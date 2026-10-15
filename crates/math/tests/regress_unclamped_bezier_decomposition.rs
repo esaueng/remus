@@ -497,3 +497,54 @@ fn weights_beyond_the_f64_range_apart_still_clamp_exactly() {
     assert!(ratios.iter().all(|r| *r == ratios[0]), "{ratios:?}");
     assert_eq!(ratios[0].to_bits() & ((1 << 52) - 1), 0, "a power of two");
 }
+
+#[test]
+fn a_common_weight_of_f64_max_does_not_overflow() {
+    // Review follow-up: log2(f64::MAX) rounds to 1024, so the centring
+    // power of two overflowed and the clamp fell back to the raw weights;
+    // the insertion then formed MAX·P, which overflows for |P| ≥ 2.
+    let n = 4;
+    let curve = NurbsCurve::new(
+        3,
+        uniform_knots(n + 4),
+        de_boor_points(n),
+        vec![f64::MAX; n],
+    )
+    .expect("a common weight of MAX is valid");
+    let segments = curve_to_bezier_segments(&curve).expect("decomposes");
+    assert_eq!(segments.len(), 1);
+    let expected = bezier_from_uniform(&de_boor_points(n));
+    for (got, want) in segments[0].control_points().iter().zip(&expected) {
+        assert_close(*got, *want, 1e-13, "Bezier point");
+    }
+    let surface = NurbsSurface::new(
+        3,
+        3,
+        uniform_knots(8),
+        uniform_knots(8),
+        grid(4, 4),
+        vec![vec![f64::MAX; 4]; 4],
+    )
+    .expect("a common weight of MAX is valid");
+    let unit = NurbsSurface::new(
+        3,
+        3,
+        uniform_knots(8),
+        uniform_knots(8),
+        grid(4, 4),
+        vec![vec![1.0; 4]; 4],
+    )
+    .unwrap();
+    let patches = surface_to_bezier_patches(&surface).expect("decomposes");
+    let unit_patches = surface_to_bezier_patches(&unit).unwrap();
+    for (got_row, want_row) in patches[0]
+        .surface
+        .control_points()
+        .iter()
+        .zip(unit_patches[0].surface.control_points())
+    {
+        for (got, want) in got_row.iter().zip(want_row) {
+            assert_close(*got, *want, 1e-13, "patch point");
+        }
+    }
+}

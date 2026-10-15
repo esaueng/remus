@@ -82,7 +82,8 @@ fn weight_scale(weights: impl Iterator<Item = f64>) -> f64 {
         return 1.0;
     }
     #[allow(clippy::cast_possible_truncation)]
-    let exponent = (0.5 * (min.log2() + max.log2())).round() as i32;
+    // `log2(f64::MAX)` rounds to 1024; keep the power of two finite and normal.
+    let exponent = ((0.5 * (min.log2() + max.log2())).round() as i32).clamp(-1022, 1023);
     let scale = 2.0_f64.powi(exponent);
     if (min / scale).is_normal() && (max / scale).is_normal() {
         scale
