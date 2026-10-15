@@ -1698,15 +1698,14 @@ fn compute_ref_direction(normal: Vec3) -> Vec3 {
     let ax = Vec3::new(1.0, 0.0, 0.0);
     let ay = Vec3::new(0.0, 1.0, 0.0);
 
-    // Seed from the unit normal, as `PlaneChart::canonical` does; a stored
-    // plane normal need not be unit length.
-    let candidate = if normal.dot(ax).abs() < 0.9 * normal.length() {
-        ax
-    } else {
-        ay
+    // Same steps as `PlaneChart::canonical`: a stored plane normal need not
+    // be unit length, and only the normalized one picks the same seed at the
+    // 0.9 cutoff.
+    let Ok(normal) = normal.normalize() else {
+        return ax;
     };
-    let ref_dir = normal.cross(candidate);
-    ref_dir.normalize().unwrap_or(ax)
+    let candidate = if normal.x().abs() < 0.9 { ax } else { ay };
+    normal.cross(candidate).normalize().unwrap_or(ax)
 }
 
 fn export_pcurve_winding(
@@ -1911,6 +1910,25 @@ mod tests {
     use remus_topology::wire::{OrientedEdge, Wire};
 
     use super::*;
+
+    #[test]
+    fn plane_ref_direction_seeds_from_the_unit_normal_at_the_cutoff() {
+        // |n̂·x̂| rounds to 0.90000000000000002, so the canonical chart seeds
+        // from ŷ; comparing |n·x̂| against 0.9·|n| instead rounds to x̂.
+        let normal =
+            remus_math::vec::Vec3::new(1.799_999_999_999_889_2, 0.871_779_788_708_081_6, 0.0);
+        assert!(normal.x().abs() < 0.9 * normal.length());
+        let unit = normal.normalize().unwrap();
+        assert!(unit.x().abs() >= 0.9);
+        let expected = unit
+            .cross(remus_math::vec::Vec3::new(0.0, 1.0, 0.0))
+            .normalize()
+            .unwrap();
+        assert_eq!(
+            compute_ref_direction(normal).0.map(f64::to_bits),
+            expected.0.map(f64::to_bits)
+        );
+    }
 
     #[test]
     fn huge_periodic_pcurve_anchor_is_not_accepted_as_winding_zero() {

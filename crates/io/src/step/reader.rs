@@ -9075,13 +9075,13 @@ fn pcurve_winding(
 fn step_plane_ref_direction(normal: Vec3) -> Vec3 {
     let x = Vec3::new(1.0, 0.0, 0.0);
     let y = Vec3::new(0.0, 1.0, 0.0);
-    // Seed from the unit normal, as `PlaneChart::canonical` does; a placement
-    // axis need not be unit length.
-    let candidate = if normal.dot(x).abs() < 0.9 * normal.length() {
-        x
-    } else {
-        y
+    // Same steps as `PlaneChart::canonical`: a placement axis need not be unit
+    // length, and only the normalized one picks the same seed at the 0.9
+    // cutoff.
+    let Ok(normal) = normal.normalize() else {
+        return x;
     };
+    let candidate = if normal.x().abs() < 0.9 { x } else { y };
     normal.cross(candidate).normalize().unwrap_or(x)
 }
 
@@ -12570,6 +12570,25 @@ mod tests {
         assert_eq!(
             topo.vertex(edge.start()).unwrap().point(),
             Point3::new(0.0, 0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn plane_ref_direction_seeds_from_the_unit_normal_at_the_cutoff() {
+        // |n̂·x̂| rounds to 0.90000000000000002, so the canonical chart seeds
+        // from ŷ; comparing |n·x̂| against 0.9·|n| instead rounds to x̂.
+        let normal =
+            remus_math::vec::Vec3::new(1.799_999_999_999_889_2, 0.871_779_788_708_081_6, 0.0);
+        assert!(normal.x().abs() < 0.9 * normal.length());
+        let unit = normal.normalize().unwrap();
+        assert!(unit.x().abs() >= 0.9);
+        let expected = unit
+            .cross(remus_math::vec::Vec3::new(0.0, 1.0, 0.0))
+            .normalize()
+            .unwrap();
+        assert_eq!(
+            step_plane_ref_direction(normal).0.map(f64::to_bits),
+            expected.0.map(f64::to_bits)
         );
     }
 
