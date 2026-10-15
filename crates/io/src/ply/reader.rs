@@ -729,8 +729,9 @@ pub fn read_ply_solid(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
+
     use super::*;
 
     #[test]
@@ -742,31 +743,41 @@ mod tests {
             ..ImportLimits::default()
         };
         for body in ["", "\n\n", "0 0 0\n", "\r\n"] {
+            // Declared coordinates, so the failure is the missing record and
+            // not a header refusal that would skip the allocation path.
             let ply = format!(
-                "ply\nformat ascii 1.0\nelement vertex {}\nelement face 0\nend_header\n{body}",
+                "ply\nformat ascii 1.0\nelement vertex {}\nproperty float x\nproperty float y\n\
+                 property float z\nelement face 0\nend_header\n{body}",
                 usize::MAX
             );
-            assert!(matches!(
-                read_ply_with_limits(ply.as_bytes(), limits),
-                Err(crate::IoError::ParseError { .. })
-            ));
+            match read_ply_with_limits(ply.as_bytes(), limits) {
+                Err(crate::IoError::ParseError { reason }) => assert!(
+                    reason.starts_with("PLY vertex") && reason.ends_with("unexpected end of data"),
+                    "{reason}"
+                ),
+                other => panic!("expected a missing-record error, got {other:?}"),
+            }
         }
     }
 
     #[test]
     fn binary_vertex_bytes_overflow_is_an_error() {
         let ply = format!(
-            "ply\nformat binary_little_endian 1.0\nelement vertex {}\nelement face 0\nend_header\n",
+            "ply\nformat binary_little_endian 1.0\nelement vertex {}\nproperty float x\n\
+             property float y\nproperty float z\nelement face 0\nend_header\n",
             usize::MAX
         );
         let limits = ImportLimits {
             max_model_entities: usize::MAX,
             ..ImportLimits::default()
         };
-        assert!(matches!(
-            read_ply_with_limits(ply.as_bytes(), limits),
-            Err(crate::IoError::ParseError { .. })
-        ));
+        match read_ply_with_limits(ply.as_bytes(), limits) {
+            Err(crate::IoError::ParseError { reason }) => assert!(
+                reason.starts_with("PLY vertex 0 of") && reason.ends_with("unexpected end of data"),
+                "{reason}"
+            ),
+            other => panic!("expected a missing-record error, got {other:?}"),
+        }
     }
 
     #[test]
