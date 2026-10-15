@@ -13,7 +13,7 @@
 use crate::MathError;
 use crate::nurbs::basis::basis_funs;
 use crate::nurbs::fitting;
-use crate::nurbs::fitting::interpolate;
+use crate::nurbs::fitting::interpolate_with_params;
 use crate::nurbs::surface::NurbsSurface;
 use crate::vec::Point3;
 
@@ -26,22 +26,28 @@ use crate::vec::Point3;
 /// # Parameters
 ///
 /// - `points` — 2D grid of data points (rows × cols)
-/// - `degree_u` — polynomial degree in the u (row) direction
-/// - `degree_v` — polynomial degree in the v (column) direction
+/// - `degree_u` — polynomial degree in the u (row) direction, clamped to
+///   `rows - 1`
+/// - `degree_v` — polynomial degree in the v (column) direction, clamped to
+///   `cols - 1`
 ///
 /// # Algorithm
 ///
-/// Uses the tensor-product approach:
-/// 1. For each row, fit a NURBS curve through the columns
-/// 2. Extract control points from those curves (they form a grid)
-/// 3. For each column of control points, fit another NURBS curve
-/// 4. The final control point grid and combined knot vectors form
-///    the interpolated surface
+/// Global tensor-product interpolation (The NURBS Book §9.2.5):
+/// 1. Average the chord-length parameters across rows (for v) and across
+///    columns (for u), giving one parameter set per direction
+/// 2. Build one averaged knot vector per direction from those parameters
+/// 3. Interpolate every row at the shared v parameters, then every column
+///    of the resulting control points at the shared u parameters
+///
+/// Every row and column is solved against the same parameters and knots, so
+/// the tensor product reproduces each data point at `(u_i, v_j)`.
 ///
 /// # Errors
 ///
-/// Returns an error if the grid is too small or rows have inconsistent
-/// lengths.
+/// Returns an error if the grid is too small, rows have inconsistent
+/// lengths, or the averaged parameters are not strictly increasing (repeated
+/// rows or columns).
 pub fn interpolate_surface(
     points: &[Vec<Point3>],
     degree_u: usize,
@@ -66,56 +72,34 @@ pub fn interpolate_surface(
         }
     }
 
-    // Step 1: Fit curves through each row (u-direction).
-    let mut row_curves = Vec::with_capacity(num_rows);
-    for row in points {
-        let curve = interpolate(row, degree_v)?;
-        row_curves.push(curve);
-    }
+    let pu = degree_u.min(num_rows - 1);
+    let pv = degree_v.min(num_cols - 1);
+    let params_u = compute_grid_params_u(points, num_rows, num_cols);
+    let params_v = compute_grid_params_v(points, num_rows, num_cols);
 
-    // All row curves should have the same number of control points
-    // (= num_cols, since we're interpolating exactly).
-    let n_cp_v = row_curves[0].control_points().len();
+    // Rows at the shared v parameters: every curve gets the same knots.
+    let row_curves = points
+        .iter()
+        .map(|row| interpolate_with_params(row, pv, &params_v))
+        .collect::<Result<Vec<_>, _>>()?;
 
-    // Step 2: Extract column-wise control points from row curves.
-    // cp_grid[col][row] = row_curves[row].control_point[col]
-    let mut col_points: Vec<Vec<Point3>> = Vec::with_capacity(n_cp_v);
-    for j in 0..n_cp_v {
-        let col: Vec<Point3> = row_curves.iter().map(|c| c.control_points()[j]).collect();
-        col_points.push(col);
-    }
+    // Columns of the row control points at the shared u parameters.
+    let col_curves = (0..num_cols)
+        .map(|j| {
+            let col: Vec<Point3> = row_curves.iter().map(|c| c.control_points()[j]).collect();
+            interpolate_with_params(&col, pu, &params_u)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-    // Step 3: Fit curves through each column (v-direction).
-    let mut col_curves = Vec::with_capacity(n_cp_v);
-    for col in &col_points {
-        let curve = interpolate(col, degree_u)?;
-        col_curves.push(curve);
-    }
-
-    // Step 4: Extract the final control point grid and knot vectors.
-    let n_cp_u = col_curves[0].control_points().len();
     let knots_u = col_curves[0].knots().to_vec();
     let knots_v = row_curves[0].knots().to_vec();
 
-    let mut control_points: Vec<Vec<Point3>> = Vec::with_capacity(n_cp_u);
-    for i in 0..n_cp_u {
-        let row: Vec<Point3> = col_curves.iter().map(|c| c.control_points()[i]).collect();
-        control_points.push(row);
-    }
-
-    let weights: Vec<Vec<f64>> = control_points
-        .iter()
-        .map(|row| vec![1.0; row.len()])
+    let control_points: Vec<Vec<Point3>> = (0..num_rows)
+        .map(|i| col_curves.iter().map(|c| c.control_points()[i]).collect())
         .collect();
+    let weights = vec![vec![1.0; num_cols]; num_rows];
 
-    NurbsSurface::new(
-        degree_u,
-        degree_v,
-        knots_u,
-        knots_v,
-        control_points,
-        weights,
-    )
+    NurbsSurface::new(pu, pv, knots_u, knots_v, control_points, weights)
 }
 
 /// Approximate a NURBS surface through a grid of data points using LSPIA.
@@ -410,6 +394,112 @@ mod tests {
 
         let p11 = surface.evaluate(1.0, 1.0);
         assert!(tol.approx_eq(p11.z(), 8.0), "far corner z: {}", p11.z());
+    }
+
+    /// Max distance from each data point to the surface at its averaged
+    /// chord-length parameters, recomputed here from the grid.
+    fn max_interpolation_residual(points: &[Vec<Point3>], surface: &NurbsSurface) -> f64 {
+        fn chords(pts: &[Point3]) -> Vec<f64> {
+            let mut acc = vec![0.0];
+            for w in pts.windows(2) {
+                acc.push(acc[acc.len() - 1] + (w[1] - w[0]).length());
+            }
+            let total = acc[acc.len() - 1];
+            acc.iter().map(|d| d / total).collect()
+        }
+        let rows = points.len();
+        let cols = points[0].len();
+        let mut u = vec![0.0; rows];
+        for j in 0..cols {
+            let col: Vec<Point3> = points.iter().map(|r| r[j]).collect();
+            for (a, c) in u.iter_mut().zip(chords(&col)) {
+                *a += c / cols as f64;
+            }
+        }
+        let mut v = vec![0.0; cols];
+        for row in points {
+            for (a, c) in v.iter_mut().zip(chords(row)) {
+                *a += c / rows as f64;
+            }
+        }
+        let mut worst = 0.0f64;
+        for (i, row) in points.iter().enumerate() {
+            for (j, q) in row.iter().enumerate() {
+                worst = worst.max((surface.evaluate(u[i], v[j]) - *q).length());
+            }
+        }
+        worst
+    }
+
+    /// WASM-7 regression: rows with different non-uniform spacing used to be
+    /// fitted at their own chord parameters and assembled with row 0's knots,
+    /// missing the interior data point by 0.0442.
+    #[test]
+    fn interpolate_surface_rows_with_different_spacing_hit_every_point() {
+        let points = vec![
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(0.2, 0.0, 0.3),
+                Point3::new(2.0, 0.0, 0.0),
+            ],
+            vec![
+                Point3::new(0.0, 1.0, 0.5),
+                Point3::new(1.7, 1.1, 1.0),
+                Point3::new(2.0, 1.0, 0.2),
+            ],
+            vec![
+                Point3::new(0.0, 3.0, 0.0),
+                Point3::new(0.9, 3.0, 0.4),
+                Point3::new(2.0, 3.0, 0.1),
+            ],
+        ];
+        let surface = interpolate_surface(&points, 2, 2).unwrap();
+        let residual = max_interpolation_residual(&points, &surface);
+        assert!(residual < 1e-9, "max data-point residual {residual}");
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn interpolate_surface_irregular_cubic_grid_hits_every_point() {
+        // 5×6 grid, jittered per row and per column, degree 3 both ways.
+        let points: Vec<Vec<Point3>> = (0..5)
+            .map(|i| {
+                (0..6)
+                    .map(|j| {
+                        let x = j as f64 + 0.3 * ((i * 7 + j * 3) % 5) as f64;
+                        let y = 2.0 * i as f64 + 0.2 * ((i * 2 + j * 5) % 3) as f64;
+                        let z = (0.4 * x).sin() * (0.3 * y).cos();
+                        Point3::new(x, y, z)
+                    })
+                    .collect()
+            })
+            .collect();
+        let surface = interpolate_surface(&points, 3, 3).unwrap();
+        let residual = max_interpolation_residual(&points, &surface);
+        assert!(residual < 1e-9, "max data-point residual {residual}");
+    }
+
+    /// MATH-10: a degree above `count - 1` is clamped per direction instead of
+    /// building a surface whose degree disagrees with its knot vectors.
+    #[test]
+    fn interpolate_surface_clamps_degree_per_direction() {
+        let points = vec![
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.5),
+                Point3::new(3.0, 0.0, 0.0),
+            ],
+            vec![
+                Point3::new(0.0, 2.0, 1.0),
+                Point3::new(1.5, 2.0, 0.0),
+                Point3::new(3.0, 2.0, 1.0),
+            ],
+        ];
+        let surface = interpolate_surface(&points, 3, 5).unwrap();
+        assert_eq!(surface.degree_u(), 1);
+        assert_eq!(surface.degree_v(), 2);
+        let residual = max_interpolation_residual(&points, &surface);
+        assert!(residual < 1e-9, "max data-point residual {residual}");
     }
 
     #[test]
