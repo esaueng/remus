@@ -48,9 +48,10 @@ struct PreparedFace {
     /// plane the boundary test's polygon containment uses. `None`
     /// when no prune is proven exact for this face.
     trim_window: Option<TrimWindow>,
-    /// Whether the support is a NURBS surface.
-    nurbs: bool,
-    /// Knot-span boxes of a NURBS support for the ray prefilter, built on
+    /// Whether the ray prefilter takes the face: a NURBS support with a span
+    /// count it takes, and a cached trim.
+    prefilter: bool,
+    /// Knot-span boxes of such a support for the ray prefilter, built on
     /// first use; `None` inside when they cannot be certified.
     span_boxes: std::sync::OnceLock<Option<ray_prefilter::SpanBoxes>>,
 }
@@ -239,9 +240,11 @@ impl<'a> PreparedSolid<'a> {
                 face_aabbs.push((i, bounds));
             }
             let trim = super::boundary::FaceTrimData::build(topo, fid).ok();
-            let (support_hull, nurbs) =
+            let (support_hull, prefilter) =
                 match topo.face(fid).map(remus_topology::face::Face::surface) {
-                    Ok(FaceSurface::Nurbs(surface)) => (nurbs_support_hull(surface), true),
+                    Ok(FaceSurface::Nurbs(surface)) => {
+                        (nurbs_support_hull(surface), ray_prefilter::takes(surface))
+                    }
                     // Analytic distances are closed-form; nothing to skip.
                     Ok(
                         FaceSurface::Plane { .. }
@@ -256,13 +259,14 @@ impl<'a> PreparedSolid<'a> {
                 (Some(trim), Ok(face)) => TrimWindow::of(face.surface(), trim),
                 _ => None,
             };
+            let prefilter = prefilter && trim.is_some();
             prepared_faces.push(PreparedFace {
                 fid,
                 trim,
                 cache: super::boundary::FaceCache::default(),
                 support_hull,
                 trim_window,
-                nurbs,
+                prefilter,
                 span_boxes: std::sync::OnceLock::new(),
             });
         }
@@ -471,16 +475,50 @@ impl<'a> PreparedSolid<'a> {
     ///
     /// Returns an error if a topology lookup fails.
     pub fn count_ray_crossings(&self, origin: Point3, direction: Vec3) -> Result<u32, CheckError> {
+        self.count_ray_crossings_noting_skips(origin, direction, || {})
+    }
+}
+
+impl PreparedSolid<'_> {
+    /// [`PreparedSolid::count_ray_crossings`], with how many of the faces
+    /// offered to the ray the NURBS knot-span prefilter skipped: evidence for
+    /// its differential oracle that the skip fires.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a topology lookup fails.
+    #[doc(hidden)]
+    pub fn count_ray_crossings_and_skips(
+        &self,
+        origin: Point3,
+        direction: Vec3,
+    ) -> Result<(u32, usize), CheckError> {
+        let mut skips = 0usize;
+        let crossings = self.count_ray_crossings_noting_skips(origin, direction, || skips += 1)?;
+        Ok((crossings, skips))
+    }
+
+    /// The crossing loop of [`PreparedSolid::count_ray_crossings`], calling
+    /// `skipped` for each face the prefilter skips. Generic so the count
+    /// without a tally compiles to the bare loop.
+    #[inline]
+    fn count_ray_crossings_noting_skips(
+        &self,
+        origin: Point3,
+        direction: Vec3,
+        mut skipped: impl FnMut(),
+    ) -> Result<u32, CheckError> {
         let candidates = self.bvh.query_ray(origin, direction);
 
         let mut crossings = 0u32;
         for face_idx in candidates {
+            let prepared = &self.prepared_faces[face_idx];
             // A NURBS support the ray provably misses contributes no crossing
             // (see `ray_misses_nurbs_face`).
-            if self.ray_misses_nurbs_face(face_idx, origin, direction) {
+            if prepared.prefilter && self.ray_misses_nurbs_face(prepared, origin, direction) {
+                skipped();
                 continue;
             }
-            let prepared = &self.prepared_faces[face_idx];
             let owned_trim;
             let trim = if let Some(cached) = &prepared.trim {
                 Some(cached)
@@ -499,9 +537,7 @@ impl<'a> PreparedSolid<'a> {
         }
         Ok(crossings)
     }
-}
 
-impl PreparedSolid<'_> {
     /// [`PreparedSolid::count_ray_crossings`] without the NURBS span
     /// prefilter, kept verbatim as the differential oracle for that skip.
     ///
