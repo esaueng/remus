@@ -414,35 +414,9 @@ impl DerivativeScratch {
         du: Vec3,
         dv: Vec3,
     ) -> Result<Vec3, crate::MathError> {
-        let cross = du.cross(dv);
-        if cross.length_squared() > 1e-30 {
-            return cross.normalize();
-        }
-
-        // Degenerate point — try perturbing the parameter slightly.
-        let (u0, u1) = surface.domain_u();
-        let (v0, v1) = surface.domain_v();
-        let eps_u = (u1 - u0) * 1e-6;
-        let eps_v = (v1 - v0) * 1e-6;
-
-        let perturbations = [
-            (u + eps_u, v),
-            (u - eps_u, v),
-            (u, v + eps_v),
-            (u, v - eps_v),
-        ];
-
-        for (pu, pv) in perturbations {
-            let pu = pu.clamp(u0, u1);
-            let pv = pv.clamp(v0, v1);
-            let (pdu, pdv) = self.partials_from(surface, pu, pv);
-            let pcross = pdu.cross(pdv);
-            if pcross.length_squared() > 1e-30 {
-                return pcross.normalize();
-            }
-        }
-
-        Err(crate::MathError::ZeroVector)
+        normal_from_partials_with(surface, u, v, du, dv, &mut |pu, pv| {
+            self.partials_from(surface, pu, pv)
+        })
     }
 
     /// One `NurbsSurface::derivatives`-equivalent solve into a caller-owned
@@ -820,48 +794,60 @@ impl NurbsSurface {
             &mut nv_heap
         };
         basis::basis_funs_into(span_v, v, pv, &self.knots_v, nv);
+        self.contract_position(span_u, span_v, nu, nv)
+    }
 
-        // Contract along v first for each relevant u-row, then along u.
-        let scale = nu
-            .iter()
-            .enumerate()
-            .take(pu + 1)
-            .flat_map(|(i, &nu_i)| {
-                nv.iter().enumerate().take(pv + 1).map(move |(j, &nv_j)| {
-                    let u_idx = span_u - pu + i;
-                    let v_idx = span_v - pv + j;
-                    (nu_i * nv_j * self.weights[u_idx][v_idx]).abs()
-                })
-            })
-            .fold(0.0_f64, f64::max);
-        let mut wx = 0.0;
-        let mut wy = 0.0;
-        let mut wz = 0.0;
-        let mut ww = 0.0;
+    /// [`Self::evaluate`]'s contraction of the control net against the basis
+    /// values `nu[..=degree_u]` and `nv[..=degree_v]` of the spans
+    /// `span_u`/`span_v`: the scale `max |N_i N_j w_ij|`, then each u-row's
+    /// v-sum of `(N_j w / scale) * [x, y, z, 1]`, then the u-sum of
+    /// `N_i * row`, then the perspective divide.
+    ///
+    /// Every product, quotient and sum is the one `evaluate` has always
+    /// computed, in the same order: the scale fold visits the terms
+    /// `i`-major, `j`-minor as the iterator chain did, and the fourth lane
+    /// multiplies by an exact `1.0` (`x * 1.0 == x` in IEEE arithmetic), so
+    /// it carries the old weight sum unchanged. Callers holding the
+    /// first-order basis pass its row 0, which is bit-identical to
+    /// [`basis::basis_funs_into`].
+    #[inline]
+    fn contract_position(&self, span_u: usize, span_v: usize, nu: &[f64], nv: &[f64]) -> Point3 {
+        let pu = self.degree_u;
+        let pv = self.degree_v;
+        let nu = &nu[..=pu];
+        let nv = &nv[..=pv];
+        let rows = &self.control_points[span_u - pu..=span_u];
+        let weight_rows = &self.weights[span_u - pu..=span_u];
+        let cols = span_v - pv..=span_v;
 
-        for (i, &nu_i) in nu.iter().enumerate().take(pu + 1) {
-            let u_idx = span_u - pu + i;
-            // Evaluate the v-direction for this row.
-            let mut row_x = 0.0;
-            let mut row_y = 0.0;
-            let mut row_z = 0.0;
-            let mut row_w = 0.0;
-            for (j, &nv_j) in nv.iter().enumerate().take(pv + 1) {
-                let v_idx = span_v - pv + j;
-                let pt = &self.control_points[u_idx][v_idx];
-                let w = self.weights[u_idx][v_idx];
-                let bw = nv_j * w / scale;
-                row_x += bw * pt.x();
-                row_y += bw * pt.y();
-                row_z += bw * pt.z();
-                row_w += bw;
+        let mut scale = 0.0_f64;
+        for (&nu_i, weight_row) in nu.iter().zip(weight_rows) {
+            for (&nv_j, &w) in nv.iter().zip(&weight_row[cols.clone()]) {
+                scale = scale.max((nu_i * nv_j * w).abs());
             }
-            wx += nu_i * row_x;
-            wy += nu_i * row_y;
-            wz += nu_i * row_z;
-            ww += nu_i * row_w;
         }
 
+        let mut acc = [0.0f64; 4];
+        for ((&nu_i, row), weight_row) in nu.iter().zip(rows).zip(weight_rows) {
+            // Evaluate the v-direction for this row.
+            let mut row_acc = [0.0f64; 4];
+            for ((&nv_j, pt), &w) in nv
+                .iter()
+                .zip(&row[cols.clone()])
+                .zip(&weight_row[cols.clone()])
+            {
+                let bw = nv_j * w / scale;
+                let lanes = [pt.x(), pt.y(), pt.z(), 1.0];
+                for (sum, coord) in row_acc.iter_mut().zip(lanes) {
+                    *sum += bw * coord;
+                }
+            }
+            for (sum, row_sum) in acc.iter_mut().zip(row_acc) {
+                *sum += nu_i * row_sum;
+            }
+        }
+
+        let [wx, wy, wz, ww] = acc;
         debug_assert!(scale.is_finite() && scale > 0.0);
         debug_assert!(ww.is_finite() && ww > 0.0);
         Point3::new(wx / ww, wy / ww, wz / ww)
@@ -1053,44 +1039,88 @@ impl NurbsSurface {
         basis_buf: &mut [f64],
         u_memo: &mut UBasisMemo,
     ) -> Option<(Vec3, Vec3, Vec3)> {
+        let (ders_u, ders_v) = self.first_order_bases(u, v, span_u, span_v, basis_buf, u_memo)?;
+        Some(self.contract_first_order(span_u, span_v, ders_u, ders_v))
+    }
+
+    /// The first-order bases `[N; N']` (stride `degree + 1`) of both axes at
+    /// the clamped `(u, v)` in the given spans: u from `u_memo`, v solved
+    /// into `basis_buf`. `None` for a u degree above [`MEMO_MAX_DEGREE`].
+    #[cfg_attr(feature = "simd", allow(dead_code))]
+    fn first_order_bases<'a>(
+        &self,
+        u: f64,
+        v: f64,
+        span_u: usize,
+        span_v: usize,
+        basis_buf: &'a mut [f64],
+        u_memo: &'a mut UBasisMemo,
+    ) -> Option<(&'a [f64], &'a [f64])> {
         let pu = self.degree_u;
         let pv = self.degree_v;
         let u = u.clamp(self.knots_u[pu], self.knots_u[self.control_points.len()]);
         let v = v.clamp(self.knots_v[pv], self.knots_v[self.control_points[0].len()]);
         let ders_u = u_memo.ders(span_u, u, pu, &self.knots_u)?;
-        let stride_u = pu + 1;
-        let stride_v = pv + 1;
-        let ders_v = &mut basis_buf[..2 * stride_v];
+        let ders_v = &mut basis_buf[..2 * (pv + 1)];
         basis::ders_basis_funs_first_into(span_v, v, pv, &self.knots_v, ders_v);
-        let (nu, nu1) = ders_u.split_at(stride_u);
-        let (nv, nv1) = ders_v.split_at(stride_v);
+        Some((ders_u, ders_v))
+    }
+
+    /// The homogeneous contraction and quotient rule of
+    /// [`Self::point_and_partials_with_spans`] for first-order bases
+    /// `ders_u = [N; N']` (stride `degree_u + 1`) and `ders_v` likewise.
+    ///
+    /// Each control point enters as the lanes `[x, y, z, 1]`; the fourth lane
+    /// multiplies by an exact `1.0`, so `c * 1.0 == c` and
+    /// `(c * 1.0) * w == c * w` keep the weight sums' old bits.
+    #[allow(clippy::many_single_char_names)]
+    #[cfg_attr(feature = "simd", allow(dead_code))]
+    fn contract_first_order(
+        &self,
+        span_u: usize,
+        span_v: usize,
+        ders_u: &[f64],
+        ders_v: &[f64],
+    ) -> (Vec3, Vec3, Vec3) {
+        let pu = self.degree_u;
+        let pv = self.degree_v;
+        let (nu, nu1) = ders_u[..2 * (pu + 1)].split_at(pu + 1);
+        let (nv, nv1) = ders_v[..2 * (pv + 1)].split_at(pv + 1);
+        let rows = &self.control_points[span_u - pu..=span_u];
+        let weight_rows = &self.weights[span_u - pu..=span_u];
+        let cols = span_v - pv..=span_v;
 
         let weight_scale = self.max_weight();
         debug_assert!(weight_scale.is_finite() && weight_scale > 0.0);
-        let uniform = self.has_uniform_weights();
         let (mut a00, mut a01, mut a10) = ([0.0f64; 4], [0.0f64; 4], [0.0f64; 4]);
-        for i in 0..=pu {
-            let u_idx = span_u - pu + i;
-            let row = &self.control_points[u_idx][span_v - pv..=span_v];
-            let weights = &self.weights[u_idx][span_v - pv..=span_v];
-            let (n_i, n1_i) = (nu[i], nu1[i]);
-            for j in 0..=pv {
-                let pt = row[j];
-                let (c00, c01, c10) = (n_i * nv[j], n_i * nv1[j], n1_i * nv[j]);
-                if uniform {
-                    for (cell, c) in [(&mut a00, c00), (&mut a01, c01), (&mut a10, c10)] {
-                        cell[0] += c * pt.x();
-                        cell[1] += c * pt.y();
-                        cell[2] += c * pt.z();
-                        cell[3] += c;
+        if self.has_uniform_weights() {
+            for ((&n_i, &n1_i), row) in nu.iter().zip(nu1).zip(rows) {
+                for ((&nv_j, &nv1_j), pt) in nv.iter().zip(nv1).zip(&row[cols.clone()]) {
+                    let (c00, c01, c10) = (n_i * nv_j, n_i * nv1_j, n1_i * nv_j);
+                    let lanes = [pt.x(), pt.y(), pt.z(), 1.0];
+                    for k in 0..4 {
+                        a00[k] += c00 * lanes[k];
+                        a01[k] += c01 * lanes[k];
+                        a10[k] += c10 * lanes[k];
                     }
-                } else {
-                    let w = weights[j] / weight_scale;
-                    for (cell, c) in [(&mut a00, c00), (&mut a01, c01), (&mut a10, c10)] {
-                        cell[0] += c * pt.x() * w;
-                        cell[1] += c * pt.y() * w;
-                        cell[2] += c * pt.z() * w;
-                        cell[3] += c * w;
+                }
+            }
+        } else {
+            for (((&n_i, &n1_i), row), weight_row) in nu.iter().zip(nu1).zip(rows).zip(weight_rows)
+            {
+                for (((&nv_j, &nv1_j), pt), &weight) in nv
+                    .iter()
+                    .zip(nv1)
+                    .zip(&row[cols.clone()])
+                    .zip(&weight_row[cols.clone()])
+                {
+                    let (c00, c01, c10) = (n_i * nv_j, n_i * nv1_j, n1_i * nv_j);
+                    let w = weight / weight_scale;
+                    let lanes = [pt.x(), pt.y(), pt.z(), 1.0];
+                    for k in 0..4 {
+                        a00[k] += c00 * lanes[k] * w;
+                        a01[k] += c01 * lanes[k] * w;
+                        a10[k] += c10 * lanes[k] * w;
                     }
                 }
             }
@@ -1110,7 +1140,7 @@ impl NurbsSurface {
             (a10[1] - wu * p.y()) / w0,
             (a10[2] - wu * p.z()) / w0,
         );
-        Some((p, du, dv))
+        (p, du, dv)
     }
 
     /// [`Self::derivatives_into_with_buffers`] with pre-resolved knot spans.
@@ -1275,7 +1305,70 @@ impl NurbsSurface {
     /// Returns [`MathError::ZeroVector`] if the surface is degenerate at
     /// this point and all fallback perturbations also fail.
     pub fn normal(&self, u: f64, v: f64) -> Result<Vec3, MathError> {
+        #[cfg(not(feature = "simd"))]
+        if self.has_stack_first_order() {
+            let (du, dv) = self.stack_partials(u, v);
+            return normal_from_partials_with(self, u, v, du, dv, &mut |pu, pv| {
+                self.stack_partials(pu, pv)
+            });
+        }
         DerivativeScratch::new().normal_from(self, u, v)
+    }
+
+    /// Whether [`Self::stack_first_order_bases`] serves this surface: a u
+    /// degree the scratch solve takes its first-order path for (the
+    /// [`MEMO_MAX_DEGREE`] bound) and a v degree within the stack basis
+    /// bound. Higher degrees keep the scratch solve and its heap buffers.
+    #[cfg(not(feature = "simd"))]
+    const fn has_stack_first_order(&self) -> bool {
+        self.degree_u <= MEMO_MAX_DEGREE && self.degree_v <= basis::MAX_STACK_DEGREE
+    }
+
+    /// The spans and first-order bases a fresh [`DerivativeScratch`] solve
+    /// computes at `(u, v)`, in stack buffers: the same clamp, the same
+    /// [`basis::find_span`] (what a missed span hint falls back to) and the
+    /// same [`basis::ders_basis_funs_first_into`] (what a missed u memo
+    /// computes). Only for surfaces with [`Self::has_stack_first_order`].
+    #[cfg(not(feature = "simd"))]
+    fn stack_first_order_bases(&self, u: f64, v: f64) -> StackBases {
+        let pu = self.degree_u;
+        let pv = self.degree_v;
+        let n_rows = self.control_points.len();
+        let n_cols = self.control_points[0].len();
+        let u = u.clamp(self.knots_u[pu], self.knots_u[n_rows]);
+        let v = v.clamp(self.knots_v[pv], self.knots_v[n_cols]);
+        let mut bases = StackBases {
+            span_u: basis::find_span(n_rows, pu, u, &self.knots_u),
+            span_v: basis::find_span(n_cols, pv, v, &self.knots_v),
+            ders_u: [0.0; STACK_BASES_LEN],
+            ders_v: [0.0; STACK_BASES_LEN],
+        };
+        basis::ders_basis_funs_first_into(
+            bases.span_u,
+            u,
+            pu,
+            &self.knots_u,
+            &mut bases.ders_u[..2 * (pu + 1)],
+        );
+        basis::ders_basis_funs_first_into(
+            bases.span_v,
+            v,
+            pv,
+            &self.knots_v,
+            &mut bases.ders_v[..2 * (pv + 1)],
+        );
+        bases
+    }
+
+    /// `(∂S/∂u, ∂S/∂v)` bit-identical to [`DerivativeScratch::partials_from`],
+    /// without its heap buffers. Only for surfaces with
+    /// [`Self::has_stack_first_order`].
+    #[cfg(not(feature = "simd"))]
+    fn stack_partials(&self, u: f64, v: f64) -> (Vec3, Vec3) {
+        let bases = self.stack_first_order_bases(u, v);
+        let (_, du, dv) =
+            self.contract_first_order(bases.span_u, bases.span_v, &bases.ders_u, &bases.ders_v);
+        (du, dv)
     }
 
     /// Compute an axis-aligned bounding box from control point extrema.
@@ -1296,6 +1389,62 @@ impl NurbsSurface {
     pub fn evaluator(&self) -> SurfaceEvaluator<'_> {
         SurfaceEvaluator::new(self)
     }
+}
+
+/// Degenerate-aware unit normal from the partials `(du, dv)` at `(u, v)`:
+/// `du × dv` normalized, or, where the cross product vanishes, the first of
+/// the `±u`, `±v` perturbations (by `1e-6` of the domain, clamped) whose
+/// partials from `partials` give a non-vanishing one.
+fn normal_from_partials_with(
+    surface: &NurbsSurface,
+    u: f64,
+    v: f64,
+    du: Vec3,
+    dv: Vec3,
+    partials: &mut dyn FnMut(f64, f64) -> (Vec3, Vec3),
+) -> Result<Vec3, MathError> {
+    let cross = du.cross(dv);
+    if cross.length_squared() > 1e-30 {
+        return cross.normalize();
+    }
+
+    // Degenerate point — try perturbing the parameter slightly.
+    let (u0, u1) = surface.domain_u();
+    let (v0, v1) = surface.domain_v();
+    let eps_u = (u1 - u0) * 1e-6;
+    let eps_v = (v1 - v0) * 1e-6;
+
+    let perturbations = [
+        (u + eps_u, v),
+        (u - eps_u, v),
+        (u, v + eps_v),
+        (u, v - eps_v),
+    ];
+
+    for (pu, pv) in perturbations {
+        let pu = pu.clamp(u0, u1);
+        let pv = pv.clamp(v0, v1);
+        let (pdu, pdv) = partials(pu, pv);
+        let pcross = pdu.cross(pdv);
+        if pcross.length_squared() > 1e-30 {
+            return pcross.normalize();
+        }
+    }
+
+    Err(MathError::ZeroVector)
+}
+
+/// Stack capacity of one axis's first-order basis rows `[N; N']`.
+#[cfg(not(feature = "simd"))]
+const STACK_BASES_LEN: usize = 2 * (basis::MAX_STACK_DEGREE + 1);
+
+/// Spans and first-order bases of [`NurbsSurface::stack_first_order_bases`].
+#[cfg(not(feature = "simd"))]
+struct StackBases {
+    span_u: usize,
+    span_v: usize,
+    ders_u: [f64; STACK_BASES_LEN],
+    ders_v: [f64; STACK_BASES_LEN],
 }
 
 fn validate_weight_values(weights: &[Vec<f64>]) -> Result<(), MathError> {
@@ -3510,3 +3659,6 @@ mod first_order_fast_path_tests {
 
 #[cfg(test)]
 mod eval_stack_oracle_tests;
+
+#[cfg(test)]
+mod contraction_oracle_tests;
