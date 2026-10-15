@@ -49,6 +49,27 @@ fn face_line_is_refused_for_its_budget_before_it_is_parsed_through() {
     );
 }
 
+/// The malformed corner sits exactly where triangle `limit + 1` would start.
+#[test]
+fn malformed_corner_at_the_budget_boundary_is_refused_for_the_budget() {
+    let limits = ImportLimits {
+        max_model_entities: 10,
+        ..ImportLimits::default()
+    };
+    // 12 corners make 10 triangles; the 13th token would make the 11th.
+    let error = read_obj_with_limits(&long_face(12, " not-a-corner"), limits).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            IoError::LimitExceeded {
+                resource: "OBJ triangles",
+                ..
+            }
+        ),
+        "{error}"
+    );
+}
+
 #[test]
 fn face_line_within_budget_still_reports_its_malformed_corner() {
     let limits = ImportLimits {
