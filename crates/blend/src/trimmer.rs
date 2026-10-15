@@ -64,19 +64,35 @@ const VERTEX_TOL: f64 = 1e-7;
 /// Tolerance for the 2D segment intersection parameter test.
 const PARAM_TOL: f64 = 1e-10;
 
-/// Return the existing vertex at `point` (within `tolerance`), or mint a new
-/// one. Contact splits on shared boundary edges must reuse one vertex per
+/// Return the endpoint of the boundary edge `split` that lies at `point`
+/// (within `tolerance`), or mint a new vertex there.
+///
+/// Contact splits on shared boundary edges must reuse one vertex per
 /// position: two trims splitting the same edge at the same point would
 /// otherwise mint coincident vertices, and the two resulting contact edges
 /// would meet the cap wire at different ids — leaving use-1 stubs the
-/// end-cap notch cannot share.
-fn find_or_add_vertex(topo: &mut Topology, point: Point3, tolerance: f64) -> VertexId {
-    for (vid, vertex) in topo.vertices().iter() {
-        if (vertex.point() - point).length() <= tolerance {
-            return vid;
+/// end-cap notch cannot share. The first split is propagated into every wire
+/// that uses the edge, so the second trim meets that vertex as an endpoint of
+/// the sub-edge it splits.
+///
+/// The search must not look past the split edge. Matching any vertex in the
+/// arena stitched one body's fillet onto vertices of another live solid (an
+/// in-place copy filleted after its original), so transforming one result
+/// moved the other's corners; it also cost O(arena) per contact as history
+/// grew.
+fn find_or_add_vertex(
+    topo: &mut Topology,
+    split: OrientedEdge,
+    point: Point3,
+    tolerance: f64,
+) -> Result<VertexId, BlendError> {
+    let edge = topo.edge(split.edge())?;
+    for vid in [edge.start(), edge.end()] {
+        if (topo.vertex(vid)?.point() - point).length() <= tolerance {
+            return Ok(vid);
         }
     }
-    topo.add_vertex(Vertex::new(point, tolerance))
+    Ok(topo.add_vertex(Vertex::new(point, tolerance)))
 }
 
 /// A point where the contact line crosses a face boundary edge.
@@ -238,8 +254,18 @@ pub fn trim_face(
         return Err(BlendError::TrimmingFailure { face: face_id });
     }
 
-    let va_id = find_or_add_vertex(topo, hit_a.point_3d, VERTEX_TOL);
-    let vb_id = find_or_add_vertex(topo, hit_b.point_3d, VERTEX_TOL);
+    let va_id = find_or_add_vertex(
+        topo,
+        edge_data[hit_a.edge_idx].0,
+        hit_a.point_3d,
+        VERTEX_TOL,
+    )?;
+    let vb_id = find_or_add_vertex(
+        topo,
+        edge_data[hit_b.edge_idx].0,
+        hit_b.point_3d,
+        VERTEX_TOL,
+    )?;
 
     // Each hit splits one oriented edge into two sub-edges:
     //   original: oriented from S→E
@@ -1509,6 +1535,55 @@ mod tests {
             !topo.has_pcurve(edges[0], neighbor).unwrap(),
             "stale pcurve entry for the replaced edge must be removed"
         );
+    }
+
+    /// Two bodies that touch (or an in-place copy and its original) must not
+    /// share the vertices a trim mints: the contact split may only reuse the
+    /// split edge's own endpoints, never a coincident vertex of other topology.
+    #[test]
+    fn trim_does_not_reuse_coincident_vertices_of_unrelated_topology() {
+        let mut topo = Topology::new();
+        let (first, _, _) = make_square_face(&mut topo);
+        let (second, second_verts, _) = make_square_face(&mut topo);
+
+        let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
+        let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
+        let trim = |topo: &mut Topology, face| {
+            trim_face(
+                topo,
+                face,
+                &contact_3d,
+                &contact_uv,
+                TrimKeep::Side(TrimSide::Left),
+                &[],
+            )
+            .expect("trim should succeed")
+        };
+        let first_result = trim(&mut topo, first);
+        let second_result = trim(&mut topo, second);
+
+        for vid in &second_result.new_vertices {
+            assert!(
+                !first_result.new_vertices.contains(vid),
+                "second trim reused {vid:?} minted for the unrelated first face"
+            );
+            assert!(
+                !second_verts.contains(vid),
+                "an interior contact split must mint its vertex, got corner {vid:?}"
+            );
+        }
+        let second_wire = topo
+            .wire(topo.face(second_result.trimmed_face).unwrap().outer_wire())
+            .unwrap();
+        for oe in second_wire.edges() {
+            let edge = topo.edge(oe.edge()).unwrap();
+            for vid in [edge.start(), edge.end()] {
+                assert!(
+                    !first_result.new_vertices.contains(&vid),
+                    "second trimmed face references first face's vertex {vid:?}"
+                );
+            }
+        }
     }
 
     #[test]
