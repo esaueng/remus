@@ -3406,8 +3406,8 @@ const MAX_PATCHES: usize = 16;
 ///
 /// identical at 1x, 1000x and 0.001x in every row. Eight is taken: it is three
 /// orders past what any consumer needs. A window holding interior knots is
-/// tiled by `integrate_knot_aligned` instead, at most one mean knot span per
-/// cell, since past [`MAX_PATCHES`] uniform patches would straddle the knots.
+/// tiled by `integrate_knot_aligned` instead, cut at every knot, since past
+/// [`MAX_PATCHES`] uniform patches would straddle the knots.
 const PATCHES_PER_KNOT_SPAN: usize = 8;
 
 /// The parameter-space length of one quadrature patch, per axis.
@@ -3678,22 +3678,27 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
 /// for seconds.
 const MAX_KNOT_ALIGNED_CELLS: usize = 1 << 18;
 
-/// The cell length a knot-aligned axis is tiled with: one mean knot span, or
-/// the fixed rule's own patch over `range` when that is finer, so alignment
-/// never coarsens a carrier of one or two spans.
+/// The cell length a knot-aligned axis is tiled with: the fixed rule's own
+/// patch over `range`.
+///
+/// The knot breaks already put every span in cells of its own, so a span
+/// shorter than this is one cell and a longer one keeps the old density;
+/// alignment never coarsens a carrier of one or two spans. Not the mean knot
+/// span: on a non-uniform vector that would cut a long span into as many
+/// cells as there are short ones elsewhere. An axis is then at most its
+/// span count plus [`MAX_PATCHES`] cells.
 #[allow(clippy::cast_precision_loss)]
 fn knot_aligned_cell(range: (f64, f64), scale: f64) -> f64 {
     let len = (range.1 - range.0).abs();
-    let fixed = len / patch_count(len, scale) as f64;
-    fixed.min(scale * PATCHES_PER_KNOT_SPAN as f64)
+    len / patch_count(len, scale) as f64
 }
 
 /// Cells of length at most `cell` an interval of length `len` is cut into.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn knot_aligned_cells(len: f64, cell: f64) -> usize {
     if cell > 0.0 && len.is_finite() {
-        // An interval one knot span long is one cell, not two when its
-        // length rounds a hair above the mean span.
+        // An interval exactly one cell long is one cell, not two when its
+        // length rounds a hair above the cell.
         ((len / cell) * (1.0 - 1e-9)).ceil().max(1.0) as usize
     } else {
         1
@@ -5040,5 +5045,41 @@ mod tests {
         let expected = 1.0 - width + width * NarrowSpan::STEEP;
         assert!((area - expected).abs() <= 1e-12, "{area} vs {expected}");
         assert!(area > 1.9, "the narrow span was skipped: {area}");
+    }
+
+    #[test]
+    fn knot_aligned_rule_does_not_split_a_long_span_by_its_short_neighbours() {
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let cylinder =
+            remus_math::surfaces::CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), z, 2.0)
+                .expect("cylinder");
+        // 299 short spans packed into [0, 0.01] and one long span after them,
+        // per axis: 300 × 300 spans, well inside the cap. Tiling the long span
+        // by the mean span would add ~300 more cells per axis and refuse it.
+        let knots: Vec<f64> = (1..300).map(|i| f64::from(i) / 29_900.0).collect();
+        let scale = knot_axis_patch_scale(&knots, (0.0, 1.0));
+        let knots = (&knots[..], &knots[..]);
+        let rule = IntegrationRule {
+            order: 1,
+            adaptive: None,
+            knots: Some(knots),
+            reference: Point3::new(0.0, 0.0, 0.0),
+            volume_only: false,
+            flux: None,
+        };
+        let area = integrate_knot_aligned::<_, true>(
+            &cylinder,
+            (0.0, 1.0),
+            (0.0, 1.0),
+            rule,
+            1.0,
+            &UvTrim::new(None, &[], &[], true),
+            PatchScale { u: scale, v: scale },
+            knots,
+        )
+        .expect("within the cap")
+        .expect("aligned")
+        .area;
+        assert!((area - 2.0).abs() <= 1e-12, "{area}");
     }
 }
