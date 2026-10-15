@@ -1,4 +1,4 @@
-//! B89: `thicken` must grow a face along its own outward normal field.
+//! B122: `thicken` must grow a face along its own outward normal field.
 //!
 //! `thicken` extruded every face along the carrier normal at parameter
 //! `(0, 0)` and ignored `is_reversed`. A curved face was swept along that one
@@ -132,7 +132,7 @@ fn half_cylinder_wall(topo: &mut Topology, radius: f64, height: f64, reversed: b
 /// The review's case: the `y < 0` half-cylinder wall grows outward (to
 /// larger radius, still at `y < 0`) and shrinks inward, never sideways.
 #[test]
-fn b89_half_cylinder_wall_thickens_along_its_normals() {
+fn b122_half_cylinder_wall_thickens_along_its_normals() {
     let (r, h) = (3.0, 4.0);
     for (t, inner, outer) in [(1.0, 3.0, 4.0), (-1.0, 2.0, 3.0)] {
         let mut topo = Topology::new();
@@ -158,7 +158,7 @@ fn b89_half_cylinder_wall_thickens_along_its_normals() {
 /// The same wall carried reversed faces the axis: positive thickness grows
 /// towards it.
 #[test]
-fn b89_reversed_half_cylinder_wall_grows_towards_the_axis() {
+fn b122_reversed_half_cylinder_wall_grows_towards_the_axis() {
     let mut topo = Topology::new();
     let face = half_cylinder_wall(&mut topo, 3.0, 4.0, true);
     let solid = thicken(&mut topo, face, 1.0).unwrap();
@@ -176,7 +176,7 @@ fn b89_reversed_half_cylinder_wall_grows_towards_the_axis() {
 /// The wall of a hole bored through a box is reversed: thickening it by `t`
 /// lines the hole (a tube inside it), by `−t` grows into the box.
 #[test]
-fn b89_bored_hole_wall_thickens_into_the_hole() {
+fn b122_bored_hole_wall_thickens_into_the_hole() {
     let (r, h) = (2.0, 10.0);
     for (t, inner, outer) in [(1.0, 1.0, 2.0), (-1.0, 2.0, 3.0)] {
         let mut topo = Topology::new();
@@ -220,7 +220,7 @@ fn b89_bored_hole_wall_thickens_into_the_hole() {
 /// A planar face carried against its plane normal thickens along its own
 /// outward side.
 #[test]
-fn b89_reversed_planar_face_thickens_along_its_outward_normal() {
+fn b122_reversed_planar_face_thickens_along_its_outward_normal() {
     let tol = 1e-7;
     let mut topo = Topology::new();
     let corners = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
@@ -257,7 +257,7 @@ fn b89_reversed_planar_face_thickens_along_its_outward_normal() {
 /// A sphere face offsets to the concentric sphere; its equator wall is a
 /// planar annulus.
 #[test]
-fn b89_hemisphere_thickens_to_a_spherical_shell() {
+fn b122_hemisphere_thickens_to_a_spherical_shell() {
     for t in [1.5, -1.5] {
         let r = 5.0;
         let mut topo = Topology::new();
@@ -294,7 +294,7 @@ fn b89_hemisphere_thickens_to_a_spherical_shell() {
 /// A frustum's lateral face: its offset is a cone with the same half-angle,
 /// its rim walls are cones whose apexes sit on the axis.
 #[test]
-fn b89_frustum_wall_thickens_by_pappus() {
+fn b122_frustum_wall_thickens_by_pappus() {
     frustum_wall_thickens_by_pappus(4.0, 2.0, 3.0);
 }
 
@@ -303,7 +303,7 @@ fn b89_frustum_wall_thickens_by_pappus() {
 /// linear tolerance, though 0.1 from it along the generator. It is not at
 /// its apex, and thickens like any other cone wall.
 #[test]
-fn b89_shallow_frustum_wall_is_not_at_its_apex() {
+fn b122_shallow_frustum_wall_is_not_at_its_apex() {
     frustum_wall_thickens_by_pappus(4.0, 0.1, 2e-7);
 }
 
@@ -354,7 +354,7 @@ fn frustum_wall_thickens_by_pappus(r0: f64, r1: f64, h: f64) {
 /// hollow tube: the offset torus and the original bound it as outer shell
 /// and cavity.
 #[test]
-fn b89_whole_torus_thickens_to_a_hollow_tube() {
+fn b122_whole_torus_thickens_to_a_hollow_tube() {
     let (major, minor) = (3.0, 1.0);
     for t in [0.5, -0.5] {
         let mut topo = Topology::new();
@@ -391,7 +391,7 @@ fn b89_whole_torus_thickens_to_a_hollow_tube() {
 /// Thickness must be finite and non-zero, and an offset that collapses the
 /// carrier is a typed refusal rather than a folded solid.
 #[test]
-fn b89_refusals_are_typed() {
+fn b122_refusals_are_typed() {
     let mut topo = Topology::new();
     let face = half_cylinder_wall(&mut topo, 3.0, 4.0, false);
     for bad in [f64::NAN, f64::INFINITY, 0.0] {
