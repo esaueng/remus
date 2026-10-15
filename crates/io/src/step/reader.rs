@@ -5431,7 +5431,10 @@ impl<'a> StepBuilder<'a> {
     fn surface_uv(surface: &FaceSurface, point: Point3) -> Result<Point2, IoError> {
         match surface {
             FaceSurface::Plane { normal, d } => {
-                let origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
+                let origin =
+                    super::plane_chart_origin(*normal, *d).ok_or_else(|| IoError::ParseError {
+                        reason: "STEP plane has no finite canonical chart origin".into(),
+                    })?;
                 let frame =
                     Frame3::from_normal_and_ref(origin, *normal, step_plane_ref_direction(*normal))
                         .map_err(|error| IoError::ParseError {
@@ -5475,7 +5478,12 @@ impl<'a> StepBuilder<'a> {
                     .map_err(|error| IoError::ParseError {
                         reason: format!("PLANE #{surface_ref} has an invalid frame: {error}"),
                     })?;
-                let target_origin = Point3::new(normal.x() * d, normal.y() * d, normal.z() * d);
+                let target_origin =
+                    super::plane_chart_origin(*normal, *d).ok_or_else(|| IoError::ParseError {
+                        reason: format!(
+                            "PLANE #{surface_ref} has no finite canonical chart origin"
+                        ),
+                    })?;
                 let target = Frame3::from_normal_and_ref(
                     target_origin,
                     *normal,
