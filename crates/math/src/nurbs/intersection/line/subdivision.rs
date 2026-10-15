@@ -43,13 +43,15 @@
 //! exhaust them; the pass then stops and the result is the grid result plus
 //! whatever was found so far, never worse than the grid alone.
 //!
-//! Arithmetic is plain products and sums, not `mul_add`: off `wasm32` and
-//! without an FMA target feature that is a library call, and these loops are
-//! all multiply-adds.
+//! Arithmetic in the loops is plain products and sums, not `mul_add`: off
+//! `wasm32` and without an FMA target feature that is a library call, and
+//! these loops are all multiply-adds. The once-per-line origin rebase is the
+//! exception, where a single rounding keeps the rebased origin on the line.
 
 use std::ops::Range;
 
 use crate::aabb::Aabb3;
+use crate::fma::FusedMulAdd;
 use crate::nurbs::surface::NurbsSurface;
 use crate::vec::{Point3, Vec3};
 
@@ -574,8 +576,16 @@ pub(super) fn complete_line_roots(
     // although sliding the origin along the line changes nothing.
     let centre = hull.boxes[0].center();
     let along = (centre - line.origin).dot(line.direction) / line.dir_len_sq;
+    // One rounding per component (`fma`): `O + d·s` with a far origin
+    // cancels, and rounding `d_i·s` separately would shift the line sideways
+    // by ~ulp(|O|). Rounding in `s` itself only slides the origin along it.
+    let (o, d) = (line.origin, line.direction);
     let line = LineQuery {
-        origin: line.origin + line.direction * along,
+        origin: Point3::new(
+            d.x().fma(along, o.x()),
+            d.y().fma(along, o.y()),
+            d.z().fma(along, o.z()),
+        ),
         ..line
     };
     let dir_len = line.dir_len_sq.sqrt();

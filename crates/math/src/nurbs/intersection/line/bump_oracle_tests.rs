@@ -367,3 +367,31 @@ fn patch_at_1e15_rejects_unit_miss_along_large_axis() {
     .unwrap();
     assert!(hits.is_empty(), "{hits:?}");
 }
+
+/// An oblique line given by an origin ~2e15 back along it: rebasing the
+/// origin next to the surface must keep it on the caller's line. Rounding
+/// each `d_i · s` separately shifted it sideways by ~0.1 per axis, and the
+/// completion pass then reported a crossing of a different line. The origin
+/// here is exactly `Q - 2^50·d`, so the line passes exactly through
+/// `Q = (0.25, 0.25, 0.875)` and crosses the flat top `z = 1` at
+/// `Q + 0.2·d = (0.6, 0.55, 1)`.
+#[test]
+fn far_oblique_origin_keeps_the_callers_line() {
+    let surface = bump_graph(5, &[]);
+    let dir = Vec3::new(1.75, 1.5, 0.625);
+    let k = 2.0_f64.powi(50);
+    let origin = Point3::new(0.25 - k * 1.75, 0.25 - k * 1.5, 0.875 - k * 0.625);
+    // The construction is exact: each origin coordinate is representable as
+    // written, so stepping back along the line recovers `Q` bit for bit.
+    for (o, d, q) in [
+        (origin.x(), 1.75, 0.25_f64),
+        (origin.y(), 1.5, 0.25),
+        (origin.z(), 0.625, 0.875),
+    ] {
+        assert_eq!(k.mul_add(d, o).to_bits(), q.to_bits());
+    }
+    let hits = intersect_line_nurbs(&surface, origin, dir, 20).unwrap();
+    let target = Point3::new(0.6, 0.55, 1.0);
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert!((hits[0].point - target).length() < 1e-9, "{hits:?}");
+}
