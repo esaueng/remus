@@ -445,6 +445,11 @@ impl From<remus_math::MathError> for StructuredWasmError {
             return Self::resource_limit(error.to_string(), resource, limit, actual)
                 .with_kernel_diagnostic(&error);
         }
+        if let remus_math::MathError::CoincidentFitPoints { index } = error {
+            return Self::invalid_argument(error.to_string(), None)
+                .with_kernel_diagnostic(&error)
+                .with_detail("index", index);
+        }
         let code = match &error {
             remus_math::MathError::ConvergenceFailure { .. } => WasmErrorCode::OperationFailed,
             remus_math::MathError::Cancelled => WasmErrorCode::Cancelled,
@@ -1086,6 +1091,13 @@ mod work_limit_tests {
         assert_eq!(coincident.code, WasmErrorCode::InvalidArgument);
         assert_eq!(coincident.category, "invalid_input");
         assert_eq!(coincident.details["kernelCode"], "coincident_fit_points");
+        assert_eq!(coincident.details["index"], 7);
+        // The operations wrapper delegates and keeps the detail.
+        let wrapped = super::StructuredWasmError::from(remus_operations::OperationsError::Math(
+            remus_math::MathError::CoincidentFitPoints { index: 7 },
+        ));
+        assert_eq!(wrapped.code, WasmErrorCode::InvalidArgument);
+        assert_eq!(wrapped.details["index"], 7);
     }
 
     #[test]
