@@ -162,52 +162,44 @@ pub fn fix_same_parameter_on_face(
     // A plane carries a line or circle exactly in its canonical chart, and
     // strict validation certifies only those analytic forms there: a NURBS
     // fit of either would read as repaired here and fail that proof.
-    if let FaceSurface::Plane { normal, d } = topo.face(face_id)?.surface()
-        && let Some(pcurve) = exact_plane_pcurve(topo, edge_id, forward, *normal, *d)?
-    {
-        topo.set_pcurve_oriented(edge_id, face_id, forward, pcurve)?;
-        return Ok(FixResult::changed(
-            Status::DONE3,
-            super::RepairActionKind::PcurveRebuilt,
-            1,
-        ));
-    }
-
-    let nurbs_3d = crate::construct::project_curve::project_edge_to_pcurve(
-        topo,
-        edge_id,
-        face_id,
-        SAME_PARAM_SAMPLES,
-        &ctx.tolerance,
-    )?;
-
-    // Convert the 3D NURBS (with z=0) to a NurbsCurve2D.
-    let cp_2d: Vec<Point2> = nurbs_3d
-        .control_points()
-        .iter()
-        .map(|p| Point2::new(p.x(), p.y()))
-        .collect();
-    let weights = nurbs_3d.weights().to_vec();
-    let knots = nurbs_3d.knots().to_vec();
-    let degree = nurbs_3d.degree();
-
-    let nurbs_2d = NurbsCurve2D::new(degree, knots.clone(), cp_2d, weights).map_err(|e| {
-        HealError::FixFailed(format!(
-            "failed to construct NurbsCurve2D for edge {edge_id:?}: {e}"
-        ))
-    })?;
-
-    let t_start = knots[degree];
-    let t_end = knots[knots.len() - degree - 1];
-
-    // The fit runs along the edge's own direction; a reversed use traverses
-    // it backwards, so its pcurve takes the parameter range reversed.
-    let pcurve = if forward {
-        PCurve::new(Curve2D::Nurbs(nurbs_2d), t_start, t_end)
+    let plane = if let FaceSurface::Plane { normal, d } = topo.face(face_id)?.surface() {
+        Some((*normal, *d))
     } else {
-        PCurve::new(Curve2D::Nurbs(nurbs_2d), t_end, t_start)
+        None
     };
+    let exact = match plane {
+        Some((normal, d)) => exact_plane_pcurve(topo, edge_id, forward, normal, d)?,
+        None => None,
+    };
+    let pcurve = match exact {
+        Some(pcurve) => pcurve,
+        None => fitted_pcurve(topo, edge_id, face_id, forward, ctx)?,
+    };
+    let original = topo.pcurve_oriented(edge_id, face_id, forward).cloned();
     topo.set_pcurve_oriented(edge_id, face_id, forward, pcurve)?;
+
+    // A plane's chart is exact, so a deviation left after the rebuild is the
+    // edge's own distance from the plane (or a fit that cannot follow it):
+    // no pcurve repairs that, so keep the caller's and say so.
+    if plane.is_some() {
+        let after = compute_pcurve_deviation(topo, edge_id, face_id, forward)?;
+        if after.is_nan() || after > ctx.tolerance.linear {
+            match original {
+                Some(pcurve) => topo.set_pcurve_oriented(edge_id, face_id, forward, pcurve)?,
+                None => {
+                    topo.remove_pcurve_oriented(edge_id, face_id, forward)?;
+                }
+            }
+            ctx.info(format!(
+                "Edge {edge_id:?} on Face {face_id:?}: rebuilt PCurve still deviates {after:.2e} from the plane, keeping the original",
+            ));
+            return Ok(FixResult::refused(
+                Status::FAIL1,
+                super::RepairRefusalKind::PcurveDeviationRemains,
+                1,
+            ));
+        }
+    }
 
     Ok(FixResult::changed(
         Status::DONE3,
@@ -414,6 +406,52 @@ fn canonical_plane_frame(normal: Vec3, d: f64) -> Result<Frame3, HealError> {
     let origin = Point3::new(normal.x() * scale, normal.y() * scale, normal.z() * scale);
     Frame3::from_normal(origin, normal)
         .map_err(|e| HealError::AnalysisFailed(format!("plane frame: {e}")))
+}
+
+/// The pcurve of `edge` on `face` fitted by projection, oriented along the
+/// use.
+fn fitted_pcurve(
+    topo: &Topology,
+    edge_id: EdgeId,
+    face_id: FaceId,
+    forward: bool,
+    ctx: &HealContext,
+) -> Result<PCurve, HealError> {
+    let nurbs_3d = crate::construct::project_curve::project_edge_to_pcurve(
+        topo,
+        edge_id,
+        face_id,
+        SAME_PARAM_SAMPLES,
+        &ctx.tolerance,
+    )?;
+
+    // Convert the 3D NURBS (with z=0) to a NurbsCurve2D.
+    let cp_2d: Vec<Point2> = nurbs_3d
+        .control_points()
+        .iter()
+        .map(|p| Point2::new(p.x(), p.y()))
+        .collect();
+    let weights = nurbs_3d.weights().to_vec();
+    let knots = nurbs_3d.knots().to_vec();
+    let degree = nurbs_3d.degree();
+
+    let nurbs_2d = NurbsCurve2D::new(degree, knots.clone(), cp_2d, weights).map_err(|e| {
+        HealError::FixFailed(format!(
+            "failed to construct NurbsCurve2D for edge {edge_id:?}: {e}"
+        ))
+    })?;
+
+    let t_start = knots[degree];
+    let t_end = knots[knots.len() - degree - 1];
+
+    // The fit runs along the edge's own direction; a reversed use traverses
+    // it backwards, so its pcurve takes the parameter range reversed.
+    let pcurve = if forward {
+        PCurve::new(Curve2D::Nurbs(nurbs_2d), t_start, t_end)
+    } else {
+        PCurve::new(Curve2D::Nurbs(nurbs_2d), t_end, t_start)
+    };
+    Ok(pcurve)
 }
 
 /// The exact pcurve of a line or circle edge lying in a plane, in the
@@ -710,6 +748,38 @@ mod repair_budget_tests {
         let rebuilt = topo.pcurve_oriented(edge, face, true).unwrap();
         assert!(matches!(rebuilt.curve(), Curve2D::Line(_)), "{rebuilt:?}");
         assert!(strictly_certified_deviation(&topo, edge, face, true) <= 1e-9);
+    }
+
+    /// An edge lifted 1e-3 off its plane has no pcurve within tolerance: the
+    /// rebuild must keep the caller's pcurve and refuse, not report a repair.
+    #[test]
+    fn off_plane_edge_keeps_its_pcurve_and_refuses() {
+        let (mut topo, edge, face) = square_face();
+        let (start, end) = {
+            let e = topo.edge(edge).unwrap();
+            (e.start(), e.end())
+        };
+        for v in [start, end] {
+            let p = topo.vertex(v).unwrap().point();
+            topo.vertex_mut(v)
+                .unwrap()
+                .set_point(Point3::new(p.x(), p.y(), 1e-3));
+        }
+        topo.set_pcurve_oriented(edge, face, true, bottom_pcurve(0.0))
+            .unwrap();
+        let mut ctx = HealContext::new();
+        let config = crate::fix::config::FixConfig::default();
+        let result =
+            super::fix_same_parameter_on_face(&mut topo, edge, face, &mut ctx, &config).unwrap();
+        assert_eq!(result.actions_taken, 0, "{result:?}");
+        assert_eq!(
+            result.refusals.first().map(|r| r.kind),
+            Some(crate::fix::RepairRefusalKind::PcurveDeviationRemains),
+            "{result:?}"
+        );
+        let kept = topo.pcurve_oriented(edge, face, true).unwrap();
+        assert!((kept.evaluate(0.0) - Point2::new(0.0, 0.0)).length() < 1e-15);
+        assert!((compute_pcurve_deviation(&topo, edge, face, true).unwrap() - 1e-3).abs() < 1e-12);
     }
 
     /// A disc on `z = 0` bounded by one full circle about `(1, 2, 0)` of
