@@ -713,11 +713,15 @@ pub(crate) fn rolling_ball_setback(
     Ok(reach)
 }
 
-/// Whether the rolling-ball rebuild places this two-plane stripe's contacts
-/// at the exact setback: it does so only once it classifies the edge convex or
-/// concave, with the same probe it uses here. An unqualified stripe takes its
-/// cross-product fallback, which lays the contacts one radius out.
-fn two_plane_stripe_is_qualified(
+/// Whether the rolling-ball rebuild is sure to place this stripe's contacts
+/// at the exact setback rather than one radius out.
+///
+/// Only a two-plane stripe it classifies convex or concave (with the same
+/// probe used here) is. An unclassified two-plane stripe takes the
+/// cross-product fallback; against a curved neighbour the rebuild solves its
+/// own stations and takes that fallback wherever its solve fails, which a
+/// guard running ahead of it cannot know. Both lay contacts one radius out.
+fn rolling_ball_contacts_are_exact(
     topo: &Topology,
     solid: SolidId,
     edge: EdgeId,
@@ -726,7 +730,7 @@ fn two_plane_stripe_is_qualified(
     radius: f64,
 ) -> Result<bool, OperationsError> {
     if topo.face(other)?.effective_plane_normal().is_none() {
-        return Ok(true);
+        return Ok(false);
     }
     let e = topo.edge(edge)?;
     let length = (topo.vertex(e.end())?.point() - topo.vertex(e.start())?.point()).length();
@@ -806,7 +810,7 @@ fn reject_blend_into_hole(
                             let setback =
                                 rolling_ball_setback(topo, edge_id, face_id, other, size)?;
                             if setback < size
-                                && !two_plane_stripe_is_qualified(
+                                && !rolling_ball_contacts_are_exact(
                                     topo, solid, edge_id, face_id, other, size,
                                 )?
                             {
