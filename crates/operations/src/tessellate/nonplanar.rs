@@ -3309,6 +3309,10 @@ pub(super) fn tessellate_nonplanar_cdt(
 
         (pt3, nrm)
     };
+    // The surface sample each interior point was given at the merge-cell
+    // filter, by CDT id, beside the point itself: emission reuses it when the
+    // CDT still holds that point bit for bit (the closure is pure).
+    let mut interior_samples: Vec<Option<(Point2, (Point3, Vec3))>> = Vec::new();
 
     if du > 1e-15 && dv > 1e-15 {
         let (n_u, n_v) = interior_grid_resolution(chart_surface, du, dv, deflection, angular_tol);
@@ -3627,8 +3631,15 @@ pub(super) fn tessellate_nonplanar_cdt(
             .chain(hole_boundaries_3d.iter().flatten())
             .map(|&(point, _, _, _)| point_merge_key(point, MERGE_GRID))
             .collect();
-        interior_pts
-            .retain(|&point| taken.insert(point_merge_key(interior_point_3d(point).0, MERGE_GRID)));
+        let mut kept_samples = Vec::with_capacity(interior_pts.len());
+        interior_pts.retain(|&point| {
+            let sample = interior_point_3d(point);
+            let kept = taken.insert(point_merge_key(sample.0, MERGE_GRID));
+            if kept {
+                kept_samples.push(sample);
+            }
+            kept
+        });
         if !interior_pts.is_empty() {
             let interior_cdt_ids = cdt
                 .insert_points_hilbert(&interior_pts)
@@ -3636,6 +3647,16 @@ pub(super) fn tessellate_nonplanar_cdt(
             let max_interior = interior_cdt_ids.iter().copied().max().unwrap_or(0);
             if cdt_to_global.len() <= max_interior {
                 cdt_to_global.resize(max_interior + 1, None);
+            }
+            interior_samples.resize(max_interior + 1, None);
+            for ((&id, &point), &sample) in interior_cdt_ids
+                .iter()
+                .zip(&interior_pts)
+                .zip(&kept_samples)
+            {
+                if let Some(slot) = interior_samples.get_mut(id) {
+                    slot.get_or_insert((point, sample));
+                }
             }
         }
     }
@@ -3662,7 +3683,18 @@ pub(super) fn tessellate_nonplanar_cdt(
         if let Some(gid) = cdt_to_global.get(i).copied().flatten() {
             final_global_ids[i] = gid;
         } else if i >= 3 {
-            let (pt3, nrm) = interior_point_3d(cdt_verts[i]);
+            let reused = interior_samples
+                .get(i)
+                .copied()
+                .flatten()
+                .filter(|(point, _)| {
+                    point.x().to_bits() == cdt_verts[i].x().to_bits()
+                        && point.y().to_bits() == cdt_verts[i].y().to_bits()
+                });
+            #[cfg(test)]
+            let reused = interior_sample_tests::observe(reused);
+            let (pt3, nrm) =
+                reused.map_or_else(|| interior_point_3d(cdt_verts[i]), |(_, sample)| sample);
             let key = point_merge_key(pt3, MERGE_GRID);
             let gid = *point_to_global.entry(key).or_insert_with(|| {
                 let idx = merged.positions.len() as u32;
@@ -5020,6 +5052,50 @@ fn sphere_boundary_conic(curve: &EdgeCurve) -> Option<SphereBoundaryConic> {
     }
 }
 
+/// A complete native equator in the carrier's own chart can use the analytic
+/// hemisphere grid. Partial, tilted, holed and sampled trims must keep the
+/// shared-boundary mesher. Check native spans, not just sampled endpoints.
+/// The returned sign selects the north (+1) or south (-1) bounded hemisphere.
+pub(super) fn analytic_sphere_equator_direction(
+    topo: &Topology,
+    face: &remus_topology::face::Face,
+) -> Result<Option<f64>, crate::OperationsError> {
+    let FaceSurface::Sphere(sphere) = face.surface() else {
+        return Ok(None);
+    };
+    let edges = topo.wire(face.outer_wire())?.edges();
+    // Keep single- and two-edge trims on the established shared-boundary path.
+    if !face.inner_wires().is_empty()
+        || edges.len() < 3
+        || !sphere_great_circle_loop(topo, sphere, edges)?
+    {
+        return Ok(None);
+    }
+    let mut turn = 0.0;
+    let mut direction = 0.0_f64;
+    for oriented in edges {
+        let edge = topo.edge(oriented.edge())?;
+        let Some(conic) = sphere_boundary_conic(edge.curve()) else {
+            return Ok(None);
+        };
+        if conic.normal.cross(sphere.z_axis()).length() > 1e-10 {
+            return Ok(None);
+        }
+        let Ok((a, b)) = edge.strict_domain() else {
+            return Ok(None);
+        };
+        let delta = (b - a)
+            * conic.u.cross(conic.v).dot(sphere.z_axis())
+            * if oriented.is_forward() { 1.0 } else { -1.0 };
+        if delta == 0.0 || !delta.is_finite() || direction * delta < 0.0 {
+            return Ok(None);
+        }
+        direction = delta;
+        turn += delta;
+    }
+    Ok(((turn.abs() - std::f64::consts::TAU).abs() <= 1e-10).then_some(turn.signum()))
+}
+
 /// The new chart selection is confined to native great-circle partitions.
 /// This checks the complete conic support, its authoritative span and the
 /// exact vertex-ID chain; sampled NURBS or general curved loops keep their
@@ -5848,6 +5924,7 @@ pub(super) fn tessellate_sphere_cap_shared(
     deflection: f64,
     angular_tol: f64,
     allow_latitude_cap: bool,
+    allow_analytic_hemisphere: bool,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
     point_to_global: &mut PointMergeMap,
@@ -5877,6 +5954,10 @@ pub(super) fn tessellate_sphere_cap_shared(
                 break;
             }
         }
+    }
+
+    if allow_analytic_hemisphere && analytic_sphere_equator_direction(topo, face_data)?.is_some() {
+        return Ok(false);
     }
 
     let pos_save = merged.positions.len();
@@ -6003,6 +6084,7 @@ pub(super) fn tessellate_sphere_cap_shared(
 ///
 /// Returns `None` when neither path produces triangles; the caller falls back
 /// to the rectangular sweep so behavior never degrades.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn tessellate_trimmed_sphere_uvs(
     topo: &Topology,
     face_id: FaceId,
@@ -6011,6 +6093,7 @@ pub(super) fn tessellate_trimmed_sphere_uvs(
     deflection: f64,
     angular_tol: f64,
     try_cdt: bool,
+    allow_analytic_hemisphere: bool,
 ) -> Option<super::TriangleMeshUV> {
     let empty_pool: DetHashMap<usize, Vec<u32>> = DetHashMap::default();
     let mut merged = TriangleMesh::default();
@@ -6022,6 +6105,7 @@ pub(super) fn tessellate_trimmed_sphere_uvs(
         deflection,
         angular_tol,
         false,
+        allow_analytic_hemisphere,
         &empty_pool,
         &mut merged,
         &mut point_to_global,
@@ -6063,27 +6147,29 @@ pub(super) fn tessellate_trimmed_sphere_uvs(
 /// Check if a 2D point is inside a polygon defined by (u, v) coordinates.
 /// Uses the winding number algorithm for robustness.
 pub(super) fn point_in_polygon_2d(polygon: &[(f64, f64)], pt: remus_math::vec::Point2) -> bool {
-    let n = polygon.len();
     let mut winding = 0i32;
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let yi = polygon[i].1;
-        let yj = polygon[j].1;
+    let mut segment = |(xi, yi): (f64, f64), (xj, yj): (f64, f64)| {
         if yi <= pt.y() {
             if yj > pt.y() {
-                let cross = (polygon[j].0 - polygon[i].0) * (pt.y() - yi)
-                    - (pt.x() - polygon[i].0) * (yj - yi);
+                let cross = (xj - xi) * (pt.y() - yi) - (pt.x() - xi) * (yj - yi);
                 if cross > 0.0 {
                     winding += 1;
                 }
             }
         } else if yj <= pt.y() {
-            let cross =
-                (polygon[j].0 - polygon[i].0) * (pt.y() - yi) - (pt.x() - polygon[i].0) * (yj - yi);
+            let cross = (xj - xi) * (pt.y() - yi) - (pt.x() - xi) * (yj - yi);
             if cross < 0.0 {
                 winding -= 1;
             }
         }
+    };
+    // Segment k runs from vertex k to vertex k + 1, the last one back to the
+    // first: the same segments in the same order as indexing `(k + 1) % n`.
+    for pair in polygon.windows(2) {
+        segment(pair[0], pair[1]);
+    }
+    if let (Some(&last), Some(&first)) = (polygon.last(), polygon.first()) {
+        segment(last, first);
     }
     winding != 0
 }
@@ -6152,31 +6238,25 @@ fn classify_dense_candidate(
     point: remus_math::vec::Point2,
     clearance: f64,
 ) -> (bool, bool) {
-    // `boundary_cdt` is mapped from `boundary_uv` one-to-one at the call
-    // site, so both index ranges coincide.
     let mut winding = 0i32;
     let mut clear = true;
-    for i in 0..boundary_uv.len() {
-        let j = (i + 1) % boundary_uv.len();
-        let yi = boundary_uv[i].1;
-        let yj = boundary_uv[j].1;
+    let mut segment = |(xi, yi): (f64, f64),
+                       (xj, yj): (f64, f64),
+                       a: remus_math::vec::Point2,
+                       b: remus_math::vec::Point2| {
         if yi <= v {
             if yj > v {
-                let cross = (boundary_uv[j].0 - boundary_uv[i].0) * (v - yi)
-                    - (u - boundary_uv[i].0) * (yj - yi);
+                let cross = (xj - xi) * (v - yi) - (u - xi) * (yj - yi);
                 if cross > 0.0 {
                     winding += 1;
                 }
             }
         } else if yj <= v {
-            let cross = (boundary_uv[j].0 - boundary_uv[i].0) * (v - yi)
-                - (u - boundary_uv[i].0) * (yj - yi);
+            let cross = (xj - xi) * (v - yi) - (u - xi) * (yj - yi);
             if cross < 0.0 {
                 winding -= 1;
             }
         }
-        let a = boundary_cdt[i];
-        let b = boundary_cdt[j];
         let ab = b - a;
         let length_squared = ab.dot(ab);
         let t = if length_squared > 1.0e-30 {
@@ -6186,6 +6266,19 @@ fn classify_dense_candidate(
         };
         let foot = remus_math::vec::Point2::new(a.x() + ab.x() * t, a.y() + ab.y() * t);
         clear = (point - foot).length() > clearance && clear;
+    };
+    // `boundary_cdt` is mapped from `boundary_uv` one-to-one at the call
+    // site, so both walk the same segments, in `point_in_polygon_2d`'s order.
+    for (uv, cdt) in boundary_uv.windows(2).zip(boundary_cdt.windows(2)) {
+        segment(uv[0], uv[1], cdt[0], cdt[1]);
+    }
+    if let (Some(&last), Some(&first), Some(&a), Some(&b)) = (
+        boundary_uv.last(),
+        boundary_uv.first(),
+        boundary_cdt.get(boundary_uv.len().wrapping_sub(1)),
+        boundary_cdt.first(),
+    ) {
+        segment(last, first, a, b);
     }
     (winding != 0, clear)
 }
@@ -6379,6 +6472,12 @@ pub(super) fn tessellate_nonplanar_snap(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod interior_sample_tests;
+
+#[cfg(test)]
+mod polygon_scan_oracle_tests;
 
 #[cfg(test)]
 mod rim_angle_tests {

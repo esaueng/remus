@@ -8,7 +8,7 @@ use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::vec::Vec3;
 use remus_topology::Topology;
-use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 use remus_topology::transaction::run_transacted;
@@ -2276,6 +2276,24 @@ pub(crate) fn transform_edges_recorded(
         apply_edge_image(topo, eid, image, recorder)?;
     }
     Ok(())
+}
+
+/// The curve and trim `transform_edges` leaves on `edge` under `matrix`,
+/// without a topology to write them into.
+pub(crate) fn transformed_edge_geometry(
+    edge: &Edge,
+    matrix: &Mat4,
+) -> Result<(EdgeCurve, Option<(f64, f64)>), crate::OperationsError> {
+    let (new_curve, new_trim) = transform_edge_curve_with_trim(edge.curve(), edge.trim(), matrix)?;
+    // `apply_edge_image`'s writes, through the same setters.
+    let mut image = edge.clone();
+    if let Some(curve) = new_curve {
+        image.set_curve(curve);
+        image.set_trim(new_trim);
+    } else if image.trim().is_some() {
+        image.set_trim(None);
+    }
+    Ok((image.curve().clone(), image.trim()))
 }
 
 fn apply_edge_image(
