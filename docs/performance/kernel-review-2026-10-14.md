@@ -23,7 +23,8 @@ their numbers.
   (vertex position bits, curve, trim, tolerance, and each use's coedge edge,
   stored pcurve and periodic winding). It also covers connectivity: which edge
   and vertices each use names, how many uses share each, and which faces each
-  edge and vertex bounds.
+  edge and vertex bounds. Lazily filled caches in a `Debug` rendering (the
+  NURBS weight `OnceLock`s) are left out.
   A `canonical` digest of the same content ignores face order, cavity order and
   the start of each closed wire. Mesh workloads digest position bits, normal
   bits and indices.
@@ -44,6 +45,17 @@ their numbers.
 
 The ranges come from the rolling-ball and v2 fillets, which iterate std
 `HashMap`s; see [Determinism](#determinism).
+
+`Ir` counts the whole process, including setup and the digest. Callgrind's
+inclusive count for the measured operation (`fuse_all`, `boolean`,
+`tessellate`, or the fillet call) is 92.4% of the total on `seq_cuts_64`,
+93.8% on `mesh_sphere`, and 97.2–99.3% on the rest. Setup and the digest do
+the same work in base and candidate, because their outputs are identical. So
+they cancel out of each absolute saving and only shrink the percentages.
+Against the operation alone, every shipped Δ is the same or larger: `seq_cuts_64`
+−21.9% and `mesh_sphere` −45.1%; the others change by at most 0.7 points. The
+below-bar leads keep their side of the line: the largest operation-only share
+is `deep_copy_solid_with_maps` at 4.9% of `seq_fuse_16`.
 
 ## Shipped
 
