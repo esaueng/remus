@@ -7,6 +7,8 @@
 use std::collections::HashMap;
 use std::io::{Cursor, Read as _};
 
+use quick_xml::name::{Namespace, NamespaceResolver, QName, ResolveResult};
+
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::tessellate::TriangleMesh;
 use remus_topology::Topology;
@@ -95,6 +97,22 @@ fn extract_model_xml(data: &[u8], limits: ImportLimits) -> Result<String, IoErro
     Ok(xml_str)
 }
 
+/// The 3MF core namespace. Elements are also accepted unbound, from models
+/// that declare no namespace.
+const CORE_NS: &str = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02";
+/// The production extension, whose `p:path` points into another model part.
+const PRODUCTION_NS: &str = "http://schemas.microsoft.com/3dmanufacturing/production/2015/06";
+
+/// Whether `name` is a core 3MF element rather than an extension element
+/// that happens to share its local name (such as a vendor `<v:build>`).
+fn is_core_element(resolver: &NamespaceResolver, name: QName<'_>) -> bool {
+    match resolver.resolve_element(name).0 {
+        ResolveResult::Unbound => true,
+        ResolveResult::Bound(Namespace(ns)) => ns == CORE_NS,
+        ResolveResult::Unknown(_) => false,
+    }
+}
+
 /// Deepest component nesting a model may use. Producers nest a few levels;
 /// the bound keeps component resolution shallow on hostile input.
 const MAX_COMPONENT_DEPTH: usize = 32;
@@ -167,7 +185,7 @@ impl Affine {
 /// Parse the model XML and return one mesh per root (see [`read_threemf`]).
 #[allow(clippy::too_many_lines)]
 fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>, IoError> {
-    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut reader = quick_xml::NsReader::from_str(xml);
     reader.config_mut().trim_text(true);
 
     let mut objects = Vec::new();
@@ -202,18 +220,20 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                     "vertices" => in_vertices = true,
                     "triangles" => in_triangles = true,
                     "components" => in_components = true,
-                    "component" if in_components => {
+                    "component"
+                        if in_components && is_core_element(reader.resolver(), e.name()) =>
+                    {
                         total_components = total_components.saturating_add(1);
                         ensure_limit(
                             "3MF components",
                             total_components,
                             limits.max_model_entities,
                         )?;
-                        push_component(e, unit_scale, current.as_mut())?;
+                        push_component(e, reader.resolver(), unit_scale, current.as_mut())?;
                     }
-                    "build" => in_build = true,
-                    "item" if in_build => {
-                        push_item(e, unit_scale, &mut items, limits)?;
+                    "build" if is_core_element(reader.resolver(), e.name()) => in_build = true,
+                    "item" if in_build && is_core_element(reader.resolver(), e.name()) => {
+                        push_item(e, reader.resolver(), unit_scale, &mut items, limits)?;
                     }
                     _ => {}
                 }
@@ -249,17 +269,19 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                             object.indices.extend([v1, v2, v3]);
                         }
                     }
-                    "component" if in_components => {
+                    "component"
+                        if in_components && is_core_element(reader.resolver(), e.name()) =>
+                    {
                         total_components = total_components.saturating_add(1);
                         ensure_limit(
                             "3MF components",
                             total_components,
                             limits.max_model_entities,
                         )?;
-                        push_component(e, unit_scale, current.as_mut())?;
+                        push_component(e, reader.resolver(), unit_scale, current.as_mut())?;
                     }
-                    "item" if in_build => {
-                        push_item(e, unit_scale, &mut items, limits)?;
+                    "item" if in_build && is_core_element(reader.resolver(), e.name()) => {
+                        push_item(e, reader.resolver(), unit_scale, &mut items, limits)?;
                     }
                     _ => {}
                 }
@@ -278,7 +300,7 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                     "vertices" => in_vertices = false,
                     "triangles" => in_triangles = false,
                     "components" => in_components = false,
-                    "build" => in_build = false,
+                    "build" if is_core_element(reader.resolver(), e.name()) => in_build = false,
                     _ => {}
                 }
             }
@@ -580,10 +602,11 @@ fn parse_object_id(e: &quick_xml::events::BytesStart<'_>) -> Result<Option<u32>,
 /// object being parsed.
 fn push_component(
     e: &quick_xml::events::BytesStart<'_>,
+    resolver: &NamespaceResolver,
     unit_scale: f64,
     object: Option<&mut ParsedObject>,
 ) -> Result<(), IoError> {
-    let component = parse_component(e, unit_scale)?;
+    let component = parse_component(e, resolver, unit_scale)?;
     if let Some(object) = object {
         object.components.push(component);
     }
@@ -593,6 +616,7 @@ fn push_component(
 /// Record a build `<item>` (written either empty or with an end tag).
 fn push_item(
     e: &quick_xml::events::BytesStart<'_>,
+    resolver: &NamespaceResolver,
     unit_scale: f64,
     items: &mut Vec<BuildItem>,
     limits: ImportLimits,
@@ -602,7 +626,7 @@ fn push_item(
         items.len().saturating_add(1),
         limits.max_model_entities,
     )?;
-    let (object_id, transform) = parse_placement(e, unit_scale, "build item")?;
+    let (object_id, transform) = parse_placement(e, resolver, unit_scale, "build item")?;
     items.push(BuildItem {
         object_id,
         transform,
@@ -613,9 +637,10 @@ fn push_item(
 /// Parse a `<component>`'s `objectid` and optional `transform`.
 fn parse_component(
     e: &quick_xml::events::BytesStart<'_>,
+    resolver: &NamespaceResolver,
     unit_scale: f64,
 ) -> Result<Component, IoError> {
-    let (object_id, transform) = parse_placement(e, unit_scale, "component")?;
+    let (object_id, transform) = parse_placement(e, resolver, unit_scale, "component")?;
     Ok(Component {
         object_id,
         transform: transform.unwrap_or(Affine::IDENTITY),
@@ -626,6 +651,7 @@ fn parse_component(
 /// and `<item>`; `what` names the element in errors.
 fn parse_placement(
     e: &quick_xml::events::BytesStart<'_>,
+    resolver: &NamespaceResolver,
     unit_scale: f64,
     what: &str,
 ) -> Result<(u32, Option<Affine>), IoError> {
@@ -647,9 +673,9 @@ fn parse_placement(
             }
             // Production extension (`p:path`): the object lives in another
             // model part, where `objectid` names a different object than it
-            // does here. Prefixes are not resolved to namespaces, so any
-            // qualified `path` is refused rather than risk a wrong placement.
-            "path" if qualified => {
+            // does here. An undeclared prefix is refused too, rather than
+            // risk a wrong placement; another extension's `path` is ignored.
+            "path" if references_production_part(resolver, attr.key) => {
                 return Err(IoError::ParseError {
                     reason: format!(
                         "3MF {what} references another model part (production extension), \
@@ -664,6 +690,16 @@ fn parse_placement(
         reason: format!("{what} element missing objectid attribute"),
     })?;
     Ok((object_id, transform))
+}
+
+/// Whether a `path` attribute is the production extension's (or carries a
+/// prefix no namespace declaration binds).
+fn references_production_part(resolver: &NamespaceResolver, key: QName<'_>) -> bool {
+    match resolver.resolve_attribute(key).0 {
+        ResolveResult::Unbound => false,
+        ResolveResult::Bound(Namespace(ns)) => ns == PRODUCTION_NS,
+        ResolveResult::Unknown(_) => true,
+    }
 }
 
 /// Parse a 12-value 3MF transform; the translation is scaled to millimeters.
