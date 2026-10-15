@@ -1,4 +1,4 @@
-//! B91: `section` must close periodic loops and keep only the part of a
+//! B125: `section` must close periodic loops and keep only the part of a
 //! curved face's carrier section that lies on the face.
 //!
 //! The sphere, cone and torus arms sectioned the untrimmed carriers, so a
@@ -141,7 +141,7 @@ fn truncated_dome(topo: &mut Topology, top: f64) -> SolidId {
 /// that span whenever both ends land off the band, leaving the two lid
 /// chords unjoined.
 #[test]
-fn b91_section_keeps_a_span_narrower_than_a_chord() {
+fn b125_section_keeps_a_span_narrower_than_a_chord() {
     let top = 0.52_f64;
     let mut topo = Topology::new();
     let solid = truncated_dome(&mut topo, top);
@@ -182,7 +182,7 @@ fn b91_section_keeps_a_span_narrower_than_a_chord() {
 
 /// The review's case: `z = 0` misses the dome, so the section is empty.
 #[test]
-fn b91_plane_below_a_dome_misses_it() {
+fn b125_plane_below_a_dome_misses_it() {
     let mut topo = Topology::new();
     let solid = dome(&mut topo);
     let probe = |p: Point3| classify_point(&topo, solid, p, 0.01, 1e-7).unwrap();
@@ -209,7 +209,7 @@ fn b91_plane_below_a_dome_misses_it() {
 /// Planes through the dome: a horizontal disc inside the cap, and a vertical
 /// cut whose arc is clipped where it meets the base rim.
 #[test]
-fn b91_dome_sections_follow_its_trim() {
+fn b125_dome_sections_follow_its_trim() {
     let mut topo = Topology::new();
     let solid = dome(&mut topo);
     // z = 0.75: a disc of radius √(1 − 0.75²).
@@ -234,7 +234,7 @@ fn b91_dome_sections_follow_its_trim() {
 
 /// A frustum's section closes: a circle across it, an ellipse obliquely.
 #[test]
-fn b91_frustum_sections_close() {
+fn b125_frustum_sections_close() {
     let mut topo = Topology::new();
     // Radius 2 at z = 0 down to 1 at z = 3: ρ(z) = 2 − z/3.
     let solid = make_cone(&mut topo, 2.0, 1.0, 3.0).unwrap();
@@ -264,7 +264,7 @@ fn b91_frustum_sections_close() {
 /// A torus with a box notch through one side of its tube keeps only the
 /// other side's cross-section (the B70 body, an exact one-torus-face cut).
 #[test]
-fn b91_notched_torus_drops_the_removed_tube() {
+fn b125_notched_torus_drops_the_removed_tube() {
     let mut topo = Topology::new();
     let ring = make_torus(&mut topo, 10.0, 3.0, 16).unwrap();
     let notch = make_box(&mut topo, 8.0, 8.0, 8.0).unwrap();
@@ -348,7 +348,7 @@ fn torus_band(topo: &mut Topology, major: f64) -> SolidId {
 /// boundary there, and the carrier's other loop at that height (radius 2.5,
 /// on the far side of the tube) is not on the band.
 #[test]
-fn b91_section_flush_with_one_rim_keeps_clipping() {
+fn b125_section_flush_with_one_rim_keeps_clipping() {
     let mut topo = Topology::new();
     let solid = torus_band(&mut topo, 3.0);
     let h = (PI / 3.0).sin();
@@ -392,7 +392,7 @@ fn b91_section_flush_with_one_rim_keeps_clipping() {
 /// radius √(1 − c²) above its chord at z = 0.5, and that chord must end
 /// exactly where the rim crosses the plane.
 #[test]
-fn b91_section_crosses_a_closed_rim_between_its_samples() {
+fn b125_section_crosses_a_closed_rim_between_its_samples() {
     let mut topo = Topology::new();
     let solid = dome(&mut topo);
     let (c, turn) = (0.865_f64, PI / 32.0);
