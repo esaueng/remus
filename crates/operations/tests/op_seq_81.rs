@@ -6078,7 +6078,7 @@ fn finding_sphere_cyl_fuse_orientation() {
 /// original result carried 1 same-sense shared edge, and the fuse was
 /// innocent: `makeCone(0, 1, 1)` points its apex down, and `make_cone` used
 /// the base circle forward in both its lateral wire and its cap, so the cone
-/// was already misoriented before any boolean (B90). The mirrored cylinder
+/// was already misoriented before any boolean (B123). The mirrored cylinder
 /// is not load-bearing; the mirror's own winding defect (F16, B89) does not
 /// affect this disjoint fuse. Minimized from campaign seed
 /// `11912020744051371592` (8 ops shrink to 5; the second cylinder, two
