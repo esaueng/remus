@@ -117,6 +117,21 @@ hand-written residual functions, within 1e-6. A converged-but-violated
 system, or non-finite solved positions, is a finding; builder or solver
 `Err` (including non-convergence) is a pass.
 
+`step_bodies`, `mesh_import` and `persistent_ref` close the IO-12 gaps
+from the 2026-10-14 kernel review. `step_bodies` runs each input through the
+sheet-body import (`read_step_bodies_with_limits`) and the validation-property
+import (`read_step_with_validation`), which `step_reader` never reached; both
+are atomic, so a refusal must leave no live entity, and an accepted import must
+return resolvable solids, sheet-class sheets and one validation report per
+solid. `mesh_import` drives the `import_mesh` step every mesh format ends in
+with lattice meshes full of coincident corners, degenerate and over-shared
+triangles, mixed winding, far offsets and occasional invalid indices or
+coordinates: accepted meshes must yield planar triangle faces, no more than the
+input triangles, with no edge used more than twice, and input-validation
+refusals must allocate nothing. `persistent_ref` decodes references the way
+they come back from storage: a decoded reference must re-encode byte-stably to
+itself and resolve, against an empty and a journaled model, without panicking.
+
 Run one target locally with nightly Rust and `cargo-fuzz`:
 
 ```bash
@@ -126,7 +141,8 @@ cargo +nightly fuzz run nurbs_surface -- -max_total_time=60 -rss_limit_mb=2048
 PR CI compiles every target. The scheduled `Fuzz Smoke` workflow runs the
 public model-reader, boolean-tree, modifier, NURBS-surface,
 topology-mutation, arena-roundtrip, tessellation, curve-intersection,
-offset, and GCS campaigns for two minutes each and
+offset, GCS, STEP-body, mesh-import and persistent-reference campaigns for two
+minutes each and
 retains crash artifacts. `arena_reader` and `wasm_batch` currently compile
 in PR CI but are not scheduled. All four B19 engine slices (tessellation,
 curve-intersection, offset, GCS) landed with independent oracles,
