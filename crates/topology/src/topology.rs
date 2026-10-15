@@ -1551,6 +1551,84 @@ impl Topology {
         Ok(())
     }
 
+    /// Atomically replaces several stored wires, as
+    /// [`Self::replace_boundary_wire`] does for one, with a single scan of the
+    /// face arena.
+    ///
+    /// Each face that uses any replaced wire has its Loop/Coedge view rebuilt
+    /// once, from its final boundary, keeping only pcurves for uses still
+    /// present. A wire listed more than once takes its last replacement, as a
+    /// sequence of single replacements would. Composes with
+    /// [`transaction::run_transacted`](crate::transaction::run_transacted)
+    /// exactly like the single-wire path.
+    ///
+    /// # Errors
+    ///
+    /// Returns a not-found error when a wire or any edge referenced by a
+    /// replacement is invalid. No topology state changes on error.
+    pub fn replace_boundary_wires(
+        &mut self,
+        replacements: Vec<(WireId, Wire)>,
+    ) -> Result<(), TopologyError> {
+        let mut last: HashMap<WireId, usize> = HashMap::with_capacity(replacements.len());
+        for (index, (wire_id, wire)) in replacements.iter().enumerate() {
+            self.wire(*wire_id)?;
+            for oriented in wire.edges() {
+                self.edge(oriented.edge())?;
+            }
+            last.insert(*wire_id, index);
+        }
+        let replaced = |wire_id: WireId| last.get(&wire_id).map(|&index| &replacements[index].1);
+
+        let mut affected = Vec::new();
+        for (face_id, face) in self.faces.iter() {
+            let uses_replaced = last.contains_key(&face.outer_wire())
+                || face
+                    .inner_wires()
+                    .iter()
+                    .any(|wire| last.contains_key(wire));
+            if !uses_replaced {
+                continue;
+            }
+            let mut specs = Vec::with_capacity(1 + face.inner_wires().len());
+            for wire_id in
+                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                let wire = match replaced(wire_id) {
+                    Some(wire) => wire,
+                    None => self.wire(wire_id)?,
+                };
+                for oriented in wire.edges() {
+                    self.edge(oriented.edge())?;
+                }
+                specs.push(BoundaryLoopSpec {
+                    oriented_edges: wire.edges().to_vec(),
+                    closed: wire.is_closed(),
+                });
+            }
+            affected.push((face_id, specs));
+        }
+
+        for (index, (wire_id, replacement)) in replacements.into_iter().enumerate() {
+            if last.get(&wire_id) != Some(&index) {
+                continue;
+            }
+            self.record_wire_overwrite(wire_id)?;
+            let stored = self
+                .wires
+                .get_mut(wire_id)
+                .ok_or(TopologyError::WireNotFound(wire_id))?;
+            *stored = replacement;
+            self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+        }
+        self.bump_cache_generation();
+
+        for (face_id, specs) in affected {
+            self.install_face_loop_specs(face_id, specs)?;
+        }
+        Ok(())
+    }
+
     /// Atomically replaces a face's complete outer/inner boundary-wire set.
     ///
     /// Every referenced wire and edge is validated before commit. Stale
@@ -2468,6 +2546,136 @@ mod tests {
             topo.coedge(loop_.coedges()[0]).unwrap().is_forward(),
             topo.wire(wire).unwrap().edges()[0].is_forward()
         );
+    }
+
+    /// A face with a hole plus a second face: three wires, one face using two.
+    fn batched_wire_fixture() -> (Topology, [FaceId; 2], [WireId; 3]) {
+        let mut topo = Topology::new();
+        let (_, first, _) = make_triangle_solid(&mut topo, 0.0);
+        let (_, second, _) = make_triangle_solid(&mut topo, 5.0);
+        let (_, hole_face, _) = make_triangle_solid(&mut topo, 0.2);
+        let outer = topo.face(first).unwrap().outer_wire();
+        let hole = topo.face(hole_face).unwrap().outer_wire();
+        let other = topo.face(second).unwrap().outer_wire();
+        topo.set_face_boundary_wires(first, outer, vec![hole])
+            .unwrap();
+        (topo, [first, second], [outer, hole, other])
+    }
+
+    fn reversed_wire(topo: &Topology, wire: WireId) -> Wire {
+        let uses = topo
+            .wire(wire)
+            .unwrap()
+            .edges()
+            .iter()
+            .rev()
+            .map(|oriented| OrientedEdge::new(oriented.edge(), !oriented.is_forward()))
+            .collect();
+        Wire::new(uses, true).unwrap()
+    }
+
+    fn loop_signature(topo: &Topology, face: FaceId) -> Vec<Vec<(EdgeId, bool)>> {
+        topo.loops_of_face(face)
+            .unwrap()
+            .iter()
+            .map(|&loop_id| {
+                topo.face_loop(loop_id)
+                    .unwrap()
+                    .coedges()
+                    .iter()
+                    .map(|&coedge| {
+                        let coedge = topo.coedge(coedge).unwrap();
+                        (coedge.edge(), coedge.is_forward())
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn batched_wire_replacement_matches_one_at_a_time() {
+        let (mut sequential, faces, wires) = batched_wire_fixture();
+        let mut batched = sequential.clone();
+        for wire in wires {
+            let replacement = reversed_wire(&sequential, wire);
+            sequential.replace_boundary_wire(wire, replacement).unwrap();
+        }
+        let replacements = wires
+            .iter()
+            .map(|&wire| (wire, reversed_wire(&batched, wire)))
+            .collect();
+        batched.replace_boundary_wires(replacements).unwrap();
+
+        for wire in wires {
+            assert_eq!(
+                wire_signature(&batched, wire),
+                wire_signature(&sequential, wire)
+            );
+        }
+        for face in faces {
+            crate::validation::validate_face_loops(&batched, face).unwrap();
+            assert_eq!(
+                loop_signature(&batched, face),
+                loop_signature(&sequential, face)
+            );
+        }
+        assert_eq!(loop_signature(&batched, faces[0]).len(), 2);
+    }
+
+    #[test]
+    fn batched_wire_replacement_takes_the_last_entry_for_a_wire() {
+        let (mut topo, faces, [outer, _, _]) = batched_wire_fixture();
+        let original = topo.wire(outer).unwrap().clone();
+        let reversed = reversed_wire(&topo, outer);
+        topo.replace_boundary_wires(vec![(outer, original.clone()), (outer, reversed.clone())])
+            .unwrap();
+        assert_eq!(topo.wire(outer).unwrap().edges(), reversed.edges());
+        crate::validation::validate_face_loops(&topo, faces[0]).unwrap();
+    }
+
+    #[test]
+    fn batched_wire_replacement_rolls_back_and_refuses_stale_input() {
+        let (mut topo, faces, wires) = batched_wire_fixture();
+        let before: Vec<_> = wires.iter().map(|&w| wire_signature(&topo, w)).collect();
+        let loops_before: Vec<_> = faces
+            .iter()
+            .map(|&face| topo.loops_of_face(face).unwrap().to_vec())
+            .collect();
+        let counts = (topo.num_wires(), topo.num_loops(), topo.num_coedges());
+
+        let error = crate::transaction::run_transacted(&mut topo, |topo| {
+            let replacements = wires
+                .iter()
+                .map(|&wire| (wire, reversed_wire(topo, wire)))
+                .collect();
+            topo.replace_boundary_wires(replacements)?;
+            Err::<(), _>(TopologyError::WireNotClosed)
+        })
+        .unwrap_err();
+        assert!(matches!(error, TopologyError::WireNotClosed));
+        let after: Vec<_> = wires.iter().map(|&w| wire_signature(&topo, w)).collect();
+        assert_eq!(after, before);
+        for (face, loops) in faces.iter().zip(&loops_before) {
+            assert_eq!(topo.loops_of_face(*face).unwrap(), loops.as_slice());
+        }
+        assert_eq!(
+            (topo.num_wires(), topo.num_loops(), topo.num_coedges()),
+            counts
+        );
+
+        // A replacement naming an edge this topology lacks changes nothing.
+        let mut other = topo.clone();
+        let first = other.wire(wires[0]).unwrap().edges()[0].edge();
+        let (start, end) = {
+            let edge = other.edge(first).unwrap();
+            (edge.start(), edge.end())
+        };
+        let ghost = other.add_edge(Edge::new(start, end, EdgeCurve::Line));
+        let mut stale = topo.clone();
+        let bad = Wire::new(vec![OrientedEdge::new(ghost, true)], false).unwrap();
+        let snapshot = format!("{stale:?}");
+        assert!(stale.replace_boundary_wires(vec![(wires[2], bad)]).is_err());
+        assert_eq!(format!("{stale:?}"), snapshot);
     }
 
     #[test]
