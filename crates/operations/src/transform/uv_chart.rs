@@ -327,8 +327,9 @@ fn derived_winding(
 /// re-derives the periodic windings of those that remain.
 ///
 /// A dropped pcurve also clears its use's winding, which counts lifts of
-/// that pcurve and is meaningless without it. A winding that cannot be
-/// re-derived (its pcurve misses its vertices) is left as it was.
+/// that pcurve and is meaningless without it. A rewritten pcurve whose
+/// winding cannot be re-derived is dropped too; on an unchanged chart such
+/// a winding is left as it was.
 ///
 /// # Errors
 ///
@@ -385,10 +386,22 @@ pub fn apply_face_chart_map(
             (edge.end(), edge.start())
         };
         let (start, end) = (topo.vertex(start)?.point(), topo.vertex(end)?.point());
-        if let Some(winding) = derived_winding(&surface, &pcurve, start, end)
-            && winding != stored
-        {
-            topo.set_coedge_periodic_winding(coedge, winding)?;
+        match derived_winding(&surface, &pcurve, start, end) {
+            Some(winding) if winding != stored => {
+                topo.set_coedge_periodic_winding(coedge, winding)?;
+            }
+            Some(_) => {}
+            // A rewritten pcurve whose ends no longer certify as lifts (one
+            // ends on a cone apex, where the principal `u` is always 0 but
+            // the turned chart moved the pcurve's) would make STEP export
+            // refuse the body: drop it rather than keep a stale winding.
+            None if rewrite.is_some() => {
+                topo.remove_coedge_pcurve(coedge)?;
+                if stored != PeriodicWinding::ZERO {
+                    topo.set_coedge_periodic_winding(coedge, PeriodicWinding::ZERO)?;
+                }
+            }
+            None => {}
         }
     }
     Ok(())
@@ -628,6 +641,102 @@ mod tests {
                         assert_eq!(data.periodic_winding(), derived, "{body}/{label}");
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn apex_pcurves_that_lose_their_lift_are_dropped() {
+        use std::f64::consts::TAU;
+        // A pointed cone's seam runs from the base to the apex, where the
+        // projection always reports `u = 0`. Turning the chart by 0.3 moves
+        // the seam pcurves' apex ends to `u = 0.3`, which the STEP writer
+        // cannot certify as a lift.
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_cone(&mut topo, 2.0, 0.0, 3.0).unwrap();
+        // `make_cone` puts its seam at `u = 3π/2`, which no apex end can
+        // certify; turn it to `u = 0` (the axis points down -z) first, so the
+        // seam pcurves export before the transform under test.
+        super::super::transform_solid(
+            &mut topo,
+            solid,
+            &Mat4::rotation_z(1.5 * std::f64::consts::PI),
+        )
+        .unwrap();
+        let cone_face = solid_faces(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Cone(_)))
+            .unwrap();
+        let surface = topo.face(cone_face).unwrap().surface().clone();
+        let mut uses = Vec::new();
+        for &loop_id in topo.face(cone_face).unwrap().boundary_loops() {
+            uses.extend_from_slice(topo.face_loop(loop_id).unwrap().coedges());
+        }
+        let ends = |topo: &Topology, coedge: CoedgeId| {
+            let data = topo.coedge(coedge).unwrap();
+            let edge = topo.edge(data.edge()).unwrap();
+            let (a, b) = if data.is_forward() {
+                (edge.start(), edge.end())
+            } else {
+                (edge.end(), edge.start())
+            };
+            (
+                topo.vertex(a).unwrap().point(),
+                topo.vertex(b).unwrap().point(),
+            )
+        };
+        let mut seams = Vec::new();
+        for coedge in uses {
+            let edge = topo.coedge(coedge).unwrap().edge();
+            if !matches!(
+                topo.edge(edge).unwrap().curve(),
+                remus_topology::edge::EdgeCurve::Line
+            ) {
+                continue;
+            }
+            let (start, end) = ends(&topo, coedge);
+            let (uv_start, uv_end) = (
+                surface.project_point(start).unwrap(),
+                surface.project_point(end).unwrap(),
+            );
+            let (v_start, v_end) = (uv_start.1, uv_end.1);
+            // The base end's `u`; the other side of the seam one turn on.
+            let base_u = if v_start > v_end {
+                uv_start.0
+            } else {
+                uv_end.0
+            };
+            let u = if seams.is_empty() {
+                base_u
+            } else {
+                base_u + TAU
+            };
+            let length = (v_end - v_start).abs();
+            let line = Line2D::new(
+                Point2::new(u, v_start),
+                Vec2::new(0.0, (v_end - v_start).signum()),
+            )
+            .unwrap();
+            let pcurve = PCurve::new(Curve2D::Line(line), 0.0, length);
+            assert!(derived_winding(&surface, &pcurve, start, end).is_some());
+            topo.set_coedge_pcurve(coedge, pcurve).unwrap();
+            seams.push(coedge);
+        }
+        assert_eq!(seams.len(), 2, "pointed cone seam uses");
+
+        super::super::transform_solid(&mut topo, solid, &Mat4::rotation_z(0.3)).unwrap();
+        let surface = topo.face(cone_face).unwrap().surface().clone();
+        for coedge in seams {
+            let data = topo.coedge(coedge).unwrap();
+            if let Some(pcurve) = data.pcurve() {
+                let (start, end) = ends(&topo, coedge);
+                assert!(
+                    derived_winding(&surface, pcurve, start, end).is_some(),
+                    "kept pcurve must stay exportable"
+                );
+            } else {
+                assert_eq!(data.periodic_winding(), PeriodicWinding::ZERO);
             }
         }
     }
