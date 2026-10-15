@@ -73,8 +73,9 @@ export function runWasmParserReferencesPackaged({ BrepKernel }) {
     assert.deepEqual(JSON.parse(kernel.sketchSolve(sketch, 20, 1e-8)).points, [[1, 2], [3, 4]]);
     kernel.free();
   }
-  // Deferred arc constraints keep their established admission policy; reject
-  // unrepresentable references when resolving them, before publishing a solve.
+  // Deferred arc constraints are index-checked when added (kernel review
+  // WASM-8): an unrepresentable reference is refused before storage, and the
+  // sketch and session stay unchanged and solvable.
   for (const field of ['line0', 'line1', 'arc', 'point']) {
     const kernel = new BrepKernel();
     const solid = kernel.makeBox(1, 1, 1);
@@ -82,16 +83,15 @@ export function runWasmParserReferencesPackaged({ BrepKernel }) {
     const points = [[0, 0], [1, 0], [0, 1], [1, 1]];
     for (const [x, y] of points) kernel.sketchAddPoint(sketch, x, y, true);
     kernel.sketchAddArc(sketch, 0, 1, 2);
-    const checkpoint = kernel.checkpoint();
     const spec = { type: 'tangentLineArc', line: [1, 3], arc: 0, point: 1 };
     if (field === 'line0') spec.line[0] += 2 ** 32;
     else if (field === 'line1') spec.line[1] += 2 ** 32;
     else spec[field] += 2 ** 32;
-    kernel.sketchAddConstraint(sketch, JSON.stringify(spec));
     const before = topologyState(kernel, solid);
-    assert.throws(() => kernel.sketchSolve(sketch, 20, 1e-8), /invalid input/, field);
+    const dof = kernel.sketchDof(sketch);
+    assert.throws(() => kernel.sketchAddConstraint(sketch, JSON.stringify(spec)), /invalid input/, field);
     assert.deepEqual(topologyState(kernel, solid), before);
-    kernel.restore(checkpoint);
+    assert.equal(kernel.sketchDof(sketch), dof);
     assert.deepEqual(JSON.parse(kernel.sketchSolve(sketch, 20, 1e-8)).points, points);
     kernel.free();
   }

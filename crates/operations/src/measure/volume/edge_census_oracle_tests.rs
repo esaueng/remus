@@ -1,5 +1,5 @@
-//! The sorted edge censuses behind the whole-solid mesh route return what the
-//! hash-map censuses they replaced returned.
+//! The sorted and bucketed edge censuses behind the whole-solid mesh route
+//! return what the hash-map censuses they replaced returned.
 //!
 //! Both references are verbatim from before the change. They are compared on
 //! random index soups (repeated, reversed and degenerate edges, small vertex
@@ -58,6 +58,11 @@ fn assert_census_matches(mesh: &tessellate::TriangleMesh, what: &str) {
         directed_edges_cancel(triangles(mesh)),
         reference_edges_cancel(triangles(mesh)),
         "{what}: edge cancellation"
+    );
+    assert_eq!(
+        edge_census(&mesh.indices).edges_cancel,
+        reference_edges_cancel(triangles(mesh)),
+        "{what}: bucketed edge cancellation"
     );
 }
 
@@ -128,5 +133,39 @@ fn edge_censuses_match_the_hash_map_references_on_solid_meshes() {
             assert!(mesh_boundary_edge_count(&open) > 0, "{what} opens");
             assert_census_matches(&open, what);
         }
+    }
+}
+
+/// The bucketed census stays linear in the edge uses: summed squared bucket
+/// lengths, which bound the bucket sorts' comparisons, stay within a fixed
+/// multiple of the use count as a sphere mesh refines, where one bucket
+/// holding every use would grow with its square.
+#[test]
+fn edge_census_bucket_work_stays_linear_in_the_uses() {
+    let mut topo = Topology::new();
+    let ball = crate::primitives::make_sphere(&mut topo, 7.0, 16).unwrap();
+    let mut ratios = Vec::new();
+    for deflection in [0.05, 5e-3, 1e-3] {
+        let mesh = tessellate::tessellate_solid_for_measurement(&topo, ball, deflection).unwrap();
+        CENSUS_BUCKET_WORK.with(|work| work.set(0));
+        let census = edge_census(&mesh.indices);
+        let work = CENSUS_BUCKET_WORK.with(std::cell::Cell::get);
+        assert_eq!(
+            census.bad_edges, 0,
+            "the sphere mesh closes at {deflection:e}"
+        );
+        #[allow(clippy::cast_precision_loss)]
+        let ratio = work as f64 / mesh.indices.len() as f64;
+        ratios.push((mesh.indices.len(), ratio));
+    }
+    assert!(
+        ratios[2].0 > 20 * ratios[0].0,
+        "premise: the mesh refines {ratios:?}"
+    );
+    for &(uses, ratio) in &ratios {
+        assert!(
+            ratio < 16.0,
+            "bucket work per use {ratio:.2} at {uses} uses ({ratios:?})"
+        );
     }
 }

@@ -11,6 +11,7 @@ use remus_topology::BodyClass;
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::pcurve::PCurve;
 use remus_topology::shell::{Shell, ShellId};
 use remus_topology::solid::{Solid, SolidId};
 use remus_topology::vertex::{Vertex, VertexId};
@@ -124,19 +125,31 @@ pub fn make_solid_from_shared_faces(
 /// `tolerance`) and merges them, creating shared topology. Then
 /// assembles the sewn faces into a shell and solid.
 ///
+/// Each boundary is rebuilt from its endpoints as straight edges, so only
+/// faces bounded by a single loop of open straight edges can be sewn. A
+/// curved edge would come back as its chord and a closed one as a
+/// zero-length loop, and an inner wire would be dropped; such faces are
+/// refused. Use [`make_solid_from_shared_faces`] for faces that already
+/// share their curved or holed boundaries.
+///
 /// # Algorithm
 ///
 /// 1. Collect all edge endpoints from all faces
 /// 2. Merge coincident vertices using spatial hashing
 /// 3. Merge coincident edges (same start/end vertices after merging)
-/// 4. Rebuild faces with the merged edges
+/// 4. Rebuild faces with the merged edges, keeping each face's orientation
 /// 5. Assemble into a shell and solid
+///
+/// The result is not validated: sewing a partial set of faces into an open
+/// sheet is a supported use.
 ///
 /// # Errors
 ///
-/// Returns an error if fewer than 2 faces are provided, or if the
-/// faces contain NURBS surfaces.
-#[allow(clippy::too_many_lines)]
+/// Returns an error if fewer than 2 faces are provided, if a face has an
+/// inner wire or a boundary edge that is not an open straight line, or if the
+/// tolerance merges two corners of one face boundary (including both ends of
+/// an edge) into one vertex. A failed sew rolls back without leaving
+/// allocations behind.
 pub fn sew_faces(
     topo: &mut Topology,
     faces: &[FaceId],
@@ -147,7 +160,17 @@ pub fn sew_faces(
             reason: "sewing requires at least 2 faces".into(),
         });
     }
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        sew_rebuilt_faces(topo, faces, tolerance)
+    })
+}
 
+#[allow(clippy::too_many_lines)]
+fn sew_rebuilt_faces(
+    topo: &mut Topology,
+    faces: &[FaceId],
+    tolerance: f64,
+) -> Result<SolidId, crate::OperationsError> {
     let tol = if tolerance > 0.0 {
         tolerance
     } else {
@@ -158,12 +181,34 @@ pub fn sew_faces(
 
     for &fid in faces {
         let face = topo.face(fid)?;
+        if !face.inner_wires().is_empty() {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!("sewing cannot keep the inner wires of face {}", fid.index()),
+            });
+        }
         let surface = face.surface().clone();
+        let reversed = face.is_reversed();
         let wire = topo.wire(face.outer_wire())?;
 
         let mut edge_points: Vec<(Point3, Point3)> = Vec::new();
+        let mut pcurves: Vec<Option<PCurve>> = Vec::new();
         for oe in wire.edges() {
             let edge = topo.edge(oe.edge())?;
+            if !matches!(edge.curve(), EdgeCurve::Line) || edge.is_closed() {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: format!(
+                        "sewing rebuilds boundaries as straight edges, but face {} has a {} \
+                         edge{}",
+                        fid.index(),
+                        edge.curve().type_tag(),
+                        if edge.is_closed() {
+                            " that closes on itself"
+                        } else {
+                            ""
+                        }
+                    ),
+                });
+            }
             let start = topo.vertex(edge.start())?.point();
             let end = topo.vertex(edge.end())?.point();
             if oe.is_forward() {
@@ -171,11 +216,17 @@ pub fn sew_faces(
             } else {
                 edge_points.push((end, start));
             }
+            pcurves.push(
+                topo.pcurve_oriented(oe.edge(), fid, oe.is_forward())
+                    .cloned(),
+            );
         }
 
         face_snapshots.push(FaceSnapshot {
             surface,
+            reversed,
             edge_points,
+            pcurves,
         });
     }
 
@@ -199,10 +250,20 @@ pub fn sew_faces(
 
     for snap in &face_snapshots {
         let mut oriented_edges: Vec<OrientedEdge> = Vec::with_capacity(snap.edge_points.len());
+        let mut corners: Vec<usize> = Vec::with_capacity(snap.edge_points.len());
 
         for &(start_pt, end_pt) in &snap.edge_points {
             let v_start = get_or_create_vertex(topo, start_pt, &mut vertex_map);
             let v_end = get_or_create_vertex(topo, end_pt, &mut vertex_map);
+            corners.push(v_start.index());
+            if v_start == v_end {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: format!(
+                        "sewing tolerance {tol} merges both ends of a boundary edge into one \
+                         vertex"
+                    ),
+                });
+            }
 
             // Canonical edge key: sorted vertex indices.
             let (key_min, key_max) = if v_start.index() <= v_end.index() {
@@ -224,10 +285,38 @@ pub fn sew_faces(
             oriented_edges.push(OrientedEdge::new(edge_id, is_forward));
         }
 
+        // Two non-adjacent corners can also merge without any single edge
+        // collapsing, which pinches the loop and reuses its edges.
+        corners.sort_unstable();
+        if corners.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!(
+                    "sewing tolerance {tol} merges two corners of one face boundary into one \
+                     vertex"
+                ),
+            });
+        }
+
+        let uses: Vec<(EdgeId, bool)> = oriented_edges
+            .iter()
+            .map(|oe| (oe.edge(), oe.is_forward()))
+            .collect();
         let wire = Wire::new(oriented_edges, true).map_err(crate::OperationsError::Topology)?;
         let wire_id = topo.add_wire(wire);
 
-        let face_id = topo.add_face(Face::new(wire_id, vec![], snap.surface.clone()));
+        let face = if snap.reversed {
+            Face::new_reversed(wire_id, vec![], snap.surface.clone())
+        } else {
+            Face::new(wire_id, vec![], snap.surface.clone())
+        };
+        let face_id = topo.add_face(face);
+        // A pcurve runs along its use's traversal, which the rebuilt use
+        // keeps, so it carries over unchanged whichever way the new edge runs.
+        for (&(edge_id, forward), pcurve) in uses.iter().zip(&snap.pcurves) {
+            if let Some(pcurve) = pcurve {
+                topo.set_pcurve_oriented(edge_id, face_id, forward, pcurve.clone())?;
+            }
+        }
         new_face_ids.push(face_id);
     }
 
@@ -239,8 +328,13 @@ pub fn sew_faces(
 /// Snapshot of a face's geometry for the sewing algorithm.
 struct FaceSnapshot {
     surface: FaceSurface,
+    /// The source face's orientation flag, carried so the rebuilt face keeps
+    /// its effective normal.
+    reversed: bool,
     /// Edge endpoints in traversal order: `[(start, end), ...]`
     edge_points: Vec<(Point3, Point3)>,
+    /// The pcurve of each boundary use, parallel to `edge_points`.
+    pcurves: Vec<Option<PCurve>>,
 }
 
 #[cfg(test)]

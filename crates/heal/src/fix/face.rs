@@ -40,6 +40,12 @@ pub fn fix_face(
         let wire_result = super::wire::fix_wire_on_face(topo, *wid, face_id, ctx, config)?;
         result.merge(&wire_result);
     }
+    // The face still names its original wires; the steps below read the
+    // rebuilt ones the wire fixers recorded.
+    let wire_ids: Vec<_> = wire_ids
+        .iter()
+        .map(|&wid| ctx.reshape.current_wire(wid))
+        .collect();
 
     // 2. SameParameter: each edge on this face must have a PCurve that
     // matches its 3D curve within tolerance, otherwise downstream UV
@@ -117,7 +123,9 @@ fn fix_wire_orientation(
 ) -> Result<FixResult, HealError> {
     let face = topo.face(face_id)?;
     let surface = face.surface().clone();
-    let outer_wire_id = face.outer_wire();
+    // The wire the wire fixers left behind, not the one the face still
+    // names until the reshape is applied.
+    let outer_wire_id = ctx.reshape.current_wire(face.outer_wire());
 
     let wire = topo.wire(outer_wire_id)?;
     let edges = wire.edges();
@@ -289,6 +297,48 @@ mod tests {
             fix_same_parameter: FixMode::On,
             ..FixConfig::default()
         }
+    }
+
+    /// A correctly wound quad with its first and third edges swapped: the
+    /// stale order runs backward, but the reordered wire is CCW again, so
+    /// orientation must judge the reordered wire and leave the face alone.
+    #[test]
+    fn orientation_reads_the_reordered_wire() {
+        use remus_topology::wire::Wire;
+
+        let mut topo = Topology::new();
+        let face_id = make_unit_square_face(&mut topo);
+        let original = topo.face(face_id).unwrap().outer_wire();
+        let mut uses = topo.wire(original).unwrap().edges().to_vec();
+        uses.swap(0, 2);
+        let swapped = topo.add_wire(Wire::new(uses, true).unwrap());
+        topo.set_face_boundary_wires(face_id, swapped, vec![])
+            .unwrap();
+
+        let mut ctx = HealContext::new();
+        let cfg = FixConfig {
+            fix_wire_orientation: FixMode::Auto,
+            ..default_config()
+        };
+        fix_face(&mut topo, face_id, &mut ctx, &cfg).unwrap();
+
+        let current = ctx.reshape.current_wire(swapped);
+        assert_ne!(current, swapped, "the reorder must rebuild the wire");
+        let FaceSurface::Plane { normal, .. } = topo.face(face_id).unwrap().surface() else {
+            unreachable!("a plane stays a plane");
+        };
+        assert!(normal.z() > 0.0, "face flipped: {normal:?}");
+        let starts: Vec<Point3> = topo
+            .wire(current)
+            .unwrap()
+            .edges()
+            .iter()
+            .map(|oe| {
+                let edge = topo.edge(oe.edge()).unwrap();
+                topo.vertex(oe.oriented_start(edge)).unwrap().point()
+            })
+            .collect();
+        assert!(projected_signed_area(&starts, normal) > 0.0, "{starts:?}");
     }
 
     #[test]

@@ -280,11 +280,6 @@ impl Cdt {
             let e0 = self.triangles[ti].v[(el + 1) % 3];
             let e1 = self.triangles[ti].v[(el + 2) % 3];
 
-            // Don't flip constrained edges.
-            if self.constraints.contains(&sorted_pair(e0, e1)) {
-                continue;
-            }
-
             let opp_local = self.find_opposite_local(adj, e0, e1);
             let opp_vert = self.triangles[adj].v[opp_local];
 
@@ -293,7 +288,12 @@ impl Cdt {
             let c = self.vertices[self.triangles[ti].v[2]];
             let d = self.vertices[opp_vert];
 
-            if fast_in_circle(a, b, c, d) > 0.0 {
+            // Never flip a constrained edge. Both tests are pure, so asking
+            // the constraint set only about edges that would flip makes the
+            // same decisions while skipping the hash lookup for the many
+            // candidates that are already Delaunay.
+            if fast_in_circle(a, b, c, d) > 0.0 && !self.constraints.contains(&sorted_pair(e0, e1))
+            {
                 self.flip_edge(ti, el, adj, opp_local);
 
                 // After flipping, legalize the two outer edges that now face

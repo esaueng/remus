@@ -1,6 +1,8 @@
 //! Edge sampling and surface normal utilities for fillet operations.
 
-use remus_math::nurbs::projection::project_point_to_surface;
+use remus_math::nurbs::projection::{
+    SurfaceSeedGrid, project_point_to_surface, project_point_to_surface_with_grid,
+};
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::edge::EdgeCurve;
@@ -207,11 +209,46 @@ pub fn face_surface_normal_at(surface: &FaceSurface, point: Point3) -> Option<Ve
             // Use a projection tolerance derived from the standard linear
             // tolerance (×1000) — loose enough for normal-direction accuracy
             // without over-iterating, and scale-aware via Tolerance::new().
-            let proj_tol = Tolerance::new().linear * 1e3;
-            match project_point_to_surface(srf, point, proj_tol) {
-                Ok(proj) => srf.normal(proj.u, proj.v).ok(),
-                Err(_) => srf.normal(0.5, 0.5).ok(), // fallback to midpoint
-            }
+            nurbs_normal_at(srf, point, None)
         }
+    }
+}
+
+/// [`face_surface_normal_at`] for a NURBS face whose coarse projection grid
+/// the caller keeps, built once per surface: bit for bit the same normal,
+/// without re-evaluating the grid on every call (see
+/// [`SurfaceSeedGrid`]). Other surfaces never project and take
+/// [`face_surface_normal_at`] directly.
+pub fn face_surface_normal_with_grid(
+    surface: &FaceSurface,
+    point: Point3,
+    grid: &mut Option<SurfaceSeedGrid>,
+) -> Option<Vec3> {
+    match surface {
+        FaceSurface::Nurbs(srf) => {
+            let grid = grid.get_or_insert_with(|| SurfaceSeedGrid::for_surface(srf));
+            nurbs_normal_at(srf, point, Some(grid))
+        }
+        FaceSurface::Plane { .. }
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => face_surface_normal_at(surface, point),
+    }
+}
+
+fn nurbs_normal_at(
+    srf: &remus_math::nurbs::surface::NurbsSurface,
+    point: Point3,
+    grid: Option<&SurfaceSeedGrid>,
+) -> Option<Vec3> {
+    let proj_tol = Tolerance::new().linear * 1e3;
+    let projection = match grid {
+        Some(grid) => project_point_to_surface_with_grid(srf, point, proj_tol, grid),
+        None => project_point_to_surface(srf, point, proj_tol),
+    };
+    match projection {
+        Ok(proj) => srf.normal(proj.u, proj.v).ok(),
+        Err(_) => srf.normal(0.5, 0.5).ok(), // fallback to midpoint
     }
 }

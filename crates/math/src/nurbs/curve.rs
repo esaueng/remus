@@ -456,7 +456,7 @@ use super::basis::binomial_f64;
 #[allow(clippy::expect_used, clippy::cast_lossless, clippy::suboptimal_flops)]
 mod tests {
     use super::*;
-    use crate::nurbs::basis::binomial;
+    use crate::nurbs::basis::checked_binomial;
 
     #[test]
     fn rejects_degree_zero() {
@@ -823,11 +823,13 @@ mod tests {
 
     #[test]
     fn binomial_values() {
-        assert_eq!(binomial(0, 0), 1);
-        assert_eq!(binomial(4, 2), 6);
-        assert_eq!(binomial(5, 0), 1);
-        assert_eq!(binomial(5, 5), 1);
-        assert_eq!(binomial(3, 4), 0);
+        assert_eq!(checked_binomial(0, 0), Some(1));
+        assert_eq!(checked_binomial(4, 2), Some(6));
+        assert_eq!(checked_binomial(5, 0), Some(1));
+        assert_eq!(checked_binomial(5, 5), Some(1));
+        assert_eq!(checked_binomial(3, 4), Some(0));
+        assert_eq!(checked_binomial(62, 31), Some(465_428_353_255_261_088));
+        assert_eq!(checked_binomial(70, 35), None);
     }
 
     use proptest::prelude::*;

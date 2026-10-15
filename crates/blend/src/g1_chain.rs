@@ -7,8 +7,7 @@
 //! cylindrical band of an earlier fillet) so that the outward normals on
 //! each side agree at the vertex.
 
-use std::collections::{HashMap, HashSet};
-
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -148,51 +147,111 @@ fn sample_edge_tangent(
 /// # Errors
 ///
 /// Returns `BlendError::Topology` if any topology lookup fails.
-#[allow(clippy::too_many_lines)]
 pub fn expand_g1_chain(
     topo: &Topology,
     solid: SolidId,
     seed_edges: &[EdgeId],
     tol: Tolerance,
 ) -> Result<Vec<EdgeId>, crate::BlendError> {
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-    let shell_face_ids: Vec<FaceId> = shell.faces().to_vec();
+    let index = G1ChainIndex::build(topo, solid)?;
+    expand_g1_chain_with(&index, seed_edges, tol)
+}
 
-    let mut edge_to_faces: HashMap<usize, Vec<FaceId>> = HashMap::new();
-    let mut vertex_to_edges: HashMap<usize, Vec<EdgeId>> = HashMap::new();
-    let mut edge_ids: HashMap<usize, EdgeId> = HashMap::new();
+/// The outer-shell incidence [`expand_g1_chain`] walks: every edge's faces
+/// and every vertex's edges, from the outer and inner wires of each face.
+///
+/// It depends only on the topology, so a caller expanding many seeds of one
+/// solid builds it once and passes it to [`expand_g1_chain_with`]; rebuilding
+/// it per seed made a selection of `k` seeds on an `n`-edge body cost
+/// `O(k * n)` before any chain was walked. It borrows the topology it
+/// indexes, so it cannot outlive a mutation or rollback of that state.
+#[derive(Clone)]
+pub struct G1ChainIndex<'a> {
+    topo: &'a Topology,
+    edge_to_faces: DetHashMap<usize, Vec<FaceId>>,
+    /// Sorted by edge index and deduplicated, so the walk visits neighbours
+    /// in one fixed order.
+    vertex_to_edges: DetHashMap<usize, Vec<EdgeId>>,
+    edge_ids: DetHashMap<usize, EdgeId>,
+}
 
-    for &fid in &shell_face_ids {
-        let face = topo.face(fid)?;
-        let wire_ids: Vec<_> = std::iter::once(face.outer_wire())
-            .chain(face.inner_wires().iter().copied())
-            .collect();
-        for wid in wire_ids {
-            let wire = topo.wire(wid)?;
-            for oe in wire.edges() {
-                let eid = oe.edge();
-                edge_to_faces.entry(eid.index()).or_default().push(fid);
-                edge_ids.insert(eid.index(), eid);
-                let edge = topo.edge(eid)?;
-                vertex_to_edges
-                    .entry(edge.start().index())
-                    .or_default()
-                    .push(eid);
-                vertex_to_edges
-                    .entry(edge.end().index())
-                    .or_default()
-                    .push(eid);
+impl std::fmt::Debug for G1ChainIndex<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("G1ChainIndex")
+            .field("edges", &self.edge_ids.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> G1ChainIndex<'a> {
+    /// Index the outer shell of `solid`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BlendError::Topology` if any topology lookup fails.
+    pub fn build(topo: &'a Topology, solid: SolidId) -> Result<Self, crate::BlendError> {
+        let solid_data = topo.solid(solid)?;
+        let shell = topo.shell(solid_data.outer_shell())?;
+
+        let mut edge_to_faces: DetHashMap<usize, Vec<FaceId>> = DetHashMap::default();
+        let mut vertex_to_edges: DetHashMap<usize, Vec<EdgeId>> = DetHashMap::default();
+        let mut edge_ids: DetHashMap<usize, EdgeId> = DetHashMap::default();
+
+        for &fid in shell.faces() {
+            let face = topo.face(fid)?;
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                let wire = topo.wire(wid)?;
+                for oe in wire.edges() {
+                    let eid = oe.edge();
+                    edge_to_faces.entry(eid.index()).or_default().push(fid);
+                    edge_ids.insert(eid.index(), eid);
+                    let edge = topo.edge(eid)?;
+                    vertex_to_edges
+                        .entry(edge.start().index())
+                        .or_default()
+                        .push(eid);
+                    vertex_to_edges
+                        .entry(edge.end().index())
+                        .or_default()
+                        .push(eid);
+                }
             }
         }
+        // Deduplicate vertex_to_edges (each edge appears once per adjacent face).
+        for edges in vertex_to_edges.values_mut() {
+            edges.sort_unstable_by_key(|e: &EdgeId| e.index());
+            edges.dedup_by_key(|e: &mut EdgeId| e.index());
+        }
+        Ok(Self {
+            topo,
+            edge_to_faces,
+            vertex_to_edges,
+            edge_ids,
+        })
     }
-    // Deduplicate vertex_to_edges (each edge appears once per adjacent face).
-    for edges in vertex_to_edges.values_mut() {
-        edges.sort_unstable_by_key(|e: &EdgeId| e.index());
-        edges.dedup_by_key(|e: &mut EdgeId| e.index());
-    }
+}
 
-    let mut expanded: HashSet<usize> = seed_edges.iter().map(|e| e.index()).collect();
+/// [`expand_g1_chain`] over a prebuilt [`G1ChainIndex`], in the topology the
+/// index borrows.
+///
+/// # Errors
+///
+/// Returns `BlendError::Topology` if any topology lookup fails.
+#[allow(clippy::too_many_lines)]
+pub fn expand_g1_chain_with(
+    index: &G1ChainIndex<'_>,
+    seed_edges: &[EdgeId],
+    tol: Tolerance,
+) -> Result<Vec<EdgeId>, crate::BlendError> {
+    let G1ChainIndex {
+        topo,
+        edge_to_faces,
+        vertex_to_edges,
+        edge_ids,
+    } = index;
+
+    let mut expanded: DetHashSet<usize> = seed_edges.iter().map(|e| e.index()).collect();
     let mut queue: Vec<EdgeId> = seed_edges.to_vec();
 
     while let Some(current) = queue.pop() {
@@ -312,14 +371,20 @@ pub fn g1_chains(
     seed_edges: &[EdgeId],
     tol: Tolerance,
 ) -> Result<Vec<Vec<EdgeId>>, crate::BlendError> {
-    let mut claimed: HashSet<usize> = HashSet::new();
+    if seed_edges.is_empty() {
+        return Ok(Vec::new());
+    }
+    // The first seed is never claimed, so the index is built exactly where
+    // the first per-seed expansion used to build its own copy.
+    let index = G1ChainIndex::build(topo, solid)?;
+    let mut claimed: DetHashSet<usize> = DetHashSet::default();
     let mut chains: Vec<Vec<EdgeId>> = Vec::new();
 
     for &seed in seed_edges {
         if claimed.contains(&seed.index()) {
             continue;
         }
-        let members = expand_g1_chain(topo, solid, &[seed], tol)?;
+        let members = expand_g1_chain_with(&index, &[seed], tol)?;
         // An edge that belongs to no face of this solid expands to nothing.
         // Keep it as its own chain so the caller still has something to
         // attribute the resulting failure to, rather than silently dropping
@@ -348,8 +413,8 @@ fn order_chain(topo: &Topology, edges: Vec<EdgeId>) -> Result<Vec<EdgeId>, crate
         return Ok(edges);
     }
 
-    let mut incident: HashMap<usize, Vec<EdgeId>> = HashMap::new();
-    let mut vertices: HashMap<usize, remus_topology::vertex::VertexId> = HashMap::new();
+    let mut incident: DetHashMap<usize, Vec<EdgeId>> = DetHashMap::default();
+    let mut vertices: DetHashMap<usize, remus_topology::vertex::VertexId> = DetHashMap::default();
     for &eid in &edges {
         let edge = topo.edge(eid)?;
         for vid in [edge.start(), edge.end()] {
@@ -377,7 +442,7 @@ fn order_chain(topo: &Topology, edges: Vec<EdgeId>) -> Result<Vec<EdgeId>, crate
     };
 
     let mut ordered: Vec<EdgeId> = Vec::with_capacity(edges.len());
-    let mut used: HashSet<usize> = HashSet::new();
+    let mut used: DetHashSet<usize> = DetHashSet::default();
     let mut current = start_vertex;
     while ordered.len() < edges.len() {
         let Some(candidates) = incident.get(&current.index()) else {
@@ -402,3 +467,6 @@ fn order_chain(topo: &Topology, edges: Vec<EdgeId>) -> Result<Vec<EdgeId>, crate
         Ok(edges)
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -218,7 +218,9 @@ pub fn surface_knot_insert_v(
 /// If the knot does not exist in the knot vector the curve is returned
 /// unchanged. The removal is accepted only when the deviation between the
 /// two trial control-point sequences (computed from each end toward the
-/// middle) is within `tolerance`.
+/// middle) is within `tolerance`. At degree 1 the sequences do not overlap,
+/// so the dropped control point's distance from its neighbours' chord at `u`
+/// is held to `tolerance` instead.
 ///
 /// # Errors
 ///
@@ -232,16 +234,36 @@ pub fn surface_knot_insert_v(
 /// control points, and dropping one would unclamp it.
 ///
 /// Returns an error if the resulting curve cannot be constructed.
+pub fn curve_knot_remove(
+    curve: &NurbsCurve,
+    u: f64,
+    tolerance: f64,
+) -> Result<NurbsCurve, MathError> {
+    knot_remove(curve, u, tolerance, true)
+}
+
+/// The removal [`curve_knot_remove`] would make, without holding it to a
+/// tolerance: a candidate for the certified reduction, which certifies the
+/// result over the whole domain itself. At degree 1 the deviation bound is
+/// skipped, so a knot whose bound is unavailable still yields a candidate.
+pub(crate) fn curve_knot_remove_candidate(
+    curve: &NurbsCurve,
+    u: f64,
+) -> Result<NurbsCurve, MathError> {
+    knot_remove(curve, u, f64::MAX, false)
+}
+
 #[allow(
     clippy::similar_names,
     clippy::too_many_lines,
     clippy::many_single_char_names,
     clippy::suboptimal_flops
 )]
-pub fn curve_knot_remove(
+fn knot_remove(
     curve: &NurbsCurve,
     u: f64,
     tolerance: f64,
+    bound_degree_one: bool,
 ) -> Result<NurbsCurve, MathError> {
     let p = curve.degree();
     let knots = curve.knots();
@@ -449,6 +471,36 @@ pub fn curve_knot_remove(
         }
     }
 
+    // At degree 1 the sweeps have no overlap: no unknown survives, so the
+    // loop above checks nothing. A5.8's odd-count branch applies instead:
+    // the dropped point pw[k] is compared with the homogeneous chord of its
+    // fixed neighbours at `u`, chord = (1-α)·pw[k-1] + α·pw[k+1].
+    //
+    // With the excess E = pw[k] - chord = (e, ε), the old curve is the new
+    // one plus N(t)·E, where N is the dropped hat function, so
+    //   C_old(t) - C_new(t) = N(t)·(e - ε·C_new(t)) / W_old(t).
+    // C_new(t) runs along the segment pw[k-1]..pw[k+1], so |e - ε·C_new| is
+    // at most its value at one of those two points, and N/W_old ≤ 1/w_k on
+    // both spans (all weights positive). That bounds the whole parametric
+    // deviation, not just the one at `u`; for ε = 0 (the non-rational case
+    // and every exactly inserted knot) it is |P_k - Q|, attained at `u`.
+    if p == 1 {
+        let denom = removed_knots[k + 1] - removed_knots[k];
+        // The stored knot, not the caller's `u`: they may differ by up to
+        // KNOT_EPS, and that roundoff must not count as spatial deviation.
+        let alpha = if denom.abs() < KNOT_EPS {
+            0.0
+        } else {
+            (knots[r] - removed_knots[k]) / denom
+        };
+        let at = |i: usize| (cps[i], ws[i]);
+        if bound_degree_one
+            && degree_one_deviation_bound(at(k - 1), at(k), at(k + 1), alpha) > tolerance
+        {
+            return Err(MathError::ConvergenceFailure { iterations: 0 });
+        }
+    }
+
     // Build new control points (n_old = n-1 points).
     let mut new_pw: Vec<[f64; 4]> = Vec::with_capacity(n_old);
 
@@ -487,6 +539,99 @@ pub fn curve_knot_remove(
     let new_ws: Vec<f64> = new_pw.iter().map(|h| h[3]).collect();
 
     NurbsCurve::new(p, new_knots, new_cps, new_ws)
+}
+
+/// Upper bound on the parametric deviation caused by removing the middle
+/// control point `mid` of a degree-1 curve, `alpha` being the knot's
+/// position between its neighbours (see the derivation in
+/// [`curve_knot_remove`]). Each point is `(position, weight)`.
+///
+/// Infinite when there is no usable bound: a weight that is not positive, a
+/// weight ratio outside the normal range, or a bound that is not
+/// representable. Every tolerance then refuses the removal; the certified
+/// reduction, which certifies its candidates itself, takes them from
+/// [`curve_knot_remove_candidate`] instead.
+///
+/// The bound `max(|e − ε·P|) / w_k` is invariant under translation and under
+/// a common weight scale, so it is evaluated relative to `prev` and already
+/// divided by `w_k`: with ρ = w/w_k,
+///   e/w_k = Δ_mid − α·ρ_next·Δ_next,
+///   ε/w_k = (1 − α)·(w_k − w_prev)/w_k + α·(w_k − w_next)/w_k.
+/// Forming e itself would underflow for a tiny middle weight and a tiny
+/// offset together.
+///
+/// The returned bound includes a forward error allowance for its own
+/// floating-point evaluation. The terms of e and ε can cancel, so their few
+/// roundings are relative to the terms, not to the result. Each computed
+/// component is within about 6u of `‖Δ_mid‖ + ρ_next·‖Δ_next‖ +
+/// (|w_k − w_prev| + |w_k − w_next|)/w_k·‖Δ_next‖`, counting the rounding of
+/// α from the knots, and the norm adds a few u relative to the bound
+/// (u = 2⁻⁵³). The allowance is 32u times that sum plus the bound, about
+/// twice the analysis. A removal is therefore only accepted when the true
+/// deviation is certainly within the tolerance, and a tolerance below the
+/// allowance (tolerance 0 included) refuses even an exactly removable knot.
+#[allow(clippy::suboptimal_flops)]
+fn degree_one_deviation_bound(
+    prev: (Point3, f64),
+    mid: (Point3, f64),
+    next: (Point3, f64),
+    alpha: f64,
+) -> f64 {
+    let finite_positive = |w: f64| w > 0.0 && w.is_finite();
+    if !(finite_positive(prev.1) && finite_positive(mid.1) && finite_positive(next.1)) {
+        return f64::INFINITY;
+    }
+    let (rho_prev, rho_next) = (prev.1 / mid.1, next.1 / mid.1);
+    // A ratio that leaves the normal range has lost its relative precision
+    // (or, at zero, a contribution ρ·dn the coordinates can still carry), so
+    // the bound would not be one.
+    if !(rho_prev.is_normal() && rho_next.is_normal()) {
+        return f64::INFINITY;
+    }
+    let dm = mid.0 - prev.0;
+    let dn = next.0 - prev.0;
+    // ε/w_k from weight differences: each term then carries a relative
+    // error, where `1 − α·ρ_next − …` cancels to an absolute one (α = 1e-100
+    // lost a 9e-100 excess that, times a 1e200 offset, is the whole bound).
+    let eps = (1.0 - alpha) * ((mid.1 - prev.1) / mid.1) + alpha * ((mid.1 - next.1) / mid.1);
+    let e = [
+        dm.x() - alpha * rho_next * dn.x(),
+        dm.y() - alpha * rho_next * dn.y(),
+        dm.z() - alpha * rho_next * dn.z(),
+    ];
+    // At `prev` (the origin now) the excess is |e|; at `next` it is
+    // |e − ε·dn|.
+    let at_prev = scaled_norm(e);
+    let at_next = scaled_norm([
+        e[0] - eps * dn.x(),
+        e[1] - eps * dn.y(),
+        e[2] - eps * dn.z(),
+    ]);
+    let bound = at_prev.max(at_next);
+    let spread = ((mid.1 - prev.1).abs() + (mid.1 - next.1).abs()) / mid.1;
+    let terms = scaled_norm([dm.x(), dm.y(), dm.z()])
+        + (rho_next + spread) * scaled_norm([dn.x(), dn.y(), dn.z()]);
+    let certain = bound + 16.0 * f64::EPSILON * (terms + bound);
+    if certain.is_finite() {
+        certain
+    } else {
+        f64::INFINITY
+    }
+}
+
+/// Euclidean norm that neither underflows nor overflows in its squares.
+/// A non-finite component (an overflowed difference, or ∞ − ∞) makes it
+/// infinite: `f64::max` would drop a NaN and report a smaller norm.
+fn scaled_norm(v: [f64; 3]) -> f64 {
+    if v.iter().any(|c| !c.is_finite()) {
+        return f64::INFINITY;
+    }
+    let m = v[0].abs().max(v[1].abs()).max(v[2].abs());
+    if m == 0.0 || !m.is_finite() {
+        return m;
+    }
+    let (x, y, z) = (v[0] / m, v[1] / m, v[2] / m);
+    m * (x * x + y * y + z * z).sqrt()
 }
 
 /// Refine a curve by inserting multiple knots at once (A5.4).

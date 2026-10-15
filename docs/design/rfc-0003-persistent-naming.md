@@ -125,6 +125,7 @@ resolve(ref) ->
   | Ambiguous { candidates, reason }      // fail closed; caller narrows
   | Dangling { deleted_at: OpId }         // target was deleted
   | UnresolvedAcrossOperation { op }      // journal gap (barrier / unresolved)
+  | Stale { reason }                      // model moved past the journal
 ```
 
 Rules:
@@ -243,6 +244,17 @@ Refinements the serialization implementation added to the design above:
   travel with the document because a naming round trip that drops names
   would be hollow; both solids' and faces' entries ride by dense local
   index.
+- **A document carries its own entities' history, not the session's**
+  (review IO-3, roadmap B206). The writer embeds
+  `Journal::lineage_snapshot`: the entries connected to the document's
+  entities through shared ordinals (ancestors, and descendants of shared
+  ancestors, so a barrier on a split's other half still severs), plus global
+  barriers after the earliest such entry, with the full high-water counters.
+  References anchored in that history resolve exactly as against the full
+  journal; others resolve `UnknownOperation`; a document whose entities no
+  entry mentions has no `journal` field. Earlier writers embedded the whole
+  journal, so a same-session round trip doubled it. The schema and version
+  are unchanged and documents of either writer read identically.
 - **Ordinals are the persistent identity; arena indices never touch the
   file.** The writer remaps live-index keys to the document's dense local
   indices; the reader remaps them to the freshly allocated ids. An entity
@@ -404,6 +416,14 @@ Refinements the resolver implementation added to the design above:
   candidate, naming which. `ref_ambiguous` is reserved for the signature
   tier (Stage 2 anchors never guess between candidates: splits are
   `BoundMany`, unresolved events sever).
+- **A chase that reaches the present checks the present** (TOPO-2,
+  2026-10-14). Mutations after the newest entry are the global barrier
+  the next `journal_begin` records, so they sever already; and every
+  bound key must name a live entity, because a checkpoint restore keeps
+  retirements while the journal and tick count roll back. Either case
+  resolves `Stale { reason }` (`ref_stale`, `invalid_input`); one retired
+  piece of a split fails the whole set rather than binding the survivors.
+  Signature anchors resolve against the live model and are unaffected.
 - **`OperationOutput` addresses entry subjects.** Outputs are the entry's
   subjects of the reference's kind except `Deleted` ones (inputs), in the
   entry's deterministic event order; `Unresolved` subjects count (their

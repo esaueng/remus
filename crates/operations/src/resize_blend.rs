@@ -670,8 +670,87 @@ fn tangent_across(
     first: FaceId,
     second: FaceId,
 ) -> Result<bool, OperationsError> {
+    let identity = (!topo.is_cache_poisoned()).then(|| topo.cache_identity());
+    // The verdict is symmetric in the two faces (`edge_is_g1` compares
+    // `1 - a·b`, which is exact under swapping), so the pair is unordered.
+    let key = (
+        edge.index(),
+        first.index().min(second.index()),
+        first.index().max(second.index()),
+    );
+    if let Some(identity) = identity {
+        let hit = TANGENCY_MEMO.with(|memo| {
+            memo.borrow()
+                .as_ref()
+                .filter(|memo| memo.identity == Some(identity))
+                .and_then(|memo| memo.verdicts.get(&key).copied())
+        });
+        if let Some(tangent) = hit {
+            return Ok(tangent);
+        }
+    }
     let pair = HashSet::from([first, second]);
-    crate::query::edge_is_tangent(topo, edge, &pair)
+    let tangent = crate::query::edge_is_tangent(topo, edge, &pair)?;
+    if let Some(identity) = identity {
+        TANGENCY_MEMO.with(|memo| {
+            if let Some(memo) = memo.borrow_mut().as_mut() {
+                if memo.identity != Some(identity) {
+                    memo.identity = Some(identity);
+                    memo.verdicts.clear();
+                }
+                memo.verdicts.insert(key, tangent);
+            }
+        });
+    }
+    Ok(tangent)
+}
+
+/// Edge tangency verdicts kept for the duration of one blend-aware move.
+///
+/// Blend discovery asks the same (edge, face pair) question many times per
+/// move: the guard, the seed loop and every candidate band re-walk the same
+/// edges, and each answer projects edge samples onto both faces. The verdict
+/// is a pure function of the topology, so the entries are tagged with its
+/// cache identity and dropped as soon as any mutation or rewind changes it.
+struct TangencyMemo {
+    identity: Option<remus_topology::CacheIdentity>,
+    verdicts: remus_math::det_hash::DetLookupHashMap<(usize, usize, usize), bool>,
+}
+
+thread_local! {
+    static TANGENCY_MEMO: std::cell::RefCell<Option<TangencyMemo>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Enables [`TANGENCY_MEMO`] until dropped. A nested scope leaves the
+/// enclosing one in charge.
+struct TangencyMemoScope {
+    owner: bool,
+}
+
+impl TangencyMemoScope {
+    fn enter() -> Self {
+        let owner = TANGENCY_MEMO.with(|memo| {
+            let mut memo = memo.borrow_mut();
+            if memo.is_some() {
+                return false;
+            }
+            *memo = Some(TangencyMemo {
+                identity: None,
+                verdicts: remus_math::det_hash::DetLookupHashMap::default(),
+            });
+            true
+        });
+        Self { owner }
+    }
+}
+
+impl Drop for TangencyMemoScope {
+    fn drop(&mut self) {
+        if self.owner {
+            TANGENCY_MEMO.with(|memo| memo.borrow_mut().take());
+        }
+    }
 }
 
 /// Find the complete equal-radius analytic blend region containing `seed`.
@@ -895,20 +974,27 @@ pub(crate) fn move_planar_faces_with_blends(
     faces: &[FaceId],
     distance: f64,
 ) -> Result<Option<BlendMoveEntities>, OperationsError> {
+    let _tangency_memo = TangencyMemoScope::enter();
     if adjacent_analytic_blend_seed(topo, solid, faces)?.is_none() {
         return Ok(None);
     }
 
-    let snapshot = topo.clone();
+    // A scoped rollback rather than a document clone: the failed attempt is
+    // undone at the cost of what it wrote, independent of document size, and
+    // its retirements are undone too so the fallback sees the input intact.
+    let snapshot = remus_topology::transaction::RollbackSnapshot::capture(topo);
     let remove_rebuild_error =
         match move_planar_faces_with_blends_remove_rebuild(topo, solid, faces, distance) {
-            Ok(Some(result)) => return Ok(Some(result)),
+            Ok(Some(result)) => {
+                snapshot.commit(topo);
+                return Ok(Some(result));
+            }
             Ok(None) => {
                 reconstruction("remove/rebuild could not derive a removable incident blend region")
             }
             Err(error) => error,
         };
-    topo.restore_preserving_handle_slots(&snapshot);
+    snapshot.restore(topo);
     match move_translation_invariant_blend_region(topo, solid, faces, distance) {
         Ok(result) => Ok(Some(result)),
         Err(translation_error) => Err(reconstruction(format!(
@@ -1462,7 +1548,10 @@ fn translation_invariant_blend_region(
     }
 
     let mut translated_nurbs_supports = HashSet::new();
-    for &blend_face in &region {
+    // Face order, not set order, so a refusal always names the same face.
+    let mut ordered_region: Vec<FaceId> = region.iter().copied().collect();
+    ordered_region.sort_unstable_by_key(|face| face.index());
+    for blend_face in ordered_region {
         for edge in face_edges(topo, blend_face)? {
             for adjacent in distinct_faces(adjacency.faces_for_edge(edge)) {
                 if adjacent == blend_face
@@ -1892,7 +1981,18 @@ fn move_translation_invariant_blend_region(
     for &face in &moved_faces {
         translate_face_surface(&mut work, face, delta)?;
     }
-    validate_exact_result(&work, solid, "translation-invariant blend move")?;
+    // Validate the deliverable rather than the scratch body: the copy is
+    // entity-for-entity, so one strict pass serves both, and running it here
+    // keeps validation ahead of the count and volume refusals as before. A
+    // refusal is reported against the scratch body, whose ids are the input's
+    // and stay live after the rollback; the copy's do not.
+    let copied = crate::copy::copy_solid_between_with_entity_map(&work, topo, solid)?;
+    let result = copied.solid;
+    if let Err(copy_error) = validate_exact_result(topo, result, "translation-invariant blend move")
+    {
+        validate_exact_result(&work, solid, "translation-invariant blend move")?;
+        return Err(copy_error);
+    }
     let result_counts = remus_topology::explorer::solid_entity_counts(&work, solid)?;
     if result_counts != source_counts {
         return Err(reconstruction(format!(
@@ -1930,9 +2030,6 @@ fn move_translation_invariant_blend_region(
         )));
     }
 
-    let copied = crate::copy::copy_solid_between_with_entity_map(&work, topo, solid)?;
-    let result = copied.solid;
-    validate_exact_result(topo, result, "accepted blend-aware planar move")?;
     let boundary_pairs =
         copied
             .edge_map

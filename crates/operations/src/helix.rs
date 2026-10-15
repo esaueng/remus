@@ -53,14 +53,14 @@ pub fn helical_sweep(
     turns: f64,
     segments_per_turn: usize,
 ) -> Result<SolidId, OperationsError> {
-    if radius <= 0.0 {
+    if !radius.is_finite() || radius <= 0.0 {
         return Err(OperationsError::InvalidInput {
-            reason: format!("helix radius must be positive, got {radius}"),
+            reason: format!("helix radius must be finite and positive, got {radius}"),
         });
     }
-    if pitch <= 0.0 {
+    if !pitch.is_finite() || pitch <= 0.0 {
         return Err(OperationsError::InvalidInput {
-            reason: format!("helix pitch must be positive, got {pitch}"),
+            reason: format!("helix pitch must be finite and positive, got {pitch}"),
         });
     }
     if !turns.is_finite() || turns < 0.25 {
@@ -102,6 +102,13 @@ pub fn make_helix_curve(
     turns: f64,
     segments_per_turn: usize,
 ) -> Result<NurbsCurve, OperationsError> {
+    if !radius.is_finite() || radius <= 0.0 || !pitch.is_finite() || pitch <= 0.0 {
+        return Err(OperationsError::InvalidInput {
+            reason: format!(
+                "helix radius and pitch must be finite and positive, got radius {radius}, pitch {pitch}"
+            ),
+        });
+    }
     let axis = axis_dir
         .normalize()
         .map_err(|_| OperationsError::InvalidInput {

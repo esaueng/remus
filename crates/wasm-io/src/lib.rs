@@ -699,7 +699,10 @@ impl RemusIo {
         Ok(Self::import_ply_impl(data, max_input_bytes, max_entities)?)
     }
 
-    /// Read a 3MF package; every object becomes a solid root of one document.
+    /// Read a 3MF package; every build item becomes a solid root of one
+    /// document, in build order and placed by its item transform (an object
+    /// listed twice gives two solids). Without build items, every object no
+    /// component references is a root.
     #[wasm_bindgen(js_name = "import3mf")]
     pub fn import_3mf(
         &self,
@@ -1030,5 +1033,55 @@ mod tests {
                 "3MF round trip must preserve the exact box volume"
             );
         }
+    }
+
+    /// IO-4: an object built only from components imports as one solid; it
+    /// used to reach `import_mesh` as an empty mesh and fail the whole file.
+    #[test]
+    fn component_only_3mf_object_imports() {
+        use std::fmt::Write as _;
+        use std::io::Write as _;
+
+        let corners = "<vertex x=\"0\" y=\"0\" z=\"0\"/><vertex x=\"1\" y=\"0\" z=\"0\"/>\
+            <vertex x=\"1\" y=\"1\" z=\"0\"/><vertex x=\"0\" y=\"1\" z=\"0\"/>\
+            <vertex x=\"0\" y=\"0\" z=\"1\"/><vertex x=\"1\" y=\"0\" z=\"1\"/>\
+            <vertex x=\"1\" y=\"1\" z=\"1\"/><vertex x=\"0\" y=\"1\" z=\"1\"/>";
+        let mut triangles = String::new();
+        for [a, b, c] in [
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [2, 3, 7],
+            [2, 7, 6],
+            [0, 4, 7],
+            [0, 7, 3],
+            [1, 2, 6],
+            [1, 6, 5],
+        ] {
+            write!(triangles, "<triangle v1=\"{a}\" v2=\"{b}\" v3=\"{c}\"/>").unwrap();
+        }
+        let xml = format!(
+            "<model unit=\"millimeter\"><resources>\
+             <object id=\"1\"><mesh><vertices>{corners}</vertices>\
+             <triangles>{triangles}</triangles></mesh></object>\
+             <object id=\"2\"><components>\
+             <component objectid=\"1\" transform=\"1 0 0 0 1 0 0 0 1 5 0 0\"/>\
+             <component objectid=\"1\" transform=\"2 0 0 0 2 0 0 0 2 -5 0 0\"/>\
+             </components></object></resources>\
+             <build><item objectid=\"2\"/></build></model>"
+        );
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file("3D/3dmodel.model", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(xml.as_bytes()).unwrap();
+        let data = zip.finish().unwrap().into_inner();
+
+        let restored = volumes(&RemusIo::import_3mf_impl(&data, None, None).unwrap());
+        assert_eq!(restored.len(), 1, "one top-level object");
+        // A unit cube plus a cube scaled by two.
+        assert!((restored[0] - 9.0).abs() < 1e-9, "volume {}", restored[0]);
     }
 }

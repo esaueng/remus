@@ -20,6 +20,11 @@
 //! ids; session state, retired slots, assemblies, GCS sketches, and checkpoints
 //! are deliberately outside this format.
 //!
+//! A document carries only the history of its own entities (the journal's
+//! lineage closure over them), never the whole session journal, so loading a
+//! document back into the session that wrote it appends that body's lineage
+//! once instead of duplicating the session's history.
+//!
 //! Loading into an existing session appends document history instead of replacing
 //! it. Imported operation ids and entity ordinals are offset by the destination's
 //! respective high-water counters after recording any preceding history gap;
@@ -825,6 +830,15 @@ impl<'a> Builder<'a> {
         let start_id = e.start();
         let end_id = e.end();
         let curve = e.curve();
+        if let Some(defect) = curve_carrier_defect(curve) {
+            return Err(IoError::InvalidTopology {
+                reason: analytic_carrier_error(
+                    format_args!("edge {id:?}"),
+                    curve.type_tag(),
+                    defect,
+                ),
+            });
+        }
         let tolerance = e.tolerance();
         let trim = e.trim();
         let start = self.intern_vertex(start_id)?;
@@ -886,6 +900,15 @@ impl<'a> Builder<'a> {
         let outer_wire_id = f.outer_wire();
         let inner_wire_ids = f.inner_wires().to_vec();
         let surface = f.surface();
+        if let Some(defect) = surface_carrier_defect(surface) {
+            return Err(IoError::InvalidTopology {
+                reason: analytic_carrier_error(
+                    format_args!("face {id:?}"),
+                    surface.type_tag(),
+                    defect,
+                ),
+            });
+        }
         let reversed = f.is_reversed();
         let outer_wire = self.intern_wire(outer_wire_id)?;
         let mut inner_wires = Vec::with_capacity(inner_wire_ids.len());
@@ -1150,7 +1173,7 @@ fn document_v3_view<'a>(
         compounds.push(SerCompound { solids: members });
     }
 
-    let journal = serialize_journal(topo, &builder);
+    let journal = serialize_journal(topo, &builder)?;
     let attributes = serialize_attributes(topo, &builder);
     let dump = SerializedDocumentV3View {
         version: FORMAT_VERSION,
@@ -1387,7 +1410,7 @@ fn document_v4_view<'a>(
         compounds.push(SerCompound { solids: members });
     }
 
-    let journal = serialize_journal(topo, &builder);
+    let journal = serialize_journal(topo, &builder)?;
     let attributes = serialize_attributes(topo, &builder);
     let dump = SerializedDocumentV4View {
         version: SHEET_ROOT_FORMAT_VERSION,
@@ -1485,7 +1508,7 @@ fn document_v5_view<'a>(
         compounds.push(SerCompound { solids: members });
     }
 
-    let journal = serialize_journal(topo, &builder);
+    let journal = serialize_journal(topo, &builder)?;
     let attributes = serialize_attributes(topo, &builder);
     let dump = SerializedDocumentV5View {
         version: WIRE_ROOT_FORMAT_VERSION,
@@ -1932,31 +1955,36 @@ fn checked_reference_count(
     })
 }
 
-/// Serializes the topology's evolution journal (RFC 0003, Stage 5),
-/// remapping live-index arena keys to this document's dense local
+/// Serializes the history of the document's entities (RFC 0003, Stage 5):
+/// the journal's lineage closure over them, never the whole session's
+/// journal, so re-importing a document cannot duplicate unrelated history.
+/// Live-index arena keys are remapped to this document's dense local
 /// indices. Entities outside the document keep their kind with no local
-/// index, so anchor output ordering stays replay-stable.
-fn serialize_journal(topo: &Topology, builder: &Builder<'_>) -> Option<SerJournal> {
-    use remus_topology::journal::{EntityKind, EventSnapshot, PayloadSnapshot};
+/// index, so anchor output ordering stays replay-stable. Documents whose
+/// entities no entry mentions carry no journal.
+fn serialize_journal(
+    topo: &Topology,
+    builder: &Builder<'_>,
+) -> Result<Option<SerJournal>, IoError> {
+    use remus_topology::journal::{EntityKey, EntityKind, EventSnapshot, PayloadSnapshot};
 
-    if topo.journal().is_empty() {
-        return None;
+    let local = |key: EntityKey| match key.kind {
+        EntityKind::Vertex => builder.vertex_map.get(&key.index).copied(),
+        EntityKind::Edge => builder.edge_map.get(&key.index).copied(),
+        EntityKind::Face => builder.face_map.get(&key.index).copied(),
+    };
+    let mut snapshot = topo.journal().lineage_snapshot(|key| local(key).is_some());
+    if snapshot.entries.is_empty() {
+        return Ok(None);
     }
-    let snapshot = topo.journal().snapshot();
+    encode_pending_journal_gap(topo, &mut snapshot)?;
     let index = snapshot
         .index
         .into_iter()
-        .map(|(ordinal, key)| {
-            let local = match key.kind {
-                EntityKind::Vertex => builder.vertex_map.get(&key.index).copied(),
-                EntityKind::Edge => builder.edge_map.get(&key.index).copied(),
-                EntityKind::Face => builder.face_map.get(&key.index).copied(),
-            };
-            SerJournalIndexEntry {
-                ordinal,
-                kind: key.kind.as_str().to_owned(),
-                local,
-            }
+        .map(|(ordinal, key)| SerJournalIndexEntry {
+            ordinal,
+            kind: key.kind.as_str().to_owned(),
+            local: local(key),
         })
         .collect();
     let entries = snapshot
@@ -2001,12 +2029,45 @@ fn serialize_journal(topo: &Topology, builder: &Builder<'_>) -> Option<SerJourna
             },
         })
         .collect();
-    Some(SerJournal {
+    Ok(Some(SerJournal {
         next_op: snapshot.next_op,
         next_ordinal: snapshot.next_ordinal,
         index,
         entries,
-    })
+    }))
+}
+
+/// Preserve an unjournaled source tail as a barrier in the document only.
+/// Session-local ticks are intentionally omitted from the wire format, so a
+/// clean replay would otherwise turn a stale source reference into a binding.
+/// The next operation ID is reserved in this snapshot without mutating the
+/// source. Appending the document scopes its global barrier to imported
+/// ordinals, preserving unrelated destination references.
+fn encode_pending_journal_gap(
+    topo: &Topology,
+    snapshot: &mut remus_topology::journal::JournalSnapshot,
+) -> Result<(), IoError> {
+    use remus_topology::journal::{EntrySnapshot, PayloadSnapshot, UNJOURNALED_MUTATIONS};
+
+    if topo
+        .journal()
+        .entries()
+        .last()
+        .is_some_and(|entry| entry.ticks_after() != topo.mutation_ticks())
+    {
+        let op = snapshot.next_op;
+        snapshot.next_op = op.checked_add(1).ok_or_else(|| IoError::InvalidTopology {
+            reason:
+                "arena journal operation counter cannot reserve an unjournaled-mutation barrier"
+                    .into(),
+        })?;
+        snapshot.entries.push(EntrySnapshot {
+            op,
+            kind: UNJOURNALED_MUTATIONS.into(),
+            payload: PayloadSnapshot::GlobalBarrier,
+        });
+    }
+    Ok(())
 }
 
 /// Serializes attributes of the document's solids and faces, by dense
@@ -2125,6 +2186,15 @@ fn replay_document_into(
             })?;
         }
         let curve = e.curve.into_curve();
+        if let Some(defect) = curve_carrier_defect(&curve) {
+            return Err(IoError::ParseError {
+                reason: analytic_carrier_error(
+                    format_args!("arena edge {index}"),
+                    curve.type_tag(),
+                    defect,
+                ),
+            });
+        }
         let trim = legacy_arena_edge_trim_adapter(
             index,
             &curve,
@@ -2180,7 +2250,7 @@ fn replay_document_into(
         .collect::<Result<Vec<_>, IoError>>()?;
 
     let mut face_ids = Vec::with_capacity(faces.len());
-    for f in faces {
+    for (index, f) in faces.into_iter().enumerate() {
         let outer = *wire_ids
             .get(f.outer_wire)
             .ok_or_else(|| index_err("wire", f.outer_wire))?;
@@ -2193,7 +2263,17 @@ fn replay_document_into(
                 reason: format!("invalid arena NURBS surface: {err}"),
             })?;
         }
-        let mut face = Face::new(outer, inner, f.surface.into_surface());
+        let surface = f.surface.into_surface();
+        if let Some(defect) = surface_carrier_defect(&surface) {
+            return Err(IoError::ParseError {
+                reason: analytic_carrier_error(
+                    format_args!("arena face {index}"),
+                    surface.type_tag(),
+                    defect,
+                ),
+            });
+        }
+        let mut face = Face::new(outer, inner, surface);
         face.set_reversed(f.reversed);
         face_ids.push(topo.add_face(face));
     }
@@ -2837,6 +2917,143 @@ fn validate_arena_point(point: Point3, subject: &str) -> Result<(), IoError> {
         });
     }
     Ok(())
+}
+
+/// Dimensionless bound on how far an analytic carrier's axes may stray from
+/// unit length and mutual perpendicularity. Kernel constructors build frames
+/// orthonormal to roundoff (~1e-16), so this refuses frames that are wrong,
+/// not frames that are imprecise.
+const ARENA_FRAME_TOLERANCE: f64 = 1e-9;
+
+/// What makes an analytic edge carrier one its constructors could not have
+/// built, if anything. The derived `Deserialize` fills the private fields
+/// directly, so the arena re-establishes the constructors' invariants on both
+/// sides: the writer refuses what the reader would. NURBS carriers are
+/// checked separately, by `NurbsCurve::validate`.
+fn curve_carrier_defect(curve: &EdgeCurve) -> Option<&'static str> {
+    match curve {
+        EdgeCurve::Line | EdgeCurve::NurbsCurve(_) => None,
+        EdgeCurve::Circle(circle) => frame_defect(
+            circle.center(),
+            &[circle.normal(), circle.u_axis(), circle.v_axis()],
+        )
+        .or_else(|| positive_defect(circle.radius(), "radius is not positive and finite")),
+        EdgeCurve::Ellipse(ellipse) => frame_defect(
+            ellipse.center(),
+            &[ellipse.normal(), ellipse.u_axis(), ellipse.v_axis()],
+        )
+        .or_else(|| {
+            positive_defect(
+                ellipse.semi_major(),
+                "semi-major axis is not positive and finite",
+            )
+        })
+        .or_else(|| {
+            positive_defect(
+                ellipse.semi_minor(),
+                "semi-minor axis is not positive and finite",
+            )
+        }),
+        EdgeCurve::Hyperbola(hyperbola) => frame_defect(
+            hyperbola.center(),
+            &[hyperbola.normal(), hyperbola.u_axis(), hyperbola.v_axis()],
+        )
+        .or_else(|| {
+            positive_defect(
+                hyperbola.semi_major(),
+                "semi-major axis is not positive and finite",
+            )
+        })
+        .or_else(|| {
+            positive_defect(
+                hyperbola.semi_minor(),
+                "semi-minor axis is not positive and finite",
+            )
+        }),
+        EdgeCurve::Parabola(parabola) => {
+            frame_defect(parabola.vertex(), &[parabola.axis_dir(), parabola.u_axis()]).or_else(
+                || {
+                    positive_defect(
+                        parabola.focal_length(),
+                        "focal length is not positive and finite",
+                    )
+                },
+            )
+        }
+    }
+}
+
+/// [`curve_carrier_defect`] for face surfaces.
+fn surface_carrier_defect(surface: &FaceSurface) -> Option<&'static str> {
+    match surface {
+        FaceSurface::Nurbs(_) => None,
+        FaceSurface::Plane { normal, d } => (!d.is_finite())
+            .then_some("offset is not finite")
+            .or_else(|| (!is_unit(*normal)).then_some("normal is not unit length")),
+        FaceSurface::Cylinder(cylinder) => frame_defect(
+            cylinder.origin(),
+            &[cylinder.axis(), cylinder.x_axis(), cylinder.y_axis()],
+        )
+        .or_else(|| positive_defect(cylinder.radius(), "radius is not positive and finite")),
+        FaceSurface::Cone(cone) => {
+            let half_angle = cone.half_angle();
+            frame_defect(cone.apex(), &[cone.axis(), cone.x_axis(), cone.y_axis()]).or_else(|| {
+                (!(half_angle > 0.0 && half_angle < std::f64::consts::FRAC_PI_2))
+                    .then_some("half-angle is outside (0, π/2)")
+            })
+        }
+        FaceSurface::Sphere(sphere) => frame_defect(
+            sphere.center(),
+            &[sphere.x_axis(), sphere.y_axis(), sphere.z_axis()],
+        )
+        .or_else(|| positive_defect(sphere.radius(), "radius is not positive and finite")),
+        FaceSurface::Torus(torus) => frame_defect(
+            torus.center(),
+            &[torus.x_axis(), torus.y_axis(), torus.z_axis()],
+        )
+        .or_else(|| {
+            positive_defect(
+                torus.major_radius(),
+                "major radius is not positive and finite",
+            )
+        })
+        .or_else(|| {
+            positive_defect(
+                torus.minor_radius(),
+                "minor radius is not positive and finite",
+            )
+        }),
+    }
+}
+
+fn analytic_carrier_error(entity: std::fmt::Arguments<'_>, kind: &str, defect: &str) -> String {
+    format!("{entity} has an invalid analytic {kind} carrier: {defect}")
+}
+
+/// A finite placement with unit, mutually perpendicular axes, or what is
+/// wrong with it.
+fn frame_defect(origin: Point3, axes: &[Vec3]) -> Option<&'static str> {
+    if origin.0.iter().any(|coordinate| !coordinate.is_finite()) {
+        return Some("placement is not finite");
+    }
+    if !axes.iter().all(|&axis| is_unit(axis)) {
+        return Some("an axis is not unit length");
+    }
+    let perpendicular = axes.iter().enumerate().all(|(index, &axis)| {
+        axes.iter()
+            .skip(index + 1)
+            .all(|&other| axis.dot(other).abs() <= ARENA_FRAME_TOLERANCE)
+    });
+    (!perpendicular).then_some("axes are not mutually perpendicular")
+}
+
+fn is_unit(vector: Vec3) -> bool {
+    (vector.length() - 1.0).abs() <= ARENA_FRAME_TOLERANCE
+}
+
+/// `defect` unless `value` is positive and finite.
+fn positive_defect(value: f64, defect: &'static str) -> Option<&'static str> {
+    (!(value.is_finite() && value > 0.0)).then_some(defect)
 }
 
 fn arena_edge_error(edge_index: usize, reason: &str) -> IoError {

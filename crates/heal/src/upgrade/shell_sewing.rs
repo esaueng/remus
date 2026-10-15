@@ -1792,6 +1792,71 @@ mod tests {
     }
 
     #[test]
+    fn sew_shells_operator_sews_the_cavity_shell() {
+        // The 24 free edges live in the cavity; the outer shell is closed.
+        use crate::pipeline::process::HealProcess;
+
+        for with_history in [false, true] {
+            let mut topo = Topology::new();
+            let outer = crate::test_fixtures::block3_shell(&mut topo);
+            let cavity = disjoint_cube_shell(&mut topo);
+            let cavity_vertices: Vec<_> = topo
+                .shell(cavity)
+                .unwrap()
+                .faces()
+                .to_vec()
+                .into_iter()
+                .flat_map(|f| {
+                    let wire = topo.face(f).unwrap().outer_wire();
+                    topo.wire(wire)
+                        .unwrap()
+                        .edges()
+                        .iter()
+                        .map(|oe| topo.edge(oe.edge()).unwrap().start())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            for vertex in cavity_vertices {
+                let p = topo.vertex(vertex).unwrap().point();
+                topo.vertex_mut(vertex).unwrap().set_point(Point3::new(
+                    p.x() + 1.0,
+                    p.y() + 1.0,
+                    p.z() + 1.0,
+                ));
+            }
+            for face in topo.shell(cavity).unwrap().faces().to_vec() {
+                let FaceSurface::Plane { normal, d } = *topo.face(face).unwrap().surface() else {
+                    unreachable!("cube faces are planar");
+                };
+                let shifted = d + normal.x() + normal.y() + normal.z();
+                let face = topo.face_mut(face).unwrap();
+                face.set_surface(FaceSurface::Plane { normal, d: shifted });
+                face.set_reversed(true);
+            }
+            let solid_id = topo.add_solid(remus_topology::solid::Solid::new(outer, vec![cavity]));
+            crate::test_fixtures::retire_fixture_solid_owners(&mut topo, solid_id);
+            assert_eq!(free_edge_count(&topo, outer), 0);
+            assert_eq!(free_edge_count(&topo, cavity), 24);
+
+            let mut process = HealProcess::new();
+            process.add_step("sew_shells");
+            let actions = if with_history {
+                process.execute_with_history(&mut topo, solid_id).unwrap().1[0].actions_taken
+            } else {
+                process.execute(&mut topo, solid_id).unwrap().1[0].actions_taken
+            };
+
+            assert_eq!(actions, 12, "with_history = {with_history}");
+            assert_eq!(
+                free_edge_count(&topo, cavity),
+                0,
+                "with_history = {with_history}: sew_shells must close the cavity shell"
+            );
+            assert_wires_chain(&topo, cavity);
+        }
+    }
+
+    #[test]
     fn sew_shells_operator_reports_fail_when_it_declines() {
         // Reporting DONE on a shell it could not close is the defect this
         // whole change exists to remove.

@@ -131,6 +131,14 @@ impl Coedge {
     pub(crate) fn replace_periodic_winding(&mut self, winding: PeriodicWinding) -> PeriodicWinding {
         std::mem::replace(&mut self.periodic_winding, winding)
     }
+
+    /// Flips the traversal direction and clears the parameter-space trace,
+    /// whose endpoint convention follows the direction.
+    pub(crate) fn reverse_direction(&mut self) {
+        self.forward = !self.forward;
+        self.pcurve = None;
+        self.periodic_winding = PeriodicWinding::ZERO;
+    }
 }
 
 #[cfg(test)]

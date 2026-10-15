@@ -109,6 +109,38 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **io:** validate analytic carrier frames and dimensions on arena encode
+  and decode, and normalize STEP plane direction ratios before computing
+  their offset so valid imports retain the arena contract (B216).
+
+* **io:** mesh import welds far-from-origin parts in linear time: weld cells
+  are keyed by the bits of an exactly scaled `f64` index instead of
+  saturating `as i64` past 2^63 (B218, review IO-2). OBJ faces are triangulated as they are read, so a
+  long `f` line is refused at the first triangle over `max_model_entities`
+  instead of after its whole corner list is collected (B217, review IO-9).
+* **io:** STEP B-spline attributes are split string-aware, so a name such as
+  `'Curve (1)'` no longer shifts the control points and knots; a knot
+  multiplicity that is not an integer, or a multiplicity list that does not
+  pair one-to-one with its knot values, is refused instead of truncated
+  (B219, review IO-10).
+
+* **algo:** planar section loops that only share a span or endpoint with an
+  existing hole retain the internal-loop path. Proper crossings still use the
+  hole-weaving path. Exact boolean regressions cover both contacts with valid,
+  watertight output and closed-form volumes (#1051).
+* **topology,operations:** orientation-reversing transforms (`mirror`, and
+  `transform_solid`, `copy_and_transform_solid` or `transform_face` with a
+  negative determinant) reverse every boundary traversal of the transformed
+  faces, so each wire still winds with its face's outward normal. A mirrored
+  box reported six face-orientation warnings, and an exact boolean consuming
+  it returned shared edges used the same way by both faces (finding F16).
+  Surviving pcurves are re-expressed in the reflected chart and follow
+  their reversed uses. `Topology::reverse_face_boundaries`
+  reverses boundaries in place, keeping loop and coedge identities.
+* **operations:** `make_cone` with a zero bottom radius (apex down) now uses
+  its base circle in the lateral face opposite to the cap. The cone carried one
+  shared edge used the same way by both faces and a lateral face wound against
+  its normal, and fuses consuming it inherited the defect (finding F11).
 * **algo,check,operations,wasm:** the sphere-minus-box cut in finding F6
   retains the seven spherical octants with closed meshes and correct material
   queries. Sphere primitives use exact circular equator arcs. The no-seam

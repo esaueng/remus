@@ -28,6 +28,7 @@ use remus_math::det_hash::DetHashMap;
 use remus_math::surfaces::SphericalSurface;
 use remus_math::vec::{Point2, Point3, Vec3};
 
+use super::PointMergeMap;
 use super::edge_sampling::segments_for_chord_deviation_a;
 use super::nonplanar::validate_interior_grid_size;
 use super::{MERGE_GRID, TriangleMesh, point_merge_key};
@@ -73,7 +74,7 @@ pub(super) fn fill_sphere_pole_winding_patch(
     deflection: f64,
     angular_tol: f64,
     merged: &mut TriangleMesh,
-    point_to_global: &mut DetHashMap<(i64, i64, i64), u32>,
+    point_to_global: &mut PointMergeMap,
 ) -> bool {
     let n = boundary.len();
     let radius = sphere.radius();
@@ -279,29 +280,27 @@ pub(super) fn fill_sphere_pole_winding_patch(
     }
 
     let mut global_ids: Vec<Option<u32>> = vec![None; cdt_vertices.len()];
-    let mut resolve = |index: usize,
-                       merged: &mut TriangleMesh,
-                       point_to_global: &mut DetHashMap<(i64, i64, i64), u32>|
-     -> u32 {
-        if let Some(id) = cdt_to_global.get(index).copied().flatten() {
-            return id;
-        }
-        if let Some(id) = global_ids[index] {
-            return id;
-        }
-        let normal = from_chart(cdt_vertices[index]);
-        let point: Point3 = center + normal * radius;
-        let key = point_merge_key(point, MERGE_GRID);
-        let id = *point_to_global.entry(key).or_insert_with(|| {
-            #[allow(clippy::cast_possible_truncation)]
-            let id = merged.positions.len() as u32;
-            merged.positions.push(point);
-            merged.normals.push(normal);
+    let mut resolve =
+        |index: usize, merged: &mut TriangleMesh, point_to_global: &mut PointMergeMap| -> u32 {
+            if let Some(id) = cdt_to_global.get(index).copied().flatten() {
+                return id;
+            }
+            if let Some(id) = global_ids[index] {
+                return id;
+            }
+            let normal = from_chart(cdt_vertices[index]);
+            let point: Point3 = center + normal * radius;
+            let key = point_merge_key(point, MERGE_GRID);
+            let id = *point_to_global.entry(key).or_insert_with(|| {
+                #[allow(clippy::cast_possible_truncation)]
+                let id = merged.positions.len() as u32;
+                merged.positions.push(point);
+                merged.normals.push(normal);
+                id
+            });
+            global_ids[index] = Some(id);
             id
-        });
-        global_ids[index] = Some(id);
-        id
-    };
+        };
     for [a, b, c] in kept {
         let ga = resolve(a, merged, point_to_global);
         let gb = resolve(b, merged, point_to_global);

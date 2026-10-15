@@ -1462,7 +1462,10 @@ fn revolve_impl(
     }
     let axis = axis_direction.normalize()?;
 
-    if angle_radians <= 0.0 || angle_radians > 2.0f64.mul_add(PI, tol.angular) {
+    if !angle_radians.is_finite()
+        || angle_radians <= 0.0
+        || angle_radians > 2.0f64.mul_add(PI, tol.angular)
+    {
         return Err(crate::OperationsError::InvalidInput {
             reason: format!("revolve angle must be in (0, 2π], got {angle_radians}"),
         });

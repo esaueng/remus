@@ -42,6 +42,83 @@ struct PreparedFace {
     /// boundary-distance projection for points that cannot be within
     /// tolerance of the surface. `None` when it cannot be certified.
     support_hull: Option<Aabb3>,
+    /// Bounding rectangle of the cached outer trim polygon in the projection
+    /// plane the boundary test's polygon containment uses. `None`
+    /// when no prune is proven exact for this face.
+    trim_window: Option<TrimWindow>,
+}
+
+/// The rectangle, in the boundary test's projection plane, that contains every
+/// point the outer-polygon containment test can admit.
+///
+/// [`super::trim_contains_point`] admits a point only when
+/// [`super::boundary::outer_contains_point`] does. With at least three
+/// vertices that is `point_in_polygon_3d` over the polygon's own Newell
+/// normal: both the point and the vertices are reduced to the same two
+/// coordinates (a selection, no arithmetic), and the exact winding-number
+/// predicate returns zero for any point strictly outside the vertices'
+/// bounding rectangle — no edge straddles its ordinate, or every straddling
+/// edge lies on one side of it, so upward and downward crossings cancel on a
+/// closed polygon. A point strictly outside the rectangle therefore never
+/// reaches `OnBoundary` through this face, whatever its surface distance, and
+/// skipping the face cannot change the boundary verdict. Sphere faces may be
+/// decided by the qualified great-circle trim instead of the polygon, so they
+/// carry no window; neither does a face with fewer than three outer vertices
+/// (a full-surface face contains every point) or with a non-finite vertex.
+#[derive(Debug, Clone, Copy)]
+struct TrimWindow {
+    /// The two coordinates `point_in_polygon_3d` keeps.
+    axes: (usize, usize),
+    min: [f64; 2],
+    max: [f64; 2],
+}
+
+impl TrimWindow {
+    fn of(surface: &FaceSurface, trim: &super::boundary::FaceTrimData) -> Option<Self> {
+        match surface {
+            FaceSurface::Sphere(_) => return None,
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => {}
+        }
+        let outer = &trim.outer;
+        if outer.len() < 3 {
+            return None;
+        }
+        // The axis choice of `crate::util::point_in_polygon_3d`, over the
+        // normal `outer_contains_point` hands it.
+        let normal = super::boundary::polygon_normal(outer);
+        let (ax, ay, az) = (normal.x().abs(), normal.y().abs(), normal.z().abs());
+        let axes = if az >= ax && az >= ay {
+            (0, 1)
+        } else if ay >= ax {
+            (0, 2)
+        } else {
+            (1, 2)
+        };
+        let mut min = [f64::INFINITY; 2];
+        let mut max = [f64::NEG_INFINITY; 2];
+        for vertex in outer {
+            for (k, axis) in [axes.0, axes.1].into_iter().enumerate() {
+                let c = vertex.0[axis];
+                if !c.is_finite() {
+                    return None;
+                }
+                min[k] = min[k].min(c);
+                max[k] = max[k].max(c);
+            }
+        }
+        Some(Self { axes, min, max })
+    }
+
+    /// Whether `point` lies strictly outside the rectangle. A non-finite
+    /// coordinate never compares outside, so it keeps the full test.
+    fn excludes(&self, point: Point3) -> bool {
+        let (a, b) = (point.0[self.axes.0], point.0[self.axes.1]);
+        a < self.min[0] || a > self.max[0] || b < self.min[1] || b > self.max[1]
+    }
 }
 
 /// Control-point bounds of a NURBS surface, when they bound the surface.
@@ -102,7 +179,7 @@ fn hull_excludes(hull: Aabb3, point: Point3, tolerance: f64) -> bool {
 /// mutation or arena restore ends the borrow, so stale reuse cannot compile.
 ///
 /// Preparation is conservative by construction: bounds come from the same
-/// `face_aabb` the one-shot path filters with, the BVH is the same `Bvh` over
+/// `face_ray_bound` the one-shot path filters with, the BVH is the same `Bvh` over
 /// the same `(face-index, bound)` pairs, trim polygons come from the same
 /// `face_polygon` / `face_hole_polygons` builders, and queries run the shared
 /// `classify_point_with_source` vote loop. A prepared query and a
@@ -124,6 +201,9 @@ pub struct PreparedSolid<'a> {
     bvh: Bvh,
     /// Per-face preparation, index-aligned with [`PreparedSolid::faces`].
     prepared_faces: Vec<PreparedFace>,
+    /// Boundary edges for the grazing-ray test, the same skeleton the
+    /// one-shot path builds per query.
+    skeleton: super::graze::BoundarySkeleton,
 }
 
 impl<'a> PreparedSolid<'a> {
@@ -146,7 +226,7 @@ impl<'a> PreparedSolid<'a> {
         let mut prepared_faces = Vec::with_capacity(faces.len());
         for (i, &fid) in faces.iter().enumerate() {
             crate::perf::bump_classify_face_aabb_eval();
-            if let Ok(bounds) = crate::util::face_aabb(topo, fid) {
+            if let Ok(bounds) = crate::util::face_ray_bound(topo, fid) {
                 face_aabbs.push((i, bounds));
             }
             let trim = super::boundary::FaceTrimData::build(topo, fid).ok();
@@ -162,15 +242,21 @@ impl<'a> PreparedSolid<'a> {
                 )
                 | Err(_) => None,
             };
+            let trim_window = match (&trim, topo.face(fid)) {
+                (Some(trim), Ok(face)) => TrimWindow::of(face.surface(), trim),
+                _ => None,
+            };
             prepared_faces.push(PreparedFace {
                 fid,
                 trim,
                 cache: super::boundary::FaceCache::default(),
                 support_hull,
+                trim_window,
             });
         }
         let bvh = Bvh::build(&face_aabbs);
         crate::perf::bump_classify_bvh_build();
+        let skeleton = super::graze::BoundarySkeleton::build(topo, &faces)?;
 
         Ok(Self {
             topo,
@@ -179,6 +265,7 @@ impl<'a> PreparedSolid<'a> {
             face_aabbs,
             bvh,
             prepared_faces,
+            skeleton,
         })
     }
 
@@ -196,7 +283,7 @@ impl<'a> PreparedSolid<'a> {
 
     /// Number of faces contributing bounds to the shared BVH.
     ///
-    /// Faces whose `face_aabb` fails are pruned, exactly as the one-shot
+    /// Faces whose `face_ray_bound` fails are pruned, exactly as the one-shot
     /// `.ok()` filter prunes them per ray.
     #[must_use]
     pub fn bounded_face_count(&self) -> usize {
@@ -257,6 +344,70 @@ impl<'a> PreparedSolid<'a> {
         for prepared in &self.prepared_faces {
             // A face whose whole support surface is provably out of reach
             // would measure `>= tolerance` below; skip the projection.
+            if prepared
+                .support_hull
+                .is_some_and(|hull| hull_excludes(hull, point, tolerance))
+            {
+                continue;
+            }
+            // A face whose trim polygon provably rejects the point cannot
+            // report it either (see `TrimWindow`). The window exists
+            // only for a cached trim, whose face lookup already succeeded, so
+            // the skipped distance computation could not have failed.
+            if prepared
+                .trim_window
+                .is_some_and(|window| window.excludes(point))
+            {
+                continue;
+            }
+            if super::face_surface_distance_cached(
+                self.topo,
+                prepared.fid,
+                point,
+                tolerance,
+                Some(&prepared.cache),
+            )? < tolerance
+            {
+                if let Some(inside) = super::boundary::qualified_sphere_trim_contains(
+                    self.topo,
+                    prepared.fid,
+                    Some(&prepared.cache),
+                    point,
+                    tolerance,
+                )? {
+                    if inside {
+                        return Ok(true);
+                    }
+                    continue;
+                }
+                let owned_trim;
+                let trim = if let Some(cached) = &prepared.trim {
+                    cached
+                } else {
+                    owned_trim = super::boundary::FaceTrimData::build(self.topo, prepared.fid)?;
+                    &owned_trim
+                };
+                if super::trim_contains_point(trim, point) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// [`PreparedSolid::is_point_on_boundary`] without the trim-window
+    /// skip, kept verbatim as the differential oracle for that prune.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a topology lookup fails.
+    #[doc(hidden)]
+    pub fn is_point_on_boundary_unpruned(
+        &self,
+        point: Point3,
+        tolerance: f64,
+    ) -> Result<bool, CheckError> {
+        for prepared in &self.prepared_faces {
             if prepared
                 .support_hull
                 .is_some_and(|hull| hull_excludes(hull, point, tolerance))
@@ -340,6 +491,10 @@ impl ClassifySource for PreparedSolid<'_> {
 
     fn count_crossings(&self, point: Point3, direction: Vec3) -> Result<u32, CheckError> {
         self.count_ray_crossings(point, direction)
+    }
+
+    fn ray_grazes_boundary(&self, point: Point3, direction: Vec3) -> Result<bool, CheckError> {
+        self.skeleton.grazed_by(self.topo, point, direction)
     }
 }
 

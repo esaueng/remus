@@ -10681,6 +10681,57 @@ fn scaling_nway_ff_seeds_junctions_once_per_run() {
     );
 }
 
+/// The coplanar phase reads only the existing sections of the face pair it
+/// checks. Before, every check scanned every section curve in the arena:
+/// the checks grow with the grid's coplanar face pairs and the arena with
+/// its body pairs, so the scan grew with the square of the body count.
+/// Measured from 3x3 to 6x6 (4x the bodies): 31 760 → 960 335 curves
+/// examined (30x) scanning the arena, 2 298 → 16 101 (7x) reading the
+/// pair's own sections.
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_nway_coplanar_reads_only_the_pairs_sections() {
+    use remus_math::mat::Mat4;
+
+    let fuse_grid = |n: usize| -> u64 {
+        let mut topo = Topology::new();
+        let mut ids = Vec::new();
+        for row in 0..n {
+            for col in 0..n {
+                let s = crate::primitives::make_box(&mut topo, 1.01, 1.01, 1.0).unwrap();
+                crate::transform::transform_solid(
+                    &mut topo,
+                    s,
+                    &Mat4::translation(col as f64, row as f64, 0.0),
+                )
+                .unwrap();
+                ids.push(s);
+            }
+        }
+        remus_algo::perf::reset();
+        let fused = crate::compound_ops::fuse_solids(&mut topo, &ids).unwrap();
+        let probes = remus_algo::perf::snapshot().coplanar_section_probes;
+        let vol = crate::measure::solid_volume(&topo, fused, 0.01).unwrap();
+        let side = n as f64 + 0.01;
+        let expected = side * side;
+        assert!(
+            (vol - expected).abs() < 1e-9 * expected,
+            "{n}x{n} overlapping grid fuse volume {vol} != {expected}"
+        );
+        probes
+    };
+
+    let p3 = fuse_grid(3);
+    let p6 = fuse_grid(6);
+    eprintln!("coplanar section probes @ 3x3 -> 6x6 overlapping grids: {p3} -> {p6}");
+    assert!(p3 > 0, "the coplanar section checks were not exercised");
+    assert!(
+        p6 < 12 * p3,
+        "coplanar section checks regressed toward whole-arena scans: {p3} -> {p6} \
+         probes (pair sections 7x, whole arena 30x)"
+    );
+}
+
 /// The holed plate of the boolean bench (`single_boolean_at_face_count`,
 /// F~54): a 100 x 100 x 10 box cut by sixteen r = 2 cylinders on a 20 mm
 /// grid, each spanning z = -5..15, plus one more such tool at `(x, y)`.
@@ -11171,5 +11222,129 @@ mod exact_result_gate_tests {
             require_exact_boolean_result(&topo, BooleanOp::Cut, blank, tool, wrong_cut),
             Err(crate::OperationsError::ExactOnlyUnattainable)
         ));
+    }
+}
+
+/// The lone-circle shortcut in `hole_winding_sign` must agree in sign with
+/// the sampled `wire_winding_sign` it replaces, for both circle axes, both
+/// face normals, both traversal directions and ascending, descending and
+/// lifted parameter spans.
+#[test]
+fn hole_winding_shortcut_matches_sampled_sign() {
+    use remus_math::curves::Circle3D;
+    use std::f64::consts::TAU;
+
+    let mut topo = Topology::new();
+    let center = Point3::new(1.0, -2.0, 3.0);
+    let mut checked = 0;
+    for axis_z in [1.0, -1.0] {
+        let circle = Circle3D::new(center, Vec3::new(0.0, 0.0, axis_z), 0.75).unwrap();
+        for span in [
+            (0.0, TAU),
+            (TAU, 0.0),
+            (1.25, 1.25 + TAU),
+            (1.25 + TAU, 1.25),
+        ] {
+            let v = topo.add_vertex(Vertex::new(circle.evaluate(span.0), 1e-7));
+            let mut edge = Edge::new(v, v, EdgeCurve::Circle(circle.clone()));
+            edge.set_trim(Some(span));
+            let eid = topo.add_edge(edge);
+            for forward in [true, false] {
+                let wire =
+                    topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, forward)], true).unwrap());
+                for normal_z in [1.0, -1.0] {
+                    let normal = Vec3::new(0.0, 0.0, normal_z);
+                    let sampled = wire_winding_sign(&topo, wire, normal).unwrap();
+                    let shortcut = hole_winding_sign(&topo, wire, normal).unwrap();
+                    assert!(
+                        sampled.abs() > 1e-3,
+                        "sampled winding {sampled} is not decisive"
+                    );
+                    assert!(
+                        (shortcut > 0.0) == (sampled > 0.0) && shortcut.abs() > 0.0,
+                        "axis {axis_z}, span {span:?}, forward {forward}, normal {normal_z}: \
+                         shortcut {shortcut} vs sampled {sampled}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 32);
+}
+
+/// N-way phase FF shares the seeded junction cells across its solid pairs
+/// and copies them only when a pair writes one. Every resolve on an
+/// overlapping box grid snaps to a seeded junction, so no pair writes and
+/// nothing is copied. Before, every pair with a surviving face pair cloned
+/// the whole seeded table, one full copy of every seed per pair (its
+/// `junction_seeds` count times the pair count).
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_nway_ff_pairs_share_the_seeded_junction_cells() {
+    use remus_math::mat::Mat4;
+
+    for n in [3, 5] {
+        let mut topo = Topology::new();
+        let mut ids = Vec::new();
+        for row in 0..n {
+            for col in 0..n {
+                let s = crate::primitives::make_box(&mut topo, 1.01, 1.01, 1.0).unwrap();
+                crate::transform::transform_solid(
+                    &mut topo,
+                    s,
+                    &Mat4::translation(col as f64, row as f64, 0.0),
+                )
+                .unwrap();
+                ids.push(s);
+            }
+        }
+        remus_algo::perf::reset();
+        crate::compound_ops::fuse_solids(&mut topo, &ids).unwrap();
+        let snapshot = remus_algo::perf::snapshot();
+        assert!(snapshot.junction_seeds > 0, "{n}x{n}: no junctions seeded");
+        assert!(
+            snapshot.junction_cells_copied < snapshot.junction_seeds,
+            "{n}x{n}: FF pairs copied {} seeded junction cells ({} seeded); \
+             a per-pair clone copies every seed per pair",
+            snapshot.junction_cells_copied,
+            snapshot.junction_seeds
+        );
+    }
+}
+
+/// N-way phase EF samples each face's outline once per run. A face's
+/// containment depends only on its boundary, which EF never changes, so the
+/// pass caches it; before, every solid pair a body was in sampled all six of
+/// its faces again (a touching-grid box is in up to eight pairs).
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_nway_ef_samples_each_face_outline_once() {
+    use remus_math::mat::Mat4;
+
+    for n in [3, 6] {
+        let mut topo = Topology::new();
+        let mut ids = Vec::new();
+        for row in 0..n {
+            for col in 0..n {
+                let s = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+                crate::transform::transform_solid(
+                    &mut topo,
+                    s,
+                    &Mat4::translation(col as f64, row as f64, 0.0),
+                )
+                .unwrap();
+                ids.push(s);
+            }
+        }
+        remus_algo::perf::reset();
+        crate::compound_ops::fuse_solids(&mut topo, &ids).unwrap();
+        let samplings = remus_algo::perf::snapshot().face_outline_samplings;
+        let faces = 6 * (n * n) as u64;
+        assert!(samplings > 0, "{n}x{n}: phase EF sampled no outline");
+        assert!(
+            samplings <= faces,
+            "{n}x{n}: phase EF sampled {samplings} face outlines for {faces} faces"
+        );
     }
 }

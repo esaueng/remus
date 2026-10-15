@@ -446,7 +446,6 @@ mod legacy {
         normal_matrix: &remus_math::mat::Mat4,
         recorder: &mut TransformRecorder,
     ) -> Result<SolidId, crate::OperationsError> {
-        let chart_reversing = crate::transform::linear_determinant(matrix) < 0.0;
         let certificates = crate::transform::translation_edge_certificates(
             topo,
             &remus_topology::explorer::solid_edges(topo, solid_id)?,
@@ -617,7 +616,8 @@ mod legacy {
 
         let mut new_shell_ids = Vec::new();
         let mut copied_face_ids = HashMap::new();
-        let mut chart_replaced_faces = Vec::new();
+        let mut charts = Vec::new();
+        let mut reflected_faces = Vec::new();
         for ssnap in &shell_snaps {
             let mut new_face_ids = Vec::new();
             for fsnap in &ssnap.faces {
@@ -647,7 +647,7 @@ mod legacy {
                 // `transform_face_surface` expects (its non-uniform branches map
                 // boundary probes back through the inverse).
                 recorder.set_refusal_origin(topo.face_id_from_index(fsnap.old_index));
-                crate::transform::transform_face_surface_recorded(
+                let chart = crate::transform::transform_face_surface_recorded(
                     topo,
                     new_fid,
                     matrix,
@@ -655,16 +655,13 @@ mod legacy {
                     recorder,
                 )?;
                 recorder.set_refusal_origin(None);
-                if matches!(topo.face(new_fid)?.surface(), FaceSurface::Nurbs(_))
-                    && (!matches!(&fsnap.surface, FaceSurface::Nurbs(_)) || chart_reversing)
-                {
-                    chart_replaced_faces.push(new_fid);
-                }
+                charts.push((new_fid, chart));
                 if let Some(attributes) = fsnap.attributes.clone() {
                     topo.set_face_attributes(new_fid, attributes)?;
                 }
                 copied_face_ids.insert(fsnap.old_index, new_fid);
                 new_face_ids.push(new_fid);
+                reflected_faces.push(new_fid);
             }
             let new_shell = Shell::new(new_face_ids).map_err(crate::OperationsError::Topology)?;
             new_shell_ids.push(topo.add_shell(new_shell));
@@ -675,15 +672,11 @@ mod legacy {
             let edge = remapped_authority_edge(&edge_map, &snapshot)?;
             restore_face_coedge_authority(topo, face, edge, snapshot)?;
         }
-        for face in chart_replaced_faces {
-            let uses: Vec<_> = topo
-                .pcurves_for_face(face)
-                .into_iter()
-                .map(|(edge, forward, _)| (edge, forward))
-                .collect();
-            for (edge, forward) in uses {
-                topo.remove_pcurve_oriented(edge, face, forward)?;
-            }
+        for (face, chart) in charts {
+            crate::transform::reexpress_face_pcurves(topo, face, &chart)?;
+        }
+        if crate::transform::linear_determinant(matrix) < 0.0 {
+            crate::transform::reverse_boundaries_for_reflection(topo, &reflected_faces)?;
         }
 
         let new_outer = new_shell_ids[0];
