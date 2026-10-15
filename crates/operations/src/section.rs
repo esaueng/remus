@@ -2061,6 +2061,14 @@ mod curved {
         let (in_plane, sagitta) = in_plane_edges(topo, face, normal, d, tol)?;
         let band = 2.0 * sagitta + tol.linear * 100.0;
         let along_one_edge = |p: Point3, q: Point3| along_one_edge(&in_plane, band, p, q);
+        // The carrier component of each chord, in `assign_crossings`' order,
+        // and the stretches of in-plane edges that pieces were kept along.
+        let component: Vec<usize> = polylines
+            .iter()
+            .enumerate()
+            .flat_map(|(k, p)| std::iter::repeat_n(k, p.len().saturating_sub(1)))
+            .collect();
+        let mut claims: Vec<Claim> = Vec::new();
         let surface = topo.face(face)?.surface();
         let on_face = |p: Point3| -> Result<bool, OperationsError> {
             let on_carrier = surface
@@ -2071,7 +2079,7 @@ mod curved {
                 topo, face, on_carrier,
             )?)
         };
-        for (&(a, b), mut cut) in chords.iter().zip(cuts) {
+        for ((&(a, b), mut cut), &k) in chords.iter().zip(cuts).zip(&component) {
             cut.compact_sort_by(|l, r| l.0.total_cmp(&r.0));
             let points: Vec<Point3> = std::iter::once(a)
                 .chain(cut.into_iter().map(|(_, x)| x))
@@ -2079,14 +2087,75 @@ mod curved {
                 .collect();
             for piece in points.windows(2) {
                 let (p, q) = (piece[0], piece[1]);
-                if (q - p).length() > tol.linear
-                    && (along_one_edge(p, q) || on_face(p + (q - p) * 0.5)?)
-                {
+                if (q - p).length() <= tol.linear {
+                    continue;
+                }
+                if let Some((edge, stretch)) = along_one_edge(p, q) {
+                    claims.extend(
+                        stretch
+                            .into_iter()
+                            .filter(|&(lo, hi)| hi > lo)
+                            .map(|(lo, hi)| (edge, lo, hi, k)),
+                    );
+                    segments.push((p, q));
+                } else if on_face(p + (q - p) * 0.5)? {
                     segments.push((p, q));
                 }
             }
         }
+        // Two carrier components along one stretch of a rim are two section
+        // loops closer than the band: the band cannot tell the rim's own
+        // loop from the other, which would be kept as boundary unclassified.
+        if components_share_an_edge(claims, 4.0 * band) {
+            return Err(unsupported(
+                "section along an in-plane boundary edge that two carrier loops follow \
+                 within its approximation band"
+                    .into(),
+            ));
+        }
         Ok(())
+    }
+
+    /// A stretch of an in-plane edge that a kept piece runs along: the
+    /// edge's index, the arc-length interval, and the piece's carrier
+    /// component.
+    type Claim = (usize, f64, f64, usize);
+
+    /// Whether pieces of two different carrier components run along one
+    /// in-plane edge over intervals overlapping by more than `slack`. One
+    /// loop split across components only abuts itself, within the band.
+    fn components_share_an_edge(mut claims: Vec<Claim>, slack: f64) -> bool {
+        claims.compact_sort_by(|l, r| l.0.cmp(&r.0).then(l.1.total_cmp(&r.1)));
+        claims.chunk_by(|l, r| l.0 == r.0).any(|edge| {
+            // The furthest end reached so far and its component, and the
+            // furthest reached by any other component. Intervals arrive by
+            // start, so an earlier one overlaps a later one by
+            // min(its end, the later end) − the later start.
+            let mut best: Option<(f64, usize)> = None;
+            let mut second = f64::NEG_INFINITY;
+            for &(_, lo, hi, k) in edge {
+                let other = match best {
+                    Some((end, c)) if c != k => end,
+                    _ => second,
+                };
+                if other.min(hi) - lo > slack {
+                    return true;
+                }
+                best = match best {
+                    Some((end, c)) if c == k => Some((end.max(hi), c)),
+                    Some((end, _)) if hi > end => {
+                        second = end;
+                        Some((hi, k))
+                    }
+                    Some(kept) => {
+                        second = second.max(hi);
+                        Some(kept)
+                    }
+                    None => Some((hi, k)),
+                };
+            }
+            false
+        })
     }
 
     /// The chords of `polylines`, with each crossing filed against the chord
@@ -2177,7 +2246,8 @@ mod curved {
         Ok((chords, cuts))
     }
 
-    /// Whether a piece runs along one in-plane edge: both its ends lie
+    /// Where a piece runs along one in-plane edge (its index and the stretch
+    /// covered, split in two across a closed edge's seam): both its ends lie
     /// within `band` of the same edge, at most twice the piece's length
     /// (plus the band's slack) apart along it, the short way round a closed
     /// edge. Ends on two different edges span the gap between them, and
@@ -2185,25 +2255,31 @@ mod curved {
     /// it leaves; a piece narrower than a chord would otherwise keep
     /// either. Shared vertices are crossings, so a piece never straddles
     /// two edges that meet.
-    fn along_one_edge(in_plane: &[InPlaneEdge], band: f64, p: Point3, q: Point3) -> bool {
+    fn along_one_edge(
+        in_plane: &[InPlaneEdge],
+        band: f64,
+        p: Point3,
+        q: Point3,
+    ) -> Option<(usize, [(f64, f64); 2])> {
         // An arc is at most twice its chord while it turns under 3.79 rad;
         // a carrier piece turns far less.
         let reach = 2.0_f64.mul_add((q - p).length(), 2.0 * band);
-        in_plane.iter().any(|edge| {
+        for (index, edge) in in_plane.iter().enumerate() {
             let (at_p, at_q) = (edge.positions(band, p), edge.positions(band, q));
             let length = edge.length();
-            at_p.iter().any(|&s| {
-                at_q.iter().any(|&r| {
-                    let apart = (r - s).abs();
-                    let apart = if edge.closed {
-                        apart.min(length - apart)
-                    } else {
-                        apart
-                    };
-                    apart <= reach
-                })
-            })
-        })
+            for &s in &at_p {
+                for &r in &at_q {
+                    let (lo, hi) = (s.min(r), s.max(r));
+                    if hi - lo <= reach {
+                        return Some((index, [(lo, hi), (lo, lo)]));
+                    }
+                    if edge.closed && length - (hi - lo) <= reach {
+                        return Some((index, [(hi, length), (0.0, lo)]));
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn segment_distance(p: Point3, a: Point3, b: Point3) -> f64 {
@@ -2664,15 +2740,13 @@ mod curved {
                 super::InPlaneEdge::new(vec![x(1.03), x(2.0)], 1e-7),
             ];
             let band = 1e-5;
-            assert!(!super::along_one_edge(&in_plane, band, x(1.0), x(1.03)));
-            assert!(super::along_one_edge(&in_plane, band, x(0.2), x(0.9)));
-            assert!(super::along_one_edge(&in_plane, band, x(1.1), x(2.0)));
-            assert!(!super::along_one_edge(
-                &in_plane,
-                band,
-                x(0.5),
-                Point3::new(0.6, 0.1, 0.0)
-            ));
+            assert!(super::along_one_edge(&in_plane, band, x(1.0), x(1.03)).is_none());
+            assert!(super::along_one_edge(&in_plane, band, x(0.2), x(0.9)).is_some());
+            assert!(super::along_one_edge(&in_plane, band, x(1.1), x(2.0)).is_some());
+            assert!(
+                super::along_one_edge(&in_plane, band, x(0.5), Point3::new(0.6, 0.1, 0.0))
+                    .is_none()
+            );
         }
 
         /// An in-plane arc of the unit circle leaving a 0.01 rad gap at angle
@@ -2690,15 +2764,10 @@ mod curved {
             };
             let band = 1e-5;
             let open = [super::InPlaneEdge::new(arc(0.005, TAU - 0.005), 1e-7)];
-            assert!(!super::along_one_edge(
-                &open,
-                band,
-                at(TAU - 0.005),
-                at(0.005)
-            ));
-            assert!(super::along_one_edge(&open, band, at(1.0), at(1.05)));
+            assert!(super::along_one_edge(&open, band, at(TAU - 0.005), at(0.005)).is_none());
+            assert!(super::along_one_edge(&open, band, at(1.0), at(1.05)).is_some());
             let rim = [super::InPlaneEdge::new(arc(0.0, TAU), 1e-7)];
-            assert!(super::along_one_edge(&rim, band, at(-0.02), at(0.02)));
+            assert!(super::along_one_edge(&rim, band, at(-0.02), at(0.02)).is_some());
         }
 
         /// Without partial curved edges the trim polygon is `wire_polygon`'s,
@@ -2771,6 +2840,75 @@ mod curved {
                     );
                 }
             }
+        }
+
+        /// A seamless torus band (R = 3, r = 1e-5, between its rims at
+        /// v = ±π/3) cut 1e-6 below its top rim: the rim lies in the plane
+        /// to the in-plane tolerance (100 × `tol.linear`) but no trim vertex
+        /// is within `tol.linear` of it, so there are no crossings to cut
+        /// at. Both carrier loops (ρ = 3 ± 6.4e-6) run within the rim's
+        /// band; the inner one is no part of the face, but its pieces would
+        /// be kept as boundary unclassified. Two loops claiming one rim
+        /// cannot be told apart, so the clip is refused.
+        #[test]
+        fn two_carrier_loops_within_one_rim_band_are_refused() {
+            let (major, r, delta) = (3.0, 1e-5, 1e-6);
+            let h = (PI / 3.0).sin() * r;
+            let mut topo = Topology::new();
+            let rim = |topo: &mut Topology, z: f64| {
+                let start = Point3::new(major + 0.5 * r, 0.0, z);
+                let v = topo.add_vertex(Vertex::new(start, 1e-7));
+                let circle = Circle3D::new_with_ref(
+                    Point3::new(0.0, 0.0, z),
+                    Vec3::new(0.0, 0.0, 1.0),
+                    major + 0.5 * r,
+                    Vec3::new(1.0, 0.0, 0.0),
+                )
+                .unwrap();
+                let edge = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+                topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap())
+            };
+            let (top, bottom) = (rim(&mut topo, h), rim(&mut topo, -h));
+            let torus =
+                remus_math::surfaces::ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), major, r)
+                    .unwrap();
+            let face = topo.add_face(Face::new(top, vec![bottom], FaceSurface::Torus(torus)));
+
+            let z = h - delta;
+            let half = (r * r - z * z).sqrt();
+            let circle = |rho: f64| -> Vec<Point3> {
+                (0..=8192)
+                    .map(|k| {
+                        let u = TAU * f64::from(k) / 8192.0;
+                        Point3::new(rho * u.cos(), rho * u.sin(), z)
+                    })
+                    .collect()
+            };
+            let clip = |polylines: &[Vec<Point3>]| {
+                let mut segments = Vec::new();
+                append_clipped(
+                    &topo,
+                    face,
+                    polylines,
+                    Vec3::new(0.0, 0.0, 1.0),
+                    z,
+                    Tolerance::new(),
+                    &mut segments,
+                )
+                .map(|()| segments)
+            };
+            // Either loop alone runs along the rim.
+            assert!(!clip(&[circle(major + half)]).unwrap().is_empty());
+            assert!(matches!(
+                clip(&[circle(major + half), circle(major - half)]),
+                Err(crate::OperationsError::Unsupported { .. })
+            ));
+            // One loop split into two components abuts itself and is kept.
+            let whole = circle(major + half);
+            let (first, second) = whole.split_at(4096);
+            let mut second = second.to_vec();
+            second.insert(0, first[first.len() - 1]);
+            assert!(clip(&[first.to_vec(), second]).is_ok());
         }
 
         /// At R = 1e6 a band of `1e-6` of the rim's length (≈ 4.7) swallowed
