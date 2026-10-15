@@ -512,6 +512,35 @@ mod tests {
     }
 
     #[test]
+    fn boundary_reversal_refuses_a_wire_shared_outside_the_set() {
+        let mut topo = Topology::new();
+        let (face, wire) = triangle_face(&mut topo);
+        let sharer = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let before = loop_uses(&topo, face);
+        let wire_before = wire_uses(&topo, wire);
+
+        assert!(matches!(
+            topo.reverse_face_boundaries(&[face]),
+            Err(TopologyError::NonManifold { .. })
+        ));
+        assert_eq!(loop_uses(&topo, face), before);
+        assert_eq!(wire_uses(&topo, wire), wire_before);
+        validate_face_loops(&topo, sharer).unwrap();
+
+        // Reversing every owner together keeps both faces consistent.
+        topo.reverse_face_boundaries(&[face, sharer]).unwrap();
+        validate_face_loops(&topo, face).unwrap();
+        validate_face_loops(&topo, sharer).unwrap();
+    }
+
+    #[test]
     fn boundary_reversal_refuses_a_stale_face_before_writing() {
         let mut topo = Topology::new();
         let (face, wire) = triangle_face(&mut topo);

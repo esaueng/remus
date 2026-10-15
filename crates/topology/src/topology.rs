@@ -1595,9 +1595,10 @@ impl Topology {
     /// use's direction, so callers that need one re-derive it.
     ///
     /// Both uses of an edge shared by two of `faces` flip together, so they
-    /// stay opposite and `reversed` flags need no change. A wire must not be
-    /// shared with a face outside `faces`: that face's loops would no longer
-    /// match its wire. Cost is linear in the size of the boundaries.
+    /// stay opposite and `reversed` flags need no change. A wire shared with
+    /// a face outside `faces` is refused: that face's loops would no longer
+    /// match its wire. Cost is linear in the size of the boundaries plus one
+    /// pass over the live faces for that ownership check.
     ///
     /// Composes with [`transaction::run_transacted`](crate::transaction::run_transacted):
     /// every write is recorded before it lands.
@@ -1605,8 +1606,10 @@ impl Topology {
     /// # Errors
     ///
     /// Returns a not-found error for a stale face, wire, loop, coedge or
-    /// edge, or [`TopologyError::LoopWireMismatch`] when a face's loops
-    /// disagree with its wires. Nothing changes on these errors.
+    /// edge, [`TopologyError::LoopWireMismatch`] when a face's loops
+    /// disagree with its wires, or [`TopologyError::NonManifold`] when a
+    /// wire is also a boundary of a face outside `faces`. Nothing changes on
+    /// these errors.
     pub fn reverse_face_boundaries(&mut self, faces: &[FaceId]) -> Result<(), TopologyError> {
         let mut seen_faces = HashSet::with_capacity(faces.len());
         let mut targets = Vec::with_capacity(faces.len());
@@ -1631,6 +1634,22 @@ impl Topology {
                 crate::validation::validate_face_loops(self, face_id)?;
             }
             targets.push(face_id);
+        }
+        for (face_id, face) in self.faces.iter() {
+            if seen_faces.contains(&face_id) {
+                continue;
+            }
+            if let Some(shared) = std::iter::once(face.outer_wire())
+                .chain(face.inner_wires().iter().copied())
+                .find(|wire_id| seen_wires.contains(wire_id))
+            {
+                return Err(TopologyError::NonManifold {
+                    reason: format!(
+                        "cannot reverse wire {shared:?}: it also bounds face {face_id:?}, \
+                         which is not being reversed"
+                    ),
+                });
+            }
         }
 
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
