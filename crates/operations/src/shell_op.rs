@@ -370,6 +370,7 @@ fn shell_with_evolution_impl(
             reason: format!("shell thickness must be positive, got {thickness}"),
         });
     }
+    crate::refuse_cavity_shells(topo, solid, "shell")?;
 
     let solid_data = topo.solid(solid)?;
     let shell_data = topo.shell(solid_data.outer_shell())?;
