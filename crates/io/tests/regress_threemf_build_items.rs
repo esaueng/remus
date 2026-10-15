@@ -302,20 +302,25 @@ fn extension_elements_are_not_core_build_instructions() {
 }
 
 /// Placement attributes are read after XML normalization: a character
-/// reference in `objectid` or `transform` names the same value.
+/// reference in `objectid` or `transform` names the same value, and so does
+/// an `objectid` with surrounding whitespace (collapsed by its XSD type).
 #[test]
 fn placement_attributes_resolve_character_references() {
     let data = model(
         "millimeter",
         &[cube_object(1)],
-        Some(&[r#"<item objectid="&#49;" transform="1 0 0 0 1 0 0 0 1 0 0 &#x33;"/>"#.to_string()]),
+        Some(&[
+            r#"<item objectid="&#49;" transform="1 0 0 0 1 0 0 0 1 0 0 &#x33;"/>"#.to_string(),
+            "<item objectid=\" 1\t\" transform=\" 1 0 0 0 1 0 0 0 1 0 0 0 \"/>".to_string(),
+        ]),
     );
     let meshes = read_threemf(&data).unwrap();
-    assert_eq!(meshes.len(), 1);
+    assert_eq!(meshes.len(), 2);
     assert_positions(
         &meshes[0].positions,
         &cube_corners(|p| Point3::new(p.x(), p.y(), p.z() + 3.0)),
     );
+    assert_positions(&meshes[1].positions, &cube_corners(|p| p));
 }
 
 fn parse_error(data: &[u8]) -> String {
