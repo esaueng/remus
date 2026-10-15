@@ -1310,8 +1310,11 @@ pub fn sweep_with_options(
 ) -> Result<SolidId, crate::OperationsError> {
     // Every branch below, including the corner and closed-path builders that
     // never evaluate the law, refuses a law that is non-finite or non-positive
-    // on its domain, before the profile is touched. The scales each branch
-    // actually builds with are checked again, inside the transaction.
+    // at the probe parameters k/64, before the profile is touched. The probe
+    // is a consistent refusal, not a certificate (no sampling certifies a
+    // closure): the scales a branch actually builds with are checked again,
+    // inside the transaction, and a branch that never evaluates the law
+    // cannot build with a non-finite scale.
     if let Some(law) = options.scale_law.as_ref() {
         #[allow(clippy::cast_precision_loss)]
         let sampled: Vec<f64> = (0..=SCALE_LAW_PROBES)
