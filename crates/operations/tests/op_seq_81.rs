@@ -497,7 +497,7 @@ fn excluded_cell(kind: BooleanOp, a: &GenLive, b: &GenLive) -> Option<&'static s
     }
     // X10, pair-level: ANY boolean on a cone–cone pair. Every operator runs
     // the fuse as a complementary leg, and the fuse of two placed frustums
-    // is the X10 defect (F17). Until B89 a mirrored cone operand was itself
+    // is the X10 defect (F17). Until B122 a mirrored cone operand was itself
     // misoriented and the leg refused, which hid this from the campaign.
     if a.kind == GenKind::Cone && b.kind == GenKind::Cone {
         return Some("X10");
@@ -6281,7 +6281,7 @@ fn finding_cylinder_offset_open_mesh() {
 /// so all six box faces wound against their surfaces. The winding check
 /// only warns and the harness topology gate counts errors, which is why the
 /// operand passed standalone. Orientation-reversing transforms now reverse
-/// every boundary traversal (B89). F11 does not share this root: its fuse
+/// every boundary traversal (B122). F11 does not share this root: its fuse
 /// fails on the apex-down pointed cone, not on its mirrored cylinder. Owns
 /// exclusion cell X13 (intersect/cut consuming a mirrored box); mirrored
 /// non-box operands and fuses stay in generation.
@@ -6316,7 +6316,7 @@ fn finding_mirrored_box_intersect_orientation() {
 /// with inconsistent face orientations. Surfaced by the bounded campaign
 /// (seed `9220677054601863815`) as the complementary fuse leg of an exact
 /// intersect of the cone with its mirror across x = 3.5 — geometrically
-/// this same translated copy, since the cone is axisymmetric. Before B89 the
+/// this same translated copy, since the cone is axisymmetric. Before B122 the
 /// mirrored cone was misoriented and the leg refused, masking the defect;
 /// the translated twin reproduces it on `main` without any mirror. X10
 /// family (fuse consuming a cone); widens X10 to every operator on a
