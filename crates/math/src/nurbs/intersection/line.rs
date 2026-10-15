@@ -232,6 +232,7 @@ pub fn intersect_line_nurbs_with_grid(
             (u_guess, v_guess),
             seed_point,
             domain,
+            GRID_CONVERGENCE,
             GRID_ROOT_TOLERANCE,
             &mut workspace,
         ) {
@@ -252,7 +253,8 @@ pub fn intersect_line_nurbs_with_grid(
     Ok(results)
 }
 
-/// Final-check residual of a grid-seeded refinement.
+/// Convergence target and final-check residual of a grid-seeded refinement.
+const GRID_CONVERGENCE: f64 = 1e-10;
 const GRID_ROOT_TOLERANCE: f64 = 1e-5;
 
 #[derive(Clone, Copy)]
@@ -426,16 +428,20 @@ const fn budget_end_index(first: usize, updates: usize) -> usize {
 /// then sees exactly the `(u, v)` exhausting the budget would have left.
 ///
 /// Iterates stay within `bounds` (`[u_min, u_max, v_min, v_max]`). Iteration
-/// stops once the distance to the line is below `1e-10`, or below
-/// `final_tolerance` when that is tighter; a point that has not converged
-/// within the budget is accepted when its distance is below
-/// `final_tolerance`.
+/// stops once the distance to the line is below the smallest of `1e-10`,
+/// `converge` and `final_tolerance`; a point that has not converged within
+/// the budget is accepted when its distance is below `final_tolerance`. The
+/// completion pass converges to its strict perpendicular bound while keeping
+/// a looser final check, which far from the origin must admit rounding
+/// along the line.
+#[allow(clippy::too_many_arguments)]
 fn refine_line_surface_point(
     surface: &NurbsSurface,
     line: LineQuery,
     guess: (f64, f64),
     seed_point: Point3,
     bounds: [f64; 4],
+    converge: f64,
     final_tolerance: f64,
     workspace: &mut NewtonWorkspace,
 ) -> Option<IntersectionPoint> {
@@ -447,9 +453,9 @@ fn refine_line_surface_point(
     let (mut u, mut v) = guess;
     workspace.seed_point(u, v, seed_point);
     let [u_min, u_max, v_min, v_max] = bounds;
-    // The grid pass's 1e-5 leaves this at 1e-10; a tighter final tolerance
-    // must not be bypassed by an early exit.
-    let converged = final_tolerance.min(1e-10);
+    // The grid pass leaves this at 1e-10; a tighter target must not be
+    // bypassed by an early exit.
+    let converged = converge.min(final_tolerance).min(1e-10);
     // `visited[k]`: the `(u, v)` bits after `k` updates.
     let mut visited = [(0_u64, 0_u64); MAX_NEWTON_ITER + 1];
     visited[0] = (u.to_bits(), v.to_bits());
@@ -1005,6 +1011,7 @@ mod tests {
                 guess,
                 seed,
                 [u0, u1, v0, v1],
+                GRID_CONVERGENCE,
                 GRID_ROOT_TOLERANCE,
                 workspace,
             )
@@ -1186,6 +1193,7 @@ mod tests {
                 guess,
                 seed,
                 [0.0, 1.0, 0.0, 1.0],
+                GRID_CONVERGENCE,
                 tolerance,
                 &mut NewtonWorkspace::default(),
             )

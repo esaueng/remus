@@ -27,9 +27,10 @@
 //!    the nets, puts every root outside the box.
 //!
 //! Each surviving box runs the shared Newton refinement clamped to the box
-//! (with a margin), so it cannot slide off to a different root, and accepts
-//! only a residual below the round-off floor of the coordinates involved
-//! (`256 ε` times their magnitude, the line origin rebased next to the
+//! (with a margin), so it cannot slide off to a different root. It accepts
+//! a root only when both plane distances from the line are within the
+//! rounding the arithmetic producing them can commit ([`ROUNDOFF`] per axis,
+//! weighted by each plane normal, the line origin rebased next to the
 //! surface): a root this pass reports is a genuine crossing, never the grid
 //! pass's looser `1e-5` near-miss, whatever the surface's size, shape or
 //! position. A box proven to
@@ -67,13 +68,15 @@ const AFFINE_FRACTION: f64 = 0.05;
 /// Parameter margin around a leaf box for its clamped Newton, as a fraction
 /// of the box extent per side.
 const LEAF_MARGIN: f64 = 0.25;
-/// Acceptance residual of a completion root, and the slab-test padding, per
-/// unit of coordinate magnitude (the larger of the surface's control points
-/// and the rebased line origin): what rounding cannot resolve at those
-/// coordinates, with margin for high-degree and rational evaluation. No
-/// geometric term: a tolerance scaled by the surface's size accepts real
-/// misses on a large or elongated surface, and translating the geometry
-/// changes only the magnitude.
+/// Round-off allowance per unit of coordinate magnitude, taken per axis (the
+/// larger of the surface's control points and the rebased line origin along
+/// that axis), with margin for high-degree and rational evaluation. It sets
+/// the slab-test padding per axis, and the sign-test slack and acceptance
+/// bound of each plane distance `n · (P - O)` as `Σ |n_i| · allowance_i`: an
+/// axis the plane normal does not use cannot round its distance. No geometric
+/// term: a tolerance scaled by the surface's size accepts real misses on a
+/// large or elongated surface, and a large coordinate along the line does
+/// not loosen the perpendicular test.
 const ROUNDOFF: f64 = 256.0 * f64::EPSILON;
 
 /// Knot spans per direction in one leaf block of the span tree. A leaf
@@ -94,8 +97,8 @@ pub(super) struct SpanHull {
     v_spans: Vec<usize>,
     /// Control-point boxes of the implicit block-range tree, in preorder.
     boxes: Vec<Aabb3>,
-    /// Largest absolute control-point coordinate.
-    magnitude: f64,
+    /// Largest absolute control-point coordinate, per axis.
+    axis_magnitude: [f64; 3],
     /// Control-point grid size, with the degrees the layout the spans index.
     rows: usize,
     cols: usize,
@@ -115,7 +118,7 @@ impl SpanHull {
             u_spans,
             v_spans,
             boxes: Vec::new(),
-            magnitude: 0.0,
+            axis_magnitude: [0.0; 3],
             rows: cps.len(),
             cols: cps.first().map_or(0, Vec::len),
         };
@@ -123,10 +126,9 @@ impl SpanHull {
         if root.leaves() > 0 {
             hull.boxes.reserve(2 * root.leaves() - 1);
             let bounds = hull.build_box(surface, root);
-            hull.magnitude = [bounds.min, bounds.max]
-                .iter()
-                .flat_map(|corner| corner.0)
-                .fold(0.0_f64, |acc, c| acc.max(c.abs()));
+            for axis in 0..3 {
+                hull.axis_magnitude[axis] = bounds.min.0[axis].abs().max(bounds.max.0[axis].abs());
+            }
         }
         hull
     }
@@ -285,16 +287,17 @@ fn extraction_operator(knots: &[f64], p: usize, k: usize, d: &mut Vec<f64>, out:
     }
 }
 
-/// Whether the infinite line meets `bounds` padded by `pad` (slab method).
-fn line_meets_box(origin: Point3, dir: Vec3, dir_len: f64, bounds: Aabb3, pad: f64) -> bool {
+/// Whether the infinite line meets `bounds` padded by `pad` per axis (slab
+/// method).
+fn line_meets_box(origin: Point3, dir: Vec3, dir_len: f64, bounds: Aabb3, pad: [f64; 3]) -> bool {
     let (mut t_lo, mut t_hi) = (f64::NEG_INFINITY, f64::INFINITY);
     for axis in 0..3 {
         let o = origin.0[axis];
         let d = dir.0[axis];
-        let lo = bounds.min.0[axis] - pad;
-        let hi = bounds.max.0[axis] + pad;
+        let lo = bounds.min.0[axis] - pad[axis];
+        let hi = bounds.max.0[axis] + pad[axis];
         // Parallel within rounding: the line's coordinate moves by at most
-        // `eps · extent` across the box, far below `pad`.
+        // `eps · extent` across the box, far below the padding.
         if d.abs() <= f64::EPSILON * dir_len {
             if o < lo || o > hi {
                 return false;
@@ -509,15 +512,18 @@ struct Completion<'a> {
     line: LineQuery,
     n1: Vec3,
     n2: Vec3,
-    pad: f64,
-    /// Rounding allowance of the homogeneous control values.
-    slack: f64,
+    pad: [f64; 3],
+    /// Rounding allowance of the homogeneous `f` and `g` control values.
+    slack_f: f64,
+    slack_g: f64,
     /// Weights enter divided by this (the largest weight): a common weight
     /// factor leaves the surface unchanged and must not overflow the
     /// products. Divided, not multiplied by a reciprocal, which overflows for
     /// a subnormal common factor.
     max_weight: f64,
+    /// Newton's own (3D) acceptance; [`Perpendicular`] then decides.
     tolerance: f64,
+    perpendicular: Perpendicular,
     nodes: usize,
     refinements: usize,
     scratch: Scratch,
@@ -573,13 +579,10 @@ pub(super) fn complete_line_roots(
         ..line
     };
     let dir_len = line.dir_len_sq.sqrt();
-    let magnitude = line
-        .origin
-        .0
-        .iter()
-        .fold(hull.magnitude, |acc, c| acc.max(c.abs()));
-    let roundoff = ROUNDOFF * magnitude;
-    let pad = roundoff;
+    let mut pad = [0.0; 3];
+    for axis in 0..3 {
+        pad[axis] = ROUNDOFF * hull.axis_magnitude[axis].max(line.origin.0[axis].abs());
+    }
     if !line_meets_box(line.origin, line.direction, dir_len, hull.boxes[0], pad) {
         return;
     }
@@ -596,6 +599,8 @@ pub(super) fn complete_line_roots(
     let n1 = unit.cross(axis);
     let n1 = n1 * (1.0 / n1.length());
     let n2 = unit.cross(n1);
+    let plane_slack = |n: Vec3| (0..3).map(|axis| n.0[axis].abs() * pad[axis]).sum::<f64>();
+    let (slack_f, slack_g) = (plane_slack(n1), plane_slack(n2));
 
     let mut pass = Completion {
         surface,
@@ -606,9 +611,19 @@ pub(super) fn complete_line_roots(
         pad,
         // Weights enter divided by the largest, so the homogeneous values are
         // bounded by the plane distances.
-        slack: pad,
+        slack_f,
+        slack_g,
         max_weight: surface.max_weight(),
-        tolerance: roundoff,
+        // Along the line a large coordinate legitimately rounds Newton's 3D
+        // residual; the perpendicular test below is the strict one.
+        tolerance: pad.iter().map(|a| a * a).sum::<f64>().sqrt(),
+        perpendicular: Perpendicular {
+            origin: line.origin,
+            n1,
+            n2,
+            slack_f,
+            slack_g,
+        },
         nodes: 0,
         refinements: 0,
         scratch: Scratch::default(),
@@ -671,7 +686,7 @@ impl Completion<'_> {
         results: &mut Vec<IntersectionPoint>,
     ) -> bool {
         let hull = self.hull;
-        let slack = self.slack;
+        let (slack_f, slack_g) = (self.slack_f, self.slack_g);
         let (us, vs) = hull.block_spans(bu, bv);
         let (rows, cols) = hull.control_window(&us, &vs);
         let cps = self.surface.control_points();
@@ -688,7 +703,7 @@ impl Completion<'_> {
                 scratch.window_g.push(w * self.n2.dot(rel));
             }
         }
-        if one_signed(&scratch.window_f, slack) || one_signed(&scratch.window_g, slack) {
+        if one_signed(&scratch.window_f, slack_f) || one_signed(&scratch.window_g, slack_g) {
             return true;
         }
         for ui in us {
@@ -710,7 +725,7 @@ impl Completion<'_> {
                         .g
                         .extend_from_slice(&scratch.window_g[at..=at + hull.degree_v]);
                 }
-                if one_signed(&scratch.f, slack) || one_signed(&scratch.g, slack) {
+                if one_signed(&scratch.f, slack_f) || one_signed(&scratch.g, slack_g) {
                     continue;
                 }
                 if !self.span(ui, vi, workspace, results) {
@@ -811,7 +826,7 @@ impl Completion<'_> {
             fg.copy_from_slice(&nets[node.offset..node.offset + 2 * len]);
             nets.truncate(node.offset);
             let (fnet, gnet) = fg.split_at(len);
-            if one_signed(fnet, self.slack) || one_signed(gnet, self.slack) {
+            if one_signed(fnet, self.slack_f) || one_signed(gnet, self.slack_g) {
                 continue;
             }
             let (f_fit, g_fit) = (affine_fit(fnet, p, q), affine_fit(gnet, p, q));
@@ -824,10 +839,20 @@ impl Completion<'_> {
                 && at_most_one_root(fnet, gnet, p, q);
             if unique || at_depth_limit {
                 let (surface, line, tolerance) = (self.surface, self.line, self.tolerance);
+                let perpendicular = &self.perpendicular;
                 if self.refinements >= MAX_LEAF_REFINEMENTS {
                     return false;
                 }
-                if refine_box(surface, line, tolerance, node, unique, workspace, results) {
+                if refine_box(
+                    surface,
+                    line,
+                    tolerance,
+                    perpendicular,
+                    node,
+                    unique,
+                    workspace,
+                    results,
+                ) {
                     self.refinements += 1;
                 }
                 continue;
@@ -876,13 +901,32 @@ impl Completion<'_> {
     }
 }
 
+/// The strict acceptance of a completion root: both plane distances of the
+/// point from the line within their own rounding allowance.
+struct Perpendicular {
+    origin: Point3,
+    n1: Vec3,
+    n2: Vec3,
+    slack_f: f64,
+    slack_g: f64,
+}
+
+impl Perpendicular {
+    fn accepts(&self, point: Point3) -> bool {
+        let rel = point - self.origin;
+        self.n1.dot(rel).abs() <= self.slack_f && self.n2.dot(rel).abs() <= self.slack_g
+    }
+}
+
 /// Newton from the box centre, clamped to the box plus a margin; appends a
 /// new root. Returns whether a refinement ran: a box proven to hold at most
 /// one root (`unique`) that already holds a reported one is skipped.
+#[allow(clippy::too_many_arguments)]
 fn refine_box(
     surface: &NurbsSurface,
     line: LineQuery,
     tolerance: f64,
+    perpendicular: &Perpendicular,
     node: BezierBox,
     unique: bool,
     workspace: &mut NewtonWorkspace,
@@ -909,8 +953,16 @@ fn refine_box(
     let u = 0.5 * (node.u.0 + node.u.1);
     let v = 0.5 * (node.v.0 + node.v.1);
     let seed = workspace.point(surface, u, v);
-    if let Some(hit) =
-        refine_line_surface_point(surface, line, (u, v), seed, bounds, tolerance, workspace)
+    if let Some(hit) = refine_line_surface_point(
+        surface,
+        line,
+        (u, v),
+        seed,
+        bounds,
+        perpendicular.slack_f.min(perpendicular.slack_g),
+        tolerance,
+        workspace,
+    ) && perpendicular.accepts(hit.point)
     {
         let duplicate = results
             .iter()
@@ -1045,13 +1097,13 @@ mod tests {
         };
         let o = Point3::new(-1.0, 0.5, 0.5);
         let hit = Vec3::new(1.0, 0.0, 0.0);
-        assert!(line_meets_box(o, hit, 1.0, bounds, 0.0));
+        assert!(line_meets_box(o, hit, 1.0, bounds, [0.0; 3]));
         // Behind the origin still counts: this is a line, not a ray.
-        assert!(line_meets_box(o, hit * -1.0, 1.0, bounds, 0.0));
+        assert!(line_meets_box(o, hit * -1.0, 1.0, bounds, [0.0; 3]));
         let miss = Vec3::new(1.0, 2.0, 0.0);
-        assert!(!line_meets_box(o, miss, miss.length(), bounds, 0.0));
+        assert!(!line_meets_box(o, miss, miss.length(), bounds, [0.0; 3]));
         let above = Point3::new(-1.0, 0.5, 1.0 + 1e-12);
-        assert!(!line_meets_box(above, hit, 1.0, bounds, 0.0));
-        assert!(line_meets_box(above, hit, 1.0, bounds, 1e-9));
+        assert!(!line_meets_box(above, hit, 1.0, bounds, [0.0; 3]));
+        assert!(line_meets_box(above, hit, 1.0, bounds, [1e-9; 3]));
     }
 }
