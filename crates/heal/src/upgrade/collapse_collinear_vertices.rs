@@ -146,9 +146,6 @@ fn collapse_pass(
     // sharing one is an adjacent collinear vertex; it waits for the next
     // pass, when its neighbour's merged edge has replaced the shared one.
     let mut claimed: BTreeSet<EdgeId> = BTreeSet::new();
-    // Merged edges created this pass, so two plans spanning the same
-    // `P, Q` share one `EdgeId`.
-    let mut created: BTreeMap<(VertexId, VertexId), EdgeId> = BTreeMap::new();
     for (&vertex, incident) in &vertex_edges {
         if incident.len() != 2 {
             continue;
@@ -281,26 +278,32 @@ fn collapse_pass(
             continue;
         }
 
-        // Find-or-create the merged edge so the two faces keep
-        // referencing the same `EdgeId` after the collapse. For the
-        // asymmetric (size-1) case, *require* an existing direct edge
-        // on a face the V-bearing face isn't using — otherwise we'd be
-        // either creating an orphan edge (no benefit) or unifying a
-        // face with itself.
+        // Find-or-create the merged edge. The symmetric (size-2) case gets
+        // an edge of its own, which both faces then share; an existing
+        // `P → Q` edge already bounds another face, so reusing it would
+        // put the edge on a third. The asymmetric (size-1) case *requires*
+        // an existing direct edge on a face the V-bearing face isn't
+        // using — otherwise we'd be either creating an orphan edge (no
+        // benefit) or unifying a face with itself — and reuses it only
+        // while it stays on two faces.
         let existing = find_line_edge(topo, &edges_in_solid, p_vid, q_vid);
-        let new_edge = match (existing, faces_e1.len()) {
-            (Some(eid), _) => {
-                // Check the existing edge is on a face NOT in faces_e1.
+        let reuse = match existing {
+            Some(eid) => {
                 let neighbour_faces = edge_to_faces.get(&eid).cloned().unwrap_or_default();
                 if neighbour_faces.is_subset(&faces_e1) {
                     // No genuine "other side" to re-unify onto.
                     continue;
                 }
-                eid
+                let shared = neighbour_faces.union(&faces_e1).count() <= 2;
+                // An edge another plan this pass removes or reuses waits
+                // for the next pass.
+                (shared && !claimed.contains(&eid)).then_some(eid)
             }
-            (None, 2) => *created
-                .entry((p_vid.min(q_vid), p_vid.max(q_vid)))
-                .or_insert_with(|| topo.add_edge(Edge::new(p_vid, q_vid, EdgeCurve::Line))),
+            None => None,
+        };
+        let new_edge = match (reuse, faces_e1.len()) {
+            (Some(eid), _) => eid,
+            (None, 2) => topo.add_edge(Edge::new(p_vid, q_vid, EdgeCurve::Line)),
             (None, _) => continue,
         };
         if new_edge == eid1 || new_edge == eid2 {
@@ -308,6 +311,9 @@ fn collapse_pass(
         }
         claimed.insert(eid1);
         claimed.insert(eid2);
+        if reuse.is_some() {
+            claimed.insert(new_edge);
+        }
         absorbed.entry(new_edge).or_default().extend(witnesses);
         plans.push(CollapsePlan {
             vertex,
@@ -804,6 +810,146 @@ mod tests {
             ],
             [a.min(b), a.max(b)]
         );
+    }
+
+    /// The most faces of `faces` that use any one edge.
+    fn max_face_uses(topo: &Topology, faces: &[FaceId]) -> usize {
+        let mut uses: BTreeMap<EdgeId, usize> = BTreeMap::new();
+        for &fid in faces {
+            let wire = topo.wire(topo.face(fid).unwrap().outer_wire()).unwrap();
+            for oe in wire.edges() {
+                *uses.entry(oe.edge()).or_default() += 1;
+            }
+        }
+        uses.values().copied().max().unwrap_or(0)
+    }
+
+    /// A planar face bounded by `edges` (edge, forward) on the plane
+    /// through the origin with normal `normal`.
+    fn plane_face(topo: &mut Topology, edges: &[(EdgeId, bool)], normal: Vec3) -> FaceId {
+        let oes = edges
+            .iter()
+            .map(|&(e, f)| OrientedEdge::new(e, f))
+            .collect();
+        let wire = topo.add_wire(Wire::new(oes, true).unwrap());
+        topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane { normal, d: 0.0 },
+        ))
+    }
+
+    #[test]
+    fn edge_disjoint_chords_between_the_same_ends_keep_separate_edges() {
+        // P-V1-Q bounds f1, f2 (z = 0) and P-V2-Q bounds f3, f4 (y = 0).
+        // Both chords collapse in one pass; sharing one P-Q edge between
+        // them would put it on four faces.
+        let mut topo = Topology::new();
+        let p = vertex(&mut topo, Point3::new(0.0, 0.0, 0.0));
+        let v1 = vertex(&mut topo, Point3::new(1.0, 0.0, 0.0));
+        let v2 = vertex(&mut topo, Point3::new(2.0, 0.0, 0.0));
+        let q = vertex(&mut topo, Point3::new(3.0, 0.0, 0.0));
+        let c = vertex(&mut topo, Point3::new(1.5, -1.0, 0.0));
+        let d = vertex(&mut topo, Point3::new(1.5, 1.0, 0.0));
+        let u = vertex(&mut topo, Point3::new(1.5, 0.0, 1.0));
+        let l = vertex(&mut topo, Point3::new(1.5, 0.0, -1.0));
+        let line = |topo: &mut Topology, a, b| topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+        let e_p1 = line(&mut topo, p, v1);
+        let e_1q = line(&mut topo, v1, q);
+        let e_p2 = line(&mut topo, p, v2);
+        let e_2q = line(&mut topo, v2, q);
+        let e_qd = line(&mut topo, q, d);
+        let e_dp = line(&mut topo, d, p);
+        let e_pc = line(&mut topo, p, c);
+        let e_cq = line(&mut topo, c, q);
+        let e_qu = line(&mut topo, q, u);
+        let e_up = line(&mut topo, u, p);
+        let e_pl = line(&mut topo, p, l);
+        let e_lq = line(&mut topo, l, q);
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let y = Vec3::new(0.0, 1.0, 0.0);
+        let faces = [
+            plane_face(
+                &mut topo,
+                &[(e_p1, true), (e_1q, true), (e_qd, true), (e_dp, true)],
+                z,
+            ),
+            plane_face(
+                &mut topo,
+                &[(e_1q, false), (e_p1, false), (e_pc, true), (e_cq, true)],
+                z,
+            ),
+            plane_face(
+                &mut topo,
+                &[(e_p2, true), (e_2q, true), (e_qu, true), (e_up, true)],
+                y,
+            ),
+            plane_face(
+                &mut topo,
+                &[(e_2q, false), (e_p2, false), (e_pl, true), (e_lq, true)],
+                y,
+            ),
+        ];
+        let solid = wrap_in_solid(&mut topo, faces.to_vec());
+
+        let collapsed =
+            collapse_collinear_wire_vertices(&mut topo, solid, Tolerance::new()).unwrap();
+
+        assert_eq!(collapsed, 2, "both chord vertices collapse");
+        assert_eq!(max_face_uses(&topo, &faces), 2, "no edge on a third face");
+        for pair in faces.chunks(2) {
+            let first = topo.wire(topo.face(pair[0]).unwrap().outer_wire()).unwrap();
+            let second = topo.wire(topo.face(pair[1]).unwrap().outer_wire()).unwrap();
+            assert_eq!(first.edges().len(), 3);
+            assert!(
+                second
+                    .edges()
+                    .iter()
+                    .any(|oe| oe.edge() == first.edges()[0].edge()),
+                "each pair shares its own P-Q edge"
+            );
+        }
+    }
+
+    #[test]
+    fn asymmetric_residue_never_moves_onto_an_edge_with_two_faces() {
+        // f carries P-V-Q alone; g and h already share a direct P-Q edge.
+        // Re-unifying f onto it would put that edge on three faces.
+        let mut topo = Topology::new();
+        let p = vertex(&mut topo, Point3::new(0.0, 0.0, 0.0));
+        let v = vertex(&mut topo, Point3::new(1.0, 0.0, 0.0));
+        let q = vertex(&mut topo, Point3::new(2.0, 0.0, 0.0));
+        let c = vertex(&mut topo, Point3::new(1.0, -1.0, 0.0));
+        let u = vertex(&mut topo, Point3::new(1.0, 0.0, 1.0));
+        let l = vertex(&mut topo, Point3::new(1.0, 0.0, -1.0));
+        let line = |topo: &mut Topology, a, b| topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+        let e_pv = line(&mut topo, p, v);
+        let e_vq = line(&mut topo, v, q);
+        let e_qc = line(&mut topo, q, c);
+        let e_cp = line(&mut topo, c, p);
+        let e_pq = line(&mut topo, p, q);
+        let e_qu = line(&mut topo, q, u);
+        let e_up = line(&mut topo, u, p);
+        let e_pl = line(&mut topo, p, l);
+        let e_lq = line(&mut topo, l, q);
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let y = Vec3::new(0.0, 1.0, 0.0);
+        let faces = [
+            plane_face(
+                &mut topo,
+                &[(e_pv, true), (e_vq, true), (e_qc, true), (e_cp, true)],
+                z,
+            ),
+            plane_face(&mut topo, &[(e_pq, true), (e_qu, true), (e_up, true)], y),
+            plane_face(&mut topo, &[(e_pq, false), (e_pl, true), (e_lq, true)], y),
+        ];
+        let solid = wrap_in_solid(&mut topo, faces.to_vec());
+
+        let collapsed =
+            collapse_collinear_wire_vertices(&mut topo, solid, Tolerance::new()).unwrap();
+
+        assert_eq!(collapsed, 0);
+        assert_eq!(max_face_uses(&topo, &faces), 2);
     }
 
     #[test]
