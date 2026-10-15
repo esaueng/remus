@@ -505,6 +505,59 @@ fn fusing_a_short_edge_leaves_a_sharing_solid_alone() {
     assert!((volume - 26.0).abs() < 1e-6, "{volume}");
 }
 
+/// A standalone wire (no face owns it) that reuses an edge at the fused
+/// corner keeps that edge: the fusion copies it for the healed solid.
+#[test]
+fn fusing_a_short_edge_leaves_a_standalone_wire_alone() {
+    let mut topo = Topology::new();
+    let outer = crate::primitives::make_box(&mut topo, 3.0, 3.0, 3.0).unwrap();
+    let void = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        void,
+        &remus_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+    )
+    .unwrap();
+    let solid =
+        crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, outer, void).unwrap();
+    let short = split_off_a_short_edge(&mut topo, solid, false);
+    let corner = topo.edge(short).unwrap().end();
+    let at_corner = remus_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .flat_map(|fid| {
+            topo.wire(topo.face(fid).unwrap().outer_wire())
+                .unwrap()
+                .edges()
+                .to_vec()
+        })
+        .map(|oe| oe.edge())
+        .find(|&eid| {
+            let e = topo.edge(eid).unwrap();
+            eid != short && (e.start() == corner || e.end() == corner)
+        })
+        .unwrap();
+    topo.add_wire(Wire::new(vec![OrientedEdge::new(at_corner, true)], false).unwrap());
+    let before = {
+        let e = topo.edge(at_corner).unwrap();
+        (e.start(), e.end())
+    };
+
+    assert_eq!(remove_degenerate_edges(&mut topo, solid, 1e-7).unwrap(), 2);
+    let e = topo.edge(at_corner).unwrap();
+    assert_eq!(
+        (e.start(), e.end()),
+        before,
+        "the standalone wire's edge moved"
+    );
+    assert_eq!(
+        crate::validate::validate_solid(&topo, solid)
+            .unwrap()
+            .error_count(),
+        0
+    );
+}
+
 #[test]
 fn merge_coincident_vertices_reaches_the_cavity() {
     let mut topo = Topology::new();
