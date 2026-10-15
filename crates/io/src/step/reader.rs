@@ -4280,11 +4280,18 @@ impl<'a> StepBuilder<'a> {
                 // already unit to roundoff keeps its bits, and a zero one is
                 // kept as written (see `build_axis2_placement`). Dividing by
                 // the largest component first keeps the squared length from
-                // overflowing or underflowing for ratios like `1E200`.
+                // overflowing or underflowing for ratios like `1E200`; dividing, not
+                // multiplying by the reciprocal, keeps subnormal ratios finite too.
                 let largest = normal.x().abs().max(normal.y().abs()).max(normal.z().abs());
                 let normal = if (normal.length() - 1.0).abs() > 4.0 * f64::EPSILON && largest > 0.0
                 {
-                    (normal * largest.recip()).normalize().unwrap_or(normal)
+                    Vec3::new(
+                        normal.x() / largest,
+                        normal.y() / largest,
+                        normal.z() / largest,
+                    )
+                    .normalize()
+                    .unwrap_or(normal)
                 } else {
                     normal
                 };
