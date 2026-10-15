@@ -377,11 +377,39 @@ fn sample_chords(topo: &Topology, id: EdgeId) -> Result<Vec<Segment>, CheckError
     let (t0, t1) = edge
         .strict_domain()
         .map_err(crate::error::edge_domain_validation)?;
+    // Closed trims use the projected topological seam, as the classifier's
+    // wire polygon does. A tolerated angular discrepancy changes every
+    // chord, including those far from either endpoint's tolerance ball.
+    let closed_domain = if edge.is_closed() {
+        match edge.curve() {
+            EdgeCurve::Circle(c) => Some((c.project(start), std::f64::consts::TAU, None)),
+            EdgeCurve::Ellipse(e) => Some((e.project(start), std::f64::consts::TAU, None)),
+            EdgeCurve::NurbsCurve(n) => {
+                let (a, b) = n.domain();
+                Some((
+                    crate::util::nurbs_seam_parameter(n, start, a, b),
+                    b - a,
+                    Some(a),
+                ))
+            }
+            EdgeCurve::Line | EdgeCurve::Parabola(_) | EdgeCurve::Hyperbola(_) => None,
+        }
+    } else {
+        None
+    };
     let mut chords = Vec::with_capacity(CURVE_SEGMENTS + 2);
     let mut previous = start;
     for i in 0..=CURVE_SEGMENTS {
         #[allow(clippy::cast_precision_loss)]
-        let t = (t1 - t0).mul_add(i as f64 / CURVE_SEGMENTS as f64, t0);
+        let fraction = i as f64 / CURVE_SEGMENTS as f64;
+        let t = closed_domain.map_or_else(
+            || (t1 - t0).mul_add(fraction, t0),
+            |(seam, span, wrap)| {
+                wrap.map_or(seam + span * fraction, |a| {
+                    a + (seam - a + span * fraction).rem_euclid(span)
+                })
+            },
+        );
         let point = edge.curve().evaluate_with_endpoints(t, start, end);
         if is_finite(previous) && is_finite(point) {
             chords.push((previous, point));
@@ -660,5 +688,60 @@ mod tests {
         // Within the tolerance ball, though off the vertex and its join.
         let ball = Point3::new(1.0 + 5e-8, 8e-8, 0.0);
         assert!(skeleton.grazed_by(&topo, o, ball - o).unwrap());
+    }
+    /// The stored trim starts at zero, while the tolerated seam projects
+    /// slightly later. Graze tests must use the classifier trim's chords.
+    #[test]
+    fn closed_curve_chords_follow_the_projected_seam() {
+        use remus_math::curves::{Circle3D, Ellipse3D};
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let circle = Circle3D::new(origin, normal, 1.0).unwrap();
+        let nurbs = remus_geometry::convert::curve_to_nurbs::circle_to_nurbs(
+            &circle,
+            0.0,
+            std::f64::consts::TAU,
+        )
+        .unwrap();
+        let nurbs_domain = nurbs.domain();
+        for (curve, phase, tolerance, domain) in [
+            (
+                EdgeCurve::Circle(circle),
+                9e-8,
+                1e-7,
+                (0.0, std::f64::consts::TAU),
+            ),
+            (
+                EdgeCurve::Ellipse(Ellipse3D::new(origin, normal, 1.0, 0.75).unwrap()),
+                9e-8,
+                1e-7,
+                (0.0, std::f64::consts::TAU),
+            ),
+            (EdgeCurve::NurbsCurve(nurbs), 0.1, 0.2, nurbs_domain),
+        ] {
+            let (mut topo, face) = disc(0.0);
+            let wire = topo.face(face).unwrap().outer_wire();
+            let edge = topo.wire(wire).unwrap().edges()[0].edge();
+            let vertex = topo.edge(edge).unwrap().start();
+            let seam = curve.evaluate_with_endpoints(phase, origin, origin);
+            topo.vertex_mut(vertex).unwrap().set_point(seam);
+            topo.vertex_mut(vertex)
+                .unwrap()
+                .set_tolerance(tolerance)
+                .unwrap();
+            topo.edge_mut(edge).unwrap().set_curve(curve);
+            topo.edge_mut(edge).unwrap().set_trim(Some(domain));
+            let polygon = crate::util::wire_polygon_sampled(&topo, wire, CURVE_SEGMENTS).unwrap();
+            let skeleton = BoundarySkeleton::build(&topo, &[face]).unwrap();
+            let a = polygon[16];
+            let b = polygon[17];
+            let target = a + (b - a) * 0.1;
+            let direction = Vec3::new(0.0, 0.0, -1.0);
+            assert!(
+                skeleton
+                    .grazed_by(&topo, target - direction, direction)
+                    .unwrap()
+            );
+        }
     }
 }
