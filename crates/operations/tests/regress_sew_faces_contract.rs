@@ -14,6 +14,7 @@ use remus_math::vec::Point3;
 use remus_math::vec::Vec3;
 use remus_operations::OperationsError;
 use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::loft::loft;
 use remus_operations::measure::solid_volume;
 use remus_operations::primitives::{make_box, make_cylinder};
 use remus_operations::sew::sew_faces;
@@ -25,6 +26,7 @@ use remus_topology::explorer::solid_faces;
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::shell::Shell;
 use remus_topology::solid::Solid;
+use remus_topology::validation::check_same_range;
 use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire};
 
@@ -205,4 +207,60 @@ fn corners_merged_by_the_tolerance_are_refused() {
         "unexpected error {error}"
     );
     assert_eq!(arena_counts(&topo), before, "refusal left entities");
+}
+
+/// Boundary uses of `faces` that carry a pcurve, with each one's SameRange
+/// deviation.
+fn pcurve_uses(topo: &Topology, faces: &[FaceId]) -> Vec<f64> {
+    let mut deviations = Vec::new();
+    for &face in faces {
+        let wire = topo.wire(topo.face(face).unwrap().outer_wire()).unwrap();
+        for oe in wire.edges() {
+            if topo
+                .pcurve_oriented(oe.edge(), face, oe.is_forward())
+                .is_some()
+            {
+                let deviation = check_same_range(topo, oe.edge(), face, oe.is_forward())
+                    .unwrap()
+                    .unwrap();
+                deviations.push(deviation);
+            }
+        }
+    }
+    deviations
+}
+
+#[test]
+fn ruled_loft_faces_keep_their_pcurves() {
+    // A square lofted to a diamond gives twisted ruled sides: NURBS quads
+    // bounded by straight edges, each with authored rectangular pcurves.
+    let mut topo = Topology::new();
+    let bottom = polygon_face(
+        &mut topo,
+        &[[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]],
+        0.0,
+    );
+    let top = polygon_face(
+        &mut topo,
+        &[[1.0, -0.4], [2.4, 1.0], [1.0, 2.4], [-0.4, 1.0]],
+        3.0,
+    );
+    let lofted = loft(&mut topo, &[bottom, top]).unwrap();
+    let faces = solid_faces(&topo, lofted).unwrap();
+    let before = pcurve_uses(&topo, &faces);
+    assert!(!before.is_empty(), "the lofted sides should carry pcurves");
+
+    let sewn = sew_faces(&mut topo, &faces, 1e-7).unwrap();
+    let after = pcurve_uses(&topo, &solid_faces(&topo, sewn).unwrap());
+    assert_eq!(
+        after.len(),
+        before.len(),
+        "every authored pcurve carries over"
+    );
+    for deviation in after {
+        assert!(
+            deviation < 1e-9,
+            "a carried pcurve misses its use's ends by {deviation}"
+        );
+    }
 }
