@@ -1,10 +1,12 @@
 //! Triangle-mesh to B-Rep import (`stl::import::import_mesh`, IO-12).
 //!
 //! The mesh readers are fuzzed for parsing only; this target drives the
-//! shared import every mesh format ends in. Meshes are built on a coarse
-//! lattice, so coincident corners, duplicate and degenerate triangles,
-//! over-shared edges and inconsistent winding are common, with occasional
-//! out-of-range indices, non-finite coordinates and extreme offsets.
+//! shared import every mesh format ends in. Corners are drawn from a small
+//! pool of lattice points, either copied exactly or moved just inside or
+//! just outside the weld tolerance, so coincident corners, duplicate and
+//! degenerate triangles, over-shared edges and inconsistent winding are
+//! common, with occasional out-of-range indices, non-finite coordinates and
+//! extreme offsets.
 //!
 //! Oracles: an accepted mesh yields one solid whose faces are planar
 //! triangles, no more than the input triangle count, with every edge used by
@@ -24,6 +26,7 @@ use remus_topology::face::FaceSurface;
 
 const MAX_VERTICES: usize = 48;
 const MAX_TRIANGLES: usize = 96;
+const MAX_POOL: usize = 12;
 
 #[derive(Debug, Arbitrary)]
 enum Offset {
@@ -33,7 +36,19 @@ enum Offset {
     NonFinite,
 }
 
+/// How a vertex derives from its shared pool point.
+#[derive(Debug, Arbitrary)]
+enum Placement {
+    /// The pool point itself: an exact duplicate for the weld to merge.
+    Copy,
+    /// Moved half the weld tolerance along one axis: must still weld.
+    Inside,
+    /// Moved one and a half tolerances along one axis: must stay apart.
+    Outside,
+}
+
 fn build(u: &mut Unstructured<'_>) -> arbitrary::Result<(TriangleMesh, f64, bool)> {
+    let tolerance = [1e-7, 1e-3, 0.3, 0.0, -1.0][u.choose_index(5)?];
     let vertex_count = u.int_in_range(0..=MAX_VERTICES)?;
     let offset = match Offset::arbitrary(u)? {
         Offset::Origin => 0.0,
@@ -41,14 +56,30 @@ fn build(u: &mut Unstructured<'_>) -> arbitrary::Result<(TriangleMesh, f64, bool
         Offset::VeryFar => 1e15,
         Offset::NonFinite => f64::NAN,
     };
+    // Vertices draw from a small shared pool, so coincident and
+    // near-tolerance corners are the common case rather than a 256^3 lottery.
+    let pool_size = u.int_in_range(1..=MAX_POOL)?;
+    let pool = (0..pool_size)
+        .map(|_| {
+            let [x, y, z]: [i8; 3] = u.arbitrary()?;
+            Ok([
+                offset + f64::from(x) * 0.5,
+                f64::from(y) * 0.5,
+                f64::from(z) * 0.5,
+            ])
+        })
+        .collect::<arbitrary::Result<Vec<_>>>()?;
     let mut positions = Vec::with_capacity(vertex_count);
     for _ in 0..vertex_count {
-        let [x, y, z]: [i8; 3] = u.arbitrary()?;
-        positions.push(Point3::new(
-            offset + f64::from(x) * 0.5,
-            f64::from(y) * 0.5,
-            f64::from(z) * 0.5,
-        ));
+        let mut point = pool[u.choose_index(pool.len())?];
+        let step = match Placement::arbitrary(u)? {
+            Placement::Copy => 0.0,
+            Placement::Inside => 0.5 * tolerance,
+            Placement::Outside => 1.5 * tolerance,
+        };
+        let sign = if u.arbitrary::<bool>()? { 1.0 } else { -1.0 };
+        point[u.choose_index(3)?] += sign * step;
+        positions.push(Point3::new(point[0], point[1], point[2]));
     }
     let with_normals = u.arbitrary::<bool>()?;
     let normals = if with_normals {
@@ -75,7 +106,6 @@ fn build(u: &mut Unstructured<'_>) -> arbitrary::Result<(TriangleMesh, f64, bool
         };
         indices.push(index);
     }
-    let tolerance = [1e-7, 1e-3, 0.3, 0.0, -1.0][u.choose_index(5)?];
     let decidable_refusal = !in_range || tolerance <= 0.0 || offset.is_nan() || indices.len() < 3;
     Ok((
         TriangleMesh {
