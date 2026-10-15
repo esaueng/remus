@@ -9083,7 +9083,13 @@ fn pcurve_winding(
 fn step_plane_ref_direction(normal: Vec3) -> Vec3 {
     let x = Vec3::new(1.0, 0.0, 0.0);
     let y = Vec3::new(0.0, 1.0, 0.0);
-    let candidate = if normal.dot(x).abs() < 0.9 { x } else { y };
+    // Seed from the unit normal, as `PlaneChart::canonical` does; a placement
+    // axis need not be unit length.
+    let candidate = if normal.normalize().is_ok_and(|unit| unit.x().abs() < 0.9) {
+        x
+    } else {
+        y
+    };
     normal.cross(candidate).normalize().unwrap_or(x)
 }
 

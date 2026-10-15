@@ -138,3 +138,45 @@ fn doubled_apex_seam_keeps_the_rim_only_pocket_mesh_for_every_wire_rotation() {
         uses.rotate_left(1);
     }
 }
+
+/// A genuine trimmed band takes the sliced adaptive path. The cone flux
+/// identity holds independently of whether the trimmed face reaches its apex.
+#[test]
+fn trimmed_cone_band_uses_stable_adaptive_apex_flux() {
+    let mut topo = Topology::new();
+    let apex = Point3::new(13.0, -7.0, 5.0);
+    let cone = ConicalSurface::with_ref_dir(
+        apex,
+        Vec3::new(0.0, 0.0, 1.0),
+        std::f64::consts::FRAC_PI_4,
+        Vec3::new(1.0, 0.0, 0.0),
+    )
+    .unwrap();
+    let outer = chart_wire(
+        &mut topo,
+        &cone,
+        &[(0.2, 1.0), (1.4, 1.0), (1.4, 2.0), (0.2, 2.0)],
+    );
+    let pocket = chart_wire(
+        &mut topo,
+        &cone,
+        &[(0.4, 1.2), (0.6, 1.2), (0.6, 1.4), (0.4, 1.4)],
+    );
+    let face = topo.add_face(Face::new(outer, vec![pocket], FaceSurface::Cone(cone)));
+    let options = remus_check::properties::PropertiesOptions {
+        adaptive_eps: 1e-9,
+        max_depth: 12,
+        ..Default::default()
+    };
+    let contribution =
+        remus_check::properties::face_integrator::integrate_face_about(&topo, face, &options, apex)
+            .unwrap();
+    let expected_area = (1.2 * 1.5 - 0.2 * 0.26) * std::f64::consts::FRAC_1_SQRT_2;
+    assert!(
+        (contribution.area - expected_area).abs() < 1e-9,
+        "area {} expected {}",
+        contribution.area,
+        expected_area
+    );
+    assert_eq!(contribution.volume.abs().to_bits(), 0);
+}

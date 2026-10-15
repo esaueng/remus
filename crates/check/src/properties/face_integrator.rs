@@ -45,6 +45,9 @@ struct IntegrationRule<'a> {
     /// over exactly the samples (or the closed form) its volume came from;
     /// see [`integrate_face_fixed_flux_about`]. Adaptive paths leave it unset.
     flux: Option<&'a Cell<Option<Vec3>>>,
+    /// Analytic cone apex used only for stable adaptive volume density:
+    /// `(P - R)·N = (apex - R)·N` on every cone generator.
+    cone_apex: Option<Point3>,
 }
 
 impl<'a> IntegrationRule<'a> {
@@ -73,6 +76,7 @@ impl<'a> IntegrationRule<'a> {
             reference: self.reference,
             volume_only: self.volume_only,
             flux: self.flux,
+            cone_apex: self.cone_apex,
         }
     }
 
@@ -213,6 +217,7 @@ pub fn integrate_face_fixed_about(
             reference,
             volume_only: false,
             flux: None,
+            cone_apex: None,
         },
     )
 }
@@ -283,6 +288,7 @@ fn integrate_face_fixed_flux_impl(
             reference,
             volume_only,
             flux: Some(&flux),
+            cone_apex: None,
         },
     )?;
     Ok((contribution, flux.get()))
@@ -311,6 +317,7 @@ pub fn integrate_face_area(
             reference: Point3::new(0.0, 0.0, 0.0),
             volume_only: false,
             flux: None,
+            cone_apex: None,
         },
     )?
     .area)
@@ -379,6 +386,7 @@ pub fn integrate_face_about(
             reference,
             volume_only: false,
             flux: None,
+            cone_apex: None,
         },
     )
 }
@@ -459,6 +467,10 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
             )
         }
         FaceSurface::Cone(s) => {
+            let rule = IntegrationRule {
+                cone_apex: Some(s.apex()),
+                ..rule
+            };
             // A cone's boundary extent alone under-spans a pointed face: the
             // apex (v = 0) is an interior singular point, not a wire vertex,
             // so a face bounded by one rim (and any holes) reaches it without
@@ -959,6 +971,7 @@ pub fn integrate_torus_band_face_about(
             reference,
             volume_only: false,
             flux: None,
+            cone_apex: None,
         },
         if face.is_reversed() { -1.0 } else { 1.0 },
     )
@@ -1090,6 +1103,7 @@ fn integrate_torus_tube_band<const AREA_ONLY: bool>(
             sign,
             options,
             reference,
+            None,
         )
         .map(Some);
     }
@@ -3575,6 +3589,7 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
             sign,
             options,
             rule.reference,
+            rule.cone_apex,
         );
     }
     if !trim.splits_domain()
@@ -3587,6 +3602,7 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
             scale,
             options,
             rule.reference,
+            rule.cone_apex,
         );
     }
     if let Some(knots) = rule.knots
@@ -5126,6 +5142,7 @@ mod tests {
                 reference: Point3::new(0.0, 0.0, 0.0),
                 volume_only: false,
                 flux: None,
+                cone_apex: None,
             };
             integrate_knot_aligned::<_, false>(
                 &cylinder,
@@ -5184,6 +5201,7 @@ mod tests {
             reference: Point3::new(0.0, 0.0, 0.0),
             volume_only: false,
             flux: None,
+            cone_apex: None,
         };
         assert!(matches!(
             integrate_knot_aligned::<_, false>(
@@ -5256,6 +5274,7 @@ mod tests {
             reference: Point3::new(0.0, 0.0, 0.0),
             volume_only: false,
             flux: None,
+            cone_apex: None,
         };
         let trim = UvTrim::new(None, &[], &[], false);
         let area = integrate_knot_aligned::<_, true>(
@@ -5298,6 +5317,7 @@ mod tests {
             reference: Point3::new(0.0, 0.0, 0.0),
             volume_only: false,
             flux: None,
+            cone_apex: None,
         };
         let area = integrate_knot_aligned::<_, true>(
             &cylinder,
@@ -5341,6 +5361,7 @@ mod tests {
             reference: Point3::new(0.0, 0.0, 0.0),
             volume_only: false,
             flux: None,
+            cone_apex: None,
         };
         let area = integrate_knot_aligned::<_, true>(
             &NarrowSpan,
@@ -5388,6 +5409,7 @@ mod tests {
             reference: Point3::new(0.0, 0.0, 0.0),
             volume_only: false,
             flux: None,
+            cone_apex: None,
         };
         let area = integrate_knot_aligned::<_, true>(
             &NarrowSpan,

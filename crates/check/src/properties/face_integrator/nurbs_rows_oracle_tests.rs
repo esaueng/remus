@@ -155,6 +155,7 @@ fn integrate_parametric_reference<S: ParametricSurface, const AREA_ONLY: bool>(
             sign,
             options,
             rule.reference,
+            rule.cone_apex,
         );
     }
     if !trim.splits_domain()
@@ -167,6 +168,7 @@ fn integrate_parametric_reference<S: ParametricSurface, const AREA_ONLY: bool>(
             scale,
             options,
             rule.reference,
+            rule.cone_apex,
         );
     }
     let gauss_pts = gauss_legendre_points(rule.order);
@@ -453,6 +455,7 @@ fn both<const AREA_ONLY: bool>(
             reference: Point3::new(0.4, -1.25, 0.75),
             volume_only,
             flux: Some(&flux),
+            cone_apex: None,
         };
         let result = if reference_path {
             integrate_parametric_reference::<_, AREA_ONLY>(

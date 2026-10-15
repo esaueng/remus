@@ -341,3 +341,108 @@ fn apex_down_cone_with_apex_inside_box() {
         );
     }
 }
+
+/// The cavity cone's apex coincides with the body's integration reference.
+/// Its volume flux is exactly zero, while its area and moments are nonzero.
+#[test]
+fn apex_inside_mass_properties_converge_without_cancelling_cone_flux() {
+    use remus_check::properties::face_integrator::integrate_face_about;
+    use remus_check::properties::{PropertiesOptions, integration_reference, solid_properties};
+    use remus_math::vec::Vec3;
+    use remus_topology::face::FaceSurface;
+
+    let close = |actual: f64, expected: f64, scale: f64| {
+        assert!(
+            (actual - expected).abs() <= 1e-9 * scale.abs(),
+            "{actual} != {expected}"
+        );
+    };
+    for up in [true, false] {
+        for apex in [0.5, 2.0, 3.5] {
+            let height = if up { apex } else { 4.0 - apex };
+            let radius = height / 8.0;
+            let removed = PI * radius * radius * height / 3.0;
+            let remaining = 24.0 - removed;
+            let cone_z = if up { height / 4.0 } else { 4.0 - height / 4.0 };
+            let displacement = -removed * (cone_z - 2.0) / remaining;
+            let transverse = -removed
+                * (0.15 * radius * radius + 0.0375 * height * height + (cone_z - 2.0).powi(2))
+                - remaining * displacement.powi(2);
+            let inertia = [
+                50.0 + transverse,
+                40.0 + transverse,
+                26.0 - 0.3 * radius * radius * removed,
+            ];
+            let area = 52.0 - PI * radius * radius + PI * radius * height.hypot(radius);
+            for scale in [0.5_f64, 1.0, 2.0] {
+                for offset in [Vec3::new(0.0, 0.0, 0.0), Vec3::new(37.0, -12.0, 9.0)] {
+                    let (mut topo, solid) = cut(up, if up { apex - H } else { apex });
+                    let matrix = Mat4::translation(offset.x(), offset.y(), offset.z())
+                        * Mat4::scale(scale, scale, scale);
+                    transform_solid(&mut topo, solid, &matrix).unwrap();
+                    let options = PropertiesOptions::default();
+                    let props = solid_properties(&topo, solid, &options)
+                        .expect("apex-relative cone flux converges");
+                    close(
+                        props.mass,
+                        remaining * scale.powi(3),
+                        remaining * scale.powi(3),
+                    );
+                    let z = 2.0 + displacement;
+                    let center = matrix.mul_point(Point3::new(1.0, 1.5, z));
+                    close((props.center - center).length(), 0.0, scale);
+                    for (actual, expected) in props.inertia[..3].iter().zip(inertia) {
+                        close(*actual, expected * scale.powi(5), expected * scale.powi(5));
+                    }
+                    for &product in &props.inertia[3..] {
+                        close(product, 0.0, 50.0 * scale.powi(5));
+                    }
+                    let reference = integration_reference(&topo, solid).unwrap();
+                    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+                    let measured_area: f64 = faces
+                        .iter()
+                        .map(|&face| {
+                            integrate_face_about(&topo, face, &options, reference)
+                                .unwrap()
+                                .area
+                        })
+                        .sum();
+                    close(measured_area, area * scale.powi(2), area * scale.powi(2));
+                    let cone = faces
+                        .into_iter()
+                        .find(|&face| {
+                            matches!(topo.face(face).unwrap().surface(), FaceSurface::Cone(_))
+                        })
+                        .unwrap();
+                    let FaceSurface::Cone(carrier) = topo.face(cone).unwrap().surface() else {
+                        panic!("cone")
+                    };
+                    for delta in [
+                        Vec3::new(0.0, 0.0, 0.0),
+                        Vec3::new(0.0, 0.0, 1e-9 * scale),
+                        Vec3::new(0.125 * scale, -0.25 * scale, 0.5 * scale),
+                    ] {
+                        let reference = carrier.apex() + delta;
+                        let options = PropertiesOptions {
+                            adaptive_eps: 1e-9,
+                            max_depth: 12,
+                            ..options
+                        };
+                        let contribution =
+                            integrate_face_about(&topo, cone, &options, reference).unwrap();
+                        let expected =
+                            (reference.z() - carrier.apex().z()) * PI * (radius * scale).powi(2)
+                                / 3.0
+                                * if up { 1.0 } else { -1.0 };
+                        close(contribution.volume, expected, scale.powi(3));
+                        close(
+                            contribution.area,
+                            PI * radius * height.hypot(radius) * scale.powi(2),
+                            scale.powi(2),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
