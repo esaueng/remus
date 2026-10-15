@@ -8,12 +8,12 @@
 //! common, with occasional out-of-range indices, non-finite coordinates and
 //! extreme offsets.
 //!
-//! Oracles: an accepted mesh yields one solid whose faces are planar
-//! triangles, no more than the input triangle count, with every edge used by
-//! at most two face uses (import refuses over-shared edges); a refusal that
-//! input validation can decide must leave the topology empty, and an
-//! over-shared or all-degenerate refusal must allocate no edge, wire, face,
-//! shell or solid.
+//! Oracles: no two welded vertices lie within the weld tolerance; an accepted
+//! mesh yields one solid whose faces are planar triangles, no more than the
+//! input triangle count, with every edge used by at most two face uses
+//! (import refuses over-shared edges); a refusal that input validation can
+//! decide must leave the topology empty, and an over-shared or all-degenerate
+//! refusal must allocate no edge, wire, loop, coedge, face, shell or solid.
 
 #![no_main]
 
@@ -118,13 +118,34 @@ fn build(u: &mut Unstructured<'_>) -> arbitrary::Result<(TriangleMesh, f64, bool
     ))
 }
 
+/// The weld keeps the first vertex within tolerance of each corner and
+/// creates one only when none exists, so no two vertices it created may lie
+/// within tolerance of each other. Exact duplicates and corners moved half a
+/// tolerance must therefore have merged.
+fn assert_welded(topo: &Topology, tolerance: f64) {
+    let tol_sq = tolerance * tolerance;
+    let points: Vec<_> = topo.vertices().iter().map(|(_, v)| v.point()).collect();
+    for (i, a) in points.iter().enumerate() {
+        for b in &points[i + 1..] {
+            // The weld's own distance expression, so rounding cannot differ.
+            let (ex, ey, ez) = (a.x() - b.x(), a.y() - b.y(), a.z() - b.z());
+            assert!(
+                ex.mul_add(ex, ey.mul_add(ey, ez * ez)) >= tol_sq,
+                "vertices {a:?} and {b:?} lie within the weld tolerance {tolerance}"
+            );
+        }
+    }
+}
+
 fuzz_target!(|data: &[u8]| {
     let mut u = Unstructured::new(data);
     let Ok((mesh, tolerance, decidable_refusal)) = build(&mut u) else {
         return;
     };
     let mut topo = Topology::new();
-    match remus_io::stl::import_mesh(&mut topo, &mesh, tolerance) {
+    let result = remus_io::stl::import_mesh(&mut topo, &mesh, tolerance);
+    assert_welded(&topo, tolerance);
+    match result {
         Ok(solid) => {
             assert!(!decidable_refusal, "invalid mesh input was accepted");
             let faces = remus_topology::explorer::solid_faces(&topo, solid).expect("solid faces");
