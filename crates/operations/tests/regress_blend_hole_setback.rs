@@ -15,6 +15,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use remus_check::validate::{ValidateOptions, validate_solid};
 use remus_math::mat::Mat4;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::OperationsError;
@@ -204,9 +205,9 @@ fn wedge_with_hole(topo: &mut Topology, angle_deg: f64) -> (SolidId, EdgeId) {
     let foot = H / angle_deg.to_radians().tan();
     let profile = [
         Point3::new(0.0, 0.0, H),
-        Point3::new(foot, 0.0, 0.0),
-        Point3::new(12.0, 0.0, 0.0),
         Point3::new(12.0, 0.0, H),
+        Point3::new(12.0, 0.0, 0.0),
+        Point3::new(foot, 0.0, 0.0),
     ];
     let wire = make_polygon_wire(topo, &profile, 1e-7).unwrap();
     let face = make_planar_face_from_wire(topo, wire).unwrap();
@@ -214,6 +215,13 @@ fn wedge_with_hole(topo: &mut Topology, angle_deg: f64) -> (SolidId, EdgeId) {
     let drill = primitives::make_cylinder(topo, HOLE_R, 3.0).unwrap();
     transform_solid(topo, drill, &Mat4::translation(2.5 + HOLE_R, 5.0, H - 2.0)).unwrap();
     let body = boolean(topo, BooleanOp::Cut, blank, drill).unwrap();
+    // A blend postcondition only refuses errors the input did not already
+    // have, so an inside-out fixture hides a broken result.
+    let report = validate_solid(topo, body, &ValidateOptions::default()).unwrap();
+    assert!(
+        report.is_valid(),
+        "the wedge fixture must validate: {report:?}"
+    );
     let edge = line_edge(
         topo,
         body,
