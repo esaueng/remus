@@ -258,6 +258,36 @@ pub fn tessellate_solid_for_measurement(
     .map(|(mesh, _, _)| mesh)
 }
 
+/// Trimmed tessellation of one face for measurement.
+///
+/// Runs the shared-edge-pool pipeline over just `face`, so the mesh honours
+/// the face's outer and inner wires. The standalone per-face mesher
+/// ([`super::tessellate`]) skins a NURBS face's whole carrier instead and
+/// refuses inner wires. The face's own boundary stays open (no weld or gap
+/// fill), and, as in [`tessellate_solid_for_measurement`], no shading
+/// normals are reconstructed.
+///
+/// # Errors
+///
+/// Returns an error if a topology lookup or the face tessellation fails.
+pub fn tessellate_face_for_measurement(
+    topo: &Topology,
+    face: FaceId,
+    deflection: f64,
+) -> Result<TriangleMesh, crate::OperationsError> {
+    tessellate_faces_core(
+        topo,
+        &[face],
+        deflection,
+        remus_math::chord::DEFAULT_ANGULAR_TOL,
+        MeshBoundaryMode::OpenMeasurement,
+        false,
+        false,
+        RetentionClass::Quantity,
+    )
+    .map(|(mesh, _, _)| mesh)
+}
+
 /// Tessellate a first-class sheet body into a merged, boundary-preserving
 /// triangle mesh using the default angular tolerance.
 ///
@@ -481,6 +511,7 @@ enum MeshBoundaryMode {
     ClosedSolid,
     OpenSheet,
     ClosedMeasurement,
+    OpenMeasurement,
 }
 
 #[allow(
@@ -1608,7 +1639,10 @@ fn tessellate_faces_core(
     }
 
     drop(curved);
-    if !matches!(boundary_mode, MeshBoundaryMode::ClosedMeasurement) {
+    if !matches!(
+        boundary_mode,
+        MeshBoundaryMode::ClosedMeasurement | MeshBoundaryMode::OpenMeasurement
+    ) {
         let normals = crate::performance::span("mesh.boundary-normals");
         let n_verts = plan.merged.positions.len();
         let tri_count = plan.merged.indices.len() / 3;
