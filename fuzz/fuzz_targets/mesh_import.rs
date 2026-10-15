@@ -171,8 +171,20 @@ fuzz_target!(|data: &[u8]| {
         }
         Err(error) => {
             if decidable_refusal {
-                assert_eq!(topo.num_vertices(), 0, "input-validation refusal allocated");
-                assert_eq!(topo.num_faces(), 0, "input-validation refusal allocated");
+                assert_eq!(
+                    (
+                        topo.num_vertices(),
+                        topo.num_edges(),
+                        topo.num_wires(),
+                        topo.num_loops(),
+                        topo.num_coedges(),
+                        topo.num_faces(),
+                        topo.num_shells(),
+                        topo.num_solids(),
+                    ),
+                    (0, 0, 0, 0, 0, 0, 0, 0),
+                    "input-validation refusal allocated topology"
+                );
             }
             // An over-shared edge and an all-degenerate mesh are refused after
             // welding but before any edge, face, shell or solid exists (welded
