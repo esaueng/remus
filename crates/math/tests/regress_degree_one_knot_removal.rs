@@ -354,3 +354,18 @@ fn a_tiny_deviation_does_not_underflow_to_zero() {
     assert!(is_refused(&curve_knot_remove(&curve, 0.5, 0.5e-200)));
     assert!(curve_knot_remove(&curve, 0.5, 1e-200).is_ok());
 }
+
+#[test]
+fn a_tiny_weight_and_a_tiny_offset_together_still_count() {
+    // Review follow-up: middle point (0, 1e-200, 0) with weight 1e-200
+    // between two points at the origin. The deviation at the knot is
+    // 1e-200, but weight × offset = 1e-400 underflowed to 0 before the norm
+    // could protect it, and the removal passed at tolerance 0.
+    let curve = polyline(
+        vec![0.0, 0.0, 0.5, 1.0, 1.0],
+        &[[0.0, 0.0, 0.0], [0.0, 1e-200, 0.0], [0.0, 0.0, 0.0]],
+        vec![1.0, 1e-200, 1.0],
+    );
+    assert!(is_refused(&curve_knot_remove(&curve, 0.5, 0.0)));
+    assert!(is_refused(&curve_knot_remove(&curve, 0.5, 0.5e-200)));
+}

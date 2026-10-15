@@ -523,11 +523,15 @@ pub fn curve_knot_remove(
 /// control point `mid` of a degree-1 curve, `alpha` being the knot's
 /// position between its neighbours (see the derivation in
 /// [`curve_knot_remove`]). Each point is `(position, weight)`. Infinite when
-/// a weight is not positive and finite.
+/// a weight is not positive or the bound is not representable.
 ///
-/// The bound is invariant under a common scale of the three weights, so they
-/// are divided by the largest first: weights near the ends of the `f64`
-/// range would otherwise underflow or overflow the homogeneous products.
+/// The bound `max(|e − ε·P|) / w_k` is invariant under translation and under
+/// a common weight scale, so it is evaluated relative to `prev` and already
+/// divided by `w_k`: with ρ = w/w_k,
+///   e/w_k = Δ_mid − α·ρ_next·Δ_next,
+///   ε/w_k = 1 − α·ρ_next − (1 − α)·ρ_prev.
+/// Forming e itself would underflow for a tiny middle weight and a tiny
+/// offset together.
 #[allow(clippy::suboptimal_flops)]
 fn degree_one_deviation_bound(
     prev: (Point3, f64),
@@ -535,21 +539,18 @@ fn degree_one_deviation_bound(
     next: (Point3, f64),
     alpha: f64,
 ) -> f64 {
-    let scale = prev.1.max(mid.1).max(next.1);
-    if !(prev.1 > 0.0 && mid.1 > 0.0 && next.1 > 0.0 && scale.is_finite()) {
+    let finite_positive = |w: f64| w > 0.0 && w.is_finite();
+    if !(finite_positive(prev.1) && finite_positive(mid.1) && finite_positive(next.1)) {
         return f64::INFINITY;
     }
-    // The bound is invariant under translation (e − ε·P is unchanged by
-    // P → P − T), so work relative to `prev`: a large common offset would
-    // otherwise cancel a small deviation when the chord is formed.
-    let (wp, wm, wn) = (prev.1 / scale, mid.1 / scale, next.1 / scale);
+    let (rho_prev, rho_next) = (prev.1 / mid.1, next.1 / mid.1);
     let dm = mid.0 - prev.0;
     let dn = next.0 - prev.0;
-    let eps = wm - (alpha * wn + (1.0 - alpha) * wp);
+    let eps = 1.0 - alpha * rho_next - (1.0 - alpha) * rho_prev;
     let e = [
-        wm * dm.x() - alpha * wn * dn.x(),
-        wm * dm.y() - alpha * wn * dn.y(),
-        wm * dm.z() - alpha * wn * dn.z(),
+        dm.x() - alpha * rho_next * dn.x(),
+        dm.y() - alpha * rho_next * dn.y(),
+        dm.z() - alpha * rho_next * dn.z(),
     ];
     // At `prev` (the origin now) the excess is |e|; at `next` it is
     // |e − ε·dn|.
@@ -559,9 +560,7 @@ fn degree_one_deviation_bound(
         e[1] - eps * dn.y(),
         e[2] - eps * dn.z(),
     ]);
-    let bound = at_prev.max(at_next) / wm;
-    // The normalized middle weight can underflow when the weights span the
-    // whole f64 range; no finite bound is available then.
+    let bound = at_prev.max(at_next);
     if bound.is_finite() {
         bound
     } else {
