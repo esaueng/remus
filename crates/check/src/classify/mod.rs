@@ -1130,6 +1130,31 @@ mod tests {
         );
     }
 
+    /// The same tetrahedron translated far from the world origin: the graze
+    /// margin must cover the roundoff of coordinates near 1e9 (one ULP is
+    /// about 1.2e-7 there), or the vertex rays vote again.
+    #[test]
+    fn rays_through_vertices_abstain_far_from_the_origin() {
+        for offset in [1e6, 1e9] {
+            let origin = Point3::new(offset, -0.2 - offset, 0.3 + offset);
+            let mut topo = Topology::new();
+            let solid = tetrahedron_on_base_rays(&mut topo, origin);
+            let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+            let skeleton = graze::BoundarySkeleton::build(&topo, &faces).unwrap();
+            for dir in &BASE_DIRS[..2] {
+                assert!(
+                    skeleton.grazed_by(&topo, origin, *dir).unwrap(),
+                    "offset {offset}: ray {dir:?}"
+                );
+            }
+            assert_eq!(
+                classify_point(&topo, solid, origin, &ClassifyOptions::default()).unwrap(),
+                PointClassification::Inside,
+                "offset {offset}"
+            );
+        }
+    }
+
     #[test]
     fn skeleton_flags_exactly_the_rays_through_vertices() {
         let origin = Point3::new(0.0, -0.2, 0.3);
