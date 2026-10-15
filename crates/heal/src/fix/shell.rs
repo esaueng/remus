@@ -98,8 +98,11 @@ fn fix_orientation(
 
     for (i, &fid) in face_ids.iter().enumerate() {
         let face = topo.face(fid)?;
+        // Read the wires and edges the face fixers left behind: the face
+        // still names its originals until the reshape is applied.
         let wire_ids: Vec<_> = std::iter::once(face.outer_wire())
             .chain(face.inner_wires().iter().copied())
+            .map(|wid| ctx.reshape.current_wire(wid))
             .collect();
 
         // Compose the face's own reversal into the wire's sense. A face flagged
@@ -114,8 +117,11 @@ fn fix_orientation(
         for wid in wire_ids {
             let wire = topo.wire(wid)?;
             for oe in wire.edges() {
+                let Some(edge) = ctx.reshape.resolve_edge(oe.edge()) else {
+                    continue;
+                };
                 let effective_forward = oe.is_forward() != face_reversed;
-                face_edge_info.push((i, oe.edge().index(), effective_forward));
+                face_edge_info.push((i, edge.index(), effective_forward));
             }
         }
     }
@@ -192,5 +198,51 @@ fn fix_orientation(
         ))
     } else {
         Ok(FixResult::ok())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use remus_topology::face::FaceSurface;
+    use remus_topology::test_utils::make_unit_cube_manifold;
+    use remus_topology::wire::{OrientedEdge, Wire};
+
+    /// One cube face with one use's sense flipped: the reorder flips it
+    /// back, so the shell pass must read the reordered wire and flip nothing.
+    #[test]
+    fn orientation_reads_the_reordered_wires() {
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_manifold(&mut topo);
+        let shell = topo.solid(solid).unwrap().outer_shell();
+        let faces = topo.shell(shell).unwrap().faces().to_vec();
+        let face = faces[2];
+        let wire = topo.face(face).unwrap().outer_wire();
+        let mut uses = topo.wire(wire).unwrap().edges().to_vec();
+        uses[2] = OrientedEdge::new(uses[2].edge(), !uses[2].is_forward());
+        let broken = topo.add_wire(Wire::new(uses, true).unwrap());
+        topo.set_face_boundary_wires(face, broken, vec![]).unwrap();
+
+        let sense = |topo: &Topology| -> Vec<(bool, remus_math::vec::Vec3)> {
+            faces
+                .iter()
+                .map(|&f| {
+                    let face = topo.face(f).unwrap();
+                    let FaceSurface::Plane { normal, .. } = face.surface() else {
+                        unreachable!("a cube face is planar");
+                    };
+                    (face.is_reversed(), *normal)
+                })
+                .collect()
+        };
+        let before = sense(&topo);
+        let mut ctx = HealContext::new();
+        fix_shell(&mut topo, shell, &mut ctx, &FixConfig::default()).unwrap();
+        assert_ne!(ctx.reshape.current_wire(broken), broken);
+        for (k, ((rev0, n0), (rev1, n1))) in before.iter().zip(sense(&topo)).enumerate() {
+            assert_eq!(*rev0, rev1, "face {k} flipped");
+            assert!(n0.dot(n1) > 0.0, "face {k} normal flipped");
+        }
     }
 }
