@@ -517,9 +517,11 @@ struct Completion<'a> {
     pad: f64,
     /// Rounding allowance of the homogeneous control values.
     slack: f64,
-    /// Weights are scaled by this (`1 / max weight`): a common weight factor
-    /// leaves the surface unchanged and must not overflow the products.
-    inv_max_weight: f64,
+    /// Weights enter divided by this (the largest weight): a common weight
+    /// factor leaves the surface unchanged and must not overflow the
+    /// products. Divided, not multiplied by a reciprocal, which overflows for
+    /// a subnormal common factor.
+    max_weight: f64,
     tolerance: f64,
     nodes: usize,
     refinements: usize,
@@ -610,7 +612,7 @@ pub(super) fn complete_line_roots(
         // Weights enter divided by the largest, so the homogeneous values are
         // bounded by the plane distances.
         slack: pad,
-        inv_max_weight: 1.0 / surface.max_weight(),
+        max_weight: surface.max_weight(),
         tolerance: ROOT_TOLERANCE * hull.extent + roundoff,
         nodes: 0,
         refinements: 0,
@@ -686,7 +688,7 @@ impl Completion<'_> {
         for i in rows.clone() {
             for j in cols.clone() {
                 let rel = cps[i][j] - self.line.origin;
-                let w = weights[i][j] * self.inv_max_weight;
+                let w = weights[i][j] / self.max_weight;
                 scratch.window_f.push(w * self.n1.dot(rel));
                 scratch.window_g.push(w * self.n2.dot(rel));
             }
