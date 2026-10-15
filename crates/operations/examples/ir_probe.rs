@@ -9,7 +9,7 @@
 //! connectivity: which edge and vertices each use names (first-seen
 //! ordinals), how many uses share each, and which faces each edge and vertex
 //! bounds. Any face whose loops break authority (loop count, owner, closure,
-//! coedge count or parent) changes both digests and is counted in
+//! coedge count, parent or edge) changes both digests and is counted in
 //! `loop_anomalies`. Tessellation workloads digest position bits and
 //! indices. Two builds whose digests match produced bit-identical output.
 //! Solids also print a `canonical` digest of the same content that ignores
@@ -138,7 +138,9 @@ fn oriented_edge_hash(
             )
             .unwrap();
             // The coedge names its own edge. Agreement leaves the hash as
-            // is; any other edge is hashed by its sharing and geometry.
+            // is; any other edge is hashed by its sharing, end vertex bits
+            // (a line carries no geometry of its own) and curve. It is also
+            // counted in `loop_anomalies`.
             if c.edge() != oe.edge() {
                 let other = topo.edge(c.edge()).unwrap();
                 write!(
@@ -150,6 +152,13 @@ fn oriented_edge_hash(
                     other.tolerance()
                 )
                 .unwrap();
+                for vid in [other.start(), other.end()] {
+                    let v = topo.vertex(vid).unwrap();
+                    let p = v.point();
+                    for x in [p.x(), p.y(), p.z(), v.tolerance()] {
+                        write!(scratch, "|{:016x}", x.to_bits()).unwrap();
+                    }
+                }
             }
         }
         None => scratch.push_str("no-coedge"),
@@ -198,7 +207,8 @@ impl Sharing {
 
 /// Anomalies in a face's loop authority, as text. Empty when the face has
 /// one loop per wire, each owned by the face, closed like its wire, holding
-/// one coedge per wire use, every coedge naming that loop as its parent.
+/// one coedge per wire use, every coedge naming that loop as its parent and
+/// the same edge as the wire use at its position.
 fn loop_anomalies(topo: &Topology, fid: remus_topology::face::FaceId) -> String {
     let face = topo.face(fid).unwrap();
     let wires: Vec<_> = std::iter::once(face.outer_wire())
@@ -229,9 +239,17 @@ fn loop_anomalies(topo: &Topology, fid: remus_topology::face::FaceId) -> String 
                 .unwrap();
             }
         }
+        let uses = wires.get(j).map(|&w| topo.wire(w).unwrap().edges());
         for (k, &c) in lp.coedges().iter().enumerate() {
-            if topo.coedge(c).unwrap().parent_loop() != l {
+            let coedge = topo.coedge(c).unwrap();
+            if coedge.parent_loop() != l {
                 write!(out, "{j}.{k}:parent;").unwrap();
+            }
+            if uses
+                .and_then(|u| u.get(k))
+                .is_some_and(|oe| oe.edge() != coedge.edge())
+            {
+                write!(out, "{j}.{k}:edge;").unwrap();
             }
         }
     }
