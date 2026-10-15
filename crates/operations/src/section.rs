@@ -1578,6 +1578,31 @@ mod curved {
                     .map(|(i, p)| (lo + span * i as f64 / divisor as f64, (p, Laid::Sample)))
                     .chain(roots.iter().map(|&(t, p)| (t, (p, Laid::Root))))
                     .collect();
+                // A periodic curve's samples start from the edge's own vertex,
+                // where the wire's next edge begins, not from the curve's
+                // parameter origin: else the polygon cuts across the rim from
+                // its last sample to that vertex.
+                if divisor == WIRE_POLYGON_SAMPLES {
+                    let vertex = topo.vertex(edge.start())?.point();
+                    let anchor = match curve {
+                        EdgeCurve::Circle(c) => {
+                            let r = vertex - c.center();
+                            r.dot(c.v_axis()).atan2(r.dot(c.u_axis()))
+                        }
+                        EdgeCurve::Ellipse(e) => {
+                            let r = vertex - e.center();
+                            (r.dot(e.v_axis()) / e.semi_minor())
+                                .atan2(r.dot(e.u_axis()) / e.semi_major())
+                        }
+                        EdgeCurve::Line
+                        | EdgeCurve::NurbsCurve(_)
+                        | EdgeCurve::Hyperbola(_)
+                        | EdgeCurve::Parabola(_) => lo,
+                    };
+                    for entry in &mut run {
+                        entry.0 = (entry.0 - anchor).rem_euclid(span);
+                    }
+                }
                 run.compact_sort_by(|l, r| l.0.total_cmp(&r.0));
                 if !oriented.is_forward() {
                     run.reverse();
@@ -2750,23 +2775,65 @@ mod curved {
             assert!(super::along_one_edge(&rim, band, at(-0.02), at(0.02)));
         }
 
-        /// Without partial curved edges the trim polygon is `wire_polygon`'s,
-        /// point for point, so faces sectioned by `section` and by the
-        /// boolean helpers still meet.
+        /// Without partial curved edges the trim polygon holds
+        /// `wire_polygon`'s points, but each closed rim starts from its own
+        /// vertex. `make_cylinder`'s rims start their circles at (0, 1.5)
+        /// while their vertex is at (1.5, 0), so `wire_polygon` cuts across
+        /// from the last sample to the seam vertex. On the lateral face, the
+        /// plane x = 0.9 then crossed that chord, inside the cylinder, as
+        /// well as the rims: every crossing must now lie on a rim.
         #[test]
-        fn trim_polygon_matches_wire_polygon_without_partial_arcs() {
+        fn trim_polygon_starts_closed_rims_at_their_vertex() {
             let mut topo = Topology::new();
             let solid = crate::primitives::make_cylinder(&mut topo, 1.5, 2.0).unwrap();
-            for face in solid_faces(&topo, solid).unwrap() {
-                let face = topo.face(face).unwrap();
+            let sorted = |mut points: Vec<Point3>| {
+                points.sort_by(|a, b| {
+                    a.x()
+                        .total_cmp(&b.x())
+                        .then(a.y().total_cmp(&b.y()))
+                        .then(a.z().total_cmp(&b.z()))
+                });
+                points
+            };
+            let side = 2.0 * 1.5 * (PI / 32.0).sin() * (1.0 + 1e-9);
+            let mut lateral = None;
+            for id in solid_faces(&topo, solid).unwrap() {
+                let face = topo.face(id).unwrap();
+                if matches!(face.surface(), FaceSurface::Cylinder(_)) {
+                    lateral = Some(id);
+                }
                 for wire in
                     std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
                 {
+                    let polygon = trim_polygon(&topo, wire, None, Tolerance::new()).unwrap();
                     assert_eq!(
-                        trim_polygon(&topo, wire, None, Tolerance::new()).unwrap(),
-                        crate::boolean::wire_polygon(&topo, wire).unwrap()
+                        sorted(polygon.clone()),
+                        sorted(crate::boolean::wire_polygon(&topo, wire).unwrap())
                     );
+                    // No chord across a rim: consecutive points at one height
+                    // are at most a 32-gon side apart.
+                    for (k, &p) in polygon.iter().enumerate() {
+                        let q = polygon[(k + 1) % polygon.len()];
+                        if (p.z() - q.z()).abs() < 1e-12 {
+                            assert!((q - p).length() <= side, "chord {p:?} → {q:?}");
+                        }
+                    }
                 }
+            }
+            let crossings = super::boundary_crossings(
+                &topo,
+                lateral.expect("a lateral face"),
+                Vec3::new(1.0, 0.0, 0.0),
+                0.9,
+                Tolerance::new(),
+            )
+            .unwrap();
+            assert_eq!(crossings.len(), 4, "{crossings:?}");
+            for x in crossings {
+                assert!(
+                    (x.x().hypot(x.y()) - 1.5).abs() < 1e-9,
+                    "crossing off the rims: {x:?}"
+                );
             }
         }
 
