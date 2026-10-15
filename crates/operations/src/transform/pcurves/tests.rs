@@ -181,16 +181,67 @@ fn chart_maps_are_exact_images_of_the_transform() {
     }
 }
 
-/// Rigid motions of cylinders and cones keep their pcurves bit-exact.
+/// Only the pcurves move: every carrier is rebuilt exactly as before B89
+/// (booleans are tuned on where those frames put the seam). Sphere and torus
+/// frames are carried, so a rigid motion leaves their pcurves bit-exact.
 #[test]
-fn rigid_motions_keep_analytic_band_pcurves_bit_exact() {
-    for (carrier, surface, corners) in carriers().into_iter().skip(1) {
-        let mut topo = Topology::new();
-        let face = face_on(&mut topo, surface, corners);
-        match transform_face(&mut topo, face, &rigid()) {
-            ChartMap::Unchanged => {}
-            ChartMap::Affine(map) => assert!(map.is_identity(), "{carrier}: {map:?}"),
-            ChartMap::Replaced => panic!("{carrier}: rigid motion replaced the chart"),
+fn carriers_keep_their_frames_and_only_pcurves_move() {
+    use crate::transform::{scaled_radius, transform_direction};
+    for (what, matrix) in matrices() {
+        for (carrier, surface, corners) in carriers().into_iter().skip(1) {
+            let mut topo = Topology::new();
+            let face = face_on(&mut topo, surface.clone(), corners);
+            let chart = transform_face(&mut topo, face, &matrix);
+            let moved = format!("{:?}", topo.face(face).unwrap().surface());
+            // The transform's own column-norm arithmetic, for bit equality.
+            let m = &matrix.0;
+            let sx = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
+            let expected = match &surface {
+                FaceSurface::Cylinder(old) => FaceSurface::Cylinder(
+                    CylindricalSurface::new(
+                        matrix.mul_point(old.origin()),
+                        transform_direction(&matrix, old.axis()).unwrap(),
+                        scaled_radius(&matrix, old.axis(), old.radius()),
+                    )
+                    .unwrap(),
+                ),
+                FaceSurface::Cone(old) => FaceSurface::Cone(
+                    ConicalSurface::new(
+                        matrix.mul_point(old.apex()),
+                        transform_direction(&matrix, old.axis()).unwrap(),
+                        old.half_angle(),
+                    )
+                    .unwrap(),
+                ),
+                FaceSurface::Sphere(old) => FaceSurface::Sphere(
+                    SphericalSurface::with_frame(
+                        matrix.mul_point(old.center()),
+                        old.radius() * sx,
+                        transform_direction(&matrix, old.z_axis()).unwrap(),
+                        transform_direction(&matrix, old.x_axis()).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+                FaceSurface::Torus(old) => FaceSurface::Torus(
+                    ToroidalSurface::with_axis_and_ref_dir(
+                        matrix.mul_point(old.center()),
+                        old.major_radius() * sx,
+                        old.minor_radius() * sx,
+                        transform_direction(&matrix, old.z_axis()).unwrap(),
+                        transform_direction(&matrix, old.x_axis()).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+                FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => unreachable!(),
+            };
+            assert_eq!(moved, format!("{expected:?}"), "{carrier} / {what}");
+            let carried_frame = matches!(surface, FaceSurface::Sphere(_) | FaceSurface::Torus(_));
+            if carried_frame && linear_determinant(&matrix) > 0.0 {
+                let ChartMap::Affine(map) = chart else {
+                    panic!("{carrier} / {what}: {chart:?}");
+                };
+                assert!(map.is_identity(), "{carrier} / {what}: {map:?}");
+            }
         }
     }
 }
