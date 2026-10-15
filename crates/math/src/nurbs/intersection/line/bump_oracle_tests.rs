@@ -395,3 +395,40 @@ fn far_oblique_origin_keeps_the_callers_line() {
     assert_eq!(hits.len(), 1, "{hits:?}");
     assert!((hits[0].point - target).length() < 1e-9, "{hits:?}");
 }
+
+/// Weights spanning many orders of magnitude across the surface: the bump's
+/// region carries weights 1e-200 while the first rows carry 1. Uniform
+/// weights over a span's support leave its geometry unchanged, so the
+/// crossings near the bump are the plain surface's. Normalising by the global
+/// largest weight left the bump region's values ~1e-200, inside the rounding
+/// slack, so nothing was rejected and the far-flank crossing was missed.
+#[test]
+fn regional_weight_scale_keeps_narrow_bump_crossings() {
+    let plain = bump_graph(30, &[(13, 13, 1.5)]);
+    let weights = (0..30)
+        .map(|i| vec![if i < 3 { 1.0 } else { 1e-200 }; 30])
+        .collect();
+    let mixed = NurbsSurface::new(
+        2,
+        2,
+        plain.knots_u().to_vec(),
+        plain.knots_v().to_vec(),
+        plain.control_points().to_vec(),
+        weights,
+    )
+    .unwrap();
+    let peak = 12.5 / 28.0;
+    let origin = Point3::new(peak, peak, 1.1);
+    let dir = Vec3::new(
+        0.573_576_436_351_046,
+        0.740_535_693_464_567_5,
+        0.350_889_803_483_932_2,
+    );
+    let expected = oracle_crossings(&plain, origin, dir);
+    let hits = intersect_line_nurbs(&mixed, origin, dir, 20).unwrap();
+    assert_matches_oracle(
+        &line_parameters(origin, dir, &hits),
+        &expected,
+        "mixed weights",
+    );
+}
