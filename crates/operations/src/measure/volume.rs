@@ -474,7 +474,16 @@ const MESH_VOLUME_FLOOR: f64 = 1e-12;
 
 /// `volume`, the volume of `mesh`, when it clears [`MESH_VOLUME_FLOOR`]
 /// against the magnitudes of the mesh's tetrahedra about its own centre.
+///
+/// Only a mesh whose directed edges cancel has a volume that is the same
+/// about every point (see [`summation_point`]). One with a face wound the
+/// wrong way is summed about the world origin, so its sum grows with its
+/// distance from it and says nothing about its size; it keeps the absolute
+/// `1e-12` floor it always had.
 fn enclosed_mesh_volume(mesh: &tessellate::TriangleMesh, volume: f64) -> Option<f64> {
+    if !directed_edges_cancel(mesh.indices.chunks_exact(3).map(|t| [t[0], t[1], t[2]])) {
+        return (volume > 1e-12).then_some(volume);
+    }
     let reference = local_reference(mesh.indices.iter().map(|&i| mesh.positions[i as usize]))?;
     let magnitude: f64 = mesh
         .indices
@@ -5506,6 +5515,43 @@ mod regression_tests {
                 "scale {scale:e}: a flattened mesh encloses nothing"
             );
         }
+    }
+
+    /// B127: the relative floor holds only for a mesh whose directed edges
+    /// cancel. A 1e-6 tetrahedron at (1e-6, 1e-6, 1e-6) with its slanted face
+    /// wound the wrong way is still edge-closed, but sums about the world
+    /// origin to 7/6e-18, seven times its 1/6e-18. Under the absolute floor,
+    /// as before, that placement-dependent sum is not taken as material;
+    /// the consistently wound tetrahedron there measures exactly.
+    #[test]
+    fn closed_mesh_volume_floor_needs_cancelling_edges() {
+        let (topo, solid, _) = cylinder_and_clamp();
+        let (s, a) = (1e-6, 1e-6);
+        let tetra = |slanted: [u32; 3]| tessellate::TriangleMesh {
+            positions: vec![
+                Point3::new(a, a, a),
+                Point3::new(a + s, a, a),
+                Point3::new(a, a + s, a),
+                Point3::new(a, a, a + s),
+            ],
+            normals: vec![Vec3::new(0.0, 0.0, 1.0); 4],
+            indices: [[0, 2, 1], [0, 1, 3], [0, 3, 2], slanted].concat(),
+        };
+        let wound = tetra([1, 2, 3]);
+        assert!(mesh_is_closed(&wound));
+        let read = closed_mesh_or_exact_volume(&topo, solid, &wound, "test").unwrap();
+        let expected = s * s * s / 6.0;
+        assert!(
+            read.is_some_and(|v| (v - expected).abs() <= 1e-12 * expected),
+            "wound tetrahedron read {read:?}, expected {expected:e}"
+        );
+        let reversed = tetra([1, 3, 2]);
+        assert!(mesh_is_closed(&reversed));
+        assert_eq!(
+            closed_mesh_or_exact_volume(&topo, solid, &reversed, "test").unwrap(),
+            None,
+            "a face wound the wrong way has no placement-free volume"
+        );
     }
 
     /// B127: the floor follows the tetrahedra's own magnitude, not the bounding
