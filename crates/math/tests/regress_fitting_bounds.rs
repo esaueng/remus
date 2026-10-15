@@ -368,4 +368,17 @@ fn overflowed_chord_parameters_are_refused_before_assembly() {
             other => panic!("n = {n}: expected ParameterOutOfRange, got {other:?}"),
         }
     }
+    // Review follow-up: least squares took the same NaN parameters inside
+    // its work budget (3320 points, 512 control points: 1.0·10⁹) and ran the
+    // whole normal-equation solve before failing. It is refused up front too.
+    let points: Vec<Point3> = (0..3320)
+        .map(|i| Point3::new(if i % 2 == 0 { 0.0 } else { 1e200 }, 0.0, 0.0))
+        .collect();
+    match approximate(&points, 3, 512) {
+        Err(MathError::ParameterOutOfRange { value, min, max }) => {
+            assert!(value.is_nan(), "parameter {value}");
+            assert_eq!((min, max), (0.0, 1.0));
+        }
+        other => panic!("approximate: expected ParameterOutOfRange, got {other:?}"),
+    }
 }
