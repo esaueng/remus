@@ -1712,7 +1712,7 @@ fn reflection_carries_use_authority_to_the_flipped_use() {
                 }
             }
         }
-        found.expect("use is present")
+        found.unwrap()
     }
 
     let mut topo = Topology::new();
@@ -1729,14 +1729,14 @@ fn reflection_carries_use_authority_to_the_flipped_use() {
         .to_vec();
     // Bottom rim, seam up, top rim, seam down: the seam is used both ways.
     assert_eq!(uses.len(), 4);
-    for (i, used) in uses.iter().enumerate() {
-        let tag = i as f64;
+    for (i, used) in (0_i32..).zip(&uses) {
+        let tag = f64::from(i);
         let line = Line2D::new(Point2::new(tag, 0.0), Vec2::new(0.0, 1.0)).unwrap();
         let pcurve = PCurve::new(Curve2D::Line(line), 10.0 * tag, 10.0 * tag + 1.0);
         topo.set_pcurve_oriented(used.edge(), lateral, used.is_forward(), pcurve)
             .unwrap();
         let coedge = coedge_of(&topo, lateral, used.edge(), used.is_forward());
-        topo.set_coedge_periodic_winding(coedge, PeriodicWinding::new(i as i32, -1))
+        topo.set_coedge_periodic_winding(coedge, PeriodicWinding::new(i, -1))
             .unwrap();
     }
 
@@ -1752,18 +1752,18 @@ fn reflection_carries_use_authority_to_the_flipped_use() {
         assert_eq!(now.edge(), was.edge());
         assert_eq!(now.is_forward(), !was.is_forward());
     }
-    for (i, used) in uses.iter().enumerate() {
-        let tag = i as f64;
+    for (i, used) in (0_i32..).zip(&uses) {
+        let tag = f64::from(i);
         let pcurve = topo
             .pcurve_oriented(used.edge(), lateral, !used.is_forward())
-            .expect("pcurve moved to the flipped use");
+            .unwrap();
         assert_eq!(pcurve.evaluate(0.0).x().to_bits(), tag.to_bits());
         assert_eq!(pcurve.t_start().to_bits(), (10.0 * tag + 1.0).to_bits());
         assert_eq!(pcurve.t_end().to_bits(), (10.0 * tag).to_bits());
         let coedge = coedge_of(&topo, lateral, used.edge(), !used.is_forward());
         assert_eq!(
             topo.coedge(coedge).unwrap().periodic_winding(),
-            PeriodicWinding::new(i as i32, -1)
+            PeriodicWinding::new(i, -1)
         );
     }
 }

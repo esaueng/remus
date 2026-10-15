@@ -1710,14 +1710,14 @@ pub(crate) fn reverse_face_boundaries(
     topo: &mut Topology,
     faces: &[FaceId],
 ) -> Result<(), crate::OperationsError> {
-    type Authority = (Option<PCurve>, PeriodicWinding);
+    type UseAuthority = DetHashMap<(EdgeId, bool), (Option<PCurve>, PeriodicWinding)>;
 
     // Snapshot every face before replacing any wire: a replacement rebuilds
     // the loops of every face that uses the wire.
     let mut seen = DetHashSet::default();
     let mut wires = Vec::new();
     let mut seen_wires = DetHashSet::default();
-    let mut carried: Vec<(FaceId, DetHashMap<(EdgeId, bool), Authority>)> = Vec::new();
+    let mut carried: Vec<(FaceId, UseAuthority)> = Vec::new();
     for &face_id in faces {
         if !seen.insert(face_id) {
             continue;
