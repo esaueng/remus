@@ -25,7 +25,7 @@ There are three fillet code paths and two chamfer paths. "v1 vs v2" is a simplif
 1. `blend_ops::fillet_v2` (which for planar-line selections runs `planar_fillet_result`, the rolling-ball rebuild, before the walking builder)
 2. `planar_fillet_result` on its own, behind the same hole guard (`reject_blend_into_hole`, B86) and lazy B71 material guard `fillet_v2` applies (B124)
 
-A band's reach on a planar face is the setback `fillet_contact_setback` computes (r·tan(θ/2) between planes, θ the angle between outward normals), never below r: the hole guard (B87) and the rolling-ball adjacent-extent guard (Phase 2b, B124) both measure it.
+A band's reach on a planar face is the setback `fillet_contact_setback` computes (r·tan(θ/2) between planes, θ the angle between outward normals). The hole guard (B87) never takes it below r, since it runs before the rolling ball classifies the edge; the rolling-ball adjacent-extent guard (Phase 2b, B124) keeps that floor only for stripes it could not classify, whose contacts then land one radius out.
 
 The flat bevel `fillet::fillet` is not consulted for a fillet request. When both fail, the walking engine's typed error is returned and the input is untouched. `BlendResult::engine` discloses the engine that produced the result. The wasm helper `try_fillet` (`crates/wasm/src/helpers.rs`) only drops tangent/degenerate edges via `filter_filletable_edges` and calls the cascade.
 
