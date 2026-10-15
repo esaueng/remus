@@ -43,6 +43,11 @@ const CURVE_SEGMENTS: usize = 32;
 /// the rounding of a computed hit point, far below any feature size.
 const RELATIVE_MARGIN: f64 = 1e-9;
 
+/// Graze margin per unit of coordinate magnitude: a few hundred ULPs, so a
+/// small solid placed far from the world origin (one ULP near 1e9 is about
+/// 1.2e-7) still catches rays its own vertices were rounded onto.
+const ROUNDOFF_MARGIN: f64 = 256.0 * f64::EPSILON;
+
 /// Up to this many edges a ray tests every edge box in turn; above it, a BVH
 /// over the boxes is built once and queried per ray.
 const LINEAR_SCAN_MAX: usize = 16;
@@ -156,12 +161,17 @@ impl BoundarySkeleton {
             }
         }
 
-        let extent = boxed
+        let (extent, magnitude) = boxed
             .iter()
             .map(|(_, aabb, _)| *aabb)
             .reduce(Aabb3::union)
-            .map_or(0.0, |aabb| (aabb.max - aabb.min).length());
-        let margin = RELATIVE_MARGIN * extent.max(1.0);
+            .map_or((0.0, 0.0), |aabb| {
+                (
+                    (aabb.max - aabb.min).length(),
+                    max_abs(aabb.min).max(max_abs(aabb.max)),
+                )
+            });
+        let margin = (RELATIVE_MARGIN * extent.max(1.0)).max(ROUNDOFF_MARGIN * magnitude);
         let edges: Vec<SkeletonEdge> = boxed
             .into_iter()
             .map(|(id, aabb, shape)| SkeletonEdge {
@@ -194,13 +204,15 @@ impl BoundarySkeleton {
         origin: Point3,
         direction: Vec3,
     ) -> Result<bool, CheckError> {
-        let margin_sq = self.margin * self.margin;
+        // A ray cast from far beyond the skeleton rounds at its own scale.
+        let margin = self.margin.max(ROUNDOFF_MARGIN * max_abs(origin));
+        let margin_sq = margin * margin;
         let near = |edge: &SkeletonEdge| -> Result<bool, CheckError> {
             if let EdgeShape::Curve {
                 circle: Some(circle),
                 ..
             } = edge.shape
-                && !circle_may_graze(circle, origin, direction, self.margin)
+                && !circle_may_graze(circle, origin, direction, margin)
             {
                 return Ok(false);
             }
@@ -345,6 +357,10 @@ fn circle_may_graze(
     let slack = direction.length() * 0.5 * (hi - lo);
     let excess = (rho - radius).abs() - slack - margin;
     excess.is_nan() || excess <= 0.0
+}
+
+fn max_abs(p: Point3) -> f64 {
+    p.x().abs().max(p.y().abs()).max(p.z().abs())
 }
 
 fn is_finite(p: Point3) -> bool {
