@@ -289,7 +289,7 @@ fn serializer_refuses_what_the_reader_would() {
 fn step_plane_with_unnormalized_direction_crosses_the_arena() {
     // Ratios whose squared length overflows or underflows f64 are still
     // valid directions.
-    for scale in ["2.5E0", "1.0E200", "1.0E-200"] {
+    for scale in ["2.5E0", "1.0E200", "1.0E-200", "1.0E-320"] {
         step_plane_with_scaled_directions_crosses_the_arena(scale);
     }
 }
