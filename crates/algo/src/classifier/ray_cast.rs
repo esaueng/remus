@@ -597,6 +597,29 @@ pub fn classify_ray_cast_cached_with_tolerance(
         Ok(FaceClass::Outside)
     }
 }
+
+/// Crossing parity and suspicion of the cardinal and then the generic ray
+/// triple from `point`, as a vote casts them.
+///
+/// With `cull` false the torus line cull is skipped: the vote loop before it,
+/// kept verbatim as the differential oracle for that skip.
+#[doc(hidden)]
+#[must_use]
+pub fn ray_cast_rays_cached(
+    geoms: &RayCastGeoms,
+    point: Point3,
+    tolerance: Tolerance,
+    cull: bool,
+) -> [[(bool, bool); 3]; 2] {
+    [0, 3].map(|base| {
+        if cull {
+            cast_rays(&geoms.faces, point, base, tolerance, false)
+        } else {
+            cast_rays_unculled(&geoms.faces, point, base, tolerance, false)
+        }
+    })
+}
+
 /// `BK_RAY_POINT=x,y,z[,radius]` — the point (and match radius) for `RAYTRACE`.
 ///
 /// Resolved once: the classifier runs this per sub-face, so an env lookup here
@@ -728,6 +751,87 @@ fn cast_rays(
     let near = 10.0 * tol.linear;
     let mut crossings = [0i32; 3];
     let mut suspicious = [false; 3];
+    // Bounds-checked once here rather than per plane group and ray.
+    let dirs = &RAY_DIRS[base..base + 3];
+    for group in &face_data.planes {
+        let numer = group.d - dot_normal_point(group.normal, point);
+        let denoms = &group.denoms[base..base + 3];
+        for i in 0..3 {
+            let ray_dir = dirs[i];
+            match plane_hit(point, ray_dir, denoms[i], numer, tol) {
+                PlaneHit::Ahead(hit) => {
+                    let p = group.axis.project(hit);
+                    for face in &group.faces {
+                        let (c, s) = face.polygon_hit(hit, p, near);
+                        crossings[i] += c;
+                        suspicious[i] |= s;
+                        if traced {
+                            trace_face(label, ray_dir, &face.kind(), (c, s));
+                        }
+                    }
+                }
+                // Every face of the group misses alike, so the group adds
+                // what one face adds (a group is never empty).
+                miss => {
+                    let s = miss == PlaneHit::Parallel(true);
+                    suspicious[i] |= s;
+                    if traced {
+                        for face in &group.faces {
+                            trace_face(label, ray_dir, &face.kind(), (0, s));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for geom in &face_data.others {
+        for i in 0..3 {
+            let ray_dir = dirs[i];
+            let (c, s) = if line_clears_carrier(geom, point, ray_dir) {
+                crate::perf::bump_ray_work(RayWork::TorusCull);
+                (0, false)
+            } else {
+                ray_geom_crossings(point, ray_dir, geom, tol)
+            };
+            crossings[i] += c;
+            suspicious[i] |= s;
+            if traced {
+                trace_face(label, ray_dir, &geom_kind(geom), (c, s));
+            }
+        }
+    }
+    let mut rays = [(false, false); 3];
+    for (i, ray) in rays.iter_mut().enumerate() {
+        *ray = (crossings[i] % 2 != 0, suspicious[i]);
+        if traced {
+            let ray_dir = RAY_DIRS[base + i];
+            log::debug!(
+                "RAYTRACE {label} dir=({:.3},{:.3},{:.3}) crossings={} parity={} suspicious={}",
+                ray_dir.x(),
+                ray_dir.y(),
+                ray_dir.z(),
+                crossings[i],
+                crossings[i] % 2,
+                suspicious[i]
+            );
+        }
+    }
+    rays
+}
+
+/// [`cast_rays`] without the torus line cull, verbatim.
+fn cast_rays_unculled(
+    face_data: &FaceGeoms,
+    point: Point3,
+    base: usize,
+    tol: Tolerance,
+    traced: bool,
+) -> [(bool, bool); 3] {
+    crate::perf::bump_ray_work(RayWork::Vote);
+    let label = if base == 0 { "cardinal" } else { "generic" };
+    let near = 10.0 * tol.linear;
+    let mut crossings = [0i32; 3];
+    let mut suspicious = [false; 3];
     for group in &face_data.planes {
         let numer = group.d - dot_normal_point(group.normal, point);
         for i in 0..3 {
@@ -786,6 +890,109 @@ fn cast_rays(
         }
     }
     rays
+}
+
+/// Whether the line through `origin` along `ray_dir` stays so far from a
+/// torus face's carrier that the face contributes `(0, false)` to the ray, so
+/// [`ray_geom_crossings`] need not run. Only torus faces are tested: their
+/// quartic solve is the costly crossing test, while the cylinder and cone
+/// tests are closed-form quadratics no cheaper to cull than to run.
+fn line_clears_carrier(geom: &FaceGeom, origin: Point3, ray_dir: Vec3) -> bool {
+    match geom {
+        FaceGeom::Torus { surface, .. } | FaceGeom::TrimmedTorus { surface, .. } => {
+            torus_line_is_clear(surface, origin, ray_dir)
+        }
+        FaceGeom::Planar { .. } | FaceGeom::Cylinder { .. } | FaceGeom::Cone { .. } => false,
+    }
+}
+
+/// Largest `Λ = 1 + |p0| + R + r` (see [`torus_line_is_clear`]) of a line the
+/// torus cull clears.
+const TORUS_CULL_MAX_REACH: f64 = 1e10;
+
+/// Whether `intersect_line_torus` provably returns no root for the line
+/// through `origin` along `ray_dir`, normalized as both torus crossing tests
+/// normalize it. With no root a torus face reports no crossing and no
+/// suspicion, whatever its trim or bands.
+///
+/// In the torus frame, with `p0` and `v` the line's origin and direction
+/// computed as the solver computes them, the solver's quartic along the line
+/// is `P(t) = (d² - r²)(d'² - r²)`, where `d` is the distance from the line
+/// point to the core circle and `d' >= d` the distance to the core-circle
+/// point opposite it across the axis. A root survives the solver's residual
+/// filter only if `|P(x) / e4| <= 1e-6 (1 + |c3| + |c2| + |c1| + |c0| + x⁴)`,
+/// the `c_k` being the monic coefficients. With `|v|` within 1e-3 of one and
+/// `Λ = 1 + |p0| + R + r`, that sum is at most `33 Λ⁴`. When the line misses
+/// the box `[-(R + r), R + r]² x [-r, r]` grown by `D`, where
+/// `2 r D + D² = 0.0125 Λ²`, every line point has `d >= r + D`, so for
+/// `|x| <= 3 Λ` the left side is at least `1.55e-4 Λ⁴` against a bound of at
+/// most `1.15e-4 Λ⁴`; for `|x| > 3 Λ`, `d - r > 0.33 |x|` makes it at least
+/// `0.012 x⁴` against at most `1.5e-6 x⁴`. The gaps dwarf the rounding of the
+/// coefficients and of their evaluation, and the box is grown by a further
+/// `1e-9 Λ`, far above the rounding of this test.
+///
+/// That covers every iterate whose fourth power is finite. An iterate that
+/// overflowed passes the filter's comparisons, so no line with `Λ` above
+/// [`TORUS_CULL_MAX_REACH`] is cleared: from about `Λ = 1.4e11` the solver
+/// overflows on the lines the box test would clear. Its first sweep moves the
+/// iterate seeded at 1 out to about `Λ⁴ / 4`, the second sweep's complex
+/// division multiplies about seven such factors, past `f64` range, and all
+/// four roots come back NaN, which can still flag a trimmed face's ray
+/// suspicious. At the cap that product is about `1e276`, and on every cleared
+/// line up to it the oracles get no root at all, finite or not.
+///
+/// Out of line: only torus faces call it, and the vote loop stays small.
+#[inline(never)]
+fn torus_line_is_clear(
+    torus: &remus_math::surfaces::ToroidalSurface,
+    origin: Point3,
+    ray_dir: Vec3,
+) -> bool {
+    let Ok(dir) = ray_dir.normalize() else {
+        return false;
+    };
+    let c = torus.center();
+    let (xa, ya, za) = (torus.x_axis(), torus.y_axis(), torus.z_axis());
+    let (big_r, small_r) = (torus.major_radius(), torus.minor_radius());
+    let o = Vec3::new(origin.x() - c.x(), origin.y() - c.y(), origin.z() - c.z());
+    let p0 = [xa.dot(o), ya.dot(o), za.dot(o)];
+    let v = [xa.dot(dir), ya.dot(dir), za.dot(dir)];
+    let speed2 = v[0].mul_add(v[0], v[1].mul_add(v[1], v[2] * v[2]));
+    if !((0.998..=1.002).contains(&speed2) && big_r > 0.0 && small_r > 0.0) {
+        return false;
+    }
+    let reach = 1.0
+        + p0[0]
+            .mul_add(p0[0], p0[1].mul_add(p0[1], p0[2] * p0[2]))
+            .sqrt()
+        + big_r
+        + small_r;
+    if !reach.is_finite() || reach > TORUS_CULL_MAX_REACH {
+        return false;
+    }
+    let grow = small_r.mul_add(small_r, 0.0125 * reach * reach).sqrt() - small_r + 1e-9 * reach;
+    let half = [
+        big_r + small_r + grow,
+        big_r + small_r + grow,
+        small_r + grow,
+    ];
+    let (mut lo, mut hi) = (f64::NEG_INFINITY, f64::INFINITY);
+    for k in 0..3 {
+        if v[k] == 0.0 {
+            if p0[k].abs() > half[k] {
+                return true;
+            }
+            continue;
+        }
+        let a = (-half[k] - p0[k]) / v[k];
+        let b = (half[k] - p0[k]) / v[k];
+        lo = lo.max(a.min(b));
+        hi = hi.min(a.max(b));
+        if lo > hi {
+            return true;
+        }
+    }
+    false
 }
 
 /// Log one face's contribution to a traced ray.
@@ -1178,7 +1385,7 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
                 continue;
             }
             if let Some(trim) =
-                super::torus_patch::trimmed_torus_polygon(topo, fid, Tolerance::default())
+                super::torus_patch::trimmed_torus_polygon_memoized(topo, fid, Tolerance::default())
             {
                 result.push(FaceGeom::TrimmedTorus {
                     surface: t.clone(),
@@ -2322,3 +2529,6 @@ mod tests {
 
 #[cfg(test)]
 mod gate_oracle_tests;
+
+#[cfg(test)]
+mod torus_cull_oracle_tests;

@@ -64,12 +64,13 @@ impl BrepKernel {
     pub fn new() -> Self {
         crate::panics::install_hook();
         // Content-keyed face integrals, NURBS areas, face boxes, planar arc
-        // pcurves and revolved wire areas, plus identity-keyed volume
-        // readings (off in the library by default). Module-wide on purpose:
-        // a body validated in one kernel is a content-keyed hit when a
-        // short-lived probe kernel validates its deserialized copy, and an
-        // unchanged hole rim or wall is a hit on every later cut of the same
-        // body. Every hit is bit-identical to recomputing. Idempotent.
+        // pcurves, revolved wire areas and the ray classifier's torus trims,
+        // plus identity-keyed volume readings (off in the library by
+        // default). Module-wide on purpose: a body validated in one kernel is
+        // a content-keyed hit when a short-lived probe kernel validates its
+        // deserialized copy, and an unchanged hole rim, wall or blend is a
+        // hit on every later cut of the same body. Every hit is bit-identical
+        // to recomputing. Idempotent.
         remus_check::properties::face_cache::enable_thread_face_cache();
         remus_operations::measure::enable_thread_volume_memo();
         remus_operations::measure::enable_thread_nurbs_area_memo();
@@ -77,6 +78,7 @@ impl BrepKernel {
         remus_operations::tessellate::enable_face_mesh_cache();
         remus_algo::pcurve_memo::enable_thread_pcurve_memo();
         remus_algo::wire_area_memo::enable_thread_wire_area_memo();
+        remus_algo::ray_geom_memo::enable_thread_ray_geom_memo();
         Self {
             topo: Rc::new(Topology::new()),
             assemblies: HandleStore::default(),

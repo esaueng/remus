@@ -43,7 +43,8 @@
 //! vote loop (`classifier::ray_cast`, PERF-Q07 subset): votes, plane hits,
 //! polygon tests, polygon tests the face's bounding box settles outright,
 //! exact point-segment distances and exact winding numbers, plus the planar
-//! faces and distinct planes of each geometry build.
+//! faces and distinct planes of each geometry build, and the torus faces a
+//! ray skips because its line stays clear of the carrier.
 //!
 //! `winding_cut_projections` counts the winding-loop cuts projected onto a
 //! closed section loop in `presplit_closed_winding_loops`. Every face carries
@@ -103,7 +104,7 @@ std::thread_local! {
 
 #[cfg(any(test, feature = "perf-counters"))]
 std::thread_local! {
-    static RAY_WORK: std::cell::Cell<[u64; 8]> = const { std::cell::Cell::new([0; 8]) };
+    static RAY_WORK: std::cell::Cell<[u64; 9]> = const { std::cell::Cell::new([0; 9]) };
     static WINDING_CUT_PROJECTIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
@@ -118,6 +119,7 @@ pub(crate) enum RayWork {
     Winding,
     PlanarFace,
     PlaneGroup,
+    TorusCull,
 }
 
 /// Count one unit of ray-cast planar work. Crate-internal.
@@ -154,6 +156,9 @@ pub struct RayWorkCounts {
     pub planar_faces: u64,
     /// Distinct supporting planes (exact bits) among those faces.
     pub plane_groups: u64,
+    /// Torus faces a ray skipped because its line provably stays clear of
+    /// the carrier.
+    pub torus_culls: u64,
 }
 
 /// This thread's ray-cast vote-loop work since the previous call, resetting
@@ -170,7 +175,8 @@ pub fn take_ray_work() -> RayWorkCounts {
         windings,
         planar_faces,
         plane_groups,
-    ] = RAY_WORK.with(|work| work.replace([0; 8]));
+        torus_culls,
+    ] = RAY_WORK.with(|work| work.replace([0; 9]));
     RayWorkCounts {
         votes,
         plane_evals,
@@ -180,6 +186,7 @@ pub fn take_ray_work() -> RayWorkCounts {
         windings,
         planar_faces,
         plane_groups,
+        torus_culls,
     }
 }
 

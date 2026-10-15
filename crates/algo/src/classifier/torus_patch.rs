@@ -101,10 +101,118 @@ pub fn rectangular_torus_domain(
 /// A local torus trim. The carrier is exact; this polygon approximates only
 /// trim membership with adaptive sampling. `margin` includes the sampling
 /// target and observed projection error; near-trim ray hits remain suspicious.
-pub(super) struct TorusTrim {
+#[derive(Debug, Clone, PartialEq)]
+pub struct TorusTrim {
     pub polygon: Vec<remus_math::vec::Point2>,
     pub centre: remus_math::vec::Point2,
     pub margin: f64,
+}
+
+impl TorusTrim {
+    /// Bytes the polygon holds.
+    pub const fn heap_bytes(&self) -> usize {
+        self.polygon.len() * std::mem::size_of::<remus_math::vec::Point2>()
+    }
+}
+
+/// [`trimmed_torus_polygon`] through this thread's ray-geometry memo when it
+/// is on and the face has a key (see [`trim_key`]).
+pub(super) fn trimmed_torus_polygon_memoized(
+    topo: &Topology,
+    face_id: FaceId,
+    tol: Tolerance,
+) -> Option<TorusTrim> {
+    if crate::ray_geom_memo::enabled()
+        && let Some(key) = trim_key(topo, face_id, tol)
+    {
+        return crate::ray_geom_memo::memoized(&key, || trimmed_torus_polygon(topo, face_id, tol));
+    }
+    trimmed_torus_polygon(topo, face_id, tol)
+}
+
+/// Leading word of a torus-trim key in the ray-geometry memo.
+const TORUS_TRIM_KEY: u64 = 1;
+
+/// The exact bits [`trimmed_torus_polygon`] reads: the tolerance, the torus,
+/// then per outer-wire edge in traversal order its direction, domain,
+/// endpoints, tolerance and curve. Counts and tags make the encoding
+/// prefix-free. `None` when the builder would decline before reading an edge
+/// (not a hole-free ring torus), for a hyperbola or parabola edge, or when a
+/// lookup or domain fails (the builder then declines on its own).
+fn trim_key(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Option<Vec<u64>> {
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::{edge::EdgeCurve, face::FaceSurface};
+    fn point(key: &mut Vec<u64>, p: Point3) {
+        key.extend([p.x(), p.y(), p.z()].map(f64::to_bits));
+    }
+    fn vector(key: &mut Vec<u64>, v: Vec3) {
+        key.extend([v.x(), v.y(), v.z()].map(f64::to_bits));
+    }
+    fn count(key: &mut Vec<u64>, n: usize) {
+        key.push(n as u64);
+    }
+    let face = topo.face(face_id).ok()?;
+    let FaceSurface::Torus(torus) = face.surface() else {
+        return None;
+    };
+    if !face.inner_wires().is_empty() || torus.major_radius() <= torus.minor_radius() {
+        return None;
+    }
+    let edges = topo.wire(face.outer_wire()).ok()?.edges();
+    let mut key = Vec::with_capacity(16 + 32 * edges.len());
+    key.push(TORUS_TRIM_KEY);
+    key.extend([tol.linear, tol.angular, tol.relative].map(f64::to_bits));
+    point(&mut key, torus.center());
+    key.extend([torus.major_radius(), torus.minor_radius()].map(f64::to_bits));
+    vector(&mut key, torus.x_axis());
+    vector(&mut key, torus.y_axis());
+    vector(&mut key, torus.z_axis());
+    count(&mut key, edges.len());
+    for oe in edges {
+        let edge = topo.edge(oe.edge()).ok()?;
+        let (t0, t1) = edge.strict_domain().ok()?;
+        key.push(u64::from(oe.is_forward()));
+        key.extend([t0, t1].map(f64::to_bits));
+        point(&mut key, topo.vertex(edge.start()).ok()?.point());
+        point(&mut key, topo.vertex(edge.end()).ok()?.point());
+        match edge.tolerance() {
+            Some(t) => key.extend([1, t.to_bits()]),
+            None => key.push(0),
+        }
+        match edge.curve() {
+            EdgeCurve::Line => key.push(0),
+            EdgeCurve::Circle(c) => {
+                key.push(1);
+                point(&mut key, c.center());
+                vector(&mut key, c.normal());
+                key.push(c.radius().to_bits());
+                vector(&mut key, c.u_axis());
+                vector(&mut key, c.v_axis());
+            }
+            EdgeCurve::Ellipse(e) => {
+                key.push(2);
+                point(&mut key, e.center());
+                vector(&mut key, e.normal());
+                key.extend([e.semi_major(), e.semi_minor()].map(f64::to_bits));
+                vector(&mut key, e.u_axis());
+                vector(&mut key, e.v_axis());
+            }
+            EdgeCurve::NurbsCurve(n) => {
+                key.push(3);
+                count(&mut key, n.degree());
+                count(&mut key, n.knots().len());
+                key.extend(n.knots().iter().map(|k| k.to_bits()));
+                count(&mut key, n.control_points().len());
+                for &p in n.control_points() {
+                    point(&mut key, p);
+                }
+                count(&mut key, n.weights().len());
+                key.extend(n.weights().iter().map(|w| w.to_bits()));
+            }
+            EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => return None,
+        }
+    }
+    Some(key)
 }
 
 /// Recognize a hole-free local patch (less than half a turn in each angle).
@@ -346,5 +454,226 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A five-edge patch `[u0, u0 + du] x [v0, v0 + 1.0]` whose bottom rim
+    /// is split in two; with `nurbs`, the first half is a rational quadratic
+    /// NURBS arc instead of a circle arc. Neither is a four-arc rectangle, so
+    /// both take the sampled trim.
+    fn patch(
+        topo: &mut Topology,
+        t: &ToroidalSurface,
+        (u0, v0, du): (f64, f64, f64),
+        nurbs: bool,
+    ) -> FaceId {
+        use remus_math::nurbs::curve::NurbsCurve;
+        let (u1, v1) = (u0 + du, v0 + 1.0);
+        let um = f64::midpoint(u0, u1);
+        let major = |v: f64| {
+            Circle3D::new_with_ref(
+                t.center() + t.z_axis() * (t.minor_radius() * v.sin()),
+                t.z_axis(),
+                t.major_radius() + t.minor_radius() * v.cos(),
+                t.x_axis(),
+            )
+            .unwrap()
+        };
+        let minor = |u: f64| {
+            let radial = t.x_axis() * u.cos() + t.y_axis() * u.sin();
+            Circle3D::new_with_ref(
+                t.center() + radial * t.major_radius(),
+                radial.cross(t.z_axis()),
+                t.minor_radius(),
+                radial,
+            )
+            .unwrap()
+        };
+        let vertices = [(u0, v0), (um, v0), (u1, v0), (u1, v1), (u0, v1)]
+            .map(|(u, v)| topo.add_vertex(Vertex::new(t.evaluate(u, v), 1e-7)));
+        let bottom = major(v0);
+        let first = if nurbs {
+            let half = 0.5 * (um - u0);
+            let mid = u0 + half;
+            let apex = bottom.center()
+                + (bottom.u_axis() * mid.cos() + bottom.v_axis() * mid.sin())
+                    * (bottom.radius() / half.cos());
+            let curve = NurbsCurve::new(
+                2,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![bottom.evaluate(u0), apex, bottom.evaluate(um)],
+                vec![1.0, half.cos(), 1.0],
+            )
+            .unwrap();
+            (EdgeCurve::NurbsCurve(curve), (0.0, 1.0))
+        } else {
+            (EdgeCurve::Circle(bottom.clone()), (u0, um))
+        };
+        let curves = [
+            first,
+            (EdgeCurve::Circle(bottom), (um, u1)),
+            (EdgeCurve::Circle(minor(u1)), (v0, v1)),
+            (EdgeCurve::Circle(major(v1)), (u1, u0)),
+            (EdgeCurve::Circle(minor(u0)), (v1, v0)),
+        ];
+        let edges: Vec<_> = curves
+            .into_iter()
+            .enumerate()
+            .map(|(i, (c, domain))| {
+                let mut e = Edge::new(vertices[i], vertices[(i + 1) % 5], c);
+                e.set_trim(Some(domain));
+                OrientedEdge::new(topo.add_edge(e), true)
+            })
+            .collect();
+        let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+        topo.add_face(Face::new(wire, vec![], FaceSurface::Torus(t.clone())))
+    }
+
+    fn torus(major: f64, minor: f64) -> ToroidalSurface {
+        ToroidalSurface::with_axis(
+            Point3::new(2.0, -3.0, 4.0),
+            major,
+            minor,
+            Vec3::new(1.0, 2.0, 3.0),
+        )
+        .unwrap()
+    }
+
+    /// Patches on several carriers, circle- and NURBS-bordered, plus one that
+    /// differs from another by one ulp of its minor radius and one that the
+    /// trim builder declines (more than half a turn in u).
+    fn memo_corpus(topo: &mut Topology) -> Vec<FaceId> {
+        let mut faces = Vec::new();
+        for (major, minor) in [(12.0, 3.0), (0.12, 0.03), (1200.0, 300.0)] {
+            let t = torus(major, minor);
+            for anchor in [(0.3, 0.4, 1.2), (5.8, 5.9, 1.2)] {
+                for nurbs in [false, true] {
+                    faces.push(patch(topo, &t, anchor, nurbs));
+                }
+            }
+        }
+        let t = torus(12.0, 3.0_f64.next_up());
+        faces.push(patch(topo, &t, (0.3, 0.4, 1.2), true));
+        let t = torus(12.0, 3.0);
+        faces.push(patch(topo, &t, (0.3, 0.4, 3.3), false));
+        faces
+    }
+
+    fn compute_all(topo: &Topology, faces: &[FaceId]) -> Vec<String> {
+        faces
+            .iter()
+            // `Debug` prints every f64 exactly.
+            .map(|&f| {
+                format!(
+                    "{:?}",
+                    trimmed_torus_polygon_memoized(topo, f, Tolerance::default())
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn memoized_trims_are_bit_identical_to_computed_ones() {
+        use crate::ray_geom_memo::{
+            enable_thread_ray_geom_memo, set_thread_ray_geom_memo_capacity,
+            thread_ray_geom_memo_stats,
+        };
+        let mut topo = Topology::new();
+        let faces = memo_corpus(&mut topo);
+        set_thread_ray_geom_memo_capacity(0);
+        let computed = compute_all(&topo, &faces);
+        let direct: Vec<String> = faces
+            .iter()
+            .map(|&f| {
+                format!(
+                    "{:?}",
+                    trimmed_torus_polygon(&topo, f, Tolerance::default())
+                )
+            })
+            .collect();
+        enable_thread_ray_geom_memo();
+        let stored = compute_all(&topo, &faces);
+        let recalled = compute_all(&topo, &faces);
+        let stats = thread_ray_geom_memo_stats();
+        set_thread_ray_geom_memo_capacity(0);
+
+        assert_eq!(computed, direct);
+        assert_eq!(computed, stored);
+        assert_eq!(computed, recalled);
+        assert!(computed.iter().any(|t| t.starts_with("Some")));
+        assert_eq!(computed.last().map(String::as_str), Some("None"));
+        // Every face has its own key, the ulp-larger torus included (a
+        // collision would answer it from the memo while storing).
+        let n = faces.len() as u64;
+        assert_eq!((stats.misses, stats.hits), (n, n), "{stats:?}");
+    }
+
+    #[test]
+    fn trim_memo_is_bounded_and_off_by_default() {
+        use crate::ray_geom_memo::{
+            enable_thread_ray_geom_memo, set_thread_ray_geom_memo_bytes,
+            set_thread_ray_geom_memo_capacity, thread_ray_geom_memo_stats,
+        };
+        let mut topo = Topology::new();
+        let faces = memo_corpus(&mut topo);
+        set_thread_ray_geom_memo_capacity(0);
+        let _ = compute_all(&topo, &faces);
+        assert_eq!(
+            thread_ray_geom_memo_stats().len,
+            0,
+            "a disabled memo stored trims"
+        );
+        set_thread_ray_geom_memo_capacity(3);
+        let _ = compute_all(&topo, &faces);
+        assert_eq!(thread_ray_geom_memo_stats().len, 3);
+        set_thread_ray_geom_memo_capacity(1);
+        assert_eq!(thread_ray_geom_memo_stats().len, 1);
+        set_thread_ray_geom_memo_capacity(0);
+        assert_eq!(thread_ray_geom_memo_stats().bytes, 0);
+
+        // The byte budget evicts oldest first and never holds more.
+        enable_thread_ray_geom_memo();
+        let _ = compute_all(&topo, &faces);
+        let full = thread_ray_geom_memo_stats();
+        assert_eq!(full.len, faces.len());
+        let budget = full.bytes / 2;
+        set_thread_ray_geom_memo_bytes(budget);
+        let half = thread_ray_geom_memo_stats();
+        assert!(
+            half.bytes <= budget && half.len < full.len && half.len > 0,
+            "{half:?}"
+        );
+        let _ = compute_all(&topo, &faces);
+        assert!(thread_ray_geom_memo_stats().bytes <= budget);
+
+        // A trim heavier than the whole budget is not stored and evicts
+        // nothing already held.
+        set_thread_ray_geom_memo_bytes(crate::ray_geom_memo::DEFAULT_RAY_GEOM_MEMO_BYTES);
+        set_thread_ray_geom_memo_capacity(0);
+        enable_thread_ray_geom_memo();
+        let weights: Vec<usize> = faces
+            .iter()
+            .map(|&f| {
+                let before = thread_ray_geom_memo_stats().bytes;
+                let _ = trimmed_torus_polygon_memoized(&topo, f, Tolerance::default());
+                thread_ray_geom_memo_stats().bytes - before
+            })
+            .collect();
+        let heaviest = weights.iter().copied().max().unwrap();
+        let (light, &light_weight) = weights
+            .iter()
+            .enumerate()
+            .find(|(_, w)| **w < heaviest)
+            .unwrap();
+        let heavy = weights.iter().position(|&w| w == heaviest).unwrap();
+        set_thread_ray_geom_memo_capacity(0);
+        enable_thread_ray_geom_memo();
+        set_thread_ray_geom_memo_bytes(heaviest - 1);
+        let _ = trimmed_torus_polygon_memoized(&topo, faces[light], Tolerance::default());
+        let _ = trimmed_torus_polygon_memoized(&topo, faces[heavy], Tolerance::default());
+        let held = thread_ray_geom_memo_stats();
+        assert_eq!((held.len, held.bytes), (1, light_weight), "{held:?}");
+
+        set_thread_ray_geom_memo_bytes(crate::ray_geom_memo::DEFAULT_RAY_GEOM_MEMO_BYTES);
+        set_thread_ray_geom_memo_capacity(0);
     }
 }

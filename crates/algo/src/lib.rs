@@ -28,6 +28,7 @@ pub mod gfa;
 mod memo;
 pub mod pcurve_memo;
 pub mod perf;
+pub mod ray_geom_memo;
 pub mod wire_area_memo;
 
 pub use memo::MemoStats;

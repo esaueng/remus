@@ -283,6 +283,7 @@ Quick reference — find the right file for any task:
 | Opt-in per-thread content-keyed memo of planar arc pcurves (bit-identical hits; the WASM kernel enables it) | `pcurve_memo.rs` |
 | Opt-in per-thread content-keyed memo of revolved-face wire areas for shell-assembly orientation (bit-identical hits; the WASM kernel enables it) | `wire_area_memo.rs` |
 | Bounded content-keyed FIFO store shared by the opt-in memos | `memo.rs` |
+| Opt-in per-thread content-keyed memo of the ray classifier's sampled torus trims (bit-identical hits; the WASM kernel enables it) | `ray_geom_memo.rs` |
 | Differential oracle for the hole-containment box gate (the ungated test kept verbatim, tests) | `builder/face_splitter/containment/gate_oracle_tests.rs` |
 | Plane frame (3D↔UV projection) | `builder/plane_frame.rs` |
 | Wire loop reconstruction | `builder/wire_builder.rs` |
@@ -294,6 +295,7 @@ Quick reference — find the right file for any task:
 | Analytic classifier (7 variants) | `classifier/analytic.rs` |
 | Ray-cast classifier | `classifier/ray_cast.rs` |
 | Closed-form and differential oracles for the ray-cast polygon gate and shared plane hits (tests) | `classifier/ray_cast/gate_oracle_tests.rs` |
+| Differential oracles for the ray-cast torus line cull: no quartic roots on a cleared line, ray triples against the unculled vote loop, near and far past the reach cap, near-miss roots only the margin keeps (tests) | `classifier/ray_cast/torus_cull_oracle_tests.rs` |
 | Recognition of bounded rectangular torus patches | `classifier/torus_patch.rs` |
 | Shell assembly (4-phase `BuilderSolid`) | `builder/builder_solid.rs` |
 | Boolean preflight diagnostics | `diagnostic.rs` |
@@ -573,6 +575,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Persistent-reference JSON codec | `naming_io.rs` |
 | Differential oracle for the persistent-reference codec (tests) | `naming_io/oracle_tests.rs` |
 | Differential oracle over the STEP fixtures and synthetic bodies for the trim-window prune of the prepared boundary test (tests) | `tests/boundary_prune_oracle.rs` |
+| Differential oracles on the hammer holder for the ray classifier's torus-trim memo (boolean result arenas with it off, cold and warm) and torus line cull (ray triples against the unculled vote loop) (tests) | `tests/hammer_ray_geom_oracle.rs` |
 
 ### L4: render (`crates/render/src/`)
 | Task | File(s) |
