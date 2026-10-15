@@ -4129,11 +4129,53 @@ impl SignedTriangle {
                 .collect();
             // A point inside a polygon is inside its box, so the polygon test
             // runs only on the few loops whose box holds the probe rather than
-            // on every pair (the box check is exact: the probe is a vertex).
-            let boxes: Vec<remus_math::aabb::Aabb3> = polygons
+            // on every pair. The boxes live in the projection the polygon test
+            // uses, dropping the axis the face's normal is largest along: the
+            // loops' vertices are coplanar only within tolerance, so the
+            // dropped coordinate must not gate containment.
+            let drop = {
+                let n = [
+                    outer_area.x().abs(),
+                    outer_area.y().abs(),
+                    outer_area.z().abs(),
+                ];
+                if n[2] >= n[0] && n[2] >= n[1] {
+                    2
+                } else if n[1] >= n[0] {
+                    1
+                } else {
+                    0
+                }
+            };
+            let plane_coords = |p: Point3| {
+                let c = [p.x(), p.y(), p.z()];
+                match drop {
+                    0 => (c[1], c[2]),
+                    1 => (c[0], c[2]),
+                    _ => (c[0], c[1]),
+                }
+            };
+            let boxes: Vec<[f64; 4]> = polygons
                 .iter()
-                .map(|polygon| remus_math::aabb::Aabb3::from_points(polygon.iter().copied()))
+                .map(|polygon| {
+                    polygon.iter().fold(
+                        [
+                            f64::INFINITY,
+                            f64::INFINITY,
+                            f64::NEG_INFINITY,
+                            f64::NEG_INFINITY,
+                        ],
+                        |[a0, b0, a1, b1], &p| {
+                            let (a, b) = plane_coords(p);
+                            [a0.min(a), b0.min(b), a1.max(a), b1.max(b)]
+                        },
+                    )
+                })
                 .collect();
+            let in_box = |[a0, b0, a1, b1]: [f64; 4], p: Point3| {
+                let (a, b) = plane_coords(p);
+                a >= a0 && a <= a1 && b >= b0 && b <= b1
+            };
             for (k, mut hole) in loops.into_iter().enumerate() {
                 // A loop inside an odd number of others bounds an island
                 // within a hole, which restores material (the parity the
@@ -4143,7 +4185,7 @@ impl SignedTriangle {
                 let depth = (0..polygons.len())
                     .filter(|&j| {
                         j != k
-                            && boxes[j].contains_point(probe)
+                            && in_box(boxes[j], probe)
                             && crate::distance::point_in_polygon_3d(
                                 &probe,
                                 &polygons[j],
@@ -5549,10 +5591,10 @@ mod nested_inner_loop_tests {
 
     use super::SignedTriangle;
 
-    fn polygon_wire(topo: &mut Topology, points: &[(f64, f64)]) -> WireId {
+    fn polygon_wire(topo: &mut Topology, points: &[(f64, f64)], z: f64) -> WireId {
         let vertices: Vec<_> = points
             .iter()
-            .map(|&(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, 0.0), 1e-7)))
+            .map(|&(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, z), 1e-7)))
             .collect();
         let n = vertices.len();
         let edges = (0..n)
@@ -5571,24 +5613,23 @@ mod nested_inner_loop_tests {
     /// The triangle (0,0), (12,0), (0,12) (area 72) pierced by the square
     /// [2, 6]² (16) holding the triangle (3,3), (5,3), (3,5) (2) as an
     /// island: the face's signed triangles sum to 72 − 16 + 2 = 58 whichever
-    /// way the inner wires are stored.
+    /// way the inner wires are stored, and with the island lifted 5e-8 off
+    /// the plane, coplanar only within its vertex tolerance.
     #[test]
     fn an_island_inside_a_hole_adds_back() {
-        for (hole, island) in [
-            (
-                vec![(2.0, 2.0), (6.0, 2.0), (6.0, 6.0), (2.0, 6.0)],
-                vec![(3.0, 3.0), (5.0, 3.0), (3.0, 5.0)],
-            ),
-            (
-                vec![(2.0, 6.0), (6.0, 6.0), (6.0, 2.0), (2.0, 2.0)],
-                vec![(3.0, 5.0), (5.0, 3.0), (3.0, 3.0)],
-            ),
+        let square = vec![(2.0, 2.0), (6.0, 2.0), (6.0, 6.0), (2.0, 6.0)];
+        let triangle = vec![(3.0, 3.0), (5.0, 3.0), (3.0, 5.0)];
+        let reversed = |v: &Vec<(f64, f64)>| v.iter().rev().copied().collect::<Vec<_>>();
+        for (hole, island, lift) in [
+            (square.clone(), triangle.clone(), 0.0),
+            (reversed(&square), reversed(&triangle), 0.0),
+            (square.clone(), triangle.clone(), 5e-8),
         ] {
             let mut topo = Topology::new();
-            let outer = polygon_wire(&mut topo, &[(0.0, 0.0), (12.0, 0.0), (0.0, 12.0)]);
+            let outer = polygon_wire(&mut topo, &[(0.0, 0.0), (12.0, 0.0), (0.0, 12.0)], 0.0);
             let inner = vec![
-                polygon_wire(&mut topo, &hole),
-                polygon_wire(&mut topo, &island),
+                polygon_wire(&mut topo, &hole, 0.0),
+                polygon_wire(&mut topo, &island, lift),
             ];
             let face = topo.add_face(Face::new(
                 outer,
