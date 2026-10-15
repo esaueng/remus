@@ -509,8 +509,9 @@ pub fn merge_coincident_vertices(
     };
 
     let mut merged = 0;
-    for shell_id in solid_shell_ids(topo, solid)? {
-        merged += merge_shell_coincident_vertices(topo, shell_id, tol)?;
+    for slot in 0..solid_shell_ids(topo, solid)?.len() {
+        let shell_id = solid_shell_ids(topo, solid)?[slot];
+        merged += merge_shell_coincident_vertices(topo, solid, shell_id, tol)?;
     }
     Ok(merged)
 }
@@ -544,6 +545,7 @@ fn shell_oriented_edges(
 
 fn merge_shell_coincident_vertices(
     topo: &mut Topology,
+    solid: SolidId,
     shell_id: ShellId,
     tol: f64,
 ) -> Result<usize, crate::OperationsError> {
@@ -590,7 +592,7 @@ fn merge_shell_coincident_vertices(
     edge_ids.compact_sort_by_key(|e| e.index());
     edge_ids.dedup_by_key(|e| e.index());
 
-    let updates: Vec<_> = edge_ids
+    let moved = edge_ids
         .iter()
         .filter_map(|&eid| {
             let edge = topo.edge(eid).ok()?;
@@ -603,22 +605,14 @@ fn merge_shell_coincident_vertices(
                 .copied()
                 .unwrap_or_else(|| edge.end());
             if new_start != edge.start() || new_end != edge.end() {
-                Some((eid, new_start, new_end))
+                Some((eid, (new_start, new_end)))
             } else {
                 None
             }
         })
         .collect();
 
-    for (eid, new_start, new_end) in updates {
-        let edge = topo.edge_mut(eid)?;
-        // `set_start`/`set_end`, never a whole-`Edge` rebuild: an explicit
-        // trim (RFC 0002, Stage 3) and an edge-specific tolerance are not
-        // recoverable from the endpoints, and a vertex merge changes neither
-        // the curve nor the parameter interval on it.
-        edge.set_start(new_start);
-        edge.set_end(new_end);
-    }
+    apply_edge_repairs(topo, solid, &moved, &std::collections::BTreeSet::new())?;
 
     Ok(merged_count)
 }
@@ -719,6 +713,34 @@ pub fn remove_degenerate_edges(
         }
     }
 
+    apply_edge_repairs(topo, solid, &moved, &drop)
+}
+
+/// Apply endpoint changes and removals to this solid alone. Wires are
+/// rebuilt, and shared edges are copied with their per-use authority.
+#[allow(clippy::too_many_lines)]
+fn apply_edge_repairs(
+    topo: &mut Topology,
+    solid: SolidId,
+    moved: &std::collections::BTreeMap<EdgeId, (VertexId, VertexId)>,
+    drop: &std::collections::BTreeSet<EdgeId>,
+) -> Result<usize, crate::OperationsError> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let changed: BTreeSet<_> = moved.keys().chain(drop.iter()).copied().collect();
+    if changed.is_empty() {
+        return Ok(0);
+    }
+    isolate_repair_faces(topo, solid, &changed)?;
+    let face_ids = remus_topology::explorer::solid_faces(topo, solid)?;
+    let mut loops = Vec::new();
+    for &fid in &face_ids {
+        let face = topo.face(fid)?;
+        loops.extend(
+            std::iter::once(face.outer_wire())
+                .chain(face.inner_wires().iter().copied())
+                .map(|wid| (fid, wid)),
+        );
+    }
     // An edge another face outside this solid also uses gets a copy for
     // this solid; the rest are re-pointed in place, as in
     // `merge_coincident_vertices` (a fusion within tolerance changes neither
@@ -743,8 +765,27 @@ pub fn remove_degenerate_edges(
             }
         }
     }
+    if !moved.is_empty() {
+        let owned_wires: BTreeSet<_> = topo
+            .faces()
+            .iter()
+            .flat_map(|(_, face)| {
+                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            })
+            .collect();
+        for (wid, wire) in topo.wires().iter() {
+            if !owned_wires.contains(&wid) {
+                shared.extend(
+                    wire.edges()
+                        .iter()
+                        .map(OrientedEdge::edge)
+                        .filter(|edge| moved.contains_key(edge)),
+                );
+            }
+        }
+    }
     let mut rekey: BTreeMap<EdgeId, EdgeId> = BTreeMap::new();
-    for (&eid, &(new_start, new_end)) in &moved {
+    for (&eid, &(new_start, new_end)) in moved {
         if shared.contains(&eid) {
             let mut copy = topo.edge(eid)?.clone();
             copy.set_start(new_start);
@@ -781,7 +822,7 @@ pub fn remove_degenerate_edges(
     }
     let mut removed_count = 0;
     for &(fid, wid) in &loops {
-        removed_count += rebuild_wire_without(topo, fid, wid, &drop, &rekey)?;
+        removed_count += rebuild_wire_without(topo, fid, wid, drop, &rekey)?;
     }
     for used in carried {
         if let Some(pcurve) = used.pcurve {
@@ -794,6 +835,104 @@ pub fn remove_degenerate_edges(
         }
     }
     Ok(removed_count)
+}
+
+/// Copy only affected faces with another shell owner, and the shells that
+/// need to point to those copies. The selected solid keeps its handle and
+/// attributes; other solid and sheet roots keep their original subtrees.
+#[allow(clippy::too_many_lines)]
+fn isolate_repair_faces(
+    topo: &mut Topology,
+    solid: SolidId,
+    changed: &std::collections::BTreeSet<EdgeId>,
+) -> Result<(), crate::OperationsError> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let shells = solid_shell_ids(topo, solid)?;
+    let own: BTreeSet<_> = shells.iter().copied().collect();
+    let mut foreign_shells = BTreeSet::new();
+    for (id, other) in topo.solids().iter() {
+        if id != solid {
+            foreign_shells.extend(
+                std::iter::once(other.outer_shell()).chain(other.inner_shells().iter().copied()),
+            );
+        }
+    }
+    let mut foreign_faces = BTreeSet::new();
+    for (id, shell) in topo.shells().iter() {
+        if !own.contains(&id) || foreign_shells.contains(&id) {
+            foreign_faces.extend(shell.faces().iter().copied());
+        }
+    }
+    let mut copied = BTreeMap::new();
+    for face in remus_topology::explorer::solid_faces(topo, solid)? {
+        if !foreign_faces.contains(&face) || copied.contains_key(&face) {
+            continue;
+        }
+        let data = topo.face(face)?;
+        let affected = std::iter::once(data.outer_wire())
+            .chain(data.inner_wires().iter().copied())
+            .any(|wid| {
+                topo.wire(wid)
+                    .is_ok_and(|wire| wire.edges().iter().any(|oe| changed.contains(&oe.edge())))
+            });
+        if !affected {
+            continue;
+        }
+        let data = data.clone();
+        let attributes = topo.attributes().face(face).cloned();
+        let mut authority = Vec::new();
+        for &lid in data.boundary_loops() {
+            for &cid in topo.face_loop(lid)?.coedges() {
+                let c = topo.coedge(cid)?;
+                authority.push((
+                    c.edge(),
+                    c.is_forward(),
+                    c.pcurve().cloned(),
+                    c.periodic_winding(),
+                ));
+            }
+        }
+        let copy = topo.add_face(data);
+        if let Some(attributes) = attributes {
+            topo.set_face_attributes(copy, attributes)?;
+        }
+        for (edge, forward, pcurve, winding) in authority {
+            if let Some(pcurve) = pcurve {
+                topo.set_pcurve_oriented(edge, copy, forward, pcurve)?;
+            }
+            if let Some(cid) = use_coedge(topo, edge, copy, forward) {
+                topo.set_coedge_periodic_winding(cid, winding)?;
+            }
+        }
+        copied.insert(face, copy);
+    }
+    if copied.is_empty() {
+        return Ok(());
+    }
+    let mut replacements = BTreeMap::new();
+    for &shell in &shells {
+        let original = topo.shell(shell)?;
+        if original
+            .faces()
+            .iter()
+            .any(|face| copied.contains_key(face))
+        {
+            let mut copy = original.clone();
+            for face in copy.faces_mut() {
+                if let Some(&replacement) = copied.get(face) {
+                    *face = replacement;
+                }
+            }
+            replacements.insert(shell, topo.add_shell(copy));
+        }
+    }
+    let outer = replacements.get(&shells[0]).copied().unwrap_or(shells[0]);
+    let inner = shells[1..]
+        .iter()
+        .map(|shell| replacements.get(shell).copied().unwrap_or(*shell))
+        .collect();
+    *topo.solid_mut(solid)? = remus_topology::solid::Solid::new(outer, inner);
+    Ok(())
 }
 
 /// One use of a copied edge's source: the authority its copy takes over.
@@ -1083,111 +1222,65 @@ pub fn close_wire_gaps(
     let tol_sq = tol * tol;
 
     let mut gaps_closed = 0;
-    for shell_id in solid_shell_ids(topo, solid)? {
-        gaps_closed += close_shell_wire_gaps(topo, shell_id, tol_sq)?;
+    for slot in 0..solid_shell_ids(topo, solid)?.len() {
+        gaps_closed += close_shell_wire_gaps(topo, solid, slot, tol_sq)?;
     }
-
     Ok(gaps_closed)
 }
 
-/// [`close_wire_gaps`] on one shell: every boundary loop of every face, and
-/// each merge rewrites every edge use in the shell, holes included.
+/// Find one gap at a time so a copied face/shell is always read through
+/// the selected solid's current boundary on the next pass.
 fn close_shell_wire_gaps(
     topo: &mut Topology,
-    shell_id: ShellId,
+    solid: SolidId,
+    slot: usize,
     tol_sq: f64,
 ) -> Result<usize, crate::OperationsError> {
-    let face_ids: Vec<_> = topo.shell(shell_id)?.faces().to_vec();
-
     let mut gaps_closed = 0;
-
-    for &fid in &face_ids {
-        let face = topo.face(fid)?;
-
-        let wire_ids: Vec<_> = std::iter::once(face.outer_wire())
-            .chain(face.inner_wires().iter().copied())
-            .collect();
-
-        for wire_id in wire_ids {
-            let wire = topo.wire(wire_id)?;
-            let edges_list: Vec<_> = wire.edges().to_vec();
-            let n_edges = edges_list.len();
-
-            if n_edges < 2 {
-                continue;
-            }
-
-            let mut merge_pairs: Vec<(VertexId, VertexId)> = Vec::new();
-
-            for i in 0..n_edges {
-                let next_i = (i + 1) % n_edges;
-
-                let edge_i = topo.edge(edges_list[i].edge())?;
-                let edge_next = topo.edge(edges_list[next_i].edge())?;
-
-                let end_vid = if edges_list[i].is_forward() {
-                    edge_i.end()
-                } else {
-                    edge_i.start()
-                };
-
-                let start_vid = if edges_list[next_i].is_forward() {
-                    edge_next.start()
-                } else {
-                    edge_next.end()
-                };
-
-                if end_vid == start_vid {
-                    continue; // Already connected
+    loop {
+        let shell = solid_shell_ids(topo, solid)?[slot];
+        let mut pair = None;
+        'find: for &fid in topo.shell(shell)?.faces() {
+            let face = topo.face(fid)?;
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                let edges = topo.wire(wid)?.edges();
+                if edges.len() < 2 {
+                    continue;
                 }
-
-                let end_pos = topo.vertex(end_vid)?.point();
-                let start_pos = topo.vertex(start_vid)?.point();
-                let dist_sq = (end_pos - start_pos).length_squared();
-
-                if dist_sq < tol_sq {
-                    // Close the gap by merging the vertices.
-                    merge_pairs.push((start_vid, end_vid)); // merge start into end
-                }
-            }
-
-            // Apply merges using "snapshot then allocate" pattern.
-            for (merge_from, merge_to) in &merge_pairs {
-                // Snapshot: collect all edges that need updating.
-                let mut updates = Vec::new();
-                for oe in shell_oriented_edges(topo, shell_id)? {
-                    let edge = topo.edge(oe.edge())?;
-                    let cur_start = edge.start();
-                    let cur_end = edge.end();
-                    let new_start = if cur_start == *merge_from {
-                        *merge_to
-                    } else {
-                        cur_start
-                    };
-                    let new_end = if cur_end == *merge_from {
-                        *merge_to
-                    } else {
-                        cur_end
-                    };
-                    if new_start != cur_start || new_end != cur_end {
-                        updates.push((oe.edge(), new_start, new_end));
+                for (i, oe) in edges.iter().enumerate() {
+                    let next = edges[(i + 1) % edges.len()];
+                    let a = oe.oriented_end(topo.edge(oe.edge())?);
+                    let b = next.oriented_start(topo.edge(next.edge())?);
+                    if a != b
+                        && (topo.vertex(a)?.point() - topo.vertex(b)?.point()).length_squared()
+                            < tol_sq
+                    {
+                        pair = Some((b, a));
+                        break 'find;
                     }
                 }
-
-                // Allocate: apply the updates.
-                for (eid, new_start, new_end) in updates {
-                    let em = topo.edge_mut(eid)?;
-                    // See `merge_coincident_vertices`: preserve trim and
-                    // edge tolerance across a pure endpoint change.
-                    em.set_start(new_start);
-                    em.set_end(new_end);
-                }
-                gaps_closed += 1;
             }
         }
+        let Some((from, to)) = pair else {
+            return Ok(gaps_closed);
+        };
+        let mut moved = std::collections::BTreeMap::new();
+        for oe in shell_oriented_edges(topo, shell)? {
+            let edge = topo.edge(oe.edge())?;
+            let a = if edge.start() == from {
+                to
+            } else {
+                edge.start()
+            };
+            let b = if edge.end() == from { to } else { edge.end() };
+            if (a, b) != (edge.start(), edge.end()) {
+                moved.insert(oe.edge(), (a, b));
+            }
+        }
+        apply_edge_repairs(topo, solid, &moved, &std::collections::BTreeSet::new())?;
+        gaps_closed += 1;
     }
-
-    Ok(gaps_closed)
 }
 
 /// Remove faces smaller than a minimum area threshold.

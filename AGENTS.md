@@ -319,6 +319,7 @@ Quick reference — find the right file for any task:
 | Chamfer builder (orchestration) | `chamfer_builder.rs` |
 | Vertex blend / corner solver | `corner.rs` |
 | Face trimming along contact curves | `trimmer.rs` |
+| Copy-on-write boundary rewrites, so a blend never edits faces its input still uses | `body_edit.rs` |
 | Shared builder utilities | `builder_utils.rs` |
 | G1-continuous fillet edge-chain expansion | `g1_chain.rs` |
 | Read-only analytic blend queries | `query.rs` |
