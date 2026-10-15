@@ -469,7 +469,7 @@ fn required_closed_mesh_volume_with(
 /// volume is round-off of a mesh that encloses nothing, not material. The
 /// floor follows the sum's own scale: an absolute `1e-12` turned away every
 /// closed mesh of a body under about 1e-4 across, and a floor on the bounding
-/// box would turn away a slender body that fills little of its box (B93).
+/// box would turn away a slender body that fills little of its box (B127).
 const MESH_VOLUME_FLOOR: f64 = 1e-12;
 
 /// `volume`, the volume of `mesh`, when it clears [`MESH_VOLUME_FLOOR`]
@@ -5477,7 +5477,7 @@ mod regression_tests {
         mesh
     }
 
-    /// B93: the closed-mesh gates hold a mesh's volume to a floor relative to
+    /// B127: the closed-mesh gates hold a mesh's volume to a floor relative to
     /// the mesh's own size. The absolute `1e-12` floor turned away the closed
     /// mesh of any body under about 1e-4 across, so the routes chosen for it
     /// fell through to the ones they exist to avoid. A closed mesh flattened
@@ -5508,7 +5508,7 @@ mod regression_tests {
         }
     }
 
-    /// B93: the floor follows the tetrahedra's own magnitude, not the bounding
+    /// B127: the floor follows the tetrahedra's own magnitude, not the bounding
     /// box, so a closed slender body that fills little of its box still
     /// measures: a 1000 × 4e-4 × 4e-4 box encloses 1.6e-4, which a floor of
     /// `1e-12 · side³` (1e-3) would turn away.
@@ -5526,7 +5526,7 @@ mod regression_tests {
         );
     }
 
-    /// B93 on the clamp retry: a cracked fine mesh of a body the exact
+    /// B127 on the clamp retry: a cracked fine mesh of a body the exact
     /// integrator declines takes the closed clamp mesh at any scale.
     #[test]
     fn clamp_retry_volume_floor_scales_with_the_mesh() {
