@@ -1,20 +1,20 @@
 //! Deterministic instruction-count (cachegrind `Ir`) workloads with an
 //! output digest.
 //!
-//! Each workload runs once and prints a digest of its result: each shell
-//! with its role (outer or cavity), and per face in shell order the surface
-//! type and exact `Debug` geometry, orientation, and every wire's ordered
-//! traversal with vertex position bits, curve geometry, each use's coedge
-//! authority (its edge, stored pcurve, periodic winding) and the solid's
-//! connectivity: which edge and vertices each use names (first-seen
-//! ordinals), how many uses share each, and which faces each edge and vertex
-//! bounds. Any face whose loops break authority (loop count, owner, closure,
-//! coedge count, parent or edge) changes both digests and is counted in
-//! `loop_anomalies`. Tessellation workloads digest position bits and
-//! indices. Two builds whose digests match produced bit-identical output.
-//! Solids also print a `canonical` digest of the same content that ignores
-//! face order, cavity order and closed-wire start, for workloads whose order
-//! varies run to run.
+//! Each workload runs once and prints a digest of its result: each shell with
+//! its role (outer or cavity) and body class, and per face in shell order the
+//! surface type and exact `Debug` geometry, orientation, and every wire's
+//! ordered traversal with vertex position bits, curve geometry, each use's
+//! coedge authority (its edge, stored pcurve, periodic winding) and the
+//! solid's connectivity: which edge and vertices each use names (first-seen
+//! ordinals), how many uses share each, which faces each edge and vertex
+//! bounds, and which vertices each edge ends at. Any face whose loops break
+//! authority (loop count, owner, closure, coedge count, parent or edge)
+//! changes both digests and is counted in `loop_anomalies`. Tessellation
+//! workloads digest position bits and indices. Two builds whose digests match
+//! produced bit-identical output. Solids also print a `canonical` digest of
+//! the same content that ignores face order, cavity order and closed-wire
+//! start, for workloads whose order varies run to run.
 //!
 //! glibc selects libm variants by CPU feature, and valgrind's virtual CPU
 //! reports fewer features, so digests compare native with native and
@@ -280,9 +280,13 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
     let mut shell_hashes = Vec::new();
     let mut anomalous_faces = 0usize;
     for (role, &shell) in shells.iter().enumerate() {
-        let shell_faces = topo.shell(shell).unwrap().faces();
-        // Shell boundary and role: 0 for the outer shell, 1 for a cavity.
+        let shell_data = topo.shell(shell).unwrap();
+        let shell_faces = shell_data.faces();
+        // Shell boundary and role: 0 for the outer shell, 1 for a cavity,
+        // and the stored body class.
+        let body_class = format!("{:?}", shell_data.body_class());
         strict.u64(u64::from(role > 0));
+        strict.str(&body_class);
         strict.u64(shell_faces.len() as u64);
         let mut face_hashes = Vec::new();
         for &fid in shell_faces {
@@ -359,15 +363,17 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
         }
         face_hashes.sort_unstable();
         let mut sh = Fnv::new();
+        sh.str(&body_class);
         sh.u64(face_hashes.len() as u64);
         for f in face_hashes {
             sh.u64(f);
         }
         shell_hashes.push(sh.0);
     }
-    // Incidence: each edge's uses as (face hash, direction) and each
-    // vertex's incident face hashes, sorted, keyed by the entity's own
-    // geometry. Order-free, so it goes into both digests.
+    // Incidence: each vertex's incident face hashes, and each edge's uses
+    // as (face hash, direction) with its end vertices' labels, sorted, keyed
+    // by the entity's own geometry. Order-free, so it goes into both
+    // digests.
     let mut edge_faces = std::collections::HashMap::<_, Vec<(u64, bool)>>::new();
     let mut vertex_faces = std::collections::HashMap::<_, Vec<u64>>::new();
     for &fid in &faces {
@@ -385,6 +391,22 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
             }
         }
     }
+    let mut vertex_label = std::collections::HashMap::new();
+    for (vid, mut incident) in vertex_faces {
+        let v = topo.vertex(vid).unwrap();
+        incident.sort_unstable();
+        let mut l = Fnv::new();
+        let p = v.point();
+        for c in [p.x(), p.y(), p.z(), v.tolerance()] {
+            l.u64(c.to_bits());
+        }
+        for f in incident {
+            l.u64(f);
+        }
+        vertex_label.insert(vid, l.0);
+    }
+    let mut vertex_labels: Vec<u64> = vertex_label.values().copied().collect();
+    vertex_labels.sort_unstable();
     let mut labels = Vec::new();
     for (eid, mut incident) in edge_faces {
         let edge = topo.edge(eid).unwrap();
@@ -400,6 +422,9 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
         )
         .unwrap();
         l.debug(&scratch);
+        // Edge-to-vertex incidence: the labels of its stored end vertices.
+        l.u64(vertex_label[&edge.start()]);
+        l.u64(vertex_label[&edge.end()]);
         for (f, forward) in incident {
             l.u64(f);
             l.u64(u64::from(forward));
@@ -407,21 +432,6 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
         labels.push(l.0);
     }
     labels.sort_unstable();
-    let mut vertex_labels = Vec::new();
-    for (vid, mut incident) in vertex_faces {
-        let v = topo.vertex(vid).unwrap();
-        incident.sort_unstable();
-        let mut l = Fnv::new();
-        let p = v.point();
-        for c in [p.x(), p.y(), p.z(), v.tolerance()] {
-            l.u64(c.to_bits());
-        }
-        for f in incident {
-            l.u64(f);
-        }
-        vertex_labels.push(l.0);
-    }
-    vertex_labels.sort_unstable();
     let mut incidence = Fnv::new();
     for l in labels.iter().chain(&vertex_labels) {
         incidence.u64(*l);

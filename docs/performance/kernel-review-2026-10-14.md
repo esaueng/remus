@@ -18,18 +18,18 @@ their numbers.
 - Run: `RAYON_NUM_THREADS=1 valgrind --tool=cachegrind --cache-sim=no`.
   Attribution comes from callgrind (`callgrind_annotate --inclusive=yes`).
   Base and candidate runs were alternated.
-- Digest: each shell with its role (outer or cavity), and per face in shell
-  order the exact surface `Debug`, orientation and every wire's traversal
-  (vertex position bits, curve, trim, tolerance, and each use's coedge edge,
-  stored pcurve and periodic winding). It also covers connectivity: which edge
-  and vertices each use names, how many uses share each, and which faces each
-  edge and vertex bounds. A face whose loops break authority (loop count,
-  owner, closure, coedge count, parent or edge) changes the digest and is
-  counted. Lazily filled caches in a `Debug` rendering (the NURBS weight
-  `OnceLock`s) are left out.
-  A `canonical` digest of the same content ignores face order, cavity order and
-  the start of each closed wire. Mesh workloads digest position bits, normal
-  bits and indices.
+- Digest: each shell with its role (outer or cavity) and body class, and per
+  face in shell order the exact surface `Debug`, orientation and every wire's
+  traversal (vertex position bits, curve, trim, tolerance, and each use's
+  coedge edge, stored pcurve and periodic winding). It also covers
+  connectivity: which edge and vertices each use names, how many uses share
+  each, which faces each edge and vertex bounds, and which vertices each edge
+  ends at. A face whose loops break authority (loop count, owner, closure,
+  coedge count, parent or edge) changes the digest and is counted. Lazily
+  filled caches in a `Debug` rendering (the NURBS weight `OnceLock`s) are left
+  out. A `canonical` digest of the same content ignores face order, cavity
+  order and the start of each closed wire. Mesh workloads digest position
+  bits, normal bits and indices.
 - glibc selects libm variants by CPU feature, so digests are compared native
   with native and valgrind with valgrind.
 
