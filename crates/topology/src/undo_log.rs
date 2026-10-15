@@ -233,6 +233,9 @@ pub struct UndoBase {
     pub(crate) log_len: usize,
     /// Mutation count of the copied state, used to detect changed intermediates.
     pub(crate) ticks: u64,
+    /// Next scope sequence number at clone time: every scope with a lower
+    /// `seq` was opened before the clone, so its log prefix covers it.
+    pub(crate) seq: u64,
 }
 
 /// Mutation-local rollback storage plus append-only guards.
@@ -275,6 +278,7 @@ impl Default for UndoLog {
                 generation: 0,
                 log_len: 0,
                 ticks: 0,
+                seq: 0,
             },
             inherited_lineage: false,
         }
@@ -287,6 +291,8 @@ impl UndoLog {
     pub(crate) fn fresh_for_clone(base: UndoBase) -> Self {
         Self {
             lineage_id: base.lineage_id,
+            // Scopes the clone opens order after the clone point.
+            next_seq: base.seq,
             base,
             inherited_lineage: true,
             ..Self::default()
@@ -828,13 +834,15 @@ impl Topology {
         }
     }
 
-    /// Prepares for a full restore. Unchanged same-lineage snapshots can
-    /// truncate to their source prefix. A changed clone or foreign snapshot
-    /// needs one full inverse while scopes are live; otherwise its state
-    /// cannot be reconstructed from the destination's mutation log.
-    /// An armed append-only guard always trips: its slot marks no longer
-    /// describe the swapped state.
-    pub(crate) fn undo_truncate_for_foreign_restore(&mut self, snapshot: &Self) {
+    /// Prepares for a full restore. `exact` is whether the restore lands on
+    /// `snapshot`'s state; only then can an unchanged same-lineage snapshot,
+    /// cloned while every live scope was already open, truncate to its
+    /// source prefix. A changed clone, a foreign snapshot or
+    /// an inexact restore needs one full inverse while scopes are live;
+    /// otherwise its state cannot be reconstructed from the destination's
+    /// mutation log. An armed append-only guard always trips: its slot marks
+    /// no longer describe the swapped state.
+    pub(crate) fn undo_truncate_for_foreign_restore(&mut self, snapshot: &Self, exact: bool) {
         // Foreign restores swap state underneath live scopes. The caller
         // (`restore_*`) already bumped, but invalidate here as well so a
         // direct caller can never miss it; extra bumps are harmless.
@@ -842,10 +850,14 @@ impl Topology {
         self.trip_append_if_armed();
         self.purge_dead_scopes();
         let base = snapshot.undo.base;
-        if base.lineage_id == self.undo.lineage_id
+        if exact
+            && base.lineage_id == self.undo.lineage_id
             && base.generation == self.undo.generation
             && base.log_len <= self.undo.records.len()
             && base.ticks == snapshot.mutation_ticks
+            // A scope opened after the clone has an entry state the snapshot
+            // does not hold, whatever the log lengths say.
+            && self.undo.scopes.iter().all(|scope| scope.mark.seq < base.seq)
         {
             self.undo.records.truncate(base.log_len);
             self.undo
@@ -862,8 +874,10 @@ impl Topology {
             self.undo.records.clear();
             self.undo.scopes.clear();
             self.undo.generation = self.undo.generation.wrapping_add(1);
-            // The swapped state has no source prefix in this log. A later
-            // clone must not claim an inherited prefix of the old topology.
+            // The swapped state has no source prefix in this log (an inexact
+            // restore rolls the tick back to a state it does not restore). A
+            // later clone must not claim an inherited prefix of the old
+            // topology.
             let lineage_id = UndoLog::default().lineage_id;
             self.undo.lineage_id = lineage_id;
             self.undo.base = UndoBase {
@@ -871,6 +885,7 @@ impl Topology {
                 generation: self.undo.generation,
                 log_len: 0,
                 ticks: snapshot.mutation_ticks,
+                seq: self.undo.next_seq,
             };
             self.undo.inherited_lineage = false;
         }

@@ -11,10 +11,10 @@ use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
-use remus_topology::shell::Shell;
+use remus_topology::shell::{Shell, ShellId};
 use remus_topology::solid::SolidId;
 use remus_topology::vertex::VertexId;
-use remus_topology::wire::{OrientedEdge, Wire};
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 /// Combined result of [`repair_solid`]: validation before, healing, validation after.
 #[derive(Debug, Clone)]
@@ -491,6 +491,10 @@ fn verify_configured_healing(
 ///
 /// Returns the number of vertices merged.
 ///
+/// Every shell (outer plus each cavity) is merged on its own, over every
+/// boundary loop of its faces, holes included: a cavity vertex never merges
+/// into an outer-shell vertex.
+///
 /// # Errors
 /// Returns an error if topology lookups fail.
 pub fn merge_coincident_vertices(
@@ -504,25 +508,60 @@ pub fn merge_coincident_vertices(
         Tolerance::new().linear
     };
 
+    let mut merged = 0;
+    for slot in 0..solid_shell_ids(topo, solid)?.len() {
+        let shell_id = solid_shell_ids(topo, solid)?[slot];
+        merged += merge_shell_coincident_vertices(topo, solid, shell_id, tol)?;
+    }
+    Ok(merged)
+}
+
+/// The outer shell followed by every cavity shell, in solid order.
+fn solid_shell_ids(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<Vec<ShellId>, crate::OperationsError> {
     let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-    let face_ids: Vec<_> = shell.faces().to_vec();
+    Ok(std::iter::once(solid_data.outer_shell())
+        .chain(solid_data.inner_shells().iter().copied())
+        .collect())
+}
+
+/// Every edge use of a shell, in face then loop order (outer loop first,
+/// then each hole loop).
+fn shell_oriented_edges(
+    topo: &Topology,
+    shell_id: ShellId,
+) -> Result<Vec<OrientedEdge>, crate::OperationsError> {
+    let mut uses = Vec::new();
+    for &fid in topo.shell(shell_id)?.faces() {
+        let face = topo.face(fid)?;
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            uses.extend_from_slice(topo.wire(wid)?.edges());
+        }
+    }
+    Ok(uses)
+}
+
+fn merge_shell_coincident_vertices(
+    topo: &mut Topology,
+    solid: SolidId,
+    shell_id: ShellId,
+    tol: f64,
+) -> Result<usize, crate::OperationsError> {
+    let uses = shell_oriented_edges(topo, shell_id)?;
 
     let mut vertex_ids: Vec<VertexId> = Vec::new();
     let mut positions: Vec<Point3> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    for &fid in &face_ids {
-        let face = topo.face(fid)?;
-        let wire = topo.wire(face.outer_wire())?;
-        for oe in wire.edges() {
-            let edge = topo.edge(oe.edge())?;
-            for &vid in &[edge.start(), edge.end()] {
-                if seen.insert(vid.index()) {
-                    let point = topo.vertex(vid)?.point();
-                    vertex_ids.push(vid);
-                    positions.push(point);
-                }
+    for oe in &uses {
+        let edge = topo.edge(oe.edge())?;
+        for &vid in &[edge.start(), edge.end()] {
+            if seen.insert(vid.index()) {
+                let point = topo.vertex(vid)?.point();
+                vertex_ids.push(vid);
+                positions.push(point);
             }
         }
     }
@@ -549,18 +588,11 @@ pub fn merge_coincident_vertices(
         return Ok(0);
     }
 
-    let mut edge_ids = Vec::new();
-    for &fid in &face_ids {
-        let face = topo.face(fid)?;
-        let wire = topo.wire(face.outer_wire())?;
-        for oe in wire.edges() {
-            edge_ids.push(oe.edge());
-        }
-    }
+    let mut edge_ids: Vec<EdgeId> = uses.iter().map(OrientedEdge::edge).collect();
     edge_ids.compact_sort_by_key(|e| e.index());
     edge_ids.dedup_by_key(|e| e.index());
 
-    let updates: Vec<_> = edge_ids
+    let moved = edge_ids
         .iter()
         .filter_map(|&eid| {
             let edge = topo.edge(eid).ok()?;
@@ -573,31 +605,29 @@ pub fn merge_coincident_vertices(
                 .copied()
                 .unwrap_or_else(|| edge.end());
             if new_start != edge.start() || new_end != edge.end() {
-                Some((eid, new_start, new_end))
+                Some((eid, (new_start, new_end)))
             } else {
                 None
             }
         })
         .collect();
 
-    for (eid, new_start, new_end) in updates {
-        let edge = topo.edge_mut(eid)?;
-        // `set_start`/`set_end`, never a whole-`Edge` rebuild: an explicit
-        // trim (RFC 0002, Stage 3) and an edge-specific tolerance are not
-        // recoverable from the endpoints, and a vertex merge changes neither
-        // the curve nor the parameter interval on it.
-        edge.set_start(new_start);
-        edge.set_end(new_end);
-    }
+    apply_edge_repairs(topo, solid, &moved, &std::collections::BTreeSet::new())?;
 
     Ok(merged_count)
 }
 
 /// Remove degenerate edges (shorter than tolerance) from a solid.
 ///
-/// An edge whose start and end vertices are within `tolerance` of each
-/// other is considered degenerate. Such edges are collapsed: their
-/// references in wires are removed, and the wire is rebuilt without them.
+/// An edge shorter than `tolerance` measured along its curve is considered
+/// degenerate. Full-turn curved edges are preserved. Such edges are collapsed: their two
+/// vertices are fused into the start vertex (every edge of the solid using
+/// the end vertex is re-pointed, or copied for this solid when a face
+/// outside it uses the edge too), so the loops stay connected, and their
+/// references in wires are removed, each wire rebuilt without them. Every
+/// boundary loop of every face is visited, cavities and holes included. A
+/// loop whose every edge is degenerate has nothing to rebuild and is left
+/// whole, its edges with it.
 ///
 /// Returns the number of degenerate edges removed.
 ///
@@ -608,6 +638,8 @@ pub fn remove_degenerate_edges(
     solid: SolidId,
     tolerance: f64,
 ) -> Result<usize, crate::OperationsError> {
+    use std::collections::{BTreeMap, BTreeSet};
+
     let tol = if tolerance > 0.0 {
         tolerance
     } else {
@@ -615,57 +647,471 @@ pub fn remove_degenerate_edges(
     };
     let tol_sq = tol * tol;
 
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-    let face_ids: Vec<_> = shell.faces().to_vec();
-
-    let mut removed_count = 0;
-
+    let face_ids = remus_topology::explorer::solid_faces(topo, solid)?;
+    let mut loops: Vec<(FaceId, WireId)> = Vec::new();
     for &fid in &face_ids {
         let face = topo.face(fid)?;
-        let wire_id = face.outer_wire();
-        let wire = topo.wire(wire_id)?;
-
-        let mut new_edges = Vec::new();
-        let mut any_removed = false;
-
-        for oe in wire.edges() {
-            let edge = topo.edge(oe.edge())?;
-            let start_pos = topo.vertex(edge.start())?.point();
-            let end_pos = topo.vertex(edge.end())?.point();
-            let len_sq = (end_pos - start_pos).length_squared();
-
-            if len_sq < tol_sq && edge.start() != edge.end() {
-                any_removed = true;
-                removed_count += 1;
-            } else {
-                new_edges.push(*oe);
-            }
-        }
-
-        if any_removed && !new_edges.is_empty() {
-            // Create a NEW wire instead of modifying in-place. In-place
-            // modification via wire_mut corrupts other solids that share
-            // the same wire ID (analytic_boolean shares edges/wires across
-            // faces via edge_map dedup in a single topology arena).
-            let new_wire = remus_topology::wire::Wire::new(new_edges, wire.is_closed())?;
-            let new_wire_id = topo.add_wire(new_wire);
-            let face = topo.face(fid)?;
-            let outer = if face.outer_wire() == wire_id {
-                new_wire_id
-            } else {
-                face.outer_wire()
-            };
-            let inner = face
-                .inner_wires()
-                .iter()
-                .map(|&wire| if wire == wire_id { new_wire_id } else { wire })
-                .collect();
-            topo.set_face_boundary_wires(fid, outer, inner)?;
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            loops.push((fid, wid));
         }
     }
 
+    let mut drop: BTreeSet<EdgeId> = BTreeSet::new();
+    let mut keep: BTreeSet<EdgeId> = BTreeSet::new();
+    for &(_, wid) in &loops {
+        let mut short = Vec::new();
+        let wire = topo.wire(wid)?;
+        for oe in wire.edges() {
+            if edge_is_degenerate(topo, oe.edge(), tol_sq)? {
+                short.push(oe.edge());
+            }
+        }
+        if short.len() == wire.edges().len() {
+            keep.extend(short);
+        } else {
+            drop.extend(short);
+        }
+    }
+    drop.retain(|edge| !keep.contains(edge));
+    if drop.is_empty() {
+        return Ok(0);
+    }
+
+    // Fuse each dropped edge's end vertex into its start, transitively.
+    let mut parent: BTreeMap<VertexId, VertexId> = BTreeMap::new();
+    let find = |parent: &BTreeMap<VertexId, VertexId>, mut v: VertexId| {
+        while let Some(&p) = parent.get(&v) {
+            v = p;
+        }
+        v
+    };
+    for &eid in &drop {
+        let edge = topo.edge(eid)?;
+        let (a, b) = (find(&parent, edge.start()), find(&parent, edge.end()));
+        if a != b {
+            parent.insert(b, a);
+        }
+    }
+    let mut solid_edges: Vec<EdgeId> = Vec::new();
+    for &(_, wid) in &loops {
+        solid_edges.extend(topo.wire(wid)?.edges().iter().map(OrientedEdge::edge));
+    }
+    solid_edges.compact_sort_by_key(|e| e.index());
+    solid_edges.dedup_by_key(|e| e.index());
+    let mut moved: BTreeMap<EdgeId, (VertexId, VertexId)> = BTreeMap::new();
+    for eid in solid_edges {
+        if drop.contains(&eid) {
+            continue;
+        }
+        let edge = topo.edge(eid)?;
+        let (new_start, new_end) = (find(&parent, edge.start()), find(&parent, edge.end()));
+        if (new_start, new_end) != (edge.start(), edge.end()) {
+            moved.insert(eid, (new_start, new_end));
+        }
+    }
+
+    apply_edge_repairs(topo, solid, &moved, &drop)
+}
+
+/// Apply endpoint changes and removals to this solid alone. Wires are
+/// rebuilt, and shared edges are copied with their per-use authority.
+#[allow(clippy::too_many_lines)]
+fn apply_edge_repairs(
+    topo: &mut Topology,
+    solid: SolidId,
+    moved: &std::collections::BTreeMap<EdgeId, (VertexId, VertexId)>,
+    drop: &std::collections::BTreeSet<EdgeId>,
+) -> Result<usize, crate::OperationsError> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let changed: BTreeSet<_> = moved.keys().chain(drop.iter()).copied().collect();
+    if changed.is_empty() {
+        return Ok(0);
+    }
+    isolate_repair_faces(topo, solid, &changed)?;
+    let face_ids = remus_topology::explorer::solid_faces(topo, solid)?;
+    let mut loops = Vec::new();
+    for &fid in &face_ids {
+        let face = topo.face(fid)?;
+        loops.extend(
+            std::iter::once(face.outer_wire())
+                .chain(face.inner_wires().iter().copied())
+                .map(|wid| (fid, wid)),
+        );
+    }
+    // An edge another face outside this solid also uses gets a copy for
+    // this solid; the rest are re-pointed in place, as in
+    // `merge_coincident_vertices` (a fusion within tolerance changes neither
+    // the curve nor its trim). Scanned only when there is something to move.
+    let own: BTreeSet<FaceId> = face_ids.iter().copied().collect();
+    let mut shared: BTreeSet<EdgeId> = BTreeSet::new();
+    if !moved.is_empty() {
+        for (fid, face) in topo.faces().iter() {
+            if own.contains(&fid) {
+                continue;
+            }
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                if let Ok(wire) = topo.wire(wid) {
+                    shared.extend(
+                        wire.edges()
+                            .iter()
+                            .map(OrientedEdge::edge)
+                            .filter(|e| moved.contains_key(e)),
+                    );
+                }
+            }
+        }
+    }
+    if !moved.is_empty() {
+        let owned_wires: BTreeSet<_> = topo
+            .faces()
+            .iter()
+            .flat_map(|(_, face)| {
+                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            })
+            .collect();
+        for (wid, wire) in topo.wires().iter() {
+            if !owned_wires.contains(&wid) {
+                shared.extend(
+                    wire.edges()
+                        .iter()
+                        .map(OrientedEdge::edge)
+                        .filter(|edge| moved.contains_key(edge)),
+                );
+            }
+        }
+    }
+    let mut rekey: BTreeMap<EdgeId, EdgeId> = BTreeMap::new();
+    for (&eid, &(new_start, new_end)) in moved {
+        if shared.contains(&eid) {
+            let mut copy = topo.edge(eid)?.clone();
+            copy.set_start(new_start);
+            copy.set_end(new_end);
+            rekey.insert(eid, topo.add_edge(copy));
+        } else {
+            let edge = topo.edge_mut(eid)?;
+            edge.set_start(new_start);
+            edge.set_end(new_end);
+        }
+    }
+
+    // A copied edge carries its source's coedge authority on this solid's
+    // faces, pcurve and periodic winding. Read it before the rebuild:
+    // re-keying a face's loop drops the source edge's uses with it.
+    let mut carried: Vec<CarriedUse> = Vec::new();
+    if !rekey.is_empty() {
+        for &fid in &face_ids {
+            for (&source, &copy) in &rekey {
+                for forward in [true, false] {
+                    if let Some(coedge) = use_coedge(topo, source, fid, forward) {
+                        let data = topo.coedge(coedge)?;
+                        carried.push(CarriedUse {
+                            face: fid,
+                            copy,
+                            forward,
+                            pcurve: data.pcurve().cloned(),
+                            winding: data.periodic_winding(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    let mut removed_count = 0;
+    for &(fid, wid) in &loops {
+        removed_count += rebuild_wire_without(topo, fid, wid, drop, &rekey)?;
+    }
+    for used in carried {
+        if let Some(pcurve) = used.pcurve {
+            topo.set_pcurve_oriented(used.copy, used.face, used.forward, pcurve)?;
+        }
+        if used.winding != remus_topology::coedge::PeriodicWinding::ZERO
+            && let Some(coedge) = use_coedge(topo, used.copy, used.face, used.forward)
+        {
+            topo.set_coedge_periodic_winding(coedge, used.winding)?;
+        }
+    }
     Ok(removed_count)
+}
+
+/// Copy only affected faces with another shell owner, and the shells that
+/// need to point to those copies. The selected solid keeps its handle and
+/// attributes; other solid and sheet roots keep their original subtrees.
+#[allow(clippy::too_many_lines)]
+fn isolate_repair_faces(
+    topo: &mut Topology,
+    solid: SolidId,
+    changed: &std::collections::BTreeSet<EdgeId>,
+) -> Result<(), crate::OperationsError> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let shells = solid_shell_ids(topo, solid)?;
+    let own: BTreeSet<_> = shells.iter().copied().collect();
+    let mut foreign_shells = BTreeSet::new();
+    for (id, other) in topo.solids().iter() {
+        if id != solid {
+            foreign_shells.extend(
+                std::iter::once(other.outer_shell()).chain(other.inner_shells().iter().copied()),
+            );
+        }
+    }
+    let mut foreign_faces = BTreeSet::new();
+    for (id, shell) in topo.shells().iter() {
+        if !own.contains(&id) || foreign_shells.contains(&id) {
+            foreign_faces.extend(shell.faces().iter().copied());
+        }
+    }
+    let mut copied = BTreeMap::new();
+    for face in remus_topology::explorer::solid_faces(topo, solid)? {
+        if !foreign_faces.contains(&face) || copied.contains_key(&face) {
+            continue;
+        }
+        let data = topo.face(face)?;
+        let affected = std::iter::once(data.outer_wire())
+            .chain(data.inner_wires().iter().copied())
+            .any(|wid| {
+                topo.wire(wid)
+                    .is_ok_and(|wire| wire.edges().iter().any(|oe| changed.contains(&oe.edge())))
+            });
+        if !affected {
+            continue;
+        }
+        let data = data.clone();
+        let attributes = topo.attributes().face(face).cloned();
+        let mut authority = Vec::new();
+        for &lid in data.boundary_loops() {
+            for &cid in topo.face_loop(lid)?.coedges() {
+                let c = topo.coedge(cid)?;
+                authority.push((
+                    c.edge(),
+                    c.is_forward(),
+                    c.pcurve().cloned(),
+                    c.periodic_winding(),
+                ));
+            }
+        }
+        let copy = topo.add_face(data);
+        if let Some(attributes) = attributes {
+            topo.set_face_attributes(copy, attributes)?;
+        }
+        for (edge, forward, pcurve, winding) in authority {
+            if let Some(pcurve) = pcurve {
+                topo.set_pcurve_oriented(edge, copy, forward, pcurve)?;
+            }
+            if let Some(cid) = use_coedge(topo, edge, copy, forward) {
+                topo.set_coedge_periodic_winding(cid, winding)?;
+            }
+        }
+        copied.insert(face, copy);
+    }
+    if copied.is_empty() {
+        return Ok(());
+    }
+    let mut replacements = BTreeMap::new();
+    for &shell in &shells {
+        let original = topo.shell(shell)?;
+        if original
+            .faces()
+            .iter()
+            .any(|face| copied.contains_key(face))
+        {
+            let mut copy = original.clone();
+            for face in copy.faces_mut() {
+                if let Some(&replacement) = copied.get(face) {
+                    *face = replacement;
+                }
+            }
+            replacements.insert(shell, topo.add_shell(copy));
+        }
+    }
+    let outer = replacements.get(&shells[0]).copied().unwrap_or(shells[0]);
+    let inner = shells[1..]
+        .iter()
+        .map(|shell| replacements.get(shell).copied().unwrap_or(*shell))
+        .collect();
+    *topo.solid_mut(solid)? = remus_topology::solid::Solid::new(outer, inner);
+    Ok(())
+}
+
+/// One use of a copied edge's source: the authority its copy takes over.
+struct CarriedUse {
+    face: FaceId,
+    copy: EdgeId,
+    forward: bool,
+    pcurve: Option<remus_topology::pcurve::PCurve>,
+    winding: remus_topology::coedge::PeriodicWinding,
+}
+
+/// The coedge of `face`'s use of `edge` in the given sense, if it has one.
+fn use_coedge(
+    topo: &Topology,
+    edge: EdgeId,
+    face: FaceId,
+    forward: bool,
+) -> Option<remus_topology::coedge::CoedgeId> {
+    let loops = topo.loops_of_face(face)?;
+    topo.coedges_of_edge(edge).into_iter().find(|&id| {
+        topo.coedge(id)
+            .is_ok_and(|c| c.is_forward() == forward && loops.contains(&c.parent_loop()))
+    })
+}
+
+/// Drop the uses of `drop` from one boundary loop of `fid` and re-key the
+/// uses of `rekey`, rebuilding the loop as a new wire when either applies;
+/// returns the number of uses dropped.
+fn rebuild_wire_without(
+    topo: &mut Topology,
+    fid: FaceId,
+    wire_id: WireId,
+    drop: &std::collections::BTreeSet<EdgeId>,
+    rekey: &std::collections::BTreeMap<EdgeId, EdgeId>,
+) -> Result<usize, crate::OperationsError> {
+    let wire = topo.wire(wire_id)?;
+    let is_closed = wire.is_closed();
+    let new_edges: Vec<OrientedEdge> = wire
+        .edges()
+        .iter()
+        .filter(|oe| !drop.contains(&oe.edge()))
+        .map(|oe| match rekey.get(&oe.edge()) {
+            Some(&copy) => OrientedEdge::new(copy, oe.is_forward()),
+            None => *oe,
+        })
+        .collect();
+    let removed_count = wire.edges().len() - new_edges.len();
+    let rekeyed = wire.edges().iter().any(|oe| rekey.contains_key(&oe.edge()));
+
+    if (removed_count > 0 || rekeyed) && !new_edges.is_empty() {
+        // Create a NEW wire instead of modifying in-place. In-place
+        // modification via wire_mut corrupts other solids that share
+        // the same wire ID (analytic_boolean shares edges/wires across
+        // faces via edge_map dedup in a single topology arena).
+        let new_wire = remus_topology::wire::Wire::new(new_edges, is_closed)?;
+        let new_wire_id = topo.add_wire(new_wire);
+        let face = topo.face(fid)?;
+        let outer = if face.outer_wire() == wire_id {
+            new_wire_id
+        } else {
+            face.outer_wire()
+        };
+        let inner = face
+            .inner_wires()
+            .iter()
+            .map(|&wire| if wire == wire_id { new_wire_id } else { wire })
+            .collect();
+        topo.set_face_boundary_wires(fid, outer, inner)?;
+        return Ok(removed_count);
+    }
+    Ok(0)
+}
+
+/// Whether `edge_id` is certainly shorter than `sqrt(tol_sq)` along its
+/// curve.
+///
+/// The chord is a lower bound on the length, so a long chord decides at once.
+/// A short-chord Line is as long as its chord, which includes the zero-length
+/// self-loop left when its two ends were fused. A full-turn circle or
+/// ellipse with one vertex at both ends is a rim, never degenerate here: a
+/// rim it bounds alone keeps it, so dropping it from its other wires would
+/// unpair it. Any other short-chord curve, including a sliver whose ends
+/// vertex merging fused, is degenerate only when its length is bounded below
+/// the tolerance
+/// over its parameter authority: a circle, parabola or hyperbola arc by its
+/// arc length, an ellipse arc by semi-major times span, a polynomial NURBS by
+/// its control polygon. A rational NURBS has no such cheap bound and is kept;
+/// so is a curve without an authority it would otherwise be judged by.
+/// Relative rounding allowance, in units of `f64::EPSILON`, for a closed-form
+/// length that subtracts nearly equal terms.
+const ROUNDING: f64 = 16.0 * f64::EPSILON;
+
+fn edge_is_degenerate(
+    topo: &Topology,
+    edge_id: EdgeId,
+    tol_sq: f64,
+) -> Result<bool, crate::OperationsError> {
+    let edge = topo.edge(edge_id)?;
+    let start_vertex = topo.vertex(edge.start())?;
+    let (start, end) = (start_vertex.point(), topo.vertex(edge.end())?.point());
+    let chord_sq = (end - start).length_squared();
+    // A NaN chord is unmeasurable, not short.
+    if chord_sq.is_nan() || chord_sq >= tol_sq {
+        return Ok(false);
+    }
+    if matches!(edge.curve(), EdgeCurve::Line) {
+        return Ok(true);
+    }
+    // Once vertex merging closes a short arc, the strict check (which wants a
+    // full turn on a closed circle) refuses its trim. The stored trim still
+    // bounds the edge when it is a real interval whose ends land on the fused
+    // vertex; any other invalid or missing trim leaves the extent unknown:
+    // keep the edge.
+    let (t0, t1) = match (edge.strict_domain(), edge.trim()) {
+        (Ok(domain), _) => domain,
+        (Err(_), Some((t0, t1)))
+            if edge.start() == edge.end() && (t1 - t0).abs() > 0.0 && (t1 - t0).is_finite() =>
+        {
+            let reach = tol_sq.sqrt() + start_vertex.tolerance();
+            let lands = |t: f64| {
+                (edge.curve().evaluate_with_endpoints(t, start, end) - start).length() <= reach
+            };
+            if !(lands(t0) && lands(t1)) {
+                return Ok(false);
+            }
+            (t0, t1)
+        }
+        (Err(_), _) => return Ok(false),
+    };
+    let span = (t1 - t0).abs();
+    let full_turn = matches!(edge.curve(), EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_))
+        && span >= std::f64::consts::TAU - Tolerance::new().angular;
+    if edge.start() == edge.end() && full_turn {
+        return Ok(false);
+    }
+    let upper_bound = match edge.curve() {
+        EdgeCurve::Circle(circle) => circle.radius() * span,
+        EdgeCurve::Ellipse(ellipse) => ellipse.semi_major().max(ellipse.semi_minor()) * span,
+        // The closed forms below subtract nearly equal antiderivative values;
+        // each is padded by ROUNDING ulps of the terms it subtracts, so the
+        // rounded bound still lies above the true length.
+        EdgeCurve::Parabola(parabola) => {
+            // F(t) = f (s sqrt(1 + s^2) + asinh s), s = t / 2f; and the speed
+            // sqrt(1 + s^2) peaks at an end, which caps the bound for long
+            // arcs where the closed form's rounding grows.
+            let two_f = 2.0 * parabola.focal_length();
+            let term = |t: f64| {
+                let s = t / two_f;
+                parabola.focal_length() * (s.abs() * (1.0 + s * s).sqrt() + s.asinh().abs())
+            };
+            let closed = parabola.arc_length(t0, t1) + ROUNDING * (term(t0) + term(t1));
+            let peak = t0.abs().max(t1.abs()) / two_f;
+            let capped = span * (1.0 + peak * peak).sqrt() * (1.0 + ROUNDING);
+            closed.min(capped)
+        }
+        // Speed sqrt(a^2 sinh^2 t + b^2 cosh^2 t) <= a |sinh t| + b cosh t,
+        // integrated in closed form (the quadrature in `arc_length` can
+        // undershoot).
+        EdgeCurve::Hyperbola(hyperbola) => {
+            let (lo, hi) = (t0.min(t1), t0.max(t1));
+            let abs_sinh_integral = if lo >= 0.0 {
+                hi.cosh() - lo.cosh()
+            } else if hi <= 0.0 {
+                lo.cosh() - hi.cosh()
+            } else {
+                (lo.cosh() - 1.0) + (hi.cosh() - 1.0)
+            };
+            let (a, b) = (hyperbola.semi_major(), hyperbola.semi_minor());
+            let terms = a * (lo.cosh() + hi.cosh()) + b * (lo.sinh().abs() + hi.sinh().abs());
+            a.mul_add(abs_sinh_integral, b * (hi.sinh() - lo.sinh())) + ROUNDING * terms
+        }
+        // A polynomial B-spline is no longer than its control polygon, and
+        // any span of it no longer than the whole.
+        EdgeCurve::NurbsCurve(curve) if !curve.is_rational() => curve
+            .control_points()
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).length())
+            .sum(),
+        EdgeCurve::NurbsCurve(_) | EdgeCurve::Line => return Ok(false),
+    };
+    // A NaN bound is unmeasurable, not short.
+    Ok(upper_bound < tol_sq.sqrt())
 }
 
 /// Remove out-and-back spurs from face wires.
@@ -864,6 +1310,9 @@ pub fn fix_face_orientations(
 /// the gap by merging the mismatched vertices. This is common when
 /// importing models from other CAD systems with different tolerances.
 ///
+/// Every shell (outer plus each cavity) is scanned on its own, over every
+/// boundary loop of its faces, holes included.
+///
 /// Returns the number of gaps closed.
 ///
 /// # Errors
@@ -880,107 +1329,66 @@ pub fn close_wire_gaps(
     };
     let tol_sq = tol * tol;
 
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-    let face_ids: Vec<_> = shell.faces().to_vec();
-
     let mut gaps_closed = 0;
+    for slot in 0..solid_shell_ids(topo, solid)?.len() {
+        gaps_closed += close_shell_wire_gaps(topo, solid, slot, tol_sq)?;
+    }
+    Ok(gaps_closed)
+}
 
-    for &fid in &face_ids {
-        let face = topo.face(fid)?;
-
-        let wire_ids: Vec<_> = std::iter::once(face.outer_wire())
-            .chain(face.inner_wires().iter().copied())
-            .collect();
-
-        for wire_id in wire_ids {
-            let wire = topo.wire(wire_id)?;
-            let edges_list: Vec<_> = wire.edges().to_vec();
-            let n_edges = edges_list.len();
-
-            if n_edges < 2 {
-                continue;
-            }
-
-            let mut merge_pairs: Vec<(VertexId, VertexId)> = Vec::new();
-
-            for i in 0..n_edges {
-                let next_i = (i + 1) % n_edges;
-
-                let edge_i = topo.edge(edges_list[i].edge())?;
-                let edge_next = topo.edge(edges_list[next_i].edge())?;
-
-                let end_vid = if edges_list[i].is_forward() {
-                    edge_i.end()
-                } else {
-                    edge_i.start()
-                };
-
-                let start_vid = if edges_list[next_i].is_forward() {
-                    edge_next.start()
-                } else {
-                    edge_next.end()
-                };
-
-                if end_vid == start_vid {
-                    continue; // Already connected
+/// Find one gap at a time so a copied face/shell is always read through
+/// the selected solid's current boundary on the next pass.
+fn close_shell_wire_gaps(
+    topo: &mut Topology,
+    solid: SolidId,
+    slot: usize,
+    tol_sq: f64,
+) -> Result<usize, crate::OperationsError> {
+    let mut gaps_closed = 0;
+    loop {
+        let shell = solid_shell_ids(topo, solid)?[slot];
+        let mut pair = None;
+        'find: for &fid in topo.shell(shell)?.faces() {
+            let face = topo.face(fid)?;
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                let edges = topo.wire(wid)?.edges();
+                if edges.len() < 2 {
+                    continue;
                 }
-
-                let end_pos = topo.vertex(end_vid)?.point();
-                let start_pos = topo.vertex(start_vid)?.point();
-                let dist_sq = (end_pos - start_pos).length_squared();
-
-                if dist_sq < tol_sq {
-                    // Close the gap by merging the vertices.
-                    merge_pairs.push((start_vid, end_vid)); // merge start into end
-                }
-            }
-
-            // Apply merges using "snapshot then allocate" pattern.
-            for (merge_from, merge_to) in &merge_pairs {
-                // Snapshot: collect all edges that need updating.
-                let solid_d = topo.solid(solid)?;
-                let sh = topo.shell(solid_d.outer_shell())?;
-                let fids: Vec<_> = sh.faces().to_vec();
-
-                let mut updates = Vec::new();
-                for &fid2 in &fids {
-                    let f = topo.face(fid2)?;
-                    let w = topo.wire(f.outer_wire())?;
-                    for oe in w.edges() {
-                        let edge = topo.edge(oe.edge())?;
-                        let cur_start = edge.start();
-                        let cur_end = edge.end();
-                        let new_start = if cur_start == *merge_from {
-                            *merge_to
-                        } else {
-                            cur_start
-                        };
-                        let new_end = if cur_end == *merge_from {
-                            *merge_to
-                        } else {
-                            cur_end
-                        };
-                        if new_start != cur_start || new_end != cur_end {
-                            updates.push((oe.edge(), new_start, new_end));
-                        }
+                for (i, oe) in edges.iter().enumerate() {
+                    let next = edges[(i + 1) % edges.len()];
+                    let a = oe.oriented_end(topo.edge(oe.edge())?);
+                    let b = next.oriented_start(topo.edge(next.edge())?);
+                    if a != b
+                        && (topo.vertex(a)?.point() - topo.vertex(b)?.point()).length_squared()
+                            < tol_sq
+                    {
+                        pair = Some((b, a));
+                        break 'find;
                     }
                 }
-
-                // Allocate: apply the updates.
-                for (eid, new_start, new_end) in updates {
-                    let em = topo.edge_mut(eid)?;
-                    // See `merge_coincident_vertices`: preserve trim and
-                    // edge tolerance across a pure endpoint change.
-                    em.set_start(new_start);
-                    em.set_end(new_end);
-                }
-                gaps_closed += 1;
             }
         }
+        let Some((from, to)) = pair else {
+            return Ok(gaps_closed);
+        };
+        let mut moved = std::collections::BTreeMap::new();
+        for oe in shell_oriented_edges(topo, shell)? {
+            let edge = topo.edge(oe.edge())?;
+            let a = if edge.start() == from {
+                to
+            } else {
+                edge.start()
+            };
+            let b = if edge.end() == from { to } else { edge.end() };
+            if (a, b) != (edge.start(), edge.end()) {
+                moved.insert(oe.edge(), (a, b));
+            }
+        }
+        apply_edge_repairs(topo, solid, &moved, &std::collections::BTreeSet::new())?;
+        gaps_closed += 1;
     }
-
-    Ok(gaps_closed)
 }
 
 /// Remove faces smaller than a minimum area threshold.

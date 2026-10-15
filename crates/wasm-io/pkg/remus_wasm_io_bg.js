@@ -173,7 +173,10 @@ export class RemusIo {
         return v2;
     }
     /**
-     * Read a 3MF package; every object becomes a solid root of one document.
+     * Read a 3MF package; every build item becomes a solid root of one
+     * document, in build order and placed by its item transform (an object
+     * listed twice gives two solids). Without build items, every object no
+     * component references is a root.
      * @param {Uint8Array} data
      * @param {number | null} [max_input_bytes]
      * @param {number | null} [max_entities]

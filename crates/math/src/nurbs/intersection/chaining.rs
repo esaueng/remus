@@ -115,7 +115,7 @@ pub(super) fn build_curves_from_points(
         };
         let curve = if positions.len() > 50 {
             let num_cps = (positions.len() / 3).max(degree + 1).min(positions.len());
-            let fitted = approximate_lspia(&positions, degree, num_cps, 1e-6, 100)?;
+            let fitted = approximate_lspia(&positions, degree, num_cps, 1e-6, 100)?.curve;
 
             // The fit-quality sweep is diagnostic only (its sole consumer is
             // the warning) and quadratic in the chain length: one global

@@ -33,7 +33,10 @@ pub mod error;
 pub mod fix;
 pub mod pipeline;
 pub mod reshape;
+pub(crate) mod shared;
 pub mod status;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 pub mod upgrade;
 
 pub use error::HealError;

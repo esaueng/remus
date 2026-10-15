@@ -19,7 +19,7 @@ type ChartFixture = (
     Face,
     TriangleMesh,
     DetHashMap<usize, Vec<u32>>,
-    DetHashMap<(i64, i64, i64), u32>,
+    super::super::PointMergeMap,
 );
 
 fn direction(matrix: Mat4, vector: Vec3) -> Vec3 {
@@ -45,7 +45,7 @@ fn patch(radius: f64, matrix: Mat4, wrong_stored_axis: bool, start: usize) -> Ch
         normals: points.map(|p| (p - center) * (1.0 / radius)).to_vec(),
         indices: vec![],
     };
-    let mut map = DetHashMap::default();
+    let mut map = super::super::PointMergeMap::default();
     for (index, point) in points.into_iter().enumerate() {
         map.insert(point_merge_key(point, super::MERGE_GRID), index as u32);
     }
@@ -151,6 +151,7 @@ fn sphere_chart_uses_the_complete_patch_and_keeps_shared_boundary_ids() {
                                 deflection * radius,
                                 0.35,
                                 false,
+                                false,
                                 &pool,
                                 &mut mesh,
                                 &mut map
@@ -215,7 +216,7 @@ fn sphere_hemisphere_decline_restores_mesh_and_vertex_index() {
         normals: positions.map(|p| p - Point3::new(0.0, 0.0, 0.0)).to_vec(),
         indices: vec![],
     };
-    let mut map = DetHashMap::default();
+    let mut map = super::super::PointMergeMap::default();
     for (i, p) in positions.into_iter().enumerate() {
         map.insert(point_merge_key(p, super::MERGE_GRID), i as u32);
     }

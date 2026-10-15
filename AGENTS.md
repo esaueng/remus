@@ -150,6 +150,7 @@ Quick reference — find the right file for any task:
 | Compact band storage for NURBS interpolation | `nurbs/banded.rs` |
 | NURBS surface evaluation | `nurbs/surface.rs` |
 | Bit-identity oracle for `NurbsSurface::evaluate`'s u/v basis buffers against the verbatim pre-widening evaluate, degrees 1–12 (tests) | `nurbs/surface/eval_stack_oracle_tests.rs` |
+| Bit-identity oracle for the loop-based `evaluate` contraction, the lane first-order solve, the allocation-free `normal`, the fused `evaluate_and_partials_from`/`point_and_normal(_with)` and the per-axis `first_order_at` tables against the verbatim pre-change code, degrees 1–5, 9 and 11 (tests) | `nurbs/surface/contraction_oracle_tests.rs` |
 | NURBS knot insertion/removal | `nurbs/knot_ops.rs` |
 | Certified NURBS reduction contracts and interval Bernstein bounds | `nurbs/reuse.rs`, `nurbs/reuse_bounds.rs` |
 | Opt-in curve/surface knot simplification and U/V removal | `nurbs/reduction.rs`, `nurbs/reduction/tests.rs` |
@@ -159,6 +160,7 @@ Quick reference — find the right file for any task:
 | Closed-form oracles for the Bezier-clip helpers and recursion work counts (tests) | `nurbs/bezier_clip/mutation_oracle_tests.rs` |
 | Curve/surface fitting (LSPIA) | `nurbs/fitting.rs`, `nurbs/surface_fitting.rs` |
 | Bit-identity oracle for the cached-basis LSPIA loop against the verbatim old loop (tests) | `nurbs/fitting/lspia_oracle_tests.rs` |
+| Bit-identity oracle for surface LSPIA's best-iterate result against every iterate of the verbatim old loop (tests) | `nurbs/surface_fitting/lspia_oracle_tests.rs` |
 | Point projection onto curves | `nurbs/projection.rs` |
 | Self-intersection detection | `nurbs/self_intersection.rs` |
 | 3D curves (Line, Circle, Ellipse, Parabola, Hyperbola) | `curves.rs` |
@@ -168,6 +170,8 @@ Quick reference — find the right file for any task:
 | Exact swept-surface carriers (revolution, linear extrusion) | `surfaces/swept.rs` |
 | Surface-surface intersection | `nurbs/intersection/` (mod, surface_marching, surface_seeding, curve_surface, plane, line, chaining, tests) |
 | Hand-placed oracles for intersection-point chaining: grid walk, adjacency (tests) | `nurbs/intersection/chaining/mutation_oracle_tests.rs` |
+| Line/NURBS root completion: span-block hull tree, Bézier extraction, de Casteljau root isolation for crossings the seed grid misses | `nurbs/intersection/line/subdivision.rs` |
+| Narrow-bump line crossings against an independent graph-bisection oracle (tests) | `nurbs/intersection/line/bump_oracle_tests.rs` |
 | Closed-form oracles for the SSI marcher's private branch geometry (tests) | `nurbs/intersection/surface_marching/oracle_tests.rs` |
 | Analytic-analytic intersection | `analytic_intersection.rs` |
 | Bit-exact oracle for the ray-torus quartic solver's Durand–Kerner cycle jump (tests) | `analytic_intersection/quartic_cycle_tests.rs` |
@@ -322,6 +326,7 @@ Quick reference — find the right file for any task:
 | Copy-on-write boundary rewrites, so a blend never edits faces its input still uses | `body_edit.rs` |
 | Shared builder utilities | `builder_utils.rs` |
 | G1-continuous fillet edge-chain expansion | `g1_chain.rs` |
+| Verbatim per-call G1 chain expansion kept as an oracle for the shared `G1ChainIndex` (tests) | `g1_chain/tests.rs` |
 | Read-only analytic blend queries | `query.rs` |
 | Exact face-face blend bands for disjoint planar support patches | `face_face.rs` |
 | Geometry-aware snap tolerance for assembly dedup | `adaptive_tolerance.rs` |
@@ -331,6 +336,7 @@ Quick reference — find the right file for any task:
 | Task | File(s) |
 |------|---------|
 | Public API, `HealError`, `Status` | `lib.rs`, `error.rs`, `status.rs` |
+| Shell mutation ownership checks | `shared.rs` |
 | Healing context (tolerance, reshape, messages) | `context.rs` |
 | Entity replacement/removal tracking | `reshape.rs` |
 | Edge analysis (3D/PCurve deviation, degeneracy) | `analysis/edge.rs` |
@@ -374,6 +380,7 @@ Quick reference — find the right file for any task:
 | Collapse orphan collinear interior wire vertices | `upgrade/collapse_collinear_vertices.rs` |
 | Canonicalize a split-arc rim into one closed edge | `upgrade/merge_split_rim_arcs.rs` |
 | Split figure-8 / pinched wires into simple cycles | `upgrade/split_self_intersecting_wires.rs` |
+| Shared hollow-block and cavity-gap fixtures for the crate's unit tests (tests) | `test_fixtures.rs` |
 
 ### L2: check (`crates/check/src/`)
 | Task | File(s) |
@@ -386,6 +393,8 @@ Quick reference — find the right file for any task:
 | Winding number classifier | `classify/winding.rs` |
 | Operation-local prepared context for repeated point classification (`PreparedSolid`) | `classify/prepared.rs` |
 | Persistent whole-topology classification cache (`ClassificationCache`, PERF-Q02) | `classify/cache.rs` |
+| Narrow-bump far-flank crossing through the classifier's NURBS ray path (tests) | `classify/boundary/nurbs_bump_ray_tests.rs` |
+| Boundary skeleton that makes a ray through an edge or vertex abstain from the classification vote | `classify/graze.rs` |
 | CheckId enum, ValidationReport, severity | `validate/checks.rs` |
 | Wire topological checks | `validate/wire.rs` |
 | Shell topological checks | `validate/shell.rs` |
@@ -402,6 +411,7 @@ Quick reference — find the right file for any task:
 | Bounded sampling of native-contiguous exact equator runs | `properties/face_integrator/sphere_latitude/partition_sampling.rs` |
 | Bounded h-refinement on an already resolved rectangular analytic domain | `properties/face_integrator/adaptive.rs` |
 | Bucketed trim-loop segment lookup for trimmed quadrature (O06) | `properties/face_integrator/loop_index.rs` |
+| Bit-identity oracle for the NURBS row and grid quadrature (per-axis basis tables) against the verbatim per-abscissa `integrate_parametric` (tests) | `properties/face_integrator/nurbs_rows_oracle_tests.rs` |
 | Properties orchestrator (volume, area, CoM) | `properties/mod.rs` |
 | Opt-in content-keyed memo of fixed-order face integrals (`FaceIntegralCache`, PERF-V02 subset) | `properties/face_cache.rs` |
 | Point-to-surface distance (all analytic types) | `distance/analytic.rs` |
@@ -470,6 +480,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
 | Helical sweep | `helix.rs` |
 | Chamfer, Fillet | `chamfer.rs`, `fillet/` (mod, rolling_ball, g1_chain, geometry, radius_law, helpers, notch_torus, tests) |
+| Spatial grid behind the rolling-ball Phase 5d vertex dedup and snap (the linear scans' winners and ties), with its oracle tests | `fillet/vertex_snap.rs` |
 | Shell (hollow solid) | `shell_op.rs` |
 | Draft (taper faces) | `draft.rs` |
 | Section / Split | `section.rs`, `split.rs` |
@@ -477,24 +488,32 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Directional curve projection onto faces, solids, sketch planes (P-Class 7.4: sweep-plane sections, coaxial circles, fitted-arc cell, clipping/seams, sketch-plane maps) | `project_curve.rs` |
 | P-Class 7.4 acceptance oracles (exact cells, approximate disclosure, refusals, solid/2D paths) | `tests/qualify_project_curve.rs` |
 | Transform, Mirror, Copy | `transform.rs`, `mirror.rs`, `copy.rs` |
+| Pcurves carried into a transformed face's UV chart (exact plane chart map, revolved-carrier `u` rotation, re-derived lift counts) | `transform/pcurves.rs` |
 | Map-based solid copy paths kept verbatim as differential oracles for `CopyPlan` (tests) | `copy/tests/legacy_oracle.rs` |
+| Spliced copy's aligned coedge-authority restore checked against the per-snapshot search on a drilled plate (tests) | `copy/tests/spliced_authority_oracle.rs` |
 | Measure (bbox, area, volume, CoM) | `measure/` (mod, volume, area, bounding_box, edge_length, helpers) |
 | Opt-in per-thread `solid_volume` memo keyed by topology cache identity and complete solid content | `measure/volume_memo.rs` |
 | Closed-form certificate that a straight-edged, axis-aligned planar outline passes the volume path's area-consistency probe without meshing | `measure/volume/planar_outline.rs` |
 | Certificate-implies-probe oracle, refusal cases and probe-mesh work guard (tests) | `measure/volume/planar_outline_tests.rs` |
 | Hash-map references for the sorted whole-mesh edge censuses (tests) | `measure/volume/edge_census_oracle_tests.rs` |
 | Bounded opt-in exact-content scalar memo for trimmed NURBS face areas | `measure/nurbs_area_memo.rs`, `measure/nurbs_area_memo/tests.rs` |
+| Bounded opt-in exact-content memo of single-face bounding boxes (the move's swept-region refusal), and its bit-identity tests | `measure/face_box_memo.rs`, `measure/face_box_memo/tests.rs` |
 | Bounded opt-in host-clock phase timings | `performance.rs` |
 | Distance queries | `distance.rs` |
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
+| Differential oracle for the interior grid's boundary scans: the `(i + 1) % n` indexed containment and clearance loops kept verbatim (tests) | `tessellate/nonplanar/polygon_scan_oracle_tests.rs` |
+| Interior grid samples reused at emission: meshes with the reuse on and off compared bit for bit (tests) | `tessellate/nonplanar/interior_sample_tests.rs` |
 | Signed native vector-area qualification for a hemisphere chart | `tessellate/nonplanar/sphere_chart_orientation.rs` |
 | Independent spherical-patch geometry and shared-boundary oracles | `tessellate/nonplanar/sphere_chart_tests.rs` |
+| Row-wise interior-grid containment against the per-point polygon test (tests) | `tessellate/nonplanar/row_containment_tests.rs` |
+| Pre-cache band emitter kept verbatim as a bit-identity oracle for its per-vertex outward reference (tests) | `tessellate/nonplanar/band_emit_oracle_tests.rs` |
 | Measurement-only tessellation and cold/warm byte parity tests | `tessellate/measurement_tests.rs` |
 | Whole-mesh passes kept verbatim as byte-identity oracles for the rewritten `mesh_ops` and `pool_index` (PERF-D07, tests) | `tessellate/tests/mesh_passes.rs` |
 | Per-vertex analytic grid kept verbatim as a bit-identity oracle for the trig-table `tessellate_analytic` (tests) | `tessellate/tests/analytic_grid_oracle.rs` |
 | Explicit shared-boundary plan and deterministic refinement reconciliation | `tessellate/boundary_plan.rs` |
 | Content-keyed per-face mesh reuse across edits, with display-priority retention inside shared bounds (opt-in, per thread; PERF-D01) | `tessellate/face_cache.rs` |
 | Spatial index of the shared vertex pool for the boundary plan's circle contact refinement (PERF-D07) | `tessellate/pool_index.rs` |
+| Differential oracle for the circle contact candidates: the 27-key neighbour expansion kept verbatim against the merged z-run lookup (tests) | `tessellate/pool_index/oracle_tests.rs` |
 | Cost-model full-scan fallback of the circle contact index: decision boundary and fallback-on/off mesh identity (tests) | `tessellate/tests/pool_fallback.rs` |
 | Point classification (in/on/out solid) | `classify.rs` |
 | Offset face / solid | `offset_face.rs`, `offset_v2.rs` (delegates to remus-offset), `offset_trim.rs` |
@@ -505,6 +524,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Feature recognition | `feature_recognition.rs` |
 | Pattern (linear/circular) | `pattern.rs` |
 | Shape queries (edge filtering) | `query.rs` |
+| Oracle for the prepared `ConcavityProbe` against the one-shot edge concavity on primitives, booleans and STEP bodies (tests) | `query/concavity_probe_oracle_tests.rs` |
 | Sewing | `sew.rs` |
 | Thickening | `thicken.rs` |
 | Untrimming | `untrim.rs` |
@@ -525,6 +545,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Direct push/pull face editing | `push_pull.rs` |
 | Exact support-surface replacement with topology-preserving re-limitation | `replace_surface.rs` |
 | Exact constant-radius blend-band resizing | `resize_blend.rs` |
+| Differential oracle for the blend move's translation path: the whole-document scratch-copy version kept verbatim (tests) | `resize_blend/translation_oracle_tests.rs` |
 | Exact local reconstruction of analytic wounds | `local_wound.rs` |
 | Cylindrical blend removal with certified affine NURBS caps | `affine_blend_caps.rs` |
 | Atomic removal of explicitly selected connected blend groups | `remove_blends.rs` |
@@ -550,6 +571,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Resource limits for untrusted imports | `limits.rs` |
 | Persistent-reference JSON codec | `naming_io.rs` |
 | Differential oracle for the persistent-reference codec (tests) | `naming_io/oracle_tests.rs` |
+| Differential oracle over the STEP fixtures and synthetic bodies for the trim-window prune of the prepared boundary test (tests) | `tests/boundary_prune_oracle.rs` |
 
 ### L4: render (`crates/render/src/`)
 | Task | File(s) |
@@ -594,12 +616,14 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Accounted checkpoint storage, allocated WASM pages and phase timing bindings | `bindings/performance.rs` |
 | Coordinated boolean batch commits and retained session-state tests | `bindings/transaction_tests.rs` |
 | 2D sketch constraint solver | `bindings/sketch.rs` |
+| Sketch input validation contracts: legacy `angle` second line, add-time deferred-constraint checks, positive GCS ellipse semiaxes (tests) | `bindings/sketch_validation_tests.rs` |
 | Directional curve projection (P-Class 7.4 direct + batch, `project-curve:<code>` refusals) | `bindings/project_curve.rs` |
 | Assembly management | `bindings/assembly.rs` |
 | 2D polygon operations | `bindings/polygon2d.rs` |
 | NURBS curve/surface manipulation | `bindings/nurbs.rs` |
 | Read-only certified NURBS carrier reduction and cubic fitting | `bindings/nurbs_reuse.rs` |
 | Batch execution & dispatch | `bindings/batch.rs` |
+| Optional `executeBatch` arguments: absent reads as the default, present but malformed is refused (contract tests) | `bindings/batch_optional_args_tests.rs` |
 | Gridfinity integration tests | `bindings/gridfinity_tests.rs` |
 | Fillet fail-closed contract tests | `bindings/fillet_fail_closed_tests.rs` |
 | Sequential fillet onto an earlier blend band (contract test) | `bindings/sequential_fillet_tests.rs` |
@@ -620,6 +644,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Ordered wire traversal contract (B16) | `bindings/wire_traversal_contract_tests.rs` |
 | Growing-holder recipe `volume` contract (B54: closed-form −5440 width step through `executeBatch`) | `bindings/growing_holder_volume_tests.rs` |
 | Store-local boolean switch (`setStoreLocalCuts` / `storeLocalCutsEnabled`, direct and batch) contract tests | `bindings/store_local_switch_tests.rs` |
+| Sweep bindings refuse atomically (`multiSectionSweep` direct and batch; kernel review WASM-6) | `bindings/sweep_transaction_tests.rs` |
 | WASM contract tests for the mixed-notch L-bracket boundary | `bindings/mixed_notch_tests.rs` |
 
 ### L4: wasm-io (`crates/wasm-io/src/`)

@@ -702,6 +702,94 @@ pub(crate) fn edge_concavity_from_faces(
     })
 }
 
+/// [`edge_concavity_from_faces`] for a loop over many edges of one solid in
+/// one topology state.
+///
+/// The first quadrant probe that reaches the classifier prepares the solid
+/// once (PERF-Q01), and every later probe reuses that preparation, where the
+/// one-shot path rebuilt every face bound, the face BVH and the candidate
+/// trims for every ray. Verdicts and errors are the one-shot path's:
+/// preparation fails only where the one-shot face gathering fails, on the
+/// same probe, and the prepared vote loop runs over the same faces, bounds
+/// and trims. A solid with a face whose trims cannot be sampled keeps the
+/// one-shot classifier, because the prepared fallback would raise that
+/// face's sampling error on probes the one-shot path answers without
+/// sampling it.
+///
+/// The borrow on the topology does the invalidation, as for
+/// [`EdgeRelationContext`].
+pub(crate) struct ConcavityProbe<'a> {
+    topo: &'a Topology,
+    solid: SolidId,
+    classifier: ProbeClassifier<'a>,
+}
+
+enum ProbeClassifier<'a> {
+    Unprepared,
+    Prepared(remus_check::classify::PreparedSolid<'a>),
+    OneShot,
+}
+
+impl<'a> ConcavityProbe<'a> {
+    /// A probe context for `solid`; nothing is prepared until a probe needs
+    /// the classifier.
+    pub(crate) const fn new(topo: &'a Topology, solid: SolidId) -> Self {
+        Self {
+            topo,
+            solid,
+            classifier: ProbeClassifier::Unprepared,
+        }
+    }
+
+    /// Exactly [`edge_concavity_from_faces`] for the context's solid.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidInput` for a non-positive or non-finite probe, or
+    /// propagates topology and classification errors.
+    pub(crate) fn concavity(
+        &mut self,
+        edge: EdgeId,
+        face_a: FaceId,
+        face_b: FaceId,
+        probe: f64,
+    ) -> Result<EdgeConcavity, OperationsError> {
+        if !probe.is_finite() || probe <= 0.0 {
+            return Err(OperationsError::InvalidInput {
+                reason: "edge concavity probe must be positive and finite".into(),
+            });
+        }
+        if face_a == face_b {
+            return Ok(EdgeConcavity::Unknown);
+        }
+        let samples = sampled_normals(self.topo, edge, face_a, face_b)?;
+        let (topo, solid) = (self.topo, self.solid);
+        let classifier = &mut self.classifier;
+        edge_concavity_with_samples(topo, edge, face_a, face_b, probe, &samples, |point| {
+            if matches!(classifier, ProbeClassifier::Unprepared) {
+                let prepared = remus_check::classify::PreparedSolid::prepare(topo, solid)?;
+                *classifier = if prepared.cached_trim_count() == prepared.face_count() {
+                    ProbeClassifier::Prepared(prepared)
+                } else {
+                    ProbeClassifier::OneShot
+                };
+            }
+            match classifier {
+                ProbeClassifier::Prepared(prepared) => {
+                    let options = remus_check::classify::ClassifyOptions {
+                        tolerance: 1.0e-7,
+                        ..Default::default()
+                    };
+                    Ok(prepared.classify_point(point, &options)?.into())
+                }
+                ProbeClassifier::Unprepared | ProbeClassifier::OneShot => {
+                    crate::classify::classify_point(topo, solid, point, 0.01, 1.0e-7)
+                }
+            }
+        })
+    }
+}
+
 /// Operation-local context for classifying many edges of one solid.
 ///
 /// Feature recognition and the bulk edge-relation queries classify four
@@ -1408,6 +1496,9 @@ pub fn face_material_sense(
         MaterialSense::Inward
     })
 }
+
+#[cfg(test)]
+mod concavity_probe_oracle_tests;
 
 #[cfg(test)]
 mod tests {

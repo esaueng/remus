@@ -60,9 +60,10 @@ export function runSecurityResourceRegressions({ BrepKernel, RemusIo }) {
     assert.throws(() => io.importStep(step, undefined, 3_000_001), /maxEntities/);
     assert.ok(io.importStep(step).length > 0);
     const emptyPly = new TextEncoder().encode(
-      'ply\nformat ascii 1.0\nelement vertex 3000000\nelement face 0\nend_header\n',
+      'ply\nformat ascii 1.0\nelement vertex 3000000\nproperty float x\nproperty float y\n' +
+        'property float z\nelement face 0\nend_header\n',
     );
-    assert.throws(() => io.importPly(emptyPly), /unexpected end of PLY vertex data/);
+    assert.throws(() => io.importPly(emptyPly), /PLY vertex 0 of 3000000: unexpected end of data/);
 
     const archive = io.export3mf(document, 0.1);
     const central = archive.findIndex(

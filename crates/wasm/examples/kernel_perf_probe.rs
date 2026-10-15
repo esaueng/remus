@@ -3,14 +3,16 @@
 //!
 //! ```text
 //! cargo build --profile profiling -p remus-wasm --example kernel_perf_probe
-//! target/profiling/examples/kernel_perf_probe hammer [stage] [iters]
+//! target/profiling/examples/kernel_perf_probe hammer [stage] [iters] [bodies]
 //! target/profiling/examples/kernel_perf_probe plate  [stage] [iters]
 //! ```
 //!
 //! `hammer` imports the public 160-face Shapr3D hammer holder and repeats the
 //! filleted face-drag pipeline (move, validate, bbox, display mesh, volume,
-//! recognition). `plate` builds a pocketed, drilled plate, fillets it in
-//! stages and then runs the same pipeline on the filleted body. `stage`
+//! recognition); `bodies` (default 0) first adds that many unrelated boxes to
+//! the hammer's document, so a stage's cost can be read against document
+//! size. `plate` builds a pocketed, drilled plate, fillets it in stages and
+//! then runs the same pipeline on the filleted body. `stage`
 //! (default `all`) restricts the loop to one stage: move, validate, bbox,
 //! display, volume, recognize, massprops, fillet, boolean. `all` is exactly
 //! the per-edit pipeline above; `massprops`, `fillet` and `boolean` run only
@@ -151,7 +153,7 @@ fn analyse(topo: &Topology, solid: SolidId, stage: &str, stages: &mut Stages) {
     }
 }
 
-fn hammer(stage: &str, iters: usize) {
+fn hammer(stage: &str, iters: usize, bodies: usize) {
     let mut source = Topology::new();
     let solids = remus_io::step::reader::read_step(
         include_str!("../../io/tests/data/shapr3d_hammer_holder.step"),
@@ -159,6 +161,11 @@ fn hammer(stage: &str, iters: usize) {
     )
     .expect("fixture parses");
     let solid = solids[0];
+    for k in 0..bodies {
+        let other = primitives::make_box(&mut source, 3.0, 2.0, 1.0).expect("box");
+        let (x, y) = ((k % 100) as f64 * 5.0, (k / 100) as f64 * 5.0);
+        translate(&mut source, other, 200.0 + x, y, 0.0);
+    }
     let faces = solid_faces(&source, solid).unwrap();
     assert_eq!(faces.len(), 160);
     let face = faces
@@ -542,7 +549,17 @@ fn main() {
         std::process::exit(2);
     }
     match scenario {
-        "hammer" => hammer(stage, iters),
+        "hammer" => {
+            let bodies = match args.get(4).map(|s| s.parse::<usize>()) {
+                None => 0,
+                Some(Ok(n)) => n,
+                Some(Err(_)) => {
+                    eprintln!("bodies must be a non-negative integer, got {:?}", args[4]);
+                    std::process::exit(2);
+                }
+            };
+            hammer(stage, iters, bodies);
+        }
         "plate" => plate(stage, iters),
         other => {
             eprintln!("unknown scenario {other}; expected hammer or plate");

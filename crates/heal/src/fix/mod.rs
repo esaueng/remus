@@ -132,6 +132,9 @@ pub enum RepairRefusalKind {
     MissingSeamRepairUnsupported,
     /// Free edges remained after the bounded sewing attempt.
     FreeEdgesRemain,
+    /// A rebuilt pcurve still deviated beyond tolerance (on a plane: the
+    /// edge's own curve lies off it), so the original was kept.
+    PcurveDeviationRemains,
 }
 
 impl RepairRefusalKind {
@@ -147,6 +150,7 @@ impl RepairRefusalKind {
             Self::IntersectingEdgesRepairUnsupported => "intersecting_edges_repair_unsupported",
             Self::MissingSeamRepairUnsupported => "missing_seam_repair_unsupported",
             Self::FreeEdgesRemain => "free_edges_remain",
+            Self::PcurveDeviationRemains => "pcurve_deviation_remains",
         }
     }
 }

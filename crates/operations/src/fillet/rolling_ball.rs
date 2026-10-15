@@ -912,9 +912,9 @@ pub fn fillet_rolling_ball_with_origins(
     remus_topology::transaction::run_transacted(topo, |topo| {
         let tol = Tolerance::new();
 
-        if radius <= tol.linear {
+        if !radius.is_finite() || radius <= tol.linear {
             return Err(crate::OperationsError::InvalidInput {
-                reason: format!("fillet radius must be positive, got {radius}"),
+                reason: format!("fillet radius must be finite and positive, got {radius}"),
             });
         }
         if edges.is_empty() {
@@ -1062,6 +1062,7 @@ pub fn fillet_rolling_ball_with_origins(
         // plane constraints, so a stripe endpoint and its corner ball cannot
         // disagree about which side of a support face contains the result.
         let mut planar_edge_sides: HashMap<usize, f64> = HashMap::new();
+        let mut concavity = crate::query::ConcavityProbe::new(topo, solid);
         for &edge_id in &filtered_edges {
             let edge = topo.edge(edge_id)?;
             if !matches!(edge.curve(), EdgeCurve::Line) {
@@ -1080,9 +1081,7 @@ pub fn fillet_rolling_ball_with_origins(
             let end = topo.vertex(edge.end())?.point();
             let edge_len = (end - start).length();
             let probe = radius.min(edge_len * 0.1).max(tol.linear * 10.0);
-            let side = match crate::query::edge_concavity_from_faces(
-                topo, solid, edge_id, faces[0], faces[1], probe,
-            )? {
+            let side = match concavity.concavity(edge_id, faces[0], faces[1], probe)? {
                 crate::query::EdgeConcavity::Convex => -1.0,
                 crate::query::EdgeConcavity::Concave => 1.0,
                 crate::query::EdgeConcavity::Tangent | crate::query::EdgeConcavity::Unknown => {
@@ -1091,6 +1090,7 @@ pub fn fillet_rolling_ball_with_origins(
             };
             planar_edge_sides.insert(edge_id.index(), side);
         }
+        drop(concavity);
 
         // A qualified N-way vertex has one ball tangent to every incident
         // planar face. Store it before computing setbacks: projecting this
@@ -1470,26 +1470,54 @@ pub fn fillet_rolling_ball_with_origins(
             })
             .collect();
 
-        // Phase 2b: Validate that the fillet radius fits within adjacent face geometry.
-        // For each target edge on each adjacent face, the shortest non-target edge
-        // from the shared vertices bounds how far the contact point can extend.
+        // Phase 2b: Validate that the fillet band fits within adjacent face geometry.
+        // On each planar support face the band's contact line runs one setback
+        // from the target edge: `radius · tan(θ/2)` between planes
+        // (`blend_ops::fillet_contact_setback`). A stripe this rebuild could not
+        // classify takes the cross-product fallback, which lays contacts one
+        // radius out, so its setback is never taken below `radius` (the hole
+        // guard, which runs before classification, keeps that floor always).
+        // At each end of the edge
+        // that line must land on the face's adjacent non-target edge, so the
+        // adjacent edge has to reach farther from the target edge's line than the
+        // setback: its perpendicular extent, not its length, bounds the band.
         for &edge_id in &filtered_edges {
             let edge = topo.edge(edge_id)?;
             let p_start = topo.vertex(edge.start())?.point();
             let p_end = topo.vertex(edge.end())?.point();
+            let edge_dir = p_end - p_start;
+            let edge_len_sq = edge_dir.dot(edge_dir);
+            // A curved target edge has no single line for the setback to be
+            // measured from; it keeps the legacy radius-against-length bound.
+            let straight = matches!(edge.curve(), EdgeCurve::Line);
 
             let Some(face_list) = edge_to_faces.get(&edge_id.index()) else {
                 continue;
+            };
+            let setback = if !straight {
+                radius
+            } else if planar_edge_sides.contains_key(&edge_id.index()) {
+                // A classified two-plane stripe takes the exact section. At a
+                // right angle that is exactly `radius`; tan(π/4) rounds a ulp
+                // short, so snap it within the angular tolerance.
+                let setback = crate::blend_ops::fillet_contact_setback(topo, face_list, radius)?;
+                if (setback / radius - 1.0).abs() <= tol.angular {
+                    radius
+                } else {
+                    setback
+                }
+            } else {
+                crate::blend_ops::fillet_contact_setback(topo, face_list, radius)?.max(radius)
             };
             for &fid in face_list {
                 let poly = match face_polygons.get(&fid.index()) {
                     Some(p) => p,
                     None => continue,
                 };
-                // For each vertex of the target edge, find the shortest adjacent
-                // non-target edge on this face. The radius must not exceed that length.
                 for &edge_pt in &[p_start, p_end] {
-                    let mut min_adj = f64::MAX;
+                    // (the reach the band needs, what the face offers) at the
+                    // tightest adjacent edge sharing this vertex.
+                    let mut tightest: Option<(f64, f64)> = None;
                     for (i, pos) in poly.positions.iter().enumerate() {
                         let next_i = (i + 1) % poly.positions.len();
                         let next_pos = poly.positions[next_i];
@@ -1498,22 +1526,45 @@ pub fn fillet_rolling_ball_with_origins(
                             continue;
                         }
                         // Only check edges sharing the vertex
-                        if (*pos - edge_pt).length() < tol.linear
-                            || (next_pos - edge_pt).length() < tol.linear
-                        {
-                            let edge_len = (next_pos - *pos).length();
-                            if edge_len < min_adj {
-                                min_adj = edge_len;
-                            }
+                        let far = if (*pos - edge_pt).length() < tol.linear {
+                            next_pos
+                        } else if (next_pos - edge_pt).length() < tol.linear {
+                            *pos
+                        } else {
+                            continue;
+                        };
+                        let offset = far - edge_pt;
+                        let extent = if edge_len_sq > 0.0 {
+                            (offset - edge_dir * (offset.dot(edge_dir) / edge_len_sq)).length()
+                        } else {
+                            offset.length()
+                        };
+                        // A collinear continuation runs alongside the contact
+                        // line rather than across it; it keeps the legacy bound
+                        // too.
+                        let bound = if straight && extent > tol.linear {
+                            (setback, extent)
+                        } else {
+                            (radius, offset.length())
+                        };
+                        if tightest.is_none_or(|(need, have)| bound.1 - bound.0 < have - need) {
+                            tightest = Some(bound);
                         }
                     }
-                    if radius >= min_adj && min_adj < f64::MAX {
+                    if let Some((need, have)) = tightest
+                        && need >= have
+                    {
                         return Err(crate::OperationsError::Blend(
                             remus_blend::BlendError::CliffEncountered {
                                 edge: edge_id,
                                 face: fid,
                                 requested_radius: radius,
-                                available_radius: min_adj,
+                                // The setback scales with the radius.
+                                available_radius: if need > 0.0 {
+                                    radius * have / need
+                                } else {
+                                    0.0
+                                },
                             },
                         ));
                     }
@@ -3967,15 +4018,11 @@ pub fn fillet_rolling_ball_with_origins(
         // Residual precision drift from polygon extraction can produce vertices
         // that are nearly coincident with original positions.
         {
-            let mut original_verts: Vec<Point3> = Vec::new();
+            let snap_tol = tol.linear * 100.0;
+            let mut original_verts = super::vertex_snap::SnapGrid::new(snap_tol);
             for poly in face_polygons.values() {
                 for &p in &poly.positions {
-                    let already = original_verts
-                        .iter()
-                        .any(|existing| (*existing - p).length() < tol.linear);
-                    if !already {
-                        original_verts.push(p);
-                    }
+                    original_verts.insert_unique(p, tol.linear);
                 }
             }
             for &fid in &shell_face_ids {
@@ -3989,13 +4036,7 @@ pub fn fillet_rolling_ball_with_origins(
                         if let Ok(edge_data) = topo.edge(oe.edge()) {
                             let vid = oe.oriented_start(edge_data);
                             if let Ok(v) = topo.vertex(vid) {
-                                let p = v.point();
-                                let already = original_verts
-                                    .iter()
-                                    .any(|existing| (*existing - p).length() < tol.linear);
-                                if !already {
-                                    original_verts.push(p);
-                                }
+                                original_verts.insert_unique(v.point(), tol.linear);
                             }
                         }
                     }
@@ -4005,16 +4046,10 @@ pub fn fillet_rolling_ball_with_origins(
             for poly in face_polygons.values() {
                 for iw in &poly.inner_wires {
                     for &p in iw {
-                        let already = original_verts
-                            .iter()
-                            .any(|existing| (*existing - p).length() < tol.linear);
-                        if !already {
-                            original_verts.push(p);
-                        }
+                        original_verts.insert_unique(p, tol.linear);
                     }
                 }
             }
-            let snap_tol = tol.linear * 100.0;
             for spec in &mut all_specs {
                 // Snap outer wire vertices.
                 let verts = match spec {
@@ -4035,33 +4070,18 @@ pub fn fillet_rolling_ball_with_origins(
                     | FaceSpec::ExistingTrimmedInners { outer: None, .. } => continue,
                 };
                 for v in verts.iter_mut() {
-                    if let Some(closest) = original_verts
-                        .iter()
-                        .filter(|ov| (**ov - *v).length() < snap_tol)
-                        .min_by(|a, b| {
-                            (**a - *v)
-                                .length()
-                                .partial_cmp(&(**b - *v).length())
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                    {
-                        *v = *closest;
+                    if let Some(closest) = original_verts.nearest_within(*v, snap_tol) {
+                        *v = closest;
                     }
                 }
                 // Snap inner wire vertices.
                 for iw in spec.inner_wires_mut() {
                     for v in iw.iter_mut() {
                         if let Some(closest) = original_verts
-                            .iter()
-                            .filter(|ov| (**ov - *v).length() < snap_tol)
-                            .min_by(|a, b| {
-                                (**a - *v)
-                                    .length()
-                                    .partial_cmp(&(**b - *v).length())
-                                    .unwrap_or(std::cmp::Ordering::Equal)
-                            })
+                            // Same winner and tie rule as the outer wire's snap.
+                            .nearest_within(*v, snap_tol)
                         {
-                            *v = *closest;
+                            *v = closest;
                         }
                     }
                 }
@@ -4191,11 +4211,13 @@ pub fn fillet_rolling_ball_with_origins(
         // called directly (not through `try_fillet`'s closed-shell gate): no new
         // validation errors against the input baseline, and the volume change
         // must be one a fillet of this radius can physically produce.
-        crate::blend_ops::validate_blend_solid_against_input(topo, "fillet", solid, solid_id)?;
+        // `blend_ops::planar_fillet_result` relies on these two checks, with
+        // exactly these arguments, instead of repeating them.
+        let mut baseline = crate::blend_ops::BlendBaseline::new(topo, solid);
+        crate::blend_ops::validate_blend_solid_against_input(&mut baseline, "fillet", solid_id)?;
         crate::blend_ops::validate_blend_volume(
-            topo,
+            &mut baseline,
             "fillet",
-            solid,
             solid_id,
             edges,
             crate::blend_ops::BlendSize::Fillet { radius },

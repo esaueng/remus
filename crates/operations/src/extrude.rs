@@ -1121,12 +1121,22 @@ fn extrude_impl(
 ) -> Result<(SolidId, ExtrudeConstruction), crate::OperationsError> {
     let tol = Tolerance::new();
 
+    if !direction.length_squared().is_finite() {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!("extrusion direction must be finite, got {direction:?}"),
+        });
+    }
     if tol.approx_eq(direction.length_squared(), 0.0) {
         return Err(crate::OperationsError::InvalidInput {
             reason: "extrusion direction is zero-length".into(),
         });
     }
 
+    if !distance.is_finite() {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!("extrusion distance must be finite, got {distance}"),
+        });
+    }
     if tol.approx_eq(distance, 0.0) {
         return Err(crate::OperationsError::InvalidInput {
             reason: "extrusion distance is zero".into(),

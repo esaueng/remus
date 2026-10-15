@@ -121,6 +121,28 @@ pub enum MathError {
     /// The caller requested cooperative cancellation at a safe checkpoint.
     #[error("operation cancelled")]
     Cancelled,
+
+    /// A fit point coincides with its predecessor, so their chord-length
+    /// parameters do not increase and interpolation through both is
+    /// singular.
+    #[error(
+        "fit point {index} coincides with its predecessor: chord-length parameters must increase"
+    )]
+    CoincidentFitPoints {
+        /// Index of the second point of the coincident pair.
+        index: usize,
+    },
+
+    /// A request exceeds an explicit size bound of a math routine.
+    #[error("math resource limit exceeded: {resource} requires {actual}, limit {limit}")]
+    ResourceLimitExceeded {
+        /// The bounded quantity's stable name.
+        resource: &'static str,
+        /// The bound.
+        limit: usize,
+        /// The requested amount (`usize::MAX` when its arithmetic overflows).
+        actual: usize,
+    },
 }
 
 pub mod aabb;

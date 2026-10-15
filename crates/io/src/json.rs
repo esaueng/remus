@@ -943,7 +943,9 @@ impl Content<'_> {
 
 /// Compact JSON writer matching `serde_json::to_vec` byte for byte, with an
 /// optional output budget: once a write would exceed it, the writer stops
-/// growing and reports [`Self::exceeded`].
+/// growing and reports [`Self::exceeded`]. A non-finite float is written as
+/// `null`, as `serde_json` writes it, and reported by [`Self::non_finite`]:
+/// no reader takes `null` back as that float, so callers refuse the output.
 ///
 /// The `key_*` helpers write a pre-quoted `"name":` fragment (with any
 /// separating comma or opening brace) followed by a value; keeping them out
@@ -952,6 +954,7 @@ pub struct Writer {
     out: Vec<u8>,
     limit: usize,
     exceeded: bool,
+    non_finite: bool,
 }
 
 impl Writer {
@@ -960,12 +963,19 @@ impl Writer {
             out: Vec::with_capacity(limit.map_or(4096, |limit| limit.min(64 * 1024))),
             limit: limit.unwrap_or(usize::MAX),
             exceeded: false,
+            non_finite: false,
         }
     }
 
     /// Whether a write was refused by the byte budget.
     pub const fn exceeded(&self) -> bool {
         self.exceeded
+    }
+
+    /// Whether a NaN or infinite float was written (as `null`). Floats a
+    /// spent byte budget skipped are not inspected.
+    pub const fn non_finite(&self) -> bool {
+        self.non_finite
     }
 
     /// The bytes written so far.
@@ -1027,6 +1037,7 @@ impl Writer {
     #[inline(never)]
     pub fn f64(&mut self, value: f64) {
         if !self.exceeded {
+            self.non_finite |= !value.is_finite();
             let before = self.out.len();
             push_f64(&mut self.out, value);
             self.settle(before);
@@ -1081,6 +1092,7 @@ impl Writer {
         if self.exceeded {
             return;
         }
+        self.non_finite |= values.iter().any(|value| !value.is_finite());
         let before = self.out.len();
         self.out.push(b'[');
         for (index, &value) in values.iter().enumerate() {

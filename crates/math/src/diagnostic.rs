@@ -233,6 +233,22 @@ impl ToDiagnostic for MathError {
             Self::Cancelled => {
                 Diagnostic::new(FailureCategory::Cancelled, "operation_cancelled", message)
             }
+            Self::CoincidentFitPoints { index } => {
+                Diagnostic::new(InvalidInput, "coincident_fit_points", message)
+                    .with_detail("index", *index)
+            }
+            Self::ResourceLimitExceeded {
+                resource,
+                limit,
+                actual,
+            } => Diagnostic::new(
+                FailureCategory::ResourceLimit,
+                "resource_limit_exceeded",
+                message,
+            )
+            .with_detail("resource", *resource)
+            .with_detail("limit", *limit)
+            .with_detail("actual", *actual),
         }
     }
 }
@@ -305,6 +321,20 @@ mod tests {
                 MathError::Cancelled,
                 FailureCategory::Cancelled,
                 "operation_cancelled",
+            ),
+            (
+                MathError::CoincidentFitPoints { index: 3 },
+                FailureCategory::InvalidInput,
+                "coincident_fit_points",
+            ),
+            (
+                MathError::ResourceLimitExceeded {
+                    resource: "fit_points",
+                    limit: 8,
+                    actual: 9,
+                },
+                FailureCategory::ResourceLimit,
+                "resource_limit_exceeded",
             ),
         ];
         for (error, category, code) in cases {

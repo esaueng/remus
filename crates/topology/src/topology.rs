@@ -15,7 +15,7 @@ use crate::compound::{Compound, CompoundId};
 use crate::compsolid::{CompSolid, CompSolidId};
 use crate::edge::{Edge, EdgeId};
 use crate::face::{Face, FaceId};
-use crate::face_loop::{Loop, LoopId};
+use crate::face_loop::{Loop, LoopId, reverse_traversal};
 use crate::journal::{EntityKey, EvolutionDraft, Journal, OpId, PendingOp};
 use crate::pcurve::{PCurve, PCurveKey, PCurveRegistry};
 use crate::shell::{Shell, ShellId};
@@ -286,6 +286,7 @@ impl Clone for Topology {
                 generation: self.undo.generation,
                 log_len: self.undo.records.len(),
                 ticks: self.mutation_ticks,
+                seq: self.undo.next_seq,
             }
         };
         Self {
@@ -318,6 +319,88 @@ struct SolidEntities {
     wires: HashSet<WireId>,
     faces: HashSet<FaceId>,
     shells: HashSet<ShellId>,
+}
+
+/// A visited-set over the entity kinds a solid's tree holds. Each `mark_*`
+/// returns whether the entity was newly marked.
+trait EntityMarks {
+    fn mark_shell(&mut self, id: ShellId) -> bool;
+    fn mark_face(&mut self, id: FaceId) -> bool;
+    fn mark_wire(&mut self, id: WireId) -> bool;
+    fn mark_edge(&mut self, id: EdgeId) -> bool;
+    fn mark_vertex(&mut self, id: VertexId);
+}
+
+impl EntityMarks for SolidEntities {
+    fn mark_shell(&mut self, id: ShellId) -> bool {
+        self.shells.insert(id)
+    }
+    fn mark_face(&mut self, id: FaceId) -> bool {
+        self.faces.insert(id)
+    }
+    fn mark_wire(&mut self, id: WireId) -> bool {
+        self.wires.insert(id)
+    }
+    fn mark_edge(&mut self, id: EdgeId) -> bool {
+        self.edges.insert(id)
+    }
+    fn mark_vertex(&mut self, id: VertexId) {
+        self.vertices.insert(id);
+    }
+}
+
+/// [`EntityMarks`] as one flag per arena slot: `delete_solid` marks every
+/// other live body, where hashing each entity cost most of the call
+/// (TOPO-4). Slot indices are dense and never reused, so a flag vector sized
+/// to the arena is exact.
+struct DenseEntityMarks {
+    vertices: Vec<bool>,
+    edges: Vec<bool>,
+    wires: Vec<bool>,
+    faces: Vec<bool>,
+    shells: Vec<bool>,
+}
+
+impl DenseEntityMarks {
+    fn for_topology(topo: &Topology) -> Self {
+        Self {
+            vertices: vec![false; topo.vertices.slot_len()],
+            edges: vec![false; topo.edges.slot_len()],
+            wires: vec![false; topo.wires.slot_len()],
+            faces: vec![false; topo.faces.slot_len()],
+            shells: vec![false; topo.shells.slot_len()],
+        }
+    }
+
+    /// Marks `index`; an out-of-range index (a stale handle the walk then
+    /// refuses) reads as newly marked.
+    fn mark(flags: &mut [bool], index: usize) -> bool {
+        flags
+            .get_mut(index)
+            .is_none_or(|flag| !std::mem::replace(flag, true))
+    }
+
+    fn is_marked(flags: &[bool], index: usize) -> bool {
+        flags.get(index).copied().unwrap_or(false)
+    }
+}
+
+impl EntityMarks for DenseEntityMarks {
+    fn mark_shell(&mut self, id: ShellId) -> bool {
+        Self::mark(&mut self.shells, id.index())
+    }
+    fn mark_face(&mut self, id: FaceId) -> bool {
+        Self::mark(&mut self.faces, id.index())
+    }
+    fn mark_wire(&mut self, id: WireId) -> bool {
+        Self::mark(&mut self.wires, id.index())
+    }
+    fn mark_edge(&mut self, id: EdgeId) -> bool {
+        Self::mark(&mut self.edges, id.index())
+    }
+    fn mark_vertex(&mut self, id: VertexId) {
+        Self::mark(&mut self.vertices, id.index());
+    }
 }
 
 #[derive(Clone)]
@@ -638,6 +721,10 @@ impl Topology {
     /// `deleteSolid` call) and must never be silently undone. For a failed
     /// transactional operation — whose retirements were never observed —
     /// use [`Self::restore_for_rollback`], which undoes them.
+    ///
+    /// Inside a live transaction scope, a restore that keeps a retirement
+    /// records the full pre-restore state, so an enclosing rollback still
+    /// returns the scope's exact entry state.
     pub fn restore_preserving_handle_slots(&mut self, snapshot: &Self) {
         // Persistent preparation invalidates on every restore, even when the
         // restored state is bit-identical: the journal tick rolls back with
@@ -645,15 +732,11 @@ impl Topology {
         // Lineage stays with the destination; only the generation moves
         // forward.
         self.bump_cache_generation();
-        self.undo_truncate_for_foreign_restore(snapshot);
-        let mut snapshot_face_authority: HashMap<
-            FaceId,
-            HashMap<(EdgeId, bool), CarriedCoedgeAuthority>,
-        > = snapshot
-            .faces
-            .iter()
-            .map(|(face_id, _)| (face_id, snapshot.carried_face_authority(face_id)))
-            .collect();
+        // A kept retirement (and the faces it orphans, re-promoted below)
+        // means the restore does not land on `snapshot`, so live scopes
+        // cannot treat it as a rewind to the clone point (TOPO-3).
+        let exact = !self.retires_live_entity_of(snapshot);
+        self.undo_truncate_for_foreign_restore(snapshot, exact);
         self.vertices.restore_preserving_slots(&snapshot.vertices);
         self.edges.restore_preserving_slots(&snapshot.edges);
         self.wires.restore_preserving_slots(&snapshot.wires);
@@ -666,7 +749,6 @@ impl Topology {
         self.loops.restore_preserving_slots(&snapshot.loops);
         self.coedges.restore_preserving_slots(&snapshot.coedges);
         self.attributes.clone_from(&snapshot.attributes);
-        self.pcurves.clone_from(&snapshot.pcurves);
         // Journal entries recorded after the snapshot are truncated with the
         // restore — the journal and the model roll back together, so the
         // history matches the state again — while `OpId`s and ordinals
@@ -676,11 +758,6 @@ impl Topology {
         // exactly the one the restored journal describes.
         self.journal.restore_preserving_ids(&snapshot.journal);
         self.mutation_ticks = snapshot.mutation_ticks;
-        let retired_edges = snapshot
-            .edges
-            .iter()
-            .filter_map(|(id, _)| self.edges.get(id).is_none().then_some(id))
-            .collect();
         let retired_faces = snapshot
             .faces
             .iter()
@@ -691,14 +768,13 @@ impl Topology {
             .iter()
             .filter_map(|(id, _)| self.solids.get(id).is_none().then_some(id))
             .collect();
-        self.pcurves
-            .remove_for_retired_entities(&retired_edges, &retired_faces);
         self.attributes
             .remove_for_retired_entities(&retired_solids, &retired_faces);
         // Retirement is sticky here, so restored faces can reference
         // Loop/Coedge handles that stayed retired. Rebuild the compatibility
-        // index from surviving authority, then promote affected live faces
-        // onto fresh handles while carrying their snapshot pcurves.
+        // index from surviving authority (so the snapshot's index is never
+        // copied), then promote affected live faces onto fresh handles while
+        // carrying their snapshot pcurves.
         self.pcurves = PCurveRegistry::new();
         let mut indexed_uses = Vec::new();
         let mut missing_faces = Vec::new();
@@ -743,7 +819,7 @@ impl Topology {
             let Ok(specs) = self.boundary_loop_specs(&wire_ids, None) else {
                 continue;
             };
-            let carried = snapshot_face_authority.remove(&face_id).unwrap_or_default();
+            let carried = snapshot.carried_face_authority(face_id);
             let _ = self.install_face_loop_specs_carrying(face_id, specs, carried, false);
         }
     }
@@ -765,8 +841,23 @@ impl Topology {
     /// to an external handle holder and must stay retired.
     pub fn restore_for_rollback(&mut self, snapshot: &Self) {
         self.bump_cache_generation();
-        self.undo_truncate_for_foreign_restore(snapshot);
+        self.undo_truncate_for_foreign_restore(snapshot, true);
         self.restore_rollback_fields(snapshot);
+    }
+
+    /// Whether an entity live in `snapshot` is retired here — a retirement
+    /// [`Self::restore_preserving_handle_slots`] keeps.
+    fn retires_live_entity_of(&self, snapshot: &Self) -> bool {
+        self.vertices.retires_live_slot_of(&snapshot.vertices)
+            || self.edges.retires_live_slot_of(&snapshot.edges)
+            || self.wires.retires_live_slot_of(&snapshot.wires)
+            || self.faces.retires_live_slot_of(&snapshot.faces)
+            || self.shells.retires_live_slot_of(&snapshot.shells)
+            || self.solids.retires_live_slot_of(&snapshot.solids)
+            || self.compounds.retires_live_slot_of(&snapshot.compounds)
+            || self.compsolids.retires_live_slot_of(&snapshot.compsolids)
+            || self.loops.retires_live_slot_of(&snapshot.loops)
+            || self.coedges.retires_live_slot_of(&snapshot.coedges)
     }
 
     pub(crate) fn restore_rollback_fields(&mut self, snapshot: &Self) {
@@ -1584,6 +1675,132 @@ impl Topology {
         Ok(())
     }
 
+    /// Reverses the traversal of every boundary of `faces` in place.
+    ///
+    /// Each distinct wire of the faces reverses its use order and every use's
+    /// direction; a closed wire keeps its first edge first. Each face's
+    /// authoritative loops follow position for position, keeping their loop
+    /// and coedge identities, and the pcurve-use index is re-keyed to the
+    /// flipped orientations. Per-use parameter-space traces (pcurves and
+    /// periodic lifts) are cleared: a trace's endpoint convention follows the
+    /// use's direction, so callers that need one re-derive it.
+    ///
+    /// Both uses of an edge shared by two of `faces` flip together, so they
+    /// stay opposite and `reversed` flags need no change. A wire shared with
+    /// a face outside `faces` is refused: that face's loops would no longer
+    /// match its wire. Cost is linear in the size of the boundaries plus one
+    /// pass over the live faces for that ownership check.
+    ///
+    /// Composes with [`transaction::run_transacted`](crate::transaction::run_transacted):
+    /// every write is recorded before it lands.
+    ///
+    /// # Errors
+    ///
+    /// Returns a not-found error for a stale face, wire, loop, coedge or
+    /// edge, [`TopologyError::LoopWireMismatch`] when a face's loops
+    /// disagree with its wires, or [`TopologyError::NonManifold`] when a
+    /// wire is also a boundary of a face outside `faces`. Nothing changes on
+    /// these errors.
+    pub fn reverse_face_boundaries(&mut self, faces: &[FaceId]) -> Result<(), TopologyError> {
+        let mut seen_faces = HashSet::with_capacity(faces.len());
+        let mut targets = Vec::with_capacity(faces.len());
+        let mut wires = Vec::new();
+        let mut seen_wires = HashSet::new();
+        for &face_id in faces {
+            if !seen_faces.insert(face_id) {
+                continue;
+            }
+            let face = self.face(face_id)?;
+            for wire_id in
+                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oriented in self.wire(wire_id)?.edges() {
+                    self.edge(oriented.edge())?;
+                }
+                if seen_wires.insert(wire_id) {
+                    wires.push(wire_id);
+                }
+            }
+            if !face.boundary_loops().is_empty() {
+                crate::validation::validate_face_loops(self, face_id)?;
+            }
+            targets.push(face_id);
+        }
+        // Nothing to reverse is no mutation: counting one would put a
+        // spurious unjournaled-mutation barrier in front of the next op.
+        if targets.is_empty() {
+            return Ok(());
+        }
+        for (face_id, face) in self.faces.iter() {
+            if seen_faces.contains(&face_id) {
+                continue;
+            }
+            if let Some(shared) = std::iter::once(face.outer_wire())
+                .chain(face.inner_wires().iter().copied())
+                .find(|wire_id| seen_wires.contains(wire_id))
+            {
+                return Err(TopologyError::NonManifold {
+                    reason: format!(
+                        "cannot reverse wire {shared:?}: it also bounds face {face_id:?}, \
+                         which is not being reversed"
+                    ),
+                });
+            }
+        }
+
+        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+        self.bump_cache_generation();
+        for wire_id in wires {
+            self.record_wire_overwrite(wire_id)?;
+            let wire = self
+                .wires
+                .get_mut(wire_id)
+                .ok_or(TopologyError::WireNotFound(wire_id))?;
+            let closed = wire.is_closed();
+            let uses = wire.edges_mut();
+            reverse_traversal(uses, closed);
+            for oriented in uses.iter_mut() {
+                *oriented = OrientedEdge::new(oriented.edge(), !oriented.is_forward());
+            }
+        }
+
+        for face_id in targets {
+            let loop_ids = self
+                .faces
+                .get(face_id)
+                .map(|face| face.boundary_loops().to_vec())
+                .unwrap_or_default();
+            // Unindex every old use before indexing any new one: a seam's
+            // two uses trade keys.
+            let mut flipped = Vec::new();
+            for &loop_id in &loop_ids {
+                let coedge_ids = self.face_loop(loop_id)?.coedges().to_vec();
+                for coedge_id in coedge_ids {
+                    let coedge = self.coedge(coedge_id)?;
+                    let (edge, forward) = (coedge.edge(), coedge.is_forward());
+                    self.record_pcurve_write(edge, face_id, forward)?;
+                    self.pcurves
+                        .remove_key(PCurveKey::new(edge, face_id, forward));
+                    self.record_coedge_overwrite(coedge_id)?;
+                    let coedge = self
+                        .coedges
+                        .get_mut(coedge_id)
+                        .ok_or(TopologyError::CoedgeNotFound(coedge_id))?;
+                    coedge.reverse_direction();
+                    flipped.push((edge, !forward, coedge_id));
+                }
+                self.record_loop_overwrite(loop_id)?;
+                if let Some(boundary_loop) = self.loops.get_mut(loop_id) {
+                    boundary_loop.reverse_traversal();
+                }
+            }
+            for (edge, forward, coedge_id) in flipped {
+                self.index_pcurve_use(edge, face_id, forward, coedge_id)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Returns this face's authoritative loops, deriving them once from the
     /// compatibility wire facade only for a legacy underived face.
     ///
@@ -1715,8 +1932,6 @@ impl Topology {
     /// invalid topology reference. No entities are retired when validation or
     /// reference discovery fails.
     pub fn delete_solid(&mut self, solid: SolidId) -> Result<(), DeleteSolidError> {
-        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
-        self.bump_cache_generation();
         let mut retiring = self.collect_solid_entities(solid)?;
         if let Some((compound_id, _)) = self
             .compounds
@@ -1741,7 +1956,7 @@ impl Topology {
             });
         }
 
-        let mut retained = SolidEntities::default();
+        let mut retained = DenseEntityMarks::for_topology(self);
         for (other_id, _) in self.solids.iter() {
             if other_id != solid {
                 self.collect_solid_entities_into(other_id, &mut retained)?;
@@ -1760,27 +1975,45 @@ impl Topology {
         // Wires all carry the wire tag, including face boundaries. Only a
         // wire with no owning face is a standalone root under the current
         // representation; a boundary wire is retained through its live body.
-        let face_owned_wires: HashSet<_> = self
-            .faces
-            .iter()
-            .flat_map(|(_, face)| {
+        let mut face_owned_wires = vec![false; self.wires.slot_len()];
+        for (_, face) in self.faces.iter() {
+            for wire_id in
                 std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
-            })
-            .collect();
+            {
+                if let Some(owned) = face_owned_wires.get_mut(wire_id.index()) {
+                    *owned = true;
+                }
+            }
+        }
         for (wire_id, _) in self.wires.iter() {
-            if !face_owned_wires.contains(&wire_id) {
+            if !DenseEntityMarks::is_marked(&face_owned_wires, wire_id.index()) {
                 self.collect_wire_entities_into(wire_id, &mut retained)?;
             }
         }
 
+        let kept = |flags: &[bool], index: usize| DenseEntityMarks::is_marked(flags, index);
         retiring
             .vertices
-            .retain(|id| !retained.vertices.contains(id));
-        retiring.edges.retain(|id| !retained.edges.contains(id));
-        retiring.wires.retain(|id| !retained.wires.contains(id));
-        retiring.faces.retain(|id| !retained.faces.contains(id));
-        retiring.shells.retain(|id| !retained.shells.contains(id));
+            .retain(|id| !kept(&retained.vertices, id.index()));
+        retiring
+            .edges
+            .retain(|id| !kept(&retained.edges, id.index()));
+        retiring
+            .wires
+            .retain(|id| !kept(&retained.wires, id.index()));
+        retiring
+            .faces
+            .retain(|id| !kept(&retained.faces, id.index()));
+        retiring
+            .shells
+            .retain(|id| !kept(&retained.shells, id.index()));
 
+        // Count the mutation only once validation has passed: a refusal
+        // changes nothing, and a tick would open a spurious journal gap.
+        // Everything below retires or records; a guard trip part-way still
+        // leaves the tick counted.
+        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+        self.bump_cache_generation();
         for face_id in &retiring.faces {
             let loop_ids = self
                 .faces
@@ -1849,10 +2082,10 @@ impl Topology {
         Ok(entities)
     }
 
-    fn collect_solid_entities_into(
+    fn collect_solid_entities_into<M: EntityMarks>(
         &self,
         solid: SolidId,
-        entities: &mut SolidEntities,
+        entities: &mut M,
     ) -> Result<(), TopologyError> {
         let solid_data = self.solid(solid)?;
         for shell_id in std::iter::once(solid_data.outer_shell())
@@ -1863,17 +2096,17 @@ impl Topology {
         Ok(())
     }
 
-    fn collect_shell_entities_into(
+    fn collect_shell_entities_into<M: EntityMarks>(
         &self,
         shell_id: ShellId,
-        entities: &mut SolidEntities,
+        entities: &mut M,
     ) -> Result<(), TopologyError> {
-        if !entities.shells.insert(shell_id) {
+        if !entities.mark_shell(shell_id) {
             return Ok(());
         }
         let shell = self.shell(shell_id)?;
         for &face_id in shell.faces() {
-            if !entities.faces.insert(face_id) {
+            if !entities.mark_face(face_id) {
                 continue;
             }
             let face = self.face(face_id)?;
@@ -1886,25 +2119,25 @@ impl Topology {
         Ok(())
     }
 
-    fn collect_wire_entities_into(
+    fn collect_wire_entities_into<M: EntityMarks>(
         &self,
         wire_id: WireId,
-        entities: &mut SolidEntities,
+        entities: &mut M,
     ) -> Result<(), TopologyError> {
-        if !entities.wires.insert(wire_id) {
+        if !entities.mark_wire(wire_id) {
             return Ok(());
         }
         let wire = self.wire(wire_id)?;
         for oriented_edge in wire.edges() {
             let edge_id = oriented_edge.edge();
-            if !entities.edges.insert(edge_id) {
+            if !entities.mark_edge(edge_id) {
                 continue;
             }
             let edge = self.edge(edge_id)?;
             self.vertex(edge.start())?;
             self.vertex(edge.end())?;
-            entities.vertices.insert(edge.start());
-            entities.vertices.insert(edge.end());
+            entities.mark_vertex(edge.start());
+            entities.mark_vertex(edge.end());
         }
         Ok(())
     }
@@ -3080,6 +3313,50 @@ mod tests {
             &[compsolid_solid]
         );
         assert!(compsolid_topo.solid(compsolid_solid).is_ok());
+    }
+
+    /// TOPO-6: a refused `delete_solid` changes nothing, so it must not
+    /// count as a mutation — otherwise the next journaled operation opens
+    /// behind a spurious global barrier that severs every reference.
+    #[test]
+    fn refused_delete_solid_leaves_no_journal_gap() {
+        let mut topo = Topology::new();
+        let (solid, face, _) = make_triangle_solid(&mut topo, 0.0);
+        topo.add_compound(Compound::new(vec![solid]));
+        let (stale, _, _) = make_triangle_solid(&mut topo, 10.0);
+        topo.delete_solid(stale).unwrap();
+        let pending = topo.journal_begin("seed");
+        topo.journal_record_barrier(pending, Vec::new());
+        assert_eq!(topo.journal().len(), 1);
+        let ticks = topo.mutation_ticks();
+
+        assert!(matches!(
+            topo.delete_solid(solid),
+            Err(DeleteSolidError::Referenced { .. })
+        ));
+        assert!(topo.delete_solid(stale).is_err());
+        assert_eq!(topo.mutation_ticks(), ticks, "refusals mutate nothing");
+
+        let pending = topo.journal_begin("next");
+        let mut draft = EvolutionDraft::construction();
+        draft.push(
+            EntityKey::face(face.index()),
+            crate::journal::EventDraft::Generated {
+                sources: Vec::new(),
+            },
+        );
+        topo.journal_record_evolution(pending, draft).unwrap();
+        assert_eq!(
+            topo.journal().len(),
+            2,
+            "no unjournaled-mutations barrier precedes the next entry"
+        );
+        assert!(
+            topo.journal()
+                .entries()
+                .iter()
+                .all(|entry| entry.kind() != crate::journal::UNJOURNALED_MUTATIONS)
+        );
     }
 
     #[test]

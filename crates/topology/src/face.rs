@@ -80,6 +80,52 @@ impl FaceSurface {
         }
     }
 
+    /// `(self.evaluate(u, v), chart.normal(u, v))`, bit for bit, sharing the
+    /// work the two calls have in common.
+    ///
+    /// A NURBS surface charted by a NURBS surface with the same degrees and
+    /// knots (itself, or its control net moved into a local frame) solves
+    /// one span and one first-order basis per axis
+    /// ([`NurbsSurface::point_and_normal_with`]); an analytic surface charted
+    /// by itself takes each angle's `sin_cos` once (its
+    /// `point_and_normal_trig`). Any other pair runs the two calls.
+    #[must_use]
+    pub fn point_and_normal_in(&self, chart: &Self, u: f64, v: f64) -> (Option<Point3>, Vec3) {
+        if let (Self::Nurbs(surface), Self::Nurbs(carrier)) = (self, chart) {
+            let (point, normal) = surface.point_and_normal_with(carrier, u, v);
+            // `ParametricSurface::normal`'s fallback for a degenerate point.
+            return (
+                Some(point),
+                normal.unwrap_or_else(|_| Vec3::new(0.0, 0.0, 1.0)),
+            );
+        }
+        if std::ptr::eq(self, chart) {
+            let shared = match self {
+                Self::Cylinder(c) => {
+                    let (sin_u, cos_u) = u.sin_cos();
+                    Some(c.point_and_normal_trig(sin_u, cos_u, v))
+                }
+                Self::Cone(c) => {
+                    let (sin_u, cos_u) = u.sin_cos();
+                    Some(c.point_and_normal_trig(sin_u, cos_u, v))
+                }
+                Self::Sphere(s) => {
+                    let ((sin_u, cos_u), (sin_v, cos_v)) = (u.sin_cos(), v.sin_cos());
+                    Some(s.point_and_normal_trig(sin_u, cos_u, sin_v, cos_v))
+                }
+                Self::Torus(t) => {
+                    let ((sin_u, cos_u), (sin_v, cos_v)) = (u.sin_cos(), v.sin_cos());
+                    Some(t.point_and_normal_trig(sin_u, cos_u, sin_v, cos_v))
+                }
+                Self::Plane { .. } | Self::Nurbs(_) => None,
+            };
+            if let Some((point, normal)) = shared {
+                return (Some(point), normal);
+            }
+        }
+        (self.evaluate(u, v), chart.normal(u, v))
+    }
+
     /// Project a 3D point onto the surface, returning `(u, v)` parameters.
     ///
     /// Returns `None` for `Plane` (no true UV parameterization).
@@ -600,6 +646,70 @@ mod tests {
         let p = surface.evaluate(u, v).unwrap();
         let outward = (p - sph.center()).normalize().unwrap();
         assert!(surface.normal(u, v).dot(outward) > 0.999_999);
+    }
+
+    /// `point_and_normal_in` is `(evaluate, chart.normal)` bit for bit on
+    /// every variant charted by itself, on a NURBS patch charted by its net
+    /// moved into a local frame (shared bases), on a degenerate NURBS point
+    /// (the `Vec3::Z` fallback) and on mismatched charts.
+    #[test]
+    fn point_and_normal_in_is_evaluate_and_chart_normal_bit_for_bit() {
+        fn bits(p: Option<Point3>, n: Vec3) -> (Option<[u64; 3]>, [u64; 3]) {
+            (
+                p.map(|p| [p.x().to_bits(), p.y().to_bits(), p.z().to_bits()]),
+                [n.x().to_bits(), n.y().to_bits(), n.z().to_bits()],
+            )
+        }
+        let moved = |s: &NurbsSurface, offset: Vec3| {
+            NurbsSurface::new(
+                s.degree_u(),
+                s.degree_v(),
+                s.knots_u().to_vec(),
+                s.knots_v().to_vec(),
+                s.control_points()
+                    .iter()
+                    .map(|row| row.iter().map(|&p| p + offset).collect())
+                    .collect(),
+                s.weights().to_vec(),
+            )
+            .unwrap()
+        };
+        let base = nurbs();
+        let frame = FaceSurface::Nurbs(moved(&base, Vec3::new(-3.0, 4.0, -1.0)));
+        let point = FaceSurface::Nurbs(moved(
+            &NurbsSurface::new(
+                1,
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![vec![Point3::new(1.0, 2.0, 3.0); 2]; 2],
+                vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+            )
+            .unwrap(),
+            Vec3::new(0.0, 0.0, 0.0),
+        ));
+        let mut surfaces = parametric_surfaces();
+        surfaces.push(("plane", plane_surface()));
+        surfaces.push(("point nurbs", point));
+        let params = [-7.5, -0.0, 0.0, 0.3, 0.55, 1.0, 2.5, 9.0];
+        for (label, surface) in &surfaces {
+            let mut charts = vec![("itself", surface), ("frame", &frame)];
+            charts.extend(surfaces.iter().map(|(l, s)| (*l, s)));
+            for (chart_label, chart) in charts {
+                for &u in &params {
+                    for &v in &params {
+                        let (p, n) = surface.point_and_normal_in(chart, u, v);
+                        assert_eq!(
+                            bits(p, n),
+                            bits(surface.evaluate(u, v), chart.normal(u, v)),
+                            "{label} in {chart_label} at ({u}, {v})"
+                        );
+                    }
+                }
+            }
+        }
+        let (p, n) = FaceSurface::Nurbs(base).point_and_normal_in(&frame, 0.3, 0.55);
+        assert!(p.is_some() && (n.length() - 1.0).abs() < TOL);
     }
 
     #[test]
