@@ -164,3 +164,16 @@ fn degree_elevation_in_range_is_unchanged_geometry() {
         assert!(d < 1e-9, "deviation {d} at t = {t}");
     }
 }
+
+#[test]
+fn huge_degree_elevation_is_refused_before_allocating() {
+    // The coefficient table for this many degrees could never be allocated;
+    // the binomial range check has to refuse it first.
+    let c = cubic();
+    let result = std::panic::catch_unwind(|| curve_degree_elevate(&c, usize::MAX / 4));
+    let result = result.expect("degree elevation panicked");
+    assert!(
+        matches!(result, Err(MathError::InvalidDegree { .. })),
+        "{result:?}"
+    );
+}

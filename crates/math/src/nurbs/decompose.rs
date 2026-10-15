@@ -364,7 +364,11 @@ pub fn curve_degree_elevate(curve: &NurbsCurve, t: usize) -> Result<NurbsCurve, 
 /// `bezalfs[i][j] = C(p,j) * C(t, i-j) / C(p+t, i)`
 #[allow(clippy::cast_precision_loss)]
 fn compute_bezalfs(p: usize, t: usize) -> Option<Vec<Vec<f64>>> {
-    let new_p = p + t;
+    let new_p = p.checked_add(t)?;
+    // C(new_p, new_p / 2) is the largest coefficient and its product chain
+    // bounds every other one, so checking it first refuses an elevation the
+    // `u64` binomials cannot represent before the table is allocated.
+    checked_binomial(new_p, new_p / 2)?;
     let mut bezalfs = vec![vec![0.0; p + 1]; new_p + 1];
 
     for (i, row) in bezalfs.iter_mut().enumerate().take(new_p + 1) {
