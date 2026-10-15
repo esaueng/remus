@@ -271,6 +271,36 @@ fn loop_anomalies(topo: &Topology, fid: remus_topology::face::FaceId, sharing: &
     out
 }
 
+/// Faces whose pcurve index disagrees with their coedges. The kernel's
+/// `validate_boundary_authority` checks that each coedge's
+/// `(edge, face, orientation)` key resolves to it, but not that the index
+/// holds no other keys, so this compares the face's indexed pcurve uses (the
+/// public `pcurves_for_face` read) with its coedges that carry a pcurve.
+fn pcurve_index_mismatches(topo: &Topology) -> usize {
+    let mut mismatches = 0;
+    for (fid, face) in topo.faces().iter() {
+        let mut expected: Vec<(usize, bool)> = face
+            .boundary_loops()
+            .iter()
+            .flat_map(|&l| topo.face_loop(l).unwrap().coedges().iter().copied())
+            .map(|c| topo.coedge(c).unwrap())
+            .filter(|c| c.pcurve().is_some())
+            .map(|c| (c.edge().index(), c.is_forward()))
+            .collect();
+        let mut indexed: Vec<(usize, bool)> = topo
+            .pcurves_for_face(fid)
+            .iter()
+            .map(|(e, forward, _)| (e.index(), *forward))
+            .collect();
+        expected.sort_unstable();
+        indexed.sort_unstable();
+        if expected != indexed {
+            mismatches += 1;
+        }
+    }
+    mismatches
+}
+
 /// Digests of a solid: `strict` hashes each shell (outer, then inner) and
 /// its faces in stored order, every wire from its stored first edge;
 /// `canonical` is the same content with faces sorted within each shell, inner
@@ -454,9 +484,12 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
     strict.u64(incidence.0);
     // The kernel's own whole-topology boundary-authority check, which also
     // covers the (edge, face, orientation) pcurve index the hashes above do
-    // not read.
+    // not read, plus the reverse check that the index holds no extra uses.
     let authority = match remus_topology::validation::validate_boundary_authority(topo) {
-        Ok(_) => "ok".to_owned(),
+        Ok(_) => match pcurve_index_mismatches(topo) {
+            0 => "ok".to_owned(),
+            n => format!("pcurve-index-mismatch:{n}"),
+        },
         Err(e) => format!("{e}").replace(' ', "_"),
     };
     strict.str(&authority);
