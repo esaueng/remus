@@ -470,6 +470,28 @@ fn collapsed_curved_slivers_are_degenerate() {
     assert!(!edge_is_degenerate(&topo, rim, tol_sq).unwrap());
 }
 
+/// An unmeasurable line (a NaN end) and a closed rim whose stored trim is
+/// empty are kept: neither proves the edge short.
+#[test]
+fn unmeasurable_edges_are_kept() {
+    use remus_math::curves::Circle3D;
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let a = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(Point3::new(f64::NAN, 0.0, 0.0), 1e-7));
+    let line = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+    let v = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+    let mut rim = Edge::new(v, v, EdgeCurve::Circle(circle));
+    rim.set_trim(Some((0.0, 0.0)));
+    let rim = topo.add_edge(rim);
+
+    assert!(!edge_is_degenerate(&topo, rim, 1e-14).unwrap());
+    assert!(!edge_is_degenerate(&topo, line, 1e-14).unwrap());
+}
+
 /// A tolerance longer than a cylinder's rims leaves its rims alone: each rim
 /// bounds its cap alone, so dropping it from the lateral wire would unpair it.
 #[test]

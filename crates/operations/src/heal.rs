@@ -686,20 +686,35 @@ fn edge_is_degenerate(
     tol_sq: f64,
 ) -> Result<bool, crate::OperationsError> {
     let edge = topo.edge(edge_id)?;
-    let start = topo.vertex(edge.start())?.point();
-    let end = topo.vertex(edge.end())?.point();
-    if (end - start).length_squared() >= tol_sq {
+    let start_vertex = topo.vertex(edge.start())?;
+    let (start, end) = (start_vertex.point(), topo.vertex(edge.end())?.point());
+    let chord_sq = (end - start).length_squared();
+    // A NaN chord is unmeasurable, not short.
+    if chord_sq.is_nan() || chord_sq >= tol_sq {
         return Ok(false);
     }
     if matches!(edge.curve(), EdgeCurve::Line) {
         return Ok(true);
     }
-    // The stored trim bounds the edge even where vertex merging closed it and
-    // the strict check (which wants a full turn on a closed circle) refuses
-    // it; without any finite trim the extent is unknown: keep the edge.
+    // Once vertex merging closes a short arc, the strict check (which wants a
+    // full turn on a closed circle) refuses its trim. The stored trim still
+    // bounds the edge when it is a real interval whose ends land on the fused
+    // vertex; any other invalid or missing trim leaves the extent unknown:
+    // keep the edge.
     let (t0, t1) = match (edge.strict_domain(), edge.trim()) {
         (Ok(domain), _) => domain,
-        (Err(_), Some((t0, t1))) if t0.is_finite() && t1.is_finite() => (t0, t1),
+        (Err(_), Some((t0, t1)))
+            if edge.start() == edge.end() && (t1 - t0).abs() > 0.0 && (t1 - t0).is_finite() =>
+        {
+            let reach = tol_sq.sqrt() + start_vertex.tolerance();
+            let lands = |t: f64| {
+                (edge.curve().evaluate_with_endpoints(t, start, end) - start).length() <= reach
+            };
+            if !(lands(t0) && lands(t1)) {
+                return Ok(false);
+            }
+            (t0, t1)
+        }
         (Err(_), _) => return Ok(false),
     };
     let span = (t1 - t0).abs();
