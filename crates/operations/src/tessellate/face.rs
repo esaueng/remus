@@ -29,6 +29,26 @@ const SPHERE_DIAG_ANG: f64 = std::f64::consts::FRAC_1_SQRT_2;
 /// (mesh-boolean) path so its calibrated tessellations stay bit-identical.
 const SPHERE_DIAG_LEGACY: f64 = 0.7;
 
+/// Keep the established two-percent signed-volume accuracy at coarse sphere
+/// resolutions. For a uniform latitude/longitude grid the volume ratio is
+/// sinc(du) * cos(dv/2)^2, so du^2/6 + dv^2/4 bounds its relative deficit.
+/// Fine display requests use the analytic grid; coarse requests retain the
+/// existing cap mesher rather than relaxing its geometric oracle.
+pub(super) fn sphere_display_grid_is_fine(radius: f64, deflection: f64, angular_tol: f64) -> bool {
+    let count = |span| {
+        segments_for_chord_deviation_a(
+            radius,
+            span,
+            deflection * SPHERE_DIAG_DEFL,
+            angular_tol * SPHERE_DIAG_ANG,
+            false,
+        )
+    };
+    let du = std::f64::consts::TAU / count(std::f64::consts::TAU) as f64;
+    let dv = std::f64::consts::FRAC_PI_2 / count(std::f64::consts::FRAC_PI_2) as f64;
+    du * du / 6.0 + dv * dv / 4.0 < 0.02
+}
+
 /// Does this cylindrical face's outer boundary need the CDT tessellator rather
 /// than the analytic grid?
 ///
@@ -281,8 +301,26 @@ pub(super) fn tessellate_with_uvs_floor(
             }
         }
         FaceSurface::Sphere(sphere) => {
-            let u_range = compute_angular_range(topo, face_data, |p| sphere.project_point(p))?;
-            let v_range = compute_sphere_v_range(topo, face_data, sphere);
+            let mut u_range = compute_angular_range(topo, face_data, |p| sphere.project_point(p))?;
+            let mut v_range = compute_sphere_v_range(topo, face_data, sphere);
+            let equator_direction = if !curvature_floor
+                && sphere_display_grid_is_fine(sphere.radius(), deflection, angular_tol)
+            {
+                super::nonplanar::analytic_sphere_equator_direction(topo, face_data)?
+            } else {
+                None
+            };
+            if let Some(direction) = equator_direction {
+                // Native spans prove a complete equator and its bounded side.
+                // Endpoint polygons can select the wrong hemisphere after mixed
+                // stored-edge reversal, or miss a full turn with unequal arcs.
+                u_range.1 = u_range.0 + std::f64::consts::TAU;
+                v_range = if direction > 0.0 {
+                    (0.0, std::f64::consts::FRAC_PI_2)
+                } else {
+                    (-std::f64::consts::FRAC_PI_2, 0.0)
+                };
+            }
             let (defl_shrink, ang_shrink) = if curvature_floor {
                 (SPHERE_DIAG_LEGACY, SPHERE_DIAG_LEGACY)
             } else {
@@ -306,6 +344,7 @@ pub(super) fn tessellate_with_uvs_floor(
                 deflection * defl_shrink,
                 angular_tol * ang_shrink,
                 !full_turn,
+                equator_direction.is_some(),
             );
             if let Some(result) = trimmed {
                 Ok(result)

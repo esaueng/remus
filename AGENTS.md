@@ -497,9 +497,12 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Certificate-implies-probe oracle, refusal cases and probe-mesh work guard (tests) | `measure/volume/planar_outline_tests.rs` |
 | Hash-map references for the sorted whole-mesh edge censuses (tests) | `measure/volume/edge_census_oracle_tests.rs` |
 | Bounded opt-in exact-content scalar memo for trimmed NURBS face areas | `measure/nurbs_area_memo.rs`, `measure/nurbs_area_memo/tests.rs` |
+| Bounded opt-in exact-content memo of single-face bounding boxes (the move's swept-region refusal), and its bit-identity tests | `measure/face_box_memo.rs`, `measure/face_box_memo/tests.rs` |
 | Bounded opt-in host-clock phase timings | `performance.rs` |
 | Distance queries | `distance.rs` |
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
+| Differential oracle for the interior grid's boundary scans: the `(i + 1) % n` indexed containment and clearance loops kept verbatim (tests) | `tessellate/nonplanar/polygon_scan_oracle_tests.rs` |
+| Interior grid samples reused at emission: meshes with the reuse on and off compared bit for bit (tests) | `tessellate/nonplanar/interior_sample_tests.rs` |
 | Signed native vector-area qualification for a hemisphere chart | `tessellate/nonplanar/sphere_chart_orientation.rs` |
 | Independent spherical-patch geometry and shared-boundary oracles | `tessellate/nonplanar/sphere_chart_tests.rs` |
 | Row-wise interior-grid containment against the per-point polygon test (tests) | `tessellate/nonplanar/row_containment_tests.rs` |
@@ -510,6 +513,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Explicit shared-boundary plan and deterministic refinement reconciliation | `tessellate/boundary_plan.rs` |
 | Content-keyed per-face mesh reuse across edits, with display-priority retention inside shared bounds (opt-in, per thread; PERF-D01) | `tessellate/face_cache.rs` |
 | Spatial index of the shared vertex pool for the boundary plan's circle contact refinement (PERF-D07) | `tessellate/pool_index.rs` |
+| Differential oracle for the circle contact candidates: the 27-key neighbour expansion kept verbatim against the merged z-run lookup (tests) | `tessellate/pool_index/oracle_tests.rs` |
 | Cost-model full-scan fallback of the circle contact index: decision boundary and fallback-on/off mesh identity (tests) | `tessellate/tests/pool_fallback.rs` |
 | Point classification (in/on/out solid) | `classify.rs` |
 | Offset face / solid | `offset_face.rs`, `offset_v2.rs` (delegates to remus-offset), `offset_trim.rs` |
@@ -541,6 +545,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Direct push/pull face editing | `push_pull.rs` |
 | Exact support-surface replacement with topology-preserving re-limitation | `replace_surface.rs` |
 | Exact constant-radius blend-band resizing | `resize_blend.rs` |
+| Differential oracle for the blend move's translation path: the whole-document scratch-copy version kept verbatim (tests) | `resize_blend/translation_oracle_tests.rs` |
 | Exact local reconstruction of analytic wounds | `local_wound.rs` |
 | Cylindrical blend removal with certified affine NURBS caps | `affine_blend_caps.rs` |
 | Atomic removal of explicitly selected connected blend groups | `remove_blends.rs` |

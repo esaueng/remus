@@ -29,7 +29,9 @@ const WALK_IR_PER_POINT: usize = 3000;
 /// Callgrind Ir of the walk left once its cells are known (the 27-cell
 /// expansion, its sort and lookups, the candidates' acceptance tests), per
 /// distinct cell: 7510-12660 over the sweep. The cells themselves cost
-/// 350-570 per walk point.
+/// 350-570 per walk point. Calibrated before the expansion became 9 merged
+/// z-runs per cell, which made the walk cheaper: the rule now scans some
+/// circles a recalibration would walk, with the same candidates either way.
 const WALK_IR_PER_CELL: usize = 7500;
 
 /// Scan only when the scan estimate is at most this fraction (3/5) of the
@@ -156,27 +158,36 @@ impl PoolIndex {
         if scan {
             return None;
         }
-        let mut around: Vec<(i64, i64, i64)> = Vec::with_capacity(cells.len() * 27);
+        // The 27 cells around each walked cell are 9 runs along z, each a
+        // contiguous range of the cell-sorted entries. Runs merged per
+        // column cover the same cells disjointly and in ascending order, so
+        // every vertex is read once and each lookup starts where the last
+        // one ended.
+        let mut runs: Vec<((i64, i64), i64, i64)> = Vec::with_capacity(cells.len() * 9);
         for &(x, y, z) in &cells {
             for dx in -1..=1 {
                 for dy in -1..=1 {
-                    for dz in -1..=1 {
-                        around.push((x + dx, y + dy, z + dz));
-                    }
+                    runs.push(((x + dx, y + dy), z - 1, z + 1));
                 }
             }
         }
-        around.sort_unstable();
-        around.dedup();
+        runs.sort_unstable();
         let mut out: Vec<u32> = self.non_finite.clone();
-        for key in around {
-            let first = self.entries.partition_point(|(c, _)| *c < key);
-            out.extend(
-                self.entries[first..]
-                    .iter()
-                    .take_while(|(c, _)| *c == key)
-                    .map(|&(_, gid)| gid),
-            );
+        let mut rest = self.entries.as_slice();
+        let mut next = 0;
+        while let Some(&((x, y), lo, mut hi)) = runs.get(next) {
+            next += 1;
+            while let Some(&(column, run_lo, run_hi)) = runs.get(next) {
+                if column != (x, y) || run_lo > hi.saturating_add(1) {
+                    break;
+                }
+                hi = hi.max(run_hi);
+                next += 1;
+            }
+            rest = &rest[rest.partition_point(|(c, _)| *c < (x, y, lo))..];
+            let within = rest.partition_point(|(c, _)| *c <= (x, y, hi));
+            out.extend(rest[..within].iter().map(|&(_, gid)| gid));
+            rest = &rest[within..];
         }
         out.sort_unstable();
         out.dedup();
@@ -190,6 +201,9 @@ fn scan_is_cheaper(pool_len: usize, walk_ir: usize) -> bool {
     pool_len.saturating_mul(SCAN_IR_PER_VERTEX * SCAN_MARGIN.1)
         <= walk_ir.saturating_mul(SCAN_MARGIN.0)
 }
+
+#[cfg(test)]
+mod oracle_tests;
 
 #[allow(clippy::cast_possible_truncation)]
 fn cell_of(p: Point3, cell: f64) -> (i64, i64, i64) {
