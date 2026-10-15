@@ -13,7 +13,7 @@
 
 use crate::context::OperationContext;
 use crate::nurbs::curve::NurbsCurve;
-use crate::nurbs::knot_ops::curve_knot_remove;
+use crate::nurbs::knot_ops::curve_knot_remove_candidate;
 use crate::nurbs::reuse::{ReductionOptions, ReductionOutcome, ReuseBudget, ReuseError};
 use crate::nurbs::reuse_bounds::{
     curve_deviation_bound, surface_deviation_bound, validate_curve_domain, validate_surface_domain,
@@ -493,7 +493,7 @@ fn curve_candidate(
     let normalized = NurbsCurve::new(curve.degree(), normalized_knots, points, normalized_weights)?;
     // Existing internal Remus implementation proposes a candidate only. Its
     // local comparison is not a geometric certificate and does not accept it.
-    let candidate = match curve_knot_remove(&normalized, (knot - start) / width, f64::MAX) {
+    let candidate = match curve_knot_remove_candidate(&normalized, (knot - start) / width) {
         Ok(candidate) if candidate.control_points().len() + 1 == curve.control_points().len() => {
             candidate
         }

@@ -391,10 +391,10 @@ fn a_weight_ratio_below_the_normal_range_refuses() {
 fn certified_reduction_still_gets_its_candidate_past_the_ratio_gate() {
     // Review follow-up: a rational line with end weights 1e-200 and 1e108,
     // with u = 0.5 inserted, has the ratio w_prev / w_mid ≈ 2e-308, which is
-    // subnormal. The gate refuses that removal at every finite tolerance, but
-    // the certified reduction asks `curve_knot_remove` for a candidate at
-    // tolerance f64::MAX and certifies it itself, so the gate must not
-    // pre-empt it: the decision belongs to the certificate, as on `main`.
+    // subnormal. The public removal refuses it, but the certified reduction
+    // takes its candidates from an unchecked generator and certifies them
+    // itself, so the gate must not pre-empt it: the decision belongs to the
+    // certificate, as on `main`.
     let line = polyline(
         vec![0.0, 0.0, 1.0, 1.0],
         &[[0.0, 0.0, 0.0], [1.0, 2.0, 0.0]],
@@ -407,11 +407,10 @@ fn certified_reduction_still_gets_its_candidate_past_the_ratio_gate() {
         "premise: ratio {:e}",
         w[0] / w[1]
     );
-    assert!(is_refused(&curve_knot_remove(&inserted, 0.5, 1.0)));
-    let candidate = curve_knot_remove(&inserted, 0.5, f64::MAX).unwrap();
-    assert_eq!(candidate.control_points().len(), 2);
-    for (got, want) in candidate.control_points().iter().zip(line.control_points()) {
-        assert!((*got - *want).length() <= 1e-12, "{got:?} vs {want:?}");
+    // The public removal refuses at every tolerance, f64::MAX included:
+    // without a bound there is nothing to hold the tolerance against.
+    for tol in [1.0, f64::MAX] {
+        assert!(is_refused(&curve_knot_remove(&inserted, 0.5, tol)));
     }
     // The certificate, not the candidate generator, now rules on this knot.
     // Its Bernstein bound cannot resolve weights 308 decades apart, which is
@@ -443,10 +442,23 @@ fn an_overflowed_coordinate_difference_does_not_vanish() {
         ],
         vec![1.0; 3],
     );
-    for tol in [0.0, 1.0, 1e300] {
+    for tol in [0.0, 1.0, 1e300, f64::MAX] {
         assert!(
             is_refused(&curve_knot_remove(&curve, 0.5, tol)),
             "removed at tolerance {tol:e}"
         );
     }
+    // Review follow-up: with the ends at -MAX and the middle at MAX the
+    // true deviation is 2·MAX, which exceeds even tolerance f64::MAX; an
+    // unusable bound must not pass as one.
+    let spike = polyline(
+        vec![0.0, 0.0, 0.5, 1.0, 1.0],
+        &[
+            [-f64::MAX, 0.0, 0.0],
+            [f64::MAX, 0.0, 0.0],
+            [-f64::MAX, 0.0, 0.0],
+        ],
+        vec![1.0; 3],
+    );
+    assert!(is_refused(&curve_knot_remove(&spike, 0.5, f64::MAX)));
 }
