@@ -3072,3 +3072,26 @@ fn collapsed_semiaxis_is_refused_and_rolled_back() {
     assert!(matches!(err, SketchError::DegenerateEllipse), "{err}");
     assert_eq!(sys.ellipse(e).unwrap().a.to_bits(), 3.0_f64.to_bits());
 }
+
+#[test]
+fn semiaxis_below_the_usable_magnitude_before_the_solve_is_kept() {
+    // `add_ellipse` accepts any positive semiaxis; one already below the
+    // collapse threshold is not a solver-made collapse and must not be refused.
+    let mut sys = GcsSystem::new();
+    let c = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let e = sys.add_ellipse(c, f64::MIN_POSITIVE, 1.0, 0.0).unwrap();
+    let r = sys.solve(20, TOL).unwrap();
+    assert!(r.converged, "{r:?}");
+    let data = sys.ellipse(e).unwrap();
+    assert_eq!(
+        (data.a.to_bits(), data.b),
+        (f64::MIN_POSITIVE.to_bits(), 1.0)
+    );
+    sys.solve_detailed(20, TOL).unwrap();
+}

@@ -672,11 +672,18 @@ impl GcsSystem {
         capture_final: bool,
     ) -> Result<(SolveResult, Option<FinalEvaluation>, SolveStats), SketchError> {
         // Only sketches with ellipses pay for the extra parameter snapshot.
-        let before = (!self.ellipses.is_empty()).then(|| self.extract_params());
+        let before = (!self.ellipses.is_empty()).then(|| {
+            let usable: Vec<bool> = self
+                .ellipses
+                .iter()
+                .map(|(_, e)| ellipse_axes_usable(e.a, e.b))
+                .collect();
+            (self.extract_params(), usable)
+        });
         let (mut result, eval, stats) =
             self.solve_with_decomposition_raw(decomp, max_iterations, tolerance, capture_final)?;
-        if let Some(before) = before {
-            self.publish_positive_ellipse_axes(&before, &mut result, tolerance)?;
+        if let Some((params, usable)) = before {
+            self.publish_positive_ellipse_axes(&params, &usable, &mut result, tolerance)?;
         }
         Ok((result, eval, stats))
     }
@@ -697,18 +704,22 @@ impl GcsSystem {
     /// A semiaxis that ends below the usable magnitude
     /// ([`ellipse_axes_usable`]) is a collapsed ellipse whose implicit-form
     /// residuals read zero by contract, so convergence there means nothing:
-    /// the pre-solve parameters are restored and the solve is refused.
+    /// the pre-solve parameters are restored and the solve is refused. Only a
+    /// semiaxis the solve drove there counts: `add_ellipse` accepts any
+    /// positive semiaxis, so one that was already below the threshold
+    /// (`usable_before[i]` false, in arena order) is left as it is.
     fn publish_positive_ellipse_axes(
         &mut self,
         before: &[f64],
+        usable_before: &[bool],
         result: &mut SolveResult,
         tolerance: f64,
     ) -> Result<(), SketchError> {
         let mut flipped = false;
         let mut collapsed = false;
-        for (_, ellipse) in self.ellipses.iter_mut() {
+        for ((_, ellipse), &was_usable) in self.ellipses.iter_mut().zip(usable_before) {
             let (a, b) = (ellipse.a, ellipse.b);
-            if a.is_finite() && b.is_finite() && !ellipse_axes_usable(a, b) {
+            if was_usable && a.is_finite() && b.is_finite() && !ellipse_axes_usable(a, b) {
                 collapsed = true;
                 continue;
             }
