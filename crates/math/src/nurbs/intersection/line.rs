@@ -425,9 +425,11 @@ const fn budget_end_index(first: usize, updates: usize) -> usize {
 /// phase. The loop jumps there and goes straight to the final check, which
 /// then sees exactly the `(u, v)` exhausting the budget would have left.
 ///
-/// Iterates stay within `bounds` (`[u_min, u_max, v_min, v_max]`); a point
-/// that has not converged within the budget is accepted when its distance to
-/// the line is below `final_tolerance`.
+/// Iterates stay within `bounds` (`[u_min, u_max, v_min, v_max]`). Iteration
+/// stops once the distance to the line is below `1e-10`, or below
+/// `final_tolerance` when that is tighter; a point that has not converged
+/// within the budget is accepted when its distance is below
+/// `final_tolerance`.
 fn refine_line_surface_point(
     surface: &NurbsSurface,
     line: LineQuery,
@@ -445,6 +447,9 @@ fn refine_line_surface_point(
     let (mut u, mut v) = guess;
     workspace.seed_point(u, v, seed_point);
     let [u_min, u_max, v_min, v_max] = bounds;
+    // The grid pass's 1e-5 leaves this at 1e-10; a tighter final tolerance
+    // must not be bypassed by an early exit.
+    let converged = final_tolerance.min(1e-10);
     // `visited[k]`: the `(u, v)` bits after `k` updates.
     let mut visited = [(0_u64, 0_u64); MAX_NEWTON_ITER + 1];
     visited[0] = (u.to_bits(), v.to_bits());
@@ -467,7 +472,7 @@ fn refine_line_surface_point(
         );
 
         let residual = pt - ray_pt;
-        if residual.length() < 1e-10 {
+        if residual.length() < converged {
             return Some(IntersectionPoint {
                 point: pt,
                 param1: (u, v),
@@ -1149,6 +1154,46 @@ mod tests {
 
     /// The cycle jump lands where running out the budget would: simulate
     /// every `(first, updates)` cycle shape step by step.
+    /// A tolerance tighter than the in-loop convergence threshold is not
+    /// bypassed by an early exit: a line 5e-11 above a plane patch is a
+    /// root at the grid pass's 1e-5 but not at 1e-12.
+    #[test]
+    fn tight_final_tolerance_rejects_sub_threshold_near_miss() {
+        let surface = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1e-3, 0.0)],
+                vec![Point3::new(1e-3, 0.0, 0.0), Point3::new(1e-3, 1e-3, 0.0)],
+            ],
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap();
+        let direction = Vec3::new(1.0, 0.0, 0.0);
+        let line = LineQuery {
+            origin: Point3::new(0.0, 5e-4, 5e-11),
+            direction,
+            dir_len_sq: 1.0,
+        };
+        let guess = (0.5, 0.5);
+        let seed = surface.evaluate(guess.0, guess.1);
+        let refine = |tolerance: f64| {
+            refine_line_surface_point(
+                &surface,
+                line,
+                guess,
+                seed,
+                [0.0, 1.0, 0.0, 1.0],
+                tolerance,
+                &mut NewtonWorkspace::default(),
+            )
+        };
+        assert!(refine(GRID_ROOT_TOLERANCE).is_some());
+        assert!(refine(1e-12).is_none());
+    }
+
     #[test]
     fn budget_end_index_matches_running_out_the_budget() {
         for updates in 1..=MAX_NEWTON_ITER {
