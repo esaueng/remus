@@ -2627,9 +2627,14 @@ mod tests {
         let (mut topo, faces, [outer, _, _]) = batched_wire_fixture();
         let original = topo.wire(outer).unwrap().clone();
         let reversed = reversed_wire(&topo, outer);
-        topo.replace_boundary_wires(vec![(outer, original.clone()), (outer, reversed.clone())])
+        topo.replace_boundary_wires(vec![(outer, original), (outer, reversed.clone())])
             .unwrap();
-        assert_eq!(topo.wire(outer).unwrap().edges(), reversed.edges());
+        let want: Vec<_> = reversed
+            .edges()
+            .iter()
+            .map(|oriented| (oriented.edge(), oriented.is_forward()))
+            .collect();
+        assert_eq!(wire_signature(&topo, outer), want);
         crate::validation::validate_face_loops(&topo, faces[0]).unwrap();
     }
 
