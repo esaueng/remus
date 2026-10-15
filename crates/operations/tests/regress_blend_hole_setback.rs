@@ -272,3 +272,23 @@ fn right_angle_fillet_with_the_same_clearance_still_succeeds() {
         "removed {removed}, closed form {want}"
     );
 }
+
+/// On an obtuse edge the exact setback is shorter than the radius, but the
+/// rolling-ball rebuild trims at the radius whenever it cannot classify the
+/// edge's material side, so the hole guard keeps the radius bound there.
+#[test]
+fn obtuse_edge_keeps_the_radius_bound() {
+    let mut topo = Topology::new();
+    let (body, edge) = wedge_with_hole(&mut topo, 120.0);
+    // Exact setback 3/√3 ≈ 1.73 clears the hole at 2.5; the radius does not.
+    let before = arena_fingerprint(&topo, body);
+    assert_cliff(
+        blend_ops::fillet_cascade(&mut topo, body, &[edge], 3.0),
+        2.5,
+    );
+    assert_eq!(arena_fingerprint(&topo, body), before);
+
+    let result = blend_ops::fillet_cascade(&mut topo, body, &[edge], 2.0)
+        .expect("a 120° fillet whose radius clears the hole is supported");
+    assert_no_loop_crosses_its_outer_wire(&topo, result.solid);
+}

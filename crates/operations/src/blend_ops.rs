@@ -673,17 +673,18 @@ fn fillet_contact_setback(
 ///
 /// The blend's contact curve on a planar neighbour lies at the setback from
 /// the blended edge (see [`fillet_contact_setback`]: `radius` only at a right
-/// angle), so the neighbour's boundary is rebuilt that far in. If an inner
-/// loop of that face — a drilled hole, a pocket — sits closer than the
-/// setback, the rebuilt boundary crosses its own hole. Expressing that would
-/// require the blend and the hole to merge into one surface, which none of
-/// these engines can do.
+/// angle, more on a sharper edge), so the neighbour's boundary is rebuilt that
+/// far in; on an obtuse edge the bound stays `radius`, where an engine that
+/// cannot classify the edge trims. If an inner loop of that face — a drilled
+/// hole, a pocket — sits closer than that, the rebuilt boundary crosses its
+/// own hole. Expressing that would require the blend and the hole to merge
+/// into one surface, which none of these engines can do.
 ///
 /// Emitting it anyway is the dangerous option: a wire crossing its own inner
 /// loop still passes the closed-shell and Euler checks, so the result looks
 /// valid and meshes into a self-intersecting body. The cause is genuinely the
 /// radius — the same edge blends fine below the clearance — so this reports
-/// `CliffEncountered` with the largest radius whose setback stays inside the
+/// `CliffEncountered` with the largest radius whose bound stays inside the
 /// clearance as the achievable maximum (zero when the setback is unbounded).
 ///
 /// Only straight blended edges are considered: a closed rim edge IS an inner
@@ -703,7 +704,11 @@ fn reject_blend_into_hole(
         let a = topo.vertex(e.start())?.point();
         let b = topo.vertex(e.end())?.point();
         let neighbours = adjacency.faces_for_edge(edge_id);
-        let setback = fillet_contact_setback(topo, neighbours, radius)?;
+        // The rolling-ball rebuild places contacts at the exact setback only
+        // when it can classify the edge's material side; otherwise it trims
+        // `radius` away. So the shorter setback of an obtuse edge is not a
+        // safe bound, and the guard never goes below `radius`.
+        let reach = fillet_contact_setback(topo, neighbours, radius)?.max(radius);
 
         for &face_id in neighbours {
             let face = topo.face(face_id)?;
@@ -723,9 +728,9 @@ fn reject_blend_into_hole(
                         clearance = clearance.min(point_segment_distance(p, a, b));
                     }
                 }
-                if clearance <= setback {
-                    // The setback is linear in the radius.
-                    let per_unit = setback / radius;
+                if clearance <= reach {
+                    // The reach is linear in the radius.
+                    let per_unit = reach / radius;
                     let available_radius = if per_unit > 0.0 && per_unit.is_finite() {
                         clearance / per_unit
                     } else {
