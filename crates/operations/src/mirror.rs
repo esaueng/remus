@@ -20,9 +20,9 @@ use crate::transform::transform_solid;
 ///   `M = I - 2 * n * nᵀ` (for reflection through the origin)
 /// with appropriate translation for a plane not passing through the origin.
 ///
-/// Note: mirroring flips the handedness, so face normals are reversed.
-/// The transform operation handles this via the inverse-transpose normal
-/// transformation.
+/// Mirroring flips handedness. The transform keeps every face's outward
+/// normal (plane normals map through the inverse transpose) and reverses
+/// each boundary's traversal so it still winds with that normal.
 ///
 /// # Errors
 ///

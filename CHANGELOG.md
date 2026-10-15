@@ -109,6 +109,15 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **topology,operations:** orientation-reversing transforms (`mirror`, and
+  `transform_solid`, `copy_and_transform_solid` or `transform_face` with a
+  negative determinant) reverse every boundary traversal of the transformed
+  faces, so each wire still winds with its face's outward normal. A mirrored
+  box reported six face-orientation warnings, and an exact boolean consuming
+  it returned shared edges used the same way by both faces (finding F16).
+  Pcurves and periodic lifts on reflected faces are now cleared: the
+  reflected UV charts had left them stale. `Topology::reverse_face_boundaries`
+  reverses boundaries in place, keeping loop and coedge identities.
 * **algo,check,operations,wasm:** the sphere-minus-box cut in finding F6
   retains the seven spherical octants with closed meshes and correct material
   queries. Sphere primitives use exact circular equator arcs. The no-seam

@@ -227,10 +227,10 @@ pub struct TransformReport {
     pub determinant: f64,
     /// True when the linear part reverses orientation (`determinant < 0`).
     /// NURBS carriers (converted or pre-existing) are re-parameterized
-    /// (u-reversed) to compensate with flags and coedges untouched;
-    /// analytic and plane carriers are rebuilt or re-derived and need no
-    /// compensation. Informational: committed results are outward-oriented
-    /// either way.
+    /// (u-reversed) so every carrier keeps its outward normal, and every
+    /// boundary traversal is reversed to wind with it again (see
+    /// [`reverse_boundaries_for_reflection`]); face flags are untouched.
+    /// Informational: committed results are outward-oriented either way.
     pub orientation_reversed: bool,
     /// True when the linear part is conformal (similarity): every analytic
     /// carrier is then preserved and no conversion runs.
@@ -1145,10 +1145,32 @@ fn execute_solid_transform(
 
     // Mutate phase 3: transform face surface geometry.
     // For plane normals, use the inverse transpose: n' = (M⁻¹)ᵀ · n
-    for fid in face_ids {
+    for &fid in &face_ids {
         transform_face_surface_recorded(topo, fid, matrix, normal_matrix, recorder)?;
     }
+    if recorder.orientation_reversing {
+        reverse_boundaries_for_reflection(topo, &face_ids)?;
+    }
 
+    Ok(())
+}
+
+/// Rewinds every boundary of `faces` after an orientation-reversing map.
+///
+/// A map with a negative linear determinant mirrors each boundary loop,
+/// while every carrier keeps its outward normal: plane normals map as
+/// covectors, analytic carriers are rebuilt right-handed, and NURBS are
+/// u-reversed by [`orient_nurbs_for_map`]. Left there, every stored winding
+/// runs against its stored normal, and a later boolean reads the wrong
+/// material side (OPS-3). Reversing each traversal restores the match with
+/// `reversed` flags untouched: both uses of a shared edge flip together and
+/// stay opposite. The mirrored UV charts make stored pcurves and periodic
+/// lifts stale, and the reversal clears them.
+pub(crate) fn reverse_boundaries_for_reflection(
+    topo: &mut Topology,
+    faces: &[FaceId],
+) -> Result<(), crate::OperationsError> {
+    topo.reverse_face_boundaries(faces)?;
     Ok(())
 }
 
@@ -1642,11 +1664,13 @@ pub(crate) fn transform_face_surface_recorded(
 /// `reversed` flag must NOT carry this instead: the shell validator reads
 /// `forward != reversed` per shared edge, so toggling flags on converted
 /// faces alone breaks mixed shells (B74: mirrored cylinder wall vs. caps).
-/// Reversing the surface in u flips the handedness back with flags,
-/// coedges, and trims untouched — the same point set, opposite travel.
+/// Reversing the surface in u flips the handedness back with flags and
+/// trims untouched — the same point set, opposite travel.
 ///
 /// Only NURBS faces need this. Analytic carriers are rebuilt right-handed
-/// and plane normals are re-derived as covectors, both already correct.
+/// and plane normals are re-derived as covectors, both already outward.
+/// The mirrored boundary traversal is restored separately, for every face,
+/// by [`reverse_boundaries_for_reflection`].
 fn orient_nurbs_for_map(
     surface: &NurbsSurface,
     reversing: bool,
@@ -2239,6 +2263,9 @@ pub fn transform_face(
 
         // Transform face surface.
         transform_face_surface(live, face_id, matrix, &normal_matrix)?;
+        if linear_determinant(matrix) < 0.0 {
+            reverse_boundaries_for_reflection(live, &[face_id])?;
+        }
 
         Ok(())
     })
