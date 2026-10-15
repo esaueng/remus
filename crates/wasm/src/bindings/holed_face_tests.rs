@@ -1419,3 +1419,253 @@ fn make_face_from_wires_rejects_a_non_planar_outer_wire() {
     );
     assert!(msg.to_lowercase().contains("planar"), "message was: {msg}");
 }
+
+/// An exact polygonal NURBS has positive signed area even though its four
+/// uniform parameter samples wind clockwise. Both face-construction routes
+/// must preserve its true winding through the public batch/thicken pipeline.
+#[test]
+fn nurbs_knot_spans_preserve_batch_face_and_thicken_direction() {
+    for scale in [1e-3, 1.0, 1e3] {
+        for forward in [true, false] {
+            for face_op in ["makePlanarFaceFromWire", "makeFaceFromWires"] {
+                let mut k = BrepKernel::new();
+                let mut points = [
+                    [0.1, 0.0],
+                    [100.0, 100.0],
+                    [-100.0, 100.0],
+                    [-100.0, -100.0],
+                    [100.0, -100.0],
+                    [0.1, -0.1],
+                ];
+                if !forward {
+                    points.reverse();
+                }
+                let start = points[0];
+                let end = points[points.len() - 1];
+                let controls: Vec<f64> = points
+                    .iter()
+                    .flat_map(|p| [p[0] * scale, p[1] * scale, 0.0])
+                    .collect();
+                let closing = [0.2 * scale, -0.02 * scale];
+                let edges = run_all_ok(
+                    &mut k,
+                    &[
+                        op(
+                            "makeNurbsEdge",
+                            serde_json::json!({
+                                "startX": start[0] * scale, "startY": start[1] * scale, "startZ": 0.0,
+                                "endX": end[0] * scale, "endY": end[1] * scale, "endZ": 0.0,
+                                "degree": 1,
+                                "knots": [0.0, 0.0, 1.0 / 3.0, 0.4, 0.6, 2.0 / 3.0, 1.0, 1.0],
+                                "controlPoints": controls,
+                                "weights": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+                            }),
+                        ),
+                        op(
+                            "makeLineEdge",
+                            serde_json::json!({
+                                "x1": end[0] * scale, "y1": end[1] * scale, "z1": 0.0,
+                                "x2": closing[0], "y2": closing[1], "z2": 0.0,
+                            }),
+                        ),
+                        op(
+                            "makeLineEdge",
+                            serde_json::json!({
+                                "x1": closing[0], "y1": closing[1], "z1": 0.0,
+                                "x2": start[0] * scale, "y2": start[1] * scale, "z2": 0.0,
+                            }),
+                        ),
+                    ],
+                );
+                let handles: Vec<u32> = edges.iter().map(as_u32).collect();
+                let wire = run_all_ok(
+                    &mut k,
+                    &[op(
+                        "makeWire",
+                        serde_json::json!({"edges": handles, "closed": true}),
+                    )],
+                );
+                let wire = as_u32(&wire[0]);
+                let args = if face_op == "makeFaceFromWires" {
+                    serde_json::json!({"outerWire": wire})
+                } else {
+                    serde_json::json!({"wire": wire})
+                };
+                let face = run_all_ok(&mut k, &[op(face_op, args)]);
+                let face = as_u32(&face[0]);
+                let normal = k
+                    .topo
+                    .face(k.resolve_face(face).unwrap())
+                    .unwrap()
+                    .effective_plane_normal()
+                    .unwrap();
+                let direction = if forward { 1.0 } else { -1.0 };
+                assert!(
+                    (normal.z() - direction).abs() < 1e-12,
+                    "{face_op}, scale={scale}, forward={forward}: {normal:?}"
+                );
+                let solid = run_all_ok(
+                    &mut k,
+                    &[op(
+                        "thicken",
+                        serde_json::json!({"face": face, "thickness": scale}),
+                    )],
+                );
+                let bbox = run_all_ok(
+                    &mut k,
+                    &[op(
+                        "boundingBox",
+                        serde_json::json!({"solid": as_u32(&solid[0])}),
+                    )],
+                );
+                let expected = if forward { [0.0, scale] } else { [-scale, 0.0] };
+                for (index, value) in [2, 5].into_iter().zip(expected) {
+                    assert!(
+                        (bbox[0][index].as_f64().unwrap() - value).abs() <= scale * 1e-9,
+                        "{face_op}, scale={scale}, forward={forward}: {:?}",
+                        bbox[0]
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A degree-elevated circle keeps its nonuniform NURBS parameterization in
+/// extrude. Its parameter midpoint is far from its geometric arc midpoint.
+#[test]
+fn batch_nonuniform_nurbs_circle_extrudes_outward_in_both_directions() {
+    let fixture: serde_json::Value = serde_json::from_str(
+        r#"{
+            "degree": 3,
+            "knots": [0,0,0,0, 0.6,0.6,0.6, 0.7,0.7,0.7, 0.8,0.8,0.8, 0.99,0.99,0.99,0.99],
+            "controlPoints": [
+                1,0,0, 1,0.585786437626905,0, 0.585786437626905,1,0, 0,1,0,
+                -0.585786437626905,1,0, -1,0.585786437626905,0, -1,0,0,
+                -1,-0.585786437626905,0, -0.585786437626905,-1,0, 0,-1,0,
+                0.5498266005380095,-1,0, 0.957568848666045,-0.6263988870351775,0,
+                0.9974284469060104,-0.0716693330697585,0
+            ],
+            "weights": [1,0.804737854124365,0.804737854124365,1,
+                0.804737854124365,0.804737854124365,1,
+                0.804737854124365,0.804737854124365,1,
+                0.8145009614181468,0.8052260094890541,0.972175144212722],
+            "startX": 1, "startY": 0, "startZ": 0,
+            "endX": 0.9974284469060104, "endY": -0.0716693330697585, "endZ": 0
+        }"#,
+    )
+    .unwrap();
+    let span = std::f64::consts::TAU
+        + fixture["endY"]
+            .as_f64()
+            .unwrap()
+            .atan2(fixture["endX"].as_f64().unwrap());
+    let expected_volume = 0.5 * (span - span.sin());
+    for forward in [true, false] {
+        for dz in [-1.0, 1.0] {
+            let mut args = fixture.clone();
+            if !forward {
+                let controls: Vec<f64> = args["controlPoints"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_f64().unwrap())
+                    .collect();
+                let controls: Vec<f64> =
+                    controls.chunks_exact(3).rev().flatten().copied().collect();
+                args["controlPoints"] = serde_json::json!(controls);
+                args["weights"].as_array_mut().unwrap().reverse();
+                let knots: Vec<f64> = args["knots"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .rev()
+                    .map(|k| 0.99 - k.as_f64().unwrap())
+                    .collect();
+                args["knots"] = serde_json::json!(knots);
+                for (start, end) in [("startX", "endX"), ("startY", "endY")] {
+                    let value = args[start].clone();
+                    args[start] = args[end].clone();
+                    args[end] = value;
+                }
+            }
+            let mut k = BrepKernel::new();
+            let edges = run_all_ok(
+                &mut k,
+                &[
+                    op("makeNurbsEdge", args.clone()),
+                    op(
+                        "makeLineEdge",
+                        serde_json::json!({
+                            "x1": args["endX"], "y1": args["endY"], "z1": 0,
+                            "x2": args["startX"], "y2": args["startY"], "z2": 0,
+                        }),
+                    ),
+                ],
+            );
+            let curve = k
+                .topo
+                .edge(k.resolve_edge(as_u32(&edges[0])).unwrap())
+                .unwrap()
+                .curve();
+            let remus_topology::edge::EdgeCurve::NurbsCurve(curve) = curve else {
+                panic!("the fixture must retain its NURBS parameterization");
+            };
+            assert_eq!(curve.degree(), 3);
+            assert!(matches!(
+                remus_geometry::convert::recognize_curve::recognize_curve(curve, 1e-5),
+                remus_geometry::convert::recognize_curve::RecognizedCurve::Circle { .. }
+            ));
+            let wire = run_all_ok(
+                &mut k,
+                &[op(
+                    "makeWire",
+                    serde_json::json!({
+                        "edges": edges.iter().map(as_u32).collect::<Vec<_>>(), "closed": true,
+                    }),
+                )],
+            );
+            let face = run_all_ok(
+                &mut k,
+                &[op(
+                    "makePlanarFaceFromWire",
+                    serde_json::json!({
+                        "wire": as_u32(&wire[0]),
+                    }),
+                )],
+            );
+            let solid = run_all_ok(
+                &mut k,
+                &[op(
+                    "extrude",
+                    serde_json::json!({
+                        "face": as_u32(&face[0]), "dx": 0, "dy": 0, "dz": dz,
+                    }),
+                )],
+            );
+            let solid = as_u32(&solid[0]);
+            let report = remus_operations::validate::validate_solid(
+                &k.topo,
+                k.resolve_solid(solid).unwrap(),
+            )
+            .unwrap();
+            assert!(report.is_valid(), "{forward}, {dz}: {:?}", report.issues);
+            for deflection in [1e-4, 5e-5] {
+                let measured = run_all_ok(
+                    &mut k,
+                    &[op(
+                        "volume",
+                        serde_json::json!({
+                            "solid": solid, "deflection": deflection,
+                        }),
+                    )],
+                );
+                let volume = measured[0].as_f64().unwrap();
+                assert!(
+                    (volume - expected_volume).abs() < expected_volume * 2e-4,
+                    "forward={forward}, dz={dz}, deflection={deflection}: {volume} vs {expected_volume}"
+                );
+            }
+        }
+    }
+}
