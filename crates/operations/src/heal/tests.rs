@@ -393,6 +393,52 @@ fn degenerate_edge_test_never_undershoots_the_length() {
     assert!(!edge_is_degenerate(&topo, bump, 100.0).unwrap());
 }
 
+/// A hairpin hyperbola arc over `[-0.269, 0.231]` (b = 1e-12) is 0.063199
+/// long, but the chunked 20-point quadrature reads 0.062960 across the kink
+/// at t = 0. The bound must stay above the true length.
+#[test]
+fn hyperbola_hairpin_is_measured_by_an_upper_bound() {
+    use remus_math::curves::Hyperbola3D;
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let hyperbola = Hyperbola3D::new(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        1.0,
+        1e-12,
+    )
+    .unwrap();
+    let (t0, t1): (f64, f64) = (-0.269, 0.231);
+    let length = (t0.cosh() - 1.0) + (t1.cosh() - 1.0);
+    let a = topo.add_vertex(Vertex::new(hyperbola.evaluate(t0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(hyperbola.evaluate(t1), 1e-7));
+    let mut arc = Edge::new(a, b, EdgeCurve::Hyperbola(hyperbola));
+    arc.set_trim(Some((t0, t1)));
+    let arc = topo.add_edge(arc);
+
+    let tol = 0.0631;
+    assert!(length > tol, "true length {length}");
+    assert!(!edge_is_degenerate(&topo, arc, tol * tol).unwrap());
+    assert!(edge_is_degenerate(&topo, arc, 0.0633 * 0.0633).unwrap());
+}
+
+/// A curved edge without a stored trim has no parameter authority: its
+/// extent is unknown, so a short chord does not make it degenerate.
+#[test]
+fn untrimmed_curved_edge_is_never_degenerate() {
+    use remus_math::curves::Circle3D;
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+    let a = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(circle.evaluate(1e-9), 1e-7));
+    let edge = topo.add_edge(Edge::new(a, b, EdgeCurve::Circle(circle)));
+    assert!(topo.edge(edge).unwrap().strict_domain().is_err());
+    assert!(!edge_is_degenerate(&topo, edge, 1e-14).unwrap());
+}
+
 /// A tolerance longer than a cylinder's rims leaves its rims alone: each rim
 /// bounds its cap alone, so dropping it from the lateral wire would unpair it.
 #[test]
