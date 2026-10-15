@@ -699,7 +699,10 @@ impl RemusIo {
         Ok(Self::import_ply_impl(data, max_input_bytes, max_entities)?)
     }
 
-    /// Read a 3MF package; every object becomes a solid root of one document.
+    /// Read a 3MF package; every build item becomes a solid root of one
+    /// document, in build order and placed by its item transform (an object
+    /// listed twice gives two solids). Without build items, every object no
+    /// component references is a root.
     #[wasm_bindgen(js_name = "import3mf")]
     pub fn import_3mf(
         &self,
