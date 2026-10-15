@@ -1238,7 +1238,7 @@ impl BrepKernel {
             "fuseWithOptions" | "cutWithOptions" | "intersectWithOptions" => {
                 let a = get_u32(args, "solidA")?;
                 let b = get_u32(args, "solidB")?;
-                let unify_faces = args["unifyFaces"].as_bool();
+                let unify_faces = get_optional_bool(args, "unifyFaces")?;
                 let bool_op = match op {
                     "fuseWithOptions" => BooleanOp::Fuse,
                     "cutWithOptions" => BooleanOp::Cut,

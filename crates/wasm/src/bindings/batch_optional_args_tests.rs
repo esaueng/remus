@@ -146,6 +146,21 @@ fn cases(
             &["dx", "dy", "dz"],
         ),
         (
+            "fuseWithOptions",
+            serde_json::json!({"solidA": solid, "solidB": solid}),
+            &["unifyFaces"],
+        ),
+        (
+            "cutWithOptions",
+            serde_json::json!({"solidA": solid, "solidB": solid}),
+            &["unifyFaces"],
+        ),
+        (
+            "intersectWithOptions",
+            serde_json::json!({"solidA": solid, "solidB": solid}),
+            &["unifyFaces"],
+        ),
+        (
             "draft",
             serde_json::json!({"solid": solid, "angle": 5.0, "faces": [face]}),
             &["dirX", "dirY", "dirZ", "neutralX", "neutralY", "neutralZ"],
@@ -177,8 +192,8 @@ fn malformed_optional_arguments_are_refused_not_defaulted() {
             }
         }
     }
-    // 54 numeric defaults plus the two boolean ones.
-    assert_eq!(checked, 2 * 56);
+    // 54 numeric defaults plus the five boolean ones.
+    assert_eq!(checked, 2 * 59);
 }
 
 /// Integer options also refuse values outside the `u32` range, which used to
