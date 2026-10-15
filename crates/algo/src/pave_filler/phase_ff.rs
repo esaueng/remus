@@ -8,7 +8,6 @@
 //! range, with topology vertices and an edge created at the endpoints.
 
 use remus_math::compact_sort::CompactSort;
-use std::borrow::Cow;
 
 use remus_math::aabb::Aabb3;
 use remus_math::analytic_intersection;
@@ -97,9 +96,15 @@ fn ff_trace_x() -> Option<f64> {
 /// junction point per corner, first refiner wins. Pairwise refinement alone
 /// gives each pair its own solution (~1e-5 apart at a lattice corner where
 /// four faces meet), and the disagreeing copies mint micro-sliver free edges.
+///
+/// The cells are shared copy-on-write. Every N-way FF solid pair starts from
+/// the one seeded registry, and most pairs only read it: cloning the cell
+/// table per pair copied every seeded pave endpoint each time. A pair's
+/// first write copies it (`Rc::make_mut`), exactly when the per-pair clone
+/// used to, so each pair still reads its own cells in the same table order.
 #[derive(Default, Clone)]
 struct JunctionRegistry {
-    cells: DetHashMap<(i64, i64, i64), JunctionEntry>,
+    cells: std::rc::Rc<DetHashMap<(i64, i64, i64), JunctionEntry>>,
     /// Characteristic size per face pair, so the snap bands below track the
     /// geometry instead of a fixed length. Cached because `resolve` runs per
     /// section endpoint and a face AABB costs a surface sampling pass.
@@ -301,6 +306,16 @@ impl JunctionRegistry {
         cells
     }
 
+    /// The cells for writing, copied first when another pair shares them.
+    fn cells_mut(
+        cells: &mut std::rc::Rc<DetHashMap<(i64, i64, i64), JunctionEntry>>,
+    ) -> &mut DetHashMap<(i64, i64, i64), JunctionEntry> {
+        if std::rc::Rc::strong_count(cells) > 1 {
+            crate::perf::bump_junction_cells_copied(cells.len());
+        }
+        std::rc::Rc::make_mut(cells)
+    }
+
     fn key(p: Point3) -> (i64, i64, i64) {
         #[allow(clippy::cast_possible_truncation)]
         let q = |v: f64| (v / Self::CELL).round() as i64;
@@ -309,10 +324,22 @@ impl JunctionRegistry {
 
     fn lookup(&self, p: Point3, band: f64) -> Option<Point3> {
         let (kx, ky, kz) = Self::key(p);
+        // Only the neighbouring cells whose keys a point within `band` of `p`
+        // can have, in the same order. An entry is keyed by its own point, so
+        // one at distance `d <= band` differs from `p` by at most `d` per
+        // axis; the doubled reach covers the distance's rounding. Skipped
+        // cells hold no entry within `band`, so the nearest (first on a tie)
+        // is unchanged.
+        let reach = 2.0 * band;
+        #[allow(clippy::cast_possible_truncation)]
+        let span = |v: f64, k: i64| {
+            let q = |v: f64| (v / Self::CELL).round() as i64;
+            (q(v - reach).max(k - 1) - k)..=(q(v + reach).min(k + 1) - k)
+        };
         let mut best: Option<(f64, Point3)> = None;
-        for dx in -1..=1_i64 {
-            for dy in -1..=1_i64 {
-                for dz in -1..=1_i64 {
+        for dx in span(p.x(), kx) {
+            for dy in span(p.y(), ky) {
+                for dz in span(p.z(), kz) {
                     if let Some(entry) = self.cells.get(&(kx + dx, ky + dy, kz + dz)) {
                         let d = (entry.point - p).length();
                         if d <= band && best.is_none_or(|(bd, _)| d < bd) {
@@ -421,7 +448,7 @@ impl JunctionRegistry {
             return candidate;
         }
 
-        self.cells.insert(
+        Self::cells_mut(&mut self.cells).insert(
             Self::key(boundary_junction),
             JunctionEntry {
                 point: boundary_junction,
@@ -467,7 +494,7 @@ impl JunctionRegistry {
     fn seed(&mut self, p: Point3, source_edge: remus_topology::edge::EdgeId) {
         crate::perf::bump_junction_seed();
         if self.lookup(p, 1e-4).is_none() {
-            self.cells.insert(
+            Self::cells_mut(&mut self.cells).insert(
                 Self::key(p),
                 JunctionEntry {
                     point: p,
@@ -508,15 +535,8 @@ pub fn perform_with_context(
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
     context.check_cancelled()?;
-    let seeds = seed_junctions(topo, arena);
-    perform_seeded(
-        topo,
-        solid_a,
-        solid_b,
-        context,
-        arena,
-        Cow::Owned(seeds.registry),
-    )
+    let mut registry = seed_junctions(topo, arena).registry;
+    perform_seeded(topo, solid_a, solid_b, context, arena, &mut registry, true)
 }
 
 /// The junction registry every FF solid pair starts from, seeded from all
@@ -571,26 +591,36 @@ pub(super) fn seeds_match_fresh(seeds: &JunctionSeeds, topo: &Topology, arena: &
 }
 
 /// [`perform_with_context`] starting from a shared [`seed_junctions`] result.
-/// The pair works on a private copy, made only once one of its face pairs
-/// survives the broad phase, so FF-minted junctions never leak across solid
-/// pairs and the shared seeds are never written.
+/// The pair reads the shared cells and copies them on its first write, so
+/// FF-minted junctions never leak across solid pairs and the shared seeds
+/// are never written.
+///
+/// The per-face caches (boundary edges, face boxes, pair extents) do carry
+/// over from pair to pair. Phase FF only adds vertices and edges, and the one
+/// vertex move it can make (`canonicalize_cap_anchors`) is refused on this
+/// shared path, so a face's boundary and box are the same in every pair and a
+/// cached entry equals the one the pair would build.
 pub(super) fn perform_with_junction_seeds(
     topo: &mut Topology,
     solid_a: SolidId,
     solid_b: SolidId,
     context: &OperationContext,
     arena: &mut GfaArena,
-    seeds: &JunctionSeeds,
+    seeds: &mut JunctionSeeds,
 ) -> Result<(), AlgoError> {
     context.check_cancelled()?;
-    perform_seeded(
-        topo,
-        solid_a,
-        solid_b,
-        context,
-        arena,
-        Cow::Borrowed(&seeds.registry),
-    )
+    let shared = &mut seeds.registry;
+    let mut registry = JunctionRegistry {
+        cells: std::rc::Rc::clone(&shared.cells),
+        extents: std::mem::take(&mut shared.extents),
+        boundaries: std::mem::take(&mut shared.boundaries),
+        face_boxes: std::mem::take(&mut shared.face_boxes),
+    };
+    let result = perform_seeded(topo, solid_a, solid_b, context, arena, &mut registry, false);
+    shared.extents = registry.extents;
+    shared.boundaries = registry.boundaries;
+    shared.face_boxes = registry.face_boxes;
+    result
 }
 
 #[allow(clippy::too_many_lines)]
@@ -600,9 +630,9 @@ fn perform_seeded(
     solid_b: SolidId,
     context: &OperationContext,
     arena: &mut GfaArena,
-    mut junction_seeds: Cow<'_, JunctionRegistry>,
+    junction_registry: &mut JunctionRegistry,
+    permit_seed_updates: bool,
 ) -> Result<(), AlgoError> {
-    let permit_seed_updates = matches!(junction_seeds, Cow::Owned(_));
     let tol = context.tolerance;
     let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;
     let faces_b = remus_topology::explorer::solid_faces(topo, solid_b)?;
@@ -726,10 +756,6 @@ fn perform_seeded(
             if torus_cylinder_faces_have_only_point_contact(topo, fa, fb, tol)? {
                 continue;
             }
-            // First surviving face pair of this solid pair: take the private
-            // copy of shared seeds (free when already owned). Later face
-            // pairs keep accumulating into the same copy.
-            let junction_registry = junction_seeds.to_mut();
             // A NURBS carrier whose control net is coplanar IS a plane, and
             // the analytic arm cuts it exactly: a plane converted to a
             // bilinear patch met a peg cylinder through the marcher in an arc
@@ -1275,7 +1301,7 @@ fn perform_seeded(
                                 .zip(previous_anchors[index].0)
                                 .any(|(new, old)| new.to_bits() != old.to_bits());
                             if changed {
-                                junction_registry.cells.insert(
+                                JunctionRegistry::cells_mut(&mut junction_registry.cells).insert(
                                     JunctionRegistry::key(point),
                                     JunctionEntry {
                                         point,
@@ -1822,13 +1848,13 @@ fn canonicalize_cap_anchors(
                     *parameter = Some(anchor.parameter);
                 }
             }
-            junctions.cells.retain(|_, entry| {
+            JunctionRegistry::cells_mut(&mut junctions.cells).retain(|_, entry| {
                 entry.source_edge != Some(anchor.source_edge)
                     || (entry.point - old).length() > trigger
             });
             changed = true;
         }
-        junctions.cells.insert(
+        JunctionRegistry::cells_mut(&mut junctions.cells).insert(
             JunctionRegistry::key(anchor.point),
             JunctionEntry {
                 point: anchor.point,
@@ -4918,13 +4944,19 @@ fn refine_boundary_junction(
     tol: Tolerance,
     weld: f64,
 ) -> Option<Point3> {
-    let surf_of = |fid: FaceId| topo.face(fid).ok().map(|f| f.surface().clone());
     let other = if owner_fid == fa { fb } else { fa };
-    let other_surf = surf_of(other)?;
+    let other_surf = topo.face(other).ok()?.surface();
+    // The plane normal's length, taken once rather than per evaluation of
+    // the search below.
+    let plane_length = if let FaceSurface::Plane { normal, .. } = other_surf {
+        normal.length()
+    } else {
+        f64::NAN
+    };
     let dist_to_surf = |q: Point3| -> f64 {
-        match &other_surf {
+        match other_surf {
             FaceSurface::Plane { normal, d } => {
-                let length = normal.length();
+                let length = plane_length;
                 if length.is_finite() && length > 0.0 {
                     (normal.dot(q - Point3::new(0.0, 0.0, 0.0)) - d).abs() / length
                 } else {
