@@ -508,6 +508,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Feature recognition | `feature_recognition.rs` |
 | Pattern (linear/circular) | `pattern.rs` |
 | Shape queries (edge filtering) | `query.rs` |
+| Oracle for the prepared `ConcavityProbe` against the one-shot edge concavity on primitives, booleans and STEP bodies (tests) | `query/concavity_probe_oracle_tests.rs` |
 | Sewing | `sew.rs` |
 | Thickening | `thicken.rs` |
 | Untrimming | `untrim.rs` |

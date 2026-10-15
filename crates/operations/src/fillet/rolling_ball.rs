@@ -1062,6 +1062,7 @@ pub fn fillet_rolling_ball_with_origins(
         // plane constraints, so a stripe endpoint and its corner ball cannot
         // disagree about which side of a support face contains the result.
         let mut planar_edge_sides: HashMap<usize, f64> = HashMap::new();
+        let mut concavity = crate::query::ConcavityProbe::new(topo, solid);
         for &edge_id in &filtered_edges {
             let edge = topo.edge(edge_id)?;
             if !matches!(edge.curve(), EdgeCurve::Line) {
@@ -1080,9 +1081,7 @@ pub fn fillet_rolling_ball_with_origins(
             let end = topo.vertex(edge.end())?.point();
             let edge_len = (end - start).length();
             let probe = radius.min(edge_len * 0.1).max(tol.linear * 10.0);
-            let side = match crate::query::edge_concavity_from_faces(
-                topo, solid, edge_id, faces[0], faces[1], probe,
-            )? {
+            let side = match concavity.concavity(edge_id, faces[0], faces[1], probe)? {
                 crate::query::EdgeConcavity::Convex => -1.0,
                 crate::query::EdgeConcavity::Concave => 1.0,
                 crate::query::EdgeConcavity::Tangent | crate::query::EdgeConcavity::Unknown => {
@@ -1091,6 +1090,7 @@ pub fn fillet_rolling_ball_with_origins(
             };
             planar_edge_sides.insert(edge_id.index(), side);
         }
+        drop(concavity);
 
         // A qualified N-way vertex has one ball tangent to every incident
         // planar face. Store it before computing setbacks: projecting this
