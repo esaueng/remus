@@ -81,15 +81,14 @@ fn plane_chart(normal: Vec3, d: f64) -> Result<Frame3, crate::OperationsError> {
 
 impl UvAffine {
     /// The map between the charts of an axial carrier (angle `u` about its
-    /// axis, `v` along or around it) and its image rebuilt around the image
-    /// axis: `u' = ±u + φ`, `v' = v_scale·v`.
+    /// axis, `v` along it) and its image rebuilt around the image axis with
+    /// a canonical reference direction: `u' = ±u + φ`, `v' = v_scale·v`.
     ///
     /// `source` and `target` are the carriers' `(x_axis, y_axis)`. `φ` is the
     /// angle of the mapped source `x_axis` in the target frame, and `u`
     /// reverses when the mapped frame is left-handed against the target (a
-    /// reflection). A rotation that only rounds off is snapped to the
-    /// identity, so a carrier that follows its mapped frame keeps its
-    /// pcurves bit for bit.
+    /// reflection). Nothing is snapped: a tiny `φ` or a near-unit `v_scale`
+    /// can be a genuine change that moves a large model's boundary.
     pub fn about_axis(
         matrix: &Mat4,
         source: (Vec3, Vec3),
@@ -105,17 +104,19 @@ impl UvAffine {
         } else {
             1.0
         };
-        let mut phase = xy.atan2(xx);
-        let mut v_scale = v_scale;
-        if phase.abs() <= ANALYTIC_ROUNDOFF_REL {
-            phase = 0.0;
-        }
-        if equal_within_analytic_roundoff(v_scale, 1.0) {
-            v_scale = 1.0;
-        }
         Self {
             a: [[sign, 0.0], [0.0, v_scale]],
-            b: Vec2::new(phase, 0.0),
+            b: Vec2::new(xy.atan2(xx), 0.0),
+        }
+    }
+
+    /// `u' = −u`: a carrier whose frame is the mapped frame made
+    /// right-handed again after a reflection (sphere, torus). The pole or
+    /// ring axis keeps its image, so `v` is unchanged.
+    pub const fn reversed_u() -> Self {
+        Self {
+            a: [[-1.0, 0.0], [0.0, 1.0]],
+            b: Vec2::new(0.0, 0.0),
         }
     }
 
@@ -629,6 +630,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn tiny_genuine_axial_changes_are_not_snapped_away() {
+        // A rotation about the carrier's own axis by `angle` shifts `u` by
+        // exactly `angle`. On a radius-1e9 cylinder 3e-15 rad moves the
+        // boundary ~3e-6, far beyond the linear tolerance, so it must stay.
+        let angle = 3e-15;
+        let cylinder = remus_math::surfaces::CylindricalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1e9,
+        )
+        .unwrap();
+        let frame = (cylinder.x_axis(), cylinder.y_axis());
+        let v_scale = 1.0 + 4.0 * f64::EPSILON;
+        let map = UvAffine::about_axis(&Mat4::rotation_z(angle), frame, frame, v_scale);
+        assert!((map.b.x() - angle).abs() < 1e-20, "phase {}", map.b.x());
+        assert_eq!(map.a[0][0].to_bits(), 1.0_f64.to_bits());
+        assert_eq!(map.a[1][1].to_bits(), v_scale.to_bits());
+        assert!(!map.is_identity());
     }
 
     #[test]
