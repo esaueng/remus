@@ -117,7 +117,7 @@ pub fn section(
                 let face_normal = *face_normal;
                 let face_d = *face_d;
 
-                let verts = face_polygon(topo, fid)?;
+                let verts = curved::trim_polygon(topo, face.outer_wire())?;
                 if let Some(seg) =
                     intersect_planar_face_with_plane(&verts, face_normal, face_d, normal, d, tol)
                 {
@@ -1263,7 +1263,7 @@ mod curved {
     //! untrimmed surface. A face is only a patch of it, so each sample is
     //! classified against the face's trims and the polylines are cut where
     //! they cross its boundary. The crossings are taken on the boundary
-    //! polygons the planar neighbours section (`wire_polygon`), so a clipped
+    //! polygons the planar neighbours section (`trim_polygon`), so a clipped
     //! arc ends exactly where the neighbouring face's segment does.
 
     use std::f64::consts::{PI, TAU};
@@ -1273,8 +1273,9 @@ mod curved {
     use remus_math::tolerance::Tolerance;
     use remus_math::vec::{Point3, Vec3};
     use remus_topology::Topology;
-    use remus_topology::edge::{Edge, EdgeDomainError};
+    use remus_topology::edge::{Edge, EdgeCurve, EdgeDomainError};
     use remus_topology::face::FaceId;
+    use remus_topology::wire::WireId;
 
     use crate::OperationsError;
     use crate::dot_normal_point;
@@ -1456,6 +1457,77 @@ mod curved {
         }
     }
 
+    /// The edge's authoritative parameter range, reconstructed from its
+    /// endpoints only when it stores no trim.
+    fn edge_range(edge: &Edge, start: Point3, end: Point3) -> Result<(f64, f64), OperationsError> {
+        match edge.strict_domain() {
+            Ok(range) => Ok(range),
+            Err(EdgeDomainError::Missing { .. }) => {
+                Ok(edge.curve().reconstruct_domain_from_endpoints(start, end))
+            }
+            Err(error) => Err(unsupported(format!(
+                "section of a face whose edge has invalid parameter authority: {error}"
+            ))),
+        }
+    }
+
+    /// Samples per partial curved trim edge in [`trim_polygon`].
+    const PARTIAL_EDGE_SAMPLES: u32 = 32;
+
+    /// `wire_polygon`'s samples per closed curve edge (`CLOSED_CURVE_SAMPLES`
+    /// in `boolean::types`); a test pins [`trim_polygon`] to it.
+    const WIRE_POLYGON_SAMPLES: usize = 32;
+
+    /// The polygon `section` crosses for a trim wire, shared by the planar
+    /// and curved arms so that neighbouring faces cut their sections at the
+    /// same points. It is [`crate::boolean::wire_polygon`] for lines and
+    /// closed curves, but a partial curved edge is sampled along its curve
+    /// instead of reduced to its endpoint chord: an arc whose ends lie on one
+    /// side of the plane can still cross it twice.
+    pub(super) fn trim_polygon(
+        topo: &Topology,
+        wire: WireId,
+    ) -> Result<Vec<Point3>, OperationsError> {
+        let mut points = Vec::new();
+        for oriented in topo.wire(wire)?.edges() {
+            let edge = topo.edge(oriented.edge())?;
+            let closed = edge.start() == edge.end();
+            let curve = edge.curve();
+            // Lines and closed curves exactly as `wire_polygon` lays them down.
+            if closed
+                && matches!(
+                    curve,
+                    EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_)
+                )
+            {
+                let mut sampled = crate::boolean::sample_edge_curve(curve, WIRE_POLYGON_SAMPLES);
+                if !oriented.is_forward() {
+                    sampled.reverse();
+                }
+                points.extend(sampled);
+                continue;
+            }
+            if closed || matches!(curve, EdgeCurve::Line) {
+                points.push(topo.vertex(oriented.oriented_start(edge))?.point());
+                continue;
+            }
+            let start = topo.vertex(edge.start())?.point();
+            let end = topo.vertex(edge.end())?.point();
+            let (t0, t1) = edge_range(edge, start, end)?;
+            let n = PARTIAL_EDGE_SAMPLES;
+            // The vertex itself, as every other trim polygon has it, then
+            // the curve's interior.
+            points.push(topo.vertex(oriented.oriented_start(edge))?.point());
+            points.extend((1..n).map(|k| {
+                let s = f64::from(k) / f64::from(n);
+                let s = if oriented.is_forward() { s } else { 1.0 - s };
+                edge.curve()
+                    .evaluate_with_endpoints(t0 + (t1 - t0) * s, start, end)
+            }));
+        }
+        Ok(points)
+    }
+
     fn boundary_edges(topo: &Topology, face: FaceId) -> Result<Vec<BoundaryEdge>, OperationsError> {
         let face = topo.face(face)?;
         let mut edges = Vec::new();
@@ -1464,18 +1536,7 @@ mod curved {
                 let edge = topo.edge(oriented.edge())?.clone();
                 let start = topo.vertex(edge.start())?.point();
                 let end = topo.vertex(edge.end())?.point();
-                let range = match edge.strict_domain() {
-                    Ok(range) => range,
-                    Err(EdgeDomainError::Missing { .. }) => {
-                        edge.curve().reconstruct_domain_from_endpoints(start, end)
-                    }
-                    Err(error) => {
-                        return Err(unsupported(format!(
-                            "section of a face whose edge has invalid parameter authority: \
-                             {error}"
-                        )));
-                    }
-                };
+                let range = edge_range(&edge, start, end)?;
                 edges.push(BoundaryEdge {
                     edge,
                     start,
@@ -1550,7 +1611,7 @@ mod curved {
         let face = topo.face(face)?;
         let mut crossings = Vec::new();
         for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-            let polygon = crate::boolean::wire_polygon(topo, wire)?;
+            let polygon = trim_polygon(topo, wire)?;
             let dists: Vec<f64> = polygon
                 .iter()
                 .map(|v| dot_normal_point(normal, *v) - d)
@@ -1596,26 +1657,7 @@ mod curved {
         // at its crossings and each piece kept by its own midpoint, so a
         // trimmed span or a hole narrower than one chord is not dropped or
         // bridged by classifying only the chord's ends.
-        let chords: Vec<(Point3, Point3)> = polylines
-            .iter()
-            .flat_map(|polyline| polyline.windows(2).map(|w| (w[0], w[1])))
-            .collect();
-        let mut cuts: Vec<Vec<(f64, Point3)>> = vec![Vec::new(); chords.len()];
-        for &x in &crossings {
-            let nearest = chords
-                .iter()
-                .enumerate()
-                .map(|(i, &(a, b))| (segment_distance(x, a, b), i))
-                .min_by(|l, r| l.0.total_cmp(&r.0));
-            if let Some((distance, i)) = nearest {
-                let (a, b) = chords[i];
-                let ab = b - a;
-                if distance <= ab.length().max(tol.linear * 1000.0) {
-                    let along = (x - a).dot(ab) / ab.length_squared().max(f64::MIN_POSITIVE);
-                    cuts[i].push((along, x));
-                }
-            }
-        }
+        let (chords, cuts) = assign_crossings(polylines, &crossings, tol)?;
         // A piece running along a boundary edge that lies in the plane is the
         // face's own boundary, shared with its neighbour (and deduplicated);
         // it is kept without classifying a point on the trim itself. Both of
@@ -1659,6 +1701,94 @@ mod curved {
         Ok(())
     }
 
+    /// The chords of `polylines`, with each crossing filed against the chord
+    /// it cuts (its parameter along the chord, and the point).
+    #[allow(clippy::type_complexity)]
+    fn assign_crossings(
+        polylines: &[Vec<Point3>],
+        crossings: &[Point3],
+        tol: Tolerance,
+    ) -> Result<(Vec<(Point3, Point3)>, Vec<Vec<(f64, Point3)>>), OperationsError> {
+        let mut chords: Vec<(Point3, Point3)> = Vec::new();
+        let mut component: Vec<usize> = Vec::new();
+        // Each chord's sagitta, from how far the polyline turns at its ends:
+        // a chord of length L turning by θ per chord sits L·θ/8 from its arc,
+        // doubled here for margin.
+        let mut sagitta: Vec<f64> = Vec::new();
+        for (k, polyline) in polylines.iter().enumerate() {
+            let directions: Vec<Vec3> = polyline.windows(2).map(|w| w[1] - w[0]).collect();
+            let closed = polyline.len() > 2
+                && polyline
+                    .first()
+                    .zip(polyline.last())
+                    .is_some_and(|(a, b)| (*a - *b).length() <= tol.linear);
+            let n = directions.len();
+            let turn = |i: usize, j: usize| {
+                let (u, v) = (directions[i], directions[j]);
+                v.cross(u).length().atan2(u.dot(v))
+            };
+            for (j, w) in polyline.windows(2).enumerate() {
+                let before = if j > 0 {
+                    turn(j - 1, j)
+                } else if closed {
+                    turn(n - 1, j)
+                } else {
+                    0.0
+                };
+                let after = if j + 1 < n {
+                    turn(j, j + 1)
+                } else if closed {
+                    turn(j, 0)
+                } else {
+                    0.0
+                };
+                chords.push((w[0], w[1]));
+                component.push(k);
+                sagitta.push((w[1] - w[0]).length() * before.max(after) / 4.0);
+            }
+        }
+        let mut cuts: Vec<Vec<(f64, Point3)>> = vec![Vec::new(); chords.len()];
+        for &x in crossings {
+            let distances: Vec<f64> = chords
+                .iter()
+                .map(|&(a, b)| segment_distance(x, a, b))
+                .collect();
+            let Some((i, &distance)) = distances
+                .iter()
+                .enumerate()
+                .min_by(|l, r| l.1.total_cmp(r.1))
+            else {
+                continue;
+            };
+            let (a, b) = chords[i];
+            let ab = b - a;
+            let reach = ab.length().max(tol.linear * 1000.0);
+            if distance > reach {
+                continue;
+            }
+            // A crossing lies on its own component's curve, within a chord's
+            // sagitta of that chord. If it is also within sagitta of another
+            // component's chord, nearness cannot tell which curve it is on:
+            // refuse rather than cut the wrong one.
+            let ambiguous =
+                distances
+                    .iter()
+                    .zip(&component)
+                    .zip(&sagitta)
+                    .any(|((&other, &k), &sag)| {
+                        k != component[i] && other <= 2.0 * sag + tol.linear * 1000.0
+                    });
+            if ambiguous {
+                return Err(unsupported(
+                    "section crossing a trim within a chord of two carrier components".into(),
+                ));
+            }
+            let along = (x - a).dot(ab) / ab.length_squared().max(f64::MIN_POSITIVE);
+            cuts[i].push((along, x));
+        }
+        Ok((chords, cuts))
+    }
+
     fn segment_distance(p: Point3, a: Point3, b: Point3) -> f64 {
         let ab = b - a;
         let length_squared = ab.length_squared();
@@ -1686,7 +1816,7 @@ mod curved {
         use remus_topology::vertex::Vertex;
         use remus_topology::wire::{OrientedEdge, Wire};
 
-        use super::{append_clipped, cone_section};
+        use super::{append_clipped, assign_crossings, cone_section, trim_polygon};
         use crate::primitives::make_cone;
         use crate::revolve::revolve;
 
@@ -1798,6 +1928,110 @@ mod curved {
                 &mut segments,
             )?;
             Ok(segments)
+        }
+
+        /// The torus band's profile face: a line, the tube arc from
+        /// (3.5, −h) through (4, 0) to (3.5, h), and two lines back to
+        /// (1, −h). The plane z = 0.5 crosses the arc inside, at
+        /// x = 3 + √0.75, while both its ends lie above it at |z| = h: its
+        /// end chord (x = 3.5) never crosses, so a section ended there.
+        #[test]
+        fn partial_arc_trims_are_crossed_where_the_arc_is() {
+            let mut topo = Topology::new();
+            let h = (PI / 3.0).sin();
+            let corner = |x: f64, z: f64| Point3::new(x, 0.0, z);
+            let [a, b, c, d] = [
+                corner(1.0, -h),
+                corner(3.5, -h),
+                corner(3.5, h),
+                corner(1.0, h),
+            ]
+            .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+            let tube = Circle3D::new_with_ref(
+                Point3::new(3.0, 0.0, 0.0),
+                Vec3::new(0.0, -1.0, 0.0),
+                1.0,
+                Vec3::new(1.0, 0.0, 0.0),
+            )
+            .unwrap();
+            let mut line = |s, e| topo.add_edge(Edge::new(s, e, EdgeCurve::Line));
+            let (bottom, top, inner) = (line(a, b), line(c, d), line(d, a));
+            let arc = topo.add_edge(Edge::new(b, c, EdgeCurve::Circle(tube)));
+            let edges = [bottom, arc, top, inner].map(|e| OrientedEdge::new(e, true));
+            let wire = topo.add_wire(Wire::new(edges.to_vec(), true).unwrap());
+
+            let polygon = trim_polygon(&topo, wire).unwrap();
+            let (p, q) = super::super::intersect_planar_face_with_plane(
+                &polygon,
+                Vec3::new(0.0, -1.0, 0.0),
+                0.0,
+                Vec3::new(0.0, 0.0, 1.0),
+                0.5,
+                Tolerance::new(),
+            )
+            .expect("the plane crosses the profile");
+            let (lo, hi) = (p.x().min(q.x()), p.x().max(q.x()));
+            // 32 samples over the arc's 2π/3: chord sagitta (π/96)²/2.
+            let sagitta = (PI / 96.0).powi(2) / 2.0;
+            assert!((lo - 1.0).abs() < 1e-9, "inner end {lo}");
+            assert!(
+                (hi - (3.0 + 0.75_f64.sqrt())).abs() <= sagitta,
+                "outer end {hi}, the arc crosses at {}",
+                3.0 + 0.75_f64.sqrt()
+            );
+        }
+
+        /// Without partial curved edges the trim polygon is `wire_polygon`'s,
+        /// point for point, so faces sectioned by `section` and by the
+        /// boolean helpers still meet.
+        #[test]
+        fn trim_polygon_matches_wire_polygon_without_partial_arcs() {
+            let mut topo = Topology::new();
+            let solid = crate::primitives::make_cylinder(&mut topo, 1.5, 2.0).unwrap();
+            for face in solid_faces(&topo, solid).unwrap() {
+                let face = topo.face(face).unwrap();
+                for wire in
+                    std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+                {
+                    assert_eq!(
+                        trim_polygon(&topo, wire).unwrap(),
+                        crate::boolean::wire_polygon(&topo, wire).unwrap()
+                    );
+                }
+            }
+        }
+
+        /// Two concentric carrier loops 1 apart, sampled at 128 per turn,
+        /// and a crossing on the inner one midway between its samples. At
+        /// R = 3 the chords' sagitta (≈ 1e-3) tells the loops apart and the
+        /// crossing cuts the inner loop; at R = 1e4 it is ≈ 3, the crossing
+        /// is nearer the outer loop's chord than its own, and is refused.
+        #[test]
+        fn crossing_between_close_components_is_refused_not_misfiled() {
+            let loops = |major: f64| -> Vec<Vec<Point3>> {
+                [major + 0.5, major - 0.5]
+                    .map(|rho| {
+                        (0..=128)
+                            .map(|k| {
+                                let u = TAU * f64::from(k) / 128.0;
+                                Point3::new(rho * u.cos(), rho * u.sin(), 0.0)
+                            })
+                            .collect()
+                    })
+                    .to_vec()
+            };
+            let crossing = |major: f64| {
+                let (u, rho) = (PI / 128.0, major - 0.5);
+                Point3::new(rho * u.cos(), rho * u.sin(), 0.0)
+            };
+            let tol = Tolerance::new();
+            let (_, cuts) = assign_crossings(&loops(3.0), &[crossing(3.0)], tol).unwrap();
+            // Chord 128 + 0 is the inner loop's first chord.
+            assert_eq!(cuts[128].len(), 1, "the inner loop is cut");
+            assert!(matches!(
+                assign_crossings(&loops(1e4), &[crossing(1e4)], tol),
+                Err(crate::OperationsError::Unsupported { .. })
+            ));
         }
 
         /// At R = 100 the far loop is well inside a quarter of a 32-segment
