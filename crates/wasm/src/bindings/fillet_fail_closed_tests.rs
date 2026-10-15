@@ -77,6 +77,142 @@ fn convex_fillet_removed(radius: f64, length: f64) -> f64 {
     (1.0 - std::f64::consts::FRAC_PI_4) * radius * radius * length
 }
 
+fn batch_hollow_box(kernel: &mut BrepKernel, corner: [f64; 3], side: f64) -> u32 {
+    let blank = make_box(kernel, 20.0, 20.0, 20.0);
+    let tool = make_box(kernel, side, side, side);
+    let translated = run(
+        kernel,
+        &[op(
+            "transform",
+            serde_json::json!({
+                "solid": tool,
+                "matrix": [1.0,0.0,0.0,corner[0],0.0,1.0,0.0,corner[1],0.0,0.0,1.0,corner[2],0.0,0.0,0.0,1.0],
+            }),
+        )],
+    );
+    assert_eq!(translated[0]["ok"], tool);
+    let cut = run(
+        kernel,
+        &[op(
+            "cut",
+            serde_json::json!({"solidA": blank, "solidB": tool}),
+        )],
+    );
+    let solid = u32::try_from(cut[0]["ok"].as_u64().expect("sealed cavity cut")).unwrap();
+    let id = kernel.resolve_solid(solid).unwrap();
+    assert_eq!(kernel.topo().solid(id).unwrap().inner_shells().len(), 1);
+    solid
+}
+
+fn top_front_edge_handle(kernel: &mut BrepKernel, solid: u32) -> u32 {
+    edge_handles(kernel, solid)
+        .into_iter()
+        .find(|&handle| {
+            let edge = kernel
+                .topo()
+                .edge(kernel.resolve_edge(handle).unwrap())
+                .unwrap();
+            let a = kernel.topo().vertex(edge.start()).unwrap().point();
+            let b = kernel.topo().vertex(edge.end()).unwrap().point();
+            a.y().abs() < 1e-9
+                && b.y().abs() < 1e-9
+                && (a.z() - 20.0).abs() < 1e-9
+                && (b.z() - 20.0).abs() < 1e-9
+        })
+        .unwrap()
+}
+
+fn live_counts(kernel: &BrepKernel) -> [usize; 9] {
+    let topo = kernel.topo();
+    [
+        topo.num_vertices(),
+        topo.num_edges(),
+        topo.num_wires(),
+        topo.num_faces(),
+        topo.num_shells(),
+        topo.num_solids(),
+        topo.num_loops(),
+        topo.num_coedges(),
+        topo.num_pcurves(),
+    ]
+}
+
+#[test]
+fn batch_fillet_refuses_consumed_and_opened_cavities_without_mutation() {
+    for (corner, side) in [([9.0, 0.1, 19.7], 0.2), ([9.0, 0.1, 17.9], 2.0)] {
+        for operation in ["fillet", "filletV2", "filletJournaled"] {
+            let mut kernel = BrepKernel::new();
+            let solid = batch_hollow_box(&mut kernel, corner, side);
+            let edge = top_front_edge_handle(&mut kernel, solid);
+            let before = kernel.serialize_solids(&[solid]).unwrap();
+            let counts = live_counts(&kernel);
+            let request = [op(
+                operation,
+                serde_json::json!({"solid": solid, "edges": [edge], "radius": 2.0}),
+            )];
+            let legacy = run(&mut kernel, &request);
+            assert!(
+                legacy[0]["error"].as_str().unwrap().contains("cavity"),
+                "{operation}: {legacy:?}"
+            );
+            let structured = run_v2(&mut kernel, &request);
+            let error = &structured[0]["error"];
+            assert!(
+                error["message"].as_str().unwrap().contains("cavity"),
+                "{operation}: {structured:?}"
+            );
+            assert!(
+                error["details"]["kernelCode"].is_string(),
+                "{operation}: {error}"
+            );
+            assert_eq!(kernel.serialize_solids(&[solid]).unwrap(), before);
+            assert_eq!(live_counts(&kernel), counts);
+        }
+    }
+}
+
+#[test]
+fn batch_fillet_preserves_a_distant_cavity() {
+    for operation in ["fillet", "filletV2"] {
+        let mut kernel = BrepKernel::new();
+        let solid = batch_hollow_box(&mut kernel, [9.0; 3], 2.0);
+        let edge = top_front_edge_handle(&mut kernel, solid);
+        let input_id = kernel.resolve_solid(solid).unwrap();
+        let cavity = kernel.topo().solid(input_id).unwrap().inner_shells()[0];
+        // Root the cavity separately so byte comparison covers its complete
+        // sub-topology even though walking fillets trim outer support wires.
+        let cavity_root = kernel
+            .topo_mut()
+            .add_solid(remus_topology::solid::Solid::new(cavity, Vec::new()));
+        let cavity_before =
+            remus_io::arena_io::serialize_solid(kernel.topo(), cavity_root).unwrap();
+        let out = run(
+            &mut kernel,
+            &[op(
+                operation,
+                serde_json::json!({"solid": solid, "edges": [edge], "radius": 2.0}),
+            )],
+        );
+        let result =
+            u32::try_from(out[0]["ok"].as_u64().expect("distant cavity stays clear")).unwrap();
+        let result_id = kernel.resolve_solid(result).unwrap();
+        assert_eq!(
+            kernel.topo().solid(result_id).unwrap().inner_shells().len(),
+            1
+        );
+        let expected = 8000.0 - 8.0 - convex_fillet_removed(2.0, 20.0);
+        assert!((volume(&mut kernel, result) - expected).abs() < 1e-3);
+        assert_eq!(
+            kernel.topo().solid(result_id).unwrap().inner_shells()[0],
+            cavity
+        );
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(kernel.topo(), cavity_root).unwrap(),
+            cavity_before
+        );
+    }
+}
+
 fn origin_setback_specs(
     kernel: &mut BrepKernel,
     solid: u32,
