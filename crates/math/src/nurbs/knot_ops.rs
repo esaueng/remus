@@ -559,6 +559,17 @@ fn knot_remove(
 ///   ε/w_k = (1 − α)·(w_k − w_prev)/w_k + α·(w_k − w_next)/w_k.
 /// Forming e itself would underflow for a tiny middle weight and a tiny
 /// offset together.
+///
+/// The returned bound includes a forward error allowance for its own
+/// floating-point evaluation. The terms of e and ε can cancel, so their few
+/// roundings are relative to the terms, not to the result. Each computed
+/// component is within about 6u of `‖Δ_mid‖ + ρ_next·‖Δ_next‖ +
+/// (|w_k − w_prev| + |w_k − w_next|)/w_k·‖Δ_next‖`, counting the rounding of
+/// α from the knots, and the norm adds a few u relative to the bound
+/// (u = 2⁻⁵³). The allowance is 32u times that sum plus the bound, about
+/// twice the analysis. A removal is therefore only accepted when the true
+/// deviation is certainly within the tolerance, and a tolerance below the
+/// allowance (tolerance 0 included) refuses even an exactly removable knot.
 #[allow(clippy::suboptimal_flops)]
 fn degree_one_deviation_bound(
     prev: (Point3, f64),
@@ -597,8 +608,12 @@ fn degree_one_deviation_bound(
         e[2] - eps * dn.z(),
     ]);
     let bound = at_prev.max(at_next);
-    if bound.is_finite() {
-        bound
+    let spread = ((mid.1 - prev.1).abs() + (mid.1 - next.1).abs()) / mid.1;
+    let terms = scaled_norm([dm.x(), dm.y(), dm.z()])
+        + (rho_next + spread) * scaled_norm([dn.x(), dn.y(), dn.z()]);
+    let certain = bound + 16.0 * f64::EPSILON * (terms + bound);
+    if certain.is_finite() {
+        certain
     } else {
         f64::INFINITY
     }
