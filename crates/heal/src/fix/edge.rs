@@ -186,7 +186,13 @@ pub fn fix_same_parameter_on_face(
     let t_start = knots[degree];
     let t_end = knots[knots.len() - degree - 1];
 
-    let pcurve = PCurve::new(Curve2D::Nurbs(nurbs_2d), t_start, t_end);
+    // The fit runs along the edge's own direction; a reversed use traverses
+    // it backwards, so its pcurve takes the parameter range reversed.
+    let pcurve = if forward {
+        PCurve::new(Curve2D::Nurbs(nurbs_2d), t_start, t_end)
+    } else {
+        PCurve::new(Curve2D::Nurbs(nurbs_2d), t_end, t_start)
+    };
     topo.set_pcurve_oriented(edge_id, face_id, forward, pcurve)?;
 
     Ok(FixResult::changed(
@@ -333,7 +339,11 @@ fn compute_pcurve_deviation(
     // those samples read every planar pcurve as deviation 0.
     let plane_frame = match surface {
         FaceSurface::Plane { normal, d } => Some(canonical_plane_frame(*normal, *d)?),
-        _ => None,
+        FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_)
+        | FaceSurface::Nurbs(_) => None,
     };
 
     let (t0_3d, t1_3d) = edge
@@ -348,7 +358,12 @@ fn compute_pcurve_deviation(
         #[allow(clippy::cast_precision_loss)]
         let frac = i as f64 / SAME_PARAM_SAMPLES as f64;
 
-        let t_3d = t0_3d + (t1_3d - t0_3d) * frac;
+        // The pcurve traces the USE: a reversed use starts at the edge's end.
+        let t_3d = if forward {
+            t0_3d + (t1_3d - t0_3d) * frac
+        } else {
+            t1_3d - (t1_3d - t0_3d) * frac
+        };
         let pt_3d = curve.evaluate_with_endpoints(t_3d, start_pos, end_pos);
 
         let t_pc = t0_pc + (t1_pc - t0_pc) * frac;
@@ -603,6 +618,56 @@ mod repair_budget_tests {
         let report = repair_pcurve_within_budget(&mut topo, edge, face, &mut ctx, 1e-9).unwrap();
         assert!((report.deviation_before - 0.5).abs() < 1e-12, "{report:?}");
         assert!(report.deviation_after <= 1e-9, "{report:?}");
+    }
+
+    /// [`square_face`] traversed the other way round: every use reversed, so
+    /// the bottom edge's use runs from `(2, 0, 0)` to `(0, 0, 0)`.
+    fn reversed_square_face() -> (Topology, EdgeId, FaceId) {
+        let (mut topo, edge, face) = square_face();
+        let wire = topo.face(face).unwrap().outer_wire();
+        let mut uses: Vec<_> = topo
+            .wire(wire)
+            .unwrap()
+            .edges()
+            .iter()
+            .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+            .collect();
+        uses.reverse();
+        let reversed = topo.add_wire(Wire::new(uses, true).unwrap());
+        topo.set_face_boundary_wires(face, reversed, vec![])
+            .unwrap();
+        (topo, edge, face)
+    }
+
+    #[test]
+    fn reversed_planar_use_is_measured_and_rebuilt_along_the_use() {
+        // Canonical pcurve of the reversed use: uv (0, -2) → (0, 0).
+        let (mut topo, edge, face) = reversed_square_face();
+        let line = Line2D::new(Point2::new(0.0, -2.0), Vec2::new(0.0, 1.0)).unwrap();
+        topo.set_pcurve_oriented(
+            edge,
+            face,
+            false,
+            PCurve::new(Curve2D::Line(line), 0.0, 2.0),
+        )
+        .unwrap();
+        let deviation = compute_pcurve_deviation(&topo, edge, face, false).unwrap();
+        assert!(
+            deviation < 1e-12,
+            "a correct reversed pcurve read {deviation}"
+        );
+
+        // Missing pcurve on the reversed use: the rebuild must run along it.
+        let (mut topo, edge, face) = reversed_square_face();
+        let mut ctx = HealContext::new();
+        let report = repair_pcurve_within_budget(&mut topo, edge, face, &mut ctx, 1e-9).unwrap();
+        assert!(report.deviation_after <= 1e-9, "{report:?}");
+        let rebuilt = topo.pcurve_oriented(edge, face, false).unwrap();
+        let start = rebuilt.evaluate(rebuilt.t_start());
+        assert!(
+            (start - Point2::new(0.0, -2.0)).length() < 1e-9,
+            "the reversed use starts at (2, 0, 0), uv (0, -2): {start:?}"
+        );
     }
 
     #[test]
