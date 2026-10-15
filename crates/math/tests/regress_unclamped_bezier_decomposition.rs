@@ -421,23 +421,52 @@ fn a_common_weight_scale_does_not_collapse_the_clamped_curve() {
 }
 
 #[test]
-fn weights_too_far_apart_to_normalize_are_kept() {
-    // Review follow-up: dividing by the largest weight rounds the smallest
-    // subnormal weight, beside 2.0, to zero, and the rebuilt curve was then
-    // refused as invalid. Both ends already carry multiplicity p, so the
-    // clamp inserts nothing and the curve decomposes exactly, as before.
+fn weights_beyond_the_f64_range_apart_still_clamp_exactly() {
+    // Review follow-ups. Weights more than the whole f64 range apart (the
+    // smallest subnormal beside 2.0) cannot be divided by the largest
+    // without rounding the smallest to zero, and left unscaled the endpoint
+    // insertion blends 0.5·w and underflows the same way. The clamp now
+    // rescales by an exact power of two near their geometric mean, so both
+    // ends stay normal.
     let tiny = f64::from_bits(1);
+    let scale = 2.0_f64.powi(537);
+    let points = vec![
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(2.0, 1.0, 0.0),
+    ];
+    // Degree 2, unclamped: both ends need real insertions.
     let curve = NurbsCurve::new(
+        2,
+        vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+        points.clone(),
+        vec![tiny, tiny, 2.0],
+    )
+    .expect("positive weights are valid");
+    // The same curve with every weight multiplied by 2^537, exactly.
+    let reference = NurbsCurve::new(
+        2,
+        vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+        points,
+        vec![tiny * scale, tiny * scale, 2.0 * scale],
+    )
+    .unwrap();
+    let segments = curve_to_bezier_segments(&curve).expect("decomposes");
+    assert_eq!(segments.len(), 1);
+    assert!(max_deviation(&reference, &segments[0], 64) <= 1e-13);
+
+    // Degree 1 with both ends already at multiplicity p: no insertion, and
+    // the curve keeps its geometry.
+    let line = NurbsCurve::new(
         1,
         vec![-1.0, 0.0, 1.0, 2.0],
-        vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 2.0, 3.0)],
+        vec![Point3::new(1.0, 1.0, 1.0), Point3::new(1.0, 2.0, 3.0)],
         vec![tiny, 2.0],
     )
     .expect("positive weights are valid");
-    let segments = curve_to_bezier_segments(&curve).expect("decomposes");
-    assert_eq!(segments.len(), 1);
-    assert_eq!(segments[0].control_points(), curve.control_points());
-    assert_eq!(segments[0].weights(), curve.weights());
+    let segments = curve_to_bezier_segments(&line).expect("decomposes");
+    assert_eq!(segments[0].control_points(), line.control_points());
+    assert!(max_deviation(&line, &segments[0], 64) <= 1e-13);
 
     let surface = NurbsSurface::new(
         1,
@@ -451,7 +480,20 @@ fn weights_too_far_apart_to_normalize_are_kept() {
         vec![vec![tiny, 1.0], vec![2.0, 2.0]],
     )
     .expect("positive weights are valid");
+    // A surface this spread cannot be evaluated at all (its own evaluator
+    // underflows there), so check the patch structurally: the same control
+    // points, and the weights divided by one exact power of two.
     let patches = surface_to_bezier_patches(&surface).expect("decomposes");
     assert_eq!(patches.len(), 1);
-    assert_eq!(patches[0].surface.weights(), surface.weights());
+    let patch = &patches[0].surface;
+    assert_eq!(patch.control_points(), surface.control_points());
+    let ratios: Vec<f64> = surface
+        .weights()
+        .iter()
+        .flatten()
+        .zip(patch.weights().iter().flatten())
+        .map(|(w, pw)| w / pw)
+        .collect();
+    assert!(ratios.iter().all(|r| *r == ratios[0]), "{ratios:?}");
+    assert_eq!(ratios[0].to_bits() & ((1 << 52) - 1), 0, "a power of two");
 }
