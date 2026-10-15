@@ -1697,11 +1697,12 @@ mod curved {
     /// hull and crosses the plane no more often than they do (variation
     /// diminishing), so a span whose control points sit on one side has no
     /// root, and one with a single sign change and opposite-signed ends has
-    /// exactly one, found by bisection. A span still undecided after
-    /// `MAX_HALVINGS` halvings is a tangency within floating point and does
-    /// not cross, and one lying in the plane is skipped. A curve whose
-    /// weights do not certify this, or whose spans do not isolate within a
-    /// fixed budget, is refused.
+    /// exactly one, found by bisection. A span whose hull lies in the plane
+    /// within tolerance (an in-plane stretch, or the neighbourhood of a
+    /// tangency) is skipped. One still straddling it after `MAX_HALVINGS`
+    /// halvings, the parameter's resolution, holds one root if its ends
+    /// differ in sign and is refused otherwise; so is a curve whose weights
+    /// do not certify this, or whose spans do not isolate within a budget.
     fn nurbs_roots(
         curve: &remus_math::nurbs::curve::NurbsCurve,
         normal: Vec3,
@@ -1763,7 +1764,19 @@ mod curved {
             }
             let mid = 0.5 * (lo + hi);
             if depth >= MAX_HALVINGS || mid <= lo || mid >= hi {
-                continue;
+                // Halved to the last bit and still straddling the plane
+                // beyond tolerance (a tangency's hull falls within it above):
+                // ends of opposite sign hold an odd number of crossings, one
+                // place for them all at this width; equal signs hold an
+                // unresolved pair, refused rather than dropped.
+                if f_lo * f_hi < 0.0 {
+                    roots.push(mid);
+                    continue;
+                }
+                return Err(unsupported(
+                    "section of a NURBS trim with crossings closer than its parameter resolves"
+                        .into(),
+                ));
             }
             // A root on the split itself ends both halves at zero, which
             // neither half can certify: take it here.
@@ -1802,6 +1815,7 @@ mod curved {
     }
 
     /// The boundary edges of `face` that lie in the plane, as polylines
+    /// whose segments carry their edge's index
     /// within an absolute sagitta of `100 × tol.linear` of their curves, and
     /// the largest sagitta reached. The bound is absolute so that scaling a
     /// body cannot widen it past the gap to another section loop; an edge
@@ -1812,12 +1826,12 @@ mod curved {
         normal: Vec3,
         d: f64,
         tol: Tolerance,
-    ) -> Result<(Vec<(Point3, Point3)>, f64), OperationsError> {
+    ) -> Result<(Vec<(usize, Point3, Point3)>, f64), OperationsError> {
         const MAX_STEPS: u32 = 1 << 16;
         let coplanar_tol = tol.linear * 100.0;
         let mut segments = Vec::new();
         let mut sagitta: f64 = 0.0;
-        for edge in boundary_edges(topo, face)? {
+        for (index, edge) in boundary_edges(topo, face)?.into_iter().enumerate() {
             let mut steps = 32;
             let mut chain = edge.chain(steps);
             if !chain
@@ -1847,7 +1861,7 @@ mod curved {
                 steps *= 2;
                 chain = edge.chain(steps);
             }
-            segments.extend(chain.windows(2).map(|w| (w[0], w[1])));
+            segments.extend(chain.windows(2).map(|w| (index, w[0], w[1])));
         }
         Ok((segments, sagitta))
     }
@@ -1921,11 +1935,7 @@ mod curved {
         // than either.
         let (in_plane, sagitta) = in_plane_edges(topo, face, normal, d, tol)?;
         let band = 2.0 * sagitta + tol.linear * 100.0;
-        let near_boundary = |p: Point3| {
-            in_plane
-                .iter()
-                .any(|&(a, b)| segment_distance(p, a, b) <= band)
-        };
+        let along_one_edge = |p: Point3, q: Point3| along_one_edge(&in_plane, band, p, q);
         let surface = topo.face(face)?.surface();
         let on_face = |p: Point3| -> Result<bool, OperationsError> {
             let on_carrier = surface
@@ -1945,7 +1955,7 @@ mod curved {
             for piece in points.windows(2) {
                 let (p, q) = (piece[0], piece[1]);
                 if (q - p).length() > tol.linear
-                    && ((near_boundary(p) && near_boundary(q)) || on_face(p + (q - p) * 0.5)?)
+                    && (along_one_edge(p, q) || on_face(p + (q - p) * 0.5)?)
                 {
                     segments.push((p, q));
                 }
@@ -2040,6 +2050,25 @@ mod curved {
             cuts[i].push((along, x));
         }
         Ok((chords, cuts))
+    }
+
+    /// Whether both ends of a piece lie within `band` of one same in-plane
+    /// edge. Ends on two different edges span the gap between them, which a
+    /// piece narrower than a chord would otherwise keep; shared vertices are
+    /// crossings, so a piece never straddles two edges that meet.
+    fn along_one_edge(
+        in_plane: &[(usize, Point3, Point3)],
+        band: f64,
+        p: Point3,
+        q: Point3,
+    ) -> bool {
+        let near = |x: Point3| {
+            in_plane
+                .iter()
+                .filter(move |&&(_, a, b)| segment_distance(x, a, b) <= band)
+                .map(|&(index, _, _)| index)
+        };
+        near(p).any(|index| near(q).any(|other| other == index))
     }
 
     fn segment_distance(p: Point3, a: Point3, b: Point3) -> f64 {
@@ -2378,6 +2407,26 @@ mod curved {
                 roots.iter().any(|&(t, _)| (t - 0.5).abs() < 1e-12),
                 "{roots:?}"
             );
+        }
+
+        /// Two in-plane edges along one line with a gap of 0.03 between them:
+        /// a piece from the end of one to the start of the other spans the
+        /// gap, so it is not boundary (each end alone is near an edge); a
+        /// piece along either edge is.
+        #[test]
+        fn a_piece_spanning_two_in_plane_edges_is_not_boundary() {
+            let x = |v: f64| Point3::new(v, 0.0, 0.0);
+            let in_plane = [(0, x(0.0), x(1.0)), (1, x(1.03), x(2.0))];
+            let band = 1e-5;
+            assert!(!super::along_one_edge(&in_plane, band, x(1.0), x(1.03)));
+            assert!(super::along_one_edge(&in_plane, band, x(0.2), x(0.9)));
+            assert!(super::along_one_edge(&in_plane, band, x(1.1), x(2.0)));
+            assert!(!super::along_one_edge(
+                &in_plane,
+                band,
+                x(0.5),
+                Point3::new(0.6, 0.1, 0.0)
+            ));
         }
 
         /// Without partial curved edges the trim polygon is `wire_polygon`'s,
