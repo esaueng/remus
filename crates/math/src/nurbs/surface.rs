@@ -450,7 +450,9 @@ impl DerivativeScratch {
             // a Newton walk rarely repeats `u`, and the memo holds exactly
             // this routine's output for these inputs, so either way gives
             // the same bits.
-            self.ensure_basis_for(surface, 1);
+            // Two rows per axis whatever the degree; `ensure_basis_for`
+            // would size a degree-0 axis for one.
+            self.ensure_basis(2 * (pu + 1) + 2 * (pv + 1));
             let (ders_u, rest) = self.basis.split_at_mut(2 * (pu + 1));
             let ders_v = &mut rest[..2 * (pv + 1)];
             let n_rows = surface.control_points.len();
