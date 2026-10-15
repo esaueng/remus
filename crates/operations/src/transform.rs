@@ -229,7 +229,8 @@ pub struct TransformReport {
     /// NURBS carriers (converted or pre-existing) are re-parameterized
     /// (u-reversed) so every carrier keeps its outward normal, and every
     /// boundary traversal is reversed to wind with it again (see
-    /// [`reverse_boundaries_for_reflection`]); face flags are untouched.
+    /// [`remus_topology::Topology::reverse_face_boundaries`]); face flags
+    /// are untouched.
     /// Informational: committed results are outward-oriented either way.
     pub orientation_reversed: bool,
     /// True when the linear part is conformal (similarity): every analytic
