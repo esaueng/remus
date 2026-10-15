@@ -4,7 +4,10 @@
 //! files into [`TriangleMesh`] objects. A `.3mf` file is a ZIP archive
 //! containing an XML model description at `3D/3dmodel.model`.
 
+use std::collections::HashMap;
 use std::io::{Cursor, Read as _};
+
+use quick_xml::name::{Namespace, NamespaceResolver, QName, ResolveResult};
 
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::tessellate::TriangleMesh;
@@ -14,9 +17,19 @@ use remus_topology::solid::SolidId;
 use crate::IoError;
 use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 
-/// Read a 3MF file from raw bytes and return one [`TriangleMesh`] per object.
+/// Read a 3MF file from raw bytes and return one [`TriangleMesh`] per build
+/// item.
 ///
-/// Each `<object>` in the model XML becomes a separate mesh.
+/// The roots are the `<build>` `<item>`s, in build order and with
+/// multiplicity: an object listed twice gives two meshes, and an object no
+/// item names is not returned. Each root object is flattened into one mesh:
+/// an object built from `<components>` places every referenced object by its
+/// component transform, recursively, and the item's `transform` is then
+/// applied to the result. Transforms use the 3MF row-vector layout
+/// (`[x y z 1] · M`), their translation is scaled with the model unit like
+/// the vertices, and a mirroring transform (det < 0) reverses the winding so
+/// it stays outward. When `<build>` is missing or empty, every object that no
+/// component references is a root instead, in document order, unplaced.
 /// Coordinates are normalized from the model's declared unit to millimeters.
 ///
 /// # Errors
@@ -25,6 +38,12 @@ use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 /// - The data is not a valid ZIP archive
 /// - The archive lacks a `3D/3dmodel.model` entry
 /// - The XML is malformed or missing required elements
+/// - A component or build item references a missing or ambiguous object id
+///   or an object in another model part (production extension, `p:path`),
+///   components form a cycle or nest deeper than 32 levels, or a placement
+///   leaves the finite millimeter range
+/// - The build items or the flattened output (counted with multiplicity)
+///   exceed the entity limit
 pub fn read_threemf(data: &[u8]) -> Result<Vec<TriangleMesh>, IoError> {
     read_threemf_with_limits(data, ImportLimits::default())
 }
@@ -78,39 +97,164 @@ fn extract_model_xml(data: &[u8], limits: ImportLimits) -> Result<String, IoErro
     Ok(xml_str)
 }
 
-/// Parse the model XML and extract meshes from each `<object>`.
+/// The 3MF core namespace. Elements are also accepted unbound, from models
+/// that declare no namespace.
+const CORE_NS: &str = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02";
+/// The production extension, whose `p:path` points into another model part.
+const PRODUCTION_NS: &str = "http://schemas.microsoft.com/3dmanufacturing/production/2015/06";
+
+/// Whether `name` is a core 3MF element rather than an extension element
+/// that happens to share its local name (such as a vendor `<v:build>`).
+fn is_core_element(resolver: &NamespaceResolver, name: QName<'_>) -> bool {
+    match resolver.resolve_element(name).0 {
+        ResolveResult::Unbound => true,
+        ResolveResult::Bound(Namespace(ns)) => ns == CORE_NS,
+        ResolveResult::Unknown(_) => false,
+    }
+}
+
+/// Deepest component nesting a model may use. Producers nest a few levels;
+/// the bound keeps component resolution shallow on hostile input.
+const MAX_COMPONENT_DEPTH: usize = 32;
+
+/// One `<object>`: its own mesh and the components it places.
+#[derive(Debug, Default)]
+struct ParsedObject {
+    /// `None` when the object has no `id`, so no component can reference it.
+    id: Option<u32>,
+    vertices: Vec<Point3>,
+    indices: Vec<u32>,
+    components: Vec<Component>,
+}
+
+/// A `<component>`: another object placed by an affine transform.
+#[derive(Debug, Clone, Copy)]
+struct Component {
+    object_id: u32,
+    transform: Affine,
+}
+
+/// A `<build>` `<item>`: an output object and its optional placement.
+#[derive(Debug, Clone, Copy)]
+struct BuildItem {
+    object_id: u32,
+    transform: Option<Affine>,
+}
+
+/// A 3MF transform: points are row vectors, `[x y z 1] · M`, with `M` the
+/// 4×3 matrix `m00 m01 m02 m10 … m32` in attribute order. `0..9` hold the
+/// linear part row by row and `9..12` the translation, in millimeters.
+#[derive(Debug, Clone, Copy)]
+struct Affine([f64; 12]);
+
+impl Affine {
+    const IDENTITY: Self = Self([1., 0., 0., 0., 1., 0., 0., 0., 1., 0., 0., 0.]);
+
+    fn apply(&self, p: Point3) -> Point3 {
+        let m = &self.0;
+        let row =
+            |col: usize| p.x() * m[col] + p.y() * m[3 + col] + p.z() * m[6 + col] + m[9 + col];
+        Point3::new(row(0), row(1), row(2))
+    }
+
+    /// `self` applied first, then `outer`.
+    fn then(&self, outer: &Self) -> Self {
+        let (a, b) = (&self.0, &outer.0);
+        let mut m = [0.0; 12];
+        for row in 0..4 {
+            for col in 0..3 {
+                let translation = if row == 3 { b[9 + col] } else { 0.0 };
+                m[row * 3 + col] = a[row * 3] * b[col]
+                    + a[row * 3 + 1] * b[3 + col]
+                    + a[row * 3 + 2] * b[6 + col]
+                    + translation;
+            }
+        }
+        Self(m)
+    }
+
+    /// A negative determinant mirrors, which turns the winding inside out.
+    fn is_mirroring(&self) -> bool {
+        let m = &self.0;
+        let det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6])
+            + m[2] * (m[3] * m[7] - m[4] * m[6]);
+        det < 0.0
+    }
+}
+
+/// Parse the model XML and return one mesh per root (see [`read_threemf`]).
+#[allow(clippy::too_many_lines)]
 fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>, IoError> {
-    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut reader = quick_xml::NsReader::from_str(xml);
     reader.config_mut().trim_text(true);
 
-    let mut meshes = Vec::new();
-    let mut current_vertices: Vec<Point3> = Vec::new();
-    let mut current_indices: Vec<u32> = Vec::new();
-    let mut in_object = false;
+    let mut objects = Vec::new();
+    let mut items = Vec::new();
+    let mut current: Option<ParsedObject> = None;
     let mut in_vertices = false;
     let mut in_triangles = false;
+    // Element nesting depth, and the depths of the open `<object>`, its core
+    // `<components>` and the core `<build>`: only a `<component>` or `<item>`
+    // directly inside its list is a placement, not one nested in an extension
+    // element (the core schema allows foreign children in both).
+    let mut depth = 0usize;
+    let mut object_depth: Option<usize> = None;
+    let mut components_depth: Option<usize> = None;
+    let mut build_depth: Option<usize> = None;
     let mut total_vertices = 0usize;
     let mut total_triangles = 0usize;
     let mut total_objects = 0usize;
+    let mut total_components = 0usize;
     let mut unit_scale = 1.0;
 
     loop {
         match reader.read_event() {
             Ok(quick_xml::events::Event::Start(ref e)) => {
+                depth += 1;
                 let local = e.local_name();
                 let name = local.as_ref();
 
                 match name {
                     "model" => unit_scale = model_unit_scale(e)?,
                     "object" => {
-                        in_object = true;
                         total_objects = total_objects.saturating_add(1);
                         ensure_limit("3MF objects", total_objects, limits.max_model_entities)?;
-                        current_vertices.clear();
-                        current_indices.clear();
+                        current = Some(ParsedObject {
+                            id: parse_object_id(e)?,
+                            ..ParsedObject::default()
+                        });
+                        object_depth = Some(depth);
                     }
                     "vertices" => in_vertices = true,
                     "triangles" => in_triangles = true,
+                    "components"
+                        if object_depth == Some(depth - 1)
+                            && is_core_element(reader.resolver(), e.name()) =>
+                    {
+                        components_depth = Some(depth);
+                    }
+                    "component"
+                        if components_depth == Some(depth - 1)
+                            && is_core_element(reader.resolver(), e.name()) =>
+                    {
+                        total_components = total_components.saturating_add(1);
+                        ensure_limit(
+                            "3MF components",
+                            total_components,
+                            limits.max_model_entities,
+                        )?;
+                        push_component(e, reader.resolver(), unit_scale, current.as_mut())?;
+                    }
+                    // A direct child of the root `<model>`.
+                    "build" if depth == 2 && is_core_element(reader.resolver(), e.name()) => {
+                        build_depth = Some(depth);
+                    }
+                    "item"
+                        if build_depth == Some(depth - 1)
+                            && is_core_element(reader.resolver(), e.name()) =>
+                    {
+                        push_item(e, reader.resolver(), unit_scale, &mut items, limits)?;
+                    }
                     _ => {}
                 }
             }
@@ -131,17 +275,37 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                                 reason: "3MF vertex exceeds the finite millimeter range".into(),
                             });
                         }
-                        current_vertices.push(pt);
                         total_vertices = total_vertices.saturating_add(1);
                         ensure_limit("3MF vertices", total_vertices, limits.max_model_entities)?;
+                        if let Some(object) = current.as_mut() {
+                            object.vertices.push(pt);
+                        }
                     }
                     "triangle" if in_triangles => {
                         let (v1, v2, v3) = parse_triangle_attributes(e)?;
-                        current_indices.push(v1);
-                        current_indices.push(v2);
-                        current_indices.push(v3);
                         total_triangles = total_triangles.saturating_add(1);
                         ensure_limit("3MF triangles", total_triangles, limits.max_model_entities)?;
+                        if let Some(object) = current.as_mut() {
+                            object.indices.extend([v1, v2, v3]);
+                        }
+                    }
+                    "component"
+                        if components_depth == Some(depth)
+                            && is_core_element(reader.resolver(), e.name()) =>
+                    {
+                        total_components = total_components.saturating_add(1);
+                        ensure_limit(
+                            "3MF components",
+                            total_components,
+                            limits.max_model_entities,
+                        )?;
+                        push_component(e, reader.resolver(), unit_scale, current.as_mut())?;
+                    }
+                    "item"
+                        if build_depth == Some(depth)
+                            && is_core_element(reader.resolver(), e.name()) =>
+                    {
+                        push_item(e, reader.resolver(), unit_scale, &mut items, limits)?;
                     }
                     _ => {}
                 }
@@ -149,15 +313,21 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
             Ok(quick_xml::events::Event::End(ref e)) => {
                 let local = e.local_name();
                 let name = local.as_ref();
+                let closing = depth;
+                depth = depth.saturating_sub(1);
 
                 match name {
-                    "object" if in_object => {
-                        let mesh = build_mesh(&current_vertices, &current_indices)?;
-                        meshes.push(mesh);
-                        in_object = false;
+                    "object" => {
+                        object_depth = None;
+                        if let Some(object) = current.take() {
+                            check_indices(&object.vertices, &object.indices)?;
+                            objects.push(object);
+                        }
                     }
                     "vertices" => in_vertices = false,
                     "triangles" => in_triangles = false,
+                    "components" if components_depth == Some(closing) => components_depth = None,
+                    "build" if build_depth == Some(closing) => build_depth = None,
                     _ => {}
                 }
             }
@@ -171,13 +341,428 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
         }
     }
 
-    if meshes.is_empty() {
+    if objects.is_empty() {
         return Err(IoError::ParseError {
             reason: "no objects found in 3MF model".to_string(),
         });
     }
 
+    resolve_objects(objects, &items, limits)
+}
+
+/// Flatten every root into a mesh, placing each component's object by the
+/// composed transforms and the root by its item transform. The roots are
+/// the build items, or every object no component references when there are
+/// none.
+///
+/// Fails on a reference to a missing or ambiguous object id, on a component
+/// cycle, on nesting deeper than [`MAX_COMPONENT_DEPTH`], and when the
+/// flattened output, counted with item multiplicity, would exceed the entity
+/// limit. All of these are decided before any flattened geometry is
+/// allocated.
+fn resolve_objects(
+    mut objects: Vec<ParsedObject>,
+    items: &[BuildItem],
+    limits: ImportLimits,
+) -> Result<Vec<TriangleMesh>, IoError> {
+    // `None` marks an id that more than one object claims.
+    let mut by_id: HashMap<u32, Option<usize>> = HashMap::new();
+    for (index, object) in objects.iter().enumerate() {
+        if let Some(id) = object.id {
+            by_id
+                .entry(id)
+                .and_modify(|slot| *slot = None)
+                .or_insert(Some(index));
+        }
+    }
+
+    let mut referenced = vec![false; objects.len()];
+    let mut children = Vec::with_capacity(objects.len());
+    for object in &objects {
+        let mut placed = Vec::with_capacity(object.components.len());
+        for component in &object.components {
+            let child = lookup_object(&by_id, component.object_id, "component")?;
+            referenced[child] = true;
+            placed.push((child, component.transform));
+        }
+        children.push(placed);
+    }
+
+    let mut extents = vec![Extent::Unvisited; objects.len()];
+    for index in 0..objects.len() {
+        flattened_extent(index, &objects, &children, &mut extents, 0)?;
+    }
+
+    // `None` leaves the root unplaced.
+    let roots: Vec<(usize, Option<Affine>)> = if items.is_empty() {
+        (0..objects.len())
+            .filter(|&i| !referenced[i])
+            .map(|i| (i, None))
+            .collect()
+    } else {
+        items
+            .iter()
+            .map(|item| {
+                lookup_object(&by_id, item.object_id, "build item")
+                    .map(|index| (index, item.transform))
+            })
+            .collect::<Result<_, _>>()?
+    };
+    let mut root_uses = vec![0usize; objects.len()];
+    let (mut vertices, mut triangles) = (0usize, 0usize);
+    for &(root, _) in &roots {
+        root_uses[root] += 1;
+        if let Extent::Done(size) = extents[root] {
+            vertices = vertices.saturating_add(size.vertices);
+            triangles = triangles.saturating_add(size.triangles);
+        }
+    }
+    ensure_limit(
+        "3MF flattened vertices",
+        vertices,
+        limits.max_model_entities,
+    )?;
+    ensure_limit(
+        "3MF flattened triangles",
+        triangles,
+        limits.max_model_entities,
+    )?;
+
+    let mut meshes = Vec::with_capacity(roots.len());
+    for (root, transform) in roots {
+        if children[root].is_empty() && !referenced[root] && root_uses[root] == 1 {
+            // Nothing else uses this object's geometry, so its buffers can
+            // move into the mesh and be placed in place.
+            let object = &mut objects[root];
+            let mut vertices = std::mem::take(&mut object.vertices);
+            let mut indices = std::mem::take(&mut object.indices);
+            if let Some(transform) = transform {
+                place_in_place(&transform, &mut vertices, &mut indices)?;
+            }
+            meshes.push(build_mesh(vertices, indices)?);
+            continue;
+        }
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        append_flattened(
+            root,
+            &transform.unwrap_or(Affine::IDENTITY),
+            &objects,
+            &children,
+            &mut vertices,
+            &mut indices,
+        )?;
+        meshes.push(build_mesh(vertices, indices)?);
+    }
     Ok(meshes)
+}
+
+/// The object `object_id` names; `what` is the referencing element.
+fn lookup_object(
+    by_id: &HashMap<u32, Option<usize>>,
+    object_id: u32,
+    what: &str,
+) -> Result<usize, IoError> {
+    match by_id.get(&object_id) {
+        Some(Some(index)) => Ok(*index),
+        Some(None) => Err(IoError::ParseError {
+            reason: format!("3MF {what} references object id {object_id} defined more than once"),
+        }),
+        None => Err(IoError::ParseError {
+            reason: format!("3MF {what} references unknown object id {object_id}"),
+        }),
+    }
+}
+
+/// Apply a root's item transform to geometry it owns outright.
+fn place_in_place(
+    transform: &Affine,
+    vertices: &mut [Point3],
+    indices: &mut [u32],
+) -> Result<(), IoError> {
+    for p in vertices.iter_mut() {
+        *p = transform.apply(*p);
+        if p.0.iter().any(|coordinate| !coordinate.is_finite()) {
+            return Err(placement_range_error());
+        }
+    }
+    if transform.is_mirroring() {
+        // Keep the winding outward under a mirroring placement.
+        for tri in indices.chunks_exact_mut(3) {
+            tri.swap(1, 2);
+        }
+    }
+    Ok(())
+}
+
+fn placement_range_error() -> IoError {
+    IoError::ParseError {
+        reason: "3MF component or build-item transform leaves the finite millimeter range".into(),
+    }
+}
+
+/// Flattened size of an object and the nesting depth below it.
+#[derive(Debug, Clone, Copy)]
+struct FlatSize {
+    vertices: usize,
+    triangles: usize,
+    depth: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Extent {
+    Unvisited,
+    InProgress,
+    Done(FlatSize),
+}
+
+/// Memoized flattened size of `index`; `path_len` is the number of objects
+/// above it on the current resolution path.
+fn flattened_extent(
+    index: usize,
+    objects: &[ParsedObject],
+    children: &[Vec<(usize, Affine)>],
+    extents: &mut [Extent],
+    path_len: usize,
+) -> Result<FlatSize, IoError> {
+    match extents[index] {
+        Extent::Done(size) => return Ok(size),
+        Extent::InProgress => {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "3MF component cycle through object id {}",
+                    objects[index].id.unwrap_or_default()
+                ),
+            });
+        }
+        Extent::Unvisited => {}
+    }
+    if path_len > MAX_COMPONENT_DEPTH {
+        return Err(component_depth_error());
+    }
+    extents[index] = Extent::InProgress;
+    let object = &objects[index];
+    let mut size = FlatSize {
+        vertices: object.vertices.len(),
+        triangles: object.indices.len() / 3,
+        depth: 0,
+    };
+    for &(child, _) in &children[index] {
+        let child = flattened_extent(child, objects, children, extents, path_len + 1)?;
+        size.vertices = size.vertices.saturating_add(child.vertices);
+        size.triangles = size.triangles.saturating_add(child.triangles);
+        size.depth = size.depth.max(child.depth + 1);
+    }
+    // A child resolved earlier through a shorter path is memoized; its depth
+    // still counts against every path that reaches it.
+    if size.depth > MAX_COMPONENT_DEPTH {
+        return Err(component_depth_error());
+    }
+    extents[index] = Extent::Done(size);
+    Ok(size)
+}
+
+fn component_depth_error() -> IoError {
+    IoError::ParseError {
+        reason: format!("3MF components nest deeper than {MAX_COMPONENT_DEPTH} levels"),
+    }
+}
+
+/// Append `index`'s own triangles and, recursively, its components' in the
+/// root object's frame. `to_root` maps this object's coordinates there.
+/// [`flattened_extent`] has already bounded the depth and output size.
+fn append_flattened(
+    index: usize,
+    to_root: &Affine,
+    objects: &[ParsedObject],
+    children: &[Vec<(usize, Affine)>],
+    vertices: &mut Vec<Point3>,
+    indices: &mut Vec<u32>,
+) -> Result<(), IoError> {
+    let object = &objects[index];
+    let base = u32::try_from(vertices.len()).map_err(|_| flattened_index_error())?;
+    for &p in &object.vertices {
+        let placed = to_root.apply(p);
+        if placed.0.iter().any(|coordinate| !coordinate.is_finite()) {
+            return Err(placement_range_error());
+        }
+        vertices.push(placed);
+    }
+    let mirrored = to_root.is_mirroring();
+    for tri in object.indices.chunks_exact(3) {
+        let [a, b, c] =
+            [tri[0], tri[1], tri[2]].map(|i| i.checked_add(base).ok_or_else(flattened_index_error));
+        let (a, b, c) = (a?, b?, c?);
+        // Keep the winding outward under a mirroring placement.
+        indices.extend(if mirrored { [a, c, b] } else { [a, b, c] });
+    }
+    for (child, placement) in &children[index] {
+        append_flattened(
+            *child,
+            &placement.then(to_root),
+            objects,
+            children,
+            vertices,
+            indices,
+        )?;
+    }
+    Ok(())
+}
+
+fn flattened_index_error() -> IoError {
+    IoError::ParseError {
+        reason: "3MF flattened vertex index exceeds u32".into(),
+    }
+}
+
+/// Parse an `<object>`'s optional `id`.
+fn parse_object_id(e: &quick_xml::events::BytesStart<'_>) -> Result<Option<u32>, IoError> {
+    for attr in e.attributes().flatten() {
+        if attr.key.as_ref() == "id" {
+            return parse_u32_attr(attr.value.as_ref(), "object id").map(Some);
+        }
+    }
+    Ok(None)
+}
+
+/// Record a `<component>` (written either empty or with an end tag) on the
+/// object being parsed.
+fn push_component(
+    e: &quick_xml::events::BytesStart<'_>,
+    resolver: &NamespaceResolver,
+    unit_scale: f64,
+    object: Option<&mut ParsedObject>,
+) -> Result<(), IoError> {
+    let component = parse_component(e, resolver, unit_scale)?;
+    if let Some(object) = object {
+        object.components.push(component);
+    }
+    Ok(())
+}
+
+/// Record a build `<item>` (written either empty or with an end tag).
+fn push_item(
+    e: &quick_xml::events::BytesStart<'_>,
+    resolver: &NamespaceResolver,
+    unit_scale: f64,
+    items: &mut Vec<BuildItem>,
+    limits: ImportLimits,
+) -> Result<(), IoError> {
+    ensure_limit(
+        "3MF build items",
+        items.len().saturating_add(1),
+        limits.max_model_entities,
+    )?;
+    let (object_id, transform) = parse_placement(e, resolver, unit_scale, "build item")?;
+    items.push(BuildItem {
+        object_id,
+        transform,
+    });
+    Ok(())
+}
+
+/// Parse a `<component>`'s `objectid` and optional `transform`.
+fn parse_component(
+    e: &quick_xml::events::BytesStart<'_>,
+    resolver: &NamespaceResolver,
+    unit_scale: f64,
+) -> Result<Component, IoError> {
+    let (object_id, transform) = parse_placement(e, resolver, unit_scale, "component")?;
+    Ok(Component {
+        object_id,
+        transform: transform.unwrap_or(Affine::IDENTITY),
+    })
+}
+
+/// Parse the `objectid` and optional `transform` shared by `<component>`
+/// and `<item>`; `what` names the element in errors.
+fn parse_placement(
+    e: &quick_xml::events::BytesStart<'_>,
+    resolver: &NamespaceResolver,
+    unit_scale: f64,
+    what: &str,
+) -> Result<(u32, Option<Affine>), IoError> {
+    let mut object_id = None;
+    let mut transform = None;
+    for attr in e.attributes().flatten() {
+        // Core attributes are unqualified; a prefixed `transform` or
+        // `objectid` belongs to an extension and must not override them.
+        let qualified = attr.key.prefix().is_some();
+        match attr.key.local_name().as_ref() {
+            "objectid" if !qualified => {
+                // `xs:positiveInteger` collapses surrounding XML whitespace.
+                let value = normalized_attribute(&attr, what)?;
+                let value = value.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n'));
+                object_id = Some(parse_u32_attr(value, &format!("{what} objectid"))?);
+            }
+            "transform" if !qualified => {
+                let value = normalized_attribute(&attr, what)?;
+                transform = Some(parse_transform(&value, unit_scale)?);
+            }
+            // Production extension (`p:path`): the object lives in another
+            // model part, where `objectid` names a different object than it
+            // does here. An undeclared prefix is refused too, rather than
+            // risk a wrong placement; another extension's `path` is ignored.
+            "path" if references_production_part(resolver, attr.key) => {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "3MF {what} references another model part (production extension), \
+                         which is not supported"
+                    ),
+                });
+            }
+            _ => {}
+        }
+    }
+    let object_id = object_id.ok_or_else(|| IoError::ParseError {
+        reason: format!("{what} element missing objectid attribute"),
+    })?;
+    Ok((object_id, transform))
+}
+
+/// An attribute value with character references resolved, so `&#49;` reads
+/// as `1`.
+fn normalized_attribute<'a>(
+    attr: &'a quick_xml::events::attributes::Attribute<'_>,
+    what: &str,
+) -> Result<std::borrow::Cow<'a, str>, IoError> {
+    attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+        .map_err(|error| IoError::ParseError {
+            reason: format!("invalid 3MF {what} attribute: {error}"),
+        })
+}
+
+/// Whether a `path` attribute is the production extension's (or carries a
+/// prefix no namespace declaration binds).
+fn references_production_part(resolver: &NamespaceResolver, key: QName<'_>) -> bool {
+    match resolver.resolve_attribute(key).0 {
+        ResolveResult::Unbound => false,
+        ResolveResult::Bound(Namespace(ns)) => ns == PRODUCTION_NS,
+        ResolveResult::Unknown(_) => true,
+    }
+}
+
+/// Parse a 12-value 3MF transform; the translation is scaled to millimeters.
+fn parse_transform(value: &str, unit_scale: f64) -> Result<Affine, IoError> {
+    let invalid = || IoError::ParseError {
+        reason: format!("invalid 3MF transform '{value}': expected 12 finite numbers"),
+    };
+    let mut m = [0.0; 12];
+    let mut values = value.split_whitespace();
+    for slot in &mut m {
+        *slot = values
+            .next()
+            .ok_or_else(invalid)?
+            .parse::<f64>()
+            .map_err(|_| invalid())?;
+    }
+    for translation in &mut m[9..] {
+        *translation *= unit_scale;
+    }
+    if values.next().is_some() || m.iter().any(|v| !v.is_finite()) {
+        return Err(invalid());
+    }
+    Ok(Affine(m))
 }
 
 /// The core format defaults to millimeters when `unit` is omitted.
@@ -261,15 +846,8 @@ fn parse_triangle_attributes(
 }
 
 /// Build a [`TriangleMesh`] from indexed vertices, computing per-vertex normals.
-fn build_mesh(vertices: &[Point3], indices: &[u32]) -> Result<TriangleMesh, IoError> {
-    if !indices.len().is_multiple_of(3) {
-        return Err(IoError::ParseError {
-            reason: format!(
-                "triangle indices count {} is not a multiple of 3",
-                indices.len()
-            ),
-        });
-    }
+fn build_mesh(vertices: Vec<Point3>, indices: Vec<u32>) -> Result<TriangleMesh, IoError> {
+    check_indices(&vertices, &indices)?;
 
     let mut normals = vec![Vec3::new(0.0, 0.0, 0.0); vertices.len()];
 
@@ -277,15 +855,6 @@ fn build_mesh(vertices: &[Point3], indices: &[u32]) -> Result<TriangleMesh, IoEr
         let i0 = tri[0] as usize;
         let i1 = tri[1] as usize;
         let i2 = tri[2] as usize;
-
-        if i0 >= vertices.len() || i1 >= vertices.len() || i2 >= vertices.len() {
-            return Err(IoError::ParseError {
-                reason: format!(
-                    "triangle index out of bounds: [{i0}, {i1}, {i2}] but only {} vertices",
-                    vertices.len(),
-                ),
-            });
-        }
 
         let v0 = vertices[i0];
         let v1 = vertices[i1];
@@ -306,10 +875,38 @@ fn build_mesh(vertices: &[Point3], indices: &[u32]) -> Result<TriangleMesh, IoEr
     }
 
     Ok(TriangleMesh {
-        positions: vertices.to_vec(),
+        positions: vertices,
         normals,
-        indices: indices.to_vec(),
+        indices,
     })
+}
+
+/// Reject triangles that are incomplete or index past the object's vertices.
+fn check_indices(vertices: &[Point3], indices: &[u32]) -> Result<(), IoError> {
+    if !indices.len().is_multiple_of(3) {
+        return Err(IoError::ParseError {
+            reason: format!(
+                "triangle indices count {} is not a multiple of 3",
+                indices.len()
+            ),
+        });
+    }
+
+    for tri in indices.chunks_exact(3) {
+        let i0 = tri[0] as usize;
+        let i1 = tri[1] as usize;
+        let i2 = tri[2] as usize;
+
+        if i0 >= vertices.len() || i1 >= vertices.len() || i2 >= vertices.len() {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "triangle index out of bounds: [{i0}, {i1}, {i2}] but only {} vertices",
+                    vertices.len(),
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Parse a float attribute value.
@@ -326,15 +923,15 @@ fn parse_u32_attr(val: &str, context: &str) -> Result<u32, IoError> {
     })
 }
 
-/// Read a 3MF file and import the first object as a solid.
+/// Read a 3MF file and import its first root (the first build item) as a
+/// solid.
 ///
 /// This is a convenience wrapper that calls [`read_threemf`] followed by
 /// [`import_mesh`](crate::stl::import::import_mesh) on the first mesh.
 /// Vertices within `tolerance` of each other are merged.
 ///
-/// **Note:** Only the first object is imported; additional objects in the
-/// archive are silently ignored. Use [`read_threemf`] directly to access
-/// all objects.
+/// **Note:** Only the first root is imported; additional build items are
+/// silently ignored. Use [`read_threemf`] directly to access all of them.
 ///
 /// # Errors
 ///
@@ -357,7 +954,8 @@ pub fn read_threemf_solid(
     crate::stl::import::import_mesh(topo, &mesh, tolerance)
 }
 
-/// Read the first 3MF object as a solid with explicit import limits.
+/// Read the first 3MF root (build item) as a solid with explicit import
+/// limits.
 ///
 /// # Errors
 ///

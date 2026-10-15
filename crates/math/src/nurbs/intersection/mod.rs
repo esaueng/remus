@@ -8,7 +8,8 @@
 //!   signed distance to the plane, trace zero-crossings via linear interpolation,
 //!   then refine with Newton iteration.
 //! - **NURBS-NURBS**: Subdivision + marching method in (u1,v1,u2,v2) parameter space.
-//! - **Line-surface**: Newton iteration from grid-based seed points.
+//! - **Line-surface**: Newton iteration from grid-based seed points, completed by
+//!   Bézier-subdivision root isolation for crossings the grid seeds miss.
 
 #![allow(
     clippy::many_single_char_names,

@@ -37,6 +37,16 @@ fn chain_curve_points(points: &[IntersectionPoint], segments: &mut Vec<(Point3, 
     }
 }
 
+/// The points of each carrier section curve, in order.
+fn section_polylines(
+    curves: &[remus_math::nurbs::intersection::IntersectionCurve],
+) -> Vec<Vec<Point3>> {
+    curves
+        .iter()
+        .map(|curve| curve.points.iter().map(|p| p.point).collect())
+        .collect()
+}
+
 /// A cross-section result: one or more planar faces on the cutting plane.
 #[derive(Debug)]
 pub struct Section {
@@ -69,6 +79,10 @@ pub struct Section {
 /// two-rim band; cuts through its rims or parallel to its axis return
 /// `Unsupported` until authoritative cap clipping is available. Contained
 /// cylindrical sections retain the existing 64-segment polygon approximation.
+/// Sphere, cone and torus sections are the same 64-chord polylines of the
+/// complete carrier, clipped to the face's trims where they cross its
+/// boundary; a curved section that leaves its face away from every boundary
+/// crossing, or a cone face spanning its apex, returns `Unsupported`.
 pub fn section(
     topo: &mut Topology,
     solid: SolidId,
@@ -103,7 +117,7 @@ pub fn section(
                 let face_normal = *face_normal;
                 let face_d = *face_d;
 
-                let verts = face_polygon(topo, fid)?;
+                let verts = curved::trim_polygon(topo, face.outer_wire(), Some((normal, d)), tol)?;
                 if let Some(seg) =
                     intersect_planar_face_with_plane(&verts, face_normal, face_d, normal, d, tol)
                 {
@@ -121,25 +135,20 @@ pub fn section(
                 cylinder::append_section(topo, face, cyl, plane_point, normal, tol, &mut segments)?;
             }
             FaceSurface::Cone(cone) => {
-                let curves =
-                    remus_math::analytic_intersection::intersect_plane_cone(cone, normal, d)?;
-                for curve in &curves {
-                    chain_curve_points(&curve.points, &mut segments);
-                }
+                let loops = curved::cone_section(topo, fid, cone, normal, d)?;
+                curved::append_clipped(topo, fid, &loops, normal, d, tol, &mut segments)?;
             }
             FaceSurface::Sphere(sphere) => {
                 let curves =
                     remus_math::analytic_intersection::intersect_plane_sphere(sphere, normal, d)?;
-                for curve in &curves {
-                    chain_curve_points(&curve.points, &mut segments);
-                }
+                let loops = section_polylines(&curves);
+                curved::append_clipped(topo, fid, &loops, normal, d, tol, &mut segments)?;
             }
             FaceSurface::Torus(torus) => {
                 let curves =
                     remus_math::analytic_intersection::intersect_plane_torus(torus, normal, d)?;
-                for curve in &curves {
-                    chain_curve_points(&curve.points, &mut segments);
-                }
+                let loops = section_polylines(&curves);
+                curved::append_clipped(topo, fid, &loops, normal, d, tol, &mut segments)?;
             }
         }
     }
@@ -1244,5 +1253,2125 @@ mod cylinder {
             previous = next;
         }
         Ok(())
+    }
+}
+
+mod curved {
+    //! Sections of sphere, cone and torus faces, clipped to the face's trims.
+    //!
+    //! The carrier's plane section is a set of polylines on the complete,
+    //! untrimmed surface. A face is only a patch of it, so each sample is
+    //! classified against the face's trims and the polylines are cut where
+    //! they cross its boundary. The crossings are taken on the boundary
+    //! polygons the planar neighbours section (`trim_polygon`), so a clipped
+    //! arc ends exactly where the neighbouring face's segment does.
+
+    use std::f64::consts::{PI, TAU};
+
+    use remus_math::compact_sort::CompactSort;
+    use remus_math::surfaces::ConicalSurface;
+    use remus_math::tolerance::Tolerance;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve, EdgeDomainError};
+    use remus_topology::face::FaceId;
+    use remus_topology::wire::WireId;
+
+    use crate::OperationsError;
+    use crate::dot_normal_point;
+
+    fn unsupported(reason: String) -> OperationsError {
+        OperationsError::Unsupported {
+            operation: "section",
+            reason,
+        }
+    }
+
+    /// Samples per full turn of a cone section, matching the sphere and
+    /// cylinder arms.
+    const CONE_SAMPLES: usize = 64;
+
+    /// Samples across the stretch of a cone section branch within the face's
+    /// generator distances.
+    const FACE_SAMPLES: u32 = 32;
+
+    /// The plane section of the cone nappe that holds `face`, as polylines on
+    /// the complete nappe: one closed loop (last point repeating the first)
+    /// for an ellipse or circle, open branches for a parabola or hyperbola,
+    /// cut off well beyond the face so clipping still sees them leave it.
+    pub(super) fn cone_section(
+        topo: &Topology,
+        face: FaceId,
+        cone: &ConicalSurface,
+        normal: Vec3,
+        d: f64,
+    ) -> Result<Vec<Vec<Point3>>, OperationsError> {
+        // Generator distances of the face's boundary; a face on both nappes,
+        // or touching the apex, has no single section branch.
+        let mut reach: f64 = 0.0;
+        let mut nearest = f64::INFINITY;
+        let mut nappe: Option<bool> = None;
+        for point in boundary_samples(topo, face)? {
+            let (_, v) = cone.project_point(point);
+            let height = cone.axis().dot(point - cone.apex());
+            if height.abs() <= Tolerance::new().linear {
+                return Err(unsupported(
+                    "conical section of a face reaching its apex".into(),
+                ));
+            }
+            if nappe.is_some_and(|above| above != (height > 0.0)) {
+                return Err(unsupported("conical face spans both nappes".into()));
+            }
+            nappe = Some(height > 0.0);
+            reach = reach.max(v.abs());
+            nearest = nearest.min(v.abs());
+        }
+        let Some(above) = nappe else {
+            return Ok(Vec::new());
+        };
+        // The samples locate the face but cannot bound it: a trim can bulge
+        // far out between them, or dip to the apex and across onto the other
+        // nappe. The branch reaches a closed-form bound, and every edge's
+        // whole height range must stay clear of the apex on the sampled side.
+        let mut bound = reach;
+        for edge in boundary_edges(topo, face)? {
+            bound = bound.max(edge.distance_bound(cone.apex())?);
+            let (low, high) = edge.height_range(cone.apex(), cone.axis())?;
+            let clear = Tolerance::new().linear;
+            if (above && low <= clear) || (!above && high >= -clear) {
+                return Err(unsupported(
+                    "conical face whose trim reaches the apex or the other nappe".into(),
+                ));
+            }
+        }
+        let limit = 4.0 * bound;
+        let apex_offset = d - dot_normal_point(normal, cone.apex());
+        if apex_offset.abs() <= Tolerance::new().linear {
+            return Err(unsupported(
+                "conical section by a plane through the apex".into(),
+            ));
+        }
+        // On longitude u the generator is g(u) = cos a·radial(u) + sin a·axis,
+        // and the plane meets it at v = apex_offset / n·g(u), where
+        // n·g(u) = R cos(u − φ) + C. The point is on the face's nappe and
+        // within the limit exactly when s·n·g(u) ≥ m, for the sign s that
+        // puts v on that nappe and m = |apex_offset| / limit: one closed-form
+        // interval of u, so a branch narrower than any sampling is found.
+        let (sin_a, cos_a) = cone.half_angle().sin_cos();
+        let (nx, ny, nz) = (
+            normal.dot(cone.x_axis()),
+            normal.dot(cone.y_axis()),
+            normal.dot(cone.axis()),
+        );
+        let amplitude = cos_a * nx.hypot(ny);
+        let phase = ny.atan2(nx);
+        let constant = sin_a * nz;
+        let side = if (apex_offset > 0.0) == above {
+            1.0
+        } else {
+            -1.0
+        };
+        let floor = apex_offset.abs() / limit;
+        let point = |u: f64| {
+            let (sin_u, cos_u) = u.sin_cos();
+            let generator =
+                (cone.x_axis() * cos_u + cone.y_axis() * sin_u) * cos_a + cone.axis() * sin_a;
+            cone.apex() + generator * (apex_offset / normal.dot(generator))
+        };
+        #[allow(clippy::cast_precision_loss)]
+        if amplitude <= f64::EPSILON * constant.abs().max(1.0) {
+            if side * constant < floor {
+                return Ok(Vec::new());
+            }
+            let mut ring: Vec<Point3> = (0..CONE_SAMPLES)
+                .map(|i| point(TAU * i as f64 / CONE_SAMPLES as f64))
+                .collect();
+            ring.push(ring[0]);
+            return Ok(vec![ring]);
+        }
+        // s·(R cos w + C) ≥ |apex_offset| / l, with w measured from the
+        // side's crest, holds for |v| ≤ l: cos w ≥ cos_at(l).
+        let cos_at = |l: f64| (apex_offset.abs() / l - side * constant) / amplitude;
+        let threshold = cos_at(limit);
+        if threshold >= 1.0 {
+            return Ok(Vec::new());
+        }
+        let closed = threshold <= -1.0;
+        let half_width = if closed { PI } else { threshold.acos() };
+        let crest = if side > 0.0 { phase } else { phase + PI };
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss
+        )]
+        let steps = ((CONE_SAMPLES as f64 * half_width / PI).ceil() as usize).max(8);
+        #[allow(clippy::cast_precision_loss)]
+        let mut offsets: Vec<f64> = (0..=steps)
+            .map(|k| half_width * (2.0 * k as f64 / steps as f64 - 1.0))
+            .collect();
+        // The face holds generator distances `nearest..=reach`, which on a
+        // near-tangent plane is a stretch of the branch narrower than the
+        // spacing above: sample it densely so the clipped section keeps its
+        // shape. `cos_at` grows as `l` shrinks, so the band is
+        // inner ≤ |w| ≤ outer, inside the branch.
+        let near = cos_at(reach);
+        if near < 1.0 {
+            let outer = near.max(-1.0).acos();
+            let far = cos_at(nearest);
+            let inner = if far >= 1.0 {
+                0.0
+            } else {
+                far.max(-1.0).acos()
+            };
+            for k in 0..=FACE_SAMPLES {
+                let w = inner + (outer - inner) * f64::from(k) / f64::from(FACE_SAMPLES);
+                offsets.extend([w, -w]);
+            }
+        }
+        offsets.compact_sort_by(f64::total_cmp);
+        offsets.dedup_by(|a, b| (*a - *b).abs() <= f64::EPSILON);
+        let mut branch: Vec<Point3> = offsets.iter().map(|&w| point(crest + w)).collect();
+        if closed {
+            // −π and π are one longitude: close the loop exactly.
+            branch.pop();
+            branch.push(branch[0]);
+        }
+        Ok(vec![branch])
+    }
+
+    /// Points along every boundary edge of `face`.
+    fn boundary_samples(topo: &Topology, face: FaceId) -> Result<Vec<Point3>, OperationsError> {
+        let mut points = Vec::new();
+        for edge in boundary_edges(topo, face)? {
+            points.extend(edge.chain(8));
+        }
+        Ok(points)
+    }
+
+    /// One boundary edge of a face, with its endpoints and parameter range.
+    struct BoundaryEdge {
+        edge: Edge,
+        start: Point3,
+        end: Point3,
+        range: (f64, f64),
+    }
+
+    impl BoundaryEdge {
+        fn at(&self, s: f64) -> Point3 {
+            let (t0, t1) = self.range;
+            self.edge
+                .curve()
+                .evaluate_with_endpoints(t0 + (t1 - t0) * s, self.start, self.end)
+        }
+
+        /// An upper bound on the distance from `from` to any point of the
+        /// edge: the farther end of a line; a conic's distance from its
+        /// centre (or vertex) plus its largest offset over the trimmed
+        /// range; a NURBS curve's farthest control point, its convex hull
+        /// holding the curve when its weights are positive.
+        fn distance_bound(&self, from: Point3) -> Result<f64, OperationsError> {
+            let to = |p: Point3| (p - from).length();
+            let (t0, t1) = self.range;
+            let far = t0.abs().max(t1.abs());
+            Ok(match self.edge.curve() {
+                EdgeCurve::Line => to(self.start).max(to(self.end)),
+                EdgeCurve::Circle(c) => to(c.center()) + c.radius(),
+                EdgeCurve::Ellipse(e) => to(e.center()) + e.semi_major().max(e.semi_minor()),
+                EdgeCurve::Parabola(p) => {
+                    to(p.vertex()) + (far * far / (4.0 * p.focal_length().abs())).hypot(far)
+                }
+                EdgeCurve::Hyperbola(h) => {
+                    to(h.center())
+                        + (h.semi_major() * far.cosh()).hypot(h.semi_minor() * far.sinh())
+                }
+                EdgeCurve::NurbsCurve(n) => {
+                    if !n.weights().iter().all(|&w| w > 0.0) {
+                        return Err(unsupported(
+                            "section of a NURBS trim without positive weights".into(),
+                        ));
+                    }
+                    n.control_points()
+                        .iter()
+                        .map(|&p| to(p))
+                        .fold(0.0, f64::max)
+                }
+            })
+        }
+
+        /// The control points (with weights) of a NURBS edge whose basis
+        /// functions are nonzero over its range: the curve's convex hull
+        /// there, and, the functions being independent, exact for planarity.
+        fn range_hull(&self, nc: &remus_math::nurbs::curve::NurbsCurve) -> Vec<(Point3, f64)> {
+            let (t0, t1) = (
+                self.range.0.min(self.range.1),
+                self.range.0.max(self.range.1),
+            );
+            let (knots, p) = (nc.knots(), nc.degree());
+            nc.control_points()
+                .iter()
+                .zip(nc.weights())
+                .enumerate()
+                .filter(|&(i, _)| knots[i] < t1 && knots[i + p + 1] > t0)
+                .map(|(_, (&q, &w))| (q, w))
+                .collect()
+        }
+
+        /// Bounds on `axis·(p − apex)` over the whole edge: exact for a line
+        /// (its ends) and over a conic's range or full turn, the control
+        /// hull of the range for a NURBS curve.
+        fn height_range(&self, apex: Point3, axis: Vec3) -> Result<(f64, f64), OperationsError> {
+            let h = |p: Point3| axis.dot(p - apex);
+            let (t0, t1) = (
+                self.range.0.min(self.range.1),
+                self.range.0.max(self.range.1),
+            );
+            let over = |values: &[f64]| {
+                values
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+                        (lo.min(v), hi.max(v))
+                    })
+            };
+            Ok(match self.edge.curve() {
+                EdgeCurve::Line => over(&[h(self.start), h(self.end)]),
+                EdgeCurve::Circle(c) => {
+                    let amp = c.radius() * axis.dot(c.u_axis()).hypot(axis.dot(c.v_axis()));
+                    (h(c.center()) - amp, h(c.center()) + amp)
+                }
+                EdgeCurve::Ellipse(e) => {
+                    let amp = (e.semi_major() * axis.dot(e.u_axis()))
+                        .hypot(e.semi_minor() * axis.dot(e.v_axis()));
+                    (h(e.center()) - amp, h(e.center()) + amp)
+                }
+                EdgeCurve::Parabola(pb) => {
+                    // h(t) = h₀ + q t² + l t, stationary at −l / 2q.
+                    let (q, l) = (
+                        axis.dot(pb.axis_dir()) / (4.0 * pb.focal_length()),
+                        axis.dot(pb.u_axis()),
+                    );
+                    let at = |t: f64| (q * t).mul_add(t, l.mul_add(t, h(pb.vertex())));
+                    let mut values = vec![at(t0), at(t1)];
+                    // q = 0 puts the stationary point at ±∞ (or NaN), outside.
+                    let t = -l / (2.0 * q);
+                    if t > t0 && t < t1 {
+                        values.push(at(t));
+                    }
+                    over(&values)
+                }
+                EdgeCurve::Hyperbola(hb) => {
+                    // h(t) = h₀ + A cosh t + B sinh t, stationary where
+                    // tanh t = −B / A.
+                    let (a, b) = (
+                        hb.semi_major() * axis.dot(hb.u_axis()),
+                        hb.semi_minor() * axis.dot(hb.v_axis()),
+                    );
+                    let at = |t: f64| a.mul_add(t.cosh(), b.mul_add(t.sinh(), h(hb.center())));
+                    let mut values = vec![at(t0), at(t1)];
+                    if b.abs() < a.abs() {
+                        let t = (-b / a).atanh();
+                        if t > t0 && t < t1 {
+                            values.push(at(t));
+                        }
+                    }
+                    over(&values)
+                }
+                EdgeCurve::NurbsCurve(nc) => {
+                    let hull = self.range_hull(nc);
+                    if !hull.iter().all(|&(_, w)| w > 0.0) {
+                        return Err(unsupported(
+                            "section of a NURBS trim without positive weights".into(),
+                        ));
+                    }
+                    let heights: Vec<f64> = hull.iter().map(|&(q, _)| h(q)).collect();
+                    over(&heights)
+                }
+            })
+        }
+
+        /// The edge at `steps` equal parameter intervals.
+        fn chain(&self, steps: u32) -> Vec<Point3> {
+            (0..=steps)
+                .map(|k| self.at(f64::from(k) / f64::from(steps)))
+                .collect()
+        }
+    }
+
+    /// The edge's authoritative parameter range, reconstructed from its
+    /// endpoints only when it stores no trim.
+    fn edge_range(edge: &Edge, start: Point3, end: Point3) -> Result<(f64, f64), OperationsError> {
+        match edge.strict_domain() {
+            Ok(range) => Ok(range),
+            Err(EdgeDomainError::Missing { .. }) => {
+                Ok(edge.curve().reconstruct_domain_from_endpoints(start, end))
+            }
+            Err(error) => Err(unsupported(format!(
+                "section of a face whose edge has invalid parameter authority: {error}"
+            ))),
+        }
+    }
+
+    /// Samples per partial curved trim edge in [`trim_polygon`].
+    const PARTIAL_EDGE_SAMPLES: u32 = 32;
+
+    /// `wire_polygon`'s samples per closed curve edge (`CLOSED_CURVE_SAMPLES`
+    /// in `boolean::types`); a test pins [`trim_polygon`] to it.
+    const WIRE_POLYGON_SAMPLES: usize = 32;
+
+    /// The polygon `section` crosses for a trim wire, shared by the planar
+    /// and curved arms so that neighbouring faces cut their sections at the
+    /// same points. It is [`crate::boolean::wire_polygon`] for lines and
+    /// closed curves, but a partial curved edge is sampled along its curve
+    /// instead of reduced to its endpoint chord: an arc whose ends lie on one
+    /// side of the plane can still cross it twice. With a cutting `plane`,
+    /// each curved edge also gains its crossings with it as vertices (see
+    /// [`plane_roots`]), so a near-tangent plane crossing twice between two
+    /// samples is still seen, at the curve rather than at a chord. Each run
+    /// of vertices within `tol.linear` of the plane is then reduced to the
+    /// crossings it stands for (see [`collapse_near_plane_runs`]).
+    pub(super) fn trim_polygon(
+        topo: &Topology,
+        wire: WireId,
+        plane: Option<(Vec3, f64)>,
+        tol: Tolerance,
+    ) -> Result<Vec<Point3>, OperationsError> {
+        let mut points: Vec<(Point3, Laid)> = Vec::new();
+        for oriented in topo.wire(wire)?.edges() {
+            let edge = topo.edge(oriented.edge())?;
+            let closed = edge.start() == edge.end();
+            let curve = edge.curve();
+            // A NURBS edge's crossings are isolated over its own range only:
+            // the rest of a longer curve must not refuse its section.
+            let range = match curve {
+                EdgeCurve::NurbsCurve(_) => {
+                    let (start, end) = (
+                        topo.vertex(edge.start())?.point(),
+                        topo.vertex(edge.end())?.point(),
+                    );
+                    Some(edge_range(edge, start, end)?)
+                }
+                EdgeCurve::Line
+                | EdgeCurve::Circle(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => None,
+            };
+            let (roots, periodic) = match plane {
+                Some((normal, d)) => plane_roots(curve, normal, d, range)?,
+                None => (Vec::new(), false),
+            };
+            // A closed NURBS edge is its whole curve only when its range is
+            // the curve's domain; a stored subrange (one loop of a longer
+            // curve) is sampled along that range like a partial edge.
+            let whole = closed
+                && match curve {
+                    EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => true,
+                    EdgeCurve::NurbsCurve(nc) => {
+                        let vertex = topo.vertex(edge.start())?.point();
+                        let (t0, t1) = edge_range(edge, vertex, vertex)?;
+                        let (u0, u1) = nc.domain();
+                        let eps = 1e-12 * (u1 - u0).abs();
+                        (t0 - u0).abs() <= eps && (t1 - u1).abs() <= eps
+                    }
+                    EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => false,
+                };
+            // Lines and whole closed curves as `wire_polygon` lays them down,
+            // plus the roots in parameter order.
+            if whole {
+                let sampled = crate::boolean::sample_edge_curve(curve, WIRE_POLYGON_SAMPLES);
+                // The samples' parameters, as `sample_edge_curve` spaces them.
+                let (lo, span, divisor) = match curve {
+                    EdgeCurve::NurbsCurve(nc) => {
+                        let (u0, u1) = nc.domain();
+                        let gap = (nc.evaluate(u0) - nc.evaluate(u1)).length();
+                        let divisor = if gap < 1e-6 {
+                            WIRE_POLYGON_SAMPLES
+                        } else {
+                            WIRE_POLYGON_SAMPLES - 1
+                        };
+                        (u0, u1 - u0, divisor)
+                    }
+                    EdgeCurve::Line
+                    | EdgeCurve::Circle(_)
+                    | EdgeCurve::Ellipse(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_) => (0.0, TAU, WIRE_POLYGON_SAMPLES),
+                };
+                #[allow(clippy::cast_precision_loss)]
+                let mut run: Vec<(f64, (Point3, Laid))> = sampled
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, p)| (lo + span * i as f64 / divisor as f64, (p, Laid::Sample)))
+                    .chain(roots.iter().map(|&(t, p)| (t, (p, Laid::Root))))
+                    .collect();
+                // A periodic curve's samples start from the edge's own vertex,
+                // where the wire's next edge begins, not from the curve's
+                // parameter origin: else the polygon cuts across the rim from
+                // its last sample to that vertex.
+                if divisor == WIRE_POLYGON_SAMPLES {
+                    let vertex = topo.vertex(edge.start())?.point();
+                    let anchor = match curve {
+                        EdgeCurve::Circle(c) => {
+                            let r = vertex - c.center();
+                            r.dot(c.v_axis()).atan2(r.dot(c.u_axis()))
+                        }
+                        EdgeCurve::Ellipse(e) => {
+                            let r = vertex - e.center();
+                            (r.dot(e.v_axis()) / e.semi_minor())
+                                .atan2(r.dot(e.u_axis()) / e.semi_major())
+                        }
+                        EdgeCurve::Line
+                        | EdgeCurve::NurbsCurve(_)
+                        | EdgeCurve::Hyperbola(_)
+                        | EdgeCurve::Parabola(_) => lo,
+                    };
+                    for entry in &mut run {
+                        entry.0 = (entry.0 - anchor).rem_euclid(span);
+                    }
+                }
+                run.compact_sort_by(|l, r| l.0.total_cmp(&r.0));
+                if !oriented.is_forward() {
+                    run.reverse();
+                }
+                points.extend(run.into_iter().map(|(_, p)| p));
+                continue;
+            }
+            if matches!(curve, EdgeCurve::Line)
+                || (closed && !matches!(curve, EdgeCurve::NurbsCurve(_)))
+            {
+                points.push((
+                    topo.vertex(oriented.oriented_start(edge))?.point(),
+                    Laid::Corner,
+                ));
+                continue;
+            }
+            let start = topo.vertex(edge.start())?.point();
+            let end = topo.vertex(edge.end())?.point();
+            let (t0, t1) = edge_range(edge, start, end)?;
+            let n = PARTIAL_EDGE_SAMPLES;
+            // Positions s along the edge from its start vertex (s = 0): the
+            // traversal's first vertex itself, the curve's interior, and the
+            // roots that fall strictly inside the trimmed range.
+            let first = if oriented.is_forward() { 0.0 } else { 1.0 };
+            let mut run: Vec<(f64, (Point3, Laid))> = vec![(
+                first,
+                (
+                    topo.vertex(oriented.oriented_start(edge))?.point(),
+                    Laid::Corner,
+                ),
+            )];
+            run.extend((1..n).map(|k| {
+                let s = f64::from(k) / f64::from(n);
+                (
+                    s,
+                    (
+                        edge.curve()
+                            .evaluate_with_endpoints(t0 + (t1 - t0) * s, start, end),
+                        Laid::Sample,
+                    ),
+                )
+            }));
+            for &(t, p) in &roots {
+                // A periodic root's turn that lands in the range, as a
+                // fraction of it.
+                let t = if periodic {
+                    t + ((t0.min(t1) - t) / TAU).ceil() * TAU
+                } else {
+                    t
+                };
+                let s = (t - t0) / (t1 - t0);
+                if s > 0.0 && s < 1.0 && (p - start).length() > 0.0 && (p - end).length() > 0.0 {
+                    run.push((s, (p, Laid::Root)));
+                }
+            }
+            run.compact_sort_by(|l, r| l.0.total_cmp(&r.0));
+            if !oriented.is_forward() {
+                run.reverse();
+            }
+            points.extend(run.into_iter().map(|(_, p)| p));
+        }
+        Ok(match plane {
+            Some((normal, d)) => {
+                collapse_near_plane_runs(points, |p| dot_normal_point(normal, p) - d, tol.linear)
+            }
+            None => points.into_iter().map(|(p, _)| p).collect(),
+        })
+    }
+
+    /// What laid a [`trim_polygon`] vertex down.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Laid {
+        /// A trim vertex.
+        Corner,
+        /// A fixed sample of a curved edge.
+        Sample,
+        /// A crossing of the cutting plane (see [`plane_roots`]).
+        Root,
+    }
+
+    /// The polygon with each cyclic run of vertices within `tol` of the
+    /// plane (by `signed` distance) reduced to the crossings it stands for.
+    /// Every vertex of a run counts as a crossing downstream, yet on a
+    /// shallow crossing the run's vertices can lie well over `tol` apart, so
+    /// one crossing would be counted twice:
+    /// - a run holding a corner or a root drops its fixed samples, which
+    ///   only see that crossing again;
+    /// - a run between opposite sides is one crossing, so if it holds a
+    ///   corner it drops its roots too. The corner is kept because every
+    ///   face meeting at that vertex lays it down, while only the faces on
+    ///   this edge lay down its root.
+    ///
+    /// A run between points on one side holds two crossings or none, and
+    /// keeps its corners and roots; a run of samples alone (a tangency) is
+    /// kept as laid.
+    fn collapse_near_plane_runs(
+        laid: Vec<(Point3, Laid)>,
+        signed: impl Fn(Point3) -> f64,
+        tol: f64,
+    ) -> Vec<Point3> {
+        let signed: Vec<f64> = laid.iter().map(|&(p, _)| signed(p)).collect();
+        let near = |i: usize| signed[i].abs() < tol;
+        // Walk from a point off the plane, so no run wraps past the end.
+        let Some(start) = (0..laid.len()).find(|&i| !near(i)) else {
+            return laid.into_iter().map(|(p, _)| p).collect();
+        };
+        let n = laid.len();
+        let mut keep = vec![true; n];
+        let mut run = Vec::new();
+        let mut before = start;
+        for k in 1..=n {
+            let i = (start + k) % n;
+            if near(i) {
+                run.push(i);
+                continue;
+            }
+            let holds = |kind: Laid| run.iter().any(|&j| laid[j].1 == kind);
+            let one_crossing = (signed[before] > 0.0) != (signed[i] > 0.0);
+            let corner = holds(Laid::Corner);
+            for &j in &run {
+                keep[j] = match laid[j].1 {
+                    Laid::Sample => !(corner || holds(Laid::Root)),
+                    Laid::Root => !(corner && one_crossing),
+                    Laid::Corner => true,
+                };
+            }
+            run.clear();
+            before = i;
+        }
+        laid.into_iter()
+            .zip(keep)
+            .filter_map(|((p, _), keep)| keep.then_some(p))
+            .collect()
+    }
+
+    /// Where a trim curve crosses the plane `n·p = d`, as its own parameters
+    /// with the points, and whether those parameters are periodic (in
+    /// [0, 2π)). Conics are solved in closed form: `n·p(t) − d` is
+    /// `C + A cos t + B sin t` on a circle or ellipse, a quadratic in `t` on
+    /// a parabola and in `eᵗ` on a hyperbola. A NURBS curve's roots are
+    /// isolated by subdivision, certified by its control points (see
+    /// [`nurbs_roots`]). Tangencies give none: they do not cross.
+    fn plane_roots(
+        curve: &EdgeCurve,
+        normal: Vec3,
+        d: f64,
+        range: Option<(f64, f64)>,
+    ) -> Result<(Vec<(f64, Point3)>, bool), OperationsError> {
+        let signed = |p: Point3| dot_normal_point(normal, p) - d;
+        let with_points = |ts: Vec<f64>, at: &dyn Fn(f64) -> Point3| -> Vec<(f64, Point3)> {
+            ts.into_iter().map(|t| (t, at(t))).collect()
+        };
+        Ok(match curve {
+            EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
+                let (center, u, v) = match curve {
+                    EdgeCurve::Circle(c) => {
+                        (c.center(), c.u_axis() * c.radius(), c.v_axis() * c.radius())
+                    }
+                    EdgeCurve::Ellipse(e) => (
+                        e.center(),
+                        e.u_axis() * e.semi_major(),
+                        e.v_axis() * e.semi_minor(),
+                    ),
+                    EdgeCurve::Line
+                    | EdgeCurve::NurbsCurve(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_) => return Ok((Vec::new(), true)),
+                };
+                let (a, b, c) = (normal.dot(u), normal.dot(v), signed(center));
+                let amplitude = a.hypot(b);
+                let ratio = -c / amplitude;
+                if amplitude <= f64::EPSILON * u.length().max(v.length()) || ratio.abs() >= 1.0 {
+                    return Ok((Vec::new(), true));
+                }
+                let (phase, half) = (b.atan2(a), ratio.acos());
+                let at = |t: f64| {
+                    let (sin_t, cos_t) = t.sin_cos();
+                    center + u * cos_t + v * sin_t
+                };
+                let ts = vec![
+                    (phase - half).rem_euclid(TAU),
+                    (phase + half).rem_euclid(TAU),
+                ];
+                (with_points(ts, &at), true)
+            }
+            EdgeCurve::Parabola(parabola) => {
+                // p(t) = vertex + axis·t²/(4f) + u·t.
+                let a2 = normal.dot(parabola.axis_dir()) / (4.0 * parabola.focal_length());
+                let a1 = normal.dot(parabola.u_axis());
+                let a0 = signed(parabola.vertex());
+                let at = |t: f64| parabola.evaluate(t);
+                (with_points(quadratic_roots(a2, a1, a0), &at), false)
+            }
+            EdgeCurve::Hyperbola(hyperbola) => {
+                // p(t) = center + u·a·cosh t + v·b·sinh t; with e = eᵗ,
+                // A cosh t + B sinh t + C = 0 is (A+B)e² + 2Ce + (A−B) = 0.
+                let big_a = normal.dot(hyperbola.u_axis()) * hyperbola.semi_major();
+                let big_b = normal.dot(hyperbola.v_axis()) * hyperbola.semi_minor();
+                let c = signed(hyperbola.center());
+                let ts = quadratic_roots(big_a + big_b, 2.0 * c, big_a - big_b)
+                    .into_iter()
+                    .filter(|&e| e > 0.0)
+                    .map(f64::ln)
+                    .collect();
+                let at = |t: f64| hyperbola.evaluate(t);
+                (with_points(ts, &at), false)
+            }
+            EdgeCurve::NurbsCurve(nc) => {
+                let at = |t: f64| nc.evaluate(t);
+                let range = range.unwrap_or_else(|| nc.domain());
+                (with_points(nurbs_roots(nc, normal, d, range)?, &at), false)
+            }
+            EdgeCurve::Line => (Vec::new(), false),
+        })
+    }
+
+    /// The simple real roots of `a t² + b t + c` (one when it is linear);
+    /// a double root, a tangency, gives none.
+    fn quadratic_roots(a: f64, b: f64, c: f64) -> Vec<f64> {
+        let scale = a.abs().max(b.abs()).max(c.abs());
+        if scale == 0.0 {
+            return Vec::new();
+        }
+        if a.abs() <= f64::EPSILON * scale {
+            return if b.abs() > f64::EPSILON * scale {
+                vec![-c / b]
+            } else {
+                Vec::new()
+            };
+        }
+        let discriminant = b.mul_add(b, -4.0 * a * c);
+        if discriminant <= f64::EPSILON * b.mul_add(b, (4.0 * a * c).abs()) {
+            return Vec::new();
+        }
+        // The cancellation-free pair.
+        let q = -0.5 * (b + b.signum() * discriminant.sqrt());
+        if q == 0.0 {
+            let root = (-c / a).sqrt();
+            return vec![-root, root];
+        }
+        vec![q / a, c / q]
+    }
+
+    /// Simple roots of a NURBS curve against the plane, isolated by halving.
+    /// With positive weights the curve lies in its control points' convex
+    /// hull and crosses the plane no more often than they do (variation
+    /// diminishing), so a span whose control points sit on one side has no
+    /// root, and one with a single sign change and opposite-signed ends has
+    /// exactly one, found by bisection. A span whose hull lies in the plane
+    /// within tolerance (an in-plane stretch, or the neighbourhood of a
+    /// tangency) is skipped. One still straddling it after `MAX_HALVINGS`
+    /// halvings, the parameter's resolution, holds one root if its ends
+    /// differ in sign and is refused otherwise; so is a curve whose weights
+    /// do not certify this, or whose spans do not isolate within a budget.
+    fn nurbs_roots(
+        curve: &remus_math::nurbs::curve::NurbsCurve,
+        normal: Vec3,
+        d: f64,
+        range: (f64, f64),
+    ) -> Result<Vec<f64>, OperationsError> {
+        const MAX_HALVINGS: usize = 52;
+        // A bound on the spans examined: each root and tangency costs at most
+        // MAX_HALVINGS pairs of them, so this is far above any real trim.
+        const MAX_SPANS: usize = 1 << 14;
+        let in_plane = Tolerance::new().linear;
+        if curve.weights().iter().any(|&w| !(w.is_finite() && w > 0.0)) {
+            return Err(unsupported(
+                "section of a NURBS trim without positive weights".into(),
+            ));
+        }
+        let signed = |p: Point3| dot_normal_point(normal, p) - d;
+        let split = |c: &remus_math::nurbs::curve::NurbsCurve, t: f64| {
+            remus_math::nurbs::knot_ops::curve_split(c, t)
+                .map_err(|error| unsupported(format!("section of a NURBS trim: {error}")))
+        };
+        // Only the range is isolated: cut the curve down to it first.
+        let (u0, u1) = curve.domain();
+        let (t0, t1) = (range.0.min(range.1).max(u0), range.0.max(range.1).min(u1));
+        let mut start = curve.clone();
+        if t0 > u0 && t0 < u1 {
+            start = split(&start, t0)?.1;
+        }
+        if t1 > start.domain().0 && t1 < start.domain().1 {
+            start = split(&start, t1)?.0;
+        }
+        let mut roots = Vec::new();
+        let mut stack = vec![(start, 0_usize)];
+        let mut examined = 0_usize;
+        while let Some((span, depth)) = stack.pop() {
+            examined += 1;
+            if examined > MAX_SPANS {
+                return Err(unsupported(
+                    "section of a NURBS trim whose crossings do not isolate".into(),
+                ));
+            }
+            let distances: Vec<f64> = span.control_points().iter().map(|&p| signed(p)).collect();
+            if distances.iter().all(|&x| x > 0.0) || distances.iter().all(|&x| x < 0.0) {
+                continue;
+            }
+            // A span whose control hull lies in the plane is an in-plane
+            // stretch of boundary, not a crossing: it never becomes
+            // one-sided, so halving it would not end.
+            if distances.iter().all(|&x| x.abs() <= in_plane) {
+                continue;
+            }
+            let (lo, hi) = span.domain();
+            let (f_lo, f_hi) = (signed(span.evaluate(lo)), signed(span.evaluate(hi)));
+            let changes = distances
+                .windows(2)
+                .filter(|w| (w[0] > 0.0) != (w[1] > 0.0))
+                .count();
+            if changes == 1 && f_lo * f_hi < 0.0 {
+                let (mut a, mut b, mut f_a) = (lo, hi, f_lo);
+                for _ in 0..MAX_HALVINGS * 2 {
+                    let m = 0.5 * (a + b);
+                    if m <= a || m >= b {
+                        break;
+                    }
+                    let f_m = signed(span.evaluate(m));
+                    if (f_m > 0.0) == (f_a > 0.0) {
+                        (a, f_a) = (m, f_m);
+                    } else {
+                        b = m;
+                    }
+                }
+                roots.push(0.5 * (a + b));
+                continue;
+            }
+            let mid = 0.5 * (lo + hi);
+            if depth >= MAX_HALVINGS || mid <= lo || mid >= hi {
+                // Halved to the last bit and still straddling the plane
+                // beyond tolerance (a tangency's hull falls within it above):
+                // ends of opposite sign hold an odd number of crossings, one
+                // place for them all at this width; equal signs hold an
+                // unresolved pair, refused rather than dropped.
+                if f_lo * f_hi < 0.0 {
+                    roots.push(mid);
+                    continue;
+                }
+                return Err(unsupported(
+                    "section of a NURBS trim with crossings closer than its parameter resolves"
+                        .into(),
+                ));
+            }
+            // A root on the split itself ends both halves at zero, which
+            // neither half can certify: take it here.
+            if signed(span.evaluate(mid)) == 0.0 {
+                let step = (hi - lo) * 1e-9;
+                if signed(span.evaluate(mid - step)) * signed(span.evaluate(mid + step)) < 0.0 {
+                    roots.push(mid);
+                }
+            }
+            let (left, right) = split(&span, mid)?;
+            stack.push((left, depth + 1));
+            stack.push((right, depth + 1));
+        }
+        Ok(roots)
+    }
+
+    fn boundary_edges(topo: &Topology, face: FaceId) -> Result<Vec<BoundaryEdge>, OperationsError> {
+        let face = topo.face(face)?;
+        let mut edges = Vec::new();
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oriented in topo.wire(wire)?.edges() {
+                let edge = topo.edge(oriented.edge())?.clone();
+                let start = topo.vertex(edge.start())?.point();
+                let end = topo.vertex(edge.end())?.point();
+                let range = edge_range(&edge, start, end)?;
+                edges.push(BoundaryEdge {
+                    edge,
+                    start,
+                    end,
+                    range,
+                });
+            }
+        }
+        Ok(edges)
+    }
+
+    /// A boundary edge lying in the cutting plane, as a polyline.
+    struct InPlaneEdge {
+        chain: Vec<Point3>,
+        closed: bool,
+    }
+
+    impl InPlaneEdge {
+        fn new(chain: Vec<Point3>, tol: f64) -> Self {
+            let closed = chain
+                .first()
+                .zip(chain.last())
+                .is_some_and(|(a, b)| chain.len() > 2 && (*a - *b).length() <= tol);
+            Self { chain, closed }
+        }
+
+        /// Arc-length positions along the polyline of its points within
+        /// `band` of `x` (one per segment that near).
+        fn positions(&self, band: f64, x: Point3) -> Vec<f64> {
+            let mut at = 0.0;
+            let mut found = Vec::new();
+            for w in self.chain.windows(2) {
+                let ab = w[1] - w[0];
+                let length = ab.length();
+                if segment_distance(x, w[0], w[1]) <= band {
+                    let t = if length > 0.0 {
+                        ((x - w[0]).dot(ab) / (length * length)).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    found.push(t.mul_add(length, at));
+                }
+                at += length;
+            }
+            found
+        }
+
+        fn length(&self) -> f64 {
+            self.chain.windows(2).map(|w| (w[1] - w[0]).length()).sum()
+        }
+    }
+
+    /// The boundary edges of `face` that lie in the plane, as polylines
+    /// within an absolute sagitta of `100 × tol.linear` of their curves, and
+    /// the largest sagitta reached. The bound is absolute so that scaling a
+    /// body cannot widen it past the gap to another section loop; an edge
+    /// that 2¹⁶ segments cannot resolve to it is refused.
+    ///
+    /// An edge is in the plane when every sample is within `tol.linear` of
+    /// it, the tolerance its polygon's crossings are taken at. A rim further
+    /// off is crossed nowhere, so the carrier section beside it is no part of
+    /// it: its pieces are classified like any other.
+    fn in_plane_edges(
+        topo: &Topology,
+        face: FaceId,
+        normal: Vec3,
+        d: f64,
+        tol: Tolerance,
+    ) -> Result<(Vec<InPlaneEdge>, f64), OperationsError> {
+        const MAX_STEPS: u32 = 1 << 16;
+        let coplanar_tol = tol.linear * 100.0;
+        let mut edges = Vec::new();
+        let mut sagitta: f64 = 0.0;
+        let near = |p: Point3| (dot_normal_point(normal, p) - d).abs() < tol.linear;
+        for edge in boundary_edges(topo, face)? {
+            // A NURBS edge lies in the plane exactly when the control points
+            // whose basis functions are nonzero over its range do (those
+            // functions are independent there); samples alone can miss it
+            // leaving the plane between them. Control points that only shape
+            // the rest of a longer curve do not count.
+            if let EdgeCurve::NurbsCurve(nc) = edge.edge.curve()
+                && !edge.range_hull(nc).iter().all(|&(q, w)| w > 0.0 && near(q))
+            {
+                continue;
+            }
+            let mut steps = 32;
+            let mut chain = edge.chain(steps);
+            // Every sample and chord midpoint the refinement evaluates must
+            // lie in the plane: a curve that leaves it between the coarse
+            // samples is not in it.
+            let in_plane = loop {
+                let mids: Vec<Point3> = (0..steps)
+                    .map(|k| edge.at((f64::from(k) + 0.5) / f64::from(steps)))
+                    .collect();
+                if !chain.iter().chain(&mids).all(|&p| near(p)) {
+                    break false;
+                }
+                let deviation = mids
+                    .iter()
+                    .zip(chain.windows(2))
+                    .map(|(&mid, w)| (mid - (w[0] + (w[1] - w[0]) * 0.5)).length())
+                    .fold(0.0_f64, f64::max);
+                if deviation <= coplanar_tol {
+                    sagitta = sagitta.max(deviation);
+                    break true;
+                }
+                if steps >= MAX_STEPS {
+                    return Err(unsupported(format!(
+                        "section along an in-plane boundary edge that {MAX_STEPS} segments \
+                         resolve only to {deviation:e}"
+                    )));
+                }
+                steps *= 2;
+                chain = edge.chain(steps);
+            };
+            if in_plane {
+                edges.push(InPlaneEdge::new(chain, tol.linear));
+            }
+        }
+        Ok((edges, sagitta))
+    }
+
+    /// Where the cutting plane crosses the face's boundary polygons, by the
+    /// same arithmetic the planar arm applies to the same polygons.
+    fn boundary_crossings(
+        topo: &Topology,
+        face: FaceId,
+        normal: Vec3,
+        d: f64,
+        tol: Tolerance,
+    ) -> Result<Vec<Point3>, OperationsError> {
+        let face = topo.face(face)?;
+        let mut crossings = Vec::new();
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            let polygon = trim_polygon(topo, wire, Some((normal, d)), tol)?;
+            let dists: Vec<f64> = polygon
+                .iter()
+                .map(|v| dot_normal_point(normal, *v) - d)
+                .collect();
+            let n = polygon.len();
+            for i in 0..n {
+                let j = (i + 1) % n;
+                let (di, dj) = (dists[i], dists[j]);
+                if di.abs() < tol.linear {
+                    crossings.push(polygon[i]);
+                } else if (di > tol.linear && dj < -tol.linear)
+                    || (di < -tol.linear && dj > tol.linear)
+                {
+                    let t = di / (di - dj);
+                    let (pi, pj) = (polygon[i], polygon[j]);
+                    crossings.push(Point3::new(
+                        (pj.x() - pi.x()).mul_add(t, pi.x()),
+                        (pj.y() - pi.y()).mul_add(t, pi.y()),
+                        (pj.z() - pi.z()).mul_add(t, pi.z()),
+                    ));
+                }
+            }
+        }
+        Ok(crossings)
+    }
+
+    /// Keep the parts of `polylines` (carrier section curves) that lie on
+    /// `face`, ending each at the boundary crossing it leaves the face by.
+    pub(super) fn append_clipped(
+        topo: &Topology,
+        face: FaceId,
+        polylines: &[Vec<Point3>],
+        normal: Vec3,
+        d: f64,
+        tol: Tolerance,
+        segments: &mut Vec<(Point3, Point3)>,
+    ) -> Result<(), OperationsError> {
+        if polylines.iter().all(|p| p.len() < 2) {
+            return Ok(());
+        }
+        let crossings = boundary_crossings(topo, face, normal, d, tol)?;
+        // Every crossing belongs to the chord nearest it. Each chord is cut
+        // at its crossings and each piece kept by its own midpoint, so a
+        // trimmed span or a hole narrower than one chord is not dropped or
+        // bridged by classifying only the chord's ends.
+        let (chords, cuts) = assign_crossings(polylines, &crossings, tol)?;
+        // A piece running along a boundary edge that lies in the plane is the
+        // face's own boundary, shared with its neighbour (and deduplicated);
+        // it is kept without classifying a point on the trim itself. Both of
+        // its ends (carrier samples or crossings) then lie on that edge's
+        // curve, so within the edge polyline's sagitta of it. The band is
+        // that absolute approximation error, not a fraction of a chord or of
+        // the rim: on a slender torus the carrier's other loop runs closer
+        // than either.
+        let (in_plane, sagitta) = in_plane_edges(topo, face, normal, d, tol)?;
+        let band = 2.0 * sagitta + tol.linear * 100.0;
+        let along_one_edge = |p: Point3, q: Point3| along_one_edge(&in_plane, band, p, q);
+        let surface = topo.face(face)?.surface();
+        let on_face = |p: Point3| -> Result<bool, OperationsError> {
+            let on_carrier = surface
+                .project_point(p)
+                .and_then(|(u, v)| surface.evaluate(u, v))
+                .unwrap_or(p);
+            Ok(remus_check::classify::surface_point_in_face(
+                topo, face, on_carrier,
+            )?)
+        };
+        for (&(a, b), mut cut) in chords.iter().zip(cuts) {
+            cut.compact_sort_by(|l, r| l.0.total_cmp(&r.0));
+            let points: Vec<Point3> = std::iter::once(a)
+                .chain(cut.into_iter().map(|(_, x)| x))
+                .chain(std::iter::once(b))
+                .collect();
+            for piece in points.windows(2) {
+                let (p, q) = (piece[0], piece[1]);
+                if (q - p).length() > tol.linear
+                    && (along_one_edge(p, q) || on_face(p + (q - p) * 0.5)?)
+                {
+                    segments.push((p, q));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The chords of `polylines`, with each crossing filed against the chord
+    /// it cuts (its parameter along the chord, and the point).
+    #[allow(clippy::type_complexity)]
+    fn assign_crossings(
+        polylines: &[Vec<Point3>],
+        crossings: &[Point3],
+        tol: Tolerance,
+    ) -> Result<(Vec<(Point3, Point3)>, Vec<Vec<(f64, Point3)>>), OperationsError> {
+        let mut chords: Vec<(Point3, Point3)> = Vec::new();
+        let mut component: Vec<usize> = Vec::new();
+        // Each chord's sagitta, from how far the polyline turns at its ends:
+        // a chord of length L turning by θ per chord sits L·θ/8 from its arc,
+        // doubled here for margin.
+        let mut sagitta: Vec<f64> = Vec::new();
+        for (k, polyline) in polylines.iter().enumerate() {
+            let directions: Vec<Vec3> = polyline.windows(2).map(|w| w[1] - w[0]).collect();
+            let closed = polyline.len() > 2
+                && polyline
+                    .first()
+                    .zip(polyline.last())
+                    .is_some_and(|(a, b)| (*a - *b).length() <= tol.linear);
+            let n = directions.len();
+            let turn = |i: usize, j: usize| {
+                let (u, v) = (directions[i], directions[j]);
+                v.cross(u).length().atan2(u.dot(v))
+            };
+            for (j, w) in polyline.windows(2).enumerate() {
+                let before = if j > 0 {
+                    turn(j - 1, j)
+                } else if closed {
+                    turn(n - 1, j)
+                } else {
+                    0.0
+                };
+                let after = if j + 1 < n {
+                    turn(j, j + 1)
+                } else if closed {
+                    turn(j, 0)
+                } else {
+                    0.0
+                };
+                chords.push((w[0], w[1]));
+                component.push(k);
+                sagitta.push((w[1] - w[0]).length() * before.max(after) / 4.0);
+            }
+        }
+        let mut cuts: Vec<Vec<(f64, Point3)>> = vec![Vec::new(); chords.len()];
+        for &x in crossings {
+            let distances: Vec<f64> = chords
+                .iter()
+                .map(|&(a, b)| segment_distance(x, a, b))
+                .collect();
+            let Some((i, &distance)) = distances
+                .iter()
+                .enumerate()
+                .min_by(|l, r| l.1.total_cmp(r.1))
+            else {
+                continue;
+            };
+            let (a, b) = chords[i];
+            let ab = b - a;
+            let reach = ab.length().max(tol.linear * 1000.0);
+            if distance > reach {
+                continue;
+            }
+            // A crossing lies on its own component's curve, within a chord's
+            // sagitta of that chord. If it is also within sagitta of another
+            // component's chord, nearness cannot tell which curve it is on:
+            // refuse rather than cut the wrong one.
+            let ambiguous =
+                distances
+                    .iter()
+                    .zip(&component)
+                    .zip(&sagitta)
+                    .any(|((&other, &k), &sag)| {
+                        k != component[i] && other <= 2.0 * sag + tol.linear * 1000.0
+                    });
+            if ambiguous {
+                return Err(unsupported(
+                    "section crossing a trim within a chord of two carrier components".into(),
+                ));
+            }
+            let along = (x - a).dot(ab) / ab.length_squared().max(f64::MIN_POSITIVE);
+            cuts[i].push((along, x));
+        }
+        Ok((chords, cuts))
+    }
+
+    /// Whether a piece runs along one in-plane edge: both its ends lie
+    /// within `band` of the same edge, at most twice the piece's length
+    /// (plus the band's slack) apart along it, the short way round a closed
+    /// edge. Ends on two different edges span the gap between them, and
+    /// ends near the two ends of one edge that almost closes span the gap
+    /// it leaves; a piece narrower than a chord would otherwise keep
+    /// either. Shared vertices are crossings, so a piece never straddles
+    /// two edges that meet.
+    fn along_one_edge(in_plane: &[InPlaneEdge], band: f64, p: Point3, q: Point3) -> bool {
+        // An arc is at most twice its chord while it turns under 3.79 rad;
+        // a carrier piece turns far less.
+        let reach = 2.0_f64.mul_add((q - p).length(), 2.0 * band);
+        in_plane.iter().any(|edge| {
+            let (at_p, at_q) = (edge.positions(band, p), edge.positions(band, q));
+            let length = edge.length();
+            at_p.iter().any(|&s| {
+                at_q.iter().any(|&r| {
+                    let apart = (r - s).abs();
+                    let apart = if edge.closed {
+                        apart.min(length - apart)
+                    } else {
+                        apart
+                    };
+                    apart <= reach
+                })
+            })
+        })
+    }
+
+    fn segment_distance(p: Point3, a: Point3, b: Point3) -> f64 {
+        let ab = b - a;
+        let length_squared = ab.length_squared();
+        let t = if length_squared > 0.0 {
+            ((p - a).dot(ab) / length_squared).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (p - (a + ab * t)).length()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+        use std::f64::consts::{PI, TAU};
+
+        use remus_math::curves::{Circle3D, Hyperbola3D, Parabola3D};
+        use remus_math::nurbs::curve::NurbsCurve;
+        use remus_math::tolerance::Tolerance;
+        use remus_math::vec::{Point3, Vec3};
+        use remus_topology::Topology;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::explorer::solid_faces;
+        use remus_topology::face::{Face, FaceSurface};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        use super::{append_clipped, assign_crossings, cone_section, trim_polygon};
+        use crate::primitives::make_cone;
+        use crate::revolve::revolve;
+
+        /// A vertical plane at distance `c = 1.999` from the axis of the
+        /// frustum `ρ = 2 − z/3` meets its lateral face for
+        /// `|u − φ| ≤ acos(c/2) ≈ 0.032`, narrower than the 2π/64 longitude
+        /// spacing. Turned to `φ = π/64`, midway between two samples, no
+        /// sample saw it and the branch was dropped. It must be found, and
+        /// sampled on the face densely enough to keep its shape.
+        #[test]
+        fn cone_branch_between_longitude_samples_is_found() {
+            let mut topo = Topology::new();
+            let solid = make_cone(&mut topo, 2.0, 1.0, 3.0).unwrap();
+            let face = solid_faces(&topo, solid)
+                .unwrap()
+                .into_iter()
+                .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cone(_)))
+                .expect("a lateral face");
+            let FaceSurface::Cone(cone) = topo.face(face).unwrap().surface().clone() else {
+                panic!("a cone face");
+            };
+            let (c, phi) = (1.999, PI / 64.0);
+            let normal = cone.x_axis() * phi.cos() + cone.y_axis() * phi.sin();
+            assert!(normal.dot(cone.axis()).abs() < 1e-12);
+            assert!(normal.dot(cone.apex() - Point3::new(0.0, 0.0, 0.0)).abs() < 1e-12);
+
+            let branches = cone_section(&topo, face, &cone, normal, c).unwrap();
+            let on_face = branches
+                .iter()
+                .flatten()
+                .filter(|&&p| {
+                    let (u, v) = cone.project_point(p);
+                    (normal.dot(p - Point3::new(0.0, 0.0, 0.0)) - c).abs() < 1e-9
+                        && (cone.evaluate(u, v) - p).length() < 1e-9
+                        && remus_check::classify::surface_point_in_face(&topo, face, p).unwrap()
+                })
+                .count();
+            assert!(on_face >= 16, "{on_face} branch samples on the face");
+        }
+
+        /// `append_clipped` on a slender torus band (`major`, r = 1,
+        /// v ∈ [−π/3, π/3]) cut flush with its top rim at ρ = major + 0.5,
+        /// given both carrier loops at that height. The other loop, at
+        /// ρ = major − 0.5, runs 1 from the rim.
+        fn clip_flush_with_slender_rim(
+            major: f64,
+        ) -> Result<Vec<(Point3, Point3)>, crate::OperationsError> {
+            let mut topo = Topology::new();
+            let h = (PI / 3.0).sin();
+            let corner = |x: f64, z: f64| Point3::new(x, 0.0, z);
+            let [a, b, c, d] = [
+                corner(major - 2.0, -h),
+                corner(major + 0.5, -h),
+                corner(major + 0.5, h),
+                corner(major - 2.0, h),
+            ]
+            .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+            let tube = Circle3D::new_with_ref(
+                Point3::new(major, 0.0, 0.0),
+                Vec3::new(0.0, -1.0, 0.0),
+                1.0,
+                Vec3::new(1.0, 0.0, 0.0),
+            )
+            .unwrap();
+            let mut line = |s, e| topo.add_edge(Edge::new(s, e, EdgeCurve::Line));
+            let (bottom, top, inner) = (line(a, b), line(c, d), line(d, a));
+            let arc = topo.add_edge(Edge::new(b, c, EdgeCurve::Circle(tube)));
+            let edges = [bottom, arc, top, inner].map(|e| OrientedEdge::new(e, true));
+            let wire = topo.add_wire(Wire::new(edges.to_vec(), true).unwrap());
+            let profile = topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, -1.0, 0.0),
+                    d: 0.0,
+                },
+            ));
+            let solid = revolve(
+                &mut topo,
+                profile,
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                TAU,
+            )
+            .unwrap();
+            let face = solid_faces(&topo, solid)
+                .unwrap()
+                .into_iter()
+                .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Torus(_)))
+                .expect("a torus band");
+
+            let circle = |rho: f64| -> Vec<Point3> {
+                (0..=128)
+                    .map(|k| {
+                        let u = TAU * f64::from(k) / 128.0;
+                        Point3::new(rho * u.cos(), rho * u.sin(), h)
+                    })
+                    .collect()
+            };
+            let polylines = [circle(major + 0.5), circle(major - 0.5)];
+            let mut segments = Vec::new();
+            append_clipped(
+                &topo,
+                face,
+                &polylines,
+                Vec3::new(0.0, 0.0, 1.0),
+                h,
+                Tolerance::new(),
+                &mut segments,
+            )?;
+            Ok(segments)
+        }
+
+        /// The torus band's profile face: a line, the tube arc from
+        /// (3.5, −h) through (4, 0) to (3.5, h), and two lines back to
+        /// (1, −h). The plane z = 0.5 crosses the arc inside, at
+        /// x = 3 + √0.75, while both its ends lie above it at |z| = h: its
+        /// end chord (x = 3.5) never crosses, so a section ended there; the
+        /// chords of a sampled arc would end it a sagitta short.
+        #[test]
+        fn partial_arc_trims_are_crossed_where_the_arc_is() {
+            let mut topo = Topology::new();
+            let h = (PI / 3.0).sin();
+            let corner = |x: f64, z: f64| Point3::new(x, 0.0, z);
+            let [a, b, c, d] = [
+                corner(1.0, -h),
+                corner(3.5, -h),
+                corner(3.5, h),
+                corner(1.0, h),
+            ]
+            .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+            let tube = Circle3D::new_with_ref(
+                Point3::new(3.0, 0.0, 0.0),
+                Vec3::new(0.0, -1.0, 0.0),
+                1.0,
+                Vec3::new(1.0, 0.0, 0.0),
+            )
+            .unwrap();
+            let mut line = |s, e| topo.add_edge(Edge::new(s, e, EdgeCurve::Line));
+            let (bottom, top, inner) = (line(a, b), line(c, d), line(d, a));
+            let arc = topo.add_edge(Edge::new(b, c, EdgeCurve::Circle(tube)));
+            let edges = [bottom, arc, top, inner].map(|e| OrientedEdge::new(e, true));
+            let wire = topo.add_wire(Wire::new(edges.to_vec(), true).unwrap());
+
+            let polygon = trim_polygon(
+                &topo,
+                wire,
+                Some((Vec3::new(0.0, 0.0, 1.0), 0.5)),
+                Tolerance::new(),
+            )
+            .unwrap();
+            let (p, q) = super::super::intersect_planar_face_with_plane(
+                &polygon,
+                Vec3::new(0.0, -1.0, 0.0),
+                0.0,
+                Vec3::new(0.0, 0.0, 1.0),
+                0.5,
+                Tolerance::new(),
+            )
+            .expect("the plane crosses the profile");
+            let (lo, hi) = (p.x().min(q.x()), p.x().max(q.x()));
+            // The arc's crossing is a root of the circle itself, so exact.
+            assert!((lo - 1.0).abs() < 1e-9, "inner end {lo}");
+            assert!(
+                (hi - (3.0 + 0.75_f64.sqrt())).abs() < 1e-9,
+                "outer end {hi}, the arc crosses at {}",
+                3.0 + 0.75_f64.sqrt()
+            );
+        }
+
+        /// The planar arm's segment for the wire `curve` from `a` to `b`
+        /// closed by a line, cut by `n·p = d`.
+        fn cut_curve_and_chord(
+            curve: EdgeCurve,
+            a: Point3,
+            b: Point3,
+            normal: Vec3,
+            d: f64,
+        ) -> (Point3, Point3) {
+            let mut topo = Topology::new();
+            let (va, vb) = (
+                topo.add_vertex(Vertex::new(a, 1e-7)),
+                topo.add_vertex(Vertex::new(b, 1e-7)),
+            );
+            let arc = topo.add_edge(Edge::new(va, vb, curve));
+            let back = topo.add_edge(Edge::new(vb, va, EdgeCurve::Line));
+            let edges = [arc, back].map(|e| OrientedEdge::new(e, true));
+            let wire = topo.add_wire(Wire::new(edges.to_vec(), true).unwrap());
+            let polygon = trim_polygon(&topo, wire, Some((normal, d)), Tolerance::new()).unwrap();
+            super::super::intersect_planar_face_with_plane(
+                &polygon,
+                normal,
+                0.0,
+                normal,
+                d,
+                Tolerance::new(),
+            )
+            .expect("the plane crosses the curve")
+        }
+
+        fn assert_ends_at(segment: (Point3, Point3), roots: [Point3; 2], what: &str) {
+            let (p, q) = segment;
+            let hit = |x: Point3| roots.iter().any(|&r| (x - r).length() < 1e-9);
+            assert!(
+                hit(p) && hit(q),
+                "{what}: segment {p:?} → {q:?}, roots {roots:?}"
+            );
+        }
+
+        /// The plane x = 1 − 5e-8 grazes the unit circle: it passes within
+        /// `tol.linear` of the sample at (1, 0, 0) but crosses at
+        /// y = ±√(1 − x²) ≈ ±3.2e-4, far from it. The sample is the roots'
+        /// crossing seen again, so the segment must run root to root, on a
+        /// closed circle trim (whose near-plane run wraps past its first
+        /// sample) and on a partial arc alike.
+        #[test]
+        fn a_sample_grazing_the_plane_beside_its_roots_is_not_a_crossing() {
+            let c: f64 = 1.0 - 5e-8;
+            let x = Vec3::new(1.0, 0.0, 0.0);
+            let y = (1.0 - c * c).sqrt();
+            let roots = [Point3::new(c, -y, 0.0), Point3::new(c, y, 0.0)];
+            let unit = Circle3D::new_with_ref(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                1.0,
+                x,
+            )
+            .unwrap();
+
+            let mut topo = Topology::new();
+            let v = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+            let rim = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(unit.clone())));
+            let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(rim, true)], true).unwrap());
+            let polygon = trim_polygon(&topo, wire, Some((x, c)), Tolerance::new()).unwrap();
+            let disc = super::super::intersect_planar_face_with_plane(
+                &polygon,
+                Vec3::new(0.0, 0.0, 1.0),
+                0.0,
+                x,
+                c,
+                Tolerance::new(),
+            )
+            .expect("the plane crosses the disc");
+            assert_ends_at(disc, roots, "closed circle");
+
+            assert_ends_at(
+                cut_curve_and_chord(
+                    EdgeCurve::Circle(unit),
+                    Point3::new(0.0, -1.0, 0.0),
+                    Point3::new(0.0, 1.0, 0.0),
+                    x,
+                    c,
+                ),
+                roots,
+                "half circle",
+            );
+        }
+
+        /// The plane x = 1 − 5e-8 passes within `tol.linear` of the corner
+        /// A = (1, 0, 0), where an arc of the unit circle leaves for
+        /// B = (0, 1, 0), and crosses the arc at y ≈ 3.2e-4.
+        /// - Wire A → arc → B → (2, 2) → A: the run {A, root} lies between
+        ///   the line arriving from x = 2 and the arc leaving towards x < 1,
+        ///   so it is one crossing, kept as the corner. The segment runs
+        ///   from A to the line B–(2, 2), not from A to the root.
+        /// - Wire A → arc → B → A: the chord arrives from x < 1 too, so the
+        ///   run holds two crossings (the sliver between chord and arc) and
+        ///   keeps both.
+        #[test]
+        fn a_corner_grazing_the_plane_beside_a_root_is_one_crossing() {
+            let c: f64 = 1.0 - 5e-8;
+            let x = Vec3::new(1.0, 0.0, 0.0);
+            let z = Vec3::new(0.0, 0.0, 1.0);
+            let (a, b, q) = (
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(2.0, 2.0, 0.0),
+            );
+            let unit = Circle3D::new_with_ref(Point3::new(0.0, 0.0, 0.0), z, 1.0, x).unwrap();
+
+            let mut topo = Topology::new();
+            let [va, vb, vq] = [a, b, q].map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+            let arc = topo.add_edge(Edge::new(va, vb, EdgeCurve::Circle(unit.clone())));
+            let out = topo.add_edge(Edge::new(vb, vq, EdgeCurve::Line));
+            let back = topo.add_edge(Edge::new(vq, va, EdgeCurve::Line));
+            let edges = [arc, out, back].map(|e| OrientedEdge::new(e, true));
+            let wire = topo.add_wire(Wire::new(edges.to_vec(), true).unwrap());
+            let polygon = trim_polygon(&topo, wire, Some((x, c)), Tolerance::new()).unwrap();
+            let segment = super::super::intersect_planar_face_with_plane(
+                &polygon,
+                z,
+                0.0,
+                x,
+                c,
+                Tolerance::new(),
+            )
+            .expect("the plane crosses the face");
+            assert_ends_at(
+                segment,
+                [a, Point3::new(c, 1.0 + c / 2.0, 0.0)],
+                "one crossing",
+            );
+
+            let root = Point3::new(c, (1.0 - c * c).sqrt(), 0.0);
+            assert_ends_at(
+                cut_curve_and_chord(EdgeCurve::Circle(unit), a, b, x, c),
+                [a, root],
+                "sliver",
+            );
+        }
+
+        /// Parabola, hyperbola and NURBS trims, each dipping across the plane
+        /// between two of its 32 samples (at ±1/32 of a span offset by half a
+        /// sample) while every sample stays on one side: the segment must
+        /// end at the curve's exact roots.
+        #[test]
+        fn non_circular_trims_are_crossed_between_their_samples() {
+            let (t0, t1) = (-31.0 / 32.0, 33.0 / 32.0);
+            // z = t²/4; samples at t = ±1/32 sit at 2.44e-4, the plane at
+            // 1e-4 crosses at t = ±0.02.
+            let parabola =
+                Parabola3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+            let z = Vec3::new(0.0, 0.0, 1.0);
+            assert_ends_at(
+                cut_curve_and_chord(
+                    EdgeCurve::Parabola(parabola.clone()),
+                    parabola.evaluate(t0),
+                    parabola.evaluate(t1),
+                    z,
+                    1e-4,
+                ),
+                [parabola.evaluate(-0.02), parabola.evaluate(0.02)],
+                "parabola",
+            );
+
+            // Along u the hyperbola is cosh t: samples at cosh(1/32), the
+            // plane at 1 + 2e-4 crosses at ±acosh(1 + 2e-4).
+            let hyperbola = Hyperbola3D::new(Point3::new(0.0, 0.0, 0.0), z, 1.0, 1.0).unwrap();
+            let u = hyperbola.u_axis();
+            let root = (1.0 + 2e-4_f64).acosh();
+            assert_ends_at(
+                cut_curve_and_chord(
+                    EdgeCurve::Hyperbola(hyperbola.clone()),
+                    hyperbola.evaluate(t0),
+                    hyperbola.evaluate(t1),
+                    u,
+                    1.0 + 2e-4,
+                ),
+                [hyperbola.evaluate(-root), hyperbola.evaluate(root)],
+                "hyperbola",
+            );
+
+            // A quadratic Bezier with z(s) = 1 − 4s + 5s², least 0.2 at
+            // s = 0.4, between the samples at 12/32 and 13/32 (z ≥ 0.2002):
+            // z = 0.2001 crosses at s = (4 ± √0.002)/10.
+            let bezier = NurbsCurve::new(
+                2,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![
+                    Point3::new(-1.0, 0.0, 1.0),
+                    Point3::new(0.3, 0.0, -1.0),
+                    Point3::new(1.0, 0.0, 2.0),
+                ],
+                vec![1.0; 3],
+            )
+            .unwrap();
+            let s = |sign: f64| sign.mul_add(0.002_f64.sqrt(), 4.0) / 10.0;
+            assert_ends_at(
+                cut_curve_and_chord(
+                    EdgeCurve::NurbsCurve(bezier.clone()),
+                    bezier.evaluate(0.0),
+                    bezier.evaluate(1.0),
+                    z,
+                    0.2001,
+                ),
+                [bezier.evaluate(s(-1.0)), bezier.evaluate(s(1.0))],
+                "NURBS",
+            );
+        }
+
+        /// A NURBS trim lying in the cutting plane: every control distance is
+        /// zero, no span ever becomes one-sided, and halving went on towards
+        /// 2⁵² spans. It is in-plane boundary, with no crossings to insert,
+        /// and a wiggle that only grazes the plane within its budget still
+        /// resolves.
+        #[test]
+        fn in_plane_nurbs_trim_terminates() {
+            let bezier = NurbsCurve::new(
+                3,
+                vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                vec![
+                    Point3::new(0.0, 0.0, 0.0),
+                    Point3::new(1.0, 2.0, 0.0),
+                    Point3::new(2.0, -2.0, 0.0),
+                    Point3::new(3.0, 0.0, 0.0),
+                ],
+                vec![1.0; 4],
+            )
+            .unwrap();
+            let z = Vec3::new(0.0, 0.0, 1.0);
+            let (roots, _) =
+                super::plane_roots(&EdgeCurve::NurbsCurve(bezier.clone()), z, 0.0, None).unwrap();
+            assert!(roots.is_empty(), "{roots:?}");
+            // The same curve stood up in the plane y = 0 crosses it three
+            // times, at s = 0, 1/2 and 1 of its parameter.
+            let (roots, _) = super::plane_roots(
+                &EdgeCurve::NurbsCurve(bezier),
+                Vec3::new(0.0, 1.0, 0.0),
+                0.0,
+                None,
+            )
+            .unwrap();
+            assert!(
+                roots.iter().any(|&(t, _)| (t - 0.5).abs() < 1e-12),
+                "{roots:?}"
+            );
+        }
+
+        /// Two in-plane edges along one line with a gap of 0.03 between them:
+        /// a piece from the end of one to the start of the other spans the
+        /// gap, so it is not boundary (each end alone is near an edge); a
+        /// piece along either edge is.
+        #[test]
+        fn a_piece_spanning_two_in_plane_edges_is_not_boundary() {
+            let x = |v: f64| Point3::new(v, 0.0, 0.0);
+            let in_plane = [
+                super::InPlaneEdge::new(vec![x(0.0), x(1.0)], 1e-7),
+                super::InPlaneEdge::new(vec![x(1.03), x(2.0)], 1e-7),
+            ];
+            let band = 1e-5;
+            assert!(!super::along_one_edge(&in_plane, band, x(1.0), x(1.03)));
+            assert!(super::along_one_edge(&in_plane, band, x(0.2), x(0.9)));
+            assert!(super::along_one_edge(&in_plane, band, x(1.1), x(2.0)));
+            assert!(!super::along_one_edge(
+                &in_plane,
+                band,
+                x(0.5),
+                Point3::new(0.6, 0.1, 0.0)
+            ));
+        }
+
+        /// An in-plane arc of the unit circle leaving a 0.01 rad gap at angle
+        /// 0: a piece across the gap has its ends at the arc's two ends, each
+        /// on the edge but a whole turn apart along it, so it is not
+        /// boundary. A piece along the arc is, and so is a piece across the
+        /// seam of a closed rim.
+        #[test]
+        fn a_piece_across_the_gap_of_one_almost_closed_edge_is_not_boundary() {
+            let at = |a: f64| Point3::new(a.cos(), a.sin(), 0.0);
+            let arc = |from: f64, to: f64| -> Vec<Point3> {
+                (0..=4096)
+                    .map(|k| at((to - from).mul_add(f64::from(k) / 4096.0, from)))
+                    .collect()
+            };
+            let band = 1e-5;
+            let open = [super::InPlaneEdge::new(arc(0.005, TAU - 0.005), 1e-7)];
+            assert!(!super::along_one_edge(
+                &open,
+                band,
+                at(TAU - 0.005),
+                at(0.005)
+            ));
+            assert!(super::along_one_edge(&open, band, at(1.0), at(1.05)));
+            let rim = [super::InPlaneEdge::new(arc(0.0, TAU), 1e-7)];
+            assert!(super::along_one_edge(&rim, band, at(-0.02), at(0.02)));
+        }
+
+        /// Without partial curved edges the trim polygon holds
+        /// `wire_polygon`'s points, but each closed rim starts from its own
+        /// vertex. `make_cylinder`'s rims start their circles at (0, 1.5)
+        /// while their vertex is at (1.5, 0), so `wire_polygon` cuts across
+        /// from the last sample to the seam vertex. On the lateral face, the
+        /// plane x = 0.9 then crossed that chord, inside the cylinder, as
+        /// well as the rims: every crossing must now lie on a rim.
+        #[test]
+        fn trim_polygon_starts_closed_rims_at_their_vertex() {
+            let mut topo = Topology::new();
+            let solid = crate::primitives::make_cylinder(&mut topo, 1.5, 2.0).unwrap();
+            let sorted = |mut points: Vec<Point3>| {
+                points.sort_by(|a, b| {
+                    a.x()
+                        .total_cmp(&b.x())
+                        .then(a.y().total_cmp(&b.y()))
+                        .then(a.z().total_cmp(&b.z()))
+                });
+                points
+            };
+            let side = 2.0 * 1.5 * (PI / 32.0).sin() * (1.0 + 1e-9);
+            let mut lateral = None;
+            for id in solid_faces(&topo, solid).unwrap() {
+                let face = topo.face(id).unwrap();
+                if matches!(face.surface(), FaceSurface::Cylinder(_)) {
+                    lateral = Some(id);
+                }
+                for wire in
+                    std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+                {
+                    let polygon = trim_polygon(&topo, wire, None, Tolerance::new()).unwrap();
+                    assert_eq!(
+                        sorted(polygon.clone()),
+                        sorted(crate::boolean::wire_polygon(&topo, wire).unwrap())
+                    );
+                    // No chord across a rim: consecutive points at one height
+                    // are at most a 32-gon side apart.
+                    for (k, &p) in polygon.iter().enumerate() {
+                        let q = polygon[(k + 1) % polygon.len()];
+                        if (p.z() - q.z()).abs() < 1e-12 {
+                            assert!((q - p).length() <= side, "chord {p:?} → {q:?}");
+                        }
+                    }
+                }
+            }
+            let crossings = super::boundary_crossings(
+                &topo,
+                lateral.expect("a lateral face"),
+                Vec3::new(1.0, 0.0, 0.0),
+                0.9,
+                Tolerance::new(),
+            )
+            .unwrap();
+            assert_eq!(crossings.len(), 4, "{crossings:?}");
+            for x in crossings {
+                assert!(
+                    (x.x().hypot(x.y()) - 1.5).abs() < 1e-9,
+                    "crossing off the rims: {x:?}"
+                );
+            }
+        }
+
+        /// Two concentric carrier loops 1 apart, sampled at 128 per turn,
+        /// and a crossing on the inner one midway between its samples. At
+        /// R = 3 the chords' sagitta (≈ 1e-3) tells the loops apart and the
+        /// crossing cuts the inner loop; at R = 1e4 it is ≈ 3, the crossing
+        /// is nearer the outer loop's chord than its own, and is refused.
+        #[test]
+        fn crossing_between_close_components_is_refused_not_misfiled() {
+            let loops = |major: f64| -> Vec<Vec<Point3>> {
+                [major + 0.5, major - 0.5]
+                    .map(|rho| {
+                        (0..=128)
+                            .map(|k| {
+                                let u = TAU * f64::from(k) / 128.0;
+                                Point3::new(rho * u.cos(), rho * u.sin(), 0.0)
+                            })
+                            .collect()
+                    })
+                    .to_vec()
+            };
+            let crossing = |major: f64| {
+                let (u, rho) = (PI / 128.0, major - 0.5);
+                Point3::new(rho * u.cos(), rho * u.sin(), 0.0)
+            };
+            let tol = Tolerance::new();
+            let (_, cuts) = assign_crossings(&loops(3.0), &[crossing(3.0)], tol).unwrap();
+            // Chord 128 + 0 is the inner loop's first chord.
+            assert_eq!(cuts[128].len(), 1, "the inner loop is cut");
+            assert!(matches!(
+                assign_crossings(&loops(1e4), &[crossing(1e4)], tol),
+                Err(crate::OperationsError::Unsupported { .. })
+            ));
+        }
+
+        /// At R = 100 the far loop is well inside a quarter of a 32-segment
+        /// rim chord (≈ 4.9), so a chord-scaled band kept it as the rim.
+        /// Only the rim may survive.
+        #[test]
+        fn far_carrier_loop_beside_an_in_plane_rim_is_dropped() {
+            let major = 100.0;
+            let segments = clip_flush_with_slender_rim(major).unwrap();
+            assert!(!segments.is_empty(), "the rim is part of the section");
+            for (p, q) in segments {
+                for x in [p, q] {
+                    let rho = x.x().hypot(x.y());
+                    assert!(
+                        (rho - (major + 0.5)).abs() < 1e-6,
+                        "section point at ρ = {rho}"
+                    );
+                }
+            }
+        }
+
+        /// A degree-1 NURBS trim zigzagging out of `z = 0`: its control
+        /// points alternate between z = 0 and z = 1e-3 at parameters k/64,
+        /// so the 32 coarse samples all lie in the plane and the chord
+        /// midpoints do not. It is no in-plane edge; only the line closing
+        /// it is.
+        #[test]
+        fn a_trim_leaving_the_plane_between_its_samples_is_not_in_it() {
+            let zigzag = NurbsCurve::new(
+                1,
+                [0.0, 0.0]
+                    .into_iter()
+                    .chain((1..64).map(|k| f64::from(k) / 64.0))
+                    .chain([1.0, 1.0])
+                    .collect(),
+                (0..=64)
+                    .map(|k| {
+                        let z = if k % 2 == 0 { 0.0 } else { 1e-3 };
+                        Point3::new(2.0 * f64::from(k) / 64.0, 0.0, z)
+                    })
+                    .collect(),
+                vec![1.0; 65],
+            )
+            .unwrap();
+            let mut topo = Topology::new();
+            let [a, b] = [Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0)]
+                .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+            let mut out = Edge::new(a, b, EdgeCurve::NurbsCurve(zigzag));
+            out.set_trim(Some((0.0, 1.0)));
+            let out = topo.add_edge(out);
+            let back = topo.add_edge(Edge::new(b, a, EdgeCurve::Line));
+            let edges = [out, back].map(|e| OrientedEdge::new(e, true));
+            let wire = topo.add_wire(Wire::new(edges.to_vec(), true).unwrap());
+            let face = topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 1.0, 0.0),
+                    d: 0.0,
+                },
+            ));
+            let (in_plane, _) =
+                super::in_plane_edges(&topo, face, Vec3::new(0.0, 0.0, 1.0), 0.0, Tolerance::new())
+                    .unwrap();
+            assert_eq!(in_plane.len(), 1, "only the closing line is in the plane");
+            assert!(in_plane[0].chain.iter().all(|p| p.z().abs() < 1e-7));
+        }
+
+        /// A cone face (half-angle π/4) bounded by one closed degree-1 NURBS
+        /// trim at generator distance 1.5, except for a spike to distance 100
+        /// at parameter 1/64. The 8 samples per edge that locate the face all
+        /// sit at 1.5, so a reach taken from them stopped every branch at
+        /// 4 × 1.5 = 6. The plane at generator distance 50 crosses only the
+        /// spike; its ring must reach it.
+        #[test]
+        fn cone_branch_reaches_a_trim_lobe_between_samples() {
+            let apex = Point3::new(0.0, 0.0, 0.0);
+            let axis = Vec3::new(0.0, 0.0, 1.0);
+            let cone = remus_math::surfaces::ConicalSurface::new(apex, axis, PI / 4.0).unwrap();
+            let points: Vec<Point3> = (0..=64)
+                .map(|k| {
+                    let v = if k == 1 { 100.0 } else { 1.5 };
+                    cone.evaluate(TAU * f64::from(k % 64) / 64.0, v)
+                })
+                .collect();
+            let trim = NurbsCurve::new(
+                1,
+                [0.0, 0.0]
+                    .into_iter()
+                    .chain((1..64).map(|k| f64::from(k) / 64.0))
+                    .chain([1.0, 1.0])
+                    .collect(),
+                points.clone(),
+                vec![1.0; 65],
+            )
+            .unwrap();
+            let mut topo = Topology::new();
+            let v = topo.add_vertex(Vertex::new(points[0], 1e-7));
+            let mut edge = Edge::new(v, v, EdgeCurve::NurbsCurve(trim));
+            edge.set_trim(Some((0.0, 1.0)));
+            let edge = topo.add_edge(edge);
+            let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+            let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Cone(cone.clone())));
+            let height = cone.evaluate(0.0, 50.0).z();
+            let branches = super::cone_section(&topo, face, &cone, axis, height).unwrap();
+            let farthest = branches
+                .iter()
+                .flatten()
+                .map(|p| (*p - apex).length())
+                .fold(0.0_f64, f64::max);
+            assert!(
+                (farthest - 50.0).abs() < 1e-9,
+                "the section ring at generator distance 50 reaches {farthest}"
+            );
+        }
+
+        /// A degree-1 NURBS trim whose control points alternate between
+        /// z = 0 and z = 1e-3 at parameters k/128: every sample and chord
+        /// midpoint the refinement evaluates (multiples of 1/64) lands on
+        /// z = 0, so the chain shows no deviation, yet the curve leaves the
+        /// plane between them. Its control points certify it out of plane.
+        #[test]
+        fn a_trim_off_the_plane_between_every_evaluated_point_is_not_in_it() {
+            let zigzag = NurbsCurve::new(
+                1,
+                [0.0, 0.0]
+                    .into_iter()
+                    .chain((1..128).map(|k| f64::from(k) / 128.0))
+                    .chain([1.0, 1.0])
+                    .collect(),
+                (0..=128)
+                    .map(|k| {
+                        let z = if k % 2 == 0 { 0.0 } else { 1e-3 };
+                        Point3::new(2.0 * f64::from(k) / 128.0, 0.0, z)
+                    })
+                    .collect(),
+                vec![1.0; 129],
+            )
+            .unwrap();
+            let mut topo = Topology::new();
+            let [a, b] = [Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0)]
+                .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+            let mut out = Edge::new(a, b, EdgeCurve::NurbsCurve(zigzag));
+            out.set_trim(Some((0.0, 1.0)));
+            let out = topo.add_edge(out);
+            let back = topo.add_edge(Edge::new(b, a, EdgeCurve::Line));
+            let edges = [out, back].map(|e| OrientedEdge::new(e, true));
+            let wire = topo.add_wire(Wire::new(edges.to_vec(), true).unwrap());
+            let face = topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 1.0, 0.0),
+                    d: 0.0,
+                },
+            ));
+            let (in_plane, _) =
+                super::in_plane_edges(&topo, face, Vec3::new(0.0, 0.0, 1.0), 0.0, Tolerance::new())
+                    .unwrap();
+            assert_eq!(in_plane.len(), 1, "only the closing line is in the plane");
+        }
+
+        /// An edge holding the first half of a longer degree-1 NURBS curve:
+        /// the half from (0, 0, 0) to (2, 0, 0) lies in z = 0, and the other
+        /// half climbs to z = 1. The control points that shape only the
+        /// unused half must not keep the edge out of the plane.
+        #[test]
+        fn an_in_plane_subrange_of_a_longer_nurbs_is_in_the_plane() {
+            let curve = NurbsCurve::new(
+                1,
+                vec![0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0],
+                vec![
+                    Point3::new(0.0, 0.0, 0.0),
+                    Point3::new(1.0, 0.0, 0.0),
+                    Point3::new(2.0, 0.0, 0.0),
+                    Point3::new(2.0, 1.0, 0.5),
+                    Point3::new(2.0, 2.0, 1.0),
+                ],
+                vec![1.0; 5],
+            )
+            .unwrap();
+            let mut topo = Topology::new();
+            let [a, b] = [Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0)]
+                .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+            let mut out = Edge::new(a, b, EdgeCurve::NurbsCurve(curve));
+            out.set_trim(Some((0.0, 0.5)));
+            let out = topo.add_edge(out);
+            let back = topo.add_edge(Edge::new(b, a, EdgeCurve::Line));
+            let edges = [out, back].map(|e| OrientedEdge::new(e, true));
+            let wire = topo.add_wire(Wire::new(edges.to_vec(), true).unwrap());
+            let face = topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 1.0, 0.0),
+                    d: 0.0,
+                },
+            ));
+            let (in_plane, _) =
+                super::in_plane_edges(&topo, face, Vec3::new(0.0, 0.0, 1.0), 0.0, Tolerance::new())
+                    .unwrap();
+            assert_eq!(
+                in_plane.len(),
+                2,
+                "both the NURBS half and the line are in the plane"
+            );
+        }
+
+        /// A closed NURBS edge holding one loop of a two-loop curve: the
+        /// degree-1 curve runs the unit square from the origin for
+        /// t ∈ [0, 4/7], then a triangle out to x = 3 and back for
+        /// t ∈ [4/7, 1], and the edge's stored range is [0, 4/7]. Its trim
+        /// polygon must hold only the square, and the plane x = 2.5, which
+        /// crosses only the other loop, must not cross it.
+        #[test]
+        fn a_closed_nurbs_edge_keeps_to_its_stored_range() {
+            let p = |x: f64, y: f64| Point3::new(x, y, 0.0);
+            let loops = NurbsCurve::new(
+                1,
+                [0.0, 0.0]
+                    .into_iter()
+                    .chain((1..7).map(|k| f64::from(k) / 7.0))
+                    .chain([1.0, 1.0])
+                    .collect(),
+                vec![
+                    p(0.0, 0.0),
+                    p(1.0, 0.0),
+                    p(1.0, 1.0),
+                    p(0.0, 1.0),
+                    p(0.0, 0.0),
+                    p(3.0, -1.0),
+                    p(0.0, -2.0),
+                    p(0.0, 0.0),
+                ],
+                vec![1.0; 8],
+            )
+            .unwrap();
+            let mut topo = Topology::new();
+            let v = topo.add_vertex(Vertex::new(p(0.0, 0.0), 1e-7));
+            let mut edge = Edge::new(v, v, EdgeCurve::NurbsCurve(loops));
+            edge.set_trim(Some((0.0, 4.0 / 7.0)));
+            let edge = topo.add_edge(edge);
+            let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+            let x = Vec3::new(1.0, 0.0, 0.0);
+            let polygon = trim_polygon(&topo, wire, Some((x, 2.5)), Tolerance::new()).unwrap();
+            assert!(polygon.len() > 4, "{polygon:?}");
+            for q in &polygon {
+                assert!(
+                    (-1e-9..=1.0 + 1e-9).contains(&q.x()) && (-1e-9..=1.0 + 1e-9).contains(&q.y()),
+                    "point off the square: {q:?}"
+                );
+            }
+        }
+
+        /// A cone face (half-angle π/4) bounded by one closed degree-1 NURBS
+        /// trim at generator distance 1.5, except for one control point at
+        /// parameter 1/64 on the opposite nappe (generator distance −0.5).
+        /// The 8 samples per edge all sit at 1.5 above the apex, so the face
+        /// looked like one nappe; its trim crosses the apex, and the section
+        /// must refuse rather than return one nappe's branch.
+        #[test]
+        fn a_cone_trim_crossing_the_apex_between_samples_is_refused() {
+            let apex = Point3::new(0.0, 0.0, 0.0);
+            let axis = Vec3::new(0.0, 0.0, 1.0);
+            let cone = remus_math::surfaces::ConicalSurface::new(apex, axis, PI / 4.0).unwrap();
+            let points: Vec<Point3> = (0..=64)
+                .map(|k| {
+                    let v = if k == 1 { -0.5 } else { 1.5 };
+                    cone.evaluate(TAU * f64::from(k % 64) / 64.0, v)
+                })
+                .collect();
+            let trim = NurbsCurve::new(
+                1,
+                [0.0, 0.0]
+                    .into_iter()
+                    .chain((1..64).map(|k| f64::from(k) / 64.0))
+                    .chain([1.0, 1.0])
+                    .collect(),
+                points.clone(),
+                vec![1.0; 65],
+            )
+            .unwrap();
+            let mut topo = Topology::new();
+            let v = topo.add_vertex(Vertex::new(points[0], 1e-7));
+            let mut edge = Edge::new(v, v, EdgeCurve::NurbsCurve(trim));
+            edge.set_trim(Some((0.0, 1.0)));
+            let edge = topo.add_edge(edge);
+            let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+            let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Cone(cone.clone())));
+            let height = cone.evaluate(0.0, 1.0).z();
+            assert!(matches!(
+                super::cone_section(&topo, face, &cone, axis, height),
+                Err(crate::OperationsError::Unsupported { .. })
+            ));
+        }
+
+        /// An edge holding the first two segments of a 20 000-segment
+        /// degree-1 NURBS curve: those stay at z = 1, while the unused rest
+        /// zigzags across z = 0 at every segment. Isolating crossings over the
+        /// whole curve exhausted the span budget and refused the section; the
+        /// edge's own range has none.
+        #[test]
+        fn crossings_outside_a_nurbs_edge_range_do_not_refuse_it() {
+            let n = 20_001_u32;
+            let step = 1.0 / f64::from(n - 1);
+            let curve = NurbsCurve::new(
+                1,
+                [0.0, 0.0]
+                    .into_iter()
+                    .chain((1..n - 1).map(|k| f64::from(k) * step))
+                    .chain([1.0, 1.0])
+                    .collect(),
+                (0..n)
+                    .map(|k| {
+                        let z = if k < 3 || k % 2 == 0 { 1.0 } else { -1.0 };
+                        Point3::new(f64::from(k) * 1e-3, 0.0, z)
+                    })
+                    .collect(),
+                vec![1.0; n as usize],
+            )
+            .unwrap();
+            let mut topo = Topology::new();
+            let [a, b] = [Point3::new(0.0, 0.0, 1.0), Point3::new(2e-3, 0.0, 1.0)]
+                .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+            let mut out = Edge::new(a, b, EdgeCurve::NurbsCurve(curve));
+            out.set_trim(Some((0.0, 2.0 * step)));
+            let out = topo.add_edge(out);
+            let back = topo.add_edge(Edge::new(b, a, EdgeCurve::Line));
+            let edges = [out, back].map(|e| OrientedEdge::new(e, true));
+            let wire = topo.add_wire(Wire::new(edges.to_vec(), true).unwrap());
+            let polygon = trim_polygon(
+                &topo,
+                wire,
+                Some((Vec3::new(0.0, 0.0, 1.0), 0.0)),
+                Tolerance::new(),
+            )
+            .expect("the edge's own range crosses nothing");
+            assert!(polygon.iter().all(|p| (p.z() - 1.0).abs() < 1e-12));
+        }
+
+        /// At R = 1e6 a band of `1e-6` of the rim's length (≈ 4.7) swallowed
+        /// the far loop too. No band set by the rim's size may decide which
+        /// loop survives: 2¹⁶ segments cannot hold this rim to the absolute
+        /// bound, so the clip is refused rather than guessed.
+        #[test]
+        fn rim_too_long_to_resolve_is_refused() {
+            assert!(matches!(
+                clip_flush_with_slender_rim(1e6),
+                Err(crate::OperationsError::Unsupported { .. })
+            ));
+        }
     }
 }

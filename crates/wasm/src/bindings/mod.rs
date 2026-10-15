@@ -34,6 +34,8 @@ pub mod transform_detailed;
 pub mod transforms;
 
 #[cfg(test)]
+mod batch_optional_args_tests;
+#[cfg(test)]
 mod fillet_fail_closed_tests;
 #[cfg(test)]
 mod gridfinity_tests;
@@ -56,7 +58,11 @@ mod qualify_section_split_tests;
 #[cfg(test)]
 mod sequential_fillet_tests;
 #[cfg(test)]
+mod sketch_validation_tests;
+#[cfg(test)]
 mod store_local_switch_tests;
+#[cfg(test)]
+mod sweep_transaction_tests;
 
 #[cfg(test)]
 mod transaction_tests;

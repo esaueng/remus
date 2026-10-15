@@ -62,6 +62,12 @@ pub(crate) use solid::{
     tessellate_closed_face_set, tessellate_face_for_measurement, tessellate_solid_for_measurement,
 };
 
+/// The tessellation merge map from a [`point_merge_key`] cell to its global
+/// vertex id. It is only ever looked up, inserted into and filtered, never
+/// iterated for order, so it uses the faster word-wise lookup hasher (see
+/// [`remus_math::det_hash::DetLookupHasher`]).
+pub(crate) type PointMergeMap = remus_math::det_hash::DetLookupHashMap<(i64, i64, i64), u32>;
+
 /// Merge-grid cell size for tolerance-based vertex deduplication.
 ///
 /// Vertices within this distance are quantized to the same grid cell and share

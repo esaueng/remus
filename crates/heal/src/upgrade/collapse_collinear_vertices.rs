@@ -23,10 +23,20 @@
 //! are distinct, only when V is strictly between them, only when V has
 //! exactly two incident edges in the solid. Vertices that fail any gate
 //! are left untouched.
+//!
+//! Adjacent candidates (`P → V1 → V2 → Q`, all collinear) share an edge, so
+//! their plans conflict: collapsing V1 to `P → V2` and V2 to `V1 → Q` in the
+//! same pass lets each wire pick whichever junction it meets first, and the
+//! two sides of the chord end on different edges. A pass therefore takes
+//! only plans whose edge pairs are disjoint, in vertex order, and the passes
+//! repeat until a run of any length has collapsed to one edge. Each merged
+//! edge remembers the vertices it absorbed, and extending it again must keep
+//! all of them within tolerance of the new chord.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use remus_math::tolerance::Tolerance;
+use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
@@ -50,6 +60,34 @@ pub fn collapse_collinear_wire_vertices(
     solid_id: SolidId,
     tol: Tolerance,
 ) -> Result<usize, HealError> {
+    // Every productive pass shortens at least one wire by an edge, so the
+    // passes end.
+    let mut collapsed = 0;
+    let mut absorbed = BTreeMap::new();
+    loop {
+        let pass = collapse_pass(topo, solid_id, tol, &mut absorbed)?;
+        if pass == 0 {
+            return Ok(collapsed);
+        }
+        collapsed += pass;
+    }
+}
+
+/// One pass over the solid: collapse every candidate vertex whose two edges
+/// no earlier candidate (in vertex order) has claimed. Returns the number of
+/// vertices removed from at least one wire.
+///
+/// `absorbed` maps each merged edge to every vertex position collapsed into
+/// it so far, across passes: extending an edge must keep all of them within
+/// tolerance of the new chord, not only the vertex removed now, or a chain of
+/// collapses could drift past tolerance one acceptable step at a time.
+#[allow(clippy::too_many_lines)]
+fn collapse_pass(
+    topo: &mut Topology,
+    solid_id: SolidId,
+    tol: Tolerance,
+    absorbed: &mut BTreeMap<EdgeId, Vec<Point3>>,
+) -> Result<usize, HealError> {
     // 1. Gather every (face_id, wire_id) pair in the solid. Faces hold
     //    one outer wire plus zero-or-more inner wires (holes); both are
     //    in scope.
@@ -70,8 +108,8 @@ pub fn collapse_collinear_wire_vertices(
     //    (a healthy manifold edge) only count once toward vertex incidence.
     //    Also record which faces reference each edge so the planarity gate
     //    below can confirm every face touching V is planar before collapse.
-    let mut edges_in_solid: HashMap<EdgeId, (VertexId, VertexId)> = HashMap::new();
-    let mut edge_to_faces: HashMap<EdgeId, HashSet<FaceId>> = HashMap::new();
+    let mut edges_in_solid: BTreeMap<EdgeId, (VertexId, VertexId)> = BTreeMap::new();
+    let mut edge_to_faces: BTreeMap<EdgeId, BTreeSet<FaceId>> = BTreeMap::new();
     for &fid in &face_ids {
         let face = topo.face(fid)?;
         let mut all_wires: Vec<WireId> = vec![face.outer_wire()];
@@ -80,7 +118,8 @@ pub fn collapse_collinear_wire_vertices(
             let wire = topo.wire(wid)?;
             for oe in wire.edges() {
                 let eid = oe.edge();
-                if let std::collections::hash_map::Entry::Vacant(slot) = edges_in_solid.entry(eid) {
+                if let std::collections::btree_map::Entry::Vacant(slot) = edges_in_solid.entry(eid)
+                {
                     let edge = topo.edge(eid)?;
                     slot.insert((edge.start(), edge.end()));
                 }
@@ -89,7 +128,7 @@ pub fn collapse_collinear_wire_vertices(
         }
     }
 
-    let mut vertex_edges: HashMap<VertexId, Vec<EdgeId>> = HashMap::new();
+    let mut vertex_edges: BTreeMap<VertexId, Vec<EdgeId>> = BTreeMap::new();
     for (&eid, &(start, end)) in &edges_in_solid {
         vertex_edges.entry(start).or_default().push(eid);
         if end != start {
@@ -103,16 +142,22 @@ pub fn collapse_collinear_wire_vertices(
     let lin_tol_sq = lin_tol * lin_tol;
 
     let mut plans: Vec<CollapsePlan> = Vec::new();
-    // Track which existing edges we've already reused so a chain of
-    // collinear vertices on the same line doesn't all try to claim
-    // overlapping P→Q edges that the prior plan already consumed.
-    // (Rare in practice — guard via per-iteration topology reads.)
+    // Edges already consumed by an accepted plan this pass. A candidate
+    // sharing one is an adjacent collinear vertex; it waits for the next
+    // pass, when its neighbour's merged edge has replaced the shared one.
+    let mut claimed: BTreeSet<EdgeId> = BTreeSet::new();
+    // Merged edges created this pass, so two plans spanning the same
+    // `P, Q` share one `EdgeId`.
+    let mut created: BTreeMap<(VertexId, VertexId), EdgeId> = BTreeMap::new();
     for (&vertex, incident) in &vertex_edges {
         if incident.len() != 2 {
             continue;
         }
         let eid1 = incident[0];
         let eid2 = incident[1];
+        if claimed.contains(&eid1) || claimed.contains(&eid2) {
+            continue;
+        }
         let edge1 = topo.edge(eid1)?;
         let edge2 = topo.edge(eid2)?;
         if !matches!(edge1.curve(), EdgeCurve::Line) || !matches!(edge2.curve(), EdgeCurve::Line) {
@@ -223,6 +268,18 @@ pub fn collapse_collinear_wire_vertices(
         if perp.dot(perp) > lin_tol_sq {
             continue;
         }
+        let mut witnesses = vec![v_pt];
+        for eid in [eid1, eid2] {
+            witnesses.extend(absorbed.get(&eid).into_iter().flatten().copied());
+        }
+        let off_chord = |w: &Point3| {
+            let s = ((*w - p_pt).dot(pq) / pq_len_sq).clamp(0.0, 1.0);
+            let gap = *w - (p_pt + pq * s);
+            gap.dot(gap) > lin_tol_sq
+        };
+        if witnesses.iter().any(off_chord) {
+            continue;
+        }
 
         // Find-or-create the merged edge so the two faces keep
         // referencing the same `EdgeId` after the collapse. For the
@@ -241,12 +298,17 @@ pub fn collapse_collinear_wire_vertices(
                 }
                 eid
             }
-            (None, 2) => topo.add_edge(Edge::new(p_vid, q_vid, EdgeCurve::Line)),
+            (None, 2) => *created
+                .entry((p_vid.min(q_vid), p_vid.max(q_vid)))
+                .or_insert_with(|| topo.add_edge(Edge::new(p_vid, q_vid, EdgeCurve::Line))),
             (None, _) => continue,
         };
         if new_edge == eid1 || new_edge == eid2 {
             continue; // Defensive — should not match the V-touching edges
         }
+        claimed.insert(eid1);
+        claimed.insert(eid2);
+        absorbed.entry(new_edge).or_default().extend(witnesses);
         plans.push(CollapsePlan {
             vertex,
             old_edges: [eid1, eid2],
@@ -263,23 +325,24 @@ pub fn collapse_collinear_wire_vertices(
     //    edge list shrinks by 1 for each match; rebuild via `Wire::new`
     //    + `*wire_mut = new_wire` (matches `merge_collinear_edges` pattern
     //    in `unify_same_domain`).
-    let plan_by_vertex: HashMap<VertexId, &CollapsePlan> =
+    let plan_by_vertex: BTreeMap<VertexId, &CollapsePlan> =
         plans.iter().map(|p| (p.vertex, p)).collect();
 
-    let mut applied: usize = 0;
     // Track which vertices were actually consumed by at least one wire
     // rewrite — the plan-vertex count is the upper bound, but a vertex
     // unreachable from any wire (orphaned by a prior pass) shouldn't
     // count as "collapsed".
-    let mut consumed: std::collections::HashSet<VertexId> = std::collections::HashSet::new();
+    let mut consumed: BTreeSet<VertexId> = BTreeSet::new();
 
     for &wid in &wire_ids {
-        let new_edges_opt = try_rewrite_wire(topo, wid, &plan_by_vertex, &mut consumed)?;
+        let mut wire_consumed = BTreeSet::new();
+        let new_edges_opt = try_rewrite_wire(topo, wid, &plan_by_vertex, &mut wire_consumed)?;
         if let Some(new_edges) = new_edges_opt {
             let is_closed = topo.wire(wid)?.is_closed();
             match Wire::new(new_edges, is_closed) {
                 Ok(new_wire) => {
                     topo.replace_boundary_wire(wid, new_wire)?;
+                    consumed.append(&mut wire_consumed);
                 }
                 Err(e) => {
                     log::warn!(
@@ -290,9 +353,8 @@ pub fn collapse_collinear_wire_vertices(
             }
         }
     }
-    applied += consumed.len();
 
-    Ok(applied)
+    Ok(consumed.len())
 }
 
 /// Find an existing `Line` edge whose endpoints are `{a, b}` (in either
@@ -306,7 +368,7 @@ pub fn collapse_collinear_wire_vertices(
 /// the cross-face re-unification this pass is built around.
 fn find_line_edge(
     topo: &Topology,
-    edges_in_solid: &HashMap<EdgeId, (VertexId, VertexId)>,
+    edges_in_solid: &BTreeMap<EdgeId, (VertexId, VertexId)>,
     a: VertexId,
     b: VertexId,
 ) -> Option<EdgeId> {
@@ -346,8 +408,8 @@ fn find_line_edge(
 fn try_rewrite_wire(
     topo: &Topology,
     wid: WireId,
-    plans: &HashMap<VertexId, &CollapsePlan>,
-    consumed: &mut std::collections::HashSet<VertexId>,
+    plans: &BTreeMap<VertexId, &CollapsePlan>,
+    consumed: &mut BTreeSet<VertexId>,
 ) -> Result<Option<Vec<OrientedEdge>>, HealError> {
     let wire = topo.wire(wid)?;
     let edges = wire.edges();
@@ -560,6 +622,187 @@ mod tests {
             w1.edges()[0].edge(),
             w2.edges()[0].edge(),
             "both wires should now reference the same merged EdgeId for A↔B"
+        );
+    }
+
+    /// Edges used by exactly one face of `faces`.
+    fn once_used_edges(topo: &Topology, faces: &[FaceId]) -> usize {
+        let mut uses: BTreeMap<EdgeId, usize> = BTreeMap::new();
+        for &fid in faces {
+            let wire = topo.wire(topo.face(fid).unwrap().outer_wire()).unwrap();
+            for oe in wire.edges() {
+                *uses.entry(oe.edge()).or_default() += 1;
+            }
+        }
+        uses.values().filter(|&&n| n == 1).count()
+    }
+
+    /// Two coplanar faces sharing the chord `A-V1-V2-B` at the given
+    /// points (z = 0), closed off by `C` below and `D` above. Returns the
+    /// topology, the solid, both faces and `V2`.
+    fn shared_chord(points: [Point3; 4]) -> (Topology, SolidId, [FaceId; 2], VertexId) {
+        let mut topo = Topology::new();
+        let [a, v1, v2, b] = points.map(|p| vertex(&mut topo, p));
+        let c = vertex(&mut topo, Point3::new(1.5, -1.0, 0.0));
+        let d = vertex(&mut topo, Point3::new(1.5, 1.0, 0.0));
+        let line = |topo: &mut Topology, p, q| topo.add_edge(Edge::new(p, q, EdgeCurve::Line));
+        let e_a1 = line(&mut topo, a, v1);
+        let e_12 = line(&mut topo, v1, v2);
+        let e_2b = line(&mut topo, v2, b);
+        let e_bd = line(&mut topo, b, d);
+        let e_da = line(&mut topo, d, a);
+        let e_ac = line(&mut topo, a, c);
+        let e_cb = line(&mut topo, c, b);
+        let surface = FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        };
+        let face = |topo: &mut Topology, edges: &[(EdgeId, bool)]| {
+            let oes = edges
+                .iter()
+                .map(|&(e, f)| OrientedEdge::new(e, f))
+                .collect();
+            let wire = topo.add_wire(Wire::new(oes, true).unwrap());
+            topo.add_face(Face::new(wire, Vec::new(), surface.clone()))
+        };
+        let f1 = face(
+            &mut topo,
+            &[
+                (e_a1, true),
+                (e_12, true),
+                (e_2b, true),
+                (e_bd, true),
+                (e_da, true),
+            ],
+        );
+        let f2 = face(
+            &mut topo,
+            &[
+                (e_2b, false),
+                (e_12, false),
+                (e_a1, false),
+                (e_ac, true),
+                (e_cb, true),
+            ],
+        );
+        let solid = wrap_in_solid(&mut topo, vec![f1, f2]);
+        (topo, solid, [f1, f2], v2)
+    }
+
+    /// Each step stays within tolerance `L` but the chain does not: V1 at
+    /// 0.9 L above A-V2 collapses first, and then V2 sits 0.9 L from A-B,
+    /// but V1 would end 1.35 L from that final chord. V2 must stay.
+    #[test]
+    fn repeated_collapses_keep_every_absorbed_vertex_within_tolerance() {
+        let l = Tolerance::new().linear;
+        let (mut topo, solid, [f1, f2], v2) = shared_chord([
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.9 * l, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(3.0, -1.35 * l, 0.0),
+        ]);
+        let before = once_used_edges(&topo, &[f1, f2]);
+
+        let collapsed =
+            collapse_collinear_wire_vertices(&mut topo, solid, Tolerance::new()).unwrap();
+
+        assert_eq!(collapsed, 1, "only V1 collapses");
+        assert_eq!(once_used_edges(&topo, &[f1, f2]), before);
+        for face in [f1, f2] {
+            let wire = topo.wire(topo.face(face).unwrap().outer_wire()).unwrap();
+            assert_eq!(wire.edges().len(), 4);
+            assert!(
+                wire.edges().iter().any(|oe| {
+                    let e = topo.edge(oe.edge()).unwrap();
+                    e.start() == v2 || e.end() == v2
+                }),
+                "V2 must stay on face {face:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn adjacent_collinear_vertices_collapse_to_one_shared_edge() {
+        // Two coplanar faces share the chord A-V1-V2-B with V1, V2 both
+        // collinear strictly between A and B. Face 1 meets V1 first, face 2
+        // (walking the chord backwards) meets V2 first: collapsing both in
+        // one pass left face 1 on (A,V2)+(V2,B) and face 2 on (B,V1)+(V1,A),
+        // four once-used edges where there had been none.
+        let mut topo = Topology::new();
+        let a = vertex(&mut topo, Point3::new(0.0, 0.0, 0.0));
+        let v1 = vertex(&mut topo, Point3::new(1.0, 0.0, 0.0));
+        let v2 = vertex(&mut topo, Point3::new(2.0, 0.0, 0.0));
+        let b = vertex(&mut topo, Point3::new(3.0, 0.0, 0.0));
+        let c = vertex(&mut topo, Point3::new(1.5, -1.0, 0.0));
+        let d = vertex(&mut topo, Point3::new(1.5, 1.0, 0.0));
+        let line = |topo: &mut Topology, p, q| topo.add_edge(Edge::new(p, q, EdgeCurve::Line));
+        let e_a1 = line(&mut topo, a, v1);
+        let e_12 = line(&mut topo, v1, v2);
+        let e_2b = line(&mut topo, v2, b);
+        let e_bd = line(&mut topo, b, d);
+        let e_da = line(&mut topo, d, a);
+        let e_ac = line(&mut topo, a, c);
+        let e_cb = line(&mut topo, c, b);
+        let surface = FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        };
+        let face = |topo: &mut Topology, edges: &[(EdgeId, bool)]| {
+            let oes = edges
+                .iter()
+                .map(|&(e, f)| OrientedEdge::new(e, f))
+                .collect();
+            let wire = topo.add_wire(Wire::new(oes, true).unwrap());
+            topo.add_face(Face::new(wire, Vec::new(), surface.clone()))
+        };
+        let f1 = face(
+            &mut topo,
+            &[
+                (e_a1, true),
+                (e_12, true),
+                (e_2b, true),
+                (e_bd, true),
+                (e_da, true),
+            ],
+        );
+        let f2 = face(
+            &mut topo,
+            &[
+                (e_2b, false),
+                (e_12, false),
+                (e_a1, false),
+                (e_ac, true),
+                (e_cb, true),
+            ],
+        );
+        let solid = wrap_in_solid(&mut topo, vec![f1, f2]);
+        let before = once_used_edges(&topo, &[f1, f2]);
+
+        let collapsed =
+            collapse_collinear_wire_vertices(&mut topo, solid, Tolerance::new()).unwrap();
+
+        assert_eq!(collapsed, 2, "both chord vertices collapse");
+        assert_eq!(
+            once_used_edges(&topo, &[f1, f2]),
+            before,
+            "the collapse must not unpair the chord"
+        );
+        let w1 = topo.wire(topo.face(f1).unwrap().outer_wire()).unwrap();
+        let w2 = topo.wire(topo.face(f2).unwrap().outer_wire()).unwrap();
+        assert_eq!(w1.edges().len(), 3);
+        assert_eq!(w2.edges().len(), 3);
+        let chord = w1.edges()[0].edge();
+        assert!(
+            w2.edges().iter().any(|oe| oe.edge() == chord),
+            "both faces must share the one A-B edge"
+        );
+        let chord = topo.edge(chord).unwrap();
+        assert_eq!(
+            [
+                chord.start().min(chord.end()),
+                chord.start().max(chord.end())
+            ],
+            [a.min(b), a.max(b)]
         );
     }
 

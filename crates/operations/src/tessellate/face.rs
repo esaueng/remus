@@ -191,7 +191,7 @@ pub(super) fn tessellate_with_uvs_floor(
                     false,
                     &remus_math::det_hash::DetHashMap::default(),
                     &mut mesh,
-                    &mut remus_math::det_hash::DetHashMap::default(),
+                    &mut super::PointMergeMap::default(),
                 )?;
                 let uvs = mesh
                     .positions

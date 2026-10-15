@@ -266,3 +266,31 @@ fn hammer_holder_arm_moves_plus_and_minus_five_with_blend_intact() {
         "equal outward/inward arm moves must have opposite volume deltas"
     );
 }
+
+#[test]
+fn blend_translation_refusal_names_the_same_face_on_every_attempt() {
+    // Several blend faces of one region can reach a non-invariant support;
+    // the refusal used to name whichever one a randomly seeded set yielded
+    // first, so the same request gave different messages from run to run.
+    let (source_topo, source) = import_hammer_holder();
+    let refusal = |face: FaceId| {
+        let mut topo = source_topo.clone();
+        move_faces(&mut topo, source, &[face], 0.5)
+            .err()
+            .map(|error| error.to_string())
+    };
+    let face = solid_faces(&source_topo, source)
+        .expect("solid faces")
+        .into_iter()
+        .find(|&face| {
+            matches!(
+                source_topo.face(face).expect("face").surface(),
+                FaceSurface::Plane { .. }
+            ) && refusal(face).is_some_and(|message| message.contains("non-invariant"))
+        })
+        .expect("the fixture has a planar face whose blend region reaches a non-invariant support");
+    let first = refusal(face).expect("refused");
+    for _ in 0..8 {
+        assert_eq!(refusal(face).expect("refused"), first);
+    }
+}

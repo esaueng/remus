@@ -28,7 +28,7 @@ use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire};
 use wasm_bindgen::prelude::*;
 
-use crate::error::{WasmError, validate_finite};
+use crate::error::{BrepIdProblem, WasmError, validate_finite};
 use crate::handles::{edge_id_to_u32, solid_id_to_u32};
 use crate::helpers::TOL;
 use crate::state::{CheckpointStore, GcsSketchState, HandleStore, SketchState};
@@ -689,6 +689,54 @@ impl BrepKernel {
         Ok(Point3::new(v.x(), v.y(), v.z()))
     }
 
+    /// Parse a `fromBREP` id: an integer in the `u32` id range.
+    ///
+    /// An integer outside `0..=u32::MAX` is refused rather than truncated,
+    /// since `as u32` would alias it onto a smaller id.
+    fn brep_id(
+        value: &serde_json::Value,
+        entity: &'static str,
+        location: impl Fn() -> String,
+    ) -> Result<u32, WasmError> {
+        let out_of_range = |id: String| WasmError::InvalidBrepId {
+            entity,
+            id,
+            location: location(),
+            problem: BrepIdProblem::OutOfRange,
+        };
+        if let Some(id) = value.as_u64() {
+            return u32::try_from(id).map_err(|_| out_of_range(id.to_string()));
+        }
+        if let Some(id) = value.as_i64() {
+            return Err(out_of_range(id.to_string()));
+        }
+        Err(WasmError::InvalidInput {
+            reason: format!(
+                "fromBREP {}: {entity} id must be an integer, got {value}",
+                location()
+            ),
+        })
+    }
+
+    /// Resolve a `fromBREP` id reference against the ids declared so far.
+    fn brep_ref<T: Copy>(
+        declared: &std::collections::HashMap<u32, T>,
+        value: &serde_json::Value,
+        entity: &'static str,
+        location: impl Fn() -> String,
+    ) -> Result<T, WasmError> {
+        let id = Self::brep_id(value, entity, &location)?;
+        declared
+            .get(&id)
+            .copied()
+            .ok_or_else(|| WasmError::InvalidBrepId {
+                entity,
+                id: id.to_string(),
+                location: location(),
+                problem: BrepIdProblem::Unknown,
+            })
+    }
+
     /// Internal implementation of `fromBREP` that returns `WasmError`
     /// for easier testing in native (non-WASM) contexts.
     #[allow(clippy::wrong_self_convention)]
@@ -717,10 +765,16 @@ impl BrepKernel {
         let mut vertex_map: std::collections::HashMap<u32, remus_topology::vertex::VertexId> =
             std::collections::HashMap::new();
 
-        for v in vertices {
-            let id = v["id"].as_u64().ok_or_else(|| WasmError::InvalidInput {
-                reason: "vertex missing id".into(),
-            })? as u32;
+        for (index, v) in vertices.iter().enumerate() {
+            let id = Self::brep_id(&v["id"], "vertex", || format!("vertices[{index}].id"))?;
+            if vertex_map.contains_key(&id) {
+                return Err(WasmError::InvalidBrepId {
+                    entity: "vertex",
+                    id: id.to_string(),
+                    location: format!("vertices[{index}].id"),
+                    problem: BrepIdProblem::Duplicate,
+                });
+            }
             let pos = v["position"]
                 .as_array()
                 .ok_or_else(|| WasmError::InvalidInput {
@@ -759,31 +813,22 @@ impl BrepKernel {
         let mut edge_map: std::collections::HashMap<u32, remus_topology::edge::EdgeId> =
             std::collections::HashMap::new();
 
-        for e in edges {
-            let id = e["id"].as_u64().ok_or_else(|| WasmError::InvalidInput {
-                reason: "edge missing id".into(),
-            })? as u32;
-            let start_v = e["startVertex"]
-                .as_u64()
-                .ok_or_else(|| WasmError::InvalidInput {
-                    reason: "edge missing startVertex".into(),
-                })? as u32;
-            let end_v = e["endVertex"]
-                .as_u64()
-                .ok_or_else(|| WasmError::InvalidInput {
-                    reason: "edge missing endVertex".into(),
-                })? as u32;
-
-            let start_vid = *vertex_map
-                .get(&start_v)
-                .ok_or_else(|| WasmError::InvalidInput {
-                    reason: format!("edge {id} references unknown start vertex {start_v}"),
-                })?;
-            let end_vid = *vertex_map
-                .get(&end_v)
-                .ok_or_else(|| WasmError::InvalidInput {
-                    reason: format!("edge {id} references unknown end vertex {end_v}"),
-                })?;
+        for (index, e) in edges.iter().enumerate() {
+            let id = Self::brep_id(&e["id"], "edge", || format!("edges[{index}].id"))?;
+            if edge_map.contains_key(&id) {
+                return Err(WasmError::InvalidBrepId {
+                    entity: "edge",
+                    id: id.to_string(),
+                    location: format!("edges[{index}].id"),
+                    problem: BrepIdProblem::Duplicate,
+                });
+            }
+            let start_vid = Self::brep_ref(&vertex_map, &e["startVertex"], "vertex", || {
+                format!("edges[{index}].startVertex")
+            })?;
+            let end_vid = Self::brep_ref(&vertex_map, &e["endVertex"], "vertex", || {
+                format!("edges[{index}].endVertex")
+            })?;
 
             let curve_type = e["curveType"].as_str().unwrap_or("line");
             let params = e.get("curveParams").and_then(|p| p.as_object());
@@ -1099,7 +1144,7 @@ impl BrepKernel {
             })?;
         let mut face_ids: Vec<remus_topology::face::FaceId> = Vec::new();
 
-        for f in faces {
+        for (face_index, f) in faces.iter().enumerate() {
             let outer_edge_ids =
                 f["outerWireEdges"]
                     .as_array()
@@ -1113,11 +1158,8 @@ impl BrepKernel {
             // Build oriented edges for the outer wire
             let mut oriented_edges = Vec::new();
             for (i, eid_val) in outer_edge_ids.iter().enumerate() {
-                let eid = eid_val.as_u64().ok_or_else(|| WasmError::InvalidInput {
-                    reason: "invalid edge id in outerWireEdges".into(),
-                })? as u32;
-                let edge_id = *edge_map.get(&eid).ok_or_else(|| WasmError::InvalidInput {
-                    reason: format!("wire references unknown edge {eid}"),
+                let edge_id = Self::brep_ref(&edge_map, eid_val, "edge", || {
+                    format!("faces[{face_index}].outerWireEdges[{i}]")
                 })?;
                 let forward = outer_orientations
                     .as_ref()
@@ -1386,44 +1428,48 @@ impl BrepKernel {
                 }
             };
 
-            // Handle inner wires (holes)
+            // Handle inner wires (holes). Every entry must resolve completely:
+            // skipping an unreadable entry or edge would drop the hole and
+            // still report success.
             let mut inner_wire_ids = Vec::new();
-            if let Some(inner_wires) = f["innerWires"].as_array() {
-                for iw in inner_wires {
-                    // Support both old format (array of edge IDs) and new format
-                    // (object with "edges" and "orientations")
-                    let (edge_arr, orient_arr) = if let Some(obj) = iw.as_object() {
-                        let e = obj
-                            .get("edges")
-                            .and_then(|v| v.as_array())
-                            .cloned()
-                            .unwrap_or_default();
-                        let o = obj.get("orientations").and_then(|v| v.as_array()).cloned();
-                        (e, o)
-                    } else if let Some(arr) = iw.as_array() {
-                        (arr.clone(), None)
-                    } else {
-                        continue;
-                    };
+            let inner_wires = match f.get("innerWires") {
+                None | Some(serde_json::Value::Null) => &[][..],
+                Some(value) => value.as_array().ok_or_else(|| WasmError::InvalidInput {
+                    reason: format!("fromBREP faces[{face_index}].innerWires must be an array"),
+                })?,
+            };
+            for (wire_index, iw) in inner_wires.iter().enumerate() {
+                // Support both old format (array of edge IDs) and new format
+                // (object with "edges" and "orientations")
+                let (edge_arr, orient_arr) = if let Some(obj) = iw.as_object() {
+                    let e = obj.get("edges").and_then(|v| v.as_array());
+                    let o = obj.get("orientations").and_then(|v| v.as_array());
+                    (e, o)
+                } else {
+                    (iw.as_array(), None)
+                };
+                let edge_arr = edge_arr.filter(|edges| !edges.is_empty()).ok_or_else(|| {
+                    WasmError::InvalidInput {
+                        reason: format!(
+                            "fromBREP faces[{face_index}].innerWires[{wire_index}] must be a \
+                             non-empty edge id array or {{edges, orientations}} object"
+                        ),
+                    }
+                })?;
 
-                    let mut inner_oriented = Vec::new();
-                    for (i, eid_val) in edge_arr.iter().enumerate() {
-                        if let Some(eid) = eid_val.as_u64()
-                            && let Some(&edge_id) = edge_map.get(&(eid as u32))
-                        {
-                            let fwd = orient_arr
-                                .as_ref()
-                                .and_then(|arr| arr.get(i))
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(true);
-                            inner_oriented.push(OrientedEdge::new(edge_id, fwd));
-                        }
-                    }
-                    if !inner_oriented.is_empty() {
-                        let inner_wire = Wire::new(inner_oriented, true)?;
-                        inner_wire_ids.push(self.topo_mut().add_wire(inner_wire));
-                    }
+                let mut inner_oriented = Vec::with_capacity(edge_arr.len());
+                for (i, eid_val) in edge_arr.iter().enumerate() {
+                    let edge_id = Self::brep_ref(&edge_map, eid_val, "edge", || {
+                        format!("faces[{face_index}].innerWires[{wire_index}].edges[{i}]")
+                    })?;
+                    let fwd = orient_arr
+                        .and_then(|arr| arr.get(i))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
+                    inner_oriented.push(OrientedEdge::new(edge_id, fwd));
                 }
+                let inner_wire = Wire::new(inner_oriented, true)?;
+                inner_wire_ids.push(self.topo_mut().add_wire(inner_wire));
             }
 
             let mut face = Face::new(wire_id, inner_wire_ids, surface);
@@ -2116,6 +2162,357 @@ mod json_brep_trim_tests {
             assert_eq!(edge.trim(), None);
             assert_eq!(edge.strict_domain().unwrap(), (0.0, 1.0));
         }
+    }
+}
+
+#[cfg(test)]
+mod json_brep_id_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use crate::error::BrepIdProblem;
+
+    /// Outward plane `(normal, d)` and counter-clockwise corner loop of each
+    /// unit-cube face; corner `i` sits at `(i & 1, i >> 1 & 1, i >> 2 & 1)`.
+    const CUBE_FACES: [([f64; 3], f64, [usize; 4]); 6] = [
+        ([0.0, 0.0, -1.0], 0.0, [0, 2, 3, 1]),
+        ([0.0, 0.0, 1.0], 1.0, [4, 5, 7, 6]),
+        ([0.0, -1.0, 0.0], 0.0, [0, 1, 5, 4]),
+        ([0.0, 1.0, 0.0], 1.0, [2, 6, 7, 3]),
+        ([-1.0, 0.0, 0.0], 0.0, [0, 4, 6, 2]),
+        ([1.0, 0.0, 0.0], 1.0, [1, 3, 7, 5]),
+    ];
+
+    /// A closed unit cube whose document ids differ from the arena indices
+    /// they will receive: vertex `i` is id `10 + i`, edge `k` is id `100 + k`.
+    fn cube_brep() -> serde_json::Value {
+        let vertices: Vec<_> = (0..8_u32)
+            .map(|i| {
+                let bit = |shift: u32| f64::from((i >> shift) & 1);
+                serde_json::json!({"id": 10 + i, "position": [bit(0), bit(1), bit(2)]})
+            })
+            .collect();
+        let mut edges: Vec<(usize, usize)> = Vec::new();
+        let mut faces = Vec::new();
+        for (normal, d, corners) in CUBE_FACES {
+            let mut ids = Vec::new();
+            let mut forward = Vec::new();
+            for k in 0..4 {
+                let (a, b) = (corners[k], corners[(k + 1) % 4]);
+                let key = (a.min(b), a.max(b));
+                let index = edges.iter().position(|&e| e == key).unwrap_or_else(|| {
+                    edges.push(key);
+                    edges.len() - 1
+                });
+                ids.push(100 + index);
+                forward.push(a < b);
+            }
+            faces.push(serde_json::json!({
+                "outerWireEdges": ids,
+                "outerWireOrientations": forward,
+                "surfaceType": "plane",
+                "surfaceParams": {"normal": normal, "d": d},
+                "reversed": false,
+                "innerWires": []
+            }));
+        }
+        let edges: Vec<_> = edges
+            .iter()
+            .enumerate()
+            .map(|(k, &(a, b))| {
+                serde_json::json!({
+                    "id": 100 + k,
+                    "curveType": "line",
+                    "startVertex": 10 + a,
+                    "endVertex": 10 + b
+                })
+            })
+            .collect();
+        serde_json::json!({"vertices": vertices, "edges": edges, "faces": faces})
+    }
+
+    fn counts(kernel: &BrepKernel) -> [usize; 5] {
+        let topo = kernel.topo();
+        [
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_solids(),
+        ]
+    }
+
+    fn volume(kernel: &mut BrepKernel, solid: u32) -> f64 {
+        let out = kernel.execute_batch(
+            &serde_json::json!([{"op": "volume", "args": {"solid": solid}}]).to_string(),
+        );
+        let results: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+        results[0]["ok"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("volume failed: {out}"))
+    }
+
+    /// Import `doc` into a kernel that already holds a box, expect the typed
+    /// id refusal, and check the session is untouched.
+    fn assert_id_refused(
+        doc: &serde_json::Value,
+        entity: &str,
+        id: &str,
+        location: &str,
+        problem: BrepIdProblem,
+    ) {
+        let (mut kernel, _box) = crate::kernel::test_fixtures::kernel_with_box();
+        let before = counts(&kernel);
+        let error = kernel.from_brep_impl(&doc.to_string()).unwrap_err();
+        match &error {
+            WasmError::InvalidBrepId {
+                entity: e,
+                id: i,
+                location: l,
+                problem: p,
+            } => assert_eq!(
+                (*e, i.as_str(), l.as_str(), *p),
+                (entity, id, location, problem),
+                "{error}"
+            ),
+            other => panic!("expected InvalidBrepId, got {other}"),
+        }
+        assert_eq!(
+            counts(&kernel),
+            before,
+            "refused import must not leak topology"
+        );
+    }
+
+    fn assert_input_refused(doc: &serde_json::Value, needle: &str) {
+        let (mut kernel, _box) = crate::kernel::test_fixtures::kernel_with_box();
+        let before = counts(&kernel);
+        let error = kernel.from_brep_impl(&doc.to_string()).unwrap_err();
+        assert!(
+            matches!(error, WasmError::InvalidInput { .. }) && error.to_string().contains(needle),
+            "expected InvalidInput containing {needle:?}, got {error}"
+        );
+        assert_eq!(
+            counts(&kernel),
+            before,
+            "refused import must not leak topology"
+        );
+    }
+
+    #[test]
+    fn cube_document_imports_closed_with_unit_volume() {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.from_brep_impl(&cube_brep().to_string()).unwrap();
+        assert!((volume(&mut kernel, solid) - 1.0).abs() < 1e-9);
+    }
+
+    /// Kernel review WASM-4: the second vertex declaring an id overwrote the
+    /// first, re-pointing every edge at the wrong corner, and the import
+    /// reported success.
+    #[test]
+    fn duplicate_vertex_id_is_refused() {
+        let mut doc = cube_brep();
+        doc["vertices"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"id": 16, "position": [0.0, 1.0, 7.0]}));
+        assert_id_refused(
+            &doc,
+            "vertex",
+            "16",
+            "vertices[8].id",
+            BrepIdProblem::Duplicate,
+        );
+    }
+
+    #[test]
+    fn duplicate_edge_id_is_refused() {
+        let mut doc = cube_brep();
+        let copy = doc["edges"][0].clone();
+        doc["edges"].as_array_mut().unwrap().push(copy);
+        assert_id_refused(
+            &doc,
+            "edge",
+            "100",
+            "edges[12].id",
+            BrepIdProblem::Duplicate,
+        );
+    }
+
+    /// `as u32` aliased 2^32 + n onto id n, both where an id is declared and
+    /// where it is referenced.
+    #[test]
+    fn ids_beyond_u32_are_refused_not_aliased() {
+        let alias = |id: u64| (1_u64 << 32) + id;
+
+        let mut doc = cube_brep();
+        doc["vertices"][7]["id"] = serde_json::json!(alias(17));
+        assert_id_refused(
+            &doc,
+            "vertex",
+            "4294967313",
+            "vertices[7].id",
+            BrepIdProblem::OutOfRange,
+        );
+
+        let mut doc = cube_brep();
+        doc["edges"][0]["startVertex"] = serde_json::json!(alias(10));
+        assert_id_refused(
+            &doc,
+            "vertex",
+            "4294967306",
+            "edges[0].startVertex",
+            BrepIdProblem::OutOfRange,
+        );
+
+        let mut doc = cube_brep();
+        doc["faces"][2]["outerWireEdges"][1] = serde_json::json!(alias(105));
+        assert_id_refused(
+            &doc,
+            "edge",
+            "4294967401",
+            "faces[2].outerWireEdges[1]",
+            BrepIdProblem::OutOfRange,
+        );
+
+        let mut doc = cube_brep();
+        doc["edges"][3]["id"] = serde_json::json!(-1);
+        assert_id_refused(&doc, "edge", "-1", "edges[3].id", BrepIdProblem::OutOfRange);
+    }
+
+    #[test]
+    fn unknown_references_are_refused() {
+        let mut doc = cube_brep();
+        doc["edges"][4]["endVertex"] = serde_json::json!(99);
+        assert_id_refused(
+            &doc,
+            "vertex",
+            "99",
+            "edges[4].endVertex",
+            BrepIdProblem::Unknown,
+        );
+
+        let mut doc = cube_brep();
+        doc["faces"][0]["outerWireEdges"][3] = serde_json::json!(999);
+        assert_id_refused(
+            &doc,
+            "edge",
+            "999",
+            "faces[0].outerWireEdges[3]",
+            BrepIdProblem::Unknown,
+        );
+    }
+
+    /// Kernel review WASM-4: an inner-wire edge with an unknown id was
+    /// skipped, so the hole was silently dropped and the import succeeded.
+    #[test]
+    fn unknown_inner_wire_edge_is_refused() {
+        let mut doc = cube_brep();
+        doc["faces"][1]["innerWires"] = serde_json::json!([[999]]);
+        assert_id_refused(
+            &doc,
+            "edge",
+            "999",
+            "faces[1].innerWires[0].edges[0]",
+            BrepIdProblem::Unknown,
+        );
+
+        let mut doc = cube_brep();
+        doc["faces"][1]["innerWires"] =
+            serde_json::json!([{"edges": [100, 999], "orientations": [true, true]}]);
+        assert_id_refused(
+            &doc,
+            "edge",
+            "999",
+            "faces[1].innerWires[0].edges[1]",
+            BrepIdProblem::Unknown,
+        );
+    }
+
+    #[test]
+    fn unreadable_inner_wire_entries_are_refused() {
+        for (inner, needle) in [
+            (serde_json::json!(["x"]), "innerWires[0] must be"),
+            (serde_json::json!([[]]), "innerWires[0] must be"),
+            (
+                serde_json::json!([{"orientations": [true]}]),
+                "innerWires[0] must be",
+            ),
+            (
+                serde_json::json!({"edges": [100]}),
+                "innerWires must be an array",
+            ),
+        ] {
+            let mut doc = cube_brep();
+            doc["faces"][1]["innerWires"] = inner;
+            assert_input_refused(&doc, needle);
+        }
+        let mut doc = cube_brep();
+        doc["faces"][1]["innerWires"] = serde_json::json!([[100.5]]);
+        assert_input_refused(&doc, "edge id must be an integer");
+    }
+
+    /// Both inner-wire spellings still import; the refusals above do not
+    /// reject well-formed holes.
+    #[test]
+    fn inner_wires_in_both_formats_still_import() {
+        let mut doc = cube_brep();
+        let square = [[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]];
+        for (k, [x, y]) in square.iter().enumerate() {
+            for (z, base) in [(1.0, 20), (0.0, 30)] {
+                doc["vertices"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({"id": base + k, "position": [x, y, z]}));
+            }
+        }
+        for (base_v, base_e) in [(20, 200), (30, 300)] {
+            for k in 0..4 {
+                doc["edges"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({
+                        "id": base_e + k,
+                        "curveType": "line",
+                        "startVertex": base_v + k,
+                        "endVertex": base_v + (k + 1) % 4
+                    }));
+            }
+        }
+        doc["faces"][1]["innerWires"] = serde_json::json!([[200, 201, 202, 203]]);
+        doc["faces"][0]["innerWires"] = serde_json::json!([{
+            "edges": [303, 302, 301, 300],
+            "orientations": [false, false, false, false]
+        }]);
+
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.from_brep_impl(&doc.to_string()).unwrap();
+        let solid = kernel.resolve_solid(solid).unwrap();
+        let faces = remus_topology::explorer::solid_faces(kernel.topo(), solid).unwrap();
+        let holes: Vec<usize> = faces
+            .iter()
+            .map(|&f| kernel.topo().face(f).unwrap().inner_wires().len())
+            .collect();
+        assert_eq!(holes, [1, 1, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn id_refusal_has_a_structured_wire_form() {
+        let error = WasmError::InvalidBrepId {
+            entity: "vertex",
+            id: "16".into(),
+            location: "vertices[7].id".into(),
+            problem: BrepIdProblem::Duplicate,
+        };
+        let structured =
+            serde_json::to_value(crate::error::StructuredWasmError::from(error)).unwrap();
+        assert_eq!(structured["code"], "invalid_argument");
+        assert_eq!(structured["details"]["argument"], "vertices[7].id");
+        assert_eq!(structured["details"]["problem"], "duplicate");
+        assert_eq!(
+            structured["message"],
+            "invalid input: fromBREP vertices[7].id: vertex id 16 is a duplicate"
+        );
     }
 }
 

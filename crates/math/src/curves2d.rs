@@ -264,7 +264,9 @@ impl NurbsCurve2D {
     ///
     /// # Errors
     /// Returns an error if knot vector or weights are inconsistent with
-    /// the number of control points and degree.
+    /// the number of control points and degree, if the degree is zero or not
+    /// below the control-point count, if the knots are non-finite, decreasing
+    /// or span no domain, or if a weight is zero or negative.
     pub fn new(
         degree: usize,
         knots: Vec<f64>,
@@ -272,6 +274,23 @@ impl NurbsCurve2D {
         weights: Vec<f64>,
     ) -> Result<Self, MathError> {
         let n = control_points.len();
+        if n == 0 {
+            return Err(MathError::EmptyInput);
+        }
+        // The structural checks of the 3D curve: evaluation indexes
+        // `span - degree`, so a degree of at least the pole count underflows,
+        // and an unordered or collapsed knot vector or a zero or negative
+        // weight evaluates to garbage or a division by zero. Non-finite poles
+        // and weights are not refused here: pcurve validation reports them
+        // against their use, and arena documents bypass this constructor.
+        // Checking the degree first also keeps the knot count below from
+        // overflowing on a hostile degree.
+        if degree == 0 || degree >= n {
+            return Err(MathError::InvalidDegree {
+                degree,
+                control_points: n,
+            });
+        }
         let expected_knots = n + degree + 1;
         if knots.len() != expected_knots {
             return Err(MathError::InvalidKnotVector {
@@ -285,8 +304,10 @@ impl NurbsCurve2D {
                 got: weights.len(),
             });
         }
-        if n == 0 {
-            return Err(MathError::EmptyInput);
+        crate::nurbs::validate_knot_values(&knots)?;
+        crate::nurbs::validate_knot_domain(&knots, degree, n)?;
+        if let Some((index, &value)) = weights.iter().enumerate().find(|(_, w)| **w <= 0.0) {
+            return Err(MathError::InvalidWeightValue { index, value });
         }
         Ok(Self {
             degree,
@@ -845,8 +866,7 @@ mod tests {
 
     #[test]
     fn nurbs2d_empty_input_error() {
-        // degree=0, expected_knots = 0+0+1 = 1; provide 1 knot, 0 control points, 0 weights.
-        // The weights length check passes (both 0), then the EmptyInput guard fires.
+        // No control points: the EmptyInput guard fires before any other check.
         let result = NurbsCurve2D::new(0, vec![0.0], vec![], vec![]);
         assert!(
             matches!(result, Err(MathError::EmptyInput)),

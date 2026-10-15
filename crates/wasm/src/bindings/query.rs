@@ -421,7 +421,12 @@ impl BrepKernel {
     ///
     /// # Errors
     ///
-    /// Returns an error if the data is invalid or reconstruction fails.
+    /// Returns an error if the data is invalid or reconstruction fails. In
+    /// the JSON format every vertex and edge id must be an integer in the
+    /// `u32` range, declared once, and every reference (edge endpoints,
+    /// outer and inner wire edges) must name a declared id; an unreadable
+    /// inner-wire entry is refused rather than skipped. A refusal restores the
+    /// live topology; allocated handles stay retired and are never reused.
     #[wasm_bindgen(js_name = "fromBREP")]
     #[allow(clippy::wrong_self_convention)]
     pub fn from_brep(&mut self, data: &str) -> Result<u32, JsError> {

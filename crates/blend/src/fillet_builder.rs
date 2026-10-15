@@ -155,7 +155,7 @@ impl<'a> FilletBuilder<'a> {
         let original_faces: Vec<FaceId> = topo.shell(shell_id)?.faces().to_vec();
         // The result shares every face it does not rebuild with the input, so
         // boundary rewrites go copy-on-write through this scope.
-        let scope = EditScope::new(topo, original_faces.iter().copied())?;
+        let mut scope = EditScope::new(topo, original_faces.iter().copied())?;
 
         // Track which faces are touched (adjacent to a fillet edge).
         let mut touched_faces: HashSet<FaceId> = HashSet::new();
@@ -2838,6 +2838,9 @@ pub fn equal_radius_cap(
     radius: f64,
     tol: remus_math::tolerance::Tolerance,
 ) -> Option<EqualRadiusCap> {
+    if !radius.is_finite() || radius <= 0.0 {
+        return None;
+    }
     let EdgeCurve::Circle(circle) = edge.curve() else {
         return None;
     };
@@ -2975,6 +2978,20 @@ pub fn blend_cross_sections(
     fractions: &[f64],
 ) -> Result<Vec<BlendCrossSection>, BlendError> {
     use remus_math::vec::Point3;
+
+    if !radius.is_finite() || radius <= 0.0 {
+        return Err(BlendError::InvalidInput {
+            reason: format!("blend radius must be finite and positive, got {radius}"),
+        });
+    }
+    if let Some(fraction) = fractions
+        .iter()
+        .find(|f| !f.is_finite() || !(0.0..=1.0).contains(*f))
+    {
+        return Err(BlendError::InvalidInput {
+            reason: format!("cross-section fraction {fraction} must be finite and in [0, 1]"),
+        });
+    }
 
     {
         let edge = topo.edge(edge_id)?;
@@ -3301,7 +3318,7 @@ mod tests {
         let spine_edge = topo.add_edge(Edge::new(spine_vertex, spine_vertex, EdgeCurve::Line));
         let mut live = std::collections::HashSet::new();
         live.insert(wire_id);
-        let scope = EditScope::new(&topo, [face_id]).unwrap();
+        let mut scope = EditScope::new(&topo, [face_id]).unwrap();
         let mut replacements = DetHashMap::default();
         let patched = stitch_end(
             &mut topo,
