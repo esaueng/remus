@@ -114,8 +114,8 @@ historical predecessor-line records, retained for provenance. The
   non-positive radius, semi-axis or focal length, an ellipse minor axis longer
   than its major axis, a non-finite value or a cone
   half-angle outside (0, π/2) is refused with the new
-  `IoError::InvalidGeometry { code, reason }` (WASM: invalid argument with
-  `kernelCode`) instead of decoding `Ok` (B98, review IO-7). Native callers
+  `IoError::InvalidGeometry { code, reason }` (WASM: the arena bindings' error
+  message names the code) instead of decoding `Ok` (B98, review IO-7). Native callers
   matching `IoError` exhaustively need an arm for the new variant.
 * **algo,check,operations,wasm:** the sphere-minus-box cut in finding F6
   retains the seven spherical octants with closed meshes and correct material
