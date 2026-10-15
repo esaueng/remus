@@ -425,3 +425,129 @@ fn openzcad_nurbs_fillet_plate_volume_reports_the_files_parabolic_content() {
         "solid_volume {measured:.4} strayed from the file content {FILE_CONTENT}"
     );
 }
+
+/// Largest deviation of any pcurve use of `solid` from its edge, and how
+/// many uses were measured.
+///
+/// Uses the strict `SameParameter` proof where one applies. Elsewhere (a
+/// rational-NURBS pcurve of a circle, whose parameter is not angular, or a
+/// circle on a cylinder) the use is measured without parameters: sampled
+/// points lifted through the face's chart must lie on the edge's carrier,
+/// and the pcurve's ends on the use's oriented vertices.
+fn max_pcurve_deviation(topo: &Topology, solid: SolidId) -> (f64, usize) {
+    use remus_math::frame::Frame3;
+    use remus_math::vec::Point3;
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::face::FaceSurface;
+    use remus_topology::validation::{CurveUseValidationError, check_same_parameter_strict};
+    let mut worst = 0.0_f64;
+    let mut measured = 0;
+    for face in solid_faces(topo, solid).expect("faces") {
+        let surface = topo.face(face).expect("face").surface().clone();
+        for (edge, forward, pcurve) in topo.pcurves_for_face(face) {
+            let deviation = match check_same_parameter_strict(topo, edge, face, forward, 64) {
+                Ok(Some(report)) => report.max_deviation,
+                Ok(None) | Err(CurveUseValidationError::SameParameterProofUnavailable { .. }) => {
+                    let lift = |t: f64| {
+                        let uv = pcurve.evaluate(t);
+                        match &surface {
+                            FaceSurface::Plane { normal, d } => {
+                                let chart = Frame3::from_normal(
+                                    Point3::new(0.0, 0.0, 0.0) + *normal * *d,
+                                    *normal,
+                                )
+                                .expect("plane chart");
+                                chart.origin + chart.x * uv.x() + chart.y * uv.y()
+                            }
+                            other => other.evaluate(uv.x(), uv.y()).expect("surface point"),
+                        }
+                    };
+                    let edge_data = topo.edge(edge).expect("edge");
+                    let start = topo.vertex(edge_data.start()).expect("vertex").point();
+                    let end = topo.vertex(edge_data.end()).expect("vertex").point();
+                    let (first, last) = if forward { (start, end) } else { (end, start) };
+                    let mut deviation = (lift(pcurve.t_start()) - first)
+                        .length()
+                        .max((lift(pcurve.t_end()) - last).length());
+                    for k in 0..=64 {
+                        let f = f64::from(k) / 64.0;
+                        let point =
+                            lift(pcurve.t_start() + f * (pcurve.t_end() - pcurve.t_start()));
+                        let off_carrier = match edge_data.curve() {
+                            EdgeCurve::Circle(circle) => {
+                                let offset = point - circle.center();
+                                let height = offset.dot(circle.normal());
+                                let radial = (offset - circle.normal() * height).length();
+                                height.hypot(radial - circle.radius())
+                            }
+                            EdgeCurve::Line => {
+                                let axis = (end - start).normalize().expect("line edge");
+                                let offset = point - start;
+                                (offset - axis * offset.dot(axis)).length()
+                            }
+                            other => panic!("no carrier measure for a {} edge", other.type_tag()),
+                        };
+                        deviation = deviation.max(off_carrier);
+                    }
+                    deviation
+                }
+                Err(error) => panic!("pcurve use {edge:?} on {face:?} is invalid: {error}"),
+            };
+            worst = worst.max(deviation);
+            measured += 1;
+        }
+    }
+    (worst, measured)
+}
+
+/// OPS-2 (2026-10-14 kernel review): transforms rebuilt plane and cylinder
+/// charts canonically but kept the pcurves in the old chart, so a 10 mm
+/// translation left every pcurve 10 mm off its edge and STEP export
+/// refused the body. Each pcurve must follow its face through translations,
+/// rotations, reflections and uniform scales, in place and on a copy.
+#[test]
+fn transformed_fillet_plate_keeps_pcurves_on_their_edges() {
+    use remus_operations::copy::copy_and_transform_solid;
+
+    let (imported, imported_solid) = import_one(FILLETED_PLATE);
+    let (before, measured) = max_pcurve_deviation(&imported, imported_solid);
+    assert_eq!(measured, 48);
+    assert!(before < 1e-9, "imported deviation {before}");
+
+    let matrices = [
+        ("translate", Mat4::translation(10.0, 0.0, 0.0)),
+        (
+            "rotate",
+            Mat4::translation(1.0, -2.0, 3.0) * Mat4::rotation_z(0.7) * Mat4::rotation_x(0.3),
+        ),
+        ("mirror", Mat4::scale(-1.0, 1.0, 1.0)),
+        (
+            "mirrored rotation",
+            Mat4::rotation_y(1.1) * Mat4::scale(1.0, 1.0, -1.0),
+        ),
+        (
+            "uniform scale",
+            Mat4::translation(-4.0, 0.5, 2.0) * Mat4::scale(2.5, 2.5, 2.5),
+        ),
+    ];
+    for (label, matrix) in matrices {
+        let mut in_place = imported.clone();
+        transform_solid(&mut in_place, imported_solid, &matrix).expect("transform");
+        let mut copied = imported.clone();
+        let copy = copy_and_transform_solid(&mut copied, imported_solid, &matrix).expect("copy");
+        for (path, topo, solid) in [
+            ("transform_solid", &in_place, imported_solid),
+            ("copy_and_transform_solid", &copied, copy),
+        ] {
+            let (deviation, measured) = max_pcurve_deviation(topo, solid);
+            assert_eq!(measured, 48, "{label}/{path}: pcurves were dropped");
+            assert!(
+                deviation < 1e-7,
+                "{label}/{path}: pcurves drifted {deviation} off their edges"
+            );
+            let step = write_step(topo, &[solid])
+                .unwrap_or_else(|error| panic!("{label}/{path}: STEP export failed: {error}"));
+            assert_eq!(step.matches("PCURVE(").count(), 48, "{label}/{path}");
+        }
+    }
+}
