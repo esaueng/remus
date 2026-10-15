@@ -19,7 +19,8 @@ their numbers.
   Attribution comes from callgrind (`callgrind_annotate --inclusive=yes`).
   Base and candidate runs were alternated.
 - Digest: per face, in solid order, the exact surface `Debug`, orientation and
-  every wire's traversal (vertex position bits, curve, trim, tolerance).
+  every wire's traversal (vertex position bits, curve, trim, tolerance, and
+  each use's stored pcurve and periodic winding).
   A `canonical` digest of the same content ignores face order and the start of
   each closed wire. Mesh workloads digest position bits, normal bits and indices.
 - glibc selects libm variants by CPU feature, so digests are compared native
@@ -56,7 +57,10 @@ The ranges come from the rolling-ball and v2 fillets, which iterate std
 | `copy_solid_spliced`: authority aligned past spliced hole loops | [#1136](https://github.com/esaueng/remus/pull/1136) | `seq_cuts_64` | 135.2M → 107.8M | −20.3% |
 | WASM-3: no rollback for a read-only op that never wrote | [#1137](https://github.com/esaueng/remus/pull/1137) | 32-query batch on a 64-hole plate | 581.9M → 1.1M (batch) | −99.8% |
 
-Every PR measured its candidate against base `0186a84` alone. The fuse PRs
+Every PR measured its candidate against base `0186a84` alone. With the
+digest extended to coedge authority, #1119, #1128, #1130 and #1136 still
+match base on every boolean workload, and #1111 keeps the fillets' canonical
+digest. The fuse PRs
 touch different phases of the same workloads, so their gains compound.
 
 ## Below the bar
