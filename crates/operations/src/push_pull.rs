@@ -506,7 +506,7 @@ pub(crate) fn refuse_swept_region_intersections(
             }
         }
 
-        let original = crate::measure::face_set_bounding_box(topo, &[moved_face])?;
+        let original = crate::measure::face_bounding_box(topo, moved_face)?;
         let destination = Aabb3 {
             min: original.min + delta,
             max: original.max + delta,
@@ -519,7 +519,7 @@ pub(crate) fn refuse_swept_region_intersections(
             {
                 continue;
             }
-            let candidate_box = crate::measure::face_set_bounding_box(topo, &[candidate])?;
+            let candidate_box = crate::measure::face_bounding_box(topo, candidate)?;
             if !original.intersects(candidate_box) && swept.intersects(candidate_box) {
                 return Err(remus_offset::OffsetError::TopologyChange {
                     face: Some(moved_face),

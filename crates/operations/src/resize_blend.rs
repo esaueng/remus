@@ -8,6 +8,7 @@
 
 use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::rc::Rc;
 
 use remus_blend::BlendResult;
 use remus_blend::fillet_builder::FilletBuilder;
@@ -15,6 +16,7 @@ use remus_math::curves::Circle3D;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
+use remus_topology::adjacency::AdjacencyIndex;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::journal::EntityKey;
@@ -679,7 +681,7 @@ fn tangent_across(
         first.index().max(second.index()),
     );
     if let Some(identity) = identity {
-        let hit = TANGENCY_MEMO.with(|memo| {
+        let hit = DISCOVERY_MEMO.with(|memo| {
             memo.borrow()
                 .as_ref()
                 .filter(|memo| memo.identity == Some(identity))
@@ -692,52 +694,96 @@ fn tangent_across(
     let pair = HashSet::from([first, second]);
     let tangent = crate::query::edge_is_tangent(topo, edge, &pair)?;
     if let Some(identity) = identity {
-        TANGENCY_MEMO.with(|memo| {
+        DISCOVERY_MEMO.with(|memo| {
             if let Some(memo) = memo.borrow_mut().as_mut() {
-                if memo.identity != Some(identity) {
-                    memo.identity = Some(identity);
-                    memo.verdicts.clear();
-                }
-                memo.verdicts.insert(key, tangent);
+                memo.current(identity).verdicts.insert(key, tangent);
             }
         });
     }
     Ok(tangent)
 }
 
-/// Edge tangency verdicts kept for the duration of one blend-aware move.
+/// The solid's adjacency index, shared while the topology is unchanged
+/// inside a [`DiscoveryMemoScope`] and built afresh otherwise.
+fn solid_adjacency(topo: &Topology, solid: SolidId) -> Result<Rc<AdjacencyIndex>, OperationsError> {
+    let identity = (!topo.is_cache_poisoned()).then(|| topo.cache_identity());
+    if let Some(identity) = identity {
+        let hit = DISCOVERY_MEMO.with(|memo| {
+            memo.borrow()
+                .as_ref()
+                .filter(|memo| memo.identity == Some(identity))
+                .and_then(|memo| {
+                    memo.adjacency
+                        .iter()
+                        .find(|(indexed, _)| *indexed == solid)
+                        .map(|(_, adjacency)| Rc::clone(adjacency))
+                })
+        });
+        if let Some(adjacency) = hit {
+            return Ok(adjacency);
+        }
+    }
+    let adjacency = Rc::new(topo.build_adjacency(solid)?);
+    if let Some(identity) = identity {
+        DISCOVERY_MEMO.with(|memo| {
+            if let Some(memo) = memo.borrow_mut().as_mut() {
+                memo.current(identity)
+                    .adjacency
+                    .push((solid, Rc::clone(&adjacency)));
+            }
+        });
+    }
+    Ok(adjacency)
+}
+
+/// Blend discovery state kept for the duration of one blend-aware move.
 ///
-/// Blend discovery asks the same (edge, face pair) question many times per
-/// move: the guard, the seed loop and every candidate band re-walk the same
-/// edges, and each answer projects edge samples onto both faces. The verdict
-/// is a pure function of the topology, so the entries are tagged with its
-/// cache identity and dropped as soon as any mutation or rewind changes it.
-struct TangencyMemo {
+/// Discovery asks the same (edge, face pair) question many times per move:
+/// the guard, the seed loop and every candidate band re-walk the same edges,
+/// and each answer projects edge samples onto both faces. Each of those
+/// helpers also indexed the solid's adjacency on its own. Both are pure
+/// functions of the topology, so the entries are tagged with its cache
+/// identity and dropped as soon as any mutation or rewind changes it.
+struct DiscoveryMemo {
     identity: Option<remus_topology::CacheIdentity>,
     verdicts: remus_math::det_hash::DetLookupHashMap<(usize, usize, usize), bool>,
+    adjacency: Vec<(SolidId, Rc<AdjacencyIndex>)>,
+}
+
+impl DiscoveryMemo {
+    /// This memo with every entry of another topology state dropped.
+    fn current(&mut self, identity: remus_topology::CacheIdentity) -> &mut Self {
+        if self.identity != Some(identity) {
+            self.identity = Some(identity);
+            self.verdicts.clear();
+            self.adjacency.clear();
+        }
+        self
+    }
 }
 
 thread_local! {
-    static TANGENCY_MEMO: std::cell::RefCell<Option<TangencyMemo>> =
+    static DISCOVERY_MEMO: std::cell::RefCell<Option<DiscoveryMemo>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Enables [`TANGENCY_MEMO`] until dropped. A nested scope leaves the
+/// Enables [`DISCOVERY_MEMO`] until dropped. A nested scope leaves the
 /// enclosing one in charge.
-struct TangencyMemoScope {
+struct DiscoveryMemoScope {
     owner: bool,
 }
 
-impl TangencyMemoScope {
+impl DiscoveryMemoScope {
     fn enter() -> Self {
-        let owner = TANGENCY_MEMO.with(|memo| {
+        let owner = DISCOVERY_MEMO.with(|memo| {
             let mut memo = memo.borrow_mut();
             if memo.is_some() {
                 return false;
             }
-            *memo = Some(TangencyMemo {
+            *memo = Some(DiscoveryMemo {
                 identity: None,
                 verdicts: remus_math::det_hash::DetLookupHashMap::default(),
+                adjacency: Vec::new(),
             });
             true
         });
@@ -745,10 +791,10 @@ impl TangencyMemoScope {
     }
 }
 
-impl Drop for TangencyMemoScope {
+impl Drop for DiscoveryMemoScope {
     fn drop(&mut self) {
         if self.owner {
-            TANGENCY_MEMO.with(|memo| memo.borrow_mut().take());
+            DISCOVERY_MEMO.with(|memo| memo.borrow_mut().take());
         }
     }
 }
@@ -785,7 +831,7 @@ pub fn blend_region(
         .into());
     };
     let tol = Tolerance::new();
-    let adjacency = topo.build_adjacency(solid)?;
+    let adjacency = solid_adjacency(topo, solid)?;
     let mut band = HashSet::from([seed]);
     let mut queue = VecDeque::from([seed]);
 
@@ -828,7 +874,7 @@ fn blend_region_supports(
     solid: SolidId,
     faces: &[FaceId],
 ) -> Result<Vec<FaceId>, OperationsError> {
-    let adjacency = topo.build_adjacency(solid)?;
+    let adjacency = solid_adjacency(topo, solid)?;
     let band: HashSet<FaceId> = faces.iter().copied().collect();
     let mut supports = HashSet::new();
     for &band_face in faces {
@@ -974,7 +1020,7 @@ pub(crate) fn move_planar_faces_with_blends(
     faces: &[FaceId],
     distance: f64,
 ) -> Result<Option<BlendMoveEntities>, OperationsError> {
-    let _tangency_memo = TangencyMemoScope::enter();
+    let _discovery_memo = DiscoveryMemoScope::enter();
     if adjacent_analytic_blend_seed(topo, solid, faces)?.is_none() {
         return Ok(None);
     }
@@ -1379,7 +1425,7 @@ fn adjacent_blend_seed(
     selected_faces: &[FaceId],
 ) -> Result<Option<FaceId>, OperationsError> {
     let selected: HashSet<FaceId> = selected_faces.iter().copied().collect();
-    let adjacency = topo.build_adjacency(solid)?;
+    let adjacency = solid_adjacency(topo, solid)?;
     let mut ordered = selected_faces.to_vec();
     ordered.sort_unstable_by_key(|face| face.index());
     for selected_face in ordered {
@@ -1409,7 +1455,7 @@ fn adjacent_analytic_blend_seed(
     selected_faces: &[FaceId],
 ) -> Result<Option<FaceId>, OperationsError> {
     let selected: HashSet<FaceId> = selected_faces.iter().copied().collect();
-    let adjacency = topo.build_adjacency(solid)?;
+    let adjacency = solid_adjacency(topo, solid)?;
     let mut ordered = selected_faces.to_vec();
     ordered.sort_unstable_by_key(|face| face.index());
     for selected_face in ordered {
@@ -1499,7 +1545,7 @@ fn translation_invariant_blend_region(
     direction: Vec3,
 ) -> Result<BlendTranslationRegion, OperationsError> {
     let selected: HashSet<FaceId> = selected_faces.iter().copied().collect();
-    let adjacency = topo.build_adjacency(solid)?;
+    let adjacency = solid_adjacency(topo, solid)?;
     let mut region = HashSet::new();
     let mut queue = VecDeque::new();
 
@@ -1604,7 +1650,9 @@ struct TranslatedFacesChange {
 }
 
 /// Volume change of a rigid translation of `faces`, read from those faces
-/// alone.
+/// alone. `translated` names each face's image in `after`; the integrals
+/// read face content only, never handles, so an image under a new handle
+/// reads as the same face under the old one would.
 ///
 /// Translating a face set S by δ while every face that bounds S is invariant
 /// under δ sweeps a prism of volume δ · ∫_S n dA: on S the boundary moves with
@@ -1649,10 +1697,15 @@ fn translated_faces_volume_change(
     after: &Topology,
     solid: SolidId,
     faces: &HashSet<FaceId>,
+    translated: impl Fn(FaceId) -> Option<FaceId>,
     delta: Vec3,
 ) -> Result<Option<TranslatedFacesChange>, OperationsError> {
     use remus_check::properties::face_cache::integrate_face_volume_about_memoized;
 
+    #[cfg(test)]
+    if translation_oracle_tests::FORCE_MESH_VOLUME.with(std::cell::Cell::get) {
+        return Ok(None);
+    }
     let reference = remus_check::properties::integration_reference(before, solid)?;
     let order = remus_check::properties::PropertiesOptions::default().gauss_order;
     let mut ordered: Vec<FaceId> = faces.iter().copied().collect();
@@ -1660,9 +1713,12 @@ fn translated_faces_volume_change(
     let mut change = 0.0;
     let mut area = 0.0;
     for face in ordered {
+        let moved = translated(face).ok_or_else(|| {
+            reconstruction(format!("translated face {} has no image", face.index()))
+        })?;
         let (Ok(was), Ok(now)) = (
             integrate_face_volume_about_memoized(before, face, order, reference),
-            integrate_face_volume_about_memoized(after, face, order, reference),
+            integrate_face_volume_about_memoized(after, moved, order, reference),
         ) else {
             return Ok(None);
         };
@@ -1785,10 +1841,19 @@ fn translate_face_surface(
     face: FaceId,
     delta: Vec3,
 ) -> Result<(), OperationsError> {
-    let translated = match topo.face(face)?.surface().clone() {
+    let translated = translated_face_surface(topo.face(face)?.surface(), delta)?;
+    topo.face_mut(face)?.set_surface(translated);
+    Ok(())
+}
+
+fn translated_face_surface(
+    surface: &FaceSurface,
+    delta: Vec3,
+) -> Result<FaceSurface, OperationsError> {
+    Ok(match surface {
         FaceSurface::Plane { normal, d } => FaceSurface::Plane {
-            normal,
-            d: normal.dot(delta).mul_add(1.0, d),
+            normal: *normal,
+            d: normal.dot(delta).mul_add(1.0, *d),
         },
         FaceSurface::Cylinder(surface) => FaceSurface::Cylinder(surface.translated(delta)),
         FaceSurface::Cone(surface) => FaceSurface::Cone(surface.translated(delta)),
@@ -1809,9 +1874,62 @@ fn translate_face_surface(
                 surface.weights().to_vec(),
             )?)
         }
-    };
-    topo.face_mut(face)?.set_surface(translated);
-    Ok(())
+    })
+}
+
+/// What a blend translation moves: these vertices and faces by `delta`,
+/// these edges' curves through the matching matrix.
+struct BlendTranslation {
+    vertices: HashSet<VertexId>,
+    edges: Vec<EdgeId>,
+    faces: HashSet<FaceId>,
+    delta: Vec3,
+}
+
+impl BlendTranslation {
+    fn matrix(&self) -> remus_math::mat::Mat4 {
+        remus_math::mat::Mat4::translation(self.delta.x(), self.delta.y(), self.delta.z())
+    }
+
+    /// The translated geometry, as the copy of the moved solid takes it.
+    fn replacements(
+        &self,
+        topo: &Topology,
+    ) -> Result<crate::copy::CopyReplacements, OperationsError> {
+        let mut replacements = crate::copy::CopyReplacements::default();
+        for &vertex in &self.vertices {
+            let point = topo.vertex(vertex)?.point();
+            replacements
+                .vertices
+                .insert(vertex.index(), point + self.delta);
+        }
+        let matrix = self.matrix();
+        for &edge in &self.edges {
+            let image = crate::transform::transformed_edge_geometry(topo.edge(edge)?, &matrix)?;
+            replacements.edges.insert(edge.index(), image);
+        }
+        for &face in &self.faces {
+            let surface = translated_face_surface(topo.face(face)?.surface(), self.delta)?;
+            replacements.surfaces.insert(face.index(), surface);
+        }
+        Ok(replacements)
+    }
+
+    /// A whole-document copy of `topo` with the translation applied in
+    /// place, under the input's handles. Only the refusal paths that report
+    /// against those handles, or mesh the translated body, need one.
+    fn applied_to_copy_of(&self, topo: &Topology) -> Result<Topology, OperationsError> {
+        let mut work = topo.clone();
+        for &vertex in &self.vertices {
+            let point = work.vertex(vertex)?.point();
+            work.vertex_mut(vertex)?.set_point(point + self.delta);
+        }
+        crate::transform::transform_edges(&mut work, &self.edges, &self.matrix())?;
+        for &face in &self.faces {
+            translate_face_surface(&mut work, face, self.delta)?;
+        }
+        Ok(work)
+    }
 }
 
 fn face_anchor(topo: &Topology, face: FaceId) -> Result<remus_math::vec::Point3, OperationsError> {
@@ -1907,13 +2025,12 @@ fn move_translation_invariant_blend_region(
     let region = translation_invariant_blend_region(topo, solid, faces, direction)?;
     let delta = direction * distance;
     let source_counts = remus_topology::explorer::solid_entity_counts(topo, solid)?;
-    let mut work = topo.clone();
     let mut moved_faces: HashSet<FaceId> = faces.iter().copied().collect();
     moved_faces.extend(region.translated_faces);
     moved_faces.extend(region.translated_nurbs_supports);
-    let adjacency = work.build_adjacency(solid)?;
+    let adjacency = solid_adjacency(topo, solid)?;
     let invariant_carriers =
-        invariant_boundary_carriers(&work, &adjacency, &moved_faces, direction)?;
+        invariant_boundary_carriers(topo, &adjacency, &moved_faces, direction)?;
     let swept_faces = faces.iter().copied().collect();
     let excluded_candidates = moved_faces.union(&invariant_carriers).copied().collect();
     crate::push_pull::refuse_swept_region_intersections(
@@ -1927,18 +2044,18 @@ fn move_translation_invariant_blend_region(
 
     let mut moved_vertices = HashSet::new();
     for &face in &moved_faces {
-        moved_vertices.extend(remus_topology::explorer::face_vertices(&work, face)?);
+        moved_vertices.extend(remus_topology::explorer::face_vertices(topo, face)?);
     }
     // `solid_edges` yields each edge once, so this stays duplicate-free.
     let mut translated_edges = Vec::new();
-    for edge in remus_topology::explorer::solid_edges(&work, solid)? {
-        let edge_data = work.edge(edge)?;
+    for edge in remus_topology::explorer::solid_edges(topo, solid)? {
+        let edge_data = topo.edge(edge)?;
         let start_moves = moved_vertices.contains(&edge_data.start());
         let end_moves = moved_vertices.contains(&edge_data.end());
         if start_moves || end_moves {
             for adjacent in distinct_faces(adjacency.faces_for_edge(edge)) {
                 if !moved_faces.contains(&adjacent)
-                    && !surface_translation_invariant(work.face(adjacent)?.surface(), direction)
+                    && !surface_translation_invariant(topo.face(adjacent)?.surface(), direction)
                 {
                     return Err(reconstruction(format!(
                         "boundary edge {} reaches non-invariant unmoved face {}",
@@ -1960,7 +2077,7 @@ fn move_translation_invariant_blend_region(
                     )));
                 }
                 let span =
-                    work.vertex(edge_data.end())?.point() - work.vertex(edge_data.start())?.point();
+                    topo.vertex(edge_data.end())?.point() - topo.vertex(edge_data.start())?.point();
                 if span.cross(direction).length() > Tolerance::new().linear {
                     return Err(reconstruction(format!(
                         "boundary edge {} is not parallel to the planar move",
@@ -1972,28 +2089,37 @@ fn move_translation_invariant_blend_region(
         }
     }
 
-    for vertex in moved_vertices {
-        let point = work.vertex(vertex)?.point();
-        work.vertex_mut(vertex)?.set_point(point + delta);
-    }
-    let matrix = remus_math::mat::Mat4::translation(delta.x(), delta.y(), delta.z());
-    crate::transform::transform_edges(&mut work, &translated_edges, &matrix)?;
-    for &face in &moved_faces {
-        translate_face_surface(&mut work, face, delta)?;
-    }
-    // Validate the deliverable rather than the scratch body: the copy is
-    // entity-for-entity, so one strict pass serves both, and running it here
-    // keeps validation ahead of the count and volume refusals as before. A
-    // refusal is reported against the scratch body, whose ids are the input's
-    // and stay live after the rollback; the copy's do not.
-    let copied = crate::copy::copy_solid_between_with_entity_map(&work, topo, solid)?;
+    let translation = BlendTranslation {
+        vertices: moved_vertices,
+        edges: translated_edges,
+        faces: moved_faces,
+        delta,
+    };
+    // The result is the copy of the translated solid, written straight from
+    // the input with the translated geometry in place of the old: no
+    // document-sized scratch copy, the same entities allocated in the same
+    // order, and the same mutations of `topo` as copying a translated
+    // scratch document.
+    let copied = crate::copy::copy_solid_replacing_with_entity_map(
+        topo,
+        solid,
+        translation.replacements(topo)?,
+    )?;
     let result = copied.solid;
+    // Validate the deliverable: the copy is entity-for-entity, so one strict
+    // pass serves both it and the translated input, and running it here
+    // keeps validation ahead of the count and volume refusals. A refusal is
+    // reported against the translated input, whose ids are the caller's and
+    // stay live after the rollback; the copy's do not.
     if let Err(copy_error) = validate_exact_result(topo, result, "translation-invariant blend move")
     {
+        let work = translation.applied_to_copy_of(topo)?;
         validate_exact_result(&work, solid, "translation-invariant blend move")?;
         return Err(copy_error);
     }
-    let result_counts = remus_topology::explorer::solid_entity_counts(&work, solid)?;
+    // A translation keeps the input's entities, so the counts of the
+    // translated input are the input's own.
+    let result_counts = remus_topology::explorer::solid_entity_counts(topo, solid)?;
     if result_counts != source_counts {
         return Err(reconstruction(format!(
             "blend translation changed (faces, edges, vertices) from {source_counts:?} to {result_counts:?}"
@@ -2007,15 +2133,21 @@ fn move_translation_invariant_blend_region(
     // negligible next to its area, is refused, independent of body size. A
     // region the integral cannot vouch for keeps the whole-body mesh
     // comparison with its original slack, so those bodies behave as before.
-    let (volume_change, volume_slack) = if let Some(read) =
-        translated_faces_volume_change(topo, &work, solid, &moved_faces, delta)?
-    {
+    let (volume_change, volume_slack) = if let Some(read) = translated_faces_volume_change(
+        topo,
+        topo,
+        solid,
+        &translation.faces,
+        |face| copied.face_map.get(&face.index()).copied(),
+        delta,
+    )? {
         (
             read.volume,
             (read.area * 1e-9).mul_add(distance.abs(), 1e-7),
         )
     } else {
         let source_volume = crate::measure::solid_volume(topo, solid, 0.05)?;
+        let work = translation.applied_to_copy_of(topo)?;
         let result_volume = crate::measure::solid_volume(&work, solid, 0.05)?;
         (
             result_volume - source_volume,
@@ -2080,7 +2212,7 @@ fn describe_band_face_lineage(
         .map(|(&source, current)| (current.index(), source))
         .collect();
     let support_set: HashSet<FaceId> = band.supports.iter().copied().collect();
-    let adjacency = topo.build_adjacency(solid)?;
+    let adjacency = solid_adjacency(topo, solid)?;
     let mut exact = true;
     let mut lineages = Vec::new();
     for &band_face in &band.faces {
@@ -2260,7 +2392,7 @@ fn support_pairs_for_edges(
     edges: &[EdgeId],
     supports: &[FaceId],
 ) -> Result<Vec<SupportPair>, OperationsError> {
-    let adjacency = topo.build_adjacency(solid)?;
+    let adjacency = solid_adjacency(topo, solid)?;
     let support_set: HashSet<FaceId> = supports.iter().copied().collect();
     let mut pairs: BTreeMap<(usize, usize), (FaceId, FaceId, usize)> = BTreeMap::new();
     for &edge in edges {
@@ -2896,7 +3028,7 @@ fn heal_cylinder_plane_strip(
             return Ok(None);
         }
     }
-    let adjacency = topo.build_adjacency(copy)?;
+    let adjacency = solid_adjacency(topo, copy)?;
     // A cross edge ending on curved geometry outside the transverse-cylinder
     // compound scope names the missing construction precisely and refuses: no
     // fallback healer owns curved-carrier sharp terminations either. A single
@@ -4131,7 +4263,7 @@ fn heal_planar_band(
                 })
         })
         .collect::<Result<_, _>>()?;
-    let adjacency = topo.build_adjacency(outcome.solid)?;
+    let adjacency = solid_adjacency(topo, outcome.solid)?;
     let mut edges = Vec::new();
     for edge in remus_topology::explorer::solid_edges(topo, outcome.solid)? {
         let adjacent = distinct_faces(adjacency.faces_for_edge(edge));
@@ -4161,7 +4293,7 @@ fn shared_edges(
     first: FaceId,
     second: FaceId,
 ) -> Result<Vec<EdgeId>, OperationsError> {
-    let adjacency = topo.build_adjacency(solid)?;
+    let adjacency = solid_adjacency(topo, solid)?;
     let mut edges = Vec::new();
     for edge in face_edges(topo, first)? {
         let adjacent = distinct_faces(adjacency.faces_for_edge(edge));
@@ -5237,6 +5369,9 @@ pub fn resize_blend_failure_code(error: &OperationsError) -> &'static str {
 }
 
 #[cfg(test)]
+mod translation_oracle_tests;
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
@@ -5502,6 +5637,7 @@ mod tests {
             after,
             solid,
             &faces.iter().copied().collect(),
+            Some,
             delta,
         )
         .unwrap()
@@ -5758,7 +5894,7 @@ mod tests {
 
     /// The filleted 10-cube of the end-to-end test: its support plane (10 × 9
     /// after the r = 1 fillet) and quarter-cylinder band move together.
-    fn filleted_cube_support_and_band() -> (Topology, SolidId, FaceId, FaceId, Vec3) {
+    pub(super) fn filleted_cube_support_and_band() -> (Topology, SolidId, FaceId, FaceId, Vec3) {
         use remus_topology::explorer::{solid_edges, solid_faces};
 
         let mut topo = Topology::new();
@@ -5783,6 +5919,56 @@ mod tests {
             .effective_plane_normal()
             .unwrap();
         (topo, solid, support, band, direction)
+    }
+
+    /// Inside a discovery scope the adjacency index is shared while the
+    /// topology is unchanged and indexes exactly what a fresh build does;
+    /// any mutation, and leaving the scope, builds afresh. Discovery answers
+    /// are the same with and without the scope.
+    #[test]
+    fn discovery_memo_shares_adjacency_only_within_one_topology_state() {
+        let (mut topo, solid, support, band, direction) = filleted_cube_support_and_band();
+        let discover = |topo: &Topology| {
+            let region = blend_region(topo, solid, band).unwrap();
+            let described = describe_band(topo, solid, band).unwrap();
+            let seed = adjacent_blend_seed(topo, solid, &[support]).unwrap();
+            let analytic = adjacent_analytic_blend_seed(topo, solid, &[support]).unwrap();
+            let translated =
+                translation_invariant_blend_region(topo, solid, &[support], direction).unwrap();
+            let sorted =
+                |set: &HashSet<FaceId>| canonical_faces(&set.iter().copied().collect::<Vec<_>>());
+            (
+                region,
+                described.faces,
+                described.supports,
+                seed,
+                analytic,
+                sorted(&translated.translated_faces),
+                sorted(&translated.translated_nurbs_supports),
+            )
+        };
+        let unscoped = discover(&topo);
+        let fresh = topo.build_adjacency(solid).unwrap();
+        let edges = remus_topology::explorer::solid_edges(&topo, solid).unwrap();
+        {
+            let _scope = DiscoveryMemoScope::enter();
+            assert_eq!(discover(&topo), unscoped);
+            let shared = solid_adjacency(&topo, solid).unwrap();
+            assert!(Rc::ptr_eq(&shared, &solid_adjacency(&topo, solid).unwrap()));
+            for &edge in &edges {
+                assert_eq!(shared.faces_for_edge(edge), fresh.faces_for_edge(edge));
+            }
+            let vertex = topo.edge(edges[0]).unwrap().start();
+            let point = topo.vertex(vertex).unwrap().point();
+            topo.vertex_mut(vertex).unwrap().set_point(point);
+            assert!(!Rc::ptr_eq(
+                &shared,
+                &solid_adjacency(&topo, solid).unwrap()
+            ));
+            assert_eq!(discover(&topo), unscoped);
+        }
+        let first = solid_adjacency(&topo, solid).unwrap();
+        assert!(!Rc::ptr_eq(&first, &solid_adjacency(&topo, solid).unwrap()));
     }
 
     /// Closed form with a translated blend face: the band's shadow along the
@@ -5959,7 +6145,7 @@ mod tests {
 
     /// The filleted box with its blend band carried as the exact rational
     /// NURBS cylinder (the production hot path's carrier), outward-wound.
-    fn filleted_cube_with_nurbs_band() -> (Topology, SolidId, FaceId, FaceId, Vec3) {
+    pub(super) fn filleted_cube_with_nurbs_band() -> (Topology, SolidId, FaceId, FaceId, Vec3) {
         let (mut topo, solid, support, band, direction) = filleted_cube_support_and_band();
         let FaceSurface::Cylinder(cylinder) = topo.face(band).unwrap().surface().clone() else {
             unreachable!("the band is a cylinder");
