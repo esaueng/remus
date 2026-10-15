@@ -30,8 +30,11 @@ fn assert_untouched(topo: &Topology, path: &str) {
             topo.num_faces(),
             topo.num_shells(),
             topo.num_solids(),
+            topo.num_loops(),
+            topo.num_coedges(),
+            topo.num_pcurves(),
         ),
-        (0, 0, 0, 0, 0, 0),
+        (0, 0, 0, 0, 0, 0, 0, 0, 0),
         "a refused {path} import left live entities behind"
     );
 }
