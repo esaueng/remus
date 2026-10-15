@@ -3,6 +3,8 @@
 //! `approximate_surface_lspia_reference` is the loop as it stood before it
 //! measured every iterate, kept verbatim: it returns the first iterate under
 //! the tolerance, or else the grid after `max_iterations` updates unmeasured.
+//! It shares the step-size helper `col_sum_lambda` with the kernel, so both
+//! walk the same iterates under the corrected step.
 //! Run once per budget `k`, it recovers iterate `k` of the same sequence, so
 //! each case checks the new result against every iterate bit for bit.
 
@@ -294,8 +296,7 @@ fn best_iterate_matches_reference_on_raised_grids() {
     // Non-monotone maximum deviation with a falling residual.
     assert_best_iterate(&raised_flat_grid(7, (3, 3)), 1, 3, 1e-6, 30);
     assert_best_iterate(&raised_flat_grid(5, (2, 2)), 2, 3, 1e-6, 30);
-    // The step-size estimate overshoots here and the iteration diverges;
-    // the best iterate is still an early one.
+    // Diverged under the old step-size estimate; now converges slowly.
     assert_best_iterate(&raised_flat_grid(7, (1, 1)), 2, 5, 1e-6, 30);
     // Monotone deviation: every budget returns its own last iterate.
     assert_best_iterate(&raised_flat_grid(6, (1, 1)), 1, 6, 1e-6, 30);
@@ -303,8 +304,8 @@ fn best_iterate_matches_reference_on_raised_grids() {
 
 #[test]
 fn best_iterate_matches_reference_when_converging() {
-    // 7×7 raised grid: deviations 0.889, 0.982, 0.695, … converge under 0.7
-    // at iterate 2. 6×6 raised grid, interpolating: 0.943, 0.304, 0.216, …
+    // 7×7 raised grid: deviations 0.889, 0.593, … converge under 0.7 at
+    // iterate 1. 6×6 raised grid, interpolating: 0.943, 0.458, 0.291, …
     assert_best_iterate(&raised_flat_grid(7, (3, 3)), 1, 3, 0.7, 30);
     assert_best_iterate(&raised_flat_grid(6, (1, 1)), 1, 6, 0.2, 30);
     // Loose enough that the initial grid already converges.
@@ -312,7 +313,7 @@ fn best_iterate_matches_reference_when_converging() {
 
     // The cases above do converge within their largest budget.
     let fit = approximate_surface_lspia(&raised_flat_grid(7, (3, 3)), 1, 1, 3, 3, 0.7, 30).unwrap();
-    assert!(fit.converged && fit.iteration == 2, "7x7: {fit:?}");
+    assert!(fit.converged && fit.iteration == 1, "7x7: {fit:?}");
     let fit = approximate_surface_lspia(&raised_flat_grid(6, (1, 1)), 1, 1, 6, 6, 0.2, 30).unwrap();
     assert!(fit.converged && fit.iteration > 0, "6x6: {fit:?}");
     let fit = approximate_surface_lspia(&paraboloid(8), 3, 3, 6, 6, 10.0, 3).unwrap();
@@ -320,7 +321,7 @@ fn best_iterate_matches_reference_when_converging() {
 }
 
 /// Pins the premise of the regression: on this grid the residual falls at
-/// every step while the maximum deviation rises after iterate 2.
+/// every step while the maximum deviation rises after iterate 1.
 #[test]
 fn raised_grid_residual_falls_while_deviation_rises() {
     let grid = raised_flat_grid(7, (3, 3));
@@ -341,14 +342,14 @@ fn raised_grid_residual_falls_while_deviation_rises() {
         assert!(w[1].0 <= w[0].0, "residual rose: {w:?}");
     }
     assert!(
-        runs[3].1 > runs[2].1,
+        runs[2].1 > runs[1].1,
         "deviation did not rise: {:?}",
-        &runs[..4]
+        &runs[..3]
     );
     assert!(
-        runs[30].1 > runs[2].1,
+        runs[30].1 > runs[1].1,
         "last iterate not worse: {:?}",
-        (runs[2], runs[30])
+        (runs[1], runs[30])
     );
 }
 
