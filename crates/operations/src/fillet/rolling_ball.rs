@@ -923,6 +923,8 @@ pub fn fillet_rolling_ball_with_origins(
             });
         }
 
+        crate::refuse_cavity_shells(topo, solid, "rolling-ball fillet")?;
+
         // Phase 1: Collect face data and build adjacency.
         let solid_data = topo.solid(solid)?;
         let shell = topo.shell(solid_data.outer_shell())?;
