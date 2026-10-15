@@ -27,8 +27,10 @@
 //!
 //! Each surviving box runs the shared Newton refinement clamped to the box
 //! (with a margin), so it cannot slide off to a different root, and accepts
-//! only a scale-relative residual below `1e-9`: a root this pass reports is a
-//! genuine crossing, never the grid pass's looser `1e-5` near-miss. A box
+//! only a residual below `1e-9` of the surface's extent plus a round-off
+//! allowance for its distance from the origin: a root this pass reports is a
+//! genuine crossing, never the grid pass's looser `1e-5` near-miss, and the
+//! thresholds do not grow when the geometry is translated. A box
 //! already holding a reported root is not refined again: a nearly affine
 //! box holds at most one transversal crossing, and two crossings of a
 //! near-tangent line inside one tiny box would merge under the `1e-6`
@@ -64,12 +66,16 @@ const AFFINE_FRACTION: f64 = 0.05;
 /// Parameter margin around a leaf box for its clamped Newton, as a fraction
 /// of the box extent per side.
 const LEAF_MARGIN: f64 = 0.25;
-/// Acceptance residual of a completion root, relative to the surface's
-/// coordinate scale (`max(1, max |coordinate|)`).
+/// Acceptance residual of a completion root, relative to the surface's extent
+/// (its control box diagonal). Translation-invariant: position enters only
+/// through [`ROUNDOFF`].
 const ROOT_TOLERANCE: f64 = 1e-9;
-/// Slab-test padding, relative to the same scale, so rounding in the box
-/// test never rejects a box the line touches.
+/// Slab-test padding, relative to the surface's extent, so rounding in the
+/// box test never rejects a box the line touches.
 const BOX_PADDING: f64 = 1e-9;
+/// Round-off allowance per unit of coordinate magnitude, added to both: a
+/// surface far from the origin computes differences no finer than this.
+const ROUNDOFF: f64 = 64.0 * f64::EPSILON;
 
 /// Knot spans per direction in one leaf block of the span tree. A leaf
 /// box covers a block of up to `BLOCK × BLOCK` spans, which keeps the tree
@@ -89,8 +95,10 @@ pub(super) struct SpanHull {
     v_spans: Vec<usize>,
     /// Control-point boxes of the implicit block-range tree, in preorder.
     boxes: Vec<Aabb3>,
-    /// `max(1, max |coordinate|)` over the control points.
-    scale: f64,
+    /// Diagonal of the control-point box.
+    extent: f64,
+    /// Largest absolute control-point coordinate.
+    magnitude: f64,
 }
 
 impl SpanHull {
@@ -107,16 +115,18 @@ impl SpanHull {
             u_spans,
             v_spans,
             boxes: Vec::new(),
-            scale: 1.0,
+            extent: 0.0,
+            magnitude: 0.0,
         };
         let root = hull.root();
         if root.leaves() > 0 {
             hull.boxes.reserve(2 * root.leaves() - 1);
             let bounds = hull.build_box(surface, root);
-            hull.scale = [bounds.min, bounds.max]
+            hull.extent = (bounds.max - bounds.min).length();
+            hull.magnitude = [bounds.min, bounds.max]
                 .iter()
                 .flat_map(|corner| corner.0)
-                .fold(1.0_f64, |acc, c| acc.max(c.abs()));
+                .fold(0.0_f64, |acc, c| acc.max(c.abs()));
         }
         hull
     }
@@ -439,6 +449,9 @@ struct Completion<'a> {
     pad: f64,
     /// Rounding allowance of the homogeneous control values.
     slack: f64,
+    /// Weights are scaled by this (`1 / max weight`): a common weight factor
+    /// leaves the surface unchanged and must not overflow the products.
+    inv_max_weight: f64,
     tolerance: f64,
     nodes: usize,
     refinements: usize,
@@ -484,13 +497,16 @@ pub(super) fn complete_line_roots(
         return;
     }
     let dir_len = line.dir_len_sq.sqrt();
-    if !line_meets_box(
-        line.origin,
-        line.direction,
-        dir_len,
-        hull.boxes[0],
-        BOX_PADDING * hull.scale,
-    ) {
+    // The control values are differences from the line origin, so its
+    // position bounds their rounding too.
+    let magnitude = line
+        .origin
+        .0
+        .iter()
+        .fold(hull.magnitude, |acc, c| acc.max(c.abs()));
+    let roundoff = ROUNDOFF * magnitude;
+    let pad = BOX_PADDING * hull.extent + roundoff;
+    if !line_meets_box(line.origin, line.direction, dir_len, hull.boxes[0], pad) {
         return;
     }
     let unit = line.direction * (1.0 / dir_len);
@@ -513,9 +529,12 @@ pub(super) fn complete_line_roots(
         line,
         n1,
         n2,
-        pad: BOX_PADDING * hull.scale,
-        slack: BOX_PADDING * hull.scale * surface.max_weight(),
-        tolerance: ROOT_TOLERANCE * hull.scale,
+        pad,
+        // Weights enter divided by the largest, so the homogeneous values are
+        // bounded by the plane distances.
+        slack: pad,
+        inv_max_weight: 1.0 / surface.max_weight(),
+        tolerance: ROOT_TOLERANCE * hull.extent + roundoff,
         nodes: 0,
         refinements: 0,
         scratch: Scratch::default(),
@@ -573,7 +592,7 @@ impl Completion<'_> {
         for i in rows.clone() {
             for j in cols.clone() {
                 let rel = cps[i][j] - self.line.origin;
-                let w = weights[i][j];
+                let w = weights[i][j] * self.inv_max_weight;
                 scratch.window_f.push(w * self.n1.dot(rel));
                 scratch.window_g.push(w * self.n2.dot(rel));
             }
