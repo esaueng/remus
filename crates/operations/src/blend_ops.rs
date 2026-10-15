@@ -610,158 +610,82 @@ fn sample_edge(
         .collect())
 }
 
-/// Stations at which [`rolling_ball_setback`] solves a curved neighbour's
-/// contact. Against a NURBS support the setback varies along the edge, so this
-/// is a sampled maximum, not a certified bound; it is kept well denser than
-/// the at-least-seven stations the rolling-ball rebuild interpolates its
-/// contact curve through, so it cannot miss a peak the built band reaches.
-const REACH_STATIONS: usize = 17;
-
-/// `REACH_STATIONS` uniform edge fractions, endpoints included.
-#[allow(clippy::cast_precision_loss)]
-const REACH_FRACTIONS: [f64; REACH_STATIONS] = {
-    let mut fractions = [0.0; REACH_STATIONS];
-    let mut i = 0;
-    while i < REACH_STATIONS {
-        fractions[i] = i as f64 / (REACH_STATIONS - 1) as f64;
-        i += 1;
-    }
-    fractions
-};
-
-/// How far across the planar support `face` a constant-radius rolling ball on
-/// the straight edge `edge` touches down — the blend band's reach on that face.
-/// `edge` must be a line: the reach is measured from its chord.
-///
-/// Between two planes whose outward normals meet at β, the ball touches each
-/// one `radius · tan(β/2)` from the edge (convex or concave alike): `radius`
-/// only on a right angle, `radius · √3` on a 60° wedge, unbounded as the edge
-/// sharpens to a knife. Both fillet engines place planar contacts exactly
-/// there.
-///
-/// Against a curved `other` face the contact comes from the walker section
-/// solve both engines use for curved neighbours, maximised over
-/// [`REACH_STATIONS`] stations. Where that solve fails, the rolling-ball
-/// rebuild falls back to a contact one radius out, so the reach is then the
-/// larger of `radius` and the tangent-plane setback. That fallback is an
-/// estimate: the neighbour's curvature moves the true contact.
-pub(crate) fn rolling_ball_setback(
+/// `tan(θ/2)` for an edge between the two planar faces `faces`, `θ` the angle
+/// between their outward normals: the in-face setback of a constant-size
+/// rolling blend per unit of its size (one at a right angle). `None` when the
+/// edge does not have exactly two distinct planar neighbours. Not finite, or
+/// astronomically large, as the faces fold onto each other (`θ → π`).
+fn planar_setback_per_unit(
     topo: &Topology,
-    edge: EdgeId,
-    face: FaceId,
-    other: FaceId,
-    radius: f64,
-) -> Result<f64, OperationsError> {
-    let face_data = topo.face(face)?;
-    let other_data = topo.face(other)?;
-    let Some(face_normal) = face_data.effective_plane_normal() else {
-        return Ok(radius);
+    faces: &[FaceId],
+) -> Result<Option<f64>, OperationsError> {
+    let &[first, second] = faces else {
+        return Ok(None);
     };
-    let tan_half_angle = |other_normal: remus_math::vec::Vec3| -> Option<f64> {
-        let cos = face_normal
-            .normalize()
-            .ok()?
-            .dot(other_normal.normalize().ok()?)
-            .clamp(-1.0, 1.0);
-        // tan(β/2) = √((1 − cos β) / (1 + cos β)) for β ∈ [0, π].
-        Some(if 1.0 + cos <= f64::EPSILON {
-            f64::INFINITY
-        } else {
-            ((1.0 - cos) / (1.0 + cos)).sqrt()
-        })
+    if first == second {
+        return Ok(None);
+    }
+    let normal = |face: FaceId| -> Result<Option<remus_math::vec::Vec3>, OperationsError> {
+        Ok(topo
+            .face(face)?
+            .effective_plane_normal()
+            .and_then(|normal| normal.normalize().ok()))
     };
-    if let Some(other_normal) = other_data.effective_plane_normal() {
-        return Ok(tan_half_angle(other_normal).map_or(radius, |t| radius * t));
-    }
-
-    let e = topo.edge(edge)?;
-    let a = topo.vertex(e.start())?.point();
-    let b = topo.vertex(e.end())?.point();
-    if let Ok(sections) = remus_blend::fillet_builder::blend_cross_sections(
-        topo,
-        edge,
-        face_data.surface(),
-        face_data.is_reversed(),
-        other_data.surface(),
-        other_data.is_reversed(),
-        radius,
-        &REACH_FRACTIONS,
-    ) {
-        let reach = sections
-            .iter()
-            .map(|section| point_segment_distance(section.contact1, a, b))
-            .fold(0.0, f64::max);
-        if reach.is_finite() && reach > 0.0 {
-            return Ok(reach);
-        }
-    }
-    let mut reach = radius;
-    for p in [a, a + (b - a) * 0.5, b] {
-        let Some((u, v)) = other_data.surface().project_point(p) else {
-            continue;
-        };
-        let normal = other_data.surface().normal(u, v);
-        let outward = if other_data.is_reversed() {
-            -normal
-        } else {
-            normal
-        };
-        if let Some(t) = tan_half_angle(outward) {
-            reach = reach.max(radius * t);
-        }
-    }
-    Ok(reach)
+    let (Some(a), Some(b)) = (normal(first)?, normal(second)?) else {
+        return Ok(None);
+    };
+    // atan2 keeps θ accurate at both ends, where acos(dot) loses it.
+    let theta = a.cross(b).length().atan2(a.dot(b));
+    Ok(Some((0.5 * theta).tan()))
 }
 
-/// Whether the rolling-ball rebuild is sure to place this stripe's contacts
-/// at the exact setback rather than one radius out.
+/// In-face distance from a straight edge to the contact line of a fillet of
+/// `radius` rolling between its two neighbours `faces`.
 ///
-/// Only a two-plane stripe it classifies convex or concave (with the same
-/// probe used here) is. An unclassified two-plane stripe takes the
-/// cross-product fallback; against a curved neighbour the rebuild solves its
-/// own stations and takes that fallback wherever its solve fails, which a
-/// guard running ahead of it cannot know. Both lay contacts one radius out.
-fn rolling_ball_contacts_are_exact(
+/// Between two planes the ball touches each face `radius / tan(α/2)` from the
+/// edge, `α` the dihedral angle on the ball's side. With `θ` the angle between
+/// the outward normals that is `radius · tan(θ/2)` for a convex and a concave
+/// edge alike: larger than `radius` for any edge sharper than 90°, smaller for
+/// an obtuse one. It grows without bound as the faces fold onto each other
+/// (`θ → π`), where no finite contact exists and this returns
+/// `f64::INFINITY`; it shrinks to zero as they flatten out (`θ → 0`).
+///
+/// When a neighbour is not a plane the setback depends on its curvature as
+/// well; this then keeps `radius`, the bound this guard has always used.
+pub(crate) fn fillet_contact_setback(
     topo: &Topology,
-    solid: SolidId,
-    edge: EdgeId,
-    face: FaceId,
-    other: FaceId,
+    faces: &[FaceId],
     radius: f64,
-) -> Result<bool, OperationsError> {
-    if topo.face(other)?.effective_plane_normal().is_none() {
-        return Ok(false);
-    }
-    let e = topo.edge(edge)?;
-    let length = (topo.vertex(e.end())?.point() - topo.vertex(e.start())?.point()).length();
-    let probe = radius
-        .min(length * 0.1)
-        .max(remus_math::tolerance::Tolerance::new().linear * 10.0);
-    Ok(matches!(
-        crate::query::edge_concavity_from_faces(topo, solid, edge, face, other, probe)?,
-        crate::query::EdgeConcavity::Convex | crate::query::EdgeConcavity::Concave
-    ))
+) -> Result<f64, OperationsError> {
+    let Some(per_unit) = planar_setback_per_unit(topo, faces)? else {
+        return Ok(radius);
+    };
+    let setback = radius * per_unit;
+    Ok(if setback.is_finite() {
+        setback
+    } else {
+        f64::INFINITY
+    })
 }
 
 /// Refuse a blend whose setback would run into a hole in one of its own
 /// neighbouring faces.
 ///
-/// The blend's contact curve on a planar neighbour lies one setback
-/// ([`rolling_ball_setback`]) away from the blended edge, so the neighbour's
-/// boundary is rebuilt that far in. If an inner loop of that face — a drilled
-/// hole, a pocket — sits that close, the rebuilt boundary crosses its own
-/// hole. Expressing that would require the blend and the hole to merge into
-/// one surface, which none of these engines can do. The setback, not `size`,
-/// is the reach: on a 60° wedge an r = 2 band lands 3.46 out and crosses a
-/// hole 2.5 clear of the ridge.
+/// The blend's contact curve on a planar neighbour lies at the setback from
+/// the blended edge (see [`fillet_contact_setback`]: `radius` only at a right
+/// angle, more on a sharper edge), so the neighbour's boundary is rebuilt that
+/// far in; on an obtuse edge the bound stays `radius`, where an engine that
+/// cannot classify the edge trims. If an inner loop of that face — a drilled
+/// hole, a pocket — sits closer than that, the rebuilt boundary crosses its
+/// own hole. Expressing that would require the blend and the hole to merge
+/// into one surface, which none of these engines can do.
 ///
 /// Emitting it anyway is the dangerous option: a wire crossing its own inner
 /// loop still passes the closed-shell and Euler checks, so the result looks
 /// valid and meshes into a self-intersecting body. The cause is genuinely the
 /// radius — the same edge blends fine below the clearance — so this reports
-/// `CliffEncountered` with the radius whose setback meets the clearance as the
-/// achievable maximum (setback scales with the radius: exact between planes,
-/// an estimate against a curved neighbour).
+/// `CliffEncountered` with the largest radius whose bound stays inside the
+/// clearance as the achievable maximum (zero when the setback is unbounded).
 ///
 /// Only straight blended edges are considered: a closed rim edge IS an inner
 /// loop, and the analytic rim assemblers have their own clearance guard.
@@ -769,7 +693,7 @@ fn reject_blend_into_hole(
     topo: &Topology,
     solid: SolidId,
     edges: &[EdgeId],
-    size: f64,
+    radius: f64,
 ) -> Result<(), OperationsError> {
     let adjacency = topo.build_adjacency(solid)?;
     for &edge_id in edges {
@@ -779,15 +703,18 @@ fn reject_blend_into_hole(
         }
         let a = topo.vertex(e.start())?.point();
         let b = topo.vertex(e.end())?.point();
+        let neighbours = adjacency.faces_for_edge(edge_id);
+        // The rolling-ball rebuild places contacts at the exact setback only
+        // when it can classify the edge's material side; otherwise it trims
+        // `radius` away. So the shorter setback of an obtuse edge is not a
+        // safe bound, and the guard never goes below `radius`.
+        let reach = fillet_contact_setback(topo, neighbours, radius)?.max(radius);
 
-        let faces = adjacency.faces_for_edge(edge_id);
-        for &face_id in faces {
+        for &face_id in neighbours {
             let face = topo.face(face_id)?;
             if !matches!(face.surface(), FaceSurface::Plane { .. }) {
                 continue;
             }
-            // Only a face with a hole needs the setback, so solve it lazily.
-            let mut reach: Option<f64> = None;
             for &inner in face.inner_wires() {
                 let wire_edges: Vec<_> = topo.wire(inner)?.edges().to_vec();
                 if wire_edges.iter().any(|oe| oe.edge() == edge_id) {
@@ -801,38 +728,19 @@ fn reject_blend_into_hole(
                         clearance = clearance.min(point_segment_distance(p, a, b));
                     }
                 }
-                let reach = if let Some(reach) = reach {
-                    reach
-                } else {
-                    let other = faces.iter().copied().find(|&f| f != face_id);
-                    let computed = match other {
-                        Some(other) => {
-                            let setback =
-                                rolling_ball_setback(topo, edge_id, face_id, other, size)?;
-                            if setback < size
-                                && !rolling_ball_contacts_are_exact(
-                                    topo, solid, edge_id, face_id, other, size,
-                                )?
-                            {
-                                setback.max(size)
-                            } else {
-                                setback
-                            }
-                        }
-                        None => size,
-                    };
-                    *reach.insert(computed)
-                };
                 if clearance <= reach {
+                    // The reach is linear in the radius.
+                    let per_unit = reach / radius;
+                    let available_radius = if per_unit > 0.0 && per_unit.is_finite() {
+                        clearance / per_unit
+                    } else {
+                        0.0
+                    };
                     return Err(OperationsError::Blend(BlendError::CliffEncountered {
                         edge: edge_id,
                         face: face_id,
-                        requested_radius: size,
-                        available_radius: if reach > 0.0 {
-                            size * clearance / reach
-                        } else {
-                            0.0
-                        },
+                        requested_radius: radius,
+                        available_radius,
                     }));
                 }
             }
@@ -1052,21 +960,9 @@ fn blend_reach(
     if !size.is_finite() || size <= 0.0 || !matches!(topo.edge(edge)?.curve(), EdgeCurve::Line) {
         return Ok(None);
     }
-    let faces = adjacency.faces_for_edge(edge);
-    if faces.len() != 2 || faces[0] == faces[1] {
-        return Ok(None);
-    }
-    let normal = |face: FaceId| -> Result<Option<remus_math::vec::Vec3>, OperationsError> {
-        Ok(topo
-            .face(face)?
-            .effective_plane_normal()
-            .and_then(|normal| normal.normalize().ok()))
-    };
-    let (Some(a), Some(b)) = (normal(faces[0])?, normal(faces[1])?) else {
+    let Some(setback) = planar_setback_per_unit(topo, adjacency.faces_for_edge(edge))? else {
         return Ok(None);
     };
-    let theta = a.cross(b).length().atan2(a.dot(b));
-    let setback = (0.5 * theta).tan();
     if !setback.is_finite() || setback > MAX_SETBACK {
         return Ok(None);
     }
@@ -1785,22 +1681,6 @@ pub fn fillet_v2(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<BlendResult, OperationsError> {
-    let edges = fillet_preflight(topo, solid, edges, radius)?;
-    fillet_v2_engines(topo, solid, &edges, radius)
-}
-
-/// The input checks and support-boundary guard every fillet engine shares.
-///
-/// Returns the de-duplicated selection. A refusal here is final for every
-/// engine, not a verdict on one of them: no engine can build a band that
-/// crosses a hole in its own support face, so [`fillet_cascade`] must not
-/// retry the selection on another engine after it.
-fn fillet_preflight(
-    topo: &Topology,
-    solid: SolidId,
-    edges: &[EdgeId],
-    radius: f64,
-) -> Result<Vec<EdgeId>, OperationsError> {
     if radius <= 0.0 {
         return Err(OperationsError::InvalidInput {
             reason: "radius must be positive".into(),
@@ -1812,18 +1692,10 @@ fn fillet_preflight(
         });
     }
     let deduped = dedup_seed_edges(edges);
-    reject_seed_selection_larger_than_solid(topo, solid, "fillet", &deduped)?;
-    reject_blend_into_hole(topo, solid, &deduped, radius)?;
-    Ok(deduped)
-}
+    let edges = deduped.as_slice();
+    reject_seed_selection_larger_than_solid(topo, solid, "fillet", edges)?;
+    reject_blend_into_hole(topo, solid, edges, radius)?;
 
-/// [`fillet_v2`]'s engines, for a selection [`fillet_preflight`] passed.
-fn fillet_v2_engines(
-    topo: &mut Topology,
-    solid: SolidId,
-    edges: &[EdgeId],
-    radius: f64,
-) -> Result<BlendResult, OperationsError> {
     // The whole selection on one engine, first and unchanged: everything that
     // works today keeps working exactly as it does, and this is the only path a
     // selection that is one feature ever takes.
@@ -1858,18 +1730,9 @@ fn fillet_v2_engines(
 /// could satisfy is refused. The engine that produced the result is disclosed
 /// in [`BlendResult::engine`].
 ///
-/// Both engines run behind the guards `fillet_v2` applies (B89): the hole
-/// guard refuses for the whole cascade before either engine starts, and the
-/// rolling-ball fallback runs under the same B71 material guard `fillet_v2`
-/// gives its own rolling-ball attempt. The fallback once skipped both, so a
-/// selection `fillet_v2` refused at a hole came back `Ok` with a cap wire
-/// crossing that hole.
-///
 /// # Errors
 ///
-/// A selection the shared preflight refuses (invalid radius or selection, or
-/// a band reaching a hole in its support face) is returned as is. Otherwise,
-/// when no engine produces a valid closed solid, returns the walking engine's
+/// When no engine produces a valid closed solid, returns the walking engine's
 /// typed error — the one with meaningful diagnostics (`UnsupportedVertexBlend`,
 /// `RadiusTooLarge`, …) — and leaves the topology exactly as it was.
 pub fn fillet_cascade(
@@ -1878,10 +1741,8 @@ pub fn fillet_cascade(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<BlendResult, OperationsError> {
-    let edges = fillet_preflight(topo, solid, edges, radius)?;
-    let edges = edges.as_slice();
     let walking_refusal = match transactional(topo, |t| {
-        let result = fillet_v2_engines(t, solid, edges, radius)?;
+        let result = fillet_v2(t, solid, edges, radius)?;
         reject_open_shell(t, result.solid)?;
         Ok(result)
     }) {
@@ -1889,6 +1750,13 @@ pub fn fillet_cascade(
         Err(error) => error,
     };
     if let Ok(result) = transactional(topo, |t| {
+        // The rolling-ball rebuild carries holed caps through as topology but
+        // does not itself check that the setback clears their holes; without
+        // this the fallback quietly succeeds where `fillet_v2` refused.
+        reject_blend_into_hole(t, solid, edges, radius)?;
+        // The same lazy B71 material guard `fillet_v2` gives its own
+        // rolling-ball attempt, so the fallback cannot ship a wrong-side band
+        // the walking engine's route would have refused.
         let result = attempt_with_lazy_material_guard(t, solid, edges, radius, |t| {
             planar_fillet_result(t, solid, edges, radius)
         })?;
@@ -2268,7 +2136,7 @@ mod tests {
         assert!(error.contains("must move at least"), "{error}");
     }
 
-    use remus_math::vec::Point3;
+    use remus_math::vec::{Point3, Vec3};
     use remus_topology::edge::{Edge, EdgeCurve};
     use remus_topology::vertex::Vertex;
 
@@ -2572,6 +2440,49 @@ mod tests {
     }
 
     #[test]
+    fn fillet_contact_setback_follows_the_dihedral() {
+        // A planar face whose outward normal makes `theta` with +z.
+        let face_at = |topo: &mut Topology, theta: f64| {
+            let n = Vec3::new(theta.sin(), 0.0, theta.cos());
+            let u = Vec3::new(0.0, 1.0, 0.0);
+            let v = n.cross(u);
+            let o = Point3::new(0.0, 0.0, 0.0);
+            let wire =
+                remus_topology::builder::make_polygon_wire(topo, &[o, o + u, o + v], 1e-7).unwrap();
+            let face = remus_topology::builder::make_planar_face_from_wire(topo, wire).unwrap();
+            let got = topo.face(face).unwrap().effective_plane_normal().unwrap();
+            assert!((got - n).length() < 1e-12, "{got:?} vs {n:?}");
+            face
+        };
+        let r = 2.0;
+        let setback = |theta: f64| {
+            let mut topo = Topology::new();
+            let a = face_at(&mut topo, 0.0);
+            let b = face_at(&mut topo, theta);
+            fillet_contact_setback(&topo, &[a, b], r).unwrap()
+        };
+        let pi = std::f64::consts::PI;
+        // Interior 90°: the radius itself.
+        assert!((setback(pi / 2.0) - r).abs() < 1e-12);
+        // Interior 60° (normals 120° apart): r / tan 30° = r·√3.
+        assert!((setback(2.0 * pi / 3.0) - r * 3.0_f64.sqrt()).abs() < 1e-12);
+        // Interior 120°: r / tan 60°, inside the radius.
+        assert!((setback(pi / 3.0) - r / 3.0_f64.sqrt()).abs() < 1e-12);
+        // Folded flat onto itself: no finite contact.
+        assert!(setback(pi) > 1e12 * r);
+        assert!(setback(pi - 1e-9) > 1e8 * r);
+        // Flattened out: the contact runs into the edge.
+        assert!(setback(0.0).abs() < 1e-12);
+        assert!(setback(1e-9) < 1e-8);
+
+        // A curved neighbour keeps the radius.
+        let mut topo = Topology::new();
+        let cyl = crate::primitives::make_cylinder(&mut topo, 1.0, 1.0).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, cyl).unwrap();
+        assert!((fillet_contact_setback(&topo, &faces[..2], r).unwrap() - r).abs() < 1e-12);
+    }
+
+    #[test]
     fn fillet_cascade_refusal_leaves_the_arena_unchanged() {
         let mut topo = Topology::new();
         let bx = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
@@ -2592,132 +2503,5 @@ mod tests {
                 .unwrap()
                 .len()
         );
-    }
-
-    /// The straight edge of `solid` whose endpoints satisfy `want`, with its
-    /// planar neighbour first.
-    fn line_edge_and_faces(
-        topo: &remus_topology::Topology,
-        solid: remus_topology::solid::SolidId,
-        want: impl Fn(remus_math::vec::Point3, remus_math::vec::Point3) -> bool,
-    ) -> (
-        remus_topology::edge::EdgeId,
-        remus_topology::face::FaceId,
-        remus_topology::face::FaceId,
-    ) {
-        let adjacency = topo.build_adjacency(solid).unwrap();
-        let edge = remus_topology::explorer::solid_edges(topo, solid)
-            .unwrap()
-            .into_iter()
-            .find(|&edge| {
-                let e = topo.edge(edge).unwrap();
-                let a = topo.vertex(e.start()).unwrap().point();
-                let b = topo.vertex(e.end()).unwrap().point();
-                matches!(e.curve(), super::EdgeCurve::Line) && want(a, b)
-            })
-            .unwrap();
-        let faces = adjacency.faces_for_edge(edge);
-        assert_eq!(faces.len(), 2);
-        let (f, g) = (faces[0], faces[1]);
-        if topo.face(f).unwrap().effective_plane_normal().is_some() {
-            (edge, f, g)
-        } else {
-            (edge, g, f)
-        }
-    }
-
-    /// Between two planes the setback is r / tan(θ/2) for the interior angle
-    /// θ: r only on a right angle, r·√3 on a 60° ridge, r/√3 on a 120° one,
-    /// and r again on a concave right angle.
-    #[test]
-    fn rolling_ball_setback_matches_the_planar_closed_form() {
-        use remus_math::vec::{Point3, Vec3};
-
-        let r = 2.0;
-        for theta_deg in [60.0_f64, 90.0, 120.0] {
-            let theta = theta_deg.to_radians();
-            let mut topo = remus_topology::Topology::new();
-            let pts = [
-                Point3::new(0.0, 0.0, 0.0),
-                Point3::new(10.0, 0.0, 0.0),
-                Point3::new(10.0 * theta.cos(), 10.0 * theta.sin(), 0.0),
-            ];
-            let wire = remus_topology::builder::make_polygon_wire(&mut topo, &pts, 1e-7).unwrap();
-            let face =
-                remus_topology::builder::make_planar_face_from_wire(&mut topo, wire).unwrap();
-            let prism =
-                crate::extrude::extrude(&mut topo, face, Vec3::new(0.0, 0.0, 1.0), 5.0).unwrap();
-            let (edge, f, g) = line_edge_and_faces(&topo, prism, |a, b| {
-                a.x().abs() < 1e-9 && a.y().abs() < 1e-9 && b.x().abs() < 1e-9 && b.y().abs() < 1e-9
-            });
-            let want = r / (theta / 2.0).tan();
-            for (face, other) in [(f, g), (g, f)] {
-                let got = super::rolling_ball_setback(&topo, edge, face, other, r).unwrap();
-                assert!(
-                    (got - want).abs() < 1e-12,
-                    "θ = {theta_deg}°: setback {got}, want {want}"
-                );
-            }
-        }
-
-        // Concave right angle: the inner corner of an L.
-        let mut topo = remus_topology::Topology::new();
-        let pts = [
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(10.0, 0.0, 0.0),
-            Point3::new(10.0, 4.0, 0.0),
-            Point3::new(4.0, 4.0, 0.0),
-            Point3::new(4.0, 10.0, 0.0),
-            Point3::new(0.0, 10.0, 0.0),
-        ];
-        let wire = remus_topology::builder::make_polygon_wire(&mut topo, &pts, 1e-7).unwrap();
-        let face = remus_topology::builder::make_planar_face_from_wire(&mut topo, wire).unwrap();
-        let l = crate::extrude::extrude(&mut topo, face, Vec3::new(0.0, 0.0, 1.0), 5.0).unwrap();
-        let (edge, f, g) = line_edge_and_faces(&topo, l, |a, b| {
-            (a.x() - 4.0).abs() < 1e-9
-                && (a.y() - 4.0).abs() < 1e-9
-                && (b.x() - 4.0).abs() < 1e-9
-                && (b.y() - 4.0).abs() < 1e-9
-        });
-        let got = super::rolling_ball_setback(&topo, edge, f, g, r).unwrap();
-        assert!((got - r).abs() < 1e-12, "concave right angle: {got}");
-    }
-
-    /// Against a curved neighbour the setback is the walker's contact, not the
-    /// tangent-plane estimate. A D-flat at y = h on a radius-R cylinder meets
-    /// it along x = √(R² − h²); a ball of radius r inside both touches the flat
-    /// at x = √((R − r)² − (h − r)²), so it sets back by the difference.
-    #[test]
-    fn rolling_ball_setback_against_a_cylinder_is_the_exact_contact() {
-        use remus_math::mat::Mat4;
-
-        let (big_r, h, r) = (10.0_f64, 6.0_f64, 2.0_f64);
-        let mut topo = remus_topology::Topology::new();
-        let shaft = crate::primitives::make_cylinder(&mut topo, big_r, 20.0).unwrap();
-        let cutter = crate::primitives::make_box(&mut topo, 40.0, 20.0, 30.0).unwrap();
-        crate::transform::transform_solid(&mut topo, cutter, &Mat4::translation(-20.0, h, -5.0))
-            .unwrap();
-        let d_shaft =
-            crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, shaft, cutter)
-                .unwrap();
-        let x_edge = big_r.mul_add(big_r, -(h * h)).sqrt();
-        let (edge, flat, wall) = line_edge_and_faces(&topo, d_shaft, |a, b| {
-            (a.x() - x_edge).abs() < 1e-6
-                && (a.y() - h).abs() < 1e-6
-                && (b.x() - x_edge).abs() < 1e-6
-                && (b.y() - h).abs() < 1e-6
-        });
-        assert!(topo.face(wall).unwrap().effective_plane_normal().is_none());
-
-        let x_contact = (big_r - r).mul_add(big_r - r, -((h - r) * (h - r))).sqrt();
-        let want = x_edge - x_contact;
-        let got = super::rolling_ball_setback(&topo, edge, flat, wall, r).unwrap();
-        assert!(
-            (got - want).abs() < 1e-6,
-            "D-flat setback {got}, closed form {want}"
-        );
-        // The tangent-plane estimate r·tan(β/2) = r(R − h)/√(R² − h²) is short.
-        let tangent_plane = r * (big_r - h) / x_edge;
-        assert!(want - tangent_plane > 0.05);
     }
 }
