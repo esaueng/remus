@@ -3967,15 +3967,11 @@ pub fn fillet_rolling_ball_with_origins(
         // Residual precision drift from polygon extraction can produce vertices
         // that are nearly coincident with original positions.
         {
-            let mut original_verts: Vec<Point3> = Vec::new();
+            let snap_tol = tol.linear * 100.0;
+            let mut original_verts = super::vertex_snap::SnapGrid::new(snap_tol);
             for poly in face_polygons.values() {
                 for &p in &poly.positions {
-                    let already = original_verts
-                        .iter()
-                        .any(|existing| (*existing - p).length() < tol.linear);
-                    if !already {
-                        original_verts.push(p);
-                    }
+                    original_verts.insert_unique(p, tol.linear);
                 }
             }
             for &fid in &shell_face_ids {
@@ -3989,13 +3985,7 @@ pub fn fillet_rolling_ball_with_origins(
                         if let Ok(edge_data) = topo.edge(oe.edge()) {
                             let vid = oe.oriented_start(edge_data);
                             if let Ok(v) = topo.vertex(vid) {
-                                let p = v.point();
-                                let already = original_verts
-                                    .iter()
-                                    .any(|existing| (*existing - p).length() < tol.linear);
-                                if !already {
-                                    original_verts.push(p);
-                                }
+                                original_verts.insert_unique(v.point(), tol.linear);
                             }
                         }
                     }
@@ -4005,16 +3995,10 @@ pub fn fillet_rolling_ball_with_origins(
             for poly in face_polygons.values() {
                 for iw in &poly.inner_wires {
                     for &p in iw {
-                        let already = original_verts
-                            .iter()
-                            .any(|existing| (*existing - p).length() < tol.linear);
-                        if !already {
-                            original_verts.push(p);
-                        }
+                        original_verts.insert_unique(p, tol.linear);
                     }
                 }
             }
-            let snap_tol = tol.linear * 100.0;
             for spec in &mut all_specs {
                 // Snap outer wire vertices.
                 let verts = match spec {
@@ -4035,33 +4019,15 @@ pub fn fillet_rolling_ball_with_origins(
                     | FaceSpec::ExistingTrimmedInners { outer: None, .. } => continue,
                 };
                 for v in verts.iter_mut() {
-                    if let Some(closest) = original_verts
-                        .iter()
-                        .filter(|ov| (**ov - *v).length() < snap_tol)
-                        .min_by(|a, b| {
-                            (**a - *v)
-                                .length()
-                                .partial_cmp(&(**b - *v).length())
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                    {
-                        *v = *closest;
+                    if let Some(closest) = original_verts.nearest_within(*v, snap_tol) {
+                        *v = closest;
                     }
                 }
                 // Snap inner wire vertices.
                 for iw in spec.inner_wires_mut() {
                     for v in iw.iter_mut() {
-                        if let Some(closest) = original_verts
-                            .iter()
-                            .filter(|ov| (**ov - *v).length() < snap_tol)
-                            .min_by(|a, b| {
-                                (**a - *v)
-                                    .length()
-                                    .partial_cmp(&(**b - *v).length())
-                                    .unwrap_or(std::cmp::Ordering::Equal)
-                            })
-                        {
-                            *v = *closest;
+                        if let Some(closest) = original_verts.nearest_within(*v, snap_tol) {
+                            *v = closest;
                         }
                     }
                 }

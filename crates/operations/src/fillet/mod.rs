@@ -32,6 +32,7 @@ pub(crate) mod notch_torus;
 mod rolling_ball;
 #[cfg(test)]
 mod tests;
+mod vertex_snap;
 
 pub(crate) use geometry::{face_surface_normal_at, face_surface_normal_with_grid};
 pub use remus_blend::radius_law::StandardRadiusLaw as FilletRadiusLaw;
