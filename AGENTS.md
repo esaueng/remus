@@ -373,6 +373,7 @@ Quick reference — find the right file for any task:
 | Collapse orphan collinear interior wire vertices | `upgrade/collapse_collinear_vertices.rs` |
 | Canonicalize a split-arc rim into one closed edge | `upgrade/merge_split_rim_arcs.rs` |
 | Split figure-8 / pinched wires into simple cycles | `upgrade/split_self_intersecting_wires.rs` |
+| Shared hollow-block and cavity-gap fixtures for the crate's unit tests (tests) | `test_fixtures.rs` |
 
 ### L2: check (`crates/check/src/`)
 | Task | File(s) |

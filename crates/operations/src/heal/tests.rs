@@ -252,6 +252,41 @@ fn heal_closes_the_same_corner_gap_in_the_cavity_as_on_the_outer_shell() {
 }
 
 #[test]
+fn an_all_degenerate_loop_is_left_whole_and_not_counted() {
+    // A one-face "solid" whose only loop is a 1e-9 triangle: every edge is
+    // degenerate, so there is no loop to rebuild and nothing to report.
+    use remus_topology::face::Face;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+
+    let mut topo = Topology::new();
+    let v: Vec<_> = [(0.0, 0.0), (1e-9, 0.0), (0.0, 1e-9)]
+        .iter()
+        .map(|&(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, 0.0), 1e-7)))
+        .collect();
+    let edges: Vec<_> = (0..3)
+        .map(|i| {
+            let edge = Edge::new(v[i], v[(i + 1) % 3], EdgeCurve::Line);
+            OrientedEdge::new(topo.add_edge(edge), true)
+        })
+        .collect();
+    let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+    let face = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ));
+    let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, vec![]));
+
+    assert_eq!(remove_degenerate_edges(&mut topo, solid, 1e-7).unwrap(), 0);
+    assert_eq!(topo.face(face).unwrap().outer_wire(), wire);
+}
+
+#[test]
 fn merge_coincident_vertices_reaches_the_cavity() {
     let mut topo = Topology::new();
     let solid = hollow_block_with_corner_gap(&mut topo, true);
