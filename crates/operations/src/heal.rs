@@ -690,6 +690,10 @@ pub fn remove_degenerate_edges(
 /// arc length, an ellipse arc by semi-major times span, a polynomial NURBS by
 /// its control polygon. A rational NURBS has no such cheap bound and is kept;
 /// so is a curve without an authority it would otherwise be judged by.
+/// Relative rounding allowance, in units of `f64::EPSILON`, for a closed-form
+/// length that subtracts nearly equal terms.
+const ROUNDING: f64 = 16.0 * f64::EPSILON;
+
 fn edge_is_degenerate(
     topo: &Topology,
     edge_id: EdgeId,
@@ -736,7 +740,23 @@ fn edge_is_degenerate(
     let upper_bound = match edge.curve() {
         EdgeCurve::Circle(circle) => circle.radius() * span,
         EdgeCurve::Ellipse(ellipse) => ellipse.semi_major().max(ellipse.semi_minor()) * span,
-        EdgeCurve::Parabola(parabola) => parabola.arc_length(t0, t1),
+        // The closed forms below subtract nearly equal antiderivative values;
+        // each is padded by ROUNDING ulps of the terms it subtracts, so the
+        // rounded bound still lies above the true length.
+        EdgeCurve::Parabola(parabola) => {
+            // F(t) = f (s sqrt(1 + s^2) + asinh s), s = t / 2f; and the speed
+            // sqrt(1 + s^2) peaks at an end, which caps the bound for long
+            // arcs where the closed form's rounding grows.
+            let two_f = 2.0 * parabola.focal_length();
+            let term = |t: f64| {
+                let s = t / two_f;
+                parabola.focal_length() * (s.abs() * (1.0 + s * s).sqrt() + s.asinh().abs())
+            };
+            let closed = parabola.arc_length(t0, t1) + ROUNDING * (term(t0) + term(t1));
+            let peak = t0.abs().max(t1.abs()) / two_f;
+            let capped = span * (1.0 + peak * peak).sqrt() * (1.0 + ROUNDING);
+            closed.min(capped)
+        }
         // Speed sqrt(a^2 sinh^2 t + b^2 cosh^2 t) <= a |sinh t| + b cosh t,
         // integrated in closed form (the quadrature in `arc_length` can
         // undershoot).
@@ -749,10 +769,9 @@ fn edge_is_degenerate(
             } else {
                 (lo.cosh() - 1.0) + (hi.cosh() - 1.0)
             };
-            hyperbola.semi_major().mul_add(
-                abs_sinh_integral,
-                hyperbola.semi_minor() * (hi.sinh() - lo.sinh()),
-            )
+            let (a, b) = (hyperbola.semi_major(), hyperbola.semi_minor());
+            let terms = a * (lo.cosh() + hi.cosh()) + b * (lo.sinh().abs() + hi.sinh().abs());
+            a.mul_add(abs_sinh_integral, b * (hi.sinh() - lo.sinh())) + ROUNDING * terms
         }
         // A polynomial B-spline is no longer than its control polygon, and
         // any span of it no longer than the whole.
