@@ -13,7 +13,7 @@
 use crate::MathError;
 use crate::nurbs::basis::basis_funs;
 use crate::nurbs::fitting;
-use crate::nurbs::fitting::interpolate;
+use crate::nurbs::fitting::interpolate_with_params;
 use crate::nurbs::surface::NurbsSurface;
 use crate::vec::Point3;
 
@@ -26,22 +26,27 @@ use crate::vec::Point3;
 /// # Parameters
 ///
 /// - `points` — 2D grid of data points (rows × cols)
-/// - `degree_u` — polynomial degree in the u (row) direction
-/// - `degree_v` — polynomial degree in the v (column) direction
+/// - `degree_u` — polynomial degree in the u (row) direction, clamped to
+///   `rows - 1` like [`fitting::interpolate`]
+/// - `degree_v` — polynomial degree in the v (column) direction, clamped to
+///   `cols - 1`
 ///
 /// # Algorithm
 ///
-/// Uses the tensor-product approach:
-/// 1. For each row, fit a NURBS curve through the columns
-/// 2. Extract control points from those curves (they form a grid)
-/// 3. For each column of control points, fit another NURBS curve
-/// 4. The final control point grid and combined knot vectors form
-///    the interpolated surface
+/// Global tensor-product interpolation (NURBS Book §9.2.5, A9.4):
+/// 1. One u parameter vector: the chord-length parameters of every column,
+///    averaged; one v parameter vector likewise over every row. Each
+///    direction gets one averaging knot vector from its parameters.
+/// 2. Fit every row through its points at the shared v parameters
+/// 3. Fit every column of those control points at the shared u parameters
+/// 4. The final control point grid and the two shared knot vectors form
+///    the surface, which passes through `points[i][j]` at `(u_i, v_j)`
 ///
 /// # Errors
 ///
-/// Returns an error if the grid is too small or rows have inconsistent
-/// lengths.
+/// Returns an error if the grid is too small, rows have inconsistent
+/// lengths, a degree is zero, or two adjacent rows or columns coincide
+/// everywhere (the shared parameters would not be strictly increasing).
 pub fn interpolate_surface(
     points: &[Vec<Point3>],
     degree_u: usize,
@@ -66,15 +71,23 @@ pub fn interpolate_surface(
         }
     }
 
-    // Step 1: Fit curves through each row (u-direction).
+    let degree_u = degree_u.min(num_rows - 1);
+    let degree_v = degree_v.min(num_cols - 1);
+
+    // Every row and column must share one parameter vector (and so one knot
+    // vector) per direction: fitting each with its own chord lengths and then
+    // assembling with one line's knots misses the data on non-uniform grids.
+    let params_u = averaged_chord_params(num_cols, num_rows, |j, i| points[i][j]);
+    let params_v = averaged_chord_params(num_rows, num_cols, |i, j| points[i][j]);
+
+    // Step 1: Fit curves through each row (v-direction).
     let mut row_curves = Vec::with_capacity(num_rows);
     for row in points {
-        let curve = interpolate(row, degree_v)?;
+        let curve = interpolate_with_params(row, degree_v, &params_v)?;
         row_curves.push(curve);
     }
 
-    // All row curves should have the same number of control points
-    // (= num_cols, since we're interpolating exactly).
+    // All row curves have num_cols control points (exact interpolation).
     let n_cp_v = row_curves[0].control_points().len();
 
     // Step 2: Extract column-wise control points from row curves.
@@ -85,14 +98,15 @@ pub fn interpolate_surface(
         col_points.push(col);
     }
 
-    // Step 3: Fit curves through each column (v-direction).
+    // Step 3: Fit curves through each column (u-direction).
     let mut col_curves = Vec::with_capacity(n_cp_v);
     for col in &col_points {
-        let curve = interpolate(col, degree_u)?;
+        let curve = interpolate_with_params(col, degree_u, &params_u)?;
         col_curves.push(curve);
     }
 
-    // Step 4: Extract the final control point grid and knot vectors.
+    // Step 4: Extract the final control point grid and the shared knot
+    // vectors (identical across rows, and across columns, by construction).
     let n_cp_u = col_curves[0].control_points().len();
     let knots_u = col_curves[0].knots().to_vec();
     let knots_v = row_curves[0].knots().to_vec();
@@ -278,6 +292,45 @@ pub fn approximate_surface_lspia(
     NurbsSurface::new(pu, pv, knots_u, knots_v, cps, weights)
 }
 
+/// Chord-length parameters of `num_lines` grid lines of `len` points each,
+/// averaged (NURBS Book A9.4); `at(line, k)` is point `k` of `line`.
+///
+/// A line of zero total length (a pole) has no spacing to contribute and is
+/// skipped; if every line is degenerate the parameters are uniform.
+#[allow(clippy::cast_precision_loss)]
+fn averaged_chord_params(
+    num_lines: usize,
+    len: usize,
+    at: impl Fn(usize, usize) -> Point3,
+) -> Vec<f64> {
+    let mut params = vec![0.0f64; len];
+    let mut chord = vec![0.0f64; len];
+    let mut used = 0usize;
+    for line in 0..num_lines {
+        let mut total = 0.0f64;
+        for k in 1..len {
+            total += (at(line, k) - at(line, k - 1)).length();
+            chord[k] = total;
+        }
+        // Same coincidence threshold as `fitting::chord_length_params`.
+        if total < 1e-15 {
+            continue;
+        }
+        used += 1;
+        // Running mean: exact when every line has the same spacing, so a
+        // regular grid keeps its per-line parameters bit for bit.
+        let used_f = used as f64;
+        for k in 1..len {
+            params[k] += (chord[k] / total - params[k]) / used_f;
+        }
+    }
+    if used == 0 {
+        let last = (len - 1) as f64;
+        return (0..len).map(|k| k as f64 / last).collect();
+    }
+    params
+}
+
 /// Compute average chord-length parameters in the u direction (across rows).
 #[allow(clippy::cast_precision_loss)]
 fn compute_grid_params_u(points: &[Vec<Point3>], rows: usize, cols: usize) -> Vec<f64> {
@@ -425,6 +478,174 @@ mod tests {
             vec![Point3::new(0.0, 1.0, 0.0)], // different length
         ];
         assert!(interpolate_surface(&points, 1, 1).is_err());
+    }
+
+    // ── Interpolation at shared averaged parameters ────────────────────
+
+    /// Independent oracle for the NURBS Book A9.4 parameters: per-line
+    /// chord lengths, summed and divided, skipping zero-length lines.
+    fn oracle_params(lines: &[Vec<Point3>]) -> Vec<f64> {
+        let len = lines[0].len();
+        let mut sum = vec![0.0; len];
+        let mut used = 0.0;
+        for line in lines {
+            let mut acc = vec![0.0; len];
+            for k in 1..len {
+                acc[k] = acc[k - 1] + (line[k] - line[k - 1]).length();
+            }
+            if acc[len - 1] < 1e-15 {
+                continue;
+            }
+            used += 1.0;
+            for k in 0..len {
+                sum[k] += acc[k] / acc[len - 1];
+            }
+        }
+        sum.iter().map(|s| s / used).collect()
+    }
+
+    fn columns(grid: &[Vec<Point3>]) -> Vec<Vec<Point3>> {
+        (0..grid[0].len())
+            .map(|j| grid.iter().map(|row| row[j]).collect())
+            .collect()
+    }
+
+    /// Largest distance between a data point and the surface at its
+    /// averaged parameters.
+    fn max_data_miss(grid: &[Vec<Point3>], surface: &NurbsSurface) -> f64 {
+        let params_u = oracle_params(&columns(grid));
+        let params_v = oracle_params(grid);
+        let mut worst = 0.0f64;
+        for (i, row) in grid.iter().enumerate() {
+            for (j, q) in row.iter().enumerate() {
+                let p = surface.evaluate(params_u[i], params_v[j]);
+                worst = worst.max((p - *q).length());
+            }
+        }
+        worst
+    }
+
+    /// Rows at x = `xs`, columns at y = `ys`, sheared and warped so every
+    /// row and column has its own chord spacing.
+    fn warped_grid(xs: &[f64], ys: &[f64]) -> Vec<Vec<Point3>> {
+        xs.iter()
+            .map(|&x| {
+                ys.iter()
+                    .map(|&y| {
+                        Point3::new(
+                            x + 0.25 * y,
+                            y + 0.15 * x * x,
+                            0.5 * x.sin() * (0.7 * y).cos() + 0.1 * x * y,
+                        )
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Review finding WASM-7: rows at x = 0, 1, 3, columns at y = 0, 2, 2.5,
+    /// centre raised to z = 1. Row-local parameters missed the centre point
+    /// by 0.0432 (closest-point distance).
+    #[test]
+    fn interpolate_non_uniform_3x3_reproduces_data() {
+        let xs = [0.0, 1.0, 3.0];
+        let ys = [0.0, 2.0, 2.5];
+        let grid: Vec<Vec<Point3>> = xs
+            .iter()
+            .enumerate()
+            .map(|(i, &x)| {
+                ys.iter()
+                    .enumerate()
+                    .map(|(j, &y)| Point3::new(x, y, if i == 1 && j == 1 { 1.0 } else { 0.0 }))
+                    .collect()
+            })
+            .collect();
+        let surface = interpolate_surface(&grid, 2, 2).unwrap();
+        let miss = max_data_miss(&grid, &surface);
+        assert!(miss < 1e-9, "3x3 data miss {miss:e}");
+
+        // Parameter-free: the surface passes through the centre point.
+        let foot = crate::nurbs::projection::project_point_to_surface(&surface, grid[1][1], 1e-12)
+            .unwrap();
+        assert!(foot.distance < 1e-9, "centre distance {:e}", foot.distance);
+    }
+
+    #[test]
+    fn interpolate_non_uniform_4x5_reproduces_data() {
+        let grid = warped_grid(&[0.0, 0.4, 1.7, 2.0], &[0.0, 0.3, 1.1, 2.6, 3.0]);
+        for (du, dv) in [(3, 3), (2, 3), (3, 2)] {
+            let surface = interpolate_surface(&grid, du, dv).unwrap();
+            let miss = max_data_miss(&grid, &surface);
+            assert!(miss < 1e-9, "4x5 degree ({du},{dv}) data miss {miss:e}");
+        }
+    }
+
+    #[test]
+    fn interpolate_non_uniform_7x4_reproduces_data() {
+        let grid = warped_grid(&[0.0, 0.1, 0.5, 1.4, 1.6, 2.9, 3.3], &[0.0, 1.2, 1.5, 4.0]);
+        for (du, dv) in [(3, 3), (5, 2), (1, 1)] {
+            let surface = interpolate_surface(&grid, du, dv).unwrap();
+            let miss = max_data_miss(&grid, &surface);
+            assert!(miss < 1e-9, "7x4 degree ({du},{dv}) data miss {miss:e}");
+        }
+    }
+
+    /// Review finding MATH-10: degrees clamp to `n - 1` per direction like
+    /// curve `interpolate` instead of failing in `NurbsSurface::new`.
+    #[test]
+    fn interpolate_surface_clamps_degree_per_direction() {
+        let grid = warped_grid(&[0.0, 0.7, 2.0], &[0.0, 0.5, 2.0, 2.4, 3.1]);
+        let surface = interpolate_surface(&grid, 5, 7).unwrap();
+        assert_eq!(surface.degree_u(), 2);
+        assert_eq!(surface.degree_v(), 4);
+        let miss = max_data_miss(&grid, &surface);
+        assert!(miss < 1e-9, "clamped data miss {miss:e}");
+
+        let two_rows = warped_grid(&[0.0, 1.3], &[0.0, 0.5, 2.0, 2.4]);
+        let surface = interpolate_surface(&two_rows, 3, 3).unwrap();
+        assert_eq!(surface.degree_u(), 1);
+        assert_eq!(surface.degree_v(), 3);
+        let miss = max_data_miss(&two_rows, &surface);
+        assert!(miss < 1e-9, "two-row data miss {miss:e}");
+
+        assert!(matches!(
+            interpolate_surface(&grid, 0, 2),
+            Err(MathError::InvalidDegree { degree: 0, .. })
+        ));
+    }
+
+    /// A zero-length row (a cone apex) carries no spacing and is left out of
+    /// the averaged v parameters; the surface still hits every data point.
+    #[test]
+    fn interpolate_surface_with_pole_row_reproduces_data() {
+        let apex = Point3::new(0.0, 0.0, 2.0);
+        let mut grid = vec![vec![apex; 5]];
+        for (r, z) in [(0.4, 1.5), (1.1, 0.6), (1.5, 0.0)] {
+            grid.push(
+                [0.0f64, 0.3, 1.2, 2.0, 2.2]
+                    .iter()
+                    .map(|&t| Point3::new(r * t.cos(), r * t.sin(), z))
+                    .collect(),
+            );
+        }
+        let surface = interpolate_surface(&grid, 3, 3).unwrap();
+        let miss = max_data_miss(&grid, &surface);
+        assert!(miss < 1e-9, "pole grid data miss {miss:e}");
+    }
+
+    /// When every row has the same chord spacing, the shared v parameters
+    /// (and so the knots) are that row's own, bit for bit.
+    #[test]
+    fn interpolate_surface_regular_rows_keep_curve_knots() {
+        let xs = [0.0, 0.3, 1.1, 2.6, 3.0];
+        let grid: Vec<Vec<Point3>> = [0.0, 0.7, 1.9, 2.0]
+            .iter()
+            .map(|&y| xs.iter().map(|&x| Point3::new(x, y, x * x)).collect())
+            .collect();
+        let surface = interpolate_surface(&grid, 3, 3).unwrap();
+        let curve = fitting::interpolate(&grid[0], 3).unwrap();
+        let bits = |k: &[f64]| k.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(surface.knots_v()), bits(curve.knots()));
     }
 
     // ── LSPIA surface tests ────────────────────────────────────────────
