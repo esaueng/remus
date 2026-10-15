@@ -175,3 +175,57 @@ fn repeated_fillet_does_not_share_vertices_with_an_earlier_result() {
         shared.len()
     );
 }
+
+/// Exact result documents (including loop order, curves, pcurves and winding)
+/// must not depend on other bodies or stale wires in the session arena.
+#[test]
+fn walking_fillet_output_is_identical_with_unrelated_arena_contents() {
+    let mut history = Topology::new();
+    let built = pocketed_plate(&mut history, 4, 3);
+    let bytes = remus_io::arena_io::serialize_solid(&history, built).unwrap();
+    let run = |padding: usize| {
+        let mut topo = Topology::new();
+        let mut foreign = Vec::new();
+        for _ in 0..padding {
+            foreign.push(make_box(&mut topo, PLATE.0, PLATE.1, PLATE.2).unwrap());
+        }
+        let input = remus_io::arena_io::deserialize_solid(&bytes, &mut topo).unwrap();
+        // A prior blend supplies coincident contact vertices and obsolete
+        // face/wire history as well as an overlapping, independently owned body.
+        let edges = outer_corner_edges(&topo, input);
+        let prior = fillet_cascade(&mut topo, input, &edges, 6.0).unwrap();
+        foreign.push(prior.solid);
+        for _ in 0..padding {
+            foreign.push(make_box(&mut topo, PLATE.0, PLATE.1, PLATE.2).unwrap());
+        }
+        let untouched: Vec<_> = std::iter::once(input)
+            .chain(foreign)
+            .map(|solid| {
+                (
+                    solid,
+                    remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+                )
+            })
+            .collect();
+        let result = fillet_cascade(&mut topo, input, &edges, 6.0).unwrap();
+        assert_eq!(result.engine, BlendEngine::Walking);
+        assert_eq!(result.succeeded, edges);
+        assert!(result.failed.is_empty());
+        assert!(!result.is_partial);
+        let before = snapshot(&topo, input);
+        let after = snapshot(&topo, result.solid);
+        let removed = 4.0 * (1.0 - std::f64::consts::FRAC_PI_4) * 36.0 * PLATE.2;
+        assert!((before.volume - after.volume - removed).abs() < 0.5);
+        for (solid, document) in untouched {
+            assert_eq!(
+                remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+                document
+            );
+        }
+        remus_io::arena_io::serialize_solid(&topo, result.solid).unwrap()
+    };
+    let baseline = run(0);
+    for padding in [1, 64, 1024] {
+        assert_eq!(run(padding), baseline, "padding bodies per side: {padding}");
+    }
+}
