@@ -450,7 +450,16 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
         incidence.u64(*l);
     }
     strict.u64(incidence.0);
+    // The kernel's own whole-topology boundary-authority check, which also
+    // covers the (edge, face, orientation) pcurve index the hashes above do
+    // not read.
+    let authority = match remus_topology::validation::validate_boundary_authority(topo) {
+        Ok(_) => "ok".to_owned(),
+        Err(e) => format!("{e}").replace(' ', "_"),
+    };
+    strict.str(&authority);
     let mut canonical = Fnv::new();
+    canonical.str(&authority);
     canonical.u64(sharing.edge_uses.len() as u64);
     canonical.u64(sharing.vertex_uses.len() as u64);
     canonical.u64(shell_hashes[0]);
@@ -462,7 +471,8 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
     canonical.u64(incidence.0);
     format!(
         "faces={} edges={} vertices={} oriented_edges={} kinds={kinds:?} \
-         loop_anomalies={anomalous_faces} digest={:016x} canonical={:016x}",
+         loop_anomalies={anomalous_faces} authority={authority} digest={:016x} \
+         canonical={:016x}",
         faces.len(),
         sharing.edge_uses.len(),
         sharing.vertex_uses.len(),
