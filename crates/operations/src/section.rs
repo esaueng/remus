@@ -1484,9 +1484,9 @@ mod curved {
     /// closed curves, but a partial curved edge is sampled along its curve
     /// instead of reduced to its endpoint chord: an arc whose ends lie on one
     /// side of the plane can still cross it twice. With a cutting `plane`,
-    /// each circle or ellipse edge also gains its exact crossings with it as
-    /// vertices, so a near-tangent plane crossing twice between two samples
-    /// is still seen, at the curve rather than at a chord.
+    /// each curved edge also gains its crossings with it as vertices (see
+    /// [`plane_roots`]), so a near-tangent plane crossing twice between two
+    /// samples is still seen, at the curve rather than at a chord.
     pub(super) fn trim_polygon(
         topo: &Topology,
         wire: WireId,
@@ -1497,7 +1497,10 @@ mod curved {
             let edge = topo.edge(oriented.edge())?;
             let closed = edge.start() == edge.end();
             let curve = edge.curve();
-            let roots = plane.map_or_else(Vec::new, |(normal, d)| conic_roots(curve, normal, d));
+            let (roots, periodic) = match plane {
+                Some((normal, d)) => plane_roots(curve, normal, d)?,
+                None => (Vec::new(), false),
+            };
             // Lines and closed curves as `wire_polygon` lays them down, plus
             // the roots in parameter order.
             if closed
@@ -1507,13 +1510,29 @@ mod curved {
                 )
             {
                 let sampled = crate::boolean::sample_edge_curve(curve, WIRE_POLYGON_SAMPLES);
-                #[allow(clippy::cast_precision_loss)]
-                let step = TAU / WIRE_POLYGON_SAMPLES as f64;
+                // The samples' parameters, as `sample_edge_curve` spaces them.
+                let (lo, span, divisor) = match curve {
+                    EdgeCurve::NurbsCurve(nc) => {
+                        let (u0, u1) = nc.domain();
+                        let gap = (nc.evaluate(u0) - nc.evaluate(u1)).length();
+                        let divisor = if gap < 1e-6 {
+                            WIRE_POLYGON_SAMPLES
+                        } else {
+                            WIRE_POLYGON_SAMPLES - 1
+                        };
+                        (u0, u1 - u0, divisor)
+                    }
+                    EdgeCurve::Line
+                    | EdgeCurve::Circle(_)
+                    | EdgeCurve::Ellipse(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_) => (0.0, TAU, WIRE_POLYGON_SAMPLES),
+                };
                 #[allow(clippy::cast_precision_loss)]
                 let mut run: Vec<(f64, Point3)> = sampled
                     .into_iter()
                     .enumerate()
-                    .map(|(i, p)| (step * i as f64, p))
+                    .map(|(i, p)| (lo + span * i as f64 / divisor as f64, p))
                     .chain(roots.iter().map(|&(t, p)| (t, p)))
                     .collect();
                 run.compact_sort_by(|l, r| l.0.total_cmp(&r.0));
@@ -1546,9 +1565,13 @@ mod curved {
                 )
             }));
             for &(t, p) in &roots {
-                // The root's turn that lands in the range, as a fraction of it.
-                let turns = ((t0.min(t1) - t) / TAU).ceil();
-                let t = t + turns * TAU;
+                // A periodic root's turn that lands in the range, as a
+                // fraction of it.
+                let t = if periodic {
+                    t + ((t0.min(t1) - t) / TAU).ceil() * TAU
+                } else {
+                    t
+                };
                 let s = (t - t0) / (t1 - t0);
                 if s > 0.0 && s < 1.0 && (p - start).length() > 0.0 && (p - end).length() > 0.0 {
                     run.push((s, p));
@@ -1563,41 +1586,180 @@ mod curved {
         Ok(points)
     }
 
-    /// Where a circle or ellipse crosses the plane `n·p = d`, as its own
-    /// parameters in [0, 2π) with the points: `n·p(t) − d = C + A cos t +
-    /// B sin t`, solved in closed form. A tangency or a miss gives none.
-    fn conic_roots(curve: &EdgeCurve, normal: Vec3, d: f64) -> Vec<(f64, Point3)> {
-        let (center, u, v) = match curve {
-            EdgeCurve::Circle(c) => (c.center(), c.u_axis() * c.radius(), c.v_axis() * c.radius()),
-            EdgeCurve::Ellipse(e) => (
-                e.center(),
-                e.u_axis() * e.semi_major(),
-                e.v_axis() * e.semi_minor(),
-            ),
-            EdgeCurve::Line
-            | EdgeCurve::NurbsCurve(_)
-            | EdgeCurve::Hyperbola(_)
-            | EdgeCurve::Parabola(_) => return Vec::new(),
+    /// Where a trim curve crosses the plane `n·p = d`, as its own parameters
+    /// with the points, and whether those parameters are periodic (in
+    /// [0, 2π)). Conics are solved in closed form: `n·p(t) − d` is
+    /// `C + A cos t + B sin t` on a circle or ellipse, a quadratic in `t` on
+    /// a parabola and in `eᵗ` on a hyperbola. A NURBS curve's roots are
+    /// isolated by subdivision, certified by its control points (see
+    /// [`nurbs_roots`]). Tangencies give none: they do not cross.
+    fn plane_roots(
+        curve: &EdgeCurve,
+        normal: Vec3,
+        d: f64,
+    ) -> Result<(Vec<(f64, Point3)>, bool), OperationsError> {
+        let signed = |p: Point3| dot_normal_point(normal, p) - d;
+        let with_points = |ts: Vec<f64>, at: &dyn Fn(f64) -> Point3| -> Vec<(f64, Point3)> {
+            ts.into_iter().map(|t| (t, at(t))).collect()
         };
-        let (a, b) = (normal.dot(u), normal.dot(v));
-        let c = dot_normal_point(normal, center) - d;
-        let amplitude = a.hypot(b);
-        if amplitude <= f64::EPSILON * u.length().max(v.length()) {
+        Ok(match curve {
+            EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
+                let (center, u, v) = match curve {
+                    EdgeCurve::Circle(c) => {
+                        (c.center(), c.u_axis() * c.radius(), c.v_axis() * c.radius())
+                    }
+                    EdgeCurve::Ellipse(e) => (
+                        e.center(),
+                        e.u_axis() * e.semi_major(),
+                        e.v_axis() * e.semi_minor(),
+                    ),
+                    EdgeCurve::Line
+                    | EdgeCurve::NurbsCurve(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_) => return Ok((Vec::new(), true)),
+                };
+                let (a, b, c) = (normal.dot(u), normal.dot(v), signed(center));
+                let amplitude = a.hypot(b);
+                let ratio = -c / amplitude;
+                if amplitude <= f64::EPSILON * u.length().max(v.length()) || ratio.abs() >= 1.0 {
+                    return Ok((Vec::new(), true));
+                }
+                let (phase, half) = (b.atan2(a), ratio.acos());
+                let at = |t: f64| {
+                    let (sin_t, cos_t) = t.sin_cos();
+                    center + u * cos_t + v * sin_t
+                };
+                let ts = vec![
+                    (phase - half).rem_euclid(TAU),
+                    (phase + half).rem_euclid(TAU),
+                ];
+                (with_points(ts, &at), true)
+            }
+            EdgeCurve::Parabola(parabola) => {
+                // p(t) = vertex + axis·t²/(4f) + u·t.
+                let a2 = normal.dot(parabola.axis_dir()) / (4.0 * parabola.focal_length());
+                let a1 = normal.dot(parabola.u_axis());
+                let a0 = signed(parabola.vertex());
+                let at = |t: f64| parabola.evaluate(t);
+                (with_points(quadratic_roots(a2, a1, a0), &at), false)
+            }
+            EdgeCurve::Hyperbola(hyperbola) => {
+                // p(t) = center + u·a·cosh t + v·b·sinh t; with e = eᵗ,
+                // A cosh t + B sinh t + C = 0 is (A+B)e² + 2Ce + (A−B) = 0.
+                let big_a = normal.dot(hyperbola.u_axis()) * hyperbola.semi_major();
+                let big_b = normal.dot(hyperbola.v_axis()) * hyperbola.semi_minor();
+                let c = signed(hyperbola.center());
+                let ts = quadratic_roots(big_a + big_b, 2.0 * c, big_a - big_b)
+                    .into_iter()
+                    .filter(|&e| e > 0.0)
+                    .map(f64::ln)
+                    .collect();
+                let at = |t: f64| hyperbola.evaluate(t);
+                (with_points(ts, &at), false)
+            }
+            EdgeCurve::NurbsCurve(nc) => {
+                let at = |t: f64| nc.evaluate(t);
+                (with_points(nurbs_roots(nc, normal, d)?, &at), false)
+            }
+            EdgeCurve::Line => (Vec::new(), false),
+        })
+    }
+
+    /// The simple real roots of `a t² + b t + c` (one when it is linear);
+    /// a double root, a tangency, gives none.
+    fn quadratic_roots(a: f64, b: f64, c: f64) -> Vec<f64> {
+        let scale = a.abs().max(b.abs()).max(c.abs());
+        if scale == 0.0 {
             return Vec::new();
         }
-        let ratio = -c / amplitude;
-        if ratio.abs() >= 1.0 {
+        if a.abs() <= f64::EPSILON * scale {
+            return if b.abs() > f64::EPSILON * scale {
+                vec![-c / b]
+            } else {
+                Vec::new()
+            };
+        }
+        let discriminant = b.mul_add(b, -4.0 * a * c);
+        if discriminant <= f64::EPSILON * b.mul_add(b, (4.0 * a * c).abs()) {
             return Vec::new();
         }
-        let (phase, half) = (b.atan2(a), ratio.acos());
-        [phase - half, phase + half]
-            .into_iter()
-            .map(|t| {
-                let t = t.rem_euclid(TAU);
-                let (sin_t, cos_t) = t.sin_cos();
-                (t, center + u * cos_t + v * sin_t)
-            })
-            .collect()
+        // The cancellation-free pair.
+        let q = -0.5 * (b + b.signum() * discriminant.sqrt());
+        if q == 0.0 {
+            let root = (-c / a).sqrt();
+            return vec![-root, root];
+        }
+        vec![q / a, c / q]
+    }
+
+    /// Simple roots of a NURBS curve against the plane, isolated by halving.
+    /// With positive weights the curve lies in its control points' convex
+    /// hull and crosses the plane no more often than they do (variation
+    /// diminishing), so a span whose control points sit on one side has no
+    /// root, and one with a single sign change and opposite-signed ends has
+    /// exactly one, found by bisection. A span still undecided after
+    /// [`MAX_HALVINGS`] halvings is a tangency within floating point and does
+    /// not cross; a curve whose weights do not certify this is refused.
+    fn nurbs_roots(
+        curve: &remus_math::nurbs::curve::NurbsCurve,
+        normal: Vec3,
+        d: f64,
+    ) -> Result<Vec<f64>, OperationsError> {
+        const MAX_HALVINGS: usize = 52;
+        if curve.weights().iter().any(|&w| !(w.is_finite() && w > 0.0)) {
+            return Err(unsupported(
+                "section of a NURBS trim without positive weights".into(),
+            ));
+        }
+        let signed = |p: Point3| dot_normal_point(normal, p) - d;
+        let mut roots = Vec::new();
+        let mut stack = vec![(curve.clone(), 0_usize)];
+        while let Some((span, depth)) = stack.pop() {
+            let distances: Vec<f64> = span.control_points().iter().map(|&p| signed(p)).collect();
+            if distances.iter().all(|&x| x > 0.0) || distances.iter().all(|&x| x < 0.0) {
+                continue;
+            }
+            let (lo, hi) = span.domain();
+            let (f_lo, f_hi) = (signed(span.evaluate(lo)), signed(span.evaluate(hi)));
+            let changes = distances
+                .windows(2)
+                .filter(|w| (w[0] > 0.0) != (w[1] > 0.0))
+                .count();
+            if changes == 1 && f_lo * f_hi < 0.0 {
+                let (mut a, mut b, mut f_a) = (lo, hi, f_lo);
+                for _ in 0..MAX_HALVINGS * 2 {
+                    let m = 0.5 * (a + b);
+                    if m <= a || m >= b {
+                        break;
+                    }
+                    let f_m = signed(span.evaluate(m));
+                    if (f_m > 0.0) == (f_a > 0.0) {
+                        (a, f_a) = (m, f_m);
+                    } else {
+                        b = m;
+                    }
+                }
+                roots.push(0.5 * (a + b));
+                continue;
+            }
+            let mid = 0.5 * (lo + hi);
+            if depth >= MAX_HALVINGS || mid <= lo || mid >= hi {
+                continue;
+            }
+            // A root on the split itself ends both halves at zero, which
+            // neither half can certify: take it here.
+            if signed(span.evaluate(mid)) == 0.0 {
+                let step = (hi - lo) * 1e-9;
+                if signed(span.evaluate(mid - step)) * signed(span.evaluate(mid + step)) < 0.0 {
+                    roots.push(mid);
+                }
+            }
+            let (left, right) = remus_math::nurbs::knot_ops::curve_split(&span, mid)
+                .map_err(|error| unsupported(format!("section of a NURBS trim: {error}")))?;
+            stack.push((left, depth + 1));
+            stack.push((right, depth + 1));
+        }
+        Ok(roots)
     }
 
     fn boundary_edges(topo: &Topology, face: FaceId) -> Result<Vec<BoundaryEdge>, OperationsError> {
@@ -1878,7 +2040,8 @@ mod curved {
 
         use std::f64::consts::{PI, TAU};
 
-        use remus_math::curves::Circle3D;
+        use remus_math::curves::{Circle3D, Hyperbola3D, Parabola3D};
+        use remus_math::nurbs::curve::NurbsCurve;
         use remus_math::tolerance::Tolerance;
         use remus_math::vec::{Point3, Vec3};
         use remus_topology::Topology;
@@ -2050,6 +2213,114 @@ mod curved {
                 (hi - (3.0 + 0.75_f64.sqrt())).abs() < 1e-9,
                 "outer end {hi}, the arc crosses at {}",
                 3.0 + 0.75_f64.sqrt()
+            );
+        }
+
+        /// The planar arm's segment for the wire `curve` from `a` to `b`
+        /// closed by a line, cut by `n·p = d`.
+        fn cut_curve_and_chord(
+            curve: EdgeCurve,
+            a: Point3,
+            b: Point3,
+            normal: Vec3,
+            d: f64,
+        ) -> (Point3, Point3) {
+            let mut topo = Topology::new();
+            let (va, vb) = (
+                topo.add_vertex(Vertex::new(a, 1e-7)),
+                topo.add_vertex(Vertex::new(b, 1e-7)),
+            );
+            let arc = topo.add_edge(Edge::new(va, vb, curve));
+            let back = topo.add_edge(Edge::new(vb, va, EdgeCurve::Line));
+            let edges = [arc, back].map(|e| OrientedEdge::new(e, true));
+            let wire = topo.add_wire(Wire::new(edges.to_vec(), true).unwrap());
+            let polygon = trim_polygon(&topo, wire, Some((normal, d))).unwrap();
+            super::super::intersect_planar_face_with_plane(
+                &polygon,
+                normal,
+                0.0,
+                normal,
+                d,
+                Tolerance::new(),
+            )
+            .expect("the plane crosses the curve")
+        }
+
+        fn assert_ends_at(segment: (Point3, Point3), roots: [Point3; 2], what: &str) {
+            let (p, q) = segment;
+            let hit = |x: Point3| roots.iter().any(|&r| (x - r).length() < 1e-9);
+            assert!(
+                hit(p) && hit(q),
+                "{what}: segment {p:?} → {q:?}, roots {roots:?}"
+            );
+        }
+
+        /// Parabola, hyperbola and NURBS trims, each dipping across the plane
+        /// between two of its 32 samples (at ±1/32 of a span offset by half a
+        /// sample) while every sample stays on one side: the segment must
+        /// end at the curve's exact roots.
+        #[test]
+        fn non_circular_trims_are_crossed_between_their_samples() {
+            let (t0, t1) = (-31.0 / 32.0, 33.0 / 32.0);
+            // z = t²/4; samples at t = ±1/32 sit at 2.44e-4, the plane at
+            // 1e-4 crosses at t = ±0.02.
+            let parabola =
+                Parabola3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+            let z = Vec3::new(0.0, 0.0, 1.0);
+            assert_ends_at(
+                cut_curve_and_chord(
+                    EdgeCurve::Parabola(parabola.clone()),
+                    parabola.evaluate(t0),
+                    parabola.evaluate(t1),
+                    z,
+                    1e-4,
+                ),
+                [parabola.evaluate(-0.02), parabola.evaluate(0.02)],
+                "parabola",
+            );
+
+            // Along u the hyperbola is cosh t: samples at cosh(1/32), the
+            // plane at 1 + 2e-4 crosses at ±acosh(1 + 2e-4).
+            let hyperbola = Hyperbola3D::new(Point3::new(0.0, 0.0, 0.0), z, 1.0, 1.0).unwrap();
+            let u = hyperbola.u_axis();
+            let root = (1.0 + 2e-4_f64).acosh();
+            assert_ends_at(
+                cut_curve_and_chord(
+                    EdgeCurve::Hyperbola(hyperbola.clone()),
+                    hyperbola.evaluate(t0),
+                    hyperbola.evaluate(t1),
+                    u,
+                    1.0 + 2e-4,
+                ),
+                [hyperbola.evaluate(-root), hyperbola.evaluate(root)],
+                "hyperbola",
+            );
+
+            // A quadratic Bezier with z(s) = 1 − 4s + 5s², least 0.2 at
+            // s = 0.4, between the samples at 12/32 and 13/32 (z ≥ 0.2002):
+            // z = 0.2001 crosses at s = (4 ± √0.002)/10.
+            let bezier = NurbsCurve::new(
+                2,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![
+                    Point3::new(-1.0, 0.0, 1.0),
+                    Point3::new(0.3, 0.0, -1.0),
+                    Point3::new(1.0, 0.0, 2.0),
+                ],
+                vec![1.0; 3],
+            )
+            .unwrap();
+            let s = |sign: f64| sign.mul_add(0.002_f64.sqrt(), 4.0) / 10.0;
+            assert_ends_at(
+                cut_curve_and_chord(
+                    EdgeCurve::NurbsCurve(bezier.clone()),
+                    bezier.evaluate(0.0),
+                    bezier.evaluate(1.0),
+                    z,
+                    0.2001,
+                ),
+                [bezier.evaluate(s(-1.0)), bezier.evaluate(s(1.0))],
+                "NURBS",
             );
         }
 
