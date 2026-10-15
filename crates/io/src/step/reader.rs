@@ -1620,6 +1620,53 @@ fn resolve_unit_scale(
     }))
 }
 
+/// Whether every number a surface carries is finite.
+fn surface_is_finite(surface: &FaceSurface) -> bool {
+    let point = |point: Point3| point.0.iter().all(|value| value.is_finite());
+    let vector = |vector: Vec3| vector.0.iter().all(|value| value.is_finite());
+    match surface {
+        FaceSurface::Plane { normal, d } => vector(*normal) && d.is_finite(),
+        FaceSurface::Nurbs(nurbs) => {
+            nurbs.control_points().iter().flatten().all(|&p| point(p))
+                && nurbs.weights().iter().flatten().all(|w| w.is_finite())
+                && nurbs
+                    .knots_u()
+                    .iter()
+                    .chain(nurbs.knots_v())
+                    .all(|k| k.is_finite())
+        }
+        FaceSurface::Cylinder(cylinder) => {
+            point(cylinder.origin())
+                && cylinder.radius().is_finite()
+                && [cylinder.axis(), cylinder.x_axis(), cylinder.y_axis()]
+                    .into_iter()
+                    .all(vector)
+        }
+        FaceSurface::Cone(cone) => {
+            point(cone.apex())
+                && cone.half_angle().is_finite()
+                && [cone.axis(), cone.x_axis(), cone.y_axis()]
+                    .into_iter()
+                    .all(vector)
+        }
+        FaceSurface::Sphere(sphere) => {
+            point(sphere.center())
+                && sphere.radius().is_finite()
+                && [sphere.x_axis(), sphere.y_axis(), sphere.z_axis()]
+                    .into_iter()
+                    .all(vector)
+        }
+        FaceSurface::Torus(torus) => {
+            point(torus.center())
+                && torus.major_radius().is_finite()
+                && torus.minor_radius().is_finite()
+                && [torus.x_axis(), torus.y_axis(), torus.z_axis()]
+                    .into_iter()
+                    .all(vector)
+        }
+    }
+}
+
 /// Compare two unit conversion factors for practical equality.
 fn approx_same_factor(a: f64, b: f64) -> bool {
     (a - b).abs() <= 1e-12 * a.abs().max(b.abs()).max(1.0)
@@ -4302,7 +4349,27 @@ impl<'a> StepBuilder<'a> {
         Ok(points)
     }
 
+    /// Build a surface entity, refusing one that carries a non-finite number.
+    ///
+    /// Every real is checked finite as it is parsed and again after unit
+    /// scaling, but a quantity derived from several of them can still
+    /// overflow: a plane's offset `n·origin`, a swept patch's translated
+    /// control points.
     fn build_surface(&self, surface_ref: u64) -> Result<FaceSurface, IoError> {
+        let surface = self.build_surface_geometry(surface_ref)?;
+        if surface_is_finite(&surface) {
+            Ok(surface)
+        } else {
+            Err(IoError::ParseError {
+                reason: format!(
+                    "{} #{surface_ref} has non-finite geometry in millimetres",
+                    diagnostic_entity_type(self.get_entity(surface_ref)?)
+                ),
+            })
+        }
+    }
+
+    fn build_surface_geometry(&self, surface_ref: u64) -> Result<FaceSurface, IoError> {
         let entity = self.get_entity(surface_ref)?;
         let entity_type = entity.kind;
         let attrs = entity.attrs.clone();
@@ -16391,6 +16458,25 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let err = surface_geometry(&body, 20).unwrap_err();
         assert!(
             err.to_string().contains("sweeps no surface"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Every input of this sweep is finite, but the plane it sweeps is not:
+    /// its offset `n·p` is (1.7E308 + 1.7E308)/√2.
+    #[test]
+    fn extrusion_whose_plane_offset_overflows_is_refused() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let body = format!(
+            "{}#10 = DIRECTION('',(0.,{s:?},{s:?}));\n\
+             #11 = VECTOR('',#10,5.);\n\
+             #20 = SURFACE_OF_LINEAR_EXTRUSION('',#4,#11);",
+            step_line((0.0, -1.7E308, 1.7E308), (1.0, 0.0, 0.0))
+        );
+        let err = surface_geometry(&body, 20).unwrap_err();
+        assert!(
+            err.to_string().contains("SURFACE_OF_LINEAR_EXTRUSION #20")
+                && err.to_string().contains("non-finite"),
             "unexpected error: {err}"
         );
     }

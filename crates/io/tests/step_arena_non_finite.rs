@@ -88,6 +88,30 @@ fn metre_point_overflowing_millimetres_is_refused() {
     assert_refused_as_non_finite(&text, "a 1E306 m coordinate");
 }
 
+/// Each input real can be finite after scaling while a quantity derived from
+/// several of them is not: here a plane's offset `n·origin`, with every
+/// coordinate 1.7E308 mm and an unnormalized `(1, 1, 1)` normal.
+#[test]
+fn metre_plane_whose_offset_overflows_is_refused() {
+    let text = metre_step(|topo| make_box(topo, 1.0, 1.0, 1.0).unwrap());
+    let plane = text
+        .lines()
+        .find(|line| line.contains("PLANE("))
+        .unwrap()
+        .to_owned();
+    let (head, _placement) = plane.rsplit_once('#').unwrap();
+    let mut text = replace_one(&text, &plane, &format!("{head}#999901);"));
+    let data_end =
+        text.find("DATA;").unwrap() + text[text.find("DATA;").unwrap()..].find("ENDSEC;").unwrap();
+    text.insert_str(
+        data_end,
+        "#999901 = AXIS2_PLACEMENT_3D('', #999902, #999903, $);\n\
+         #999902 = CARTESIAN_POINT('', (1.7E305, 1.7E305, 1.7E305));\n\
+         #999903 = DIRECTION('', (1., 1., 1.));\n",
+    );
+    assert_refused_as_non_finite(&text, "a plane offset of 5.1E308 mm");
+}
+
 /// The writer no longer emits a document its own reader refuses.
 #[test]
 fn arena_writer_refuses_non_finite_geometry() {
