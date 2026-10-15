@@ -63,6 +63,14 @@ fn check_first_span(knots: &[f64], p: usize) -> Result<(), MathError> {
     Ok(())
 }
 
+/// The largest weight, by which the clamping paths divide all weights first.
+/// A common weight factor leaves a rational curve unchanged, but knot
+/// insertion forms the products `w·P`, which a common scale such as 1e-300
+/// would underflow to zero.
+fn max_weight(weights: impl Iterator<Item = f64>) -> f64 {
+    weights.fold(0.0, f64::max)
+}
+
 /// Clamp a curve to its own domain by inserting both domain ends to
 /// multiplicity `p` (Boehm insertion, Piegl & Tiller A5.1) and dropping what
 /// lies outside.
@@ -76,8 +84,15 @@ fn clamp_curve(curve: &NurbsCurve) -> Result<NurbsCurve, MathError> {
         return Ok(curve.clone());
     }
     check_first_span(curve.knots(), p)?;
+    let scale = max_weight(curve.weights().iter().copied());
+    let unit = NurbsCurve::new(
+        p,
+        curve.knots().to_vec(),
+        curve.control_points().to_vec(),
+        curve.weights().iter().map(|w| w / scale).collect(),
+    )?;
     let (a, b) = curve.domain();
-    let ends = curve_knot_insert(&curve_knot_insert(curve, a, p)?, b, p)?;
+    let ends = curve_knot_insert(&curve_knot_insert(&unit, a, p)?, b, p)?;
     let (start, end, knots) = clamped_window(ends.knots(), p, a, b)?;
     NurbsCurve::new(
         p,
@@ -95,7 +110,19 @@ fn clamp_surface(surface: &NurbsSurface) -> Result<NurbsSurface, MathError> {
     if clamped_u && clamped_v {
         return Ok(surface.clone());
     }
-    let mut ends = surface.clone();
+    let scale = max_weight(surface.weights().iter().flatten().copied());
+    let mut ends = NurbsSurface::new(
+        pu,
+        pv,
+        surface.knots_u().to_vec(),
+        surface.knots_v().to_vec(),
+        surface.control_points().to_vec(),
+        surface
+            .weights()
+            .iter()
+            .map(|row| row.iter().map(|w| w / scale).collect())
+            .collect(),
+    )?;
     if !clamped_u {
         check_first_span(surface.knots_u(), pu)?;
         let (a, b) = surface.domain_u();
