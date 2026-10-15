@@ -9,12 +9,13 @@
 //! solid's connectivity: which edge and vertices each use names (first-seen
 //! ordinals), how many uses share each, which faces each edge and vertex
 //! bounds, and which vertices each edge ends at. Any face whose loops break
-//! authority (loop count, owner, closure, coedge count, parent or edge)
-//! changes both digests and is counted in `loop_anomalies`. Tessellation
-//! workloads digest position bits and indices. Two builds whose digests match
-//! produced bit-identical output. Solids also print a `canonical` digest of
-//! the same content that ignores face order, cavity order and closed-wire
-//! start, for workloads whose order varies run to run.
+//! authority (loop count, owner, closure, coedge count, parent or edge) or
+//! that shares a wire with another boundary changes both digests and is
+//! counted in `loop_anomalies`. Tessellation workloads digest position bits
+//! and indices. Two builds whose digests match produced bit-identical output.
+//! Solids also print a `canonical` digest of the same content that ignores
+//! face order, cavity order and closed-wire start, for workloads whose order
+//! varies run to run.
 //!
 //! glibc selects libm variants by CPU feature, and valgrind's virtual CPU
 //! reports fewer features, so digests compare native with native and
@@ -174,6 +175,9 @@ struct Sharing {
     vertex_uses: std::collections::HashMap<remus_topology::vertex::VertexId, u64>,
     edge_ordinal: std::collections::HashMap<remus_topology::edge::EdgeId, u64>,
     vertex_ordinal: std::collections::HashMap<remus_topology::vertex::VertexId, u64>,
+    /// How many face boundary slots name each wire: 1 for every wire of a
+    /// valid solid.
+    wire_uses: std::collections::HashMap<remus_topology::wire::WireId, u64>,
 }
 
 impl Sharing {
@@ -183,11 +187,13 @@ impl Sharing {
             vertex_uses: std::collections::HashMap::new(),
             edge_ordinal: std::collections::HashMap::new(),
             vertex_ordinal: std::collections::HashMap::new(),
+            wire_uses: std::collections::HashMap::new(),
         };
         for &fid in faces {
             let face = topo.face(fid).unwrap();
             for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
             {
+                *sharing.wire_uses.entry(wid).or_default() += 1;
                 for oe in topo.wire(wid).unwrap().edges() {
                     let edge = topo.edge(oe.edge()).unwrap();
                     *sharing.edge_uses.entry(oe.edge()).or_default() += 1;
@@ -208,14 +214,21 @@ impl Sharing {
 /// Anomalies in a face's loop authority, as text. Empty when the face has
 /// one loop per wire, each owned by the face, closed like its wire, holding
 /// one coedge per wire use, every coedge naming that loop as its parent and
-/// the same edge as the wire use at its position.
-fn loop_anomalies(topo: &Topology, fid: remus_topology::face::FaceId) -> String {
+/// the same edge as the wire use at its position, and no wire shared with
+/// another boundary slot.
+fn loop_anomalies(topo: &Topology, fid: remus_topology::face::FaceId, sharing: &Sharing) -> String {
     let face = topo.face(fid).unwrap();
     let wires: Vec<_> = std::iter::once(face.outer_wire())
         .chain(face.inner_wires().iter().copied())
         .collect();
     let loops = topo.loops_of_face(fid).unwrap_or(&[]);
     let mut out = String::new();
+    for (j, wid) in wires.iter().enumerate() {
+        let uses = sharing.wire_uses[wid];
+        if uses != 1 {
+            write!(out, "{j}:wire-uses={uses};").unwrap();
+        }
+    }
     if loops.len() != wires.len() {
         write!(out, "loops={}/{};", loops.len(), wires.len()).unwrap();
     }
@@ -300,7 +313,7 @@ fn solid_digest(topo: &Topology, solid: SolidId) -> String {
             head.u64(face.inner_wires().len() as u64);
             // Only an anomaly changes the hash, so valid output keeps its
             // digest.
-            let anomalies = loop_anomalies(topo, fid);
+            let anomalies = loop_anomalies(topo, fid, &sharing);
             if !anomalies.is_empty() {
                 anomalous_faces += 1;
                 head.str(&anomalies);

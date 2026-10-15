@@ -25,11 +25,11 @@ their numbers.
   connectivity: which edge and vertices each use names, how many uses share
   each, which faces each edge and vertex bounds, and which vertices each edge
   ends at. A face whose loops break authority (loop count, owner, closure,
-  coedge count, parent or edge) changes the digest and is counted. Lazily
-  filled caches in a `Debug` rendering (the NURBS weight `OnceLock`s) are left
-  out. A `canonical` digest of the same content ignores face order, cavity
-  order and the start of each closed wire. Mesh workloads digest position
-  bits, normal bits and indices.
+  coedge count, parent or edge), or that shares a wire with another face,
+  changes the digest and is counted. Lazily filled caches in a `Debug`
+  rendering (the NURBS weight `OnceLock`s) are left out. A `canonical` digest
+  of the same content ignores face order, cavity order and the start of each
+  closed wire. Mesh workloads digest position bits, normal bits and indices.
 - glibc selects libm variants by CPU feature, so digests are compared native
   with native and valgrind with valgrind.
 
