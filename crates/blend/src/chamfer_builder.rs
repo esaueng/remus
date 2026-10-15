@@ -171,7 +171,7 @@ impl<'a> ChamferBuilder<'a> {
         let original_faces: Vec<FaceId> = topo.shell(shell_id)?.faces().to_vec();
         // The result shares every face it does not rebuild with the input, so
         // boundary rewrites go copy-on-write through this scope.
-        let scope = EditScope::new(topo, original_faces.iter().copied())?;
+        let mut scope = EditScope::new(topo, original_faces.iter().copied())?;
 
         let mut touched_faces: HashSet<FaceId> = HashSet::new();
 
