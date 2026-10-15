@@ -50,6 +50,19 @@ fn clamped_window(
     Ok((last_a - p, first_b, clamped))
 }
 
+/// Refuse a knot vector whose first span is empty: the start of the domain
+/// then carries multiplicity above `p` and the curve has no value there. The
+/// clamped decomposition refuses the same input at its first collapsed span.
+fn check_first_span(knots: &[f64], p: usize) -> Result<(), MathError> {
+    if (knots[p + 1] - knots[p]).abs() < KNOT_EPS {
+        return Err(MathError::InvalidKnotValue {
+            index: p + 1,
+            value: knots[p],
+        });
+    }
+    Ok(())
+}
+
 /// Clamp a curve to its own domain by inserting both domain ends to
 /// multiplicity `p` (Boehm insertion, Piegl & Tiller A5.1) and dropping what
 /// lies outside.
@@ -62,6 +75,7 @@ fn clamp_curve(curve: &NurbsCurve) -> Result<NurbsCurve, MathError> {
     if is_clamped(curve.knots(), p) {
         return Ok(curve.clone());
     }
+    check_first_span(curve.knots(), p)?;
     let (a, b) = curve.domain();
     let ends = curve_knot_insert(&curve_knot_insert(curve, a, p)?, b, p)?;
     let (start, end, knots) = clamped_window(ends.knots(), p, a, b)?;
@@ -83,10 +97,12 @@ fn clamp_surface(surface: &NurbsSurface) -> Result<NurbsSurface, MathError> {
     }
     let mut ends = surface.clone();
     if !clamped_u {
+        check_first_span(surface.knots_u(), pu)?;
         let (a, b) = surface.domain_u();
         ends = surface_knot_insert_u(&surface_knot_insert_u(&ends, a, pu)?, b, pu)?;
     }
     if !clamped_v {
+        check_first_span(surface.knots_v(), pv)?;
         let (a, b) = surface.domain_v();
         ends = surface_knot_insert_v(&surface_knot_insert_v(&ends, a, pv)?, b, pv)?;
     }

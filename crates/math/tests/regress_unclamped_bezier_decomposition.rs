@@ -29,6 +29,7 @@
     clippy::suboptimal_flops
 )]
 
+use remus_math::MathError;
 use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::decompose::{
     curve_degree_elevate, curve_to_bezier_segments, surface_to_bezier_patches,
@@ -340,4 +341,41 @@ fn multi_span_unclamped_surface_patches_reproduce_the_surface() {
             }
         }
     }
+}
+
+#[test]
+fn start_multiplicity_above_degree_is_refused_as_on_the_clamped_path() {
+    // Review follow-up: degree 3 with knots [-1, 0, 0, 0, 0, 1, 1, 1, 1]
+    // leaves the first span [knots[3], knots[4]] = [0, 0] empty, so the
+    // curve has no value at its domain start. Main refused it at that span
+    // (`InvalidKnotValue { index: 4 }`); clamping must not drop a side and
+    // accept it instead.
+    let points = de_boor_points(5);
+    let knots = vec![-1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+    let curve = NurbsCurve::new(3, knots.clone(), points, vec![1.0; 5]).unwrap();
+    for result in [
+        curve_to_bezier_segments(&curve).map(|_| ()),
+        curve_degree_elevate(&curve, 1).map(|_| ()),
+    ] {
+        assert!(
+            matches!(
+                result,
+                Err(MathError::InvalidKnotValue { index: 4, value }) if value == 0.0
+            ),
+            "{result:?}"
+        );
+    }
+    let surface = NurbsSurface::new(
+        3,
+        3,
+        knots,
+        uniform_knots(8),
+        grid(5, 4),
+        vec![vec![1.0; 4]; 5],
+    )
+    .unwrap();
+    assert!(matches!(
+        surface_to_bezier_patches(&surface),
+        Err(MathError::InvalidKnotValue { index: 4, .. })
+    ));
 }
