@@ -114,8 +114,15 @@ fn degree_zero_is_refused_by_every_entry_point() {
         approximate(&points, 0, 8),
         Err(MathError::InvalidDegree { degree: 0, .. })
     ));
-    // Review follow-up: with no control points either, the degree is still
-    // what is reported, not the control-point count.
+    // Review follow-ups: with no control points, or no parameters, either,
+    // the degree is still what is reported.
+    assert!(matches!(
+        interpolate_with_params(&points, 0, &[]),
+        Err(MathError::InvalidDegree {
+            degree: 0,
+            control_points: 20
+        })
+    ));
     assert!(matches!(
         approximate(&points, 0, 0),
         Err(MathError::InvalidDegree {

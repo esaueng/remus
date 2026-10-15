@@ -247,6 +247,12 @@ pub fn interpolate_with_params(
         return Err(MathError::EmptyInput);
     }
     check_fit_points(n)?;
+    if degree == 0 {
+        return Err(MathError::InvalidDegree {
+            degree,
+            control_points: n,
+        });
+    }
     if params.len() != n {
         return Err(MathError::InvalidControlPointGrid {
             expected_rows: n,
