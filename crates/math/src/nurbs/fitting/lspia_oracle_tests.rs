@@ -157,7 +157,10 @@ fn max_deviation(points: &[Point3], curve: &NurbsCurve) -> f64 {
     for (q, &u) in points.iter().zip(&chord_length_params(points)) {
         let c = curve.evaluate(u);
         let (err_x, err_y, err_z) = (q.x() - c.x(), q.y() - c.y(), q.z() - c.z());
-        max_err = max_err.max((err_x * err_x + err_y * err_y + err_z * err_z).sqrt());
+        max_err = super::fold_residual(
+            max_err,
+            (err_x * err_x + err_y * err_y + err_z * err_z).sqrt(),
+        );
     }
     max_err
 }
@@ -391,7 +394,7 @@ fn matches_reference_on_nan_parameters() {
     // m == p + 1 keeps the knots valid while a NaN beyond points[0] makes
     // every parameter NaN; the initial polygon is all points[0], so both
     // loops reach the NaN evaluation. Its zero scale trips the scale
-    // `debug_assert!` in both, and in release both return the same curve.
+    // `debug_assert!` in both.
     let mut pts = helix(30);
     pts[7] = Point3::new(f64::NAN, 0.0, 0.0);
     let new = std::panic::catch_unwind(|| approximate_lspia(&pts, 3, 4, 1e-6, 100));
@@ -399,12 +402,21 @@ fn matches_reference_on_nan_parameters() {
     if cfg!(debug_assertions) {
         assert!(new.is_err() && old.is_err());
     } else {
-        let (new, old) = (new.unwrap().unwrap().curve, old.unwrap().unwrap());
-        assert_eq!(
-            point_bits(new.control_points()),
-            point_bits(old.control_points())
-        );
-        assert_eq!(bits(new.knots()), bits(old.knots()));
+        // In release every residual is NaN. The old loop's `f64::max`
+        // dropped them, measured 0 and stopped at the initial polygon as
+        // if converged. Review follow-up: a NaN residual now counts as
+        // infinite, so no iterate converges; the first update writes NaN
+        // control points and is refused, and with no update the initial
+        // polygon is returned unconverged with an infinite error.
+        assert!(old.unwrap().is_ok());
+        assert!(matches!(
+            new.unwrap(),
+            Err(MathError::InvalidControlPointValue { index: 0, .. })
+        ));
+        let fit = approximate_lspia(&pts, 3, 4, 1e-6, 0).unwrap();
+        assert!(!fit.converged);
+        assert!(fit.max_error.is_infinite());
+        assert_eq!(fit.iteration, 0);
     }
 }
 

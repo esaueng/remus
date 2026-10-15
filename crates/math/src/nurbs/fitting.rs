@@ -749,6 +749,17 @@ fn point_from_basis(
     Point3::new(wx / ww, wy / ww, wz / ww)
 }
 
+/// Fold one data-point residual into the running maximum. `f64::max`
+/// drops a NaN operand, which would let a fit whose residuals cannot be
+/// measured report a zero error and converge; a NaN counts as infinite.
+fn fold_residual(max_err: f64, residual: f64) -> f64 {
+    if residual.is_nan() {
+        f64::INFINITY
+    } else {
+        max_err.max(residual)
+    }
+}
+
 /// The outcome of an LSPIA fit: the best iterate and how good it is.
 #[derive(Debug, Clone)]
 pub struct LspiaFit {
@@ -876,7 +887,7 @@ pub fn approximate_lspia(
             let err_y = points[i].y() - q.y();
             let err_z = points[i].z() - q.z();
             let err_mag = (err_x * err_x + err_y * err_y + err_z * err_z).sqrt();
-            max_err = max_err.max(err_mag);
+            max_err = fold_residual(max_err, err_mag);
 
             for (k, &nv) in n_vals.iter().enumerate() {
                 let j = span - p + k;
@@ -1005,7 +1016,7 @@ pub(crate) fn approximate_lspia_weighted(
             let err_y = points[i].y() - q.y();
             let err_z = points[i].z() - q.z();
             let err_mag = (err_x * err_x + err_y * err_y + err_z * err_z).sqrt();
-            max_err = max_err.max(err_mag);
+            max_err = fold_residual(max_err, err_mag);
 
             let (span, n_vals) = &basis_data[i];
             for (k, &nv) in n_vals.iter().enumerate() {
