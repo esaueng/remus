@@ -261,3 +261,25 @@ fn every_accepted_rational_removal_stays_within_its_tolerance() {
     // The sweep must exercise acceptance, not only refusal.
     assert!(accepted > 50, "only {accepted} removals accepted");
 }
+
+#[test]
+fn uniformly_scaled_weights_give_the_unit_weight_answer() {
+    // Review follow-up: weights sharing a projective scale describe the same
+    // curve. At 1e-320 the homogeneous products underflowed, the bound came
+    // out 0 and the unit corner (deviation 1) was removed at tolerance 0.
+    for scale in [1e-320, 1e-300, 1e300] {
+        let scaled = polyline(
+            vec![0.0, 0.0, 0.5, 1.0, 1.0],
+            &[[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0]],
+            vec![scale; 3],
+        );
+        for tol in [0.0, 1e-6, 0.999_999] {
+            assert!(
+                is_refused(&curve_knot_remove(&scaled, 0.5, tol)),
+                "weights {scale:e}: removed at tolerance {tol}"
+            );
+        }
+        let removed = curve_knot_remove(&scaled, 0.5, 1.0).expect("deviation is exactly 1");
+        assert_eq!(removed.control_points().len(), 2);
+    }
+}
