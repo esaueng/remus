@@ -12,6 +12,7 @@
 pub(crate) mod adaptive_tolerance;
 pub(crate) mod analytic;
 pub(crate) mod blend_func;
+pub(crate) mod body_edit;
 pub(crate) mod builder_utils;
 pub mod chamfer_builder;
 pub(crate) mod corner;

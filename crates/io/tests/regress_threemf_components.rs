@@ -1,4 +1,4 @@
-//! Kernel review 2026-10-14, IO-4 (B90): 3MF objects built from components.
+//! Kernel review 2026-10-14, IO-4 (B125): 3MF objects built from components.
 //!
 //! The reader produced one mesh per `<object>` from its `<mesh>` alone, so an
 //! object made only of `<components>` came back as an empty mesh, and every
@@ -371,4 +371,18 @@ fn extension_component_elements_are_ignored() {
     let meshes = read_threemf(&nested).unwrap();
     assert_eq!(meshes.len(), 1, "the part is a component, not top-level");
     assert_eq!(meshes[0].indices.len(), 12 * 3);
+    // A core-namespace `<component>` inside an extension child of a
+    // `<component>` is not another placement of the part.
+    let inside_extension = model(
+        "millimeter",
+        &[
+            cube_object(1),
+            r#"<object id="2" type="model"><components xmlns:v="urn:example:vendor"><component objectid="1"><v:ext><component objectid="1" transform="1 0 0 0 1 0 0 0 1 50 0 0"/><components><component objectid="7"/></components></v:ext></component></components></object>"#.to_string(),
+        ],
+        &[2],
+    );
+    let meshes = read_threemf(&inside_extension).unwrap();
+    assert_eq!(meshes.len(), 1);
+    assert_eq!(meshes[0].indices.len(), 12 * 3, "one placement only");
+    assert_positions(&meshes[0].positions, &cube_corners(|p| p));
 }

@@ -1,4 +1,4 @@
-//! Kernel review 2026-10-15, IO-4 follow-up (B102): 3MF build items.
+//! Kernel review 2026-10-15, IO-4 follow-up (B129): 3MF build items.
 //!
 //! The reader ignored `<build>`: `<item transform>` was never applied, and
 //! the returned meshes did not depend on the build list, so an object a
@@ -321,6 +321,43 @@ fn placement_attributes_resolve_character_references() {
         &cube_corners(|p| Point3::new(p.x(), p.y(), p.z() + 3.0)),
     );
     assert_positions(&meshes[1].positions, &cube_corners(|p| p));
+}
+
+/// Only a core `<item>` directly inside the root's core `<build>` is a build
+/// item: one nested in an extension child of an item, or a `<build>` nested
+/// in an extension element, adds nothing.
+#[test]
+fn nested_build_markup_is_not_a_build_item() {
+    let vendor = r#"xmlns:v="urn:vendor""#;
+    let data = model(
+        "millimeter",
+        &[cube_object(1), cube_object(2)],
+        Some(&[format!(
+            r#"<item {vendor} objectid="1"><v:extra><item objectid="2"/></v:extra></item>"#
+        )]),
+    );
+    // A vendor element after the core build, holding a core-namespace build.
+    let data = rewrite_model(&data, |xml| {
+        xml.replace(
+            "</build>",
+            &format!(r#"</build><v:extra {vendor}><build><item objectid="2"/></build></v:extra>"#),
+        )
+    });
+    let meshes = read_threemf(&data).unwrap();
+    assert_eq!(meshes.len(), 1, "only the direct core item");
+    assert_positions(&meshes[0].positions, &cube_corners(|p| p));
+}
+
+/// Re-zip a model archive with its XML rewritten.
+fn rewrite_model(data: &[u8], edit: impl Fn(&str) -> String) -> Vec<u8> {
+    let mut zip = zip::ZipArchive::new(Cursor::new(data)).unwrap();
+    let mut xml = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("3D/3dmodel.model").unwrap(), &mut xml).unwrap();
+    let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    out.start_file("3D/3dmodel.model", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    out.write_all(edit(&xml).as_bytes()).unwrap();
+    out.finish().unwrap().into_inner()
 }
 
 fn parse_error(data: &[u8]) -> String {

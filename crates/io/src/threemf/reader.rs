@@ -193,8 +193,14 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
     let mut current: Option<ParsedObject> = None;
     let mut in_vertices = false;
     let mut in_triangles = false;
-    let mut in_components = false;
-    let mut in_build = false;
+    // Element nesting depth, and the depths of the open `<object>`, its core
+    // `<components>` and the core `<build>`: only a `<component>` or `<item>`
+    // directly inside its list is a placement, not one nested in an extension
+    // element (the core schema allows foreign children in both).
+    let mut depth = 0usize;
+    let mut object_depth: Option<usize> = None;
+    let mut components_depth: Option<usize> = None;
+    let mut build_depth: Option<usize> = None;
     let mut total_vertices = 0usize;
     let mut total_triangles = 0usize;
     let mut total_objects = 0usize;
@@ -204,6 +210,7 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
     loop {
         match reader.read_event() {
             Ok(quick_xml::events::Event::Start(ref e)) => {
+                depth += 1;
                 let local = e.local_name();
                 let name = local.as_ref();
 
@@ -216,14 +223,19 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                             id: parse_object_id(e)?,
                             ..ParsedObject::default()
                         });
+                        object_depth = Some(depth);
                     }
                     "vertices" => in_vertices = true,
                     "triangles" => in_triangles = true,
-                    "components" if is_core_element(reader.resolver(), e.name()) => {
-                        in_components = true;
+                    "components"
+                        if object_depth == Some(depth - 1)
+                            && is_core_element(reader.resolver(), e.name()) =>
+                    {
+                        components_depth = Some(depth);
                     }
                     "component"
-                        if in_components && is_core_element(reader.resolver(), e.name()) =>
+                        if components_depth == Some(depth - 1)
+                            && is_core_element(reader.resolver(), e.name()) =>
                     {
                         total_components = total_components.saturating_add(1);
                         ensure_limit(
@@ -233,8 +245,14 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                         )?;
                         push_component(e, reader.resolver(), unit_scale, current.as_mut())?;
                     }
-                    "build" if is_core_element(reader.resolver(), e.name()) => in_build = true,
-                    "item" if in_build && is_core_element(reader.resolver(), e.name()) => {
+                    // A direct child of the root `<model>`.
+                    "build" if depth == 2 && is_core_element(reader.resolver(), e.name()) => {
+                        build_depth = Some(depth);
+                    }
+                    "item"
+                        if build_depth == Some(depth - 1)
+                            && is_core_element(reader.resolver(), e.name()) =>
+                    {
                         push_item(e, reader.resolver(), unit_scale, &mut items, limits)?;
                     }
                     _ => {}
@@ -272,7 +290,8 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                         }
                     }
                     "component"
-                        if in_components && is_core_element(reader.resolver(), e.name()) =>
+                        if components_depth == Some(depth)
+                            && is_core_element(reader.resolver(), e.name()) =>
                     {
                         total_components = total_components.saturating_add(1);
                         ensure_limit(
@@ -282,7 +301,10 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                         )?;
                         push_component(e, reader.resolver(), unit_scale, current.as_mut())?;
                     }
-                    "item" if in_build && is_core_element(reader.resolver(), e.name()) => {
+                    "item"
+                        if build_depth == Some(depth)
+                            && is_core_element(reader.resolver(), e.name()) =>
+                    {
                         push_item(e, reader.resolver(), unit_scale, &mut items, limits)?;
                     }
                     _ => {}
@@ -291,9 +313,12 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
             Ok(quick_xml::events::Event::End(ref e)) => {
                 let local = e.local_name();
                 let name = local.as_ref();
+                let closing = depth;
+                depth = depth.saturating_sub(1);
 
                 match name {
                     "object" => {
+                        object_depth = None;
                         if let Some(object) = current.take() {
                             check_indices(&object.vertices, &object.indices)?;
                             objects.push(object);
@@ -301,10 +326,8 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                     }
                     "vertices" => in_vertices = false,
                     "triangles" => in_triangles = false,
-                    "components" if is_core_element(reader.resolver(), e.name()) => {
-                        in_components = false;
-                    }
-                    "build" if is_core_element(reader.resolver(), e.name()) => in_build = false,
+                    "components" if components_depth == Some(closing) => components_depth = None,
+                    "build" if build_depth == Some(closing) => build_depth = None,
                     _ => {}
                 }
             }
