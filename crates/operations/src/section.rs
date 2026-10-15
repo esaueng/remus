@@ -1814,6 +1814,10 @@ mod curved {
         Ok(edges)
     }
 
+    /// One segment of an in-plane boundary edge's polyline: the edge's index
+    /// among the face's boundary edges, and the segment's ends.
+    type InPlaneSegment = (usize, Point3, Point3);
+
     /// The boundary edges of `face` that lie in the plane, as polylines
     /// whose segments carry their edge's index
     /// within an absolute sagitta of `100 × tol.linear` of their curves, and
@@ -1826,7 +1830,7 @@ mod curved {
         normal: Vec3,
         d: f64,
         tol: Tolerance,
-    ) -> Result<(Vec<(usize, Point3, Point3)>, f64), OperationsError> {
+    ) -> Result<(Vec<InPlaneSegment>, f64), OperationsError> {
         const MAX_STEPS: u32 = 1 << 16;
         let coplanar_tol = tol.linear * 100.0;
         let mut segments = Vec::new();
@@ -2056,12 +2060,7 @@ mod curved {
     /// edge. Ends on two different edges span the gap between them, which a
     /// piece narrower than a chord would otherwise keep; shared vertices are
     /// crossings, so a piece never straddles two edges that meet.
-    fn along_one_edge(
-        in_plane: &[(usize, Point3, Point3)],
-        band: f64,
-        p: Point3,
-        q: Point3,
-    ) -> bool {
+    fn along_one_edge(in_plane: &[InPlaneSegment], band: f64, p: Point3, q: Point3) -> bool {
         let near = |x: Point3| {
             in_plane
                 .iter()
