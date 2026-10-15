@@ -1462,7 +1462,10 @@ fn translation_invariant_blend_region(
     }
 
     let mut translated_nurbs_supports = HashSet::new();
-    for &blend_face in &region {
+    // Face order, not set order, so a refusal always names the same face.
+    let mut ordered_region: Vec<FaceId> = region.iter().copied().collect();
+    ordered_region.sort_unstable_by_key(|face| face.index());
+    for blend_face in ordered_region {
         for edge in face_edges(topo, blend_face)? {
             for adjacent in distinct_faces(adjacency.faces_for_edge(edge)) {
                 if adjacent == blend_face
