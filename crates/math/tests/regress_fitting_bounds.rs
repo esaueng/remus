@@ -188,11 +188,12 @@ fn point_count_above_the_ceiling_is_refused() {
 
 #[test]
 fn least_squares_dense_budget_is_enforced_before_assembly() {
-    // 8192 points and 512 control points: 8192·512 + 2·512² = 4 718 592
-    // entries against a budget of 4 194 304. Main allocated them and spent
-    // about 2·10⁹ multiply-adds forming the normal equations.
+    // 8192 points and 512 control points: 8192·(512 + 6) + 2·512² =
+    // 4 767 744 entries (six per basis row for its allocation) against a
+    // budget of 4 194 304. Main allocated them and spent about 2·10⁹
+    // multiply-adds forming the normal equations.
     let (n, m) = (8192, 512);
-    let entries = n * m + 2 * m * m;
+    let entries = n * (m + 6) + 2 * m * m;
     assert!(entries > MAX_DENSE_FIT_ENTRIES);
     let points = helix(n);
     assert_eq!(
@@ -201,19 +202,36 @@ fn least_squares_dense_budget_is_enforced_before_assembly() {
     );
     // Fewer control points keep the same data inside the budget.
     let m = 64;
-    assert!(n * m + 2 * m * m <= MAX_DENSE_FIT_ENTRIES);
+    assert!(n * (m + 6) + 2 * m * m <= MAX_DENSE_FIT_ENTRIES);
     let fitted = approximate(&points, 3, m).expect("inside the dense budget");
     assert_eq!(fitted.control_points().len(), m);
 }
 
 #[test]
+fn least_squares_rows_are_charged_their_allocation_overhead() {
+    // Review follow-up: 2²⁰ points with two control points hold only 2²¹
+    // basis values but allocate each of their 2²⁰ rows separately. Each row
+    // now counts six entries of overhead.
+    let n = MAX_FIT_POINTS;
+    let points = helix(n);
+    assert_eq!(
+        limit(approximate(&points, 1, 2)),
+        (
+            "dense_fit_entries",
+            MAX_DENSE_FIT_ENTRIES,
+            n * (2 + 6) + 2 * 2 * 2
+        )
+    );
+}
+
+#[test]
 fn least_squares_work_is_bounded_not_only_its_memory() {
-    // Review follow-up: 3345 points and 836 control points fit the dense
-    // entry budget (4 194 212 of 4 194 304) but forming NᵀN alone is
-    // n·m² ≈ 2.34·10⁹ multiply-adds, more than the 8192 × 512 case.
-    let (n, m) = (3345, 836);
+    // Review follow-up: 3320 points and 836 control points fit the dense
+    // entry budget (4 193 232 of 4 194 304) but forming NᵀN alone is
+    // n·m² ≈ 2.32·10⁹ multiply-adds, more than the 8192 × 512 case.
+    let (n, m) = (3320, 836);
     assert!(
-        n * m + 2 * m * m <= MAX_DENSE_FIT_ENTRIES,
+        n * (m + 6) + 2 * m * m <= MAX_DENSE_FIT_ENTRIES,
         "premise: entries fit"
     );
     let work = n * m * m + m * m * m;
