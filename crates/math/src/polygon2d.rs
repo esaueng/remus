@@ -181,13 +181,28 @@ pub fn fillet_polygon_2d(polygon: &[Point2], radius: f64) -> Vec<Point2> {
         })
         .collect();
 
-    let mut result = Vec::with_capacity(n * (ARC_SEGMENTS as usize + 1));
+    // A tangent point at the far end of a used-up edge lands on the next
+    // corner (or on a straight-through vertex that keeps itself); points this
+    // close to the last one placed are that same vertex, up to rounding.
+    let scale = polygon
+        .iter()
+        .fold(0.0_f64, |m, p| m.max(p.x().abs()).max(p.y().abs()));
+    let tol_sq = (1e-12 * scale).powi(2);
+    let mut result: Vec<Point2> = Vec::with_capacity(n * (ARC_SEGMENTS as usize + 1));
+    let push = |out: &mut Vec<Point2>, p: Point2| {
+        if out
+            .last()
+            .is_none_or(|&q| (p - q).length_squared() > tol_sq)
+        {
+            out.push(p);
+        }
+    };
     for i in 0..n {
         let prev = (i + n - 1) % n;
         let curr = polygon[i];
         let t = setback[i];
         if t < 1e-10 {
-            result.push(curr);
+            push(&mut result, curr);
             continue;
         }
 
@@ -202,13 +217,14 @@ pub fn fillet_polygon_2d(polygon: &[Point2], radius: f64) -> Vec<Point2> {
         // An edge used up by both of its corners would repeat its shared
         // tangent point; the previous corner has already placed it.
         if t + setback[prev] < edge_len(prev) * (1.0 - 1e-12) || setback[prev] < 1e-10 {
-            result.push(t1);
+            push(&mut result, t1);
         }
         let (start, end) = (t1 - center, t2 - center);
         let sweep = (start.x() * end.y() - start.y() * end.x()).atan2(start.dot(end));
         for k in 1..ARC_SEGMENTS {
             let (sin, cos) = (sweep * f64::from(k) / f64::from(ARC_SEGMENTS)).sin_cos();
-            result.push(
+            push(
+                &mut result,
                 center
                     + Vec2::new(
                         start.x() * cos - start.y() * sin,
@@ -216,7 +232,14 @@ pub fn fillet_polygon_2d(polygon: &[Point2], radius: f64) -> Vec<Point2> {
                     ),
             );
         }
-        result.push(t2);
+        push(&mut result, t2);
+    }
+    while result.len() > 1
+        && result
+            .last()
+            .is_some_and(|&q| (q - result[0]).length_squared() <= tol_sq)
+    {
+        result.pop();
     }
 
     result
@@ -376,6 +399,27 @@ mod tests {
             }
             let expected = 20.0 - 4.0 * corner_piece(1.0, 1.0, PI / 2.0);
             assert!((area(&rounded).abs() - expected).abs() < 1e-9);
+        }
+    }
+
+    /// A straight-through vertex keeps itself, and a corner that uses up the
+    /// whole edge to it puts its tangent point on that same vertex. The 2×10
+    /// rectangle with a vertex at (1, 0), filleted at 100, has each corner
+    /// shrunk to radius 1; (1, 0) must appear once, in every starting
+    /// rotation (the wrap from last point to first included) and winding.
+    #[test]
+    fn used_up_edge_beside_a_straight_vertex_places_it_once() {
+        let poly = pts(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (2.0, 10.0), (0.0, 10.0)]);
+        let expected = 20.0 - 4.0 * corner_piece(1.0, 1.0, PI / 2.0);
+        for start in 0..poly.len() {
+            let mut turned = poly.clone();
+            turned.rotate_left(start);
+            for turned in [turned.clone(), reversed(&turned)] {
+                let rounded = fillet_polygon_2d(&turned, 100.0);
+                assert_no_repeated_points(&rounded);
+                assert_eq!(rounded.len(), 34, "start {start}: {rounded:?}");
+                assert!((area(&rounded).abs() - expected).abs() < 1e-9);
+            }
         }
     }
 
