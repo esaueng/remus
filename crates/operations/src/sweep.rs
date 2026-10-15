@@ -1302,8 +1302,33 @@ fn validate_scales(scales: &[f64]) -> Result<(), crate::OperationsError> {
 /// # Errors
 ///
 /// Returns errors for invalid input (see [`sweep`]).
-#[allow(clippy::too_many_lines)]
 pub fn sweep_with_options(
+    topo: &mut Topology,
+    profile: FaceId,
+    path: &NurbsCurve,
+    options: &SweepOptions,
+) -> Result<SolidId, crate::OperationsError> {
+    // Every branch below, including the corner and closed-path builders that
+    // never evaluate the law, refuses a law that is non-finite or non-positive
+    // on its domain, before the profile is touched. The scales each branch
+    // actually builds with are checked again, inside the transaction.
+    if let Some(law) = options.scale_law.as_ref() {
+        #[allow(clippy::cast_precision_loss)]
+        let sampled: Vec<f64> = (0..=SCALE_LAW_PROBES)
+            .map(|k| law(k as f64 / SCALE_LAW_PROBES as f64))
+            .collect();
+        validate_scales(&sampled)?;
+    }
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        sweep_with_options_impl(topo, profile, path, options)
+    })
+}
+
+/// Parameters at which [`sweep_with_options`] checks a scale law up front.
+const SCALE_LAW_PROBES: usize = 64;
+
+#[allow(clippy::too_many_lines)]
+fn sweep_with_options_impl(
     topo: &mut Topology,
     profile: FaceId,
     path: &NurbsCurve,

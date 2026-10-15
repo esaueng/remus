@@ -109,6 +109,57 @@ fn b90_offsets_and_sweeps_refuse_non_finite_distances() {
         };
         remus_operations::sweep::sweep_with_options(&mut f.topo, f.square, &path, &options)
     });
+    // The corner and closed-path builders never evaluate the law; it is
+    // refused before dispatch all the same.
+    let kinked = NurbsCurve::new(
+        1,
+        vec![0.0, 0.0, 0.5, 1.0, 1.0],
+        vec![
+            Point3::new(0.5, 0.5, 0.0),
+            Point3::new(0.5, 0.5, 5.0),
+            Point3::new(5.5, 0.5, 5.0),
+        ],
+        vec![1.0, 1.0, 1.0],
+    )
+    .unwrap();
+    let closed = NurbsCurve::new(
+        1,
+        vec![0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0],
+        vec![
+            Point3::new(0.5, 0.5, 0.0),
+            Point3::new(0.5, 0.5, 5.0),
+            Point3::new(5.5, 0.5, 5.0),
+            Point3::new(0.5, 0.5, 0.0),
+        ],
+        vec![1.0; 4],
+    )
+    .unwrap();
+    for (name, path, corner_mode) in [
+        (
+            "miter",
+            kinked.clone(),
+            remus_operations::sweep::SweepCornerMode::Miter,
+        ),
+        (
+            "round",
+            kinked,
+            remus_operations::sweep::SweepCornerMode::Round { radius: 0.5 },
+        ),
+        (
+            "closed",
+            closed,
+            remus_operations::sweep::SweepCornerMode::Smooth,
+        ),
+    ] {
+        refuses(&format!("sweep scale law ({name})"), |f, s| {
+            let options = SweepOptions {
+                corner_mode,
+                scale_law: Some(Box::new(move |t| if t > 0.5 { s } else { 1.0 })),
+                ..SweepOptions::default()
+            };
+            remus_operations::sweep::sweep_with_options(&mut f.topo, f.square, &path, &options)
+        });
+    }
 }
 
 #[test]
@@ -261,13 +312,19 @@ fn b90_chamfer_builder_refuses_non_finite_distances() {
 #[test]
 fn b90_thick_solid_refuses_a_non_finite_tolerance() {
     for value in BAD {
-        let mut f = fixture();
-        let mut options = remus_offset::OffsetOptions::default();
-        options.tolerance.linear = value;
-        let result = remus_offset::thick_solid(&mut f.topo, f.cube, 0.1, &[f.top], options);
-        assert!(
-            matches!(result, Err(remus_offset::OffsetError::InvalidInput { .. })),
-            "thick_solid with tolerance {value} must refuse, got {result:?}"
-        );
+        for field in ["linear", "angular", "relative"] {
+            let mut f = fixture();
+            let mut options = remus_offset::OffsetOptions::default();
+            match field {
+                "linear" => options.tolerance.linear = value,
+                "angular" => options.tolerance.angular = value,
+                _ => options.tolerance.relative = value,
+            }
+            let result = remus_offset::thick_solid(&mut f.topo, f.cube, 0.1, &[f.top], options);
+            assert!(
+                matches!(result, Err(remus_offset::OffsetError::InvalidInput { .. })),
+                "thick_solid with {field} tolerance {value} must refuse, got {result:?}"
+            );
+        }
     }
 }

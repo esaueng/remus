@@ -193,10 +193,18 @@ fn thick_solid_impl(
 ) -> Result<ThickSolidResult, OffsetError> {
     let linear = options.tolerance.linear;
     let angular = options.tolerance.angular;
-    if !linear.is_finite() || linear <= 0.0 || !angular.is_finite() || angular <= 0.0 {
+    let relative = options.tolerance.relative;
+    if !linear.is_finite()
+        || linear <= 0.0
+        || !angular.is_finite()
+        || angular <= 0.0
+        || !relative.is_finite()
+        || relative < 0.0
+    {
         return Err(OffsetError::InvalidInput {
             reason: format!(
-                "offset tolerance must be finite and positive, got linear {linear}, angular {angular}"
+                "offset tolerance must be finite (linear and angular positive, relative \
+                 non-negative), got linear {linear}, angular {angular}, relative {relative}"
             ),
         });
     }
