@@ -269,13 +269,34 @@ fn banded_and_basis_storage_is_bounded() {
             n * (3 * 25 + 1)
         )
     );
-    // LSPIA's per-point basis table is the same kind of storage: n·(p + 1).
+    // LSPIA's per-point basis table is the same kind of storage: n·(p + 1)
+    // values plus six entries of overhead per separately allocated row.
     assert_eq!(
         limit(approximate_lspia(&points, MAX_FIT_DEGREE, 64, 0.0, 0)),
-        ("sparse_fit_entries", MAX_SPARSE_FIT_ENTRIES, n * 26)
+        ("sparse_fit_entries", MAX_SPARSE_FIT_ENTRIES, n * 32)
     );
     // A cubic fit through every admitted point stays inside the budget.
     const { assert!(MAX_FIT_POINTS * (3 * 3 + 1) <= MAX_SPARSE_FIT_ENTRIES) };
+    const { assert!(MAX_FIT_POINTS * (3 + 1 + 6) <= MAX_SPARSE_FIT_ENTRIES) };
+}
+
+#[test]
+fn lspia_rows_are_charged_their_allocation_overhead() {
+    // Review follow-up: 10⁶ points at degree 15 hold 16·10⁶ basis values,
+    // inside the budget, but each point's row is its own allocation, so the
+    // table retained a million allocations beyond those values. Each row now
+    // counts six entries of overhead.
+    let n = 1_000_000;
+    let points: Vec<Point3> = (0..n)
+        .map(|i| {
+            let t = i as f64 / (n - 1) as f64;
+            Point3::new(t, (6.0 * t).sin(), 0.0)
+        })
+        .collect();
+    assert_eq!(
+        limit(approximate_lspia(&points, 15, 16, 0.0, 0)),
+        ("sparse_fit_entries", MAX_SPARSE_FIT_ENTRIES, n * 22)
+    );
 }
 
 #[test]
@@ -295,12 +316,12 @@ fn lspia_scan_fallback_is_budgeted_for_overflowed_parameters() {
         ("fit_work", MAX_FIT_WORK, n * 4 * (3 + 40) + n * m)
     );
     // Review follow-up: the scan and the iterations share one budget. Here
-    // each fits on its own (scan 1 073 740 928, iterations 721 419 686) but
+    // each fits on its own (scan 832 000 000, iterations 559 000 000) but
     // not together, and the per-point basis table fits its own budget.
-    let (n, p, m) = (645_277, 25, 1664);
-    const { assert!(645_277 * 1664 <= MAX_FIT_WORK) };
-    const { assert!(645_277 * 26 * (3 + 40) <= MAX_FIT_WORK) };
-    const { assert!(645_277 * 26 <= MAX_SPARSE_FIT_ENTRIES) };
+    let (n, p, m) = (500_000, 25, 1664);
+    const { assert!(500_000 * 1664 <= MAX_FIT_WORK) };
+    const { assert!(500_000 * 26 * (3 + 40) <= MAX_FIT_WORK) };
+    const { assert!(500_000 * (26 + 6) <= MAX_SPARSE_FIT_ENTRIES) };
     let points: Vec<Point3> = (0..n)
         .map(|i| Point3::new(if i % 2 == 0 { 0.0 } else { 1e200 }, 0.0, 0.0))
         .collect();
