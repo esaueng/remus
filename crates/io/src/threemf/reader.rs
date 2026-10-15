@@ -152,7 +152,8 @@ impl Affine {
 
 /// Parse the model XML and return one mesh per top-level object.
 fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>, IoError> {
-    let mut reader = quick_xml::Reader::from_str(xml);
+    // Namespace-aware, so component attributes are matched by namespace.
+    let mut reader = quick_xml::NsReader::from_str(xml);
     reader.config_mut().trim_text(true);
 
     let mut objects = Vec::new();
@@ -192,7 +193,7 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                             total_components,
                             limits.max_model_entities,
                         )?;
-                        push_component(e, unit_scale, current.as_mut())?;
+                        push_component(&reader, e, unit_scale, current.as_mut())?;
                     }
                     _ => {}
                 }
@@ -235,7 +236,7 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                             total_components,
                             limits.max_model_entities,
                         )?;
-                        push_component(e, unit_scale, current.as_mut())?;
+                        push_component(&reader, e, unit_scale, current.as_mut())?;
                     }
                     _ => {}
                 }
@@ -508,33 +509,48 @@ fn parse_object_id(e: &quick_xml::events::BytesStart<'_>) -> Result<Option<u32>,
 /// Record a `<component>` (written either empty or with an end tag) on the
 /// object being parsed.
 fn push_component(
+    reader: &quick_xml::NsReader<&[u8]>,
     e: &quick_xml::events::BytesStart<'_>,
     unit_scale: f64,
     object: Option<&mut ParsedObject>,
 ) -> Result<(), IoError> {
-    let component = parse_component(e, unit_scale)?;
+    let component = parse_component(reader, e, unit_scale)?;
     if let Some(object) = object {
         object.components.push(component);
     }
     Ok(())
 }
 
+/// The 3MF production extension's namespace.
+const PRODUCTION_NAMESPACE: &str =
+    "http://schemas.microsoft.com/3dmanufacturing/production/2015/06";
+
 /// Parse a `<component>`'s `objectid` and optional `transform`.
+///
+/// Core attributes are unqualified; attributes of extensions this reader does
+/// not support are ignored, as the 3MF namespace rules require. Only the
+/// production extension's `path` is refused.
 fn parse_component(
+    reader: &quick_xml::NsReader<&[u8]>,
     e: &quick_xml::events::BytesStart<'_>,
     unit_scale: f64,
 ) -> Result<Component, IoError> {
+    use quick_xml::name::ResolveResult;
+
     let mut object_id = None;
     let mut transform = Affine::IDENTITY;
     for attr in e.attributes().flatten() {
-        match attr.key.local_name().as_ref() {
-            "objectid" => {
+        let (namespace, local) = reader.resolver().resolve_attribute(attr.key);
+        match (namespace, local.as_ref()) {
+            (ResolveResult::Unbound, "objectid") => {
                 object_id = Some(parse_u32_attr(attr.value.as_ref(), "component objectid")?);
             }
-            "transform" => transform = parse_transform(attr.value.as_ref(), unit_scale)?,
-            // Production extension: the object lives in another model part,
-            // where `objectid` names a different object than it does here.
-            "path" => {
+            (ResolveResult::Unbound, "transform") => {
+                transform = parse_transform(attr.value.as_ref(), unit_scale)?;
+            }
+            // The object lives in another model part, where `objectid` names
+            // a different object than it does here.
+            (ResolveResult::Bound(ns), "path") if ns.as_ref() == PRODUCTION_NAMESPACE => {
                 return Err(IoError::ParseError {
                     reason: "3MF component references another model part (production \
                              extension), which is not supported"

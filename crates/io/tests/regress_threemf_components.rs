@@ -320,3 +320,24 @@ fn flattened_output_is_bounded_by_import_limits() {
         })
     ));
 }
+
+/// Attributes of unsupported extensions are ignored by namespace, not by
+/// local name: `v:transform` does not move the part and `v:path` does not
+/// read as the production extension's `p:path`.
+#[test]
+fn extension_attributes_are_matched_by_namespace() {
+    let data = model(
+        "millimeter",
+        &[
+            cube_object(1),
+            r#"<object id="2" type="model"><components><component xmlns:v="urn:example:vendor" objectid="1" v:transform="1 0 0 0 1 0 0 0 1 9 9 9" v:path="/3D/other.model" transform="1 0 0 0 1 0 0 0 1 10 0 0"/></components></object>"#.to_string(),
+        ],
+        &[2],
+    );
+    let meshes = read_threemf(&data).unwrap();
+    assert_eq!(meshes.len(), 1);
+    assert_positions(
+        &meshes[0].positions,
+        &cube_corners(|p| Point3::new(p.x() + 10.0, p.y(), p.z())),
+    );
+}
