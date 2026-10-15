@@ -667,13 +667,12 @@ fn parse_placement(
         let qualified = attr.key.prefix().is_some();
         match attr.key.local_name().as_ref() {
             "objectid" if !qualified => {
-                object_id = Some(parse_u32_attr(
-                    attr.value.as_ref(),
-                    &format!("{what} objectid"),
-                )?);
+                let value = normalized_attribute(&attr, what)?;
+                object_id = Some(parse_u32_attr(&value, &format!("{what} objectid"))?);
             }
             "transform" if !qualified => {
-                transform = Some(parse_transform(attr.value.as_ref(), unit_scale)?);
+                let value = normalized_attribute(&attr, what)?;
+                transform = Some(parse_transform(&value, unit_scale)?);
             }
             // Production extension (`p:path`): the object lives in another
             // model part, where `objectid` names a different object than it
@@ -694,6 +693,18 @@ fn parse_placement(
         reason: format!("{what} element missing objectid attribute"),
     })?;
     Ok((object_id, transform))
+}
+
+/// An attribute value with character references resolved, so `&#49;` reads
+/// as `1`.
+fn normalized_attribute<'a>(
+    attr: &'a quick_xml::events::attributes::Attribute<'_>,
+    what: &str,
+) -> Result<std::borrow::Cow<'a, str>, IoError> {
+    attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+        .map_err(|error| IoError::ParseError {
+            reason: format!("invalid 3MF {what} attribute: {error}"),
+        })
 }
 
 /// Whether a `path` attribute is the production extension's (or carries a
