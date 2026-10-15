@@ -472,25 +472,103 @@ fn last_visit_targets(faces: &[(usize, FaceId)]) -> Vec<FaceId> {
     targets
 }
 
-/// Whether coedge `k` of `coedges` is the one use of `(edges[k], forward)`
-/// for every snapshot `k`. Then the map-based search for each snapshot
-/// can only find the coedge at the same position.
+#[cfg(test)]
+thread_local! {
+    /// Forces every face visit through the per-snapshot search (the
+    /// reference the position match must agree with).
+    static SEARCH_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Visits offered an alignment that skips inserted coedges.
+    static ALIGNMENT_USES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Snapshots restored by the per-snapshot search, each a scan of every
+    /// coedge of its face.
+    static SNAPSHOT_SEARCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Where snapshot `k` sits among a copied face's coedges: at `k`, or past
+/// `skip` coedges inserted after the first `outer` (a splice's leading inner
+/// wires, which the source snapshots do not cover).
+#[derive(Clone, Copy)]
+struct Alignment {
+    outer: usize,
+    skip: usize,
+}
+
+impl Alignment {
+    const IDENTITY: Self = Self { outer: 0, skip: 0 };
+
+    /// The alignment to try for `coedges` against `snapshots` snapshots:
+    /// the identity when the counts agree, else the face's surplus coedges
+    /// placed right after its first loop.
+    fn of(topo: &Topology, face: FaceId, coedges: usize, snapshots: usize) -> Option<Self> {
+        if coedges == snapshots {
+            return Some(Self::IDENTITY);
+        }
+        let outer = topo
+            .face_loop(*topo.loops_of_face(face)?.first()?)
+            .ok()?
+            .coedges()
+            .len();
+        (coedges > snapshots && outer <= snapshots).then_some(Self {
+            outer,
+            skip: coedges - snapshots,
+        })
+    }
+
+    const fn position(self, k: usize) -> usize {
+        if k < self.outer { k } else { k + self.skip }
+    }
+}
+
+/// Whether the coedge `alignment` places snapshot `k` at is the one use of
+/// `(edges[k], forward)` for every snapshot `k`: the aligned coedges carry
+/// the snapshots' keys, those keys are distinct, and no skipped coedge
+/// carries one. Then the map-based search for each snapshot, which scans
+/// every coedge of the face, can only find the aligned one.
 fn matches_by_position(
     topo: &Topology,
     coedges: &[CoedgeId],
     snapshots: &[CoedgeAuthoritySnap],
     snapshot_edges: &[usize],
     edges: &[(usize, EdgeId)],
+    alignment: Alignment,
 ) -> bool {
-    if coedges.len() != snapshots.len() || snapshot_edges.len() != snapshots.len() {
+    if coedges.len() != snapshots.len() + alignment.skip || snapshot_edges.len() != snapshots.len()
+    {
         return false;
     }
-    for ((&coedge, snapshot), &edge) in coedges.iter().zip(snapshots).zip(snapshot_edges) {
-        let (Some(&(_, edge)), Ok(coedge)) = (edges.get(edge), topo.coedge(coedge)) else {
+    for (k, (snapshot, &edge)) in snapshots.iter().zip(snapshot_edges).enumerate() {
+        let (Some(&(_, edge)), Some(Ok(coedge))) = (
+            edges.get(edge),
+            coedges
+                .get(alignment.position(k))
+                .map(|&coedge| topo.coedge(coedge)),
+        ) else {
             return false;
         };
         if coedge.edge() != edge || coedge.is_forward() != snapshot.forward {
             return false;
+        }
+    }
+    if alignment.skip > 0 {
+        let mut keys: Vec<(EdgeId, bool)> = Vec::with_capacity(snapshots.len());
+        for (snapshot, &edge) in snapshots.iter().zip(snapshot_edges) {
+            let Some(&(_, edge)) = edges.get(edge) else {
+                return false;
+            };
+            keys.push((edge, snapshot.forward));
+        }
+        keys.sort_unstable();
+        let skipped = &coedges[alignment.outer..alignment.outer + alignment.skip];
+        for &coedge in skipped {
+            let Ok(coedge) = topo.coedge(coedge) else {
+                return false;
+            };
+            if keys
+                .binary_search(&(coedge.edge(), coedge.is_forward()))
+                .is_ok()
+            {
+                return false;
+            }
         }
     }
     let keys = || {
@@ -538,8 +616,17 @@ fn restore_planned_authority(
             continue;
         }
         face_coedges_into(topo, target, &mut coedges)?;
-        if matches_by_position(topo, &coedges, snapshots, snapshot_edges, edges) {
-            for (&coedge, snapshot) in coedges.iter().zip(snapshots) {
+        let alignment = Alignment::of(topo, target, coedges.len(), snapshots.len());
+        #[cfg(test)]
+        let alignment = alignment.filter(|alignment| {
+            ALIGNMENT_USES.with(|uses| uses.set(uses.get() + usize::from(alignment.skip > 0)));
+            !SEARCH_ONLY.get()
+        });
+        if let Some(alignment) = alignment
+            && matches_by_position(topo, &coedges, snapshots, snapshot_edges, edges, alignment)
+        {
+            for (k, snapshot) in snapshots.iter_mut().enumerate() {
+                let coedge = coedges[alignment.position(k)];
                 topo.set_coedge_periodic_winding(coedge, snapshot.periodic_winding)?;
                 if let Some(pcurve) = snapshot.pcurve.take() {
                     topo.set_coedge_pcurve(coedge, pcurve)?;
@@ -547,6 +634,8 @@ fn restore_planned_authority(
             }
         } else {
             for (snapshot, &edge) in snapshots.iter_mut().zip(snapshot_edges) {
+                #[cfg(test)]
+                SNAPSHOT_SEARCHES.with(|searches| searches.set(searches.get() + 1));
                 let (_, edge) = planned(edges, edge)?;
                 let snapshot = CoedgeAuthoritySnap {
                     face_index: snapshot.face_index,
@@ -1706,6 +1795,7 @@ mod tests {
     use super::*;
 
     mod legacy_oracle;
+    mod spliced_authority_oracle;
 
     fn assert_single_lifted_pcurve(topo: &Topology, face: FaceId) {
         let pcurves = topo.pcurves_for_face(face);
