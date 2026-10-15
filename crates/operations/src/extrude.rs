@@ -591,14 +591,21 @@ fn extrude_wire_vertices_with(
 ///
 /// Returns `(surface, is_reversed)` — `is_reversed` is `true` when the
 /// surface's native normal points inward and the face needs flipping.
+///
+/// `arc_mid` is the point at the middle of the edge's traced parameter span.
+/// `arc_tangent` follows the wire traversal at that same point. Using its
+/// actual tangent also handles nonuniform rational circle parameterizations:
+/// their parameter midpoint need not be the geometric arc midpoint.
 fn side_face_surface(
     curve: &EdgeCurve,
     p0: Point3,
     p1: Point3,
+    arc_frame: (Point3, Vec3),
     trim: Option<(f64, f64)>,
     offset: Vec3,
     outer_is_cw: bool,
 ) -> Result<(FaceSurface, bool), crate::OperationsError> {
+    let (arc_mid, arc_tangent) = arc_frame;
     match curve {
         EdgeCurve::Line => {
             let edge_dir = p1 - p0;
@@ -623,17 +630,17 @@ fn side_face_surface(
             .map_err(crate::OperationsError::Math)?;
             // Check whether the cylinder's natural radial normal agrees with
             // the expected outward direction (same logic as NURBS reversal).
-            let edge_dir = p1 - p0;
             let expected = if outer_is_cw {
-                offset.cross(edge_dir)
+                offset.cross(arc_tangent)
             } else {
-                edge_dir.cross(offset)
+                arc_tangent.cross(offset)
             };
-            // Cylinder natural normal at p0: radial direction from axis.
+            // Cylinder natural normal at the arc midpoint: radial direction
+            // from the axis.
             let to_pt = Vec3::new(
-                p0.x() - circle.center().x(),
-                p0.y() - circle.center().y(),
-                p0.z() - circle.center().z(),
+                arc_mid.x() - circle.center().x(),
+                arc_mid.y() - circle.center().y(),
+                arc_mid.z() - circle.center().z(),
             );
             let along_axis = cyl.axis() * cyl.axis().dot(to_pt);
             let radial = to_pt - along_axis;
@@ -661,13 +668,12 @@ fn side_face_surface(
                     radius,
                 )
                 .map_err(crate::OperationsError::Math)?;
-                let edge_dir = p1 - p0;
                 let expected = if outer_is_cw {
-                    offset.cross(edge_dir)
+                    offset.cross(arc_tangent)
                 } else {
-                    edge_dir.cross(offset)
+                    arc_tangent.cross(offset)
                 };
-                let to_pt = p0 - center;
+                let to_pt = arc_mid - center;
                 let along_axis = cyl.axis() * cyl.axis().dot(to_pt);
                 let radial = to_pt - along_axis;
                 let reversed = radial.dot(expected) < 0.0;
@@ -718,6 +724,28 @@ fn side_face_surface(
             Ok((FaceSurface::Nurbs(surface), reversed))
         }
     }
+}
+
+/// The point and traversal tangent at the middle of an edge's parameter
+/// span, from its start vertex to its end vertex. The caller then applies
+/// the wire's oriented-edge direction. A profile edge without parameter authority (raw construction,
+/// such as a primitive's rim) is read through the named reconstruction
+/// adapter, the counter-clockwise span an untrimmed conic edge follows.
+fn traced_span_frame(
+    topo: &Topology,
+    edge_id: EdgeId,
+) -> Result<(Point3, Vec3), crate::OperationsError> {
+    let edge = topo.edge(edge_id)?;
+    let start = topo.vertex(edge.start())?.point();
+    let end = topo.vertex(edge.end())?.point();
+    let (t0, t1) = edge
+        .strict_domain()
+        .unwrap_or_else(|_| edge.curve().reconstruct_domain_from_endpoints(start, end));
+    let midpoint = f64::midpoint(t0, t1);
+    let point = edge.curve().evaluate_with_endpoints(midpoint, start, end);
+    let tangent = edge.curve().tangent_with_endpoints(midpoint, start, end);
+    let tangent = if t1 >= t0 { tangent } else { -tangent };
+    Ok((point, tangent))
 }
 
 /// Check if the ruled NURBS surface's native normal disagrees with the
@@ -1038,7 +1066,8 @@ fn nurbs_is_quadratic_circle(
 /// # Errors
 ///
 /// Returns an error if the direction is zero-length, the face is not found,
-/// or the face surface is not a plane.
+/// the face surface is unsupported, or a planar profile's curved-boundary
+/// winding cannot be qualified within its work budget.
 #[allow(clippy::too_many_lines)]
 pub fn extrude(
     topo: &mut Topology,
@@ -1137,11 +1166,18 @@ fn extrude_impl(
 
     // Detect CW-wound outer wire (e.g. from brepjs polygon approximations).
     // CW winding makes `edge_dir.cross(offset)` point inward instead of outward;
-    // the side-face surface builder uses this to flip side normals. Sample
-    // along the edges (not just vertices) so a two-edge arc+line loop, whose
-    // two endpoints alone give zero signed area, still winds correctly.
-    let outer_winding_pts = winding_sample_points(topo, input_oriented)?;
-    let outer_is_cw = crate::winding::is_cw_winding(&outer_winding_pts, &offset);
+    // the side-face surface builder uses this to flip side normals. Reuse
+    // the qualified planar-wire winding, including each trimmed knot span;
+    // sparse parameter samples can invert a nonuniform rational arc. General
+    // nonplanar profiles keep their existing winding adapter.
+    let outer_is_cw = match remus_topology::builder::wire_plane(topo, input_wire_id) {
+        Ok((normal, _)) => normal.dot(offset) < 0.0,
+        Err(remus_topology::TopologyError::NotPlanar) => {
+            let points = winding_sample_points(topo, input_oriented)?;
+            crate::winding::is_cw_winding(&points, &offset)
+        }
+        Err(error) => return Err(error.into()),
+    };
 
     // Orient the cap-deriving normal by the extrusion direction, NOT the wire
     // winding. The two caps are at the input plane F and the swept plane F+offset;
@@ -1244,8 +1280,21 @@ fn extrude_impl(
             let e = topo.edge(input_edge_ids[i])?;
             (e.curve().clone(), e.trim())
         };
-        let (surface, reversed) =
-            side_face_surface(&edge_curve, p0, p1, trim, offset, outer_is_cw)?;
+        let (arc_mid, arc_tangent) = traced_span_frame(topo, input_edge_ids[i])?;
+        let arc_tangent = if input_oriented[i].is_forward() {
+            arc_tangent
+        } else {
+            -arc_tangent
+        };
+        let (surface, reversed) = side_face_surface(
+            &edge_curve,
+            p0,
+            p1,
+            (arc_mid, arc_tangent),
+            trim,
+            offset,
+            outer_is_cw,
+        )?;
 
         // A reversed face flips every edge's effective traversal, so the wire
         // must be built with reversed winding too, or the face traverses its
@@ -1286,7 +1335,7 @@ fn extrude_impl(
 
     // --- Inner wire side faces ---
     let mut holes = Vec::with_capacity(inner_wire_data.len());
-    for iwd in inner_wire_data {
+    for (iwd, &inner_wire_id) in inner_wire_data.into_iter().zip(&inner_wire_ids) {
         let iw_n = iwd.positions.len();
         let mut hole_sides = Vec::with_capacity(iw_n);
         let iw_n = iwd.positions.len();
@@ -1295,7 +1344,13 @@ fn extrude_impl(
         // CW (negative signed area) is the standard B-Rep hole convention;
         // CCW (positive signed area) occurs when callers use math-convention
         // circle generation.  We support both.
-        let is_cw = crate::winding::inner_wire_is_cw(&iwd.positions, &offset);
+        let is_cw = match remus_topology::builder::wire_plane(topo, inner_wire_id) {
+            Ok((normal, _)) => normal.dot(offset) < 0.0,
+            Err(remus_topology::TopologyError::NotPlanar) => {
+                crate::winding::inner_wire_is_cw(&iwd.positions, &offset)
+            }
+            Err(error) => return Err(error.into()),
+        };
 
         for i in 0..iw_n {
             let next = (i + 1) % iw_n;
@@ -1308,14 +1363,26 @@ fn extrude_impl(
             };
             // Inner wires have flipped winding relative to outer
             let inner_is_cw = !is_cw;
-            let (surface, reversed) =
-                side_face_surface(&edge_curve, p0, p1, trim, offset, inner_is_cw)?;
+            let (arc_mid, arc_tangent) = traced_span_frame(topo, iwd.edge_ids[i])?;
+            let arc_tangent = if iwd.oriented[i].is_forward() {
+                arc_tangent
+            } else {
+                -arc_tangent
+            };
+            let (surface, reversed) = side_face_surface(
+                &edge_curve,
+                p0,
+                p1,
+                (arc_mid, arc_tangent),
+                trim,
+                offset,
+                inner_is_cw,
+            )?;
 
             // A full closed circle passed through unsplit becomes one exact
-            // cylinder wall, but its start==end vertex makes `edge_dir` zero, so
-            // `side_face_surface` cannot derive the outward direction. A hole
-            // wall always faces into the hole (toward the axis), i.e. opposite
-            // the cylinder's natural outward radial normal, so force the flip.
+            // cylinder wall. Retain the explicit hole-wall convention: it
+            // faces into the hole (toward the axis), opposite the cylinder's
+            // natural radial normal, for either wire traversal.
             let reversed =
                 reversed || (e_start == e_end && matches!(surface, FaceSurface::Cylinder(_)));
 
