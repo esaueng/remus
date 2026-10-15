@@ -137,6 +137,7 @@ pub fn find_common_segments(a: &[Point2], b: &[Point2], tolerance: f64) -> Vec<(
 #[must_use]
 pub fn fillet_polygon_2d(polygon: &[Point2], radius: f64) -> Vec<Point2> {
     const ARC_SEGMENTS: u32 = 8;
+    const USED_UP: f64 = 8.0 * f64::EPSILON;
     let n = polygon.len();
     if n < 3 {
         return polygon.to_vec();
@@ -202,7 +203,10 @@ pub fn fillet_polygon_2d(polygon: &[Point2], radius: f64) -> Vec<Point2> {
 
         let to_prev = (polygon[prev] - curr) * (1.0 / edge_len(prev));
         let to_next = (polygon[(i + 1) % n] - curr) * (1.0 / edge_len(i));
-        let uses_up = |edge: usize| t >= edge_len(edge) * (1.0 - 1e-12);
+        // An edge is used up when its setbacks fill it to within the rounding
+        // of their proportional split (a few ulps); any real gap, however
+        // small against the edge, keeps both tangent points.
+        let uses_up = |edge: usize| t >= edge_len(edge) * (1.0 - USED_UP);
         let t1 = if uses_up(prev) {
             polygon[prev]
         } else {
@@ -219,7 +223,7 @@ pub fn fillet_polygon_2d(polygon: &[Point2], radius: f64) -> Vec<Point2> {
 
         // An edge used up by both of its corners would repeat its shared
         // tangent point; the previous corner has already placed it.
-        if t + setback[prev] < edge_len(prev) * (1.0 - 1e-12) || setback[prev] < 1e-10 {
+        if t + setback[prev] < edge_len(prev) * (1.0 - USED_UP) || setback[prev] < 1e-10 {
             push(&mut result, t1);
         }
         let (start, end) = (t1 - center, t2 - center);
@@ -452,6 +456,25 @@ mod tests {
             let rounded = fillet_polygon_2d(&poly, 100.0);
             assert_eq!(rounded.len(), 34);
             assert_no_repeated_points(&rounded);
+        }
+    }
+
+    /// A gap left between two setbacks is kept however small it is against
+    /// the edge: on a 1e12 × 2e12 rectangle at r = (1e12 − 0.5) / 2 each short
+    /// edge keeps a 0.5 straight run, so all 36 points survive.
+    #[test]
+    fn small_gap_on_a_long_edge_keeps_both_tangent_points() {
+        let rect = pts(&[(0.0, 0.0), (1e12, 0.0), (1e12, 2e12), (0.0, 2e12)]);
+        for poly in [rect.clone(), reversed(&rect)] {
+            let rounded = fillet_polygon_2d(&poly, (1e12 - 0.5) / 2.0);
+            assert_eq!(rounded.len(), 36);
+            assert_no_repeated_points(&rounded);
+            let gaps = rounded
+                .iter()
+                .zip(rounded.iter().cycle().skip(1))
+                .filter(|(p, q)| ((**q - **p).length() - 0.5).abs() < 1e-3)
+                .count();
+            assert_eq!(gaps, 2, "each short edge keeps its 0.5 straight run");
         }
     }
 
