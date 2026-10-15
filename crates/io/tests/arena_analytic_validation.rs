@@ -181,7 +181,7 @@ fn frame_error_is_bounded_by_carrier_size() {
     ));
 }
 
-/// A cone or parabola has no size of its own: its trimmed extent multiplies
+/// A cylinder, cone or parabola is unbounded along an axis: its trimmed extent multiplies
 /// any frame error, so the frame must be unit to rounding.
 #[test]
 fn unbounded_carriers_need_a_rounding_exact_frame() {
@@ -193,6 +193,10 @@ fn unbounded_carriers_need_a_rounding_exact_frame() {
 
     let mut document = document(|topo| make_cone(topo, 2.0, 1.0, 3.0).unwrap());
     surface(&mut document, "Cone")["axis"] = json!([0.0, 0.0, 1.0 + 5e-10]);
+    assert_refused(&document, "non-unit-direction");
+    // A cylinder is unbounded along its axis, whatever its radius.
+    let mut document = cylinder();
+    surface(&mut document, "Cylinder")["axis"] = json!([0.0, 0.0, 1.0 + 5e-10]);
     assert_refused(&document, "non-unit-direction");
 
     // f = 1e-6 trimmed at t = ±1: a 5e-10 axis error moves the ends 1.25e-4.
