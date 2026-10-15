@@ -880,16 +880,23 @@ impl Topology {
     }
 
     /// Whether [`Self::restore_preserving_handle_slots`] from an identical
-    /// value leaves this one unchanged: every live face's loops and coedges
-    /// are live, and the pcurve index holds exactly the uses that restore
-    /// re-indexes from them.
+    /// value certainly leaves this one unchanged: every live face's loops
+    /// and coedges are live, and the pcurve index holds exactly the uses
+    /// that restore re-indexes from them.
     ///
     /// A restore always re-derives the boundary of a face whose authority
-    /// is not live and rebuilds the index from authority, so only a value
-    /// that passes this check is a fixed point of it. O(boundary uses).
+    /// is not live and rebuilds the index from authority, so a value that
+    /// fails the first condition, or whose index differs, is not a fixed
+    /// point. The check is conservative: a malformed boundary in which two
+    /// coedges claim one oriented use answers `false` even when the rebuilt
+    /// index would match. O(boundary uses), with no map built.
     #[must_use]
     pub fn is_restore_fixed_point(&self) -> bool {
-        let mut derived = PCurveRegistry::new();
+        // Every use resolves to its own coedge, and the index holds no more
+        // entries than there are distinct coedges: then the rebuilt index
+        // (one entry per distinct coedge, each under its own key) is equal.
+        let mut seen = vec![false; self.coedges.slot_len()];
+        let mut distinct = 0usize;
         for (face_id, face) in self.faces.iter() {
             if face.boundary_loops().is_empty() {
                 return false;
@@ -902,11 +909,22 @@ impl Topology {
                     let Some(coedge) = self.coedges.get(coedge_id) else {
                         return false;
                     };
-                    derived.index_use(coedge.edge(), face_id, coedge.is_forward(), coedge_id);
+                    let indexed = self
+                        .pcurves
+                        .get_use(coedge.edge(), face_id, coedge.is_forward());
+                    if indexed != Some(coedge_id) {
+                        return false;
+                    }
+                    if let Some(first) = seen.get_mut(coedge_id.index())
+                        && !*first
+                    {
+                        *first = true;
+                        distinct += 1;
+                    }
                 }
             }
         }
-        derived.same_uses(&self.pcurves)
+        distinct == self.pcurves.len()
     }
 
     pub(crate) fn restore_rollback_fields(&mut self, snapshot: &Self) {

@@ -234,11 +234,6 @@ impl PCurveRegistry {
         self.uses.remove(&key);
     }
 
-    /// Whether both registries index exactly the same uses.
-    pub(crate) fn same_uses(&self, other: &Self) -> bool {
-        self.uses == other.uses
-    }
-
     /// Returns the number of indexed coedge uses, including uses without a
     /// stored pcurve.
     #[must_use]
@@ -493,7 +488,7 @@ mod tests {
                 listed.remove_key(PCurveKey::new(edge, face, forward));
             }
             assert_eq!(format!("{listed:?}"), format!("{whole:?}"));
-            assert!(listed.same_uses(&whole));
+            assert_eq!(listed.len(), whole.len());
             assert!(listed.uses_for_face(face).is_empty());
         }
     }
