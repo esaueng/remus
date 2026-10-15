@@ -680,10 +680,16 @@ impl GcsSystem {
                 .collect();
             (self.extract_params(), usable)
         });
-        let (mut result, eval, stats) =
+        let (mut result, eval, mut stats) =
             self.solve_with_decomposition_raw(decomp, max_iterations, tolerance, capture_final)?;
         if let Some((params, usable)) = before {
-            self.publish_positive_ellipse_axes(&params, &usable, &mut result, tolerance)?;
+            self.publish_positive_ellipse_axes(
+                &params,
+                &usable,
+                &mut result,
+                &mut stats,
+                tolerance,
+            )?;
         }
         Ok((result, eval, stats))
     }
@@ -699,7 +705,7 @@ impl GcsSystem {
     /// `EllipseAxisA/B` (positive target) and `EqualEllipseRadii`,
     /// `||a| − t| ≤ |a − t|` and `||a₁| − |a₂|| ≤ |a₁ − a₂|`. When a sign
     /// changes, `max_residual` and `converged` are re-read at the published
-    /// state.
+    /// state, and that residual pass is counted in `stats` (PERF-S06).
     ///
     /// A semiaxis that ends below the usable magnitude
     /// ([`ellipse_axes_usable`]) is a collapsed ellipse whose implicit-form
@@ -713,6 +719,7 @@ impl GcsSystem {
         before: &[f64],
         usable_before: &[bool],
         result: &mut SolveResult,
+        stats: &mut SolveStats,
         tolerance: f64,
     ) -> Result<(), SketchError> {
         let mut flipped = false;
@@ -735,6 +742,7 @@ impl GcsSystem {
             return Err(SketchError::DegenerateEllipse);
         }
         if flipped {
+            stats.residual_evals += 1;
             result.max_residual = self.current_max_residual();
             result.converged = result.max_residual < tolerance;
         }

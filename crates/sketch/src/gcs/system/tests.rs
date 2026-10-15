@@ -3095,3 +3095,23 @@ fn semiaxis_below_the_usable_magnitude_before_the_solve_is_kept() {
     );
     sys.solve_detailed(20, TOL).unwrap();
 }
+
+#[test]
+fn semiaxis_flip_counts_its_residual_pass() {
+    // a0 = 5 converges on a = −1, so publication re-reads the residuals once.
+    let (mut raw, _, _) = semiaxis_sign_system(5.0);
+    raw.rebuild_if_dirty();
+    let decomp = decompose(&mut raw);
+    let (_, _, unchecked) = raw
+        .solve_with_decomposition_raw(&decomp, 200, TOL, true)
+        .unwrap();
+    let (mut sys, e, _) = semiaxis_sign_system(5.0);
+    sys.rebuild_if_dirty();
+    let decomp = decompose(&mut sys);
+    let (_, _, published) = sys
+        .solve_with_decomposition(&decomp, 200, TOL, true)
+        .unwrap();
+    assert!((sys.ellipse(e).unwrap().a - 1.0).abs() < 1e-9);
+    assert_eq!(published.residual_evals, unchecked.residual_evals + 1);
+    assert_eq!(published.jacobian_evals, unchecked.jacobian_evals);
+}
