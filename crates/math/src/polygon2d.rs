@@ -224,10 +224,15 @@ pub fn fillet_polygon_2d(polygon: &[Point2], radius: f64) -> Vec<Point2> {
 
 /// Twice the signed area of a closed polygon; positive when counter-clockwise.
 fn signed_area_2x(polygon: &[Point2]) -> f64 {
-    let n = polygon.len();
-    (0..n)
-        .map(|i| {
-            let (p, q) = (polygon[i], polygon[(i + 1) % n]);
+    // Relative to the first vertex, so the sum does not cancel far from the
+    // origin.
+    let Some(&o) = polygon.first() else {
+        return 0.0;
+    };
+    polygon
+        .windows(2)
+        .map(|w| {
+            let (p, q) = (w[0] - o, w[1] - o);
             p.x() * q.y() - q.x() * p.y()
         })
         .sum()
@@ -412,6 +417,32 @@ mod tests {
                 assert_eq!(area(&overlap) > 0.0, area(&subject) > 0.0);
                 for p in &overlap {
                     assert!((1.0..=2.0).contains(&p.x()) && (1.0..=2.0).contains(&p.y()));
+                }
+            }
+        }
+    }
+
+    /// The clip polygon's winding was read from a shoelace sum of absolute
+    /// coordinates, which cancels far from the origin: a unit-square clip
+    /// near (1e10, 1e10) read clockwise for about half of the offsets tried
+    /// and clipped everything away.
+    #[test]
+    fn clip_winding_holds_far_from_the_origin() {
+        let square = |c: f64, h: f64| {
+            pts(&[
+                (c - h, c - h),
+                (c + h, c - h),
+                (c + h, c + h),
+                (c - h, c + h),
+            ])
+        };
+        for k in 0..200 {
+            let c = 1e10 + 0.0137 * f64::from(k);
+            for clip in [square(c, 0.5), reversed(&square(c, 0.5))] {
+                let overlap = sutherland_hodgman_clip(&square(c, 2.0), &clip);
+                assert_eq!(overlap.len(), 4, "c = {c}: {overlap:?}");
+                for p in &overlap {
+                    assert!((p.x() - c).abs() <= 0.5 + 1e-5 && (p.y() - c).abs() <= 0.5 + 1e-5);
                 }
             }
         }
