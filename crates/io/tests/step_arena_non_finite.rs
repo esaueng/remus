@@ -134,3 +134,33 @@ fn arena_writer_refuses_non_finite_geometry() {
         "{error}"
     );
 }
+
+/// A spent byte budget is reported as such, whichever write crossed it,
+/// including the non-finite one.
+#[test]
+fn arena_byte_budget_wins_over_non_finite_refusal() {
+    let mut topo = Topology::new();
+    let solid = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    let finite_len = serialize_solids(&topo, &[solid]).unwrap().len();
+    let vertex = explorer::solid_vertices(&topo, solid).unwrap()[0];
+    let at = topo.vertex(vertex).unwrap().point();
+    topo.vertex_mut(vertex)
+        .unwrap()
+        .set_point(Point3::new(f64::INFINITY, at.y(), at.z()));
+    // `null` is never shorter than the finite coordinate it replaces, so every
+    // budget below the finite length is exceeded.
+    for limit in 0..finite_len {
+        let limits = remus_io::ImportLimits {
+            max_input_bytes: limit,
+            ..remus_io::ImportLimits::default()
+        };
+        let Err(error) = remus_io::arena_io::serialize_solids_with_limits(&topo, &[solid], limits)
+        else {
+            panic!("a {limit}-byte budget accepted the document");
+        };
+        assert!(
+            matches!(error, IoError::LimitExceeded { .. }),
+            "budget {limit}: {error}"
+        );
+    }
+}

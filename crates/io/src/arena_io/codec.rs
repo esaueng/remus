@@ -1728,20 +1728,22 @@ pub(super) fn encode_document(
         write_attributes(&mut w, attributes);
     }
     w.byte(b'}');
-    if w.non_finite() {
-        // JSON has no non-finite numbers: `serde_json` writes them as `null`,
-        // which the arena reader refuses.
-        return Err(IoError::InvalidTopology {
-            reason: "arena document holds a non-finite value, which JSON cannot represent"
-                .to_owned(),
-        });
-    }
     if w.exceeded() {
         let limit = limit.unwrap_or(usize::MAX);
         return Err(IoError::LimitExceeded {
             resource: "arena document bytes",
             limit,
             actual: limit.saturating_add(1),
+        });
+    }
+    // After the budget check: a refused budget is reported as such even
+    // when the write that crossed it was a non-finite float.
+    if w.non_finite() {
+        // JSON has no non-finite numbers: `serde_json` writes them as `null`,
+        // which the arena reader refuses.
+        return Err(IoError::InvalidTopology {
+            reason: "arena document holds a non-finite value, which JSON cannot represent"
+                .to_owned(),
         });
     }
     Ok(w.finish())
