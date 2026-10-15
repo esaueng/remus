@@ -15,7 +15,7 @@ use crate::compound::{Compound, CompoundId};
 use crate::compsolid::{CompSolid, CompSolidId};
 use crate::edge::{Edge, EdgeId};
 use crate::face::{Face, FaceId};
-use crate::face_loop::{Loop, LoopId};
+use crate::face_loop::{Loop, LoopId, reverse_traversal};
 use crate::journal::{EntityKey, EvolutionDraft, Journal, OpId, PendingOp};
 use crate::pcurve::{PCurve, PCurveKey, PCurveRegistry};
 use crate::shell::{Shell, ShellId};
@@ -1581,6 +1581,108 @@ impl Topology {
         self.mutation_ticks = self.mutation_ticks.saturating_add(1);
         self.bump_cache_generation();
         self.install_face_loop_specs(face_id, specs)?;
+        Ok(())
+    }
+
+    /// Reverses the traversal of every boundary of `faces` in place.
+    ///
+    /// Each distinct wire of the faces reverses its use order and every use's
+    /// direction; a closed wire keeps its first edge first. Each face's
+    /// authoritative loops follow position for position, keeping their loop
+    /// and coedge identities, and the pcurve-use index is re-keyed to the
+    /// flipped orientations. Per-use parameter-space traces (pcurves and
+    /// periodic lifts) are cleared: a trace's endpoint convention follows the
+    /// use's direction, so callers that need one re-derive it.
+    ///
+    /// Both uses of an edge shared by two of `faces` flip together, so they
+    /// stay opposite and `reversed` flags need no change. A wire must not be
+    /// shared with a face outside `faces`: that face's loops would no longer
+    /// match its wire. Cost is linear in the size of the boundaries.
+    ///
+    /// Composes with [`transaction::run_transacted`](crate::transaction::run_transacted):
+    /// every write is recorded before it lands.
+    ///
+    /// # Errors
+    ///
+    /// Returns a not-found error for a stale face, wire, loop, coedge or
+    /// edge, or [`TopologyError::LoopWireMismatch`] when a face's loops
+    /// disagree with its wires. Nothing changes on these errors.
+    pub fn reverse_face_boundaries(&mut self, faces: &[FaceId]) -> Result<(), TopologyError> {
+        let mut seen_faces = HashSet::with_capacity(faces.len());
+        let mut targets = Vec::with_capacity(faces.len());
+        let mut wires = Vec::new();
+        let mut seen_wires = HashSet::new();
+        for &face_id in faces {
+            if !seen_faces.insert(face_id) {
+                continue;
+            }
+            let face = self.face(face_id)?;
+            for wire_id in
+                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oriented in self.wire(wire_id)?.edges() {
+                    self.edge(oriented.edge())?;
+                }
+                if seen_wires.insert(wire_id) {
+                    wires.push(wire_id);
+                }
+            }
+            if !face.boundary_loops().is_empty() {
+                crate::validation::validate_face_loops(self, face_id)?;
+            }
+            targets.push(face_id);
+        }
+
+        self.mutation_ticks = self.mutation_ticks.saturating_add(1);
+        self.bump_cache_generation();
+        for wire_id in wires {
+            self.record_wire_overwrite(wire_id)?;
+            let wire = self
+                .wires
+                .get_mut(wire_id)
+                .ok_or(TopologyError::WireNotFound(wire_id))?;
+            let closed = wire.is_closed();
+            let uses = wire.edges_mut();
+            reverse_traversal(uses, closed);
+            for oriented in uses.iter_mut() {
+                *oriented = OrientedEdge::new(oriented.edge(), !oriented.is_forward());
+            }
+        }
+
+        for face_id in targets {
+            let loop_ids = self
+                .faces
+                .get(face_id)
+                .map(|face| face.boundary_loops().to_vec())
+                .unwrap_or_default();
+            // Unindex every old use before indexing any new one: a seam's
+            // two uses trade keys.
+            let mut flipped = Vec::new();
+            for &loop_id in &loop_ids {
+                let coedge_ids = self.face_loop(loop_id)?.coedges().to_vec();
+                for coedge_id in coedge_ids {
+                    let coedge = self.coedge(coedge_id)?;
+                    let (edge, forward) = (coedge.edge(), coedge.is_forward());
+                    self.record_pcurve_write(edge, face_id, forward)?;
+                    self.pcurves
+                        .remove_key(PCurveKey::new(edge, face_id, forward));
+                    self.record_coedge_overwrite(coedge_id)?;
+                    let coedge = self
+                        .coedges
+                        .get_mut(coedge_id)
+                        .ok_or(TopologyError::CoedgeNotFound(coedge_id))?;
+                    coedge.reverse_direction();
+                    flipped.push((edge, !forward, coedge_id));
+                }
+                self.record_loop_overwrite(loop_id)?;
+                if let Some(boundary_loop) = self.loops.get_mut(loop_id) {
+                    boundary_loop.reverse_traversal();
+                }
+            }
+            for (edge, forward, coedge_id) in flipped {
+                self.index_pcurve_use(edge, face_id, forward, coedge_id)?;
+            }
+        }
         Ok(())
     }
 
