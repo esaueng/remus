@@ -757,15 +757,24 @@ pub fn remove_degenerate_edges(
         }
     }
 
-    // A copied edge carries its source's pcurves on this solid's faces. Read
-    // them before the rebuild: re-keying a face's loop drops the source
-    // edge's uses, pcurves included.
-    let mut carried: Vec<(FaceId, EdgeId, bool, remus_topology::pcurve::PCurve)> = Vec::new();
+    // A copied edge carries its source's coedge authority on this solid's
+    // faces, pcurve and periodic winding. Read it before the rebuild:
+    // re-keying a face's loop drops the source edge's uses with it.
+    let mut carried: Vec<CarriedUse> = Vec::new();
     if !rekey.is_empty() {
         for &fid in &face_ids {
-            for (edge, forward, pcurve) in topo.pcurves_for_face(fid) {
-                if let Some(&copy) = rekey.get(&edge) {
-                    carried.push((fid, copy, forward, pcurve.clone()));
+            for (&source, &copy) in &rekey {
+                for forward in [true, false] {
+                    if let Some(coedge) = use_coedge(topo, source, fid, forward) {
+                        let data = topo.coedge(coedge)?;
+                        carried.push(CarriedUse {
+                            face: fid,
+                            copy,
+                            forward,
+                            pcurve: data.pcurve().cloned(),
+                            winding: data.periodic_winding(),
+                        });
+                    }
                 }
             }
         }
@@ -774,10 +783,40 @@ pub fn remove_degenerate_edges(
     for &(fid, wid) in &loops {
         removed_count += rebuild_wire_without(topo, fid, wid, &drop, &rekey)?;
     }
-    for (fid, copy, forward, pcurve) in carried {
-        topo.set_pcurve_oriented(copy, fid, forward, pcurve)?;
+    for used in carried {
+        if let Some(pcurve) = used.pcurve {
+            topo.set_pcurve_oriented(used.copy, used.face, used.forward, pcurve)?;
+        }
+        if used.winding != remus_topology::coedge::PeriodicWinding::ZERO
+            && let Some(coedge) = use_coedge(topo, used.copy, used.face, used.forward)
+        {
+            topo.set_coedge_periodic_winding(coedge, used.winding)?;
+        }
     }
     Ok(removed_count)
+}
+
+/// One use of a copied edge's source: the authority its copy takes over.
+struct CarriedUse {
+    face: FaceId,
+    copy: EdgeId,
+    forward: bool,
+    pcurve: Option<remus_topology::pcurve::PCurve>,
+    winding: remus_topology::coedge::PeriodicWinding,
+}
+
+/// The coedge of `face`'s use of `edge` in the given sense, if it has one.
+fn use_coedge(
+    topo: &Topology,
+    edge: EdgeId,
+    face: FaceId,
+    forward: bool,
+) -> Option<remus_topology::coedge::CoedgeId> {
+    let loops = topo.loops_of_face(face)?;
+    topo.coedges_of_edge(edge).into_iter().find(|&id| {
+        topo.coedge(id)
+            .is_ok_and(|c| c.is_forward() == forward && loops.contains(&c.parent_loop()))
+    })
 }
 
 /// Drop the uses of `drop` from one boundary loop of `fid` and re-key the
