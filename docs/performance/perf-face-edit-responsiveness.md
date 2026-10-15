@@ -66,7 +66,7 @@ their contracts.
 `crates/operations/src/measure/nurbs_area_memo.rs` memoizes only areas produced
 by the NURBS face-area path: the face's trimmed measurement tessellation (the
 shared-edge pipeline run over that face alone) and triangle-area summation.
-Until B89 (2026-10-14) that path tessellated the whole support surface and
+Until B90 (2026-10-14) that path tessellated the whole support surface and
 ignored the trim, so the key held the surface alone. Reusing an unrelated solid
 display mesh or trimmed quadrature would change the value and is deliberately
 excluded.

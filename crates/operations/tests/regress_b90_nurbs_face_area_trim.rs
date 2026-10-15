@@ -1,4 +1,4 @@
-//! B89 (kernel review 2026-10-14, OPS-4): `face_area` and
+//! B90 (kernel review 2026-10-14, OPS-4): `face_area` and
 //! `solid_surface_area` measured a NURBS face by its untrimmed carrier.
 //!
 //! `convert_to_bspline` gives each planar box face a carrier patch that
