@@ -2028,6 +2028,15 @@ mod curved {
         let mut sagitta: f64 = 0.0;
         let near = |p: Point3| (dot_normal_point(normal, p) - d).abs() < tol.linear;
         for edge in boundary_edges(topo, face)? {
+            // A NURBS curve lies in the plane exactly when its control points
+            // do (its basis functions are independent); samples alone can
+            // miss it leaving the plane between them.
+            if let EdgeCurve::NurbsCurve(nc) = edge.edge.curve()
+                && !(nc.weights().iter().all(|&w| w > 0.0)
+                    && nc.control_points().iter().all(|&p| near(p)))
+            {
+                continue;
+            }
             let mut steps = 32;
             let mut chain = edge.chain(steps);
             // Every sample and chord midpoint the refinement evaluates must
@@ -2982,6 +2991,52 @@ mod curved {
                 (farthest - 50.0).abs() < 1e-9,
                 "the section ring at generator distance 50 reaches {farthest}"
             );
+        }
+
+        /// A degree-1 NURBS trim whose control points alternate between
+        /// z = 0 and z = 1e-3 at parameters k/128: every sample and chord
+        /// midpoint the refinement evaluates (multiples of 1/64) lands on
+        /// z = 0, so the chain shows no deviation, yet the curve leaves the
+        /// plane between them. Its control points certify it out of plane.
+        #[test]
+        fn a_trim_off_the_plane_between_every_evaluated_point_is_not_in_it() {
+            let zigzag = NurbsCurve::new(
+                1,
+                [0.0, 0.0]
+                    .into_iter()
+                    .chain((1..128).map(|k| f64::from(k) / 128.0))
+                    .chain([1.0, 1.0])
+                    .collect(),
+                (0..=128)
+                    .map(|k| {
+                        let z = if k % 2 == 0 { 0.0 } else { 1e-3 };
+                        Point3::new(2.0 * f64::from(k) / 128.0, 0.0, z)
+                    })
+                    .collect(),
+                vec![1.0; 129],
+            )
+            .unwrap();
+            let mut topo = Topology::new();
+            let [a, b] = [Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0)]
+                .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+            let mut out = Edge::new(a, b, EdgeCurve::NurbsCurve(zigzag));
+            out.set_trim(Some((0.0, 1.0)));
+            let out = topo.add_edge(out);
+            let back = topo.add_edge(Edge::new(b, a, EdgeCurve::Line));
+            let edges = [out, back].map(|e| OrientedEdge::new(e, true));
+            let wire = topo.add_wire(Wire::new(edges.to_vec(), true).unwrap());
+            let face = topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 1.0, 0.0),
+                    d: 0.0,
+                },
+            ));
+            let (in_plane, _) =
+                super::in_plane_edges(&topo, face, Vec3::new(0.0, 0.0, 1.0), 0.0, Tolerance::new())
+                    .unwrap();
+            assert_eq!(in_plane.len(), 1, "only the closing line is in the plane");
         }
 
         /// At R = 1e6 a band of `1e-6` of the rim's length (≈ 4.7) swallowed
