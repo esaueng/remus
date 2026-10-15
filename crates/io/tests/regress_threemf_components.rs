@@ -1,4 +1,4 @@
-//! Kernel review 2026-10-14, IO-4 (B90): 3MF objects built from components.
+//! Kernel review 2026-10-14, IO-4 (B125): 3MF objects built from components.
 //!
 //! The reader produced one mesh per `<object>` from its `<mesh>` alone, so an
 //! object made only of `<components>` came back as an empty mesh, and every
