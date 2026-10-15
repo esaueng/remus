@@ -78,13 +78,32 @@ pub fn fix_edge(
 /// # Errors
 ///
 /// Returns [`HealError`] if entity lookups fail or PCurve projection fails.
-#[allow(clippy::too_many_lines)]
 pub fn fix_same_parameter_on_face(
     topo: &mut Topology,
     edge_id: EdgeId,
     face_id: FaceId,
     ctx: &mut HealContext,
     config: &FixConfig,
+) -> Result<FixResult, HealError> {
+    let accept = ctx.tolerance.linear;
+    same_parameter_use(topo, edge_id, face_id, ctx, config, accept, true)
+}
+
+/// [`fix_same_parameter_on_face`] with the deviation a rebuild must meet.
+///
+/// `accept` qualifies a planar circle for its exact chart pcurve and, when
+/// `post_check` is set, judges a planar rebuild after the fact (restoring
+/// the original and refusing when it misses). The budgeted repair passes its
+/// own budget and judges, and rolls back, by itself.
+#[allow(clippy::too_many_lines)]
+fn same_parameter_use(
+    topo: &mut Topology,
+    edge_id: EdgeId,
+    face_id: FaceId,
+    ctx: &mut HealContext,
+    config: &FixConfig,
+    accept: f64,
+    post_check: bool,
 ) -> Result<FixResult, HealError> {
     // How does this face use the edge? A SEAM edge appears in the face's wires
     // twice — once forward, once reversed — and each use carries its own
@@ -168,7 +187,7 @@ pub fn fix_same_parameter_on_face(
         None
     };
     let exact = match plane {
-        Some((normal, d)) => exact_plane_pcurve(topo, edge_id, forward, normal, d)?,
+        Some((normal, d)) => exact_plane_pcurve(topo, edge_id, forward, normal, d, accept)?,
         None => None,
     };
     let pcurve = match exact {
@@ -181,9 +200,9 @@ pub fn fix_same_parameter_on_face(
     // A plane's chart is exact, so a deviation left after the rebuild is the
     // edge's own distance from the plane (or a fit that cannot follow it):
     // no pcurve repairs that, so keep the caller's and say so.
-    if plane.is_some() {
+    if post_check && plane.is_some() {
         let after = compute_pcurve_deviation(topo, edge_id, face_id, forward)?;
-        if after.is_nan() || after > ctx.tolerance.linear {
+        if after.is_nan() || after > accept {
             match original {
                 Some(pcurve) => topo.set_pcurve_oriented(edge_id, face_id, forward, pcurve)?,
                 None => {
@@ -456,7 +475,7 @@ fn fitted_pcurve(
 
 /// The exact pcurve of a line or circle edge lying in a plane, in the
 /// plane's canonical chart, oriented along the use; `None` for any other
-/// curve, or a circle whose own plane is not the face's.
+/// curve, or a circle farther than `accept` from lying in the plane.
 ///
 /// A line maps to the chart segment between its use's end points over
 /// `(0, length)`. A circle maps to a chart circle whose angle is the edge
@@ -469,6 +488,7 @@ fn exact_plane_pcurve(
     forward: bool,
     normal: Vec3,
     d: f64,
+    accept: f64,
 ) -> Result<Option<PCurve>, HealError> {
     use remus_math::curves2d::{Circle2D, Line2D};
     use remus_topology::edge::EdgeCurve;
@@ -496,10 +516,14 @@ fn exact_plane_pcurve(
         }
         EdgeCurve::Circle(circle) => {
             let along = circle.normal().dot(frame.z);
-            // Off-plane centers and tilted circles stay with the fitted
-            // projection; strict validation then reports them as they are.
+            // The chart circle is the circle's projection: it is off by at
+            // most the center's height plus the tilt's radius loss. Within
+            // `accept`, it stays analytic; beyond, the fitted projection
+            // takes it, and the deviation is judged as it is.
             let off_plane = (circle.center() - frame.origin).dot(frame.z);
-            if along.abs() < 1.0 - 1e-12 || off_plane.abs() > 1e-9 * circle.radius().max(1.0) {
+            let tilt = circle.radius() * along.mul_add(-along, 1.0).max(0.0).sqrt();
+            let excess = off_plane.abs() + tilt - accept;
+            if excess.is_nan() || excess > 0.0 {
                 return Ok(None);
             }
             let Ok(chart_circle) = Circle2D::new(to_chart(circle.center()), circle.radius()) else {
@@ -579,7 +603,7 @@ pub fn repair_pcurve_within_budget(
         fix_same_parameter: crate::fix::config::FixMode::On,
         ..Default::default()
     };
-    fix_same_parameter_on_face(topo, edge_id, face_id, ctx, &config)?;
+    same_parameter_use(topo, edge_id, face_id, ctx, &config, budget, false)?;
 
     let deviation_after = compute_pcurve_deviation(topo, edge_id, face_id, forward)?;
     if deviation_after > budget {
@@ -782,12 +806,71 @@ mod repair_budget_tests {
         assert!((compute_pcurve_deviation(&topo, edge, face, true).unwrap() - 1e-3).abs() < 1e-12);
     }
 
-    /// A disc on `z = 0` bounded by one full circle about `(1, 2, 0)` of
+    /// A circle 1e-8 off its plane is within the default 1e-7 tolerance: it
+    /// keeps its analytic chart circle, which strict validation certifies,
+    /// instead of a NURBS fit it cannot.
+    #[test]
+    fn planar_circle_within_tolerance_of_its_plane_stays_analytic() {
+        use remus_math::curves2d::Circle2D;
+        let (mut topo, rim, face) = disc_face(1.0, 0.0, 1e-8);
+        let offset = Circle2D::new(Point2::new(2.25, -1.0), 1.5).unwrap();
+        topo.set_pcurve_oriented(
+            rim,
+            face,
+            true,
+            PCurve::new(Curve2D::Circle(offset), 0.0, std::f64::consts::TAU),
+        )
+        .unwrap();
+        let mut ctx = HealContext::new();
+        let config = crate::fix::config::FixConfig::default();
+        let result =
+            super::fix_same_parameter_on_face(&mut topo, rim, face, &mut ctx, &config).unwrap();
+        assert_eq!(result.actions_taken, 1, "{result:?}");
+        let rebuilt = topo.pcurve_oriented(rim, face, true).unwrap();
+        assert!(matches!(rebuilt.curve(), Curve2D::Circle(_)), "{rebuilt:?}");
+        assert!(strictly_certified_deviation(&topo, rim, face, true) <= 1e-7);
+    }
+
+    /// The budgeted repair is judged against its own budget, not the
+    /// context's tighter tolerance: an edge 1e-4 off its plane takes a new
+    /// pcurve under a 1e-3 budget and is refused, with nothing left behind,
+    /// under 1e-5.
+    #[test]
+    fn budgeted_planar_repair_answers_to_its_budget() {
+        for (budget, meets) in [(1e-3, true), (1e-5, false)] {
+            let (mut topo, edge, face) = square_face();
+            let (start, end) = {
+                let e = topo.edge(edge).unwrap();
+                (e.start(), e.end())
+            };
+            for v in [start, end] {
+                let p = topo.vertex(v).unwrap().point();
+                topo.vertex_mut(v)
+                    .unwrap()
+                    .set_point(Point3::new(p.x(), p.y(), 1e-4));
+            }
+            let mut ctx = HealContext::new();
+            let outcome = repair_pcurve_within_budget(&mut topo, edge, face, &mut ctx, budget);
+            if meets {
+                let report = outcome.unwrap();
+                assert!((report.deviation_after - 1e-4).abs() < 1e-12, "{report:?}");
+                assert!(topo.pcurve_oriented(edge, face, true).is_some());
+            } else {
+                assert!(
+                    matches!(outcome, Err(HealError::RepairBudgetExceeded { .. })),
+                    "{outcome:?}"
+                );
+                assert!(topo.pcurve_oriented(edge, face, true).is_none());
+            }
+        }
+    }
+
+    /// A disc on `z = 0` bounded by one full circle about `(1, 2, lift)` of
     /// radius 1.5, its normal along `normal_z` and its seam at `phase`.
-    fn disc_face(normal_z: f64, phase: f64) -> (Topology, EdgeId, FaceId) {
+    fn disc_face(normal_z: f64, phase: f64, lift: f64) -> (Topology, EdgeId, FaceId) {
         let mut topo = Topology::new();
         let circle = Circle3D::new_with_ref(
-            Point3::new(1.0, 2.0, 0.0),
+            Point3::new(1.0, 2.0, lift),
             Vec3::new(0.0, 0.0, normal_z),
             1.5,
             Vec3::new(phase.cos(), phase.sin(), 0.0),
@@ -817,7 +900,7 @@ mod repair_budget_tests {
     fn planar_circle_repair_writes_a_certified_chart_circle() {
         use remus_math::curves2d::Circle2D;
         for (normal_z, phase) in [(1.0, 0.0), (1.0, 0.7), (-1.0, 2.0)] {
-            let (mut topo, rim, face) = disc_face(normal_z, phase);
+            let (mut topo, rim, face) = disc_face(normal_z, phase, 0.0);
             // Right radius, centre 0.25 off.
             let offset = Circle2D::new(Point2::new(2.25, -1.0), 1.5).unwrap();
             topo.set_pcurve_oriented(
