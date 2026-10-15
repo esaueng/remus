@@ -3,8 +3,8 @@
 //! Persistent references are saved beside arena documents and read back from
 //! untrusted storage. Oracles: a decoded reference is a value object, so
 //! encoding it and decoding the result must give the same reference, and
-//! re-encoding must be byte-stable; resolving it against an empty and against
-//! a small journaled model must not panic.
+//! re-encoding must be byte-stable; resolving it against an empty model and
+//! against a journaled fuse that must itself succeed must not panic.
 
 #![no_main]
 
@@ -28,15 +28,24 @@ fuzz_target!(|data: &[u8]| {
 
     let _ = resolve(&Topology::new(), &reference);
     let mut topo = Topology::new();
-    let a = remus_operations::primitives::make_box(&mut topo, 1.0, 2.0, 3.0);
-    let b = remus_operations::primitives::make_box(&mut topo, 0.5, 0.5, 0.5);
-    if let (Ok(a), Ok(b)) = (a, b) {
-        let _ = remus_operations::journal_ops::boolean_journaled(
-            &mut topo,
-            remus_algo::bop::BooleanOp::Fuse,
-            a,
-            b,
-        );
-        let _ = resolve(&topo, &reference);
-    }
+    journaled_fuse(&mut topo);
+    let _ = resolve(&topo, &reference);
 });
+
+/// Two overlapping boxes fused through the journal. The fixture must succeed,
+/// or the journaled resolve below silently stops being exercised.
+fn journaled_fuse(topo: &mut Topology) {
+    use remus_math::mat::Mat4;
+    use remus_operations::primitives::make_box;
+
+    let a = make_box(topo, 1.0, 2.0, 3.0).expect("box");
+    let b = make_box(topo, 1.0, 1.0, 1.0).expect("box");
+    remus_operations::transform::transform_solid(topo, b, &Mat4::translation(0.5, 0.5, 0.5))
+        .expect("translate");
+    remus_operations::journal_ops::boolean_journaled(topo, remus_algo::bop::BooleanOp::Fuse, a, b)
+        .expect("the journaled fuse fixture succeeds");
+    assert!(
+        !topo.journal().is_empty(),
+        "the fuse recorded no journal entry"
+    );
+}
