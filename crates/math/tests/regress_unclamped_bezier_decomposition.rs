@@ -548,3 +548,45 @@ fn a_common_weight_of_f64_max_does_not_overflow() {
         }
     }
 }
+
+#[test]
+fn small_weights_with_small_coordinates_do_not_underflow() {
+    // Review follow-up: weights 2^-500 sat inside the old "leave alone"
+    // band, but with coordinates near 2^-600 the insertion's w·P ≈ 2^-1100
+    // underflowed to zero and the decomposition returned the origin. The
+    // weights are now always centred on 1 by an exact power of two.
+    let n = 4;
+    let tiny = 2.0_f64.powi(-600);
+    let points: Vec<Point3> = de_boor_points(n)
+        .iter()
+        .map(|p| Point3::new(p.x() * tiny, p.y() * tiny, p.z() * tiny))
+        .collect();
+    let curve = NurbsCurve::new(
+        3,
+        uniform_knots(n + 4),
+        points.clone(),
+        vec![2.0_f64.powi(-500); n],
+    )
+    .expect("valid");
+    let segments = curve_to_bezier_segments(&curve).expect("decomposes");
+    let expected = bezier_from_uniform(&points);
+    for (got, want) in segments[0].control_points().iter().zip(&expected) {
+        assert_close(*got, *want, 1e-13 * tiny, "Bezier point");
+        assert!(got.x() != 0.0 || want.x() == 0.0, "collapsed to the origin");
+    }
+    let surface = NurbsSurface::new(
+        3,
+        3,
+        uniform_knots(8),
+        uniform_knots(8),
+        vec![points; 4],
+        vec![vec![2.0_f64.powi(-500); 4]; 4],
+    )
+    .expect("valid");
+    let patches = surface_to_bezier_patches(&surface).expect("decomposes");
+    for row in patches[0].surface.control_points() {
+        for (got, want) in row.iter().zip(&expected) {
+            assert_close(*got, *want, 1e-13 * tiny, "patch point");
+        }
+    }
+}
