@@ -4026,7 +4026,10 @@ pub fn fillet_rolling_ball_with_origins(
                 // Snap inner wire vertices.
                 for iw in spec.inner_wires_mut() {
                     for v in iw.iter_mut() {
-                        if let Some(closest) = original_verts.nearest_within(*v, snap_tol) {
+                        if let Some(closest) = original_verts
+                            // Same winner and tie rule as the outer wire's snap.
+                            .nearest_within(*v, snap_tol)
+                        {
                             *v = closest;
                         }
                     }
