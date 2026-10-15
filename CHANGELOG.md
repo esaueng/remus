@@ -12,6 +12,12 @@ historical predecessor-line records, retained for provenance. The
 
 ### ⚠ BREAKING CHANGES
 
+* **math (Rust callers):** `approximate_lspia` and
+  `approximate_surface_lspia` now return `LspiaFit` and `LspiaSurfaceFit`.
+  Read the fitted geometry from `.curve` or `.surface`, and inspect
+  `.converged` and `.max_error`; reaching the iteration limit can return
+  the best measured fit with `converged = false`.
+
 * **check,operations,wasm:** solid-to-solid minimum distance now requires
   complete native sphere pairs or straight-edged planar boundaries (including
   certified affine NURBS planes). Other curved pairs return a typed distance

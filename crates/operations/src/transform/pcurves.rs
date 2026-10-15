@@ -22,6 +22,7 @@ use remus_math::mat::Mat4;
 use remus_math::vec::{Point2, Point3, Vec2, Vec3};
 use remus_topology::Topology;
 use remus_topology::coedge::PeriodicWinding;
+use remus_topology::edge::EdgeCurve;
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::pcurve::PCurve;
 
@@ -147,6 +148,43 @@ impl UvAffine {
 
     fn point(self, p: Point2) -> Point2 {
         self.origin + self.vector(Vec2::new(p.x(), p.y()))
+    }
+
+    /// Match a planar circular trace to the circle the 3D transform retained.
+    /// Inside its analytic-roundoff band the edge transformer keeps a circle
+    /// using its own reference-axis scale; averaging the UV scales separately
+    /// can move a large trace outside the linear tolerance. Only reconcile
+    /// axes already within that same roundoff band of the retained radius.
+    /// Every other conic keeps the general affine image from `apply`.
+    fn apply_retained_planar_circle(
+        mut self,
+        pcurve: &PCurve,
+        radius: f64,
+    ) -> Result<PCurve, crate::OperationsError> {
+        let Curve2D::Circle(circle) = pcurve.curve() else {
+            return self.apply(pcurve);
+        };
+        let p = self.vector(Vec2::new(circle.radius(), 0.0));
+        let q = self.vector(Vec2::new(0.0, circle.radius()));
+        let (lp, lq) = (p.length(), q.length());
+        if !super::equal_within_analytic_roundoff(lp, radius)
+            || !super::equal_within_analytic_roundoff(lq, radius)
+            || p.dot(q).abs() > super::ANALYTIC_ROUNDOFF_REL * lp * lq
+        {
+            return self.apply(pcurve);
+        }
+        // Local circle retention applies even when an unrelated out-of-plane
+        // scale makes the complete 3D matrix nonconformal.
+        self.conformal = true;
+        let image = self.apply(pcurve)?;
+        let Curve2D::Circle(circle) = image.curve() else {
+            return Ok(image);
+        };
+        Ok(PCurve::new(
+            Curve2D::Circle(Circle2D::new(circle.center(), radius)?),
+            image.t_start(),
+            image.t_end(),
+        ))
     }
 
     /// The pcurve's image, reparameterized so that the image's parameter `t'`
@@ -319,7 +357,19 @@ pub fn reexpress_face_pcurves(
         let Some(pcurve) = coedge.pcurve() else {
             continue;
         };
-        let image = affine.map(|affine| affine.apply(pcurve)).transpose()?;
+        let image = affine
+            .map(|affine| {
+                match (
+                    topo.face(face)?.surface(),
+                    topo.edge(coedge.edge())?.curve(),
+                ) {
+                    (FaceSurface::Plane { .. }, EdgeCurve::Circle(circle)) => {
+                        affine.apply_retained_planar_circle(pcurve, circle.radius())
+                    }
+                    _ => affine.apply(pcurve),
+                }
+            })
+            .transpose()?;
         let winding = if periodic {
             let edge = topo.edge(coedge.edge())?;
             let (start, end) = if coedge.is_forward() {
