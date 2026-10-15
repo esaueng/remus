@@ -1295,7 +1295,7 @@ mod tests {
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
 
-        let scope = input_scope(&topo);
+        let mut scope = input_scope(&topo);
         let mut replacements = DetHashMap::default();
         let result = trim_face(
             &mut topo,
@@ -1403,7 +1403,7 @@ mod tests {
         // neighbor) and e2 (unshared).
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
-        let scope = input_scope(&topo);
+        let mut scope = input_scope(&topo);
         let mut replacements = DetHashMap::default();
         let result = trim_face(
             &mut topo,
@@ -1488,7 +1488,7 @@ mod tests {
         let (face_id, verts, edges) = make_square_face(&mut topo);
         // The scope opens before the neighbor exists, so the neighbor is the
         // build's own face: rewritten, not copied.
-        let scope = EditScope::new(&topo, [face_id]).unwrap();
+        let mut scope = EditScope::new(&topo, [face_id]).unwrap();
         let neighbor = attach_neighbor_below(&mut topo, verts[0], verts[1], edges[0]);
         let neighbor_wire = topo.face(neighbor).unwrap().outer_wire();
 
@@ -1521,7 +1521,7 @@ mod tests {
         // Pre-existing but not part of the input body: another solid's face.
         let foreign = attach_neighbor_below(&mut topo, verts[0], verts[1], edges[0]);
         let foreign_wire = topo.face(foreign).unwrap().outer_wire();
-        let scope = EditScope::new(&topo, [face_id]).unwrap();
+        let mut scope = EditScope::new(&topo, [face_id]).unwrap();
 
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
@@ -1574,7 +1574,7 @@ mod tests {
 
         let contact_3d = vec![Point3::new(0.5, -1.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, -1.0), (0.5, 1.0)];
-        let scope = input_scope(&topo);
+        let mut scope = input_scope(&topo);
         let mut replacements = DetHashMap::default();
         let result = trim_face(
             &mut topo,
@@ -1620,7 +1620,7 @@ mod tests {
 
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
-        let scope = input_scope(&topo);
+        let mut scope = input_scope(&topo);
         let mut replacements = DetHashMap::default();
         trim_face(
             &mut topo,
@@ -1654,7 +1654,7 @@ mod tests {
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
 
-        let scope = input_scope(&topo);
+        let mut scope = input_scope(&topo);
         let mut replacements = DetHashMap::default();
         let result = trim_face(
             &mut topo,
@@ -1718,7 +1718,7 @@ mod tests {
         let contact_3d = vec![Point3::new(0.5, 0.0, 0.0), Point3::new(0.5, 1.0, 0.0)];
         let contact_uv = vec![(0.5, 0.0), (0.5, 1.0)];
 
-        let scope = input_scope(&topo);
+        let mut scope = input_scope(&topo);
         let mut replacements = DetHashMap::default();
         let result = trim_face(
             &mut topo,
@@ -1805,7 +1805,7 @@ mod tests {
         source.set_trim(Some((0.0, std::f64::consts::PI)));
         let source_id = topo.add_edge(source);
 
-        let scope = input_scope(&topo);
+        let mut scope = input_scope(&topo);
         let mut replacements = DetHashMap::default();
         let (before, after) = split_edge_at(
             &mut topo,
@@ -1842,7 +1842,7 @@ mod tests {
         let source_id = topo.add_edge(Edge::new(start, end, EdgeCurve::Circle(circle)));
         let edge_count = topo.num_edges();
 
-        let scope = input_scope(&topo);
+        let mut scope = input_scope(&topo);
         let mut replacements = DetHashMap::default();
         assert!(matches!(
             split_edge_at(
