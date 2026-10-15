@@ -1488,8 +1488,10 @@ mod curved {
     }
 
     /// The boundary edges of `face` that lie in the plane, as polylines
-    /// within a sagitta of `1e-6` of their length (floored at the linear
-    /// tolerance), and the largest sagitta reached.
+    /// within an absolute sagitta of `100 × tol.linear` of their curves, and
+    /// the largest sagitta reached. The bound is absolute so that scaling a
+    /// body cannot widen it past the gap to another section loop; an edge
+    /// that 2¹⁶ segments cannot resolve to it is refused.
     fn in_plane_edges(
         topo: &Topology,
         face: FaceId,
@@ -1497,7 +1499,7 @@ mod curved {
         d: f64,
         tol: Tolerance,
     ) -> Result<(Vec<(Point3, Point3)>, f64), OperationsError> {
-        const MAX_STEPS: u32 = 4096;
+        const MAX_STEPS: u32 = 1 << 16;
         let coplanar_tol = tol.linear * 100.0;
         let mut segments = Vec::new();
         let mut sagitta: f64 = 0.0;
@@ -1511,7 +1513,6 @@ mod curved {
                 continue;
             }
             loop {
-                let length: f64 = chain.windows(2).map(|w| (w[1] - w[0]).length()).sum();
                 let deviation = (0..steps)
                     .map(|k| {
                         let mid = edge.at((f64::from(k) + 0.5) / f64::from(steps));
@@ -1519,9 +1520,15 @@ mod curved {
                         (mid - (a + (b - a) * 0.5)).length()
                     })
                     .fold(0.0_f64, f64::max);
-                if deviation <= (1e-6 * length).max(tol.linear) || steps >= MAX_STEPS {
+                if deviation <= coplanar_tol {
                     sagitta = sagitta.max(deviation);
                     break;
+                }
+                if steps >= MAX_STEPS {
+                    return Err(unsupported(format!(
+                        "section along an in-plane boundary edge that {MAX_STEPS} segments \
+                         resolve only to {deviation:e}"
+                    )));
                 }
                 steps *= 2;
                 chain = edge.chain(steps);
@@ -1614,8 +1621,9 @@ mod curved {
         // it is kept without classifying a point on the trim itself. Both of
         // its ends (carrier samples or crossings) then lie on that edge's
         // curve, so within the edge polyline's sagitta of it. The band is
-        // that approximation error, not a chord fraction: on a slender
-        // torus the carrier's other loop runs closer than a rim chord.
+        // that absolute approximation error, not a fraction of a chord or of
+        // the rim: on a slender torus the carrier's other loop runs closer
+        // than either.
         let (in_plane, sagitta) = in_plane_edges(topo, face, normal, d, tol)?;
         let band = 2.0 * sagitta + tol.linear * 100.0;
         let near_boundary = |p: Point3| {
@@ -1719,15 +1727,15 @@ mod curved {
             assert!(on_face >= 16, "{on_face} branch samples on the face");
         }
 
-        /// A slender torus band (R = 100, r = 1, v ∈ [−π/3, π/3]) cut flush
-        /// with its top rim at ρ = 100.5. The carrier's other loop at that
-        /// height, ρ = 99.5, runs 1 from the rim: well inside a quarter of a
-        /// 32-segment rim chord (≈ 4.9), so a chord-scaled boundary band kept
-        /// it as the rim. Only the rim may survive.
-        #[test]
-        fn far_carrier_loop_beside_an_in_plane_rim_is_dropped() {
+        /// `append_clipped` on a slender torus band (`major`, r = 1,
+        /// v ∈ [−π/3, π/3]) cut flush with its top rim at ρ = major + 0.5,
+        /// given both carrier loops at that height. The other loop, at
+        /// ρ = major − 0.5, runs 1 from the rim.
+        fn clip_flush_with_slender_rim(
+            major: f64,
+        ) -> Result<Vec<(Point3, Point3)>, crate::OperationsError> {
             let mut topo = Topology::new();
-            let (major, h) = (100.0, (PI / 3.0).sin());
+            let h = (PI / 3.0).sin();
             let corner = |x: f64, z: f64| Point3::new(x, 0.0, z);
             let [a, b, c, d] = [
                 corner(major - 2.0, -h),
@@ -1770,7 +1778,6 @@ mod curved {
                 .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Torus(_)))
                 .expect("a torus band");
 
-            #[allow(clippy::cast_precision_loss)]
             let circle = |rho: f64| -> Vec<Point3> {
                 (0..=128)
                     .map(|k| {
@@ -1780,18 +1787,26 @@ mod curved {
                     .collect()
             };
             let polylines = [circle(major + 0.5), circle(major - 0.5)];
-            let normal = Vec3::new(0.0, 0.0, 1.0);
             let mut segments = Vec::new();
             append_clipped(
                 &topo,
                 face,
                 &polylines,
-                normal,
+                Vec3::new(0.0, 0.0, 1.0),
                 h,
                 Tolerance::new(),
                 &mut segments,
-            )
-            .unwrap();
+            )?;
+            Ok(segments)
+        }
+
+        /// At R = 100 the far loop is well inside a quarter of a 32-segment
+        /// rim chord (≈ 4.9), so a chord-scaled band kept it as the rim.
+        /// Only the rim may survive.
+        #[test]
+        fn far_carrier_loop_beside_an_in_plane_rim_is_dropped() {
+            let major = 100.0;
+            let segments = clip_flush_with_slender_rim(major).unwrap();
             assert!(!segments.is_empty(), "the rim is part of the section");
             for (p, q) in segments {
                 for x in [p, q] {
@@ -1802,6 +1817,18 @@ mod curved {
                     );
                 }
             }
+        }
+
+        /// At R = 1e6 a band of `1e-6` of the rim's length (≈ 4.7) swallowed
+        /// the far loop too. No band set by the rim's size may decide which
+        /// loop survives: 2¹⁶ segments cannot hold this rim to the absolute
+        /// bound, so the clip is refused rather than guessed.
+        #[test]
+        fn rim_too_long_to_resolve_is_refused() {
+            assert!(matches!(
+                clip_flush_with_slender_rim(1e6),
+                Err(crate::OperationsError::Unsupported { .. })
+            ));
         }
     }
 }
