@@ -15,6 +15,11 @@ use remus_topology::transaction::run_transacted;
 use remus_topology::vertex::VertexId;
 use remus_topology::wire::WireId;
 
+mod uv_chart;
+
+pub(crate) use uv_chart::{FaceChartMap, apply_face_chart_map};
+use uv_chart::{UvAffine, linear_image};
+
 /// Dimensionless floor below which a transform is treated as collapsing the
 /// model rather than moving it.
 ///
@@ -1389,23 +1394,27 @@ pub(crate) fn transform_face_surface(
     normal_matrix: &Mat4,
 ) -> Result<(), crate::OperationsError> {
     let mut recorder = TransformRecorder::new(linear_determinant(matrix) < 0.0, true);
-    transform_face_surface_recorded(topo, fid, matrix, normal_matrix, &mut recorder)
+    transform_face_surface_recorded(topo, fid, matrix, normal_matrix, &mut recorder).map(|_| ())
 }
 
 /// Recorded face-surface transform shared by the legacy entry points, the
 /// detailed twins, and the copy path.
+///
+/// Rewrites the pcurves the face stores for its new chart and returns the
+/// chart map, so the copy path can apply it to pcurves it restores later.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn transform_face_surface_recorded(
     topo: &mut Topology,
     fid: FaceId,
     matrix: &Mat4,
     normal_matrix: &Mat4,
     recorder: &mut TransformRecorder,
-) -> Result<(), crate::OperationsError> {
+) -> Result<FaceChartMap, crate::OperationsError> {
     let from = topo.face(fid)?.surface().type_tag();
     let face = topo.face(fid)?;
-    match face.surface() {
-        FaceSurface::Plane { normal, .. } => {
-            let n = *normal;
+    let chart = match face.surface() {
+        FaceSurface::Plane { normal, d } => {
+            let (n, old_d) = (*normal, *d);
             let transformed =
                 normal_matrix.mul_point(remus_math::vec::Point3::new(n.x(), n.y(), n.z()));
             let origin = normal_matrix.mul_point(remus_math::vec::Point3::new(0.0, 0.0, 0.0));
@@ -1435,7 +1444,9 @@ pub(crate) fn transform_face_surface_recorded(
                 d: new_d,
             });
             // Planes stay planes under every affine map (normals re-derived
-            // as covectors): nothing to record, no flag to carry.
+            // as covectors): nothing to record, no flag to carry. Their
+            // chart is canonical in (normal, d), so pcurves are re-expressed.
+            FaceChartMap::Affine(UvAffine::plane(matrix, (n, old_d), (new_normal, new_d))?)
         }
         FaceSurface::Nurbs(s) => {
             let s_clone = s.clone();
@@ -1455,6 +1466,11 @@ pub(crate) fn transform_face_surface_recorded(
             let oriented = orient_nurbs_for_map(&new_surface?, recorder.orientation_reversing)?;
             topo.face_mut(fid)?
                 .set_surface(FaceSurface::Nurbs(oriented));
+            if recorder.orientation_reversing {
+                FaceChartMap::Replaced
+            } else {
+                FaceChartMap::Unchanged
+            }
         }
         FaceSurface::Cylinder(cyl) => {
             if is_uniform_scale(matrix) {
@@ -1465,8 +1481,15 @@ pub(crate) fn transform_face_surface_recorded(
                 let new_cyl = remus_math::surfaces::CylindricalSurface::new(
                     new_origin, new_axis, new_radius,
                 )?;
+                let chart = UvAffine::about_axis(
+                    matrix,
+                    (cyl_clone.x_axis(), cyl_clone.y_axis()),
+                    (new_cyl.x_axis(), new_cyl.y_axis()),
+                    linear_image(matrix, cyl_clone.axis()).dot(new_cyl.axis()),
+                );
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Cylinder(new_cyl));
+                FaceChartMap::Affine(chart)
             } else {
                 // Same reasoning as the sibling arm above: an anisotropic
                 // scale makes the cylinder elliptic, so convert to NURBS
@@ -1489,6 +1512,7 @@ pub(crate) fn transform_face_surface_recorded(
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Nurbs(oriented));
                 recorder.record_face(fid, from, "nurbs", SurfaceMethod::ExactRational, count);
+                FaceChartMap::Replaced
             }
         }
         FaceSurface::Cone(cone) => {
@@ -1501,7 +1525,16 @@ pub(crate) fn transform_face_surface_recorded(
                     new_axis,
                     cone_clone.half_angle(),
                 )?;
+                // `v` is distance along the generator, so it scales with
+                // the map.
+                let chart = UvAffine::about_axis(
+                    matrix,
+                    (cone_clone.x_axis(), cone_clone.y_axis()),
+                    (new_cone.x_axis(), new_cone.y_axis()),
+                    linear_image(matrix, cone_clone.axis()).dot(new_cone.axis()),
+                );
                 topo.face_mut(fid)?.set_surface(FaceSurface::Cone(new_cone));
+                FaceChartMap::Affine(chart)
             } else {
                 let inverse = matrix.inverse()?;
                 let v_range = analytic_face_v_range(topo, fid, |pt| {
@@ -1519,6 +1552,7 @@ pub(crate) fn transform_face_surface_recorded(
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Nurbs(oriented));
                 recorder.record_face(fid, from, "nurbs", SurfaceMethod::ExactRational, count);
+                FaceChartMap::Replaced
             }
         }
         FaceSurface::Sphere(sph) => {
@@ -1533,8 +1567,18 @@ pub(crate) fn transform_face_surface_recorded(
                     transform_direction(matrix, sph_clone.z_axis())?,
                     transform_direction(matrix, sph_clone.x_axis())?,
                 )?;
+                // The frame follows the map, so only a reflection (which
+                // leaves it right-handed by reversing `u`) moves the chart.
+                // The latitude `v` is unchanged.
+                let chart = UvAffine::about_axis(
+                    matrix,
+                    (sph_clone.x_axis(), sph_clone.y_axis()),
+                    (new_sph.x_axis(), new_sph.y_axis()),
+                    1.0,
+                );
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Sphere(new_sph));
+                FaceChartMap::Affine(chart)
             } else {
                 let inverse = matrix.inverse()?;
                 let sph_clone = sph.clone();
@@ -1570,6 +1614,7 @@ pub(crate) fn transform_face_surface_recorded(
                             max_residual,
                             check_points,
                         });
+                        FaceChartMap::Replaced
                     }
                     patch => {
                         let transformed = sphere_patch_to_nurbs(&sph_clone, patch, matrix)?;
@@ -1585,6 +1630,7 @@ pub(crate) fn transform_face_surface_recorded(
                             SurfaceMethod::ExactRational,
                             count,
                         );
+                        FaceChartMap::Replaced
                     }
                 }
             }
@@ -1602,7 +1648,15 @@ pub(crate) fn transform_face_surface_recorded(
                     transform_direction(matrix, tor_clone.z_axis())?,
                     transform_direction(matrix, tor_clone.x_axis())?,
                 )?;
+                // As for the sphere; the tube angle `v` is unchanged.
+                let chart = UvAffine::about_axis(
+                    matrix,
+                    (tor_clone.x_axis(), tor_clone.y_axis()),
+                    (new_tor.x_axis(), new_tor.y_axis()),
+                    1.0,
+                );
                 topo.face_mut(fid)?.set_surface(FaceSurface::Torus(new_tor));
+                FaceChartMap::Affine(chart)
             } else {
                 let tor_clone = tor.clone();
                 let nurbs = remus_heal::construct::convert_surface::torus_to_nurbs(&tor_clone)
@@ -1615,24 +1669,13 @@ pub(crate) fn transform_face_surface_recorded(
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Nurbs(oriented));
                 recorder.record_face(fid, from, "nurbs", SurfaceMethod::ExactRational, count);
+                FaceChartMap::Replaced
             }
         }
-    }
-    // Converted and reflected NURBS faces have a different UV chart. Keep
-    // their exact 3D edges, but remove pcurves that use the old coordinates.
-    let chart_replaced = matches!(topo.face(fid)?.surface(), FaceSurface::Nurbs(_))
-        && (from != "nurbs" || recorder.orientation_reversing);
-    if chart_replaced {
-        let uses: Vec<_> = topo
-            .pcurves_for_face(fid)
-            .into_iter()
-            .map(|(edge, forward, _)| (edge, forward))
-            .collect();
-        for (edge, forward) in uses {
-            topo.remove_pcurve_oriented(edge, fid, forward)?;
-        }
-    }
-    Ok(())
+    };
+    // Exact 3D edges are kept either way; only the UV traces move.
+    apply_face_chart_map(topo, fid, &chart)?;
+    Ok(chart)
 }
 
 /// Carry orientation across an orientation-reversing map for NURBS carriers.
