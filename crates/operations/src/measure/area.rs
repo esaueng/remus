@@ -17,21 +17,23 @@ use super::helpers::{collect_solid_face_ids, collect_wire_positions};
 /// boundaries contain circles, ellipses, parabolas, hyperbolas, or NURBS arcs
 /// recognized as one of those forms use the exact Green-theorem boundary
 /// integrator, including inner wires. Other planar boundaries retain the
-/// established 256-sample polygon path. NURBS faces tessellate and sum
-/// triangle areas.
+/// established 256-sample polygon path. NURBS faces sum the triangle areas
+/// of the face's trimmed tessellation: the region bounded by the outer wire
+/// minus the inner wires, never the whole carrier patch.
 ///
 /// The result is deflection-independent on every path except the NURBS-face
 /// tessellation and the sampled planar fallback; both are documented at the
-/// functions that own them.
+/// functions that own them. The NURBS reading is an inscribed mesh, so it
+/// converges to the exact trimmed area as `deflection` shrinks.
 ///
 /// The two quadrature paths go through the thread's face-integral cache
 /// (`remus_check::properties::face_cache`, off unless an application enables
 /// it), which returns a previous reading of the same face content bit for
 /// bit.
-/// The standalone NURBS tessellation path can likewise reuse its scalar area
-/// through the opt-in [`super::enable_thread_nurbs_area_memo`], keyed by the
-/// support surface's exact content and request policy. Neither memo substitutes
-/// a display mesh or changes the measurement's numerical path.
+/// The NURBS tessellation path can likewise reuse its scalar area through the
+/// opt-in [`super::enable_thread_nurbs_area_memo`], keyed by the face's exact
+/// support surface, boundary content and request policy. Neither memo
+/// substitutes a display mesh or changes the measurement's numerical path.
 ///
 /// # Errors
 ///
@@ -71,17 +73,13 @@ pub fn face_area(
             remus_check::properties::face_cache::integrate_face_area_memoized(topo, face_id, 8)?
                 .abs(),
         ),
+        // The standalone per-face mesher skins the whole carrier patch, which
+        // overhangs any trimmed face (a converted box face read 144 for 100).
         FaceSurface::Nurbs(surface) => {
-            let compute = || {
-                let mesh = tessellate::tessellate(topo, face_id, deflection)?;
+            super::nurbs_area_memo::memoized(topo, face_id, surface, deflection, || {
+                let mesh = tessellate::tessellate_face_for_measurement(topo, face_id, deflection)?;
                 Ok(triangle_mesh_area(&mesh))
-            };
-            // Standalone tessellation refuses inner wires. That gate must run
-            // before any support-surface memo hit can answer this face.
-            if !face.inner_wires().is_empty() {
-                return compute();
-            }
-            super::nurbs_area_memo::memoized(surface, deflection, face.is_reversed(), compute)
+            })
         }
     }
 }
