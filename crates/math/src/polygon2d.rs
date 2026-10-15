@@ -181,19 +181,13 @@ pub fn fillet_polygon_2d(polygon: &[Point2], radius: f64) -> Vec<Point2> {
         })
         .collect();
 
-    // A tangent point at the far end of a used-up edge lands on the next
-    // corner (or on a straight-through vertex that keeps itself); points this
-    // close to the last one placed are that same vertex, up to rounding.
-    let scale = polygon
-        .iter()
-        .fold(0.0_f64, |m, p| m.max(p.x().abs()).max(p.y().abs()));
-    let tol_sq = (1e-12 * scale).powi(2);
+    // A tangent point at the far end of a used-up edge is placed exactly on
+    // the vertex there, which that vertex (kept when straight through) or its
+    // corner may already have placed: a point equal to the last one is that
+    // same input vertex, so exact equality is the intended test.
     let mut result: Vec<Point2> = Vec::with_capacity(n * (ARC_SEGMENTS as usize + 1));
     let push = |out: &mut Vec<Point2>, p: Point2| {
-        if out
-            .last()
-            .is_none_or(|&q| (p - q).length_squared() > tol_sq)
-        {
+        if out.last() != Some(&p) {
             out.push(p);
         }
     };
@@ -208,8 +202,17 @@ pub fn fillet_polygon_2d(polygon: &[Point2], radius: f64) -> Vec<Point2> {
 
         let to_prev = (polygon[prev] - curr) * (1.0 / edge_len(prev));
         let to_next = (polygon[(i + 1) % n] - curr) * (1.0 / edge_len(i));
-        let t1 = curr + to_prev * t;
-        let t2 = curr + to_next * t;
+        let uses_up = |edge: usize| t >= edge_len(edge) * (1.0 - 1e-12);
+        let t1 = if uses_up(prev) {
+            polygon[prev]
+        } else {
+            curr + to_prev * t
+        };
+        let t2 = if uses_up(i) {
+            polygon[(i + 1) % n]
+        } else {
+            curr + to_next * t
+        };
         // The center lies on the bisector, `t / cos(α/2)` from the corner.
         let dot = to_prev.x() * to_next.x() + to_prev.y() * to_next.y();
         let center = curr + (to_prev + to_next) * (t / (1.0 + dot));
@@ -234,11 +237,7 @@ pub fn fillet_polygon_2d(polygon: &[Point2], radius: f64) -> Vec<Point2> {
         }
         push(&mut result, t2);
     }
-    while result.len() > 1
-        && result
-            .last()
-            .is_some_and(|&q| (q - result[0]).length_squared() <= tol_sq)
-    {
+    while result.len() > 1 && result.last() == result.first() {
         result.pop();
     }
 
@@ -420,6 +419,39 @@ mod tests {
                 assert_eq!(rounded.len(), 34, "start {start}: {rounded:?}");
                 assert!((area(&rounded).abs() - expected).abs() < 1e-9);
             }
+        }
+    }
+
+    /// Translation must not change which points survive: a unit square near
+    /// (1e12, 1e12) filleted at 0.1 keeps all 36 points, as at the origin, and
+    /// the used-up-edge case there still places its shared vertex once.
+    #[test]
+    fn fillet_far_from_the_origin_keeps_its_arcs() {
+        let far = 1e12;
+        let square = pts(&[
+            (far, far),
+            (far + 1.0, far),
+            (far + 1.0, far + 1.0),
+            (far, far + 1.0),
+        ]);
+        for poly in [square.clone(), reversed(&square)] {
+            let rounded = fillet_polygon_2d(&poly, 0.1);
+            assert_eq!(rounded.len(), 36, "{rounded:?}");
+            assert_no_repeated_points(&rounded);
+            let expected = 1.0 - 4.0 * corner_piece(0.1, 0.1, PI / 2.0);
+            assert!((area(&rounded).abs() - expected).abs() < 1e-3);
+        }
+        let notched = pts(&[
+            (far, far),
+            (far + 1.0, far),
+            (far + 2.0, far),
+            (far + 2.0, far + 10.0),
+            (far, far + 10.0),
+        ]);
+        for poly in [notched.clone(), reversed(&notched)] {
+            let rounded = fillet_polygon_2d(&poly, 100.0);
+            assert_eq!(rounded.len(), 34);
+            assert_no_repeated_points(&rounded);
         }
     }
 
