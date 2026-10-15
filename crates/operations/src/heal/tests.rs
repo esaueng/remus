@@ -328,6 +328,29 @@ fn degenerate_edge_test_measures_along_the_curve() {
     assert!(!edge_is_degenerate(&topo, almost, tol_sq).unwrap());
     assert!(edge_is_degenerate(&topo, collapsed, tol_sq).unwrap());
     assert!(edge_is_degenerate(&topo, short, tol_sq).unwrap());
+
+    // At tolerance 6.25 the near-full unit arc (length 2*pi - 1e-9 = 6.2832)
+    // is still long, though a 16-chord sum reads 6.243; and a closed circle
+    // shorter than tolerance is not degenerate either.
+    let tol_sq = 6.25 * 6.25;
+    assert!(!edge_is_degenerate(&topo, almost, tol_sq).unwrap());
+    assert!(!edge_is_degenerate(&topo, full, tol_sq).unwrap());
+}
+
+/// A tolerance longer than a cylinder's rims leaves its rims alone: each rim
+/// bounds its cap alone, so dropping it from the lateral wire would unpair it.
+#[test]
+fn rims_shorter_than_tolerance_stay_in_every_wire() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_cylinder(&mut topo, 0.1, 1.0).unwrap();
+    let before = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+
+    let removed = remove_degenerate_edges(&mut topo, solid, 1.0).unwrap();
+    assert_eq!(removed, 0);
+    let report = crate::validate::validate_solid(&topo, solid).unwrap();
+    assert_eq!(report.error_count(), 0, "{report:?}");
+    let after = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+    assert!((after - before).abs() < 1e-12, "{before} -> {after}");
 }
 
 // ── Small face removal tests ────────────────────────
