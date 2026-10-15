@@ -981,8 +981,9 @@ pub fn approximate_lspia(
     let sorted = params_sorted(&params);
     if !sorted {
         // The scan fallback costs n·m comparisons. Finite coordinates that
-        // overflow the chord lengths reach it too, so it is budgeted.
-        check_fit_work(n.saturating_mul(m))?;
+        // overflow the chord lengths reach it too, so it is charged to the
+        // same budget as the iterations that follow it.
+        check_fit_work(lspia_work(n, p, max_iterations).saturating_add(n.saturating_mul(m)))?;
     }
     let mut control_points = Vec::with_capacity(m);
     for i in 0..m {
@@ -1114,8 +1115,9 @@ pub(crate) fn approximate_lspia_weighted(
     let sorted = params_sorted(&params);
     if !sorted {
         // The scan fallback costs n·m comparisons. Finite coordinates that
-        // overflow the chord lengths reach it too, so it is budgeted.
-        check_fit_work(n.saturating_mul(m))?;
+        // overflow the chord lengths reach it too, so it is charged to the
+        // same budget as the iterations that follow it.
+        check_fit_work(lspia_work(n, p, max_iterations).saturating_add(n.saturating_mul(m)))?;
     }
     let mut control_points = Vec::with_capacity(m);
     for i in 0..m {
