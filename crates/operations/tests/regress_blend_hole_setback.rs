@@ -56,7 +56,7 @@ fn loop_polygon(topo: &Topology, wire: WireId, drop_axis: usize) -> Vec<(f64, f6
         let edge = topo.edge(oriented.edge()).unwrap();
         let start = topo.vertex(edge.start()).unwrap().point();
         let end = topo.vertex(edge.end()).unwrap().point();
-        let (t0, t1) = edge.domain_with_endpoints(start, end);
+        let (t0, t1) = edge.strict_domain().expect("stored edge domain");
         let mut points: Vec<Point3> = (0..64)
             .map(|k| {
                 let t = (t1 - t0).mul_add(f64::from(k) / 64.0, t0);
