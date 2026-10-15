@@ -40,7 +40,7 @@ closed-form volume (24·scale³, 1e-6 relative; skipped only at 1e-3 with a
    Auto/Off-refusal. BFS is seed-sensitive: face 0 (all-reversed natively)
    refuses under every policy after 5 flips; face 1 repairs with exactly 1.
 4. **Swap is a reorder defect.** Auto and On both commit exactly; Off
-   refuses. (Until B91, On refused typed with `ClosureGapTooLarge`: the gap
+   refuses. (Until B117, On refused typed with `ClosureGapTooLarge`: the gap
    and closure passes measured the stale unordered wire, not the reordered
    one.) Pinned as Auto/On-repair vs Off-refusal.
 5. **At-tolerance closure splits by policy at 1e3** (stored 1e-7 rounds to

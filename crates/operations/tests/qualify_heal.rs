@@ -80,7 +80,7 @@
 //!    chain (disclosed `WireReordered`) and the later wire passes run on the
 //!    reordered wire. Auto and On both commit exactly; Off refuses. (On used
 //!    to veto with `ClosureGapTooLarge`: the gap and closure passes measured
-//!    the stale unordered wire, whose swapped joints read as ~3.6 gaps, B91.)
+//!    the stale unordered wire, whose swapped joints read as ~3.6 gaps, B117.)
 //! 6. At-tolerance closure-gap behavior splits by policy at 1e3: the stored
 //!    1e-7 rounds to ~1.0000008e-7, a hair above the `dist <= linear` closure
 //!    gate — Auto still commits exactly (the nominal merge is unconditional
@@ -771,7 +771,7 @@ fn run_fix_matrix(
 /// Wire-order defects (swapped edge order): Auto and On commit exactly via
 /// reorder (disclosed `WireReordered`); Off refuses typed (validation vetoes).
 /// On used to refuse with `ClosureGapTooLarge` only because the closure pass
-/// measured the stale, unordered wire instead of the reordered one (B91).
+/// measured the stale, unordered wire instead of the reordered one (B117).
 #[test]
 fn b17_wire_order_matrix() {
     let mut failures = Vec::new();
