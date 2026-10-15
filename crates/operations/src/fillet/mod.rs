@@ -149,6 +149,7 @@ fn fillet_transacted(
             reason: "no edges specified for fillet".into(),
         });
     }
+    crate::refuse_cavity_shells(topo, solid, "fillet")?;
 
     let solid_data = topo.solid(solid)?;
     let shell = topo.shell(solid_data.outer_shell())?;
@@ -801,6 +802,7 @@ fn fillet_variable_transacted(
         }
     }
 
+    crate::refuse_cavity_shells(topo, solid, "variable fillet")?;
     let solid_data = topo.solid(solid)?;
     let shell = topo.shell(solid_data.outer_shell())?;
     let shell_face_ids: Vec<_> = shell.faces().to_vec();
