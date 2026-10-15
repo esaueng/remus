@@ -244,7 +244,7 @@ Refinements the serialization implementation added to the design above:
   would be hollow; both solids' and faces' entries ride by dense local
   index.
 - **A document carries its own entities' history, not the session's**
-  (review IO-3, roadmap B89). The writer embeds
+  (review IO-3, roadmap B118). The writer embeds
   `Journal::lineage_snapshot`: the entries connected to the document's
   entities through shared ordinals (ancestors, and descendants of shared
   ancestors, so a barrier on a split's other half still severs), plus global
