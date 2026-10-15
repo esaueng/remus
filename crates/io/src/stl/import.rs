@@ -134,6 +134,11 @@ fn signed_six_volume(positions: &[Point3], triangles: &[[usize; 3]], reference: 
 /// mesh encloses negative signed volume, `Some(false)` when every one encloses
 /// positive volume, and `None` when the signs are mixed or one is zero.
 ///
+/// Components are joined across shared edges, not shared vertices: two shells
+/// that only touch at a corner are separate bodies with their own orientation.
+/// Each component is closed, since both triangles on each of its edges belong
+/// to it, so its signed volume decides its orientation.
+///
 /// Each component's tetrahedra are summed about one of its own vertices:
 /// about a far point, such as the world origin or the centre of a box that
 /// includes unused or distant vertices, the rounding error grows with the
@@ -143,30 +148,32 @@ fn closed_components_inward(
     vertex_ids: &[VertexId],
     triangles: &[[usize; 3]],
 ) -> Option<bool> {
-    // Union-find over welded vertices, indexed densely in first-use order.
-    let mut dense: HashMap<usize, usize> = HashMap::new();
-    let mut parent: Vec<usize> = Vec::new();
-    let mut slot = |position: usize| {
-        let next = dense.len();
-        let index = *dense.entry(vertex_ids[position].index()).or_insert(next);
-        if index == parent.len() {
-            parent.push(index);
-        }
-        index
-    };
-    let tri_slots: Vec<[usize; 3]> = triangles.iter().map(|tri| tri.map(&mut slot)).collect();
-    for &[a, b, c] in &tri_slots {
-        for other in [b, c] {
-            let (ra, ro) = (find_root(&mut parent, a), find_root(&mut parent, other));
-            parent[ro] = ra;
+    // Union-find over triangles, joining the two triangles on each edge.
+    let mut parent: Vec<usize> = (0..triangles.len()).collect();
+    let mut first_on_edge: HashMap<(usize, usize), usize> = HashMap::new();
+    for (index, tri) in triangles.iter().enumerate() {
+        let [a, b, c] = tri.map(|i| vertex_ids[i]);
+        for (start, end) in [(a, b), (b, c), (c, a)] {
+            match first_on_edge.entry(edge_key(start, end)) {
+                std::collections::hash_map::Entry::Occupied(other) => {
+                    let (root, other) = (
+                        find_root(&mut parent, index),
+                        find_root(&mut parent, *other.get()),
+                    );
+                    parent[other] = root;
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(index);
+                }
+            }
         }
     }
 
     // Per component: its reference vertex and six times its signed volume.
     let mut components: HashMap<usize, (Point3, f64)> = HashMap::new();
-    for (tri, slots) in triangles.iter().zip(&tri_slots) {
+    for (index, tri) in triangles.iter().enumerate() {
         let (reference, volume) = components
-            .entry(find_root(&mut parent, slots[0]))
+            .entry(find_root(&mut parent, index))
             .or_insert((positions[tri[0]], 0.0));
         *volume += signed_six_volume(positions, std::slice::from_ref(tri), *reference);
     }
