@@ -56,6 +56,30 @@ fn nurbs2d_refuses_degree_not_below_pole_count() {
 }
 
 #[test]
+fn nurbs2d_huge_degree_is_refused_before_the_knot_count() {
+    // `n + degree + 1` overflows for this degree, so the degree check has to
+    // run before the knot count is computed.
+    let result = std::panic::catch_unwind(|| {
+        NurbsCurve2D::new(
+            usize::MAX,
+            vec![0., 0., 1., 1.],
+            vec![Point2::new(0., 0.), Point2::new(1., 0.)],
+            vec![1., 1.],
+        )
+    });
+    assert!(
+        matches!(
+            result,
+            Ok(Err(MathError::InvalidDegree {
+                degree: usize::MAX,
+                control_points: 2
+            }))
+        ),
+        "{result:?}"
+    );
+}
+
+#[test]
 fn nurbs2d_refuses_bad_knots_and_weights() {
     let points = vec![
         Point2::new(0., 0.),
