@@ -555,6 +555,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Resource limits for untrusted imports | `limits.rs` |
 | Persistent-reference JSON codec | `naming_io.rs` |
 | Differential oracle for the persistent-reference codec (tests) | `naming_io/oracle_tests.rs` |
+| Differential oracle over the STEP fixtures and synthetic bodies for the trim-window prune of the prepared boundary test (tests) | `tests/boundary_prune_oracle.rs` |
 
 ### L4: render (`crates/render/src/`)
 | Task | File(s) |
