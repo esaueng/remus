@@ -11,9 +11,11 @@
 //!
 //! The skeleton is every boundary edge of the classified faces: a line edge
 //! as its exact segment, a curved edge as a chord polyline over its
-//! parameter domain. A hit within the margin of a straight edge is always
-//! caught; near a curved edge, only within the margin of its chords
-//! (approximate by the chord sag, which the trim polygons share).
+//! parameter domain, joined to its topological vertices. A hit within the
+//! margin of a straight edge is always caught; near a curved edge, only
+//! within the margin of its chords (approximate by the chord sag, which the
+//! trim polygons share). Each vertex adds its tolerance ball, where faces
+//! meeting there may disagree.
 //!
 //! Building it reads one certified box per edge
 //! ([`remus_geometry::bounds::curve`]) and samples nothing: a curved edge's
@@ -64,9 +66,9 @@ pub struct BoundarySkeleton {
     margin: f64,
 }
 
+/// One edge, or one vertex's tolerance ball, of the skeleton.
 #[derive(Debug, Clone)]
 struct SkeletonEdge {
-    id: EdgeId,
     /// Contains every segment of the edge, padded by the margin.
     padded: Aabb3,
     shape: EdgeShape,
@@ -76,14 +78,22 @@ struct SkeletonEdge {
 enum EdgeShape {
     Line(Segment),
     Curve {
+        id: EdgeId,
         /// Sampled on first use (or at build when the curve has no
         /// certified box).
         chords: OnceLock<Vec<Segment>>,
-        /// A circle carrier's `(center, unit normal, radius)`, for a
-        /// closed-form test that rules a ray out before any chord is read.
-        circle: Option<(Point3, Vec3, f64)>,
+        /// A circle carrier, for a closed-form test that rules a ray out
+        /// before any chord is read.
+        circle: Option<CircleReach>,
     },
+    /// A vertex and its tolerance.
+    Ball(Point3, f64),
 }
+
+/// A circle `(center, unit normal, radius)` and how far beyond it the
+/// edge's segments reach: the chord sag, and the joins from the carrier's
+/// ends to the edge's vertices.
+type CircleReach = ((Point3, Vec3, f64), f64);
 
 impl BoundarySkeleton {
     /// Collect every edge bounding `faces` (outer and hole loops).
@@ -110,15 +120,17 @@ impl BoundarySkeleton {
         ids.dedup();
 
         // Unpadded boxes first: the margin scales with their union.
-        let mut boxed: Vec<(EdgeId, Aabb3, EdgeShape)> = Vec::with_capacity(ids.len());
+        let mut boxed: Vec<(Aabb3, EdgeShape)> = Vec::with_capacity(ids.len());
+        let mut vertices = Vec::with_capacity(2 * ids.len());
         for id in ids {
             let edge = topo.edge(id)?;
+            vertices.extend([edge.start(), edge.end()]);
             let curve = edge.curve();
+            let a = topo.vertex(edge.start())?.point();
+            let b = topo.vertex(edge.end())?.point();
             if matches!(curve, EdgeCurve::Line) {
-                let a = topo.vertex(edge.start())?.point();
-                let b = topo.vertex(edge.end())?.point();
                 if is_finite(a) && is_finite(b) {
-                    boxed.push((id, segment_box(a, b), EdgeShape::Line((a, b))));
+                    boxed.push((segment_box(a, b), EdgeShape::Line((a, b))));
                 }
                 continue;
             }
@@ -127,15 +139,27 @@ impl BoundarySkeleton {
                 .map_err(crate::error::edge_domain_validation)?;
             let bound = curve_bounds(curve, t0, t1);
             let circle = if let EdgeCurve::Circle(c) = curve {
-                Some((c.center(), c.normal(), c.radius()))
+                #[allow(clippy::cast_precision_loss)]
+                let half_step = 0.5 * (t1 - t0).abs() / CURVE_SEGMENTS as f64;
+                let sag = c.radius() * (1.0 - half_step.cos());
+                let join = (a - c.evaluate(t0))
+                    .length()
+                    .max((b - c.evaluate(t1)).length());
+                Some(((c.center(), c.normal(), c.radius()), sag + join))
             } else {
                 None
             };
             if let Some(aabb) = bound.filter(FiniteBound::is_prunable).map(|b| b.aabb()) {
+                // The joins to the vertices reach outside the carrier's box.
+                let aabb = if is_finite(a) && is_finite(b) {
+                    aabb.union(segment_box(a, b))
+                } else {
+                    aabb
+                };
                 boxed.push((
-                    id,
                     aabb,
                     EdgeShape::Curve {
+                        id,
                         chords: OnceLock::new(),
                         circle,
                     },
@@ -150,9 +174,9 @@ impl BoundarySkeleton {
                     .reduce(Aabb3::union)
                 {
                     boxed.push((
-                        id,
                         aabb,
                         EdgeShape::Curve {
+                            id,
                             chords: OnceLock::from(chords),
                             circle,
                         },
@@ -160,10 +184,23 @@ impl BoundarySkeleton {
                 }
             }
         }
+        vertices.sort_unstable();
+        vertices.dedup();
+        for vid in vertices {
+            let vertex = topo.vertex(vid)?;
+            let (point, tolerance) = (vertex.point(), vertex.tolerance());
+            if is_finite(point) && tolerance.is_finite() {
+                let radius = tolerance.max(0.0);
+                boxed.push((
+                    segment_box(point, point).expanded(radius),
+                    EdgeShape::Ball(point, radius),
+                ));
+            }
+        }
 
         let (extent, magnitude) = boxed
             .iter()
-            .map(|(_, aabb, _)| *aabb)
+            .map(|(aabb, _)| *aabb)
             .reduce(Aabb3::union)
             .map_or((0.0, 0.0), |aabb| {
                 (
@@ -174,8 +211,7 @@ impl BoundarySkeleton {
         let margin = (RELATIVE_MARGIN * extent.max(1.0)).max(ROUNDOFF_MARGIN * magnitude);
         let edges: Vec<SkeletonEdge> = boxed
             .into_iter()
-            .map(|(id, aabb, shape)| SkeletonEdge {
-                id,
+            .map(|(aabb, shape)| SkeletonEdge {
                 padded: aabb.expanded(margin),
                 shape,
             })
@@ -208,13 +244,20 @@ impl BoundarySkeleton {
         let margin = self.margin.max(ROUNDOFF_MARGIN * max_abs(origin));
         let margin_sq = margin * margin;
         let near = |edge: &SkeletonEdge| -> Result<bool, CheckError> {
-            if let EdgeShape::Curve {
-                circle: Some(circle),
-                ..
-            } = edge.shape
-                && !circle_may_graze(circle, origin, direction, margin)
-            {
-                return Ok(false);
+            match edge.shape {
+                EdgeShape::Ball(point, radius) => {
+                    let reach = margin + radius;
+                    return Ok(
+                        ray_segment_distance_sq(origin, direction, point, point) <= reach * reach
+                    );
+                }
+                EdgeShape::Curve {
+                    circle: Some((circle, beyond)),
+                    ..
+                } if !circle_may_graze(circle, origin, direction, margin + beyond) => {
+                    return Ok(false);
+                }
+                EdgeShape::Line(_) | EdgeShape::Curve { .. } => {}
             }
             Ok(edge_segments(topo, edge)?
                 .iter()
@@ -264,7 +307,7 @@ impl BoundarySkeleton {
             .capacity()
             .saturating_mul(size_of::<SkeletonEdge>());
         let chord_bytes = curved
-            .saturating_mul(CURVE_SEGMENTS)
+            .saturating_mul(CURVE_SEGMENTS + 2)
             .saturating_mul(size_of::<Segment>());
         // `Bvh` is a flat node vector whose length is private: bound it by
         // the construction cap of two nodes per primitive.
@@ -286,13 +329,14 @@ impl BoundarySkeleton {
 fn edge_segments<'s>(topo: &Topology, edge: &'s SkeletonEdge) -> Result<&'s [Segment], CheckError> {
     match &edge.shape {
         EdgeShape::Line(segment) => Ok(std::slice::from_ref(segment)),
-        EdgeShape::Curve { chords, .. } => {
+        EdgeShape::Curve { id, chords, .. } => {
             if let Some(chords) = chords.get() {
                 return Ok(chords);
             }
-            let sampled = sample_chords(topo, edge.id)?;
+            let sampled = sample_chords(topo, *id)?;
             Ok(chords.get_or_init(|| sampled))
         }
+        EdgeShape::Ball(..) => Ok(&[]),
     }
 }
 
@@ -308,9 +352,11 @@ fn curve_bounds(curve: &EdgeCurve, t0: f64, t1: f64) -> Option<FiniteBound> {
     }
 }
 
-/// [`CURVE_SEGMENTS`] chords over a curved edge's domain, non-finite chords
-/// dropped. Chord ends lie on the curve, so every chord stays inside the
-/// curve's certified box.
+/// [`CURVE_SEGMENTS`] chords over a curved edge's domain, joined at each end
+/// to the edge's vertex (which the carrier need only meet within the vertex
+/// tolerance), non-finite segments dropped. Chord ends lie on the curve, so
+/// every chord stays inside the curve's certified box; the joins stay inside
+/// its union with the vertices.
 fn sample_chords(topo: &Topology, id: EdgeId) -> Result<Vec<Segment>, CheckError> {
     let edge = topo.edge(id)?;
     let start = topo.vertex(edge.start())?.point();
@@ -318,9 +364,9 @@ fn sample_chords(topo: &Topology, id: EdgeId) -> Result<Vec<Segment>, CheckError
     let (t0, t1) = edge
         .strict_domain()
         .map_err(crate::error::edge_domain_validation)?;
-    let mut chords = Vec::with_capacity(CURVE_SEGMENTS);
-    let mut previous = edge.curve().evaluate_with_endpoints(t0, start, end);
-    for i in 1..=CURVE_SEGMENTS {
+    let mut chords = Vec::with_capacity(CURVE_SEGMENTS + 2);
+    let mut previous = start;
+    for i in 0..=CURVE_SEGMENTS {
         #[allow(clippy::cast_precision_loss)]
         let t = (t1 - t0).mul_add(i as f64 / CURVE_SEGMENTS as f64, t0);
         let point = edge.curve().evaluate_with_endpoints(t, start, end);
@@ -328,6 +374,9 @@ fn sample_chords(topo: &Topology, id: EdgeId) -> Result<Vec<Segment>, CheckError
             chords.push((previous, point));
         }
         previous = point;
+    }
+    if is_finite(previous) && is_finite(end) {
+        chords.push((previous, end));
     }
     Ok(chords)
 }
@@ -537,5 +586,66 @@ mod tests {
             Point3::new(-1.0, 3.0, 2.0),
         );
         assert!((d - 4.0).abs() < 1e-12, "{d}");
+    }
+
+    /// A plane disc bounded by one closed unit circle edge in z = 0, its
+    /// seam vertex at angle 0 moved `offset` outward off the carrier.
+    fn disc(offset: f64) -> (Topology, FaceId) {
+        use remus_math::curves::Circle3D;
+        use remus_topology::edge::Edge;
+        use remus_topology::face::{Face, FaceSurface};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let seam = topo.add_vertex(Vertex::new(Point3::new(1.0 + offset, 0.0, 0.0), 1e-7));
+        let mut rim = Edge::new(seam, seam, EdgeCurve::Circle(circle));
+        rim.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let rim = topo.add_edge(rim);
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(rim, true)], true).unwrap());
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        (topo, face)
+    }
+
+    /// A ray through a chord's midpoint, 4.8e-3 inside the circle (the sag
+    /// of a 1/32-turn chord), grazes: the prefilter must reach the chords.
+    #[test]
+    fn rays_through_circle_chords_graze() {
+        let (topo, face) = disc(0.0);
+        let skeleton = BoundarySkeleton::build(&topo, &[face]).unwrap();
+        let half_step = std::f64::consts::PI / 32.0;
+        let mid = Point3::new(
+            half_step.cos() * half_step.cos(),
+            half_step.cos() * half_step.sin(),
+            0.0,
+        );
+        let o = Point3::new(0.1, 0.2, 1.0);
+        assert!(skeleton.grazed_by(&topo, o, mid - o).unwrap());
+        // Halfway between the chord and the circle: clear of both.
+        let clear = Point3::new(mid.x() * 1.0024, mid.y() * 1.0024, 0.0);
+        assert!(!skeleton.grazed_by(&topo, o, clear - o).unwrap());
+    }
+
+    /// A seam vertex 5e-8 off its carrier (within its 1e-7 tolerance): a ray
+    /// through the vertex grazes, though it misses the carrier by 3.5e-8.
+    #[test]
+    fn rays_through_a_vertex_off_its_carrier_graze() {
+        let (topo, face) = disc(5e-8);
+        let skeleton = BoundarySkeleton::build(&topo, &[face]).unwrap();
+        let o = Point3::new(0.0, 0.0, 1.0);
+        let vertex = Point3::new(1.0 + 5e-8, 0.0, 0.0);
+        assert!(skeleton.grazed_by(&topo, o, vertex - o).unwrap());
+        // Within the tolerance ball, though off the vertex and its join.
+        let ball = Point3::new(1.0 + 5e-8, 8e-8, 0.0);
+        assert!(skeleton.grazed_by(&topo, o, ball - o).unwrap());
     }
 }
