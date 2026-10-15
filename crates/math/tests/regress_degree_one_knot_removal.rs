@@ -70,10 +70,12 @@ fn polyline_corner_is_not_removable_within_a_tight_tolerance() {
 
 #[test]
 fn polyline_corner_removal_is_accepted_at_its_exact_deviation() {
-    // The bound is inclusive, as in the general branch: tol = 1.0 admits a
-    // deviation of exactly 1.0, and the result is the closed-form chord.
+    // The bound carries a rounding allowance of about 1e-14 here, so a
+    // deviation of exactly 1.0 is accepted just above tol = 1.0, not at it,
+    // and the result is the closed-form chord.
     let c = corner();
-    let removed = curve_knot_remove(&c, 0.5, 1.0).expect("deviation 1.0 within tol 1.0");
+    assert!(is_refused(&curve_knot_remove(&c, 0.5, 1.0)));
+    let removed = curve_knot_remove(&c, 0.5, 1.0 + 1e-13).expect("deviation 1.0 within tol");
     assert_eq!(removed.knots(), &[0.0, 0.0, 1.0, 1.0]);
     assert_eq!(
         removed.control_points(),
@@ -96,19 +98,21 @@ fn collinear_point_off_its_parameter_is_still_a_deviation() {
     );
     assert!(is_refused(&curve_knot_remove(&c, 0.5, 1e-6)));
     assert!(is_refused(&curve_knot_remove(&c, 0.5, 0.499)));
-    assert!(curve_knot_remove(&c, 0.5, 0.5).is_ok());
+    assert!(curve_knot_remove(&c, 0.5, 0.5 + 1e-13).is_ok());
 }
 
 #[test]
 fn point_on_the_chord_at_its_parameter_is_removed_exactly() {
     // Off-centre knot: α = 0.25 puts the chord at (0.5, 0, 0), which is
-    // exactly the stored point, so the removal is exact.
+    // exactly the stored point, so the removal is exact. Its bound still
+    // carries the rounding allowance, so tolerance 0 cannot certify it.
     let c = polyline(
         vec![0.0, 0.0, 0.25, 1.0, 1.0],
         &[[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [2.0, 0.0, 0.0]],
         vec![1.0; 3],
     );
-    let removed = curve_knot_remove(&c, 0.25, 0.0).expect("exactly removable at tol 0");
+    assert!(is_refused(&curve_knot_remove(&c, 0.25, 0.0)));
+    let removed = curve_knot_remove(&c, 0.25, 1e-13).expect("exactly removable");
     assert_eq!(
         removed.control_points(),
         &[Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0)]
@@ -282,7 +286,7 @@ fn uniformly_scaled_weights_give_the_unit_weight_answer() {
                 "weights {scale:e}: removed at tolerance {tol}"
             );
         }
-        let removed = curve_knot_remove(&scaled, 0.5, 1.0).expect("deviation is exactly 1");
+        let removed = curve_knot_remove(&scaled, 0.5, 1.0 + 1e-13).expect("deviation is exactly 1");
         assert_eq!(removed.control_points().len(), 2);
     }
 }
@@ -292,7 +296,9 @@ fn chord_position_comes_from_the_stored_knot_not_the_query() {
     // Review follow-up: x = 0, 5e14, 1e15 has its middle point exactly on
     // the chord at the stored knot 0.5. A query seven ulps away still matches
     // that knot (within the knot epsilon) but shifted α by ~7e-16, which over
-    // a 1e15 chord read as a deviation of ~0.75.
+    // a 1e15 chord read as a deviation of ~0.78. The bound's rounding
+    // allowance at this scale is about 5.3, so tolerance 5.7 accepts the
+    // stored-knot bound (5.3) and still refuses the query's (about 6.1).
     let curve = polyline(
         vec![0.0, 0.0, 0.5, 1.0, 1.0],
         &[[0.0, 0.0, 0.0], [5e14, 0.0, 0.0], [1e15, 0.0, 0.0]],
@@ -300,7 +306,7 @@ fn chord_position_comes_from_the_stored_knot_not_the_query() {
     );
     let u = 0.5 + 7.0 * f64::EPSILON / 2.0;
     assert!(u > 0.5 && u - 0.5 < 1e-15, "premise: query {u} matches 0.5");
-    let removed = curve_knot_remove(&curve, u, 1e-6).expect("exactly removable");
+    let removed = curve_knot_remove(&curve, u, 5.7).expect("exactly removable");
     assert_eq!(removed.knots(), &[0.0, 0.0, 1.0, 1.0]);
 }
 
@@ -355,7 +361,7 @@ fn a_tiny_deviation_does_not_underflow_to_zero() {
     );
     assert!(is_refused(&curve_knot_remove(&curve, 0.5, 0.0)));
     assert!(is_refused(&curve_knot_remove(&curve, 0.5, 0.5e-200)));
-    assert!(curve_knot_remove(&curve, 0.5, 1e-200).is_ok());
+    assert!(curve_knot_remove(&curve, 0.5, 1e-200 * (1.0 + 1e-13)).is_ok());
 }
 
 #[test]
@@ -481,4 +487,43 @@ fn a_weight_excess_across_widely_separated_spans_is_kept() {
             "removed at tolerance {tol:e}"
         );
     }
+}
+
+#[test]
+fn cancellation_in_the_weight_excess_does_not_hide_a_deviation() {
+    // Review follow-up: the two terms of ε rounded to exact opposites, so
+    // the bound came out 1.44e163 while the curves differ by 2.21e163 at the
+    // stored knot, and the removal passed at 1.5e163. The bound now carries
+    // a forward error allowance for its own evaluation.
+    let curve = polyline(
+        vec![0.0, 0.0, 0.3, 1.0, 1.0],
+        &[
+            [0.0, 0.0, 0.0],
+            [-5.352_990_896_342_235e178, 0.0, 0.0],
+            [-5.357_887_885_145_676e178, 0.0, 0.0],
+        ],
+        vec![0.001_305_682_097_234_999_2, 1.0, 3.330_286_741_773_118],
+    );
+    for tol in [1.5e163, 2.2e163] {
+        assert!(
+            is_refused(&curve_knot_remove(&curve, 0.3, tol)),
+            "removed at tolerance {tol:e} despite a 2.21e163 deviation"
+        );
+    }
+
+    // The same with plain weights: x = 0, 1e11, 1e12 at α = 0.1 puts the
+    // chord at 1e11 + 5.55e-6, below half an ulp of 1e11, and the bound
+    // rounded that away. Below the allowance nothing is certified.
+    let curve = polyline(
+        vec![0.0, 0.0, 0.1, 1.0, 1.0],
+        &[[0.0, 0.0, 0.0], [1e11, 0.0, 0.0], [1e12, 0.0, 0.0]],
+        vec![1.0; 3],
+    );
+    for tol in [0.0, 1e-6, 5e-6] {
+        assert!(
+            is_refused(&curve_knot_remove(&curve, 0.1, tol)),
+            "removed at tolerance {tol:e} despite a 5.55e-6 deviation"
+        );
+    }
+    assert!(curve_knot_remove(&curve, 0.1, 1e-2).is_ok());
 }
