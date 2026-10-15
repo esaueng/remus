@@ -868,11 +868,8 @@ fn cavity_spine_is_straight(
 /// How far from `edge` a blend of `size` can change material, or `None` when
 /// that cannot be bounded.
 ///
-/// For a straight spine between planar supports, the band meets each face
-/// `size * tan(theta / 2)` from the edge, where
-/// `theta` is the angle between the faces' outward normals (one setback for a
-/// right-angle edge, growing without bound as the wedge closes). Twice the
-/// larger of that setback and `size` conservatively covers the rounded band.
+/// Twice the larger of the band's setback (see [`planar_ridge_setback`]) and
+/// `size` conservatively covers the rounded band.
 /// [`cavity_spine_is_straight`] excludes vertex blends and slanted end caps.
 fn blend_reach(
     topo: &Topology,
@@ -880,10 +877,34 @@ fn blend_reach(
     edge: EdgeId,
     size: f64,
 ) -> Result<Option<f64>, OperationsError> {
+    if !size.is_finite() || size <= 0.0 {
+        return Ok(None);
+    }
+    let Some(setback) = planar_ridge_setback(topo, adjacency, edge)? else {
+        return Ok(None);
+    };
+    let reach = 2.0 * size * setback.max(1.0);
+    Ok(reach.is_finite().then_some(reach))
+}
+
+/// How far, per unit blend size, a blend band on a straight ridge between two
+/// planar supports runs up each face.
+///
+/// The band meets each face `size * tan(theta / 2)` from the edge, where
+/// `theta` is the angle between the faces' outward normals: one size for a
+/// right-angle edge, growing without bound as the wedge closes. Returns
+/// `None` when `edge` is not a straight ridge between two distinct planar
+/// faces, and `Some(f64::INFINITY)` when the wedge is too thin to trust a
+/// finite setback.
+fn planar_ridge_setback(
+    topo: &Topology,
+    adjacency: &remus_topology::adjacency::AdjacencyIndex,
+    edge: EdgeId,
+) -> Result<Option<f64>, OperationsError> {
     // Past this the setback exceeds a dozen blend sizes (a wedge under ~10°):
     // treat it as unbounded rather than trust a box that large.
     const MAX_SETBACK: f64 = 12.0;
-    if !size.is_finite() || size <= 0.0 || !matches!(topo.edge(edge)?.curve(), EdgeCurve::Line) {
+    if !matches!(topo.edge(edge)?.curve(), EdgeCurve::Line) {
         return Ok(None);
     }
     let faces = adjacency.faces_for_edge(edge);
@@ -902,10 +923,9 @@ fn blend_reach(
     let theta = a.cross(b).length().atan2(a.dot(b));
     let setback = (0.5 * theta).tan();
     if !setback.is_finite() || setback > MAX_SETBACK {
-        return Ok(None);
+        return Ok(Some(f64::INFINITY));
     }
-    let reach = 2.0 * size * setback.max(1.0);
-    Ok(reach.is_finite().then_some(reach))
+    Ok(Some(setback))
 }
 
 fn planar_chamfer_result(
@@ -1041,11 +1061,17 @@ fn union_find_root(parent: &mut [usize], mut i: usize) -> usize {
 /// Partition a selection into groups of edges whose blends cannot reach each
 /// other.
 ///
-/// A constant-size blend only reshapes material within `size` of its own edge,
-/// so two edges further apart than `2·size` — and not joined through the same
-/// tangent-continuous ridgeline — round into surfaces that never meet. They
-/// are separate features that happen to have been named in one call, and
-/// nothing about how one of them is built constrains the other.
+/// A constant-size blend reshapes material within its band of its own edge:
+/// `size` on a right-angle edge, but the full setback `size * tan(theta / 2)`
+/// on a straight edge between planes whose outward normals are `theta` apart
+/// (`1.73·size` on a 60° ridge; see [`planar_ridge_setback`]). Two edges
+/// further apart than the sum of their bands — and not joined through the
+/// same tangent-continuous ridgeline — round into surfaces that never meet.
+/// They are separate features that happen to have been named in one call, and
+/// nothing about how one of them is built constrains the other. A ridge too
+/// thin for a finite setback reaches everything and keeps its whole selection
+/// together. Curved edges keep the `size` band: their setback is not
+/// certified here.
 ///
 /// This matters because the two fillet engines are complementary rather than
 /// ranked. The planar rebuild is the only one that closes a vertex blend where
@@ -1062,7 +1088,7 @@ fn union_find_root(parent: &mut [usize], mut i: usize) -> usize {
 /// stays in one group, so nothing is ever applied in sequence that has to be
 /// solved together. It is also only consulted after one engine has already
 /// refused the selection whole, so a selection that works today never reaches
-/// it at all — four corner edges of a box are `2·size` apart and would split,
+/// it at all — four corner edges of a box further apart than `2·size` would split,
 /// but the planar rebuild takes them together and is never asked twice.
 ///
 /// Groups keep the caller's edge order, and are themselves ordered by first
@@ -1081,17 +1107,26 @@ fn independent_blend_groups(
     // What each seed actually blends: both engines expand a seed to its whole
     // G1 ridgeline first, so two distant seeds on one smooth run belong
     // together even though the seeds themselves are far apart.
+    let adjacency = topo.build_adjacency(solid)?;
     let mut chains: Vec<Vec<EdgeId>> = Vec::with_capacity(edges.len());
     let mut outlines: Vec<Vec<remus_math::vec::Point3>> = Vec::with_capacity(edges.len());
+    // How far each seed's band runs from its ridgeline: the widest setback of
+    // any member, never below `size`.
+    let mut bands: Vec<f64> = Vec::with_capacity(edges.len());
     for &edge in edges {
         let chain = remus_blend::g1_chain::expand_g1_chain(topo, solid, &[edge], tol)?;
         let chain = if chain.is_empty() { vec![edge] } else { chain };
         let mut outline = Vec::new();
+        let mut setback = 1.0f64;
         for &member in &chain {
             outline.extend(edge_polyline(topo, member, size * 0.25)?);
+            if let Some(member_setback) = planar_ridge_setback(topo, &adjacency, member)? {
+                setback = setback.max(member_setback);
+            }
         }
         chains.push(chain);
         outlines.push(outline);
+        bands.push(size * setback);
     }
 
     // Union-find over the seeds.
@@ -1099,12 +1134,14 @@ fn independent_blend_groups(
     // A polyline chord may sit up to half its own length from the true curve,
     // so widen the reach test by that much rather than risk splitting a pair
     // that in fact touches.
-    let reach = 2.0f64.mul_add(size, size * 0.25);
+    let slack = size * 0.25;
     for i in 0..edges.len() {
         for j in (i + 1)..edges.len() {
             let shares_ridgeline = chains[i].iter().any(|e| chains[j].contains(e));
-            let touches =
-                shares_ridgeline || polyline_distance(&outlines[i], &outlines[j]) <= reach;
+            let reach = bands[i] + bands[j] + slack;
+            let touches = shares_ridgeline
+                || !reach.is_finite()
+                || polyline_distance(&outlines[i], &outlines[j]) <= reach;
             if touches {
                 let (ri, rj) = (
                     union_find_root(&mut parent, i),
@@ -2122,6 +2159,159 @@ mod tests {
             (reach - expected).abs() < 1e-9,
             "45° edge: {reach} vs {expected}"
         );
+    }
+
+    /// The edge of `solid` whose chord midpoint is `at`.
+    fn edge_at(topo: &Topology, solid: SolidId, at: Point3) -> EdgeId {
+        remus_topology::explorer::solid_edges(topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&e| {
+                let edge = topo.edge(e).unwrap();
+                let a = topo.vertex(edge.start()).unwrap().point();
+                let b = topo.vertex(edge.end()).unwrap().point();
+                ((a + (b - a) * 0.5) - at).length() < 1e-9
+            })
+            .unwrap()
+    }
+
+    /// `profile` (in the XY plane) extruded `depth` along +z.
+    fn prism(topo: &mut Topology, profile: &[Point3], depth: f64) -> SolidId {
+        let wire = remus_topology::builder::make_polygon_wire(topo, profile, 1e-7).unwrap();
+        let face = remus_topology::builder::make_face_from_wire(topo, wire).unwrap();
+        crate::extrude::extrude(topo, face, remus_math::vec::Vec3::new(0.0, 0.0, 1.0), depth)
+            .unwrap()
+    }
+
+    /// Two parallel 60° edges 3r apart bound one floor face. Each band runs
+    /// `r * tan(60°) = 1.73 r` across that floor, so the two overlap there
+    /// (3.46 r > 3 r) although the edges are further apart than `2r`. Grouping
+    /// by the radius alone split them into two features filleted in sequence.
+    #[test]
+    fn acute_ridges_within_their_setbacks_stay_one_group() {
+        let r = 1.0;
+        let inset = 2.0 / 3.0f64.sqrt();
+        let mut topo = Topology::new();
+        // Trapezoid with 60° base angles at (0,0) and (3,0), height 2.
+        let body = prism(
+            &mut topo,
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(3.0, 0.0, 0.0),
+                Point3::new(3.0 - inset, 2.0, 0.0),
+                Point3::new(inset, 2.0, 0.0),
+            ],
+            10.0,
+        );
+        let left = edge_at(&topo, body, Point3::new(0.0, 0.0, 5.0));
+        let right = edge_at(&topo, body, Point3::new(3.0, 0.0, 5.0));
+
+        let adjacency = topo.build_adjacency(body).unwrap();
+        for edge in [left, right] {
+            let setback = planar_ridge_setback(&topo, &adjacency, edge)
+                .unwrap()
+                .unwrap();
+            assert!((setback - 3.0f64.sqrt()).abs() < 1e-9, "{setback}");
+        }
+
+        let groups = independent_blend_groups(&topo, body, &[left, right], r).unwrap();
+        assert_eq!(groups, vec![vec![left, right]]);
+
+        // Halving the radius halves both bands (1.73 + 1.73 + 0.25 slack
+        // = 3.71 half-radii < 6): now they really are independent.
+        let groups = independent_blend_groups(&topo, body, &[left, right], 0.5 * r).unwrap();
+        assert_eq!(groups, vec![vec![left], vec![right]]);
+    }
+
+    /// A ridge too thin for a finite setback reaches everything: it keeps the
+    /// whole selection together however far apart the edges are.
+    #[test]
+    fn unbounded_setback_keeps_the_selection_together() {
+        let mut topo = Topology::new();
+        // A 5° sliver at the origin, a right-angle edge 100 away.
+        let tip = 5.0f64.to_radians().tan() * 100.0;
+        let body = prism(
+            &mut topo,
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(100.0, 0.0, 0.0),
+                Point3::new(100.0, tip, 0.0),
+            ],
+            4.0,
+        );
+        let sliver = edge_at(&topo, body, Point3::new(0.0, 0.0, 2.0));
+        let square = edge_at(&topo, body, Point3::new(100.0, 0.0, 2.0));
+        let adjacency = topo.build_adjacency(body).unwrap();
+        assert_eq!(
+            planar_ridge_setback(&topo, &adjacency, sliver).unwrap(),
+            Some(f64::INFINITY)
+        );
+        let groups = independent_blend_groups(&topo, body, &[sliver, square], 0.1).unwrap();
+        assert_eq!(groups, vec![vec![sliver, square]]);
+    }
+
+    /// Right-angle edges keep the `2·size` reach: four vertical box edges 10
+    /// apart split below a radius of 10 / 2.25 and join above it, exactly as
+    /// before setbacks were read.
+    #[test]
+    fn box_corner_grouping_is_unchanged() {
+        let mut topo = Topology::new();
+        let cube = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let verticals: Vec<EdgeId> = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+            .into_iter()
+            .map(|(x, y)| edge_at(&topo, cube, Point3::new(x, y, 5.0)))
+            .collect();
+
+        let groups = independent_blend_groups(&topo, cube, &verticals, 4.4).unwrap();
+        assert_eq!(groups.len(), 4, "{groups:?}");
+        let groups = independent_blend_groups(&topo, cube, &verticals, 4.5).unwrap();
+        assert_eq!(groups, vec![verticals.clone()]);
+
+        // A top edge shares a corner with two verticals.
+        let top = edge_at(&topo, cube, Point3::new(5.0, 0.0, 10.0));
+        let groups =
+            independent_blend_groups(&topo, cube, &[verticals[0], verticals[2], top], 1.0).unwrap();
+        assert_eq!(groups, vec![vec![verticals[0], top], vec![verticals[2]]]);
+    }
+
+    /// The plate perimeter and a bore rim 7.75 away stay two features at R2
+    /// (the `regress_mixed_rim_perimeter_fillet` part): the perimeter's
+    /// right-angle edges and the curved rim both keep the `size` band.
+    #[test]
+    fn plate_perimeter_and_bore_rim_stay_separate() {
+        let mut topo = Topology::new();
+        let plate = crate::primitives::make_box(&mut topo, 80.0, 60.0, 6.0).unwrap();
+        let drill = crate::primitives::make_cylinder(&mut topo, 2.25, 10.0).unwrap();
+        crate::transform::transform_solid(
+            &mut topo,
+            drill,
+            &remus_math::mat::Mat4::translation(10.0, 10.0, -2.0),
+        )
+        .unwrap();
+        let body = crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, plate, drill)
+            .unwrap();
+
+        let mut perimeter = Vec::new();
+        let mut rim = Vec::new();
+        for edge_id in remus_topology::explorer::solid_edges(&topo, body).unwrap() {
+            let edge = topo.edge(edge_id).unwrap();
+            let a = topo.vertex(edge.start()).unwrap().point();
+            let b = topo.vertex(edge.end()).unwrap().point();
+            if (a.z() - 6.0).abs() > 1e-9 || (b.z() - 6.0).abs() > 1e-9 {
+                continue;
+            }
+            match edge.curve() {
+                EdgeCurve::Line if edge.start() != edge.end() => perimeter.push(edge_id),
+                EdgeCurve::Circle(_) => rim.push(edge_id),
+                _ => {}
+            }
+        }
+        assert_eq!((perimeter.len(), rim.is_empty()), (4, false));
+
+        let mut selection = perimeter.clone();
+        selection.extend(&rim);
+        let groups = independent_blend_groups(&topo, body, &selection, 2.0).unwrap();
+        assert_eq!(groups, vec![perimeter, rim]);
     }
 
     #[test]
