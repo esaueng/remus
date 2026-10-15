@@ -6073,9 +6073,11 @@ fn finding_sphere_cyl_fuse_orientation() {
     );
 }
 
-/// 8.1 finding F11 (retained, kernel untouched): a fuse of a mirrored,
-/// rigid-moved cylinder with an unmoved pointed cone carries 1 shared edge
-/// with inconsistent face orientations. Orientation-family affinity on a
+/// 8.1 finding F11 (fixed): a fuse of a mirrored, rigid-moved cylinder
+/// with an unmoved pointed cone carried 1 shared edge with inconsistent
+/// face orientations. Root cause: the cone is apex-down (`bottomRadius` 0)
+/// and the operands are disjoint, so the bad edge was the cone's own rim —
+/// `make_cone` used it forward in both the lateral wire and the cap. Orientation-family affinity on a
 /// pointed-cone operand — the cone that F9 implicates on the offset side
 /// implicates the fuse assembly here. Minimized from campaign seed
 /// `11912020744051371592` (8 ops shrink to 5; the second cylinder, two
@@ -6087,9 +6089,8 @@ fn finding_sphere_cyl_fuse_orientation() {
 /// in generation.
 ///
 /// Acceptance: the harness `ExactOk` verdict (valid topology with agreeing
-/// volumes). No geometry fix in this harness PR.
+/// volumes).
 #[test]
-#[ignore = "8.1 finding F11: fuse of a moved cylinder with a pointed cone misorients one shared edge; route to the B33 orientation family"]
 fn finding_pointed_cone_fuse_orientation() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"height":1.0,"radius":1.0},"op":"makeCylinder"},{"args":{"bottomRadius":0.0,"height":1.0,"topRadius":1.0},"op":"makeCone"},{"args":{"nx":1.0,"ny":0.0,"nz":0.0,"px":0.0,"py":0.0,"pz":0.0,"solid":0},"op":"mirror"},{"args":{"matrix":[1.0,0.0,0.0,1.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,-3.0,0.0,0.0,0.0,1.0],"solid":2},"op":"transform"},{"args":{"exactOnly":true,"operation":"fuse","solidA":2,"solidB":1},"op":"booleanWithQuality"}]"#,
