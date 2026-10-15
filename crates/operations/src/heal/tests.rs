@@ -1948,3 +1948,102 @@ fn unify_still_reverts_a_merge_that_breaks_a_valid_input() {
         "the forged plans must exercise the revert rule"
     );
 }
+
+#[test]
+fn fusing_short_edge_preserves_a_standalone_wire() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_box(&mut topo, 3.0, 3.0, 3.0).unwrap();
+    let short = split_off_a_short_edge(&mut topo, solid, false);
+    let corner = topo.edge(short).unwrap().end();
+    let neighbor = remus_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .flat_map(|f| {
+            topo.wire(topo.face(f).unwrap().outer_wire())
+                .unwrap()
+                .edges()
+                .to_vec()
+        })
+        .map(|o| o.edge())
+        .find(|&e| {
+            e != short && {
+                let e = topo.edge(e).unwrap();
+                e.start() == corner || e.end() == corner
+            }
+        })
+        .unwrap();
+    let free = topo.add_wire(Wire::new(vec![OrientedEdge::new(neighbor, true)], false).unwrap());
+    let ends = |topo: &Topology| {
+        let e = topo
+            .edge(topo.wire(free).unwrap().edges()[0].edge())
+            .unwrap();
+        (e.start(), e.end())
+    };
+    let before = ends(&topo);
+    remove_degenerate_edges(&mut topo, solid, 1e-7).unwrap();
+    assert_eq!(
+        ends(&topo),
+        before,
+        "healing selected body changed an unrelated standalone wire"
+    );
+}
+
+fn cavity_repair_preserves_foreign_face(merge: bool, alias: u8) {
+    let mut topo = Topology::new();
+    let solid = hollow_block_with_corner_gap(&mut topo, true);
+    let shell = topo.solid(solid).unwrap().inner_shells()[0];
+    let face = topo.shell(shell).unwrap().faces()[0];
+    let original = topo.face(face).unwrap().clone();
+    let foreign = if alias == 0 {
+        topo.add_face(original)
+    } else {
+        face
+    };
+    let shell = if alias == 2 {
+        shell
+    } else {
+        topo.add_shell(Shell::new(vec![foreign]).unwrap())
+    };
+    let _other = topo.add_solid(remus_topology::solid::Solid::new(shell, vec![]));
+    let ends = |topo: &Topology| {
+        topo.wire(topo.face(foreign).unwrap().outer_wire())
+            .unwrap()
+            .edges()
+            .iter()
+            .map(|o| {
+                let e = topo.edge(o.edge()).unwrap();
+                (e.start(), e.end())
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = ends(&topo);
+    let changed = if merge {
+        merge_coincident_vertices(&mut topo, solid, 1e-7)
+    } else {
+        close_wire_gaps(&mut topo, solid, 1e-7)
+    }
+    .unwrap();
+    assert!(changed > 0);
+    assert!(
+        crate::validate::validate_solid(&topo, solid)
+            .unwrap()
+            .is_valid()
+    );
+    assert_eq!(
+        ends(&topo),
+        before,
+        "cavity repair mutated a face belonging to another body"
+    );
+}
+#[test]
+fn merge_cavity_vertices_preserves_other_body() {
+    for alias in 0..3 {
+        cavity_repair_preserves_foreign_face(true, alias);
+    }
+}
+#[test]
+fn close_cavity_gaps_preserves_other_body() {
+    for alias in 0..3 {
+        cavity_repair_preserves_foreign_face(false, alias);
+    }
+}
