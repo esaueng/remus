@@ -544,6 +544,12 @@ fn degree_one_deviation_bound(
         return f64::INFINITY;
     }
     let (rho_prev, rho_next) = (prev.1 / mid.1, next.1 / mid.1);
+    // A ratio that leaves the normal range has lost its relative precision
+    // (or, at zero, a contribution ρ·dn the coordinates can still carry), so
+    // the bound would not be one: refuse.
+    if !(rho_prev.is_normal() && rho_next.is_normal()) {
+        return f64::INFINITY;
+    }
     let dm = mid.0 - prev.0;
     let dn = next.0 - prev.0;
     let eps = 1.0 - alpha * rho_next - (1.0 - alpha) * rho_prev;
