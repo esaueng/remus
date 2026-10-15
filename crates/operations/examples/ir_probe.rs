@@ -1,16 +1,18 @@
 //! Deterministic instruction-count (cachegrind `Ir`) workloads with an
 //! output digest.
 //!
-//! Each workload runs once and prints a digest of its result: per face in
-//! solid order, the surface type and exact `Debug` geometry, orientation, and
-//! every wire's ordered traversal with vertex position bits, curve geometry,
-//! each use's coedge authority (its edge, stored pcurve, periodic winding)
-//! and the solid's connectivity: which edge and vertices each use names
-//! (first-seen ordinals) and how many uses share each. Tessellation
-//! workloads digest position bits and indices. Two builds whose digests
-//! match produced bit-identical output. Solids also print a `canonical`
-//! digest of the same content that ignores face order and closed-wire
-//! start, for workloads whose order varies run to run.
+//! Each workload runs once and prints a digest of its result: each shell
+//! with its role (outer or cavity), and per face in shell order the surface
+//! type and exact `Debug` geometry, orientation, and every wire's ordered
+//! traversal with vertex position bits, curve geometry, each use's coedge
+//! authority (its edge, stored pcurve, periodic winding) and the solid's
+//! connectivity: which edge and vertices each use names (first-seen
+//! ordinals), how many uses share each, and which faces each edge and vertex
+//! bounds. Tessellation workloads digest position bits and indices. Two
+//! builds whose digests match produced bit-identical output. Solids also
+//! print a `canonical` digest of the same content that ignores face order,
+//! cavity order and closed-wire start, for workloads whose order varies run
+//! to run.
 //!
 //! glibc selects libm variants by CPU feature, and valgrind's virtual CPU
 //! reports fewer features, so digests compare native with native and
@@ -178,82 +180,179 @@ impl Sharing {
     }
 }
 
-/// Digests of a solid: `strict` hashes faces in solid order and every wire
-/// from its stored first edge; `canonical` is the same content with faces
-/// sorted and each closed wire rotated to its smallest edge hash, so it is
-/// blind only to face order and wire start.
+/// Digests of a solid: `strict` hashes each shell (outer, then inner) and
+/// its faces in stored order, every wire from its stored first edge;
+/// `canonical` is the same content with faces sorted within each shell, inner
+/// shells sorted, and each closed wire rotated to its smallest edge hash, so
+/// it is blind only to face order, inner-shell order and wire start. Both
+/// fold in each edge's and vertex's incident faces (one round of
+/// Weisfeiler-Lehman refinement over the face/entity incidence), so rewiring
+/// a shared entity between faces changes them.
+#[allow(clippy::too_many_lines)]
 fn solid_digest(topo: &Topology, solid: SolidId) -> String {
     let mut strict = Fnv::new();
-    let mut face_hashes = Vec::new();
+    let solid_data = topo.solid(solid).unwrap();
+    let shells: Vec<_> = std::iter::once(solid_data.outer_shell())
+        .chain(solid_data.inner_shells().iter().copied())
+        .collect();
     let faces = solid_faces(topo, solid).unwrap();
     let sharing = Sharing::of(topo, &faces);
     let mut edges = 0usize;
     let mut kinds = std::collections::BTreeMap::<&str, usize>::new();
     let mut scratch = String::new();
+    let mut face_hash = std::collections::HashMap::new();
+    let mut shell_hashes = Vec::new();
+    for (role, &shell) in shells.iter().enumerate() {
+        let shell_faces = topo.shell(shell).unwrap().faces();
+        // Shell boundary and role: 0 for the outer shell, 1 for a cavity.
+        strict.u64(u64::from(role > 0));
+        strict.u64(shell_faces.len() as u64);
+        let mut face_hashes = Vec::new();
+        for &fid in shell_faces {
+            let face = topo.face(fid).unwrap();
+            *kinds.entry(face.surface().type_tag()).or_default() += 1;
+            let mut head = Fnv::new();
+            scratch.clear();
+            write!(scratch, "{:?}", face.surface()).unwrap();
+            head.str(&scratch);
+            head.u64(u64::from(face.is_reversed()));
+            head.u64(face.inner_wires().len() as u64);
+            strict.u64(head.0);
+            let mut canon_wires = Vec::new();
+            // Loop `j` holds the coedges of wire `j`, position by position.
+            let loops = topo.loops_of_face(fid).unwrap_or(&[]);
+            let wires =
+                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied());
+            for (j, wid) in wires.enumerate() {
+                let wire = topo.wire(wid).unwrap();
+                let coedges = loops
+                    .get(j)
+                    .map(|&l| topo.face_loop(l).unwrap().coedges().to_vec())
+                    .unwrap_or_default();
+                let uses: Vec<u64> = wire
+                    .edges()
+                    .iter()
+                    .enumerate()
+                    .map(|(k, oe)| {
+                        oriented_edge_hash(
+                            topo,
+                            oe,
+                            coedges.get(k).copied(),
+                            &sharing,
+                            &mut scratch,
+                        )
+                    })
+                    .collect();
+                edges += uses.len();
+                strict.u64(u64::from(wire.is_closed()));
+                strict.u64(uses.len() as u64);
+                for (&u, oe) in uses.iter().zip(wire.edges()) {
+                    strict.u64(u);
+                    // Which entity each use names, by first-seen ordinal.
+                    let edge = topo.edge(oe.edge()).unwrap();
+                    strict.u64(sharing.edge_ordinal[&oe.edge()]);
+                    strict.u64(sharing.vertex_ordinal[&oe.oriented_start(edge)]);
+                    strict.u64(sharing.vertex_ordinal[&oe.oriented_end(edge)]);
+                }
+                let start = if wire.is_closed() {
+                    (0..uses.len()).min_by_key(|&i| uses[i]).unwrap_or(0)
+                } else {
+                    0
+                };
+                let mut w = Fnv::new();
+                w.u64(u64::from(wire.is_closed()));
+                for i in 0..uses.len() {
+                    w.u64(uses[(start + i) % uses.len()]);
+                }
+                canon_wires.push(w.0);
+            }
+            canon_wires[1..].sort_unstable();
+            for w in canon_wires {
+                head.u64(w);
+            }
+            face_hash.insert(fid, head.0);
+            face_hashes.push(head.0);
+        }
+        face_hashes.sort_unstable();
+        let mut sh = Fnv::new();
+        sh.u64(face_hashes.len() as u64);
+        for f in face_hashes {
+            sh.u64(f);
+        }
+        shell_hashes.push(sh.0);
+    }
+    // Incidence: each edge's uses as (face hash, direction) and each
+    // vertex's incident face hashes, sorted, keyed by the entity's own
+    // geometry. Order-free, so it goes into both digests.
+    let mut edge_faces = std::collections::HashMap::<_, Vec<(u64, bool)>>::new();
+    let mut vertex_faces = std::collections::HashMap::<_, Vec<u64>>::new();
     for &fid in &faces {
         let face = topo.face(fid).unwrap();
-        *kinds.entry(face.surface().type_tag()).or_default() += 1;
-        let mut head = Fnv::new();
-        scratch.clear();
-        write!(scratch, "{:?}", face.surface()).unwrap();
-        head.str(&scratch);
-        head.u64(u64::from(face.is_reversed()));
-        head.u64(face.inner_wires().len() as u64);
-        strict.u64(head.0);
-        let mut canon_wires = Vec::new();
-        // Loop `j` holds the coedges of wire `j`, position by position.
-        let loops = topo.loops_of_face(fid).unwrap_or(&[]);
-        let wires = std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied());
-        for (j, wid) in wires.enumerate() {
-            let wire = topo.wire(wid).unwrap();
-            let coedges = loops
-                .get(j)
-                .map(|&l| topo.face_loop(l).unwrap().coedges().to_vec())
-                .unwrap_or_default();
-            let uses: Vec<u64> = wire
-                .edges()
-                .iter()
-                .enumerate()
-                .map(|(k, oe)| {
-                    oriented_edge_hash(topo, oe, coedges.get(k).copied(), &sharing, &mut scratch)
-                })
-                .collect();
-            edges += uses.len();
-            strict.u64(u64::from(wire.is_closed()));
-            strict.u64(uses.len() as u64);
-            for (&u, oe) in uses.iter().zip(wire.edges()) {
-                strict.u64(u);
-                // Which entity each use names, by first-seen ordinal.
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid).unwrap().edges() {
                 let edge = topo.edge(oe.edge()).unwrap();
-                strict.u64(sharing.edge_ordinal[&oe.edge()]);
-                strict.u64(sharing.vertex_ordinal[&oe.oriented_start(edge)]);
-                strict.u64(sharing.vertex_ordinal[&oe.oriented_end(edge)]);
+                edge_faces
+                    .entry(oe.edge())
+                    .or_default()
+                    .push((face_hash[&fid], oe.is_forward()));
+                for vid in [oe.oriented_start(edge), oe.oriented_end(edge)] {
+                    vertex_faces.entry(vid).or_default().push(face_hash[&fid]);
+                }
             }
-            let start = if wire.is_closed() {
-                (0..uses.len()).min_by_key(|&i| uses[i]).unwrap_or(0)
-            } else {
-                0
-            };
-            let mut w = Fnv::new();
-            w.u64(u64::from(wire.is_closed()));
-            for i in 0..uses.len() {
-                w.u64(uses[(start + i) % uses.len()]);
-            }
-            canon_wires.push(w.0);
         }
-        canon_wires[1..].sort_unstable();
-        for w in canon_wires {
-            head.u64(w);
-        }
-        face_hashes.push(head.0);
     }
-    face_hashes.sort_unstable();
+    let mut labels = Vec::new();
+    for (eid, mut incident) in edge_faces {
+        let edge = topo.edge(eid).unwrap();
+        incident.sort_unstable();
+        let mut l = Fnv::new();
+        scratch.clear();
+        write!(
+            scratch,
+            "{:?}|{:?}|{:?}",
+            edge.curve(),
+            edge.trim(),
+            edge.tolerance()
+        )
+        .unwrap();
+        l.str(&scratch);
+        for (f, forward) in incident {
+            l.u64(f);
+            l.u64(u64::from(forward));
+        }
+        labels.push(l.0);
+    }
+    labels.sort_unstable();
+    let mut vertex_labels = Vec::new();
+    for (vid, mut incident) in vertex_faces {
+        let v = topo.vertex(vid).unwrap();
+        incident.sort_unstable();
+        let mut l = Fnv::new();
+        let p = v.point();
+        for c in [p.x(), p.y(), p.z(), v.tolerance()] {
+            l.u64(c.to_bits());
+        }
+        for f in incident {
+            l.u64(f);
+        }
+        vertex_labels.push(l.0);
+    }
+    vertex_labels.sort_unstable();
+    let mut incidence = Fnv::new();
+    for l in labels.iter().chain(&vertex_labels) {
+        incidence.u64(*l);
+    }
+    strict.u64(incidence.0);
     let mut canonical = Fnv::new();
     canonical.u64(sharing.edge_uses.len() as u64);
     canonical.u64(sharing.vertex_uses.len() as u64);
-    for f in face_hashes {
-        canonical.u64(f);
+    canonical.u64(shell_hashes[0]);
+    shell_hashes[1..].sort_unstable();
+    canonical.u64(shell_hashes.len() as u64);
+    for s in &shell_hashes[1..] {
+        canonical.u64(*s);
     }
+    canonical.u64(incidence.0);
     format!(
         "faces={} edges={} vertices={} oriented_edges={} kinds={kinds:?} digest={:016x} \
          canonical={:016x}",
