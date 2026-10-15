@@ -304,7 +304,7 @@ fn shared_index_matches_per_call_expansion() {
                 expected
             );
             assert_eq!(
-                expand_g1_chain_with(topo, &index, &[edge], tol).unwrap(),
+                expand_g1_chain_with(&index, &[edge], tol).unwrap(),
                 expected
             );
             let mut faces: Vec<usize> = expected

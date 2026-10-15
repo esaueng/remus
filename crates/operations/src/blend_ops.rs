@@ -1134,7 +1134,7 @@ fn independent_blend_groups(
     let mut chains: Vec<Vec<EdgeId>> = Vec::with_capacity(edges.len());
     let mut outlines: Vec<Vec<remus_math::vec::Point3>> = Vec::with_capacity(edges.len());
     for &edge in edges {
-        let chain = remus_blend::g1_chain::expand_g1_chain_with(topo, &index, &[edge], tol)?;
+        let chain = remus_blend::g1_chain::expand_g1_chain_with(&index, &[edge], tol)?;
         let chain = if chain.is_empty() { vec![edge] } else { chain };
         let mut outline = Vec::new();
         for &member in &chain {

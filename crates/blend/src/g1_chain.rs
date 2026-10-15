@@ -154,7 +154,7 @@ pub fn expand_g1_chain(
     tol: Tolerance,
 ) -> Result<Vec<EdgeId>, crate::BlendError> {
     let index = G1ChainIndex::build(topo, solid)?;
-    expand_g1_chain_with(topo, &index, seed_edges, tol)
+    expand_g1_chain_with(&index, seed_edges, tol)
 }
 
 /// The outer-shell incidence [`expand_g1_chain`] walks: every edge's faces
@@ -163,9 +163,11 @@ pub fn expand_g1_chain(
 /// It depends only on the topology, so a caller expanding many seeds of one
 /// solid builds it once and passes it to [`expand_g1_chain_with`]; rebuilding
 /// it per seed made a selection of `k` seeds on an `n`-edge body cost
-/// `O(k * n)` before any chain was walked.
-#[derive(Debug, Clone)]
-pub struct G1ChainIndex {
+/// `O(k * n)` before any chain was walked. It borrows the topology it
+/// indexes, so it cannot outlive a mutation or rollback of that state.
+#[derive(Clone)]
+pub struct G1ChainIndex<'a> {
+    topo: &'a Topology,
     edge_to_faces: DetHashMap<usize, Vec<FaceId>>,
     /// Sorted by edge index and deduplicated, so the walk visits neighbours
     /// in one fixed order.
@@ -173,13 +175,21 @@ pub struct G1ChainIndex {
     edge_ids: DetHashMap<usize, EdgeId>,
 }
 
-impl G1ChainIndex {
+impl std::fmt::Debug for G1ChainIndex<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("G1ChainIndex")
+            .field("edges", &self.edge_ids.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> G1ChainIndex<'a> {
     /// Index the outer shell of `solid`.
     ///
     /// # Errors
     ///
     /// Returns `BlendError::Topology` if any topology lookup fails.
-    pub fn build(topo: &Topology, solid: SolidId) -> Result<Self, crate::BlendError> {
+    pub fn build(topo: &'a Topology, solid: SolidId) -> Result<Self, crate::BlendError> {
         let solid_data = topo.solid(solid)?;
         let shell = topo.shell(solid_data.outer_shell())?;
 
@@ -214,6 +224,7 @@ impl G1ChainIndex {
             edges.dedup_by_key(|e: &mut EdgeId| e.index());
         }
         Ok(Self {
+            topo,
             edge_to_faces,
             vertex_to_edges,
             edge_ids,
@@ -221,20 +232,20 @@ impl G1ChainIndex {
     }
 }
 
-/// [`expand_g1_chain`] over a prebuilt [`G1ChainIndex`] of the same solid in
-/// the same topology state.
+/// [`expand_g1_chain`] over a prebuilt [`G1ChainIndex`], in the topology the
+/// index borrows.
 ///
 /// # Errors
 ///
 /// Returns `BlendError::Topology` if any topology lookup fails.
 #[allow(clippy::too_many_lines)]
 pub fn expand_g1_chain_with(
-    topo: &Topology,
-    index: &G1ChainIndex,
+    index: &G1ChainIndex<'_>,
     seed_edges: &[EdgeId],
     tol: Tolerance,
 ) -> Result<Vec<EdgeId>, crate::BlendError> {
     let G1ChainIndex {
+        topo,
         edge_to_faces,
         vertex_to_edges,
         edge_ids,
@@ -373,7 +384,7 @@ pub fn g1_chains(
         if claimed.contains(&seed.index()) {
             continue;
         }
-        let members = expand_g1_chain_with(topo, &index, &[seed], tol)?;
+        let members = expand_g1_chain_with(&index, &[seed], tol)?;
         // An edge that belongs to no face of this solid expands to nothing.
         // Keep it as its own chain so the caller still has something to
         // attribute the resulting failure to, rather than silently dropping
