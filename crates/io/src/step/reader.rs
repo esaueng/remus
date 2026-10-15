@@ -5188,16 +5188,14 @@ impl<'a> StepBuilder<'a> {
         let principal_end = Self::surface_uv(surface, end_point)?;
         let principal_trace = open_edge_use_trace(
             edge,
-            self.topo.vertex(edge.start())?.point(),
-            self.topo.vertex(edge.end())?.point(),
+            (
+                self.topo.vertex(edge.start())?.point(),
+                self.topo.vertex(edge.end())?.point(),
+            ),
             coedge.is_forward(),
-        )
-        .and_then(|trace| {
-            trace
-                .into_iter()
-                .map(|point| Self::surface_uv(surface, point).ok())
-                .collect::<Option<Vec<_>>>()
-        });
+            periodic_axes(surface),
+            |point| Self::surface_uv(surface, point).ok(),
+        );
         let (expected_start, expected_end) = lift_pcurve_endpoint_branches(
             surface,
             &curve,
@@ -5214,9 +5212,16 @@ impl<'a> StepBuilder<'a> {
                 range,
             ) {
                 Some(qualified) => qualified,
-                None => {
-                    select_pcurve_range(&curve, range, expected_start, expected_end, pcurve_ref)?
-                }
+                // The declared range is the pcurve's own trace: it may sit on
+                // any periodic branch, so its ends only have to hit the
+                // oriented vertices modulo the period.
+                None => select_pcurve_range(
+                    &curve,
+                    range,
+                    (expected_start, expected_end),
+                    periodic_axes(surface),
+                    pcurve_ref,
+                )?,
             },
             None => derive_pcurve_range(
                 &curve,
@@ -8345,21 +8350,46 @@ fn select_full_turn_cylinder_pcurve_range(
     })
 }
 
+/// Which UV coordinates of `surface` are periodic (period 2π).
+const fn periodic_axes(surface: &FaceSurface) -> (bool, bool) {
+    match surface {
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => (true, false),
+        FaceSurface::Torus(_) => (true, true),
+        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => (false, false),
+    }
+}
+
+/// `a − b`, with each periodic coordinate reduced to its nearest lift.
+fn periodic_difference(a: Point2, b: Point2, periodic: (bool, bool)) -> Vec2 {
+    let reduce = |d: f64, periodic: bool| {
+        if periodic {
+            d - (d / std::f64::consts::TAU).round() * std::f64::consts::TAU
+        } else {
+            d
+        }
+    };
+    Vec2::new(
+        reduce(a.x() - b.x(), periodic.0),
+        reduce(a.y() - b.y(), periodic.1),
+    )
+}
+
 fn select_pcurve_range(
     curve: &Curve2D,
     range: (f64, f64),
-    expected_start: Point2,
-    expected_end: Point2,
+    (expected_start, expected_end): (Point2, Point2),
+    periodic: (bool, bool),
     pcurve_ref: u64,
 ) -> Result<(f64, f64), IoError> {
     let tolerance = pcurve_uv_tolerance(&[expected_start, expected_end]);
-    let direct = (curve.evaluate(range.0) - expected_start).length() <= tolerance
-        && (curve.evaluate(range.1) - expected_end).length() <= tolerance;
+    let hits = |parameter: f64, expected: Point2| {
+        periodic_difference(curve.evaluate(parameter), expected, periodic).length() <= tolerance
+    };
+    let direct = hits(range.0, expected_start) && hits(range.1, expected_end);
     if direct {
         return Ok(range);
     }
-    let reversed = (curve.evaluate(range.1) - expected_start).length() <= tolerance
-        && (curve.evaluate(range.0) - expected_end).length() <= tolerance;
+    let reversed = hits(range.1, expected_start) && hits(range.0, expected_end);
     if reversed {
         return Ok((range.1, range.0));
     }
@@ -8448,7 +8478,13 @@ fn derive_pcurve_range(
             }
         }
     };
-    select_pcurve_range(curve, range, expected_start, expected_end, pcurve_ref)
+    select_pcurve_range(
+        curve,
+        range,
+        (expected_start, expected_end),
+        (false, false),
+        pcurve_ref,
+    )
 }
 
 fn project_nurbs2d(
@@ -8500,44 +8536,92 @@ fn project_ellipse2d(ellipse: &Ellipse2D, point: Point2) -> f64 {
         .rem_euclid(std::f64::consts::TAU)
 }
 
-/// Interior samples of an open edge, ordered along the use (`forward` keeps
-/// the edge's own direction): the trace that ties both pcurve endpoint lifts
-/// to the branch the edge actually sweeps. `None` for closed edges (their
-/// full-turn ranges are resolved separately) and for edges without a strict
-/// domain.
+/// Principal UVs of interior samples of an open edge, ordered along the use
+/// (`forward` keeps the edge's own direction): the trace that ties both
+/// pcurve endpoint lifts to the branch the edge actually sweeps.
+///
+/// The 3D parameterization need not advance uniformly with the periodic UV
+/// coordinate, so the samples are a uniform grid plus every interior NURBS
+/// knot, bisected wherever one step jumps more than a quarter period (a
+/// bounded refinement, not a certificate). `None` for closed edges (their
+/// full-turn ranges are resolved separately), for edges without a strict
+/// domain, when a sample does not project, or past the sample budget.
 fn open_edge_use_trace(
     edge: &Edge,
-    start: Point3,
-    end: Point3,
+    (start, end): (Point3, Point3),
     forward: bool,
-) -> Option<Vec<Point3>> {
-    /// Segments of the sampled trace. The 3D parameterization need not
-    /// advance uniformly with the periodic UV coordinate, so one midpoint is
-    /// not enough; the unwrap only fails where a sixteenth of the parameter
-    /// domain sweeps half a period.
+    periodic: (bool, bool),
+    project: impl Fn(Point3) -> Option<Point2>,
+) -> Option<Vec<Point2>> {
     const SEGMENTS: u32 = 16;
+    const MAX_DEPTH: u32 = 12;
+    const MAX_SAMPLES: usize = 4096;
     if edge.start() == edge.end() {
         return None;
     }
-    let domain = if matches!(edge.curve(), EdgeCurve::Line) {
-        None
+    let (t0, t1) = if matches!(edge.curve(), EdgeCurve::Line) {
+        (0.0, 1.0)
     } else {
-        Some(edge.strict_domain().ok()?)
+        edge.strict_domain().ok()?
     };
-    let mut trace = Vec::with_capacity(SEGMENTS as usize - 1);
-    for k in 1..SEGMENTS {
-        let f = f64::from(k) / f64::from(SEGMENTS);
-        let point = match domain {
-            None => start + (end - start) * f,
-            Some((t0, t1)) => edge
-                .curve()
-                .evaluate_with_endpoints(t0 + f * (t1 - t0), start, end),
+    let at = |t: f64| -> Option<Point2> {
+        let point = if matches!(edge.curve(), EdgeCurve::Line) {
+            start + (end - start) * t
+        } else {
+            edge.curve().evaluate_with_endpoints(t, start, end)
         };
-        if !point.0.iter().all(|value| value.is_finite()) {
-            return None;
-        }
-        trace.push(point);
+        point
+            .0
+            .iter()
+            .all(|value| value.is_finite())
+            .then_some(point)
+            .and_then(&project)
+    };
+    // Grid fractions of the edge domain, knots included, in edge order.
+    let mut fractions: Vec<f64> = (0..=SEGMENTS)
+        .map(|k| f64::from(k) / f64::from(SEGMENTS))
+        .collect();
+    if let EdgeCurve::NurbsCurve(nurbs) = edge.curve()
+        && (t1 - t0).abs() > 0.0
+    {
+        fractions.extend(
+            nurbs
+                .knots()
+                .iter()
+                .map(|knot| (knot - t0) / (t1 - t0))
+                .filter(|fraction| *fraction > 0.0 && *fraction < 1.0),
+        );
     }
+    fractions.sort_by(f64::total_cmp);
+    fractions.dedup();
+    let jumps = |a: Point2, b: Point2| {
+        let step = periodic_difference(b, a, periodic);
+        let limit = std::f64::consts::FRAC_PI_2;
+        (periodic.0 && step.x().abs() > limit) || (periodic.1 && step.y().abs() > limit)
+    };
+    let parameter = |fraction: f64| t0 + fraction * (t1 - t0);
+    let mut trace = vec![at(parameter(0.0))?];
+    for pair in fractions.windows(2) {
+        // Depth-first bisection of one grid step, emitted in edge order.
+        let mut pending = vec![(pair[1], at(parameter(pair[1]))?, 0)];
+        let mut left = pair[0];
+        while let Some(&(right, uv, depth)) = pending.last() {
+            let previous = *trace.last()?;
+            if depth < MAX_DEPTH && jumps(previous, uv) {
+                let mid = 0.5 * (left + right);
+                pending.push((mid, at(parameter(mid))?, depth + 1));
+            } else {
+                pending.pop();
+                trace.push(uv);
+                left = right;
+            }
+            if trace.len() + pending.len() > MAX_SAMPLES {
+                return None;
+            }
+        }
+    }
+    trace.pop();
+    trace.remove(0);
     if !forward {
         trace.reverse();
     }
@@ -11220,6 +11304,71 @@ mod tests {
     /// lands the end three quarters of a turn away. Unwrapping along the
     /// edge's own trace keeps the quarter turn, and still does when the 3D
     /// parameterization crowds most samples near one end.
+    /// A sweep packed into the last sixteenth of the edge's parameter domain
+    /// jumps more than half a turn between grid samples; the trace bisects
+    /// there until every step is under a quarter turn, so the end keeps its
+    /// branch.
+    #[test]
+    fn periodic_edge_trace_refines_a_sweep_packed_into_one_grid_step() {
+        use std::f64::consts::TAU;
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(remus_topology::vertex::Vertex::new(
+            Point3::new(0.0, 0.0, 0.0),
+            1e-7,
+        ));
+        let b = topo.add_vertex(remus_topology::vertex::Vertex::new(
+            Point3::new(1.0, 0.0, 0.0),
+            1e-7,
+        ));
+        let edge = Edge::new(a, b, EdgeCurve::Line);
+        // u = 4.7·x⁴⁰ wrapped to the principal branch: almost all of the
+        // sweep happens in the last grid step.
+        let project = |p: Point3| Some(Point2::new((4.7 * p.x().powi(40)).rem_euclid(TAU), 0.0));
+        let trace = open_edge_use_trace(
+            &edge,
+            (Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)),
+            true,
+            (true, false),
+            project,
+        )
+        .unwrap();
+        assert!(trace.len() > 15, "{}", trace.len());
+        let surface = FaceSurface::Cylinder(
+            remus_math::surfaces::CylindricalSurface::new(
+                Point3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                1.0,
+            )
+            .unwrap(),
+        );
+        let curve = Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap());
+        let (_, end) = lift_pcurve_endpoint_branches(
+            &surface,
+            &curve,
+            Point2::new(0.0, 0.0),
+            Point2::new(4.7, 0.0),
+            Some(&trace),
+        );
+        assert_eq!(end.x().to_bits(), 4.7_f64.to_bits());
+    }
+
+    /// A declared range is the pcurve's own trace: its ends may sit a whole
+    /// period away from the lifted vertices and still be accepted.
+    #[test]
+    fn declared_pcurve_range_matches_its_vertices_modulo_the_period() {
+        use std::f64::consts::{FRAC_PI_2, TAU};
+        let curve = Curve2D::Line(Line2D::new(Point2::new(TAU, 0.0), Vec2::new(1.0, 0.0)).unwrap());
+        let expected = (Point2::new(0.0, 0.0), Point2::new(FRAC_PI_2, 0.0));
+        assert_eq!(
+            select_pcurve_range(&curve, (0.0, FRAC_PI_2), expected, (true, false), 7).unwrap(),
+            (0.0, FRAC_PI_2)
+        );
+        assert!(
+            select_pcurve_range(&curve, (0.0, FRAC_PI_2), expected, (false, false), 7).is_err()
+        );
+        assert!(select_pcurve_range(&curve, (0.0, 1.0), expected, (true, false), 7).is_err());
+    }
+
     #[test]
     #[allow(clippy::approx_constant)] // The file's 12-digit rounding of −π/2.
     fn periodic_endpoint_lifts_unwrap_the_edge_trace_through_a_half_turn_tie() {
