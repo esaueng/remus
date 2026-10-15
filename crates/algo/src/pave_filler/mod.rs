@@ -415,9 +415,17 @@ pub fn run_pave_filler_n_with_pairs(
         phase_ff::seeds_match_fresh(&junction_seeds, topo, arena),
         "phase FF wrote a junction seed input; shared seeding is stale"
     );
+    let mut coplanar_index = phase_ff_coplanar::ArenaFaceIndex::default();
     for &(i, j) in &pairs {
         context.check_cancelled()?;
-        phase_ff_coplanar::perform(topo, sources[i], sources[j], tol, arena)?;
+        phase_ff_coplanar::perform_indexed(
+            topo,
+            sources[i],
+            sources[j],
+            tol,
+            arena,
+            &mut coplanar_index,
+        )?;
     }
 
     // Stage 2: Resolution (solid-agnostic — reads the accumulated arena).
