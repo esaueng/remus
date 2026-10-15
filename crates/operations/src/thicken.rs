@@ -237,14 +237,21 @@ fn thicken_curved(
     // allocated.
     let mut offset_positions: BTreeMap<VertexId, Point3> = BTreeMap::new();
     for (&vertex, &(p, _)) in &positions {
-        // Measured along the generator: the axial height is only v·sin a,
-        // which a shallow cone keeps under tolerance far from its apex.
-        if let FaceSurface::Cone(cone) = &surface
-            && cone.project_point(p).1 <= check_tol
-        {
-            return Err(unsupported(
-                "a cone face reaching its apex has no offset normal there".into(),
-            ));
+        if let FaceSurface::Cone(cone) = &surface {
+            // Measured along the generator: the axial height is only v·sin a,
+            // which a shallow cone keeps under tolerance far from its apex.
+            let v = cone.project_point(p).1;
+            if v.abs() <= check_tol {
+                return Err(unsupported(
+                    "a cone face reaching its apex has no offset normal there".into(),
+                ));
+            }
+            // The offset below moves the apex as the v > 0 nappe needs.
+            if v < 0.0 {
+                return Err(unsupported(
+                    "a cone face on its carrier's negative nappe".into(),
+                ));
+            }
         }
         offset_positions.insert(vertex, offset_point(p)?);
     }

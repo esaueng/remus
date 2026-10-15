@@ -21,7 +21,7 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use remus_math::curves::Circle3D;
 use remus_math::mat::Mat4;
-use remus_math::surfaces::CylindricalSurface;
+use remus_math::surfaces::{ConicalSurface, CylindricalSurface};
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::OperationsError;
 use remus_operations::boolean::{BooleanOp, boolean};
@@ -408,4 +408,27 @@ fn b122_refusals_are_typed() {
         thicken(&mut topo, face, -3.0),
         Err(OperationsError::Unsupported { .. })
     ));
+
+    // A frustum wall carried by the same double cone with its axis flipped
+    // lies on that carrier's negative nappe (generator parameter v < 0):
+    // refused as such, not as reaching its apex.
+    let frustum = make_cone(&mut topo, 4.0, 2.0, 3.0).unwrap();
+    let wall = remus_topology::explorer::solid_faces(&topo, frustum)
+        .unwrap()
+        .into_iter()
+        .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cone(_)))
+        .expect("frustum wall");
+    let FaceSurface::Cone(cone) = topo.face(wall).unwrap().surface().clone() else {
+        panic!("a cone face")
+    };
+    let flipped = ConicalSurface::new(cone.apex(), -cone.axis(), cone.half_angle()).unwrap();
+    topo.face_mut(wall)
+        .unwrap()
+        .set_surface(FaceSurface::Cone(flipped));
+    match thicken(&mut topo, wall, 0.5) {
+        Err(OperationsError::Unsupported { reason, .. }) => {
+            assert!(reason.contains("negative nappe"), "{reason}");
+        }
+        other => panic!("negative-nappe wall: {other:?}"),
+    }
 }
