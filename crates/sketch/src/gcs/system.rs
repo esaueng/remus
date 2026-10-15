@@ -673,10 +673,10 @@ impl GcsSystem {
     ) -> Result<(SolveResult, Option<FinalEvaluation>, SolveStats), SketchError> {
         // Only sketches with ellipses pay for the extra parameter snapshot.
         let before = (!self.ellipses.is_empty()).then(|| {
-            let usable: Vec<bool> = self
+            let usable: Vec<(bool, bool)> = self
                 .ellipses
                 .iter()
-                .map(|(_, e)| ellipse_axes_usable(e.a, e.b))
+                .map(|(_, e)| (semiaxis_usable(e.a), semiaxis_usable(e.b)))
                 .collect();
             (self.extract_params(), usable)
         });
@@ -713,20 +713,23 @@ impl GcsSystem {
     /// the pre-solve parameters are restored and the solve is refused. Only a
     /// semiaxis the solve drove there counts: `add_ellipse` accepts any
     /// positive semiaxis, so one that was already below the threshold
-    /// (`usable_before[i]` false, in arena order) is left as it is.
+    /// (its flag in `usable_before[i]` false, `(a, b)` in arena order) is
+    /// left as it is. Each semiaxis is judged on its own: a tiny `a` does not
+    /// exempt a `b` the solve collapsed.
     fn publish_positive_ellipse_axes(
         &mut self,
         before: &[f64],
-        usable_before: &[bool],
+        usable_before: &[(bool, bool)],
         result: &mut SolveResult,
         stats: &mut SolveStats,
         tolerance: f64,
     ) -> Result<(), SketchError> {
         let mut flipped = false;
         let mut collapsed = false;
-        for ((_, ellipse), &was_usable) in self.ellipses.iter_mut().zip(usable_before) {
+        for ((_, ellipse), &(a_was, b_was)) in self.ellipses.iter_mut().zip(usable_before) {
             let (a, b) = (ellipse.a, ellipse.b);
-            if was_usable && a.is_finite() && b.is_finite() && !ellipse_axes_usable(a, b) {
+            let lost = (a_was && !semiaxis_usable(a)) || (b_was && !semiaxis_usable(b));
+            if a.is_finite() && b.is_finite() && lost {
                 collapsed = true;
                 continue;
             }
@@ -2495,6 +2498,11 @@ fn constraint_references_ellipse(c: &Constraint, id: EllipseId) -> bool {
         | Constraint::TangentLineCircle(_, _)
         | Constraint::SymmetricAboutPoint(_, _, _) => false,
     }
+}
+
+/// One semiaxis against the [`ellipse_axes_usable`] magnitude threshold.
+fn semiaxis_usable(axis: f64) -> bool {
+    ellipse_axes_usable(axis, axis)
 }
 
 #[cfg(test)]
