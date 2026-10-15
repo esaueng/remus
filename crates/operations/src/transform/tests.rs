@@ -1564,8 +1564,11 @@ fn reverse_order_transform(
         }
         transform_edges_recorded(live, &edge_ids, matrix, &mut recorder)?;
         restore_translation_certificates(live, certificates)?;
-        for fid in face_ids {
+        for &fid in &face_ids {
             transform_face_surface_recorded(live, fid, matrix, &normal_matrix, &mut recorder)?;
+        }
+        if linear_determinant(matrix) < 0.0 {
+            reverse_boundaries_for_reflection(live, &face_ids)?;
         }
         Ok(())
     })

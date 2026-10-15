@@ -371,8 +371,11 @@ fn get_u32(args: &Value, key: &str) -> Option<u32> {
 ///   Placed variants stay in generation as tripwires.
 /// - X10: a FUSE consuming a cone — pointed or frustum, placed or not,
 ///   prim or copy (`finding_pointed_cone_fuse_orientation`, F11: two
-///   demonstrated instances with identical minimal signatures). Other
-///   operators stay in generation as tripwires.
+///   demonstrated instances with identical minimal signatures) — and ANY
+///   boolean on a cone–cone pair (`finding_placed_frustum_pair_fuse_
+///   orientation`, F17: the pair's complementary fuse leg misorients 4
+///   edges). Other operators on mixed pairs stay in generation as
+///   tripwires.
 /// - X11: a CUT of two prim cylinders with a translated-but-unrotated side
 ///   on either operand (`finding_translated_cyl_cut_orientation`, F12: 3
 ///   misoriented edges outside the X1/X2/X3 cells). Rotated variants stay
@@ -491,6 +494,13 @@ fn excluded_cell(kind: BooleanOp, a: &GenLive, b: &GenLive) -> Option<&'static s
         if a.kind == GenKind::Cone || b.kind == GenKind::Cone {
             return Some("X10");
         }
+    }
+    // X10, pair-level: ANY boolean on a cone–cone pair. Every operator runs
+    // the fuse as a complementary leg, and the fuse of two placed frustums
+    // is the X10 defect (F17). Until B89 a mirrored cone operand was itself
+    // misoriented and the leg refused, which hid this from the campaign.
+    if a.kind == GenKind::Cone && b.kind == GenKind::Cone {
+        return Some("X10");
     }
     // X9: ANY boolean on an unmoved prim sphere–cylinder pair, either
     // operand order. Pair-level, not fuse-only: the fuse demonstrably
@@ -6263,23 +6273,24 @@ fn finding_cylinder_offset_open_mesh() {
     );
 }
 
-/// 8.1 finding F16 (retained, kernel untouched): an intersect of a
-/// y-mirrored unit box with a unit cylinder carries 6 shared edges with
-/// inconsistent face orientations (volume π/4 reads correctly — the defect
-/// is orientation-only). The unmirrored twin intersects exactly (π/4,
-/// full battery green), so the mirror is load-bearing: a mirrored operand
-/// validates clean standalone (the harness mirror arm runs the full
-/// topology gate) yet misassembles in the boolean. First mirror-lane
-/// orientation witness; whether it shares F11's root (whose fuse also
-/// consumes a mirror) is the owners' call — the pairs, operators, and
-/// counts differ, so the witnesses stay distinct. Owns exclusion cell X13
-/// (intersect/cut consuming a mirrored box); mirrored non-box operands
-/// and fuses stay in generation.
+/// 8.1 finding F16 regression: an intersect of a y-mirrored unit box with a
+/// unit cylinder must keep opposing shared boundaries. The original result
+/// carried 6 same-sense shared edges while its volume π/4 read correctly.
+/// The root was the mirror, not the boolean: every mirrored face kept its
+/// carrier's outward normal but the reflection's clockwise wire traversal,
+/// so all six box faces wound against their surfaces. The winding check
+/// only warns and the harness topology gate counts errors, which is why the
+/// operand passed standalone. Orientation-reversing transforms now reverse
+/// every boundary traversal (B89). F11 does not share this root: its fuse
+/// fails on the apex-down pointed cone, not on its mirrored cylinder. Owns
+/// exclusion cell X13 (intersect/cut consuming a mirrored box); mirrored
+/// non-box operands and fuses stay in generation.
 ///
-/// Acceptance: the harness `ExactOk` verdict (valid topology with agreeing
-/// volumes). No geometry fix in this harness PR.
+/// Acceptance: the harness `ExactOk` verdict. Independent closed-form
+/// volumes, validity and material probes over the cut, fuse and intersect
+/// of the same pair, every det < 0 transform path and a drilled plate pin
+/// the fix in `regress_reflection_orientation.rs`.
 #[test]
-#[ignore = "8.1 finding F16: mirrored-box intersect misorients 6 shared edges (unmirrored twin exact); route to the boolean orientation lane"]
 fn finding_mirrored_box_intersect_orientation() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"height":1.0,"radius":1.0},"op":"makeCylinder"},{"args":{"depth":1.0,"height":1.0,"width":1.0},"op":"makeBox"},{"args":{"nx":0.0,"ny":1.0,"nz":0.0,"px":0.0,"py":0.0,"pz":0.0,"solid":1},"op":"mirror"},{"args":{"exactOnly":true,"operation":"intersect","solidA":2,"solidB":0},"op":"booleanWithQuality"}]"#,
@@ -6297,6 +6308,41 @@ fn finding_mirrored_box_intersect_orientation() {
         report.kind,
         SeqKind::ExactOk,
         "mirrored-box intersect must validate clean with agreeing volumes"
+    );
+}
+
+/// 8.1 finding F17 (retained, kernel untouched): a fuse of a frustum cone
+/// (4.5, 2.5, 5.5) with its copy translated 7 along x carries 4 shared edges
+/// with inconsistent face orientations. Surfaced by the bounded campaign
+/// (seed `9220677054601863815`) as the complementary fuse leg of an exact
+/// intersect of the cone with its mirror across x = 3.5 — geometrically
+/// this same translated copy, since the cone is axisymmetric. Before B89 the
+/// mirrored cone was misoriented and the leg refused, masking the defect;
+/// the translated twin reproduces it on `main` without any mirror. X10
+/// family (fuse consuming a cone); widens X10 to every operator on a
+/// cone–cone pair.
+///
+/// Acceptance: the harness `ExactOk` verdict (valid topology with agreeing
+/// volumes). No geometry fix in this PR.
+#[test]
+#[ignore = "8.1 finding F17: fuse of two placed frustum cones misorients 4 shared edges; route to the B33 orientation family"]
+fn finding_placed_frustum_pair_fuse_orientation() {
+    let ops: Vec<Value> = serde_json::from_str(
+        r#"[{"args":{"bottomRadius":4.5,"height":5.5,"topRadius":2.5},"op":"makeCone"},{"args":{"bottomRadius":4.5,"height":5.5,"topRadius":2.5},"op":"makeCone"},{"args":{"matrix":[1.0,0.0,0.0,7.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],"solid":1},"op":"transform"},{"args":{"exactOnly":true,"operation":"fuse","solidA":1,"solidB":0},"op":"booleanWithQuality"}]"#,
+    )
+    .expect("finding bundle parses");
+    let limits = SeqLimits::default();
+    let report = execute_sequence(&ops, &limits, Fault::None);
+    for n in &report.notes {
+        println!(
+            "B81FINDING op {} {}: {}: {}",
+            n.index, n.op, n.oracle, n.detail
+        );
+    }
+    assert_eq!(
+        report.kind,
+        SeqKind::ExactOk,
+        "placed frustum-pair fuse must validate clean with agreeing volumes"
     );
 }
 

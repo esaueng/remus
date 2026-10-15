@@ -1469,6 +1469,10 @@ fn copy_and_transform_solid_impl(
             topo.remove_pcurve_oriented(edge, face, forward)?;
         }
     }
+    if chart_reversing {
+        let faces: Vec<FaceId> = new_faces.iter().map(|&(_, face)| face).collect();
+        crate::transform::reverse_boundaries_for_reflection(topo, &faces)?;
+    }
 
     add_planned_solid(topo, &new_shell_ids, solid_attributes)
 }
