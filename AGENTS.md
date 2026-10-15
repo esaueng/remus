@@ -477,6 +477,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | P-Class 7.4 acceptance oracles (exact cells, approximate disclosure, refusals, solid/2D paths) | `tests/qualify_project_curve.rs` |
 | Transform, Mirror, Copy | `transform.rs`, `mirror.rs`, `copy.rs` |
 | Map-based solid copy paths kept verbatim as differential oracles for `CopyPlan` (tests) | `copy/tests/legacy_oracle.rs` |
+| Spliced copy's aligned coedge-authority restore checked against the per-snapshot search on a drilled plate (tests) | `copy/tests/spliced_authority_oracle.rs` |
 | Measure (bbox, area, volume, CoM) | `measure/` (mod, volume, area, bounding_box, edge_length, helpers) |
 | Opt-in per-thread `solid_volume` memo keyed by topology cache identity and complete solid content | `measure/volume_memo.rs` |
 | Closed-form certificate that a straight-edged, axis-aligned planar outline passes the volume path's area-consistency probe without meshing | `measure/volume/planar_outline.rs` |
