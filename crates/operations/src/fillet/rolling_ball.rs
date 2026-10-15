@@ -1473,9 +1473,11 @@ pub fn fillet_rolling_ball_with_origins(
         // Phase 2b: Validate that the fillet band fits within adjacent face geometry.
         // On each planar support face the band's contact line runs one setback
         // from the target edge: `radius · tan(θ/2)` between planes
-        // (`blend_ops::fillet_contact_setback`), never taken below `radius`, the
-        // reach of the cross-product fallback for a stripe this rebuild cannot
-        // classify (the hole guard keeps the same floor). At each end of the edge
+        // (`blend_ops::fillet_contact_setback`). A stripe this rebuild could not
+        // classify takes the cross-product fallback, which lays contacts one
+        // radius out, so its setback is never taken below `radius` (the hole
+        // guard, which runs before classification, keeps that floor always).
+        // At each end of the edge
         // that line must land on the face's adjacent non-target edge, so the
         // adjacent edge has to reach farther from the target edge's line than the
         // setback: its perpendicular extent, not its length, bounds the band.
@@ -1492,10 +1494,20 @@ pub fn fillet_rolling_ball_with_origins(
             let Some(face_list) = edge_to_faces.get(&edge_id.index()) else {
                 continue;
             };
-            let setback = if straight {
-                crate::blend_ops::fillet_contact_setback(topo, face_list, radius)?.max(radius)
-            } else {
+            let setback = if !straight {
                 radius
+            } else if planar_edge_sides.contains_key(&edge_id.index()) {
+                // A classified two-plane stripe takes the exact section. At a
+                // right angle that is exactly `radius`; tan(π/4) rounds a ulp
+                // short, so snap it within the angular tolerance.
+                let setback = crate::blend_ops::fillet_contact_setback(topo, face_list, radius)?;
+                if (setback / radius - 1.0).abs() <= tol.angular {
+                    radius
+                } else {
+                    setback
+                }
+            } else {
+                crate::blend_ops::fillet_contact_setback(topo, face_list, radius)?.max(radius)
             };
             for &fid in face_list {
                 let poly = match face_polygons.get(&fid.index()) {
