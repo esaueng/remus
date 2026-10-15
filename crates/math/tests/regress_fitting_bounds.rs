@@ -212,20 +212,29 @@ fn least_squares_work_is_bounded_not_only_its_memory() {
 
 #[test]
 fn lspia_iteration_work_is_bounded() {
-    // Review follow-up: every LSPIA iteration touches p + 1 basis values per
-    // point, and the iteration count is the caller's (WASM allows 10 000).
-    // 10 000 points at degree 3 with 30 000 iterations is
-    // 10⁴ · 4 · 30 001 ≈ 1.2·10⁹ updates.
+    // Every iterate walks each point's p + 1 basis values three times
+    // (evaluate twice, spread the error once), and the step size takes 20
+    // power-iteration rounds of two passes: n·(p + 1)·(3·(iterations + 1) + 40).
+    // 10 000 points at degree 3 with 10 000 iterations (the WASM cap) is
+    // 1.2·10⁹ visits.
     let n = 10_000;
-    let work = n * 4 * 30_001;
+    let work = n * 4 * (3 * 10_001 + 40);
     assert!(work > MAX_FIT_WORK);
     assert_eq!(
-        limit(approximate_lspia(&helix(n), 3, 100, 0.0, 30_000)),
+        limit(approximate_lspia(&helix(n), 3, 100, 0.0, 10_000)),
         ("fit_work", MAX_FIT_WORK, work)
     );
-    // The in-tree callers (degree ≤ 3, 100 iterations) stay inside the
-    // budget for every point count the point bound admits.
-    const { assert!(MAX_FIT_POINTS * 4 * 101 <= MAX_FIT_WORK) };
+    // Review follow-up: 10⁶ points at degree 3 and 267 iterations passed
+    // the old one-pass count (1.07·10⁹) but visits 3.2·10⁹ basis values.
+    let n = 1_000_000;
+    let points: Vec<Point3> = (0..n).map(|i| Point3::new(i as f64, 0.0, 0.0)).collect();
+    assert_eq!(
+        limit(approximate_lspia(&points, 3, 100, 0.0, 267)),
+        ("fit_work", MAX_FIT_WORK, n * 4 * (3 * 268 + 40))
+    );
+    // The in-tree SSI and self-intersection callers (degree ≤ 3, 100
+    // iterations) stay inside the budget up to 780 000 points per chain.
+    const { assert!(780_000 * 4 * (3 * 101 + 40) <= MAX_FIT_WORK) };
 }
 
 #[test]
