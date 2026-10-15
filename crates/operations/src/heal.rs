@@ -757,24 +757,25 @@ pub fn remove_degenerate_edges(
         }
     }
 
+    // A copied edge carries its source's pcurves on this solid's faces. Read
+    // them before the rebuild: re-keying a face's loop drops the source
+    // edge's uses, pcurves included.
+    let mut carried: Vec<(FaceId, EdgeId, bool, remus_topology::pcurve::PCurve)> = Vec::new();
+    if !rekey.is_empty() {
+        for &fid in &face_ids {
+            for (edge, forward, pcurve) in topo.pcurves_for_face(fid) {
+                if let Some(&copy) = rekey.get(&edge) {
+                    carried.push((fid, copy, forward, pcurve.clone()));
+                }
+            }
+        }
+    }
     let mut removed_count = 0;
     for &(fid, wid) in &loops {
         removed_count += rebuild_wire_without(topo, fid, wid, &drop, &rekey)?;
     }
-    // A copied edge carries its source's pcurves on this solid's faces.
-    for &fid in &face_ids {
-        let carried: Vec<(EdgeId, bool, remus_topology::pcurve::PCurve)> = topo
-            .pcurves_for_face(fid)
-            .into_iter()
-            .filter_map(|(edge, forward, pcurve)| {
-                rekey
-                    .get(&edge)
-                    .map(|&copy| (copy, forward, pcurve.clone()))
-            })
-            .collect();
-        for (copy, forward, pcurve) in carried {
-            topo.set_pcurve_oriented(copy, fid, forward, pcurve)?;
-        }
+    for (fid, copy, forward, pcurve) in carried {
+        topo.set_pcurve_oriented(copy, fid, forward, pcurve)?;
     }
     Ok(removed_count)
 }
