@@ -24,8 +24,9 @@ use remus_math::surfaces::SphericalSurface;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::classify::{PointClassification, classify_point};
-use remus_operations::measure::face_area;
+use remus_operations::measure::{face_area, solid_volume};
 use remus_operations::primitives::{make_box, make_cone, make_torus};
+use remus_operations::revolve::revolve;
 use remus_operations::section::section;
 use remus_operations::transform::transform_solid;
 use remus_operations::validate::validate_solid;
@@ -287,4 +288,96 @@ fn b91_notched_torus_drops_the_removed_tube() {
         Vec3::new(0.0, 1.0, 0.0),
     );
     assert_area(area, 9.0 * PI, "y = 0");
+}
+
+/// A torus band between the parallels `v = ±π/3` of `R = 3, r = 1`, closed by
+/// an inner cylinder of radius 1 and two annular caps: the revolution of a
+/// profile whose outer side is the tube arc through `(4, 0)`.
+fn torus_band(topo: &mut Topology) -> SolidId {
+    let h = (PI / 3.0).sin();
+    let corner = |x: f64, z: f64| Point3::new(x, 0.0, z);
+    let [a, b, c, d] = [
+        corner(1.0, -h),
+        corner(3.5, -h),
+        corner(3.5, h),
+        corner(1.0, h),
+    ]
+    .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+    // Normal −y puts the circle's v-axis on +z, so B → C runs through (4, 0).
+    let tube = Circle3D::new_with_ref(
+        Point3::new(3.0, 0.0, 0.0),
+        Vec3::new(0.0, -1.0, 0.0),
+        1.0,
+        Vec3::new(1.0, 0.0, 0.0),
+    )
+    .unwrap();
+    let mut line = |s, e| topo.add_edge(Edge::new(s, e, EdgeCurve::Line));
+    let (bottom, top, axis_side) = (line(a, b), line(c, d), line(d, a));
+    let arc = topo.add_edge(Edge::new(b, c, EdgeCurve::Circle(tube)));
+    let wire = topo.add_wire(
+        Wire::new(
+            [bottom, arc, top, axis_side]
+                .into_iter()
+                .map(|e| OrientedEdge::new(e, true))
+                .collect(),
+            true,
+        )
+        .unwrap(),
+    );
+    let profile = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, -1.0, 0.0),
+            d: 0.0,
+        },
+    ));
+    revolve(
+        topo,
+        profile,
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        TAU,
+    )
+    .unwrap()
+}
+
+/// A plane flush with one rim of the torus band: the rim is the section's
+/// boundary there, and the carrier's other loop at that height (radius 2.5,
+/// on the far side of the tube) is not on the band.
+#[test]
+fn b91_section_flush_with_one_rim_keeps_clipping() {
+    let mut topo = Topology::new();
+    let solid = torus_band(&mut topo);
+    let h = (PI / 3.0).sin();
+    // Pappus: the rectangle 1 ≤ x ≤ 3.5, |z| ≤ h, plus the tube's segment
+    // beyond its chord at x = 3.5 (angle 2π/3, centroid at
+    // 3 + 4 sin³(π/3) / (3 (2π/3 − sin(2π/3)))).
+    let angle = 2.0 * PI / 3.0;
+    let segment = 0.5 * (angle - angle.sin());
+    let centroid = 3.0 + 4.0 * (angle / 2.0).sin().powi(3) / (3.0 * (angle - angle.sin()));
+    let expected = TAU * (2.5 * 2.0 * h * 2.25 + segment * centroid);
+    let volume = solid_volume(&topo, solid, 1e-3).unwrap();
+    assert!(
+        (volume - expected).abs() <= 1e-6 * expected,
+        "{volume} vs {expected}"
+    );
+    let probe = |p: Point3| classify_point(&topo, solid, p, 0.01, 1e-7).unwrap();
+    assert_eq!(
+        probe(Point3::new(2.5, 0.0, h - 0.1)),
+        PointClassification::Inside
+    );
+    assert_eq!(
+        probe(Point3::new(3.8, 0.0, 0.0)),
+        PointClassification::Inside
+    );
+
+    // z = h: the top cap, the annulus 1 ≤ ρ ≤ 3.5.
+    let area = section_area(
+        &mut topo,
+        solid,
+        Point3::new(0.0, 0.0, h),
+        Vec3::new(0.0, 0.0, 1.0),
+    );
+    assert_area(area, PI * (3.5 * 3.5 - 1.0), "z = h");
 }

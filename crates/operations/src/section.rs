@@ -1266,7 +1266,7 @@ mod curved {
     //! polygons the planar neighbours section (`wire_polygon`), so a clipped
     //! arc ends exactly where the neighbouring face's segment does.
 
-    use std::f64::consts::TAU;
+    use std::f64::consts::{PI, TAU};
 
     use remus_math::compact_sort::CompactSort;
     use remus_math::surfaces::ConicalSurface;
@@ -1289,6 +1289,10 @@ mod curved {
     /// cylinder arms.
     const CONE_SAMPLES: usize = 64;
 
+    /// Samples across the stretch of a cone section branch within the face's
+    /// generator distances.
+    const FACE_SAMPLES: u32 = 32;
+
     /// The plane section of the cone nappe that holds `face`, as polylines on
     /// the complete nappe: one closed loop (last point repeating the first)
     /// for an ellipse or circle, open branches for a parabola or hyperbola,
@@ -1303,6 +1307,7 @@ mod curved {
         // Generator distances of the face's boundary; a face on both nappes,
         // or touching the apex, has no single section branch.
         let mut reach: f64 = 0.0;
+        let mut nearest = f64::INFINITY;
         let mut nappe: Option<bool> = None;
         for point in boundary_samples(topo, face)? {
             let (_, v) = cone.project_point(point);
@@ -1317,109 +1322,148 @@ mod curved {
             }
             nappe = Some(height > 0.0);
             reach = reach.max(v.abs());
+            nearest = nearest.min(v.abs());
         }
         let Some(above) = nappe else {
             return Ok(Vec::new());
         };
         let limit = 4.0 * reach;
         let apex_offset = d - dot_normal_point(normal, cone.apex());
-        // Generator parameter where the plane meets longitude `u`, when on
-        // the face's nappe and within the limit.
-        let at = |u: f64| -> Option<f64> {
-            let generator = cone.evaluate(u, 1.0) - cone.apex();
-            let v = apex_offset / normal.dot(generator);
-            let height = cone.axis().dot(generator) * v;
-            (v.is_finite() && height != 0.0 && (height > 0.0) == above && v.abs() <= limit)
-                .then_some(v)
+        if apex_offset.abs() <= Tolerance::new().linear {
+            return Err(unsupported(
+                "conical section by a plane through the apex".into(),
+            ));
+        }
+        // On longitude u the generator is g(u) = cos a·radial(u) + sin a·axis,
+        // and the plane meets it at v = apex_offset / n·g(u), where
+        // n·g(u) = R cos(u − φ) + C. The point is on the face's nappe and
+        // within the limit exactly when s·n·g(u) ≥ m, for the sign s that
+        // puts v on that nappe and m = |apex_offset| / limit: one closed-form
+        // interval of u, so a branch narrower than any sampling is found.
+        let (sin_a, cos_a) = cone.half_angle().sin_cos();
+        let (nx, ny, nz) = (
+            normal.dot(cone.x_axis()),
+            normal.dot(cone.y_axis()),
+            normal.dot(cone.axis()),
+        );
+        let amplitude = cos_a * nx.hypot(ny);
+        let phase = ny.atan2(nx);
+        let constant = sin_a * nz;
+        let side = if (apex_offset > 0.0) == above {
+            1.0
+        } else {
+            -1.0
         };
-        let point = |u: f64, v: f64| cone.evaluate(u, v);
-
+        let floor = apex_offset.abs() / limit;
+        let point = |u: f64| {
+            let (sin_u, cos_u) = u.sin_cos();
+            let generator =
+                (cone.x_axis() * cos_u + cone.y_axis() * sin_u) * cos_a + cone.axis() * sin_a;
+            cone.apex() + generator * (apex_offset / normal.dot(generator))
+        };
         #[allow(clippy::cast_precision_loss)]
-        let longitude = |i: usize| TAU * i as f64 / CONE_SAMPLES as f64;
-        let valid: Vec<Option<f64>> = (0..CONE_SAMPLES).map(|i| at(longitude(i))).collect();
-        if valid.iter().all(Option::is_some) {
-            let mut ring: Vec<Point3> = valid
-                .iter()
-                .enumerate()
-                .map(|(i, v)| point(longitude(i), v.unwrap_or_default()))
+        if amplitude <= f64::EPSILON * constant.abs().max(1.0) {
+            if side * constant < floor {
+                return Ok(Vec::new());
+            }
+            let mut ring: Vec<Point3> = (0..CONE_SAMPLES)
+                .map(|i| point(TAU * i as f64 / CONE_SAMPLES as f64))
                 .collect();
             ring.push(ring[0]);
             return Ok(vec![ring]);
         }
-        let Some(gap) = valid.iter().position(Option::is_none) else {
+        // s·(R cos w + C) ≥ |apex_offset| / l, with w measured from the
+        // side's crest, holds for |v| ≤ l: cos w ≥ cos_at(l).
+        let cos_at = |l: f64| (apex_offset.abs() / l - side * constant) / amplitude;
+        let threshold = cos_at(limit);
+        if threshold >= 1.0 {
             return Ok(Vec::new());
-        };
-        // Walk once round from an invalid sample, cutting a branch at every
-        // invalid one; each branch end is extended to the limit (or the
-        // nappe's edge) by bisection on the longitude, so it leaves the face.
-        let branch_end = |inside: f64, outside: f64| -> Point3 {
-            let (mut good, mut bad) = (inside, outside);
-            for _ in 0..48 {
-                let mid = f64::midpoint(good, bad);
-                if at(mid).is_some() {
-                    good = mid;
-                } else {
-                    bad = mid;
-                }
-            }
-            point(good, at(good).unwrap_or_default())
-        };
-        let mut branches = Vec::new();
-        let mut current: Vec<Point3> = Vec::new();
-        for step in 1..=CONE_SAMPLES {
-            let i = (gap + step) % CONE_SAMPLES;
-            let previous = (gap + step - 1) % CONE_SAMPLES;
-            let (u, u_previous) = (longitude(i), longitude(previous));
-            // Unwrapped so bisection never runs the long way round.
-            let u_previous = if u_previous > u {
-                u_previous - TAU
+        }
+        let closed = threshold <= -1.0;
+        let half_width = if closed { PI } else { threshold.acos() };
+        let crest = if side > 0.0 { phase } else { phase + PI };
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss
+        )]
+        let steps = ((CONE_SAMPLES as f64 * half_width / PI).ceil() as usize).max(8);
+        #[allow(clippy::cast_precision_loss)]
+        let mut offsets: Vec<f64> = (0..=steps)
+            .map(|k| half_width * (2.0 * k as f64 / steps as f64 - 1.0))
+            .collect();
+        // The face holds generator distances `nearest..=reach`, which on a
+        // near-tangent plane is a stretch of the branch narrower than the
+        // spacing above: sample it densely so the clipped section keeps its
+        // shape. `cos_at` grows as `l` shrinks, so the band is
+        // inner ≤ |w| ≤ outer, inside the branch.
+        let near = cos_at(reach);
+        if near < 1.0 {
+            let outer = near.max(-1.0).acos();
+            let far = cos_at(nearest);
+            let inner = if far >= 1.0 {
+                0.0
             } else {
-                u_previous
+                far.max(-1.0).acos()
             };
-            match (valid[previous], valid[i]) {
-                (None, Some(v)) => current = vec![branch_end(u, u_previous), point(u, v)],
-                (Some(_), Some(v)) => current.push(point(u, v)),
-                (Some(_), None) => {
-                    current.push(branch_end(u_previous, u));
-                    branches.push(std::mem::take(&mut current));
-                }
-                (None, None) => {}
+            for k in 0..=FACE_SAMPLES {
+                let w = inner + (outer - inner) * f64::from(k) / f64::from(FACE_SAMPLES);
+                offsets.extend([w, -w]);
             }
         }
-        Ok(branches)
+        offsets.compact_sort_by(f64::total_cmp);
+        offsets.dedup_by(|a, b| (*a - *b).abs() <= f64::EPSILON);
+        let mut branch: Vec<Point3> = offsets.iter().map(|&w| point(crest + w)).collect();
+        if closed {
+            // −π and π are one longitude: close the loop exactly.
+            branch.pop();
+            branch.push(branch[0]);
+        }
+        Ok(vec![branch])
     }
 
     /// Points along every boundary edge of `face`.
     fn boundary_samples(topo: &Topology, face: FaceId) -> Result<Vec<Point3>, OperationsError> {
+        Ok(edge_chains(topo, face, 8)?.into_iter().flatten().collect())
+    }
+
+    /// Each boundary edge of `face` sampled at `steps` equal parameter
+    /// intervals.
+    fn edge_chains(
+        topo: &Topology,
+        face: FaceId,
+        steps: u32,
+    ) -> Result<Vec<Vec<Point3>>, OperationsError> {
         let face = topo.face(face)?;
-        let mut points = Vec::new();
+        let mut chains = Vec::new();
         for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
             for oriented in topo.wire(wire)?.edges() {
                 let edge = topo.edge(oriented.edge())?;
                 let start = topo.vertex(edge.start())?.point();
                 let end = topo.vertex(edge.end())?.point();
                 let (t0, t1) = edge.domain_with_endpoints(start, end);
-                for k in 0..=8 {
-                    let t = t0 + (t1 - t0) * f64::from(k) / 8.0;
-                    points.push(edge.curve().evaluate_with_endpoints(t, start, end));
-                }
+                chains.push(
+                    (0..=steps)
+                        .map(|k| {
+                            let t = t0 + (t1 - t0) * f64::from(k) / f64::from(steps);
+                            edge.curve().evaluate_with_endpoints(t, start, end)
+                        })
+                        .collect(),
+                );
             }
         }
-        Ok(points)
+        Ok(chains)
     }
 
     /// Where the cutting plane crosses the face's boundary polygons, by the
-    /// same arithmetic the planar arm applies to the same polygons. `None`
-    /// when a whole boundary wire lies in the plane: the section then runs
-    /// along the boundary there.
+    /// same arithmetic the planar arm applies to the same polygons.
     fn boundary_crossings(
         topo: &Topology,
         face: FaceId,
         normal: Vec3,
         d: f64,
         tol: Tolerance,
-    ) -> Result<Option<Vec<Point3>>, OperationsError> {
-        let coplanar_tol = tol.linear * 100.0;
+    ) -> Result<Vec<Point3>, OperationsError> {
         let face = topo.face(face)?;
         let mut crossings = Vec::new();
         for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
@@ -1428,9 +1472,6 @@ mod curved {
                 .iter()
                 .map(|v| dot_normal_point(normal, *v) - d)
                 .collect();
-            if !dists.is_empty() && dists.iter().all(|d| d.abs() < coplanar_tol) {
-                return Ok(None);
-            }
             let n = polygon.len();
             for i in 0..n {
                 let j = (i + 1) % n;
@@ -1450,7 +1491,7 @@ mod curved {
                 }
             }
         }
-        Ok(Some(crossings))
+        Ok(crossings)
     }
 
     /// Keep the parts of `polylines` (carrier section curves) that lie on
@@ -1467,14 +1508,7 @@ mod curved {
         if polylines.iter().all(|p| p.len() < 2) {
             return Ok(());
         }
-        let Some(crossings) = boundary_crossings(topo, face, normal, d, tol)? else {
-            // The section runs along a boundary wire: every polyline is the
-            // face's own edge, shared with its neighbour (and deduplicated).
-            for polyline in polylines {
-                segments.extend(polyline.windows(2).map(|w| (w[0], w[1])));
-            }
-            return Ok(());
-        };
+        let crossings = boundary_crossings(topo, face, normal, d, tol)?;
         // Every crossing belongs to the chord nearest it. Each chord is cut
         // at its crossings and each piece kept by its own midpoint, so a
         // trimmed span or a hole narrower than one chord is not dropped or
@@ -1499,8 +1533,36 @@ mod curved {
                 }
             }
         }
+        // A piece running along a boundary edge that lies in the plane is the
+        // face's own boundary, shared with its neighbour (and deduplicated);
+        // it is kept without classifying a point on the trim itself. The
+        // edge is sampled finely enough that the carrier samples, which lie
+        // on the same curve, stay within its sagitta, under a quarter chord.
+        let coplanar_tol = tol.linear * 100.0;
+        let in_plane: Vec<(Point3, Point3)> = edge_chains(topo, face, 32)?
+            .into_iter()
+            .filter(|chain| {
+                chain
+                    .iter()
+                    .all(|&p| (dot_normal_point(normal, p) - d).abs() < coplanar_tol)
+            })
+            .flat_map(|chain| chain.windows(2).map(|w| (w[0], w[1])).collect::<Vec<_>>())
+            .collect();
+        let band = 0.25
+            * in_plane
+                .iter()
+                .map(|&(a, b)| (b - a).length())
+                .fold(tol.linear * 1000.0, f64::max);
+        let along_boundary = |p: Point3| {
+            in_plane
+                .iter()
+                .any(|&(a, b)| segment_distance(p, a, b) <= band)
+        };
         let surface = topo.face(face)?.surface();
         let on_face = |p: Point3| -> Result<bool, OperationsError> {
+            if along_boundary(p) {
+                return Ok(true);
+            }
             let on_carrier = surface
                 .project_point(p)
                 .and_then(|(u, v)| surface.evaluate(u, v))
@@ -1534,5 +1596,57 @@ mod curved {
             0.0
         };
         (p - (a + ab * t)).length()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+        use std::f64::consts::PI;
+
+        use remus_math::vec::Point3;
+        use remus_topology::Topology;
+        use remus_topology::explorer::solid_faces;
+        use remus_topology::face::FaceSurface;
+
+        use super::cone_section;
+        use crate::primitives::make_cone;
+
+        /// A vertical plane at distance `c = 1.999` from the axis of the
+        /// frustum `ρ = 2 − z/3` meets its lateral face for
+        /// `|u − φ| ≤ acos(c/2) ≈ 0.032`, narrower than the 2π/64 longitude
+        /// spacing. Turned to `φ = π/64`, midway between two samples, no
+        /// sample saw it and the branch was dropped. It must be found, and
+        /// sampled on the face densely enough to keep its shape.
+        #[test]
+        fn cone_branch_between_longitude_samples_is_found() {
+            let mut topo = Topology::new();
+            let solid = make_cone(&mut topo, 2.0, 1.0, 3.0).unwrap();
+            let face = solid_faces(&topo, solid)
+                .unwrap()
+                .into_iter()
+                .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cone(_)))
+                .expect("a lateral face");
+            let FaceSurface::Cone(cone) = topo.face(face).unwrap().surface().clone() else {
+                panic!("a cone face");
+            };
+            let (c, phi) = (1.999, PI / 64.0);
+            let normal = cone.x_axis() * phi.cos() + cone.y_axis() * phi.sin();
+            assert!(normal.dot(cone.axis()).abs() < 1e-12);
+            assert!(normal.dot(cone.apex() - Point3::new(0.0, 0.0, 0.0)).abs() < 1e-12);
+
+            let branches = cone_section(&topo, face, &cone, normal, c).unwrap();
+            let on_face = branches
+                .iter()
+                .flatten()
+                .filter(|&&p| {
+                    let (u, v) = cone.project_point(p);
+                    (normal.dot(p - Point3::new(0.0, 0.0, 0.0)) - c).abs() < 1e-9
+                        && (cone.evaluate(u, v) - p).length() < 1e-9
+                        && remus_check::classify::surface_point_in_face(&topo, face, p).unwrap()
+                })
+                .count();
+            assert!(on_face >= 16, "{on_face} branch samples on the face");
+        }
     }
 }
