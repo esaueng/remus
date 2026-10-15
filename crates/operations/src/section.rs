@@ -2040,14 +2040,28 @@ mod curved {
         let mut sagitta: f64 = 0.0;
         let near = |p: Point3| (dot_normal_point(normal, p) - d).abs() < tol.linear;
         for edge in boundary_edges(topo, face)? {
-            // A NURBS curve lies in the plane exactly when its control points
-            // do (its basis functions are independent); samples alone can
-            // miss it leaving the plane between them.
-            if let EdgeCurve::NurbsCurve(nc) = edge.edge.curve()
-                && !(nc.weights().iter().all(|&w| w > 0.0)
-                    && nc.control_points().iter().all(|&p| near(p)))
-            {
-                continue;
+            // A NURBS edge lies in the plane exactly when the control points
+            // whose basis functions are nonzero over its range do (those
+            // functions are independent there); samples alone can miss it
+            // leaving the plane between them. Control points that only shape
+            // the rest of a longer curve do not count.
+            if let EdgeCurve::NurbsCurve(nc) = edge.edge.curve() {
+                let (t0, t1) = (
+                    edge.range.0.min(edge.range.1),
+                    edge.range.0.max(edge.range.1),
+                );
+                let (knots, p) = (nc.knots(), nc.degree());
+                let spans = |i: usize| knots[i] < t1 && knots[i + p + 1] > t0;
+                let certified = nc
+                    .control_points()
+                    .iter()
+                    .zip(nc.weights())
+                    .enumerate()
+                    .filter(|&(i, _)| spans(i))
+                    .all(|(_, (&q, &w))| w > 0.0 && near(q));
+                if !certified {
+                    continue;
+                }
             }
             let mut steps = 32;
             let mut chain = edge.chain(steps);
@@ -3049,6 +3063,52 @@ mod curved {
                 super::in_plane_edges(&topo, face, Vec3::new(0.0, 0.0, 1.0), 0.0, Tolerance::new())
                     .unwrap();
             assert_eq!(in_plane.len(), 1, "only the closing line is in the plane");
+        }
+
+        /// An edge holding the first half of a longer degree-1 NURBS curve:
+        /// the half from (0, 0, 0) to (2, 0, 0) lies in z = 0, and the other
+        /// half climbs to z = 1. The control points that shape only the
+        /// unused half must not keep the edge out of the plane.
+        #[test]
+        fn an_in_plane_subrange_of_a_longer_nurbs_is_in_the_plane() {
+            let curve = NurbsCurve::new(
+                1,
+                vec![0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0],
+                vec![
+                    Point3::new(0.0, 0.0, 0.0),
+                    Point3::new(1.0, 0.0, 0.0),
+                    Point3::new(2.0, 0.0, 0.0),
+                    Point3::new(2.0, 1.0, 0.5),
+                    Point3::new(2.0, 2.0, 1.0),
+                ],
+                vec![1.0; 5],
+            )
+            .unwrap();
+            let mut topo = Topology::new();
+            let [a, b] = [Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0)]
+                .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+            let mut out = Edge::new(a, b, EdgeCurve::NurbsCurve(curve));
+            out.set_trim(Some((0.0, 0.5)));
+            let out = topo.add_edge(out);
+            let back = topo.add_edge(Edge::new(b, a, EdgeCurve::Line));
+            let edges = [out, back].map(|e| OrientedEdge::new(e, true));
+            let wire = topo.add_wire(Wire::new(edges.to_vec(), true).unwrap());
+            let face = topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 1.0, 0.0),
+                    d: 0.0,
+                },
+            ));
+            let (in_plane, _) =
+                super::in_plane_edges(&topo, face, Vec3::new(0.0, 0.0, 1.0), 0.0, Tolerance::new())
+                    .unwrap();
+            assert_eq!(
+                in_plane.len(),
+                2,
+                "both the NURBS half and the line are in the plane"
+            );
         }
 
         /// A closed NURBS edge holding one loop of a two-loop curve: the
