@@ -25,6 +25,10 @@ pub const MAX_FIT_POINTS: usize = 1 << 20;
 pub const MAX_FIT_DEGREE: usize = 25;
 
 /// Largest dense matrix, in `f64` entries (32 MiB), a fit may allocate.
+///
+/// Least squares' `n×m` basis matrix is charged six entries of overhead per
+/// separately allocated row, so few control points through many data points
+/// count their row allocations as well as their values.
 pub const MAX_DENSE_FIT_ENTRIES: usize = 1 << 22;
 
 /// Largest banded or per-point basis storage, in `f64` entries (128 MiB).
@@ -35,9 +39,10 @@ pub const MAX_DENSE_FIT_ENTRIES: usize = 1 << 22;
 /// stays inside it.
 pub const MAX_SPARSE_FIT_ENTRIES: usize = 1 << 24;
 
-/// Retained overhead of one LSPIA basis row, in `f64` entries: its span
-/// index, `Vec` header and allocator header (48 bytes).
-const LSPIA_ROW_OVERHEAD: usize = 6;
+/// Retained overhead of one separately allocated per-point row, in `f64`
+/// entries: its `Vec` header and allocator header, plus LSPIA's span index
+/// (48 bytes).
+const ROW_OVERHEAD: usize = 6;
 
 fn check_sparse_entries(entries: usize) -> Result<(), MathError> {
     if entries > MAX_SPARSE_FIT_ENTRIES {
@@ -292,8 +297,9 @@ pub fn interpolate_with_params(
 /// # Errors
 ///
 /// Returns an error if parameters are invalid. The size and degree bounds
-/// of [`interpolate`] apply, and the dense normal equations (`n·m + 2·m²`
-/// entries for `n` points and `m` control points) are held to
+/// of [`interpolate`] apply, and the dense normal equations (`n·(m + 6) +
+/// 2·m²` entries for `n` points and `m` control points, six per row for its
+/// allocation) are held to
 /// [`MAX_DENSE_FIT_ENTRIES`].
 pub fn approximate(
     points: &[Point3],
@@ -330,10 +336,10 @@ pub fn approximate(
 
     let p = fit_degree(degree, num_control_points - 1, num_control_points)?;
     let m = num_control_points;
-    // `solve_approximation` holds the n×m basis matrix and the m×m normal
-    // matrix plus one working copy of it.
+    // `solve_approximation` holds the n×m basis matrix, one allocation per
+    // row, and the m×m normal matrix plus one working copy of it.
     check_dense_entries(
-        n.saturating_mul(m)
+        n.saturating_mul(m + ROW_OVERHEAD)
             .saturating_add(m.saturating_mul(m).saturating_mul(2)),
     )?;
     // Forming NᵀN costs n·m² multiply-adds and the three dense solves about
@@ -1000,7 +1006,7 @@ pub fn approximate_lspia(
     check_fit_points(n)?;
     let p = fit_degree(degree, n - 1, num_control_points.min(n).max(1))?;
     let m = num_control_points.min(n).max(p + 1);
-    check_sparse_entries(n.saturating_mul(p + 1 + LSPIA_ROW_OVERHEAD))?;
+    check_sparse_entries(n.saturating_mul(p + 1 + ROW_OVERHEAD))?;
     check_fit_work(lspia_work(n, p, max_iterations))?;
 
     let params = chord_length_params(points);
@@ -1134,7 +1140,7 @@ pub(crate) fn approximate_lspia_weighted(
     check_fit_points(n)?;
     let p = fit_degree(degree, n - 1, num_control_points.min(n).max(1))?;
     let m = num_control_points.min(n).max(p + 1);
-    check_sparse_entries(n.saturating_mul(p + 1 + LSPIA_ROW_OVERHEAD))?;
+    check_sparse_entries(n.saturating_mul(p + 1 + ROW_OVERHEAD))?;
     check_fit_work(lspia_work(n, p, max_iterations))?;
 
     let params = chord_length_params(points);
