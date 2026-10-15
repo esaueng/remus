@@ -399,7 +399,7 @@ pub fn run_pave_filler_n_with_pairs(
     // once. Its inputs (edge pave blocks and their paves, same-domain
     // vertices, vertex points) are written only by VV/VE/EE/EF above and by
     // coplanar FF and make_blocks below, never by FF itself.
-    let junction_seeds = phase_ff::seed_junctions(topo, arena);
+    let mut junction_seeds = phase_ff::seed_junctions(topo, arena);
     for &(i, j) in &pairs {
         context.check_cancelled()?;
         phase_ff::perform_with_junction_seeds(
@@ -408,7 +408,7 @@ pub fn run_pave_filler_n_with_pairs(
             sources[j],
             context,
             arena,
-            &junction_seeds,
+            &mut junction_seeds,
         )?;
     }
     debug_assert!(

@@ -10681,6 +10681,46 @@ fn scaling_nway_ff_seeds_junctions_once_per_run() {
     );
 }
 
+/// N-way phase FF shares the seeded junction cells across its solid pairs
+/// and copies them only when a pair writes one. Every resolve on an
+/// overlapping box grid snaps to a seeded junction, so no pair writes and
+/// nothing is copied. Before, every pair with a surviving face pair cloned
+/// the whole seeded table, one full copy of every seed per pair (its
+/// `junction_seeds` count times the pair count).
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_nway_ff_pairs_share_the_seeded_junction_cells() {
+    use remus_math::mat::Mat4;
+
+    for n in [3, 5] {
+        let mut topo = Topology::new();
+        let mut ids = Vec::new();
+        for row in 0..n {
+            for col in 0..n {
+                let s = crate::primitives::make_box(&mut topo, 1.01, 1.01, 1.0).unwrap();
+                crate::transform::transform_solid(
+                    &mut topo,
+                    s,
+                    &Mat4::translation(col as f64, row as f64, 0.0),
+                )
+                .unwrap();
+                ids.push(s);
+            }
+        }
+        remus_algo::perf::reset();
+        crate::compound_ops::fuse_solids(&mut topo, &ids).unwrap();
+        let snapshot = remus_algo::perf::snapshot();
+        assert!(snapshot.junction_seeds > 0, "{n}x{n}: no junctions seeded");
+        assert!(
+            snapshot.junction_cells_copied < snapshot.junction_seeds,
+            "{n}x{n}: FF pairs copied {} seeded junction cells ({} seeded); \
+             a per-pair clone copies every seed per pair",
+            snapshot.junction_cells_copied,
+            snapshot.junction_seeds
+        );
+    }
+}
+
 /// The holed plate of the boolean bench (`single_boolean_at_face_count`,
 /// F~54): a 100 x 100 x 10 box cut by sixteen r = 2 cylinders on a 20 mm
 /// grid, each spanning z = -5..15, plus one more such tool at `(x, y)`.

@@ -58,6 +58,10 @@
 //! `hole_containment_samplings`, counts the hole loops the face splitter's
 //! containment test samples (a box gate skips those a query lies outside).
 //!
+//! `junction_cells_copied` counts the seeded phase-FF junction cells an
+//! N-way solid pair copies. Pairs share the seeded cells and copy them only
+//! on a write; copying them for every pair grew with pairs × seeds.
+//!
 //! The counters are gated behind the `perf-counters` feature. With the feature
 //! off (every normal and release build) the `bump_*` calls are empty `#[inline]`
 //! functions that compile to nothing, so the instrumented hot loops pay zero
@@ -92,6 +96,7 @@ std::thread_local! {
     static FACE_BBOX_BUILDS: Cell<u64> = const { Cell::new(0) };
     static FACE_OUTLINE_SAMPLINGS: Cell<u64> = const { Cell::new(0) };
     static STORE_FACES_COPIED: Cell<u64> = const { Cell::new(0) };
+    static JUNCTION_CELLS_COPIED: Cell<u64> = const { Cell::new(0) };
 }
 
 #[cfg(any(test, feature = "perf-counters"))]
@@ -338,6 +343,18 @@ pub(crate) fn bump_store_face_copied() {
     increment(&STORE_FACES_COPIED);
 }
 
+/// Count `cells` junction-registry cells copied when a phase-FF solid pair
+/// first writes the shared seeded cells. Crate-internal.
+#[inline]
+pub(crate) fn bump_junction_cells_copied(cells: usize) {
+    #[cfg(feature = "perf-counters")]
+    JUNCTION_CELLS_COPIED.with(|value| {
+        value.set(value.get().saturating_add(cells as u64));
+    });
+    #[cfg(not(feature = "perf-counters"))]
+    let _ = cells;
+}
+
 /// Count one face whose outline phase EF sampled for its containment test.
 /// Crate-internal.
 #[inline]
@@ -419,6 +436,8 @@ pub struct PerfSnapshot {
     pub face_outline_samplings: u64,
     /// Operand faces deep-copied into a GFA store.
     pub store_faces_copied: u64,
+    /// Seeded junction cells copied by phase-FF solid pairs that wrote them.
+    pub junction_cells_copied: u64,
 }
 
 /// Reset all counters to zero. Only available with `perf-counters`.
@@ -444,6 +463,7 @@ pub fn reset() {
     FACE_BBOX_BUILDS.set(0);
     FACE_OUTLINE_SAMPLINGS.set(0);
     STORE_FACES_COPIED.set(0);
+    JUNCTION_CELLS_COPIED.set(0);
 }
 
 /// Every work counter since the last [`reset`]. Only available with
@@ -472,6 +492,7 @@ pub fn snapshot() -> PerfSnapshot {
         face_bbox_builds: FACE_BBOX_BUILDS.get(),
         face_outline_samplings: FACE_OUTLINE_SAMPLINGS.get(),
         store_faces_copied: STORE_FACES_COPIED.get(),
+        junction_cells_copied: JUNCTION_CELLS_COPIED.get(),
     }
 }
 
