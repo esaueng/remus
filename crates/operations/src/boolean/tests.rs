@@ -11024,18 +11024,27 @@ fn hole_winding_shortcut_matches_sampled_sign() {
     let mut checked = 0;
     for axis_z in [1.0, -1.0] {
         let circle = Circle3D::new(center, Vec3::new(0.0, 0.0, axis_z), 0.75).unwrap();
-        for span in [(0.0, TAU), (TAU, 0.0), (1.25, 1.25 + TAU), (1.25 + TAU, 1.25)] {
+        for span in [
+            (0.0, TAU),
+            (TAU, 0.0),
+            (1.25, 1.25 + TAU),
+            (1.25 + TAU, 1.25),
+        ] {
             let v = topo.add_vertex(Vertex::new(circle.evaluate(span.0), 1e-7));
             let mut edge = Edge::new(v, v, EdgeCurve::Circle(circle.clone()));
             edge.set_trim(Some(span));
             let eid = topo.add_edge(edge);
             for forward in [true, false] {
-                let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, forward)], true).unwrap());
+                let wire =
+                    topo.add_wire(Wire::new(vec![OrientedEdge::new(eid, forward)], true).unwrap());
                 for normal_z in [1.0, -1.0] {
                     let normal = Vec3::new(0.0, 0.0, normal_z);
                     let sampled = wire_winding_sign(&topo, wire, normal).unwrap();
                     let shortcut = hole_winding_sign(&topo, wire, normal).unwrap();
-                    assert!(sampled.abs() > 1e-3, "sampled winding {sampled} is not decisive");
+                    assert!(
+                        sampled.abs() > 1e-3,
+                        "sampled winding {sampled} is not decisive"
+                    );
                     assert!(
                         (shortcut > 0.0) == (sampled > 0.0) && shortcut.abs() > 0.0,
                         "axis {axis_z}, span {span:?}, forward {forward}, normal {normal_z}: \
