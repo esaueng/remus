@@ -462,7 +462,29 @@ fn required_closed_mesh_volume_with(
     };
     let volume = signed_volume_from_mesh(&retried);
     vol_trace(|| format!("{why}: closed clamp mesh instead of refusing -> {volume}"));
-    Ok((volume > 1e-12).then_some(volume))
+    Ok(enclosed_mesh_volume(&retried, volume))
+}
+
+/// Below this fraction of the cube of a mesh's largest bounding-box side, its
+/// volume is round-off of a mesh that encloses nothing, not material. Relative to the mesh's own size, so a reading does not depend on
+/// the model's units: the absolute `1e-12` floor it replaces turned away
+/// every closed mesh of a body under about 1e-4 across (B93).
+const MESH_VOLUME_FLOOR: f64 = 1e-12;
+
+/// `volume`, the signed volume of `mesh`, when it clears
+/// [`MESH_VOLUME_FLOOR`] for the mesh's own size.
+fn enclosed_mesh_volume(mesh: &tessellate::TriangleMesh, volume: f64) -> Option<f64> {
+    let mut points = mesh.indices.iter().map(|&i| mesh.positions[i as usize]);
+    let first = points.next()?;
+    let (lo, hi) = points.fold((first, first), |(lo, hi), p| {
+        (
+            Point3::new(lo.x().min(p.x()), lo.y().min(p.y()), lo.z().min(p.z())),
+            Point3::new(hi.x().max(p.x()), hi.y().max(p.y()), hi.z().max(p.z())),
+        )
+    });
+    let size = hi - lo;
+    let side = size.x().max(size.y()).max(size.z());
+    (volume.is_finite() && volume > MESH_VOLUME_FLOOR * side * side * side).then_some(volume)
 }
 
 /// [`required_closed_mesh_volume`] on an already built whole-solid mesh.
@@ -475,7 +497,7 @@ fn closed_mesh_or_exact_volume(
     if mesh_is_closed(mesh) {
         let volume = signed_volume_from_mesh(mesh);
         vol_trace(|| format!("{why}: closed whole-solid mesh -> {volume}"));
-        return Ok((volume > 1e-12).then_some(volume));
+        return Ok(enclosed_mesh_volume(mesh, volume));
     }
     let exact = open_mesh_exact_volume(topo, solid, why);
     vol_trace(|| format!("{why}: open whole-solid mesh -> exact fallback {exact:?}"));
@@ -2507,7 +2529,7 @@ fn solid_volume_uncached(
     let mesh = whole_solid_mesh(topo, solid, deflection)?;
     if !mesh.indices.is_empty() {
         let vol = signed_volume_from_mesh(&mesh);
-        if vol > 1e-12 {
+        if enclosed_mesh_volume(&mesh, vol).is_some() {
             vol_trace(|| {
                 format!(
                     "final whole-solid mesh ({} bad edges) -> {vol}",
@@ -5435,6 +5457,79 @@ mod regression_tests {
                     })
                 ),
                 "at {deflection:e}: an open clamp mesh must refuse, got {refusal:?}"
+            );
+        }
+    }
+
+    /// `mesh` with every position scaled about the origin by `scale`.
+    fn scaled(mut mesh: tessellate::TriangleMesh, scale: f64) -> tessellate::TriangleMesh {
+        for p in &mut mesh.positions {
+            *p = Point3::new(p.x() * scale, p.y() * scale, p.z() * scale);
+        }
+        mesh
+    }
+
+    /// B93: the closed-mesh gates hold a mesh's volume to a floor relative to
+    /// the mesh's own size. The absolute `1e-12` floor turned away the closed
+    /// mesh of any body under about 1e-4 across, so the routes chosen for it
+    /// fell through to the ones they exist to avoid. A closed mesh flattened
+    /// onto a plane, enclosing nothing, is still turned away at every scale.
+    #[test]
+    fn closed_mesh_volume_floor_scales_with_the_mesh() {
+        let (topo, solid, clamp) = cylinder_and_clamp();
+        let mesh = tessellate::tessellate_solid(&topo, solid, clamp).unwrap();
+        assert!(mesh_is_closed(&mesh));
+        let unit = signed_volume_from_mesh(&mesh);
+        for scale in [1e3, 1.0, 1e-4, 1e-6] {
+            let tiny = scaled(mesh.clone(), scale);
+            let expected = unit * scale.powi(3);
+            let read = closed_mesh_or_exact_volume(&topo, solid, &tiny, "test").unwrap();
+            assert!(
+                read.is_some_and(|v| (v - expected).abs() <= 1e-12 * expected),
+                "scale {scale:e}: closed mesh read {read:?}, expected {expected:e}"
+            );
+            let mut flat = tiny;
+            for p in &mut flat.positions {
+                *p = Point3::new(p.x(), p.y(), 0.0);
+            }
+            assert_eq!(
+                closed_mesh_or_exact_volume(&topo, solid, &flat, "test").unwrap(),
+                None,
+                "scale {scale:e}: a flattened mesh encloses nothing"
+            );
+        }
+    }
+
+    /// B93 on the clamp retry: a cracked fine mesh of a body the exact
+    /// integrator declines takes the closed clamp mesh at any scale.
+    #[test]
+    fn clamp_retry_volume_floor_scales_with_the_mesh() {
+        use remus_math::mat::Mat4;
+        let mut topo = Topology::new();
+        let bx = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let sp = crate::primitives::make_sphere(&mut topo, 6.0, 24).unwrap();
+        crate::transform::transform_solid(&mut topo, sp, &Mat4::translation(5.0, 5.0, 5.0))
+            .unwrap();
+        let solid =
+            crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Intersect, bx, sp)
+                .unwrap();
+        let clamp = volume_tessellation_deflection(&topo, solid, f64::INFINITY);
+        let at_clamp = tessellate::tessellate_solid(&topo, solid, clamp).unwrap();
+        let unit = signed_volume_from_mesh(&at_clamp);
+        for scale in [1.0, 1e-5] {
+            let mut mesher = cracking_mesher(&topo, solid, clamp, false);
+            let retried = required_closed_mesh_volume_with(
+                &topo,
+                solid,
+                clamp / 4.0,
+                "scalloped sphere collar",
+                |d| mesher(d).map(|mesh| scaled(mesh, scale)),
+            )
+            .unwrap();
+            let expected = unit * scale.powi(3);
+            assert!(
+                retried.is_some_and(|v| (v - expected).abs() <= 1e-12 * expected),
+                "scale {scale:e}: clamp mesh read {retried:?}, expected {expected:e}"
             );
         }
     }
