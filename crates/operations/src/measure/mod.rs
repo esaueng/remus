@@ -4,6 +4,7 @@
 mod area;
 mod bounding_box;
 mod edge_length;
+mod face_box_memo;
 pub(crate) mod helpers;
 mod nurbs_area_memo;
 mod volume;
@@ -19,6 +20,12 @@ pub(crate) use bounding_box::{
 pub(crate) use bounding_box::{face_set_bounding_box, face_set_vertex_bounding_box};
 pub use bounding_box::{sheet_bounding_box, solid_bounding_box};
 pub use edge_length::{body_length, edge_length, face_perimeter, wire_length};
+pub(crate) use face_box_memo::face_bounding_box;
+pub use face_box_memo::{
+    DEFAULT_FACE_BOX_MEMO_BYTE_BUDGET, DEFAULT_FACE_BOX_MEMO_CAPACITY, FaceBoxMemoStats,
+    clear_thread_face_box_memo, disable_thread_face_box_memo, enable_thread_face_box_memo,
+    set_thread_face_box_memo_limits, thread_face_box_memo_stats,
+};
 pub use nurbs_area_memo::{
     DEFAULT_NURBS_AREA_MEMO_BYTE_BUDGET, DEFAULT_NURBS_AREA_MEMO_CAPACITY, NurbsAreaMemoStats,
     clear_thread_nurbs_area_memo, disable_thread_nurbs_area_memo, enable_thread_nurbs_area_memo,

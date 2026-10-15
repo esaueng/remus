@@ -488,6 +488,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Certificate-implies-probe oracle, refusal cases and probe-mesh work guard (tests) | `measure/volume/planar_outline_tests.rs` |
 | Hash-map references for the sorted whole-mesh edge censuses (tests) | `measure/volume/edge_census_oracle_tests.rs` |
 | Bounded opt-in exact-content scalar memo for trimmed NURBS face areas | `measure/nurbs_area_memo.rs`, `measure/nurbs_area_memo/tests.rs` |
+| Bounded opt-in exact-content memo of single-face bounding boxes (the move's swept-region refusal), and its bit-identity tests | `measure/face_box_memo.rs`, `measure/face_box_memo/tests.rs` |
 | Bounded opt-in host-clock phase timings | `performance.rs` |
 | Distance queries | `distance.rs` |
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
