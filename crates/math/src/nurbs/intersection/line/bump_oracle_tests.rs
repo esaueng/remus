@@ -242,15 +242,6 @@ fn far_translated_patch_reports_no_near_miss() {
 #[test]
 fn common_weight_factor_keeps_narrow_bump_crossings() {
     let plain = bump_graph(30, &[(13, 13, 1.5)]);
-    let heavy = NurbsSurface::new(
-        2,
-        2,
-        plain.knots_u().to_vec(),
-        plain.knots_v().to_vec(),
-        plain.control_points().to_vec(),
-        vec![vec![1.5e308; 30]; 30],
-    )
-    .unwrap();
     let peak = 12.5 / 28.0;
     let origin = Point3::new(peak, peak, 1.1);
     let dir = Vec3::new(
@@ -259,12 +250,26 @@ fn common_weight_factor_keeps_narrow_bump_crossings() {
         0.350_889_803_483_932_2,
     );
     let expected = oracle_crossings(&plain, origin, dir);
-    let hits = intersect_line_nurbs(&heavy, origin, dir, 20).unwrap();
-    assert_matches_oracle(
-        &line_parameters(origin, dir, &hits),
-        &expected,
-        "heavy weights",
-    );
+    // Near both ends of the normal range. A subnormal common factor carries
+    // too few significant bits for the surface evaluator itself, grid pass
+    // included, so it is not a representation of the same surface.
+    for weight in [1.5e308, 1e-300] {
+        let scaled = NurbsSurface::new(
+            2,
+            2,
+            plain.knots_u().to_vec(),
+            plain.knots_v().to_vec(),
+            plain.control_points().to_vec(),
+            vec![vec![weight; 30]; 30],
+        )
+        .unwrap();
+        let hits = intersect_line_nurbs(&scaled, origin, dir, 20).unwrap();
+        assert_matches_oracle(
+            &line_parameters(origin, dir, &hits),
+            &expected,
+            &format!("weights {weight:e}"),
+        );
+    }
 }
 
 /// Sliding the origin along the line does not change the line, so it must
