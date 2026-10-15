@@ -4073,7 +4073,7 @@ impl SignedTriangle {
     ///
     /// A face may be pierced by holes bounded by line edges: each hole adds a
     /// fan over its polygon wound against the face's triangle, so its area
-    /// subtracts. Reading the outer triangle alone credited the removed
+    /// subtracts, and an island nested inside a hole one wound with it. Reading the outer triangle alone credited the removed
     /// patch, and with the hole's edges missing the directed edges could not
     /// cancel, so the sum also moved with the body (B92). The winding comes
     /// from the triangle's own normal rather than the hole wire's stored
@@ -4113,19 +4113,39 @@ impl SignedTriangle {
             });
 
             let outer_area = (b - a).cross(c - a);
+            let mut loops = Vec::with_capacity(face.inner_wires().len());
             for &inner in face.inner_wires() {
-                let Some(mut hole) = line_loop(topo, inner)? else {
+                let Some(hole) = line_loop(topo, inner)? else {
                     return Ok(None);
                 };
                 if hole.len() < 3 {
                     return Ok(None);
                 }
+                loops.push(hole);
+            }
+            let polygons: Vec<Vec<Point3>> = loops
+                .iter()
+                .map(|hole| hole.iter().map(|&(p, _)| p).collect())
+                .collect();
+            for (k, mut hole) in loops.into_iter().enumerate() {
+                // A loop inside an odd number of others bounds an island
+                // within a hole, which restores material (the parity the
+                // planar tessellator applies): it winds with the face's
+                // triangle, a hole against it.
+                let depth = polygons
+                    .iter()
+                    .enumerate()
+                    .filter(|&(j, other)| {
+                        j != k
+                            && crate::distance::point_in_polygon_3d(&hole[0].0, other, &outer_area)
+                    })
+                    .count();
                 let (h0, _) = hole[0];
                 let hole_area = hole
                     .windows(2)
                     .map(|w| (w[0].0 - h0).cross(w[1].0 - h0))
                     .fold(Vec3::new(0.0, 0.0, 0.0), |sum, v| sum + v);
-                if hole_area.dot(outer_area) > 0.0 {
+                if (hole_area.dot(outer_area) > 0.0) == (depth % 2 == 0) {
                     hole.reverse();
                 }
                 let (h0, i0) = hole[0];
@@ -5498,5 +5518,89 @@ mod notch_patch_qualification_tests {
             !torus_face_is_notch_patch(&topo, face),
             "a stored full turn must not qualify as a quarter seam"
         );
+    }
+}
+
+/// B92: nested inner loops on a pierced triangle face alternate: a hole
+/// subtracts, an island inside it adds back.
+#[cfg(test)]
+mod nested_inner_loop_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::{Face, FaceSurface};
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire, WireId};
+
+    use super::SignedTriangle;
+
+    fn polygon_wire(topo: &mut Topology, points: &[(f64, f64)]) -> WireId {
+        let vertices: Vec<_> = points
+            .iter()
+            .map(|&(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, 0.0), 1e-7)))
+            .collect();
+        let n = vertices.len();
+        let edges = (0..n)
+            .map(|i| {
+                let edge = topo.add_edge(Edge::new(
+                    vertices[i],
+                    vertices[(i + 1) % n],
+                    EdgeCurve::Line,
+                ));
+                OrientedEdge::new(edge, true)
+            })
+            .collect();
+        topo.add_wire(Wire::new(edges, true).unwrap())
+    }
+
+    /// The triangle (0,0), (12,0), (0,12) (area 72) pierced by the square
+    /// [2, 6]² (16) holding the triangle (3,3), (5,3), (3,5) (2) as an
+    /// island: the face's signed triangles sum to 72 − 16 + 2 = 58 whichever
+    /// way the inner wires are stored.
+    #[test]
+    fn an_island_inside_a_hole_adds_back() {
+        for (hole, island) in [
+            (
+                vec![(2.0, 2.0), (6.0, 2.0), (6.0, 6.0), (2.0, 6.0)],
+                vec![(3.0, 3.0), (5.0, 3.0), (3.0, 5.0)],
+            ),
+            (
+                vec![(2.0, 6.0), (6.0, 6.0), (6.0, 2.0), (2.0, 2.0)],
+                vec![(3.0, 5.0), (5.0, 3.0), (3.0, 3.0)],
+            ),
+        ] {
+            let mut topo = Topology::new();
+            let outer = polygon_wire(&mut topo, &[(0.0, 0.0), (12.0, 0.0), (0.0, 12.0)]);
+            let inner = vec![
+                polygon_wire(&mut topo, &hole),
+                polygon_wire(&mut topo, &island),
+            ];
+            let face = topo.add_face(Face::new(
+                outer,
+                inner,
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            ));
+            let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+            let solid = topo.add_solid(Solid::new(shell, Vec::new()));
+
+            let triangles = SignedTriangle::of_solid(&topo, solid)
+                .unwrap()
+                .expect("line loops");
+            let area: f64 = triangles
+                .iter()
+                .map(|t| {
+                    let [a, b, c] = t.points;
+                    0.5 * (b - a).cross(c - a).z() * t.orientation
+                })
+                .sum();
+            assert!((area - 58.0).abs() < 1e-12, "signed area {area}");
+        }
     }
 }
