@@ -2889,7 +2889,7 @@ fn validate_arena_positive(value: f64, subject: &str, label: &str) -> Result<(),
 /// linear tolerance, or the rounding of a kernel-built frame (64 ulp relative)
 /// on a carrier so large that rounding alone exceeds it.
 ///
-/// An unbounded carrier (`scale` infinite: cone, parabola, hyperbola) moves
+/// An unbounded carrier (`scale` infinite: cylinder, cone, parabola, hyperbola) moves
 /// points by its trimmed extent times the frame error, which the carrier alone
 /// does not bound, so it gets the rounding bound. Planes pass 0 and keep the
 /// plain bound: STEP imports carry plane normals up to 5e-10 off unit length.
@@ -3051,7 +3051,7 @@ fn validate_arena_face_surface(surface: &FaceSurface, subject: &str) -> Result<(
                     (cylinder.x_axis(), "cylinder x axis"),
                     (cylinder.y_axis(), "cylinder y axis"),
                 ],
-                cylinder.radius(),
+                f64::INFINITY,
                 subject,
             )
         }
