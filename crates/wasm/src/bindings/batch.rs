@@ -533,6 +533,28 @@ impl BrepKernel {
             .collect()
     }
 
+    /// Runs a `ReadOnly`-hinted operation, undoing any topology change if it
+    /// fails.
+    ///
+    /// The snapshot is an O(1) `Rc` share. It stays correct if the op does
+    /// mutate: `Rc::make_mut` in `topo_mut` sees the extra reference and
+    /// copies the pre-op arenas aside before the first mutation lands.
+    fn run_read_only(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> BatchItemResult,
+    ) -> BatchItemResult {
+        let snapshot = Rc::clone(&self.topo);
+        let result = operation(self);
+        // While `snapshot` is alive every mutation goes through that copy, so
+        // a still-shared pointer proves the op left the topology untouched.
+        // Restoring then would itself deep-copy (through `topo_mut`) and bump
+        // the cache generation for nothing.
+        if result.is_err() && !Rc::ptr_eq(&self.topo, &snapshot) {
+            self.topo_mut().restore_preserving_handle_slots(&snapshot);
+        }
+        result
+    }
+
     /// Runs one batch operation, undoing its topology changes if it fails.
     ///
     /// The qualified boolean family coordinates its entry snapshot with native
@@ -552,15 +574,7 @@ impl BrepKernel {
             }
             result
         } else if kind == BatchOpKind::ReadOnly {
-            // O(1). Still correct if the op does mutate: `Rc::make_mut` in
-            // `topo_mut` sees the extra reference and copies the pre-op arenas
-            // aside before the first mutation lands.
-            let snapshot = Rc::clone(&self.topo);
-            let result = self.dispatch_op(op, args);
-            if result.is_err() {
-                self.topo_mut().restore_preserving_handle_slots(&snapshot);
-            }
-            result
+            self.run_read_only(|kernel| kernel.dispatch_op(op, args))
         } else {
             // Copy aside so `self.topo` stays unshared and the operation
             // mutates it in place, keeping its arena capacity.
@@ -3532,6 +3546,81 @@ mod batch_contract_tests {
 
     fn parse(response: &str) -> serde_json::Value {
         serde_json::from_str(response).expect("batch response must be valid JSON")
+    }
+
+    /// WASM-3: a failing read-only op used to restore through `topo_mut`
+    /// while its own `Rc` snapshot was still alive, which deep-copied the
+    /// whole topology (one `checkpoint.first-mutation-clone` span) and
+    /// bumped the cache generation although nothing had changed.
+    #[test]
+    fn failing_read_only_op_neither_copies_nor_invalidates_the_topology() {
+        thread_local! {
+            static NOW: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+        }
+        fn clock() -> f64 {
+            NOW.with(|now| {
+                now.set(now.get() + 1.0);
+                now.get()
+            })
+        }
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(1.0, 1.0, 1.0).expect("box fixture");
+        let pointer = Rc::as_ptr(&kernel.topo);
+        let identity = kernel.topo().cache_identity();
+        remus_operations::performance::configure(Some(clock));
+        let response = parse(
+            &kernel.execute_batch_v2(
+                &serde_json::json!([
+                    {"op": "boundingBox", "args": {"solid": solid + 1000}},
+                    {"op": "volume", "args": {"solid": "not a handle"}},
+                    {"op": "gcsPointPosition", "args": {"sketch": 7, "point": 0}},
+                ])
+                .to_string(),
+            ),
+        );
+        let phases = remus_operations::performance::drain();
+        remus_operations::performance::configure(None);
+        for item in response.as_array().expect("batch array") {
+            assert!(item.get("error").is_some(), "{response}");
+        }
+        assert!(
+            !phases
+                .iter()
+                .any(|phase| phase.name == "checkpoint.first-mutation-clone"),
+            "{phases:?}"
+        );
+        assert_eq!(Rc::as_ptr(&kernel.topo), pointer);
+        assert_eq!(kernel.topo().cache_identity(), identity);
+    }
+
+    /// The ReadOnly path is a performance hint: an op that does mutate and
+    /// then fails must still roll back, through the copy `topo_mut` made.
+    #[test]
+    fn read_only_hint_still_restores_an_op_that_mutated() {
+        let mut kernel = BrepKernel::new();
+        kernel.make_box_solid(1.0, 1.0, 1.0).expect("box fixture");
+        let counts = |k: &BrepKernel| {
+            let t = k.topo();
+            (
+                t.num_vertices(),
+                t.num_edges(),
+                t.num_faces(),
+                t.num_solids(),
+            )
+        };
+        let before = counts(&kernel);
+        let pointer = Rc::as_ptr(&kernel.topo);
+        let result = kernel.run_read_only(|k| {
+            remus_operations::primitives::make_box(k.topo_mut(), 2.0, 2.0, 2.0)
+                .expect("second box");
+            Err(StructuredWasmError::invalid_argument(
+                "refused after mutating",
+                None,
+            ))
+        });
+        assert!(result.is_err());
+        assert_ne!(Rc::as_ptr(&kernel.topo), pointer, "the op must have copied");
+        assert_eq!(counts(&kernel), before);
     }
 
     #[test]
