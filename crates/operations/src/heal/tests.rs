@@ -111,7 +111,7 @@ fn strip_wire_spurs_cancels_nested_wraparound_pairs() {
         OrientedEdge::new(a, false),
     ];
 
-    assert_eq!(strip_wire_spurs(&mut wire), 4);
+    assert_eq!(strip_wire_spurs(&mut wire, |_| false), 4);
     assert_eq!(wire.len(), 1);
     assert_eq!(wire[0].edge(), c);
     assert!(wire[0].is_forward());
@@ -129,7 +129,7 @@ fn strip_wire_spurs_handles_large_spur_heavy_wire() {
         wire.push(OrientedEdge::new(edge, false));
     }
 
-    assert_eq!(strip_wire_spurs(&mut wire), pair_count * 2);
+    assert_eq!(strip_wire_spurs(&mut wire, |_| false), pair_count * 2);
     assert!(wire.is_empty());
 }
 
@@ -2520,4 +2520,29 @@ fn collapsed_edge_is_removed_from_hole_and_lateral_together() {
             .unwrap()
             .is_valid()
     );
+}
+
+#[test]
+fn strip_wire_spurs_keeps_pairs_the_predicate_pins() {
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    let edges = remus_topology::explorer::solid_edges(&topo, solid).unwrap();
+    let [seam, rim, spur] = edges[..3] else {
+        panic!("box should provide at least three edges");
+    };
+    // A pointed-cone-shaped loop: seam out, rim, seam back (the pair wraps
+    // around the loop's end), plus an ordinary spur in the middle.
+    let mut wire = vec![
+        OrientedEdge::new(seam, true),
+        OrientedEdge::new(rim, true),
+        OrientedEdge::new(spur, true),
+        OrientedEdge::new(spur, false),
+        OrientedEdge::new(seam, false),
+    ];
+
+    // Pin only the seam pair, whose outgoing half is the wrap-around last use.
+    let removed = strip_wire_spurs(&mut wire, |out| out.edge() == seam && !out.is_forward());
+    assert_eq!(removed, 2);
+    let kept: Vec<_> = wire.iter().map(|oe| (oe.edge(), oe.is_forward())).collect();
+    assert_eq!(kept, vec![(seam, true), (rim, true), (seam, false)]);
 }

@@ -25,6 +25,7 @@ import { runOpseqF6Packaged } from './opseq-f6-packaged.mjs';
 import { runWasmRayTorusPackaged } from './wasm-ray-torus-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
 import { runPackageQueueWitness } from './queue-contracts-packaged.mjs';
+import { runPointedConeCutPackaged } from './pointed-cone-cut-packaged.mjs';
 import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -92,6 +93,7 @@ try {
 
   runSecurityResourceRegressions({ ...packageExports, ...ioExports });
   runPackageQueueWitness({ ...packageExports, ...ioExports });
+  runPointedConeCutPackaged(packageExports);
   runOpseqF3Packaged(packageExports);
   runOpenZcadConsumerRegressions({ ...packageExports, ...ioExports });
   runProjectCurvePackaged(packageExports);
