@@ -181,7 +181,7 @@ fn chart_maps_are_exact_images_of_the_transform() {
     }
 }
 
-/// Only the pcurves move: every carrier is rebuilt exactly as before B89
+/// Only the pcurves move: every carrier is rebuilt exactly as before B130
 /// (booleans are tuned on where those frames put the seam). Sphere and torus
 /// frames are carried, so a rigid motion leaves their pcurves bit-exact.
 #[test]

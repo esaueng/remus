@@ -1,4 +1,4 @@
-//! Regression (B89): every pcurve of an imported STEP body must trace its
+//! Regression (B130): every pcurve of an imported STEP body must trace its
 //! edge, on import and after any similarity or affine transform.
 //!
 //! The OCCT-exported fillet plate carries LINE pcurves on four quarter-cylinder

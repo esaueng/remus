@@ -1869,7 +1869,7 @@ mod tests {
             .find(|&candidate| !source.pcurves_for_face(candidate).is_empty())
             .unwrap();
         // The lift count is carried, and the pcurve is re-expressed in the
-        // moved plane's chart: its 3D image moves with the face (B89).
+        // moved plane's chart: its 3D image moves with the face (B130).
         let pcurves = source.pcurves_for_face(transformed_face);
         assert_eq!(pcurves.len(), 1, "copied face must retain one pcurve");
         let (edge, forward, moved) = &pcurves[0];

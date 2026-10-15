@@ -1,4 +1,4 @@
-//! Pcurve re-expression for transformed faces (B89).
+//! Pcurve re-expression for transformed faces (B130).
 //!
 //! A transform moves a face's 3D boundary, but its pcurves are coordinates
 //! in the face's UV chart. Every surface arm of the face transform therefore
