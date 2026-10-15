@@ -261,3 +261,17 @@ fn unused_far_vertex_does_not_hide_an_inward_cube() {
     let volume = import_obj_signed_volume(&text);
     assert!((volume - 1.0).abs() < 1e-9, "signed volume {volume}");
 }
+
+/// Shells that only touch at one corner are separate bodies: an inward cube
+/// must not decide the orientation of the outward cube at its corner (summed
+/// as one body they enclose −7, and both would flip).
+#[test]
+fn shells_touching_at_a_vertex_are_oriented_separately() {
+    let mixed = cubes_obj(&[([0.0; 3], 1.0, false), ([1.0; 3], 2.0, true)], &[]);
+    let volume = import_obj_signed_volume(&mixed);
+    assert!((volume + 7.0).abs() < 1e-9, "signed volume {volume}");
+
+    let inward = cubes_obj(&[([0.0; 3], 1.0, true), ([1.0; 3], 2.0, true)], &[]);
+    let volume = import_obj_signed_volume(&inward);
+    assert!((volume - 9.0).abs() < 1e-9, "signed volume {volume}");
+}
