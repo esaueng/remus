@@ -561,3 +561,102 @@ fn retained_planar_circle_reconciles_only_analytic_roundoff() {
         assert_eq!(format!("{guarded:?}"), format!("{expected:?}"));
     }
 }
+
+#[test]
+fn retained_planar_ellipse_reconciles_only_analytic_roundoff() {
+    let source = PCurve::new(
+        Curve2D::Ellipse(Ellipse2D::new(Point2::new(1.0, -2.0), 2.0, 1.0, 0.2).unwrap()),
+        0.0,
+        1.0,
+    );
+    let map = UvAffine::diagonal(1.0, 1.0);
+    let major = 2.0 * (1.0 + 4.0 * f64::EPSILON);
+    let reconciled = map
+        .apply_retained_planar_ellipse(&source, major, 1.0)
+        .unwrap();
+    let Curve2D::Ellipse(ellipse) = reconciled.curve() else {
+        panic!("ellipse image")
+    };
+    assert_eq!(ellipse.semi_major().to_bits(), major.to_bits());
+    let expected = map.apply(&source).unwrap();
+    for (a, b) in [(2.1, 1.0), (1.0, 2.0), (f64::NAN, 1.0)] {
+        let guarded = map.apply_retained_planar_ellipse(&source, a, b).unwrap();
+        assert_eq!(format!("{guarded:?}"), format!("{expected:?}"));
+    }
+}
+
+#[test]
+fn seam_pcurves_keep_both_exact_images_or_drop_both_replaced_uses() {
+    // The cylinder's seam is used twice by its lateral face. A uniform
+    // scale stretches only the axial `v`, so the chart map is not
+    // conformal: the exact mapper retains both the ellipse and line images.
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+    let lateral = remus_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Cylinder(_)))
+        .unwrap();
+    let mut uses = Vec::new();
+    for &loop_id in topo.face(lateral).unwrap().boundary_loops() {
+        uses.extend_from_slice(topo.face_loop(loop_id).unwrap().coedges());
+    }
+    let seam: Vec<_> = uses
+        .into_iter()
+        .filter(|&coedge| {
+            let edge = topo.coedge(coedge).unwrap().edge();
+            matches!(topo.edge(edge).unwrap().curve(), EdgeCurve::Line)
+        })
+        .collect();
+    assert_eq!(seam.len(), 2, "cylinder seam uses");
+    // The line branch lies exactly on its use, so it maps and certifies
+    // on its own; the exact affine mapper keeps its ellipse partner too.
+    let surface = topo.face(lateral).unwrap().surface().clone();
+    let data = topo.coedge(seam[0]).unwrap();
+    let edge = topo.edge(data.edge()).unwrap();
+    let (from, to) = if data.is_forward() {
+        (edge.start(), edge.end())
+    } else {
+        (edge.end(), edge.start())
+    };
+    let from = surface
+        .project_point(topo.vertex(from).unwrap().point())
+        .unwrap();
+    let to = surface
+        .project_point(topo.vertex(to).unwrap().point())
+        .unwrap();
+    let line = PCurve::new(
+        Curve2D::Line(
+            Line2D::new(Point2::new(from.0, from.1), Vec2::new(0.0, to.1 - from.1)).unwrap(),
+        ),
+        0.0,
+        (to.1 - from.1).abs(),
+    );
+    let ellipse = PCurve::new(
+        Curve2D::Ellipse(Ellipse2D::new(Point2::new(0.0, 1.0), 1.0, 0.5, 0.0).unwrap()),
+        0.0,
+        1.0,
+    );
+    topo.set_coedge_pcurve(seam[0], line).unwrap();
+    topo.set_coedge_pcurve(seam[1], ellipse).unwrap();
+
+    super::super::transform_solid(&mut topo, solid, &Mat4::scale(2.0, 2.0, 2.0)).unwrap();
+    let kept: Vec<bool> = seam
+        .iter()
+        .map(|&coedge| topo.coedge(coedge).unwrap().pcurve().is_some())
+        .collect();
+    assert_eq!(kept, [true, true], "both exact affine images must survive");
+    remus_topology::validation::validate_boundary_authority(&topo).unwrap();
+    reexpress_face_pcurves(&mut topo, lateral, &ChartMap::Replaced).unwrap();
+    assert!(
+        seam.iter()
+            .all(|&id| topo.coedge(id).unwrap().pcurve().is_none())
+    );
+    remus_topology::validation::validate_boundary_authority(&topo).unwrap();
+    for &coedge in &seam {
+        assert_eq!(
+            topo.coedge(coedge).unwrap().periodic_winding(),
+            PeriodicWinding::ZERO
+        );
+    }
+}

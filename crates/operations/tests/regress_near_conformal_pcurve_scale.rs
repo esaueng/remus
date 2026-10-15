@@ -4,8 +4,8 @@
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
-use remus_math::curves::Circle3D;
-use remus_math::curves2d::{Circle2D, Curve2D};
+use remus_math::curves::{Circle3D, Ellipse3D};
+use remus_math::curves2d::{Circle2D, Curve2D, Ellipse2D};
 use remus_math::frame::Frame3;
 use remus_math::mat::Mat4;
 use remus_math::tolerance::Tolerance;
@@ -172,6 +172,102 @@ fn near_conformal_planar_circle_uses_its_retained_edge_radius() {
                                 assert_eq!(original.t_start().to_bits(), start.to_bits());
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn large_rotated_ellipse_axes_follow_retained_edge() {
+    for radius in [1.0, 1e9] {
+        for angle in [
+            0.0_f64,
+            0.2,
+            std::f64::consts::FRAC_PI_4,
+            1.1,
+            std::f64::consts::FRAC_PI_2,
+        ] {
+            for reflect in [false, true] {
+                for copy in [false, true] {
+                    for z_scale in [1.0, 2.0] {
+                        let mut topo = Topology::new();
+                        let zero = Point3::new(0.0, 0.0, 0.0);
+                        let normal = Vec3::new(0.0, 0.0, 1.0);
+                        let frame = Frame3::from_normal(zero, normal).unwrap();
+                        let (sin, cos) = angle.sin_cos();
+                        let ellipse = Ellipse3D::with_axes(
+                            zero,
+                            normal,
+                            2.0 * radius,
+                            radius,
+                            frame.x * cos + frame.y * sin,
+                            frame.y * cos - frame.x * sin,
+                        )
+                        .unwrap();
+                        let vertex = topo.add_vertex(Vertex::new(ellipse.evaluate(0.0), 1e-7));
+                        let mut edge = Edge::new(vertex, vertex, EdgeCurve::Ellipse(ellipse));
+                        edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+                        let edge = topo.add_edge(edge);
+                        let wire = topo.add_wire(
+                            Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap(),
+                        );
+                        let face = topo.add_face(Face::new(
+                            wire,
+                            vec![],
+                            FaceSurface::Plane { normal, d: 0.0 },
+                        ));
+                        topo.set_pcurve_oriented(
+                            edge,
+                            face,
+                            true,
+                            PCurve::new(
+                                Curve2D::Ellipse(
+                                    Ellipse2D::new(
+                                        Point2::new(0.0, 0.0),
+                                        2.0 * radius,
+                                        radius,
+                                        angle,
+                                    )
+                                    .unwrap(),
+                                ),
+                                0.0,
+                                std::f64::consts::TAU,
+                            ),
+                        )
+                        .unwrap();
+                        let shell = topo.add_shell(Shell::new(vec![face]).unwrap());
+                        let solid = topo.add_solid(Solid::new(shell, vec![]));
+                        let matrix =
+                            Mat4::scale(if reflect { -1.0 } else { 1.0 }, 1.0 + 3e-15, z_scale);
+                        let result = if copy {
+                            copy_and_transform_solid(&mut topo, solid, &matrix).unwrap()
+                        } else {
+                            transform_solid(&mut topo, solid, &matrix).unwrap();
+                            solid
+                        };
+                        let face = solid_faces(&topo, result).unwrap()[0];
+                        let coedge = topo
+                            .face_loop(topo.loops_of_face(face).unwrap()[0])
+                            .unwrap()
+                            .coedges()[0];
+                        let data = topo.coedge(coedge).unwrap();
+                        let EdgeCurve::Ellipse(ellipse) = topo.edge(data.edge()).unwrap().curve()
+                        else {
+                            panic!("ellipse edge")
+                        };
+                        let Curve2D::Ellipse(pcurve) = data.pcurve().unwrap().curve() else {
+                            panic!("ellipse pcurve")
+                        };
+                        let difference = (ellipse.semi_major() - pcurve.semi_major())
+                            .abs()
+                            .max((ellipse.semi_minor() - pcurve.semi_minor()).abs());
+                        assert!(
+                            difference <= 1e-7,
+                            "axis mismatch {difference:e}:r={radius},angle={angle},reflect={reflect},copy={copy},z_scale={z_scale}"
+                        );
                     }
                 }
             }

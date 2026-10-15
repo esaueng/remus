@@ -187,6 +187,37 @@ impl UvAffine {
         ))
     }
 
+    /// Use the extents of the retained planar 3D ellipse when its independently
+    /// computed affine image differs only inside analytic roundoff. Keep the
+    /// mapped principal-axis rotation and parameter range; genuine differences
+    /// and every non-ellipse retain their original exact affine image.
+    fn apply_retained_planar_ellipse(
+        self,
+        pcurve: &PCurve,
+        major: f64,
+        minor: f64,
+    ) -> Result<PCurve, crate::OperationsError> {
+        let image = self.apply(pcurve)?;
+        let Curve2D::Ellipse(ellipse) = image.curve() else {
+            return Ok(image);
+        };
+        if !super::equal_within_analytic_roundoff(ellipse.semi_major(), major)
+            || !super::equal_within_analytic_roundoff(ellipse.semi_minor(), minor)
+        {
+            return Ok(image);
+        }
+        Ok(PCurve::new(
+            Curve2D::Ellipse(Ellipse2D::new(
+                ellipse.center(),
+                major,
+                minor,
+                ellipse.rotation(),
+            )?),
+            image.t_start(),
+            image.t_end(),
+        ))
+    }
+
     /// The pcurve's image, reparameterized so that the image's parameter `t'`
     /// at each point is an affine function of the source parameter `t`.
     pub fn apply(self, pcurve: &PCurve) -> Result<PCurve, crate::OperationsError> {
@@ -366,9 +397,13 @@ pub fn reexpress_face_pcurves(
                         EdgeCurve::Circle(circle) => {
                             affine.apply_retained_planar_circle(pcurve, circle.radius())
                         }
+                        EdgeCurve::Ellipse(ellipse) => affine.apply_retained_planar_ellipse(
+                            pcurve,
+                            ellipse.semi_major(),
+                            ellipse.semi_minor(),
+                        ),
                         EdgeCurve::Line
                         | EdgeCurve::NurbsCurve(_)
-                        | EdgeCurve::Ellipse(_)
                         | EdgeCurve::Hyperbola(_)
                         | EdgeCurve::Parabola(_) => affine.apply(pcurve),
                     },
