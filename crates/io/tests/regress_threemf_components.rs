@@ -358,4 +358,17 @@ fn extension_component_elements_are_ignored() {
     assert_eq!(meshes.len(), 1);
     assert_eq!(meshes[0].indices.len(), 12 * 3, "one cube, not two");
     assert_positions(&meshes[0].positions, &cube_corners(|p| p));
+
+    // An extension's `<v:components>` closing must not end the core list.
+    let nested = model(
+        "millimeter",
+        &[
+            cube_object(1),
+            r#"<object id="2" type="model"><components xmlns:v="urn:example:vendor"><v:components><v:component/></v:components><component objectid="1"/></components></object>"#.to_string(),
+        ],
+        &[2],
+    );
+    let meshes = read_threemf(&nested).unwrap();
+    assert_eq!(meshes.len(), 1, "the part is a component, not top-level");
+    assert_eq!(meshes[0].indices.len(), 12 * 3);
 }

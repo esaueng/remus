@@ -185,7 +185,7 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                     }
                     "vertices" => in_vertices = true,
                     "triangles" => in_triangles = true,
-                    "components" => in_components = true,
+                    "components" if is_core_name(&reader, e.name()) => in_components = true,
                     "component" if in_components && is_core_element(&reader, e) => {
                         total_components = total_components.saturating_add(1);
                         ensure_limit(
@@ -254,7 +254,7 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                     }
                     "vertices" => in_vertices = false,
                     "triangles" => in_triangles = false,
-                    "components" => in_components = false,
+                    "components" if is_core_name(&reader, e.name()) => in_components = false,
                     _ => {}
                 }
             }
@@ -532,9 +532,14 @@ fn is_core_element(
     reader: &quick_xml::NsReader<&[u8]>,
     e: &quick_xml::events::BytesStart<'_>,
 ) -> bool {
+    is_core_name(reader, e.name())
+}
+
+/// [`is_core_element`] for a start or end tag's name.
+fn is_core_name(reader: &quick_xml::NsReader<&[u8]>, name: quick_xml::name::QName<'_>) -> bool {
     use quick_xml::name::ResolveResult;
 
-    match reader.resolver().resolve_element(e.name()).0 {
+    match reader.resolver().resolve_element(name).0 {
         ResolveResult::Unbound => true,
         ResolveResult::Bound(ns) => ns.as_ref() == CORE_NAMESPACE,
         ResolveResult::Unknown(_) => false,
