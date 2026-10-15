@@ -276,6 +276,20 @@ fn lspia_scan_fallback_is_budgeted_for_overflowed_parameters() {
     let m = 2048;
     assert_eq!(
         limit(approximate_lspia(&points, 3, m, 0.0, 0)),
-        ("fit_work", MAX_FIT_WORK, n * m)
+        ("fit_work", MAX_FIT_WORK, n * 4 * (3 + 40) + n * m)
+    );
+    // Review follow-up: the scan and the iterations share one budget. Here
+    // each fits on its own (scan 1 073 740 928, iterations 721 419 686) but
+    // not together, and the per-point basis table fits its own budget.
+    let (n, p, m) = (645_277, 25, 1664);
+    const { assert!(645_277 * 1664 <= MAX_FIT_WORK) };
+    const { assert!(645_277 * 26 * (3 + 40) <= MAX_FIT_WORK) };
+    const { assert!(645_277 * 26 <= MAX_SPARSE_FIT_ENTRIES) };
+    let points: Vec<Point3> = (0..n)
+        .map(|i| Point3::new(if i % 2 == 0 { 0.0 } else { 1e200 }, 0.0, 0.0))
+        .collect();
+    assert_eq!(
+        limit(approximate_lspia(&points, p, m, 0.0, 0)),
+        ("fit_work", MAX_FIT_WORK, n * (p + 1) * (3 + 40) + n * m)
     );
 }
