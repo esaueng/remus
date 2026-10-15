@@ -465,26 +465,27 @@ fn required_closed_mesh_volume_with(
     Ok(enclosed_mesh_volume(&retried, volume))
 }
 
-/// Below this fraction of the cube of a mesh's largest bounding-box side, its
-/// volume is round-off of a mesh that encloses nothing, not material. Relative to the mesh's own size, so a reading does not depend on
-/// the model's units: the absolute `1e-12` floor it replaces turned away
-/// every closed mesh of a body under about 1e-4 across (B93).
+/// Below this fraction of the total magnitude of its tetrahedra, a mesh's
+/// volume is round-off of a mesh that encloses nothing, not material. The
+/// floor follows the sum's own scale: an absolute `1e-12` turned away every
+/// closed mesh of a body under about 1e-4 across, and a floor on the bounding
+/// box would turn away a slender body that fills little of its box (B93).
 const MESH_VOLUME_FLOOR: f64 = 1e-12;
 
-/// `volume`, the signed volume of `mesh`, when it clears
-/// [`MESH_VOLUME_FLOOR`] for the mesh's own size.
+/// `volume`, the volume of `mesh`, when it clears [`MESH_VOLUME_FLOOR`]
+/// against the magnitudes of the mesh's tetrahedra about its own centre.
 fn enclosed_mesh_volume(mesh: &tessellate::TriangleMesh, volume: f64) -> Option<f64> {
-    let mut points = mesh.indices.iter().map(|&i| mesh.positions[i as usize]);
-    let first = points.next()?;
-    let (lo, hi) = points.fold((first, first), |(lo, hi), p| {
-        (
-            Point3::new(lo.x().min(p.x()), lo.y().min(p.y()), lo.z().min(p.z())),
-            Point3::new(hi.x().max(p.x()), hi.y().max(p.y()), hi.z().max(p.z())),
-        )
-    });
-    let size = hi - lo;
-    let side = size.x().max(size.y()).max(size.z());
-    (volume.is_finite() && volume > MESH_VOLUME_FLOOR * side * side * side).then_some(volume)
+    let reference = local_reference(mesh.indices.iter().map(|&i| mesh.positions[i as usize]))?;
+    let magnitude: f64 = mesh
+        .indices
+        .chunks_exact(3)
+        .map(|t| {
+            let [a, b, c] = [t[0], t[1], t[2]].map(|i| mesh.positions[i as usize]);
+            six_tetra_volume(reference, a, b, c).abs()
+        })
+        .sum::<f64>()
+        / 6.0;
+    (volume.is_finite() && volume > MESH_VOLUME_FLOOR * magnitude).then_some(volume)
 }
 
 /// [`required_closed_mesh_volume`] on an already built whole-solid mesh.
@@ -2529,7 +2530,14 @@ fn solid_volume_uncached(
     let mesh = whole_solid_mesh(topo, solid, deflection)?;
     if !mesh.indices.is_empty() {
         let vol = signed_volume_from_mesh(&mesh);
-        if enclosed_mesh_volume(&mesh, vol).is_some() {
+        // The relative floor is for closed meshes; an open one read here keeps
+        // the absolute floor that sends a near-empty sum to the per-face route.
+        let encloses = if mesh_is_closed(&mesh) {
+            enclosed_mesh_volume(&mesh, vol).is_some()
+        } else {
+            vol > 1e-12
+        };
+        if encloses {
             vol_trace(|| {
                 format!(
                     "final whole-solid mesh ({} bad edges) -> {vol}",
@@ -5498,6 +5506,24 @@ mod regression_tests {
                 "scale {scale:e}: a flattened mesh encloses nothing"
             );
         }
+    }
+
+    /// B93: the floor follows the tetrahedra's own magnitude, not the bounding
+    /// box, so a closed slender body that fills little of its box still
+    /// measures: a 1000 × 4e-4 × 4e-4 box encloses 1.6e-4, which a floor of
+    /// `1e-12 · side³` (1e-3) would turn away.
+    #[test]
+    fn closed_mesh_volume_floor_admits_a_slender_body() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_box(&mut topo, 1000.0, 4e-4, 4e-4).unwrap();
+        let mesh = tessellate::tessellate_solid(&topo, solid, 1e-5).unwrap();
+        assert!(mesh_is_closed(&mesh));
+        let read = closed_mesh_or_exact_volume(&topo, solid, &mesh, "test").unwrap();
+        let expected = 1000.0 * 4e-4 * 4e-4;
+        assert!(
+            read.is_some_and(|v| (v - expected).abs() <= 1e-9 * expected),
+            "slender closed mesh read {read:?}, expected {expected:e}"
+        );
     }
 
     /// B93 on the clamp retry: a cracked fine mesh of a body the exact
