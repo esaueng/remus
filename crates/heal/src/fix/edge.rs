@@ -159,6 +159,20 @@ pub fn fix_same_parameter_on_face(
         ));
     }
 
+    // A plane carries a line or circle exactly in its canonical chart, and
+    // strict validation certifies only those analytic forms there: a NURBS
+    // fit of either would read as repaired here and fail that proof.
+    if let FaceSurface::Plane { normal, d } = topo.face(face_id)?.surface()
+        && let Some(pcurve) = exact_plane_pcurve(topo, edge_id, forward, *normal, *d)?
+    {
+        topo.set_pcurve_oriented(edge_id, face_id, forward, pcurve)?;
+        return Ok(FixResult::changed(
+            Status::DONE3,
+            super::RepairActionKind::PcurveRebuilt,
+            1,
+        ));
+    }
+
     let nurbs_3d = crate::construct::project_curve::project_edge_to_pcurve(
         topo,
         edge_id,
@@ -402,6 +416,77 @@ fn canonical_plane_frame(normal: Vec3, d: f64) -> Result<Frame3, HealError> {
         .map_err(|e| HealError::AnalysisFailed(format!("plane frame: {e}")))
 }
 
+/// The exact pcurve of a line or circle edge lying in a plane, in the
+/// plane's canonical chart, oriented along the use; `None` for any other
+/// curve, or a circle whose own plane is not the face's.
+///
+/// A line maps to the chart segment between its use's end points over
+/// `(0, length)`. A circle maps to a chart circle whose angle is the edge
+/// parameter shifted by the circle's phase in the chart, negated when the
+/// circle's normal opposes the plane's; the range follows the edge domain
+/// along the use.
+fn exact_plane_pcurve(
+    topo: &Topology,
+    edge_id: EdgeId,
+    forward: bool,
+    normal: Vec3,
+    d: f64,
+) -> Result<Option<PCurve>, HealError> {
+    use remus_math::curves2d::{Circle2D, Line2D};
+    use remus_topology::edge::EdgeCurve;
+
+    let frame = canonical_plane_frame(normal, d)?;
+    let to_chart = |p: Point3| {
+        let rel = p - frame.origin;
+        Point2::new(rel.dot(frame.x), rel.dot(frame.y))
+    };
+    let edge = topo.edge(edge_id)?;
+    match edge.curve() {
+        EdgeCurve::Line => {
+            let start = topo.vertex(edge.start())?.point();
+            let end = topo.vertex(edge.end())?.point();
+            let (from, to) = if forward { (start, end) } else { (end, start) };
+            let (uv0, uv1) = (to_chart(from), to_chart(to));
+            let Ok(line) = Line2D::new(uv0, uv1 - uv0) else {
+                return Ok(None);
+            };
+            Ok(Some(PCurve::new(
+                Curve2D::Line(line),
+                0.0,
+                (uv1 - uv0).length(),
+            )))
+        }
+        EdgeCurve::Circle(circle) => {
+            let along = circle.normal().dot(frame.z);
+            // Off-plane centers and tilted circles stay with the fitted
+            // projection; strict validation then reports them as they are.
+            let off_plane = (circle.center() - frame.origin).dot(frame.z);
+            if along.abs() < 1.0 - 1e-12 || off_plane.abs() > 1e-9 * circle.radius().max(1.0) {
+                return Ok(None);
+            }
+            let Ok(chart_circle) = Circle2D::new(to_chart(circle.center()), circle.radius()) else {
+                return Ok(None);
+            };
+            let u = circle.u_axis();
+            let phase = u.dot(frame.y).atan2(u.dot(frame.x));
+            let angle = |t: f64| if along > 0.0 { phase + t } else { phase - t };
+            let (t0, t1) = edge
+                .strict_domain()
+                .map_err(|e| HealError::AnalysisFailed(format!("edge domain: {e}")))?;
+            let (a, b) = if forward { (t0, t1) } else { (t1, t0) };
+            Ok(Some(PCurve::new(
+                Curve2D::Circle(chart_circle),
+                angle(a),
+                angle(b),
+            )))
+        }
+        EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => Ok(None),
+    }
+}
+
 /// Outcome of a budget-bound pcurve repair.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PcurveRepairReport {
@@ -597,6 +682,19 @@ mod repair_budget_tests {
         }
     }
 
+    /// Strict validation's verdict on one use: the certified deviation.
+    fn strictly_certified_deviation(
+        topo: &Topology,
+        edge: EdgeId,
+        face: FaceId,
+        forward: bool,
+    ) -> f64 {
+        remus_topology::validation::check_same_parameter_strict(topo, edge, face, forward, 0)
+            .unwrap()
+            .unwrap()
+            .max_deviation
+    }
+
     #[test]
     fn plane_repair_measures_an_offset_pcurve_against_its_budget() {
         let (mut topo, edge, face) = square_face();
@@ -604,20 +702,79 @@ mod repair_budget_tests {
             .unwrap();
         let mut ctx = HealContext::new();
 
-        let err = repair_pcurve_within_budget(&mut topo, edge, face, &mut ctx, 1e-30).unwrap_err();
-        assert!(
-            matches!(err, HealError::RepairBudgetExceeded { .. }),
-            "an offset planar pcurve must not pass a 1e-30 budget: {err:?}"
-        );
-        let kept = topo.pcurve_oriented(edge, face, true).unwrap();
-        assert!(
-            (kept.evaluate(0.0) - Point2::new(0.5, 0.0)).length() < 1e-15,
-            "the refused repair must restore the original pcurve"
-        );
-
-        let report = repair_pcurve_within_budget(&mut topo, edge, face, &mut ctx, 1e-9).unwrap();
+        // The rebuild is exact in the plane's chart, so even a 1e-30 budget
+        // holds, and strict validation certifies the analytic line it wrote.
+        let report = repair_pcurve_within_budget(&mut topo, edge, face, &mut ctx, 1e-30).unwrap();
         assert!((report.deviation_before - 0.5).abs() < 1e-12, "{report:?}");
-        assert!(report.deviation_after <= 1e-9, "{report:?}");
+        assert!(report.deviation_after <= 1e-30, "{report:?}");
+        let rebuilt = topo.pcurve_oriented(edge, face, true).unwrap();
+        assert!(matches!(rebuilt.curve(), Curve2D::Line(_)), "{rebuilt:?}");
+        assert!(strictly_certified_deviation(&topo, edge, face, true) <= 1e-9);
+    }
+
+    /// A disc on `z = 0` bounded by one full circle about `(1, 2, 0)` of
+    /// radius 1.5, its normal along `normal_z` and its seam at `phase`.
+    fn disc_face(normal_z: f64, phase: f64) -> (Topology, EdgeId, FaceId) {
+        let mut topo = Topology::new();
+        let circle = Circle3D::new_with_ref(
+            Point3::new(1.0, 2.0, 0.0),
+            Vec3::new(0.0, 0.0, normal_z),
+            1.5,
+            Vec3::new(phase.cos(), phase.sin(), 0.0),
+        )
+        .unwrap();
+        let p0 = ParametricCurve::evaluate(&circle, 0.0);
+        let v = topo.add_vertex(Vertex::new(p0, 1e-7));
+        let mut rim_edge = Edge::new(v, v, EdgeCurve::Circle(circle));
+        rim_edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let rim = topo.add_edge(rim_edge);
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(rim, true)], true).unwrap());
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        (topo, rim, face)
+    }
+
+    /// A planar circle rebuilds as a chart circle, phase and winding
+    /// included, which strict validation certifies; a NURBS fit has no
+    /// strict proof on a plane.
+    #[test]
+    fn planar_circle_repair_writes_a_certified_chart_circle() {
+        use remus_math::curves2d::Circle2D;
+        for (normal_z, phase) in [(1.0, 0.0), (1.0, 0.7), (-1.0, 2.0)] {
+            let (mut topo, rim, face) = disc_face(normal_z, phase);
+            // Right radius, centre 0.25 off.
+            let offset = Circle2D::new(Point2::new(2.25, -1.0), 1.5).unwrap();
+            topo.set_pcurve_oriented(
+                rim,
+                face,
+                true,
+                PCurve::new(Curve2D::Circle(offset), 0.0, std::f64::consts::TAU),
+            )
+            .unwrap();
+            let mut ctx = HealContext::new();
+            let report = repair_pcurve_within_budget(&mut topo, rim, face, &mut ctx, 1e-9).unwrap();
+            assert!(
+                report.deviation_before > 0.2,
+                "{normal_z} {phase}: {report:?}"
+            );
+            assert!(
+                report.deviation_after <= 1e-9,
+                "{normal_z} {phase}: {report:?}"
+            );
+            let rebuilt = topo.pcurve_oriented(rim, face, true).unwrap();
+            assert!(matches!(rebuilt.curve(), Curve2D::Circle(_)), "{rebuilt:?}");
+            let certified = strictly_certified_deviation(&topo, rim, face, true);
+            assert!(
+                certified <= 1e-9,
+                "{normal_z} {phase}: certified {certified}"
+            );
+        }
     }
 
     /// [`square_face`] traversed the other way round: every use reversed, so
