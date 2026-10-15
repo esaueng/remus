@@ -776,8 +776,7 @@ fn hole_winding_sign(
         if let EdgeCurve::Circle(circle) = edge.curve()
             && edge.is_closed()
         {
-            let (t0, t1) =
-                crate::authoritative_edge_domain(edge, "boolean wire-winding sampling")?;
+            let (t0, t1) = crate::authoritative_edge_domain(edge, "boolean wire-winding sampling")?;
             let axis = circle.u_axis().cross(circle.v_axis()).dot(normal);
             let span = t1 - t0;
             // A hole circle lies in its face's plane, so its axis is (anti)parallel
