@@ -300,3 +300,22 @@ fn chord_position_comes_from_the_stored_knot_not_the_query() {
     let removed = curve_knot_remove(&curve, u, 1e-6).expect("exactly removable");
     assert_eq!(removed.knots(), &[0.0, 0.0, 1.0, 1.0]);
 }
+
+#[test]
+fn weights_spanning_the_f64_range_refuse_rather_than_accept() {
+    // Review follow-up: with weights [MAX, MIN_POSITIVE, MAX] the middle
+    // weight normalizes to zero, the bound was 0/0 = NaN and `NaN > tol` let
+    // the removal through at tolerance 0, though the curve passes (0, 1, 0)
+    // at the knot and the chord is the origin.
+    let curve = polyline(
+        vec![0.0, 0.0, 0.5, 1.0, 1.0],
+        &[[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]],
+        vec![f64::MAX, f64::MIN_POSITIVE, f64::MAX],
+    );
+    for tol in [0.0, 1e-6, 0.5] {
+        assert!(
+            is_refused(&curve_knot_remove(&curve, 0.5, tol)),
+            "removed at tolerance {tol}"
+        );
+    }
+}

@@ -553,7 +553,14 @@ fn degree_one_deviation_bound(
         );
         (dx * dx + dy * dy + dz * dz).sqrt()
     };
-    excess_at(prev.0).max(excess_at(next.0)) / hm[3]
+    let bound = excess_at(prev.0).max(excess_at(next.0)) / hm[3];
+    // The normalized middle weight can underflow when the weights span the
+    // whole f64 range; no finite bound is available then.
+    if bound.is_finite() {
+        bound
+    } else {
+        f64::INFINITY
+    }
 }
 
 /// Refine a curve by inserting multiple knots at once (A5.4).
