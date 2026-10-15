@@ -527,16 +527,20 @@ fn cylinder_band_strands_above(uvs: &[CylinderUv], range: (usize, usize), u: f64
 /// apex: the wire minus that seam, or `None` when the wire is not that shape.
 ///
 /// Only a DOUBLED seam (one Line edge to the apex, used in both directions)
-/// beside a full-turn rim (closed circles) qualifies. A cone sector's two
-/// distinct generators also reach the apex, and its open rim arc must not be
-/// widened to the whole turn the single-rim apex synthesis assumes.
+/// beside a full-turn rim qualifies. The rim may be one closed circle or
+/// circle arcs split at section vertices; either way its uses must chain
+/// end-to-start back to where they began. A cone sector's two distinct
+/// generators also reach the apex, and its open rim arc must not be widened
+/// to the whole turn the single-rim apex synthesis assumes.
 fn pointed_cone_rim(
     topo: &Topology,
     wire: &remus_topology::wire::Wire,
     apex: Point3,
 ) -> Option<Vec<remus_topology::wire::OrientedEdge>> {
     use remus_topology::edge::EdgeCurve;
-    let tol = remus_math::tolerance::Tolerance::default().linear;
+    // Same slack the face splitter and the spur passes use to recognise the
+    // apex, so every seam they keep is recognised here too.
+    let tol = remus_math::tolerance::Tolerance::default().linear * 100.0;
     let mut rim = Vec::with_capacity(wire.edges().len());
     let mut seam_uses = Vec::new();
     for &oe in wire.edges() {
@@ -548,8 +552,8 @@ fn pointed_cone_rim(
             });
         if reaches_apex {
             seam_uses.push((oe.edge(), oe.is_forward()));
-        } else if matches!(edge.curve(), EdgeCurve::Circle(_)) && edge.start() == edge.end() {
-            rim.push(oe);
+        } else if matches!(edge.curve(), EdgeCurve::Circle(_)) {
+            rim.push((oe, oe.oriented_start(edge), oe.oriented_end(edge)));
         } else {
             return None;
         }
@@ -558,7 +562,13 @@ fn pointed_cone_rim(
         seam_uses.iter().filter(|&&(other, _)| other == id).count() == 2
             && seam_uses.contains(&(id, !forward))
     });
-    (doubled && !seam_uses.is_empty() && !rim.is_empty()).then_some(rim)
+    let closed_rim = !rim.is_empty()
+        && rim
+            .iter()
+            .zip(rim.iter().cycle().skip(1))
+            .all(|(&(_, _, end), &(_, start, _))| end == start);
+    (doubled && !seam_uses.is_empty() && closed_rim)
+        .then(|| rim.into_iter().map(|(oe, _, _)| oe).collect())
 }
 
 /// Tessellate a cylindrical or conical face with inner wires in its unwrapped
@@ -2686,6 +2696,39 @@ mod pointed_cone_rim_tests {
             topo.edge(rim[0].edge()).unwrap().curve(),
             EdgeCurve::Circle(_)
         ));
+    }
+
+    /// A rim split into two half arcs at section vertices, plus the doubled
+    /// seam: still a full-turn rim.
+    #[test]
+    fn rim_split_into_arcs_still_qualifies() {
+        let mut topo = Topology::new();
+        let tol = 1e-7;
+        let apex = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 4.0), tol));
+        let p0 = topo.add_vertex(Vertex::new(Point3::new(0.5, 0.0, 0.0), tol));
+        let p1 = topo.add_vertex(Vertex::new(Point3::new(-0.5, 0.0, 0.0), tol));
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 0.5).unwrap();
+        let mut first = Edge::new(p0, p1, EdgeCurve::Circle(circle.clone()));
+        first.set_trim(Some((0.0, std::f64::consts::PI)));
+        let first = topo.add_edge(first);
+        let mut second = Edge::new(p1, p0, EdgeCurve::Circle(circle));
+        second.set_trim(Some((std::f64::consts::PI, std::f64::consts::TAU)));
+        let second = topo.add_edge(second);
+        let seam = topo.add_edge(Edge::new(p0, apex, EdgeCurve::Line));
+        let wire = Wire::new(
+            vec![
+                OrientedEdge::new(first, true),
+                OrientedEdge::new(second, true),
+                OrientedEdge::new(seam, true),
+                OrientedEdge::new(seam, false),
+            ],
+            true,
+        )
+        .unwrap();
+        let rim = pointed_cone_rim(&topo, &wire, Point3::new(0.0, 0.0, 4.0)).unwrap();
+        let ids: Vec<_> = rim.iter().map(OrientedEdge::edge).collect();
+        assert_eq!(ids, vec![first, second]);
     }
 
     /// A quarter cone sector: an open rim arc and two DISTINCT generators to
