@@ -291,16 +291,17 @@ fn extraction_operator(knots: &[f64], p: usize, k: usize, d: &mut Vec<f64>, out:
 
 /// Whether the infinite line meets `bounds` padded by `pad` per axis (slab
 /// method).
-fn line_meets_box(origin: Point3, dir: Vec3, dir_len: f64, bounds: Aabb3, pad: [f64; 3]) -> bool {
+fn line_meets_box(origin: Point3, dir: Vec3, bounds: Aabb3, pad: [f64; 3]) -> bool {
     let (mut t_lo, mut t_hi) = (f64::NEG_INFINITY, f64::INFINITY);
     for axis in 0..3 {
         let o = origin.0[axis];
         let d = dir.0[axis];
         let lo = bounds.min.0[axis] - pad[axis];
         let hi = bounds.max.0[axis] + pad[axis];
-        // Parallel within rounding: the line's coordinate moves by at most
-        // `eps · extent` across the box, far below the padding.
-        if d.abs() <= f64::EPSILON * dir_len {
+        // Only an exactly zero component is parallel: a tiny one still
+        // crosses the slab far along a long box, and its quotients below
+        // are finite or correctly signed infinities.
+        if d == 0.0 {
             if o < lo || o > hi {
                 return false;
             }
@@ -588,7 +589,7 @@ pub(super) fn complete_line_roots(
     for axis in 0..3 {
         pad[axis] = ROUNDOFF * hull.axis_magnitude[axis].max(line.origin.0[axis].abs());
     }
-    if !line_meets_box(line.origin, line.direction, dir_len, hull.boxes[0], pad) {
+    if !line_meets_box(line.origin, line.direction, hull.boxes[0], pad) {
         return;
     }
     let unit = line.direction * (1.0 / dir_len);
@@ -634,7 +635,7 @@ pub(super) fn complete_line_roots(
     };
 
     let reported = results.len();
-    pass.traverse(dir_len, workspace, results);
+    pass.traverse(workspace, results);
     // Line parameters of the appended roots relative to the caller's origin,
     // as the grid pass reports them.
     for hit in &mut results[reported..] {
@@ -644,23 +645,11 @@ pub(super) fn complete_line_roots(
 
 impl Completion<'_> {
     /// Walk the span-block tree along the line, solving every block it meets.
-    fn traverse(
-        &mut self,
-        dir_len: f64,
-        workspace: &mut NewtonWorkspace,
-        results: &mut Vec<IntersectionPoint>,
-    ) {
+    fn traverse(&mut self, workspace: &mut NewtonWorkspace, results: &mut Vec<IntersectionPoint>) {
         let (hull, line) = (self.hull, self.line);
         let mut stack = vec![(0_usize, hull.root())];
         while let Some((slot, range)) = stack.pop() {
-            if slot > 0
-                && !line_meets_box(
-                    line.origin,
-                    line.direction,
-                    dir_len,
-                    hull.boxes[slot],
-                    self.pad,
-                )
+            if slot > 0 && !line_meets_box(line.origin, line.direction, hull.boxes[slot], self.pad)
             {
                 continue;
             }
@@ -1124,13 +1113,31 @@ mod tests {
         };
         let o = Point3::new(-1.0, 0.5, 0.5);
         let hit = Vec3::new(1.0, 0.0, 0.0);
-        assert!(line_meets_box(o, hit, 1.0, bounds, [0.0; 3]));
+        assert!(line_meets_box(o, hit, bounds, [0.0; 3]));
         // Behind the origin still counts: this is a line, not a ray.
-        assert!(line_meets_box(o, hit * -1.0, 1.0, bounds, [0.0; 3]));
+        assert!(line_meets_box(o, hit * -1.0, bounds, [0.0; 3]));
         let miss = Vec3::new(1.0, 2.0, 0.0);
-        assert!(!line_meets_box(o, miss, miss.length(), bounds, [0.0; 3]));
+        assert!(!line_meets_box(o, miss, bounds, [0.0; 3]));
         let above = Point3::new(-1.0, 0.5, 1.0 + 1e-12);
-        assert!(!line_meets_box(above, hit, 1.0, bounds, [0.0; 3]));
-        assert!(line_meets_box(above, hit, 1.0, bounds, [1e-9; 3]));
+        assert!(!line_meets_box(above, hit, bounds, [0.0; 3]));
+        assert!(line_meets_box(above, hit, bounds, [1e-9; 3]));
+    }
+
+    #[test]
+    fn tiny_direction_component_still_crosses_a_long_box() {
+        // y changes by 5 over x ∈ [0, 5e17]: the line enters the y slab near
+        // the box's far end although `1e-17 < eps · |dir|`.
+        let bounds = Aabb3 {
+            min: Point3::new(-5e17, 4.99, -1.0),
+            max: Point3::new(5e17, 5.01, 1.0),
+        };
+        let (o, pad) = (Point3::new(0.0, 0.0, 0.0), [0.0; 3]);
+        let (tilted, flatter) = (Vec3::new(1.0, 1e-17, 0.0), Vec3::new(1.0, 1e-18, 0.0));
+        assert!(line_meets_box(o, tilted, bounds, pad));
+        assert!(!line_meets_box(o, flatter, bounds, pad));
+        // An exactly zero component is still parallel, on a slab face too.
+        let (along_x, on_face) = (Vec3::new(1.0, 0.0, 0.0), Point3::new(0.0, 4.99, 0.0));
+        assert!(line_meets_box(on_face, along_x, bounds, pad));
+        assert!(!line_meets_box(o, along_x, bounds, pad));
     }
 }
