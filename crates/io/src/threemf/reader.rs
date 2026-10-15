@@ -160,7 +160,13 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
     let mut current: Option<ParsedObject> = None;
     let mut in_vertices = false;
     let mut in_triangles = false;
-    let mut in_components = false;
+    // Element nesting depth, and the depths of the open `<object>` and its
+    // core `<components>`: only a `<component>` directly inside that list is
+    // a placement, not one nested in an extension element (the core schema
+    // allows foreign children in a `<component>`).
+    let mut depth = 0usize;
+    let mut object_depth: Option<usize> = None;
+    let mut components_depth: Option<usize> = None;
     let mut total_vertices = 0usize;
     let mut total_triangles = 0usize;
     let mut total_objects = 0usize;
@@ -170,6 +176,7 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
     loop {
         match reader.read_event() {
             Ok(quick_xml::events::Event::Start(ref e)) => {
+                depth += 1;
                 let local = e.local_name();
                 let name = local.as_ref();
 
@@ -182,11 +189,18 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                             id: parse_object_id(e)?,
                             ..ParsedObject::default()
                         });
+                        object_depth = Some(depth);
                     }
                     "vertices" => in_vertices = true,
                     "triangles" => in_triangles = true,
-                    "components" if is_core_name(&reader, e.name()) => in_components = true,
-                    "component" if in_components && is_core_element(&reader, e) => {
+                    "components"
+                        if object_depth == Some(depth - 1) && is_core_name(&reader, e.name()) =>
+                    {
+                        components_depth = Some(depth);
+                    }
+                    "component"
+                        if components_depth == Some(depth - 1) && is_core_element(&reader, e) =>
+                    {
                         total_components = total_components.saturating_add(1);
                         ensure_limit(
                             "3MF components",
@@ -229,7 +243,9 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                             object.indices.extend([v1, v2, v3]);
                         }
                     }
-                    "component" if in_components && is_core_element(&reader, e) => {
+                    "component"
+                        if components_depth == Some(depth) && is_core_element(&reader, e) =>
+                    {
                         total_components = total_components.saturating_add(1);
                         ensure_limit(
                             "3MF components",
@@ -244,9 +260,12 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
             Ok(quick_xml::events::Event::End(ref e)) => {
                 let local = e.local_name();
                 let name = local.as_ref();
+                let closing = depth;
+                depth = depth.saturating_sub(1);
 
                 match name {
                     "object" => {
+                        object_depth = None;
                         if let Some(object) = current.take() {
                             check_indices(&object.vertices, &object.indices)?;
                             objects.push(object);
@@ -254,7 +273,7 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                     }
                     "vertices" => in_vertices = false,
                     "triangles" => in_triangles = false,
-                    "components" if is_core_name(&reader, e.name()) => in_components = false,
+                    "components" if components_depth == Some(closing) => components_depth = None,
                     _ => {}
                 }
             }
