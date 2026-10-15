@@ -4127,17 +4127,28 @@ impl SignedTriangle {
                 .iter()
                 .map(|hole| hole.iter().map(|&(p, _)| p).collect())
                 .collect();
+            // A point inside a polygon is inside its box, so the polygon test
+            // runs only on the few loops whose box holds the probe rather than
+            // on every pair (the box check is exact: the probe is a vertex).
+            let boxes: Vec<remus_math::aabb::Aabb3> = polygons
+                .iter()
+                .map(|polygon| remus_math::aabb::Aabb3::from_points(polygon.iter().copied()))
+                .collect();
             for (k, mut hole) in loops.into_iter().enumerate() {
                 // A loop inside an odd number of others bounds an island
                 // within a hole, which restores material (the parity the
                 // planar tessellator applies): it winds with the face's
                 // triangle, a hole against it.
-                let depth = polygons
-                    .iter()
-                    .enumerate()
-                    .filter(|&(j, other)| {
+                let probe = hole[0].0;
+                let depth = (0..polygons.len())
+                    .filter(|&j| {
                         j != k
-                            && crate::distance::point_in_polygon_3d(&hole[0].0, other, &outer_area)
+                            && boxes[j].contains_point(probe)
+                            && crate::distance::point_in_polygon_3d(
+                                &probe,
+                                &polygons[j],
+                                &outer_area,
+                            )
                     })
                     .count();
                 let (h0, _) = hole[0];
