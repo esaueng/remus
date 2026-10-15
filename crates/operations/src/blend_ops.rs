@@ -1411,9 +1411,9 @@ pub fn fillet_v2(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<BlendResult, OperationsError> {
-    if radius <= 0.0 {
+    if !radius.is_finite() || radius <= 0.0 {
         return Err(OperationsError::InvalidInput {
-            reason: "radius must be positive".into(),
+            reason: format!("radius must be finite and positive, got {radius}"),
         });
     }
     if edges.is_empty() {
@@ -1549,9 +1549,9 @@ pub fn chamfer_v2(
     d1: f64,
     d2: f64,
 ) -> Result<BlendResult, OperationsError> {
-    if d1 <= 0.0 || d2 <= 0.0 {
+    if !d1.is_finite() || !d2.is_finite() || d1 <= 0.0 || d2 <= 0.0 {
         return Err(OperationsError::InvalidInput {
-            reason: "distances must be positive".into(),
+            reason: format!("distances must be finite and positive, got d1={d1}, d2={d2}"),
         });
     }
     if edges.is_empty() {
@@ -1596,12 +1596,12 @@ pub fn chamfer_distance_angle(
     distance: f64,
     angle: f64,
 ) -> Result<BlendResult, OperationsError> {
-    if distance <= 0.0 {
+    if !distance.is_finite() || distance <= 0.0 {
         return Err(OperationsError::InvalidInput {
-            reason: "distance must be positive".into(),
+            reason: format!("distance must be finite and positive, got {distance}"),
         });
     }
-    if angle <= 0.0 || angle >= std::f64::consts::FRAC_PI_2 {
+    if !angle.is_finite() || angle <= 0.0 || angle >= std::f64::consts::FRAC_PI_2 {
         return Err(OperationsError::InvalidInput {
             reason: "angle must be between 0 and \u{03c0}/2".into(),
         });

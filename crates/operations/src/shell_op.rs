@@ -365,9 +365,9 @@ fn shell_with_evolution_impl(
 ) -> Result<(SolidId, crate::evolution::EvolutionMap, ShellQuality), crate::OperationsError> {
     let tol = Tolerance::new();
 
-    if thickness <= tol.linear {
+    if !thickness.is_finite() || thickness <= tol.linear {
         return Err(crate::OperationsError::InvalidInput {
-            reason: format!("shell thickness must be positive, got {thickness}"),
+            reason: format!("shell thickness must be finite and positive, got {thickness}"),
         });
     }
 

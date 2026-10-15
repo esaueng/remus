@@ -912,9 +912,9 @@ pub fn fillet_rolling_ball_with_origins(
     remus_topology::transaction::run_transacted(topo, |topo| {
         let tol = Tolerance::new();
 
-        if radius <= tol.linear {
+        if !radius.is_finite() || radius <= tol.linear {
             return Err(crate::OperationsError::InvalidInput {
-                reason: format!("fillet radius must be positive, got {radius}"),
+                reason: format!("fillet radius must be finite and positive, got {radius}"),
             });
         }
         if edges.is_empty() {

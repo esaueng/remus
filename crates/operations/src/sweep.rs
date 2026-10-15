@@ -1284,6 +1284,17 @@ impl std::fmt::Debug for SweepOptions {
     }
 }
 
+/// Refuse a scale law that returned a non-finite or non-positive scale: a NaN
+/// read as "no scaling" and an infinite one put the profile at infinity.
+fn validate_scales(scales: &[f64]) -> Result<(), crate::OperationsError> {
+    match scales.iter().find(|s| !s.is_finite() || **s <= 0.0) {
+        Some(scale) => Err(crate::OperationsError::InvalidInput {
+            reason: format!("sweep scale law must return finite positive scales, got {scale}"),
+        }),
+        None => Ok(()),
+    }
+}
+
 /// Sweep a face along a path with advanced options.
 ///
 /// Supports scaling laws (tapered sweep) and multiple contact modes.
@@ -1445,6 +1456,7 @@ pub fn sweep_with_options(
             options.scale_law.as_ref().map_or(1.0, |law| law(t))
         })
         .collect();
+    validate_scales(&scales)?;
 
     assemble_swept_solid(
         topo,
@@ -2525,6 +2537,7 @@ fn sweep_round(
     } else {
         vec![1.0; frames.len()]
     };
+    validate_scales(&scales)?;
 
     assemble_swept_solid(
         topo,
