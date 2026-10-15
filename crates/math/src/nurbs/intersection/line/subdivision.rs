@@ -20,8 +20,9 @@
 //! 2. the B-spline control values of one knot span;
 //! 3. the span's Bézier control values (homogeneous `w · f`, `w · g`, which
 //!    share the sign and the zeros of `f`, `g`), split by de Casteljau
-//!    until both nets are nearly affine, where at most one transversal root
-//!    remains and Newton converges from the box centre;
+//!    until both nets are nearly affine (so Newton converges from the box
+//!    centre) and their interval Jacobian is nonsingular (so the box holds
+//!    at most one root);
 //! 4. a Bézier box whose affine model, widened by its proven deviation from
 //!    the nets, puts every root outside the box.
 //!
@@ -30,11 +31,10 @@
 //! only a residual below `1e-9` of the surface's extent plus a round-off
 //! allowance for its distance from the origin: a root this pass reports is a
 //! genuine crossing, never the grid pass's looser `1e-5` near-miss, and the
-//! thresholds do not grow when the geometry is translated. A box
-//! already holding a reported root is not refined again: a nearly affine
-//! box holds at most one transversal crossing, and two crossings of a
-//! near-tangent line inside one tiny box would merge under the `1e-6`
-//! deduplication anyway.
+//! thresholds do not grow when the geometry is translated. A box proven to
+//! hold at most one root that already holds a reported one is not refined
+//! again. A box that reaches the split-depth limit unproven (a near-tangent
+//! line) is always refined.
 //!
 //! Work is bounded per line by [`MAX_BEZIER_NODES`] and
 //! [`MAX_LEAF_REFINEMENTS`]. A line lying in or grazing along the surface can
@@ -99,6 +99,9 @@ pub(super) struct SpanHull {
     extent: f64,
     /// Largest absolute control-point coordinate.
     magnitude: f64,
+    /// Control-point grid size, with the degrees the layout the spans index.
+    rows: usize,
+    cols: usize,
 }
 
 impl SpanHull {
@@ -117,6 +120,8 @@ impl SpanHull {
             boxes: Vec::new(),
             extent: 0.0,
             magnitude: 0.0,
+            rows: cps.len(),
+            cols: cps.first().map_or(0, Vec::len),
         };
         let root = hull.root();
         if root.leaves() > 0 {
@@ -129,6 +134,16 @@ impl SpanHull {
                 .fold(0.0_f64, |acc, c| acc.max(c.abs()));
         }
         hull
+    }
+
+    /// Whether `surface` has the layout this hull indexes. A grid reused with
+    /// a different surface is meaningless but must not index out of range.
+    fn fits(&self, surface: &NurbsSurface) -> bool {
+        let cps = surface.control_points();
+        surface.degree_u() == self.degree_u
+            && surface.degree_v() == self.degree_v
+            && cps.len() == self.rows
+            && cps.first().map_or(0, Vec::len) == self.cols
     }
 
     /// The whole block grid.
@@ -378,6 +393,59 @@ fn affine_excludes_root(f: &AffineFit, g: &AffineFit) -> bool {
     s.abs() > 0.5 + s_slack || r.abs() > 0.5 + r_slack
 }
 
+/// Range `[lo, hi]` of each partial derivative of a tensor Bézier net over
+/// its box: the derivative is a Bézier net of the scaled forward
+/// differences, so its convex hull bounds it.
+fn derivative_ranges(net: &[f64], p: usize, q: usize) -> ((f64, f64), (f64, f64)) {
+    let at = |i: usize, j: usize| net[i * (q + 1) + j];
+    let (mut ds, mut dr) = (
+        (f64::INFINITY, f64::NEG_INFINITY),
+        (f64::INFINITY, f64::NEG_INFINITY),
+    );
+    #[allow(clippy::cast_precision_loss)]
+    let (pf, qf) = (p as f64, q as f64);
+    for i in 0..=p {
+        for j in 0..=q {
+            if i < p {
+                let d = pf * (at(i + 1, j) - at(i, j));
+                ds = (ds.0.min(d), ds.1.max(d));
+            }
+            if j < q {
+                let d = qf * (at(i, j + 1) - at(i, j));
+                dr = (dr.0.min(d), dr.1.max(d));
+            }
+        }
+    }
+    (ds, dr)
+}
+
+/// Product of two intervals.
+fn interval_mul(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    let products = [a.0 * b.0, a.0 * b.1, a.1 * b.0, a.1 * b.1];
+    products
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &x| {
+            (lo.min(x), hi.max(x))
+        })
+}
+
+/// Whether `(f, g)` has at most one zero in the box.
+///
+/// By the mean value theorem, row by row, `F(x) - F(y) = M (x - y)` with
+/// each row of `M` a gradient of one component at some point of the box, so
+/// inside the interval matrix of the derivative ranges. When no matrix there
+/// is singular (the interval determinant excludes zero), `F(x) = F(y)`
+/// forces `x = y`. Nearly affine nets alone do not suffice: two nearly
+/// parallel components can each be nearly affine and still share two zeros.
+fn at_most_one_root(fnet: &[f64], gnet: &[f64], p: usize, q: usize) -> bool {
+    let (fs, fr) = derivative_ranges(fnet, p, q);
+    let (gs, gr) = derivative_ranges(gnet, p, q);
+    let main = interval_mul(fs, gr);
+    let cross = interval_mul(fr, gs);
+    let det = (main.0 - cross.1, main.1 - cross.0);
+    det.0 > 0.0 || det.1 < 0.0
+}
+
 /// Halve a tensor Bézier net at the parameter midpoint along u (`along_u`) or
 /// v, writing the two halves into `low` and `high`.
 fn split_net(net: &[f64], p: usize, q: usize, along_u: bool, low: &mut [f64], high: &mut [f64]) {
@@ -493,7 +561,7 @@ pub(super) fn complete_line_roots(
     workspace: &mut NewtonWorkspace,
     results: &mut Vec<IntersectionPoint>,
 ) {
-    if hull.boxes.is_empty() {
+    if hull.boxes.is_empty() || !hull.fits(surface) {
         return;
     }
     let caller_origin = line.origin;
@@ -753,14 +821,16 @@ impl Completion<'_> {
             if affine_excludes_root(&f_fit, &g_fit) {
                 continue;
             }
-            let leaf =
-                node.depth >= MAX_SPLIT_DEPTH || (f_fit.nearly_affine() && g_fit.nearly_affine());
-            if leaf {
+            let at_depth_limit = node.depth >= MAX_SPLIT_DEPTH;
+            let unique = f_fit.nearly_affine()
+                && g_fit.nearly_affine()
+                && at_most_one_root(fnet, gnet, p, q);
+            if unique || at_depth_limit {
                 let (surface, line, tolerance) = (self.surface, self.line, self.tolerance);
                 if self.refinements >= MAX_LEAF_REFINEMENTS {
                     return false;
                 }
-                if refine_box(surface, line, tolerance, node, workspace, results) {
+                if refine_box(surface, line, tolerance, node, unique, workspace, results) {
                     self.refinements += 1;
                 }
                 continue;
@@ -810,21 +880,22 @@ impl Completion<'_> {
 }
 
 /// Newton from the box centre, clamped to the box plus a margin; appends a
-/// new root. Returns whether a refinement ran (`false` when a reported root
-/// already lies in the box: a nearly affine box holds at most one
-/// transversal crossing).
+/// new root. Returns whether a refinement ran: a box proven to hold at most
+/// one root (`unique`) that already holds a reported one is skipped.
 fn refine_box(
     surface: &NurbsSurface,
     line: LineQuery,
     tolerance: f64,
     node: BezierBox,
+    unique: bool,
     workspace: &mut NewtonWorkspace,
     results: &mut Vec<IntersectionPoint>,
 ) -> bool {
-    let known = results.iter().any(|hit| {
-        let (u, v) = hit.param1;
-        (node.u.0..=node.u.1).contains(&u) && (node.v.0..=node.v.1).contains(&v)
-    });
+    let known = unique
+        && results.iter().any(|hit| {
+            let (u, v) = hit.param1;
+            (node.u.0..=node.u.1).contains(&u) && (node.v.0..=node.v.1).contains(&v)
+        });
     if known {
         return false;
     }
@@ -898,6 +969,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Degree-2×2 Bézier net of `h` on `[0, 1]²`, from its values at the
+    /// 3×3 grid of `0, ½, 1` (`b1 = 2·h(½) - (h(0) + h(1)) / 2` per direction).
+    fn quadratic_net(h: impl Fn(f64, f64) -> f64) -> Vec<f64> {
+        let to_bernstein = |v: [f64; 3]| [v[0], 2.0 * v[1] - 0.5 * (v[0] + v[2]), v[2]];
+        let t = [0.0, 0.5, 1.0];
+        let rows: Vec<[f64; 3]> = t
+            .iter()
+            .map(|&s| to_bernstein([h(s, 0.0), h(s, 0.5), h(s, 1.0)]))
+            .collect();
+        let mut net = vec![0.0; 9];
+        for j in 0..3 {
+            let column = to_bernstein([rows[0][j], rows[1][j], rows[2][j]]);
+            for i in 0..3 {
+                net[i * 3 + j] = column[i];
+            }
+        }
+        net
+    }
+
+    /// Two nearly parallel, nearly affine components can still share two
+    /// zeros; such a box is no leaf. `f = s + r - 1` and
+    /// `g = f + ε((s - r)² - a²)` meet at `s - r = ±a` on `s + r = 1`.
+    #[test]
+    fn nearly_affine_pair_with_two_roots_is_not_proven_unique() {
+        let (eps, a) = (0.01, 0.3);
+        let f = quadratic_net(|s, r| s + r - 1.0);
+        let g = quadratic_net(|s, r| s + r - 1.0 + eps * ((s - r).powi(2) - a * a));
+        assert!(affine_fit(&f, 2, 2).nearly_affine());
+        assert!(affine_fit(&g, 2, 2).nearly_affine());
+        assert!(!at_most_one_root(&f, &g, 2, 2));
+        // Transversal components prove uniqueness.
+        let across = quadratic_net(|s, r| s - r + 0.1 * s * s);
+        assert!(at_most_one_root(&f, &across, 2, 2));
     }
 
     #[test]

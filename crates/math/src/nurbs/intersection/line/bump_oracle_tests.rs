@@ -292,3 +292,16 @@ fn far_origin_along_the_line_reports_no_near_miss() {
         assert!((t - back).abs() < 1e-6 * back, "back {back}: t {t}");
     }
 }
+
+/// A grid built from another surface gives meaningless roots, but the
+/// completion pass must not index the supplied surface with its layout.
+#[test]
+fn grid_from_another_surface_does_not_panic() {
+    let large = bump_graph(30, &[(13, 13, 1.5)]);
+    let small = bump_graph(5, &[(2, 2, 1.5)]);
+    let grid = LineSurfaceSeedGrid::for_surface(&large, 20);
+    for origin in [Point3::new(0.45, 0.45, 1.1), Point3::new(0.9, 0.9, 0.5)] {
+        let dir = Vec3::new(0.2, 0.1, 1.0);
+        assert!(intersect_line_nurbs_with_grid(&small, &grid, origin, dir).is_ok());
+    }
+}
