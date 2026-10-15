@@ -319,7 +319,20 @@ fn positive_winding_loops(path: &[Point2], tol: f64) -> Vec<Vec<Point2>> {
     let mut edges = Vec::new();
     for piece in &pieces {
         let (a, b) = (nodes.pos[piece.from], nodes.pos[piece.to]);
-        let mid = Point2::new(f64::midpoint(a.x(), b.x()), f64::midpoint(a.y(), b.y()));
+        // Direction and height come from the segment the piece lies on: a
+        // crossing node is rounded off that segment, so a piece of a
+        // horizontal segment can read as sloped from its end nodes.
+        let (s0, forward0) = piece.along[0];
+        let (sa, sb) = segs[s0];
+        let horizontal = sb.y() - sa.y() == 0.0;
+        let mid = Point2::new(
+            f64::midpoint(a.x(), b.x()),
+            if horizontal {
+                sa.y()
+            } else {
+                f64::midpoint(a.y(), b.y())
+            },
+        );
         // With the piece's own segments left out, the crossing number at
         // `mid` is the winding on the piece's +x side, or just above it when
         // the piece is horizontal (vertex heights resolve upward).
@@ -334,7 +347,8 @@ fn positive_winding_loops(path: &[Point2], tol: f64) -> Vec<Vec<Point2>> {
             .iter()
             .map(|&(_, forward)| if forward { 1 } else { -1 })
             .sum();
-        let (dx, dy) = (b.x() - a.x(), b.y() - a.y());
+        let way = if forward0 { 1.0 } else { -1.0 };
+        let (dx, dy) = (way * (sb.x() - sa.x()), way * (sb.y() - sa.y()));
         let (left, right) = if dy > 0.0 || (dy == 0.0 && dx < 0.0) {
             (wind + step, wind)
         } else {
@@ -903,6 +917,45 @@ mod tests {
             for p in &inset {
                 assert!((1.0 - 1e-9..=5.0 + 1e-9).contains(&p.x()), "{p:?}");
                 assert!((1.0 - 1e-9..=5.0 + 1e-9).contains(&p.y()), "{p:?}");
+            }
+        }
+    }
+
+    /// Just past the 1-wide bridge's collapse the two bridge offsets lie a
+    /// hair apart, and crossing nodes on the squares' horizontal edges are
+    /// rounded off them. Those edges must still be classified as horizontal,
+    /// or the larger square drops out for some overshoots.
+    #[test]
+    fn inset_just_past_a_bridge_collapse_keeps_the_larger_piece() {
+        let base = [
+            (0.0, 0.0),
+            (6.0, 0.0),
+            (6.0, 2.5),
+            (8.0, 2.5),
+            (8.0, 1.0),
+            (12.0, 1.0),
+            (12.0, 5.0),
+            (8.0, 5.0),
+            (8.0, 3.5),
+            (6.0, 3.5),
+            (6.0, 6.0),
+            (0.0, 6.0),
+        ];
+        for (ox, oy, scale) in [(0.0, 0.0, 1.0), (37.3, -91.7, 1.0), (0.0, 0.0, 1e3)] {
+            let placed: Vec<(f64, f64)> = base
+                .iter()
+                .map(|&(x, y)| (ox + scale * x, oy + scale * y))
+                .collect();
+            let poly = pts(&placed);
+            for m in 0..=100 {
+                // Overshoots from 1e-13 to 1e-3 past half the bridge width.
+                let e = 10f64.powf(-13.0 + 0.1 * f64::from(m));
+                for poly in both_windings(&poly) {
+                    let inset =
+                        offset_polygon_2d(&poly, -(0.5 + e) * scale, 1e-10 * scale).unwrap();
+                    assert_eq!(inset.len(), 4, "e = {e:e}: {inset:?}");
+                    assert_area(&inset, &poly, (5.0 - 2.0 * e).powi(2) * scale * scale);
+                }
             }
         }
     }
