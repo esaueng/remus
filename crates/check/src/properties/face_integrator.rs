@@ -1686,13 +1686,24 @@ impl<'a> UvTrim<'a> {
     }
 
     /// The `u` values strictly inside `u_range` at which a loop segment
-    /// crosses one of `v_knots` (sorted).
+    /// crosses one of `v_knots` (sorted), or `None` once there are more than
+    /// `limit` of them.
     ///
     /// Within one `u` interval the v-cuts move affinely with `u`, so the
     /// v-integrand's piecewise structure only changes where a cut passes a
     /// `v` knot. That abscissa is a kink in the `u` integrand which no
     /// splitting of the `v` spans can remove, so it has to be a `u` break.
-    fn knot_crossing_breaks(&self, u_range: (f64, f64), v_knots: &[f64]) -> Vec<f64> {
+    ///
+    /// The count is segments times the knots each one passes, so a trim
+    /// that zigzags across a carrier of many `v` spans could ask for far
+    /// more than any integration budget; `limit` stops it before it
+    /// allocates them.
+    fn knot_crossing_breaks(
+        &self,
+        u_range: (f64, f64),
+        v_knots: &[f64],
+        limit: usize,
+    ) -> Option<Vec<f64>> {
         let tau = std::f64::consts::TAU;
         let (lo, hi) = (u_range.0, u_range.1);
         let shifts: &[f64] = if self.u_periodic {
@@ -1723,13 +1734,16 @@ impl<'a> UvTrim<'a> {
                     let u = (b.x() - a.x()).fma(t, a.x());
                     for &shift in shifts {
                         if u + shift > lo && u + shift < hi {
+                            if breaks.len() == limit {
+                                return None;
+                            }
                             breaks.push(u + shift);
                         }
                     }
                 }
             }
         }
-        breaks
+        Some(breaks)
     }
 
     /// The sub-intervals of `v_range` that belong to the face at abscissa `u`.
@@ -3725,9 +3739,23 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
     } else {
         vec![u_range.0, u_range.1]
     };
+    let over_budget = || {
+        CheckError::IntegrationFailed(format!(
+            "knot-aligned quadrature needs more than {MAX_KNOT_ALIGNED_CELLS} cells"
+        ))
+    };
+    // Every `u` interval is at least one cell, so the breaks are held to the
+    // cap before any is sorted or integrated.
     breaks.extend_from_slice(&knots_u);
     if splits {
-        breaks.extend(trim.knot_crossing_breaks(u_range, &knots_v));
+        let room = MAX_KNOT_ALIGNED_CELLS.saturating_sub(breaks.len());
+        breaks.extend(
+            trim.knot_crossing_breaks(u_range, &knots_v, room)
+                .ok_or_else(over_budget)?,
+        );
+    }
+    if breaks.len() > MAX_KNOT_ALIGNED_CELLS {
+        return Err(over_budget());
     }
     breaks.compact_sort_by(f64::total_cmp);
     breaks.dedup();
@@ -3736,11 +3764,6 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
     let cell_v = knot_aligned_cell(v_range, scale.v);
     let gauss_pts = gauss_legendre_points(rule.order);
     let budget = MAX_KNOT_ALIGNED_CELLS.saturating_mul(gauss_pts.len());
-    let over_budget = || {
-        CheckError::IntegrationFailed(format!(
-            "knot-aligned quadrature needs more than {MAX_KNOT_ALIGNED_CELLS} cells"
-        ))
-    };
     let mut acc = Accumulator {
         volume_only: rule.volume_only,
         ..Accumulator::default()
@@ -3751,9 +3774,17 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
     // Gauss lines integrated so far, each one `v` sub-cell at one `u`
     // abscissa: `order` of them make one tensor cell.
     let mut lines = 0usize;
+    // A whole knot span is integrated however narrow it is: an import that
+    // writes a multiple knot as two nearly equal ones still puts geometry
+    // between them. Only slivers next to a trim break are dropped.
+    let knot_end = |u: f64| {
+        u.to_bits() == u_range.0.to_bits()
+            || u.to_bits() == u_range.1.to_bits()
+            || knots_u.binary_search_by(|k| k.total_cmp(&u)).is_ok()
+    };
     for w in breaks.windows(2) {
         let (u0, u1) = (w[0], w[1]);
-        if u1 - u0 <= eps {
+        if u1 - u0 <= eps && !(knot_end(u0) && knot_end(u1)) {
             continue;
         }
         let nu = knot_aligned_cells(u1 - u0, cell_u);
@@ -4827,11 +4858,20 @@ mod tests {
         let trim = UvTrim::new(Some(&outer), &[], &[], false);
         let knots = [0.5, 1.0, 2.0];
         assert_eq!(
-            trim.knot_crossing_breaks((-1.0, 5.0), &knots),
-            vec![1.0, 2.0, 0.0, 0.0]
+            trim.knot_crossing_breaks((-1.0, 5.0), &knots, usize::MAX),
+            Some(vec![1.0, 2.0, 0.0, 0.0])
         );
         // Only crossings strictly inside the window are breaks.
-        assert_eq!(trim.knot_crossing_breaks((0.0, 1.5), &knots), vec![1.0]);
+        assert_eq!(
+            trim.knot_crossing_breaks((0.0, 1.5), &knots, usize::MAX),
+            Some(vec![1.0])
+        );
+        // More than `limit` stops before allocating the rest.
+        assert_eq!(
+            trim.knot_crossing_breaks((-1.0, 5.0), &knots, 4),
+            Some(vec![1.0, 2.0, 0.0, 0.0])
+        );
+        assert_eq!(trim.knot_crossing_breaks((-1.0, 5.0), &knots, 3), None);
     }
 
     #[test]
@@ -4880,5 +4920,125 @@ mod tests {
             run((&finer, &finer)),
             Err(CheckError::IntegrationFailed(_))
         ));
+    }
+
+    #[test]
+    fn knot_aligned_rule_caps_crossing_breaks_before_allocating_them() {
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let cylinder =
+            remus_math::surfaces::CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), z, 2.0)
+                .expect("cylinder");
+        // 600 segments zigzagging across 1,000 interior `v` knots ask for
+        // 600,000 crossing breaks, past the cap on their own.
+        let outer = UvLoop::new(
+            (0..=600)
+                .map(|i| Point2::new(f64::from(i) / 600.0, f64::from(i % 2)))
+                .collect(),
+            false,
+            false,
+        );
+        let trim = UvTrim::new(Some(&outer), &[], &[], false);
+        let knots_v: Vec<f64> = (1..1001).map(|i| f64::from(i) / 1001.0).collect();
+        let knots = (&[][..], &knots_v[..]);
+        let rule = IntegrationRule {
+            order: 1,
+            adaptive: None,
+            knots: Some(knots),
+            reference: Point3::new(0.0, 0.0, 0.0),
+            volume_only: false,
+            flux: None,
+        };
+        assert!(matches!(
+            integrate_knot_aligned::<_, false>(
+                &cylinder,
+                (0.0, 1.0),
+                (0.0, 1.0),
+                rule,
+                1.0,
+                &trim,
+                PatchScale::ANGULAR,
+                knots,
+            ),
+            Err(CheckError::IntegrationFailed(_))
+        ));
+    }
+
+    /// `(x(u), v, 0)` with `x' = STEEP` on the knot span `[0.5, 0.5 + NARROW]`
+    /// and `x' = 1` elsewhere: the narrow span carries one unit of area.
+    struct NarrowSpan;
+
+    impl NarrowSpan {
+        const NARROW: f64 = 1e-13;
+        const STEEP: f64 = 1.0 / Self::NARROW;
+
+        fn slope(u: f64) -> f64 {
+            if (0.5..=0.5 + Self::NARROW).contains(&u) {
+                Self::STEEP
+            } else {
+                1.0
+            }
+        }
+    }
+
+    impl ParametricSurface for NarrowSpan {
+        fn evaluate(&self, u: f64, v: f64) -> Point3 {
+            let x = if u < 0.5 {
+                u
+            } else if u <= 0.5 + Self::NARROW {
+                0.5 + (u - 0.5) * Self::STEEP
+            } else {
+                u + 1.0 - Self::NARROW
+            };
+            Point3::new(x, v, 0.0)
+        }
+        fn normal(&self, _: f64, _: f64) -> Vec3 {
+            Vec3::new(0.0, 0.0, 1.0)
+        }
+        fn project_point(&self, p: Point3) -> (f64, f64) {
+            (p.x(), p.y())
+        }
+        fn partial_u(&self, u: f64, _: f64) -> Vec3 {
+            Vec3::new(Self::slope(u), 0.0, 0.0)
+        }
+        fn partial_v(&self, _: f64, _: f64) -> Vec3 {
+            Vec3::new(0.0, 1.0, 0.0)
+        }
+    }
+
+    #[test]
+    fn knot_aligned_rule_integrates_a_knot_span_narrower_than_its_sliver_floor() {
+        // The span is 1e-13 of the window, under the 1e-12 floor below which
+        // an interval beside a trim break is dropped, yet it is a whole knot
+        // span: area 1 + 1 rather than 1.
+        let knots_u = [0.5, 0.5 + NarrowSpan::NARROW];
+        let knots = (&knots_u[..], &[][..]);
+        let rule = IntegrationRule {
+            order: 2,
+            adaptive: None,
+            knots: Some(knots),
+            reference: Point3::new(0.0, 0.0, 0.0),
+            volume_only: false,
+            flux: None,
+        };
+        let trim = UvTrim::new(None, &[], &[], false);
+        let area = integrate_knot_aligned::<_, true>(
+            &NarrowSpan,
+            (0.0, 1.0),
+            (0.0, 1.0),
+            rule,
+            1.0,
+            &trim,
+            PatchScale::ANGULAR,
+            knots,
+        )
+        .expect("within the cap")
+        .expect("aligned")
+        .area;
+        // The span's width as stored, (0.5 + 1e-13) − 0.5, is 1e-13 only to
+        // ~1e-3: compare against the surface's own area.
+        let width = (0.5 + NarrowSpan::NARROW) - 0.5;
+        let expected = 1.0 - width + width * NarrowSpan::STEEP;
+        assert!((area - expected).abs() <= 1e-12, "{area} vs {expected}");
+        assert!(area > 1.9, "the narrow span was skipped: {area}");
     }
 }
