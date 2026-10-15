@@ -11009,3 +11009,167 @@ fn scaling_raycast_votes_measure_few_segments() {
         );
     }
 }
+
+mod exact_result_gate_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use remus_math::mat::Mat4;
+    use remus_math::tolerance::Tolerance;
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+
+    fn box_at(topo: &mut Topology, size: f64, x: f64) -> SolidId {
+        let solid = crate::primitives::make_box(topo, size, size, size).unwrap();
+        crate::transform::transform_solid(topo, solid, &Mat4::translation(x, 0.0, 0.0)).unwrap();
+        solid
+    }
+
+    fn joined_outer_shells(topo: &mut Topology, pieces: &[SolidId]) -> SolidId {
+        let faces = pieces
+            .iter()
+            .flat_map(|&solid| {
+                let shell = topo.solid(solid).unwrap().outer_shell();
+                topo.shell(shell).unwrap().faces().to_vec()
+            })
+            .collect();
+        let shell = topo.add_shell(Shell::new(faces).unwrap());
+        let cavities = pieces
+            .iter()
+            .flat_map(|&solid| topo.solid(solid).unwrap().inner_shells().to_vec())
+            .collect();
+        topo.add_solid(Solid::new(shell, cavities))
+    }
+
+    #[test]
+    fn exact_gate_refuses_overlapping_or_nested_closed_components() {
+        for x in [1.0, 3.0] {
+            let mut topo = Topology::new();
+            let a = box_at(&mut topo, 4.0, 0.0);
+            let b = box_at(&mut topo, 2.0, x);
+            // Two individually closed surfaces do not describe their union:
+            // x=1 nests B, x=3 overlaps it without containment.
+            let wrong_union = joined_outer_shells(&mut topo, &[a, b]);
+            assert!(is_closed_manifold(&topo, wrong_union).unwrap());
+            assert!(validate_boolean_result(&topo, wrong_union).is_ok());
+            assert!(matches!(
+                require_exact_boolean_result(&topo, BooleanOp::Fuse, a, b, wrong_union),
+                Err(crate::OperationsError::ExactOnlyUnattainable)
+            ));
+        }
+    }
+
+    #[test]
+    fn exact_gate_refuses_intersection_components_in_an_operand_gap() {
+        let mut topo = Topology::new();
+        let left = box_at(&mut topo, 2.0, 0.0);
+        let right = box_at(&mut topo, 2.0, 8.0);
+        let a = joined_outer_shells(&mut topo, &[left, right]);
+        let b = crate::primitives::make_box(&mut topo, 10.0, 2.0, 2.0).unwrap();
+        let gap_left = box_at(&mut topo, 1.0, 3.0);
+        let gap_right = box_at(&mut topo, 1.0, 6.0);
+        let wrong_common = joined_outer_shells(&mut topo, &[gap_left, gap_right]);
+        // Both wrong pieces are within BOTH operand AABBs but outside A itself.
+        assert!(is_closed_manifold(&topo, wrong_common).unwrap());
+        assert!(validate_boolean_result(&topo, wrong_common).is_ok());
+        assert!(result_within_operand_bounds(
+            &topo,
+            BooleanOp::Intersect,
+            wrong_common,
+            a,
+            b,
+            Tolerance::new()
+        ));
+        assert!(matches!(
+            require_exact_boolean_result(&topo, BooleanOp::Intersect, a, b, wrong_common),
+            Err(crate::OperationsError::ExactOnlyUnattainable)
+        ));
+    }
+
+    #[test]
+    fn exact_gate_still_refuses_a_retained_tool_interior_piece() {
+        for hollow in [false, true] {
+            let mut topo = Topology::new();
+            let a = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+            let b = box_at(&mut topo, 2.0, 6.0);
+            let mut material = box_at(&mut topo, 4.0, 0.0);
+            if hollow {
+                let cavity = box_at(&mut topo, 1.0, 1.5);
+                crate::transform::transform_solid(
+                    &mut topo,
+                    cavity,
+                    &Mat4::translation(0.0, 1.5, 1.5),
+                )
+                .unwrap();
+                material = boolean(&mut topo, BooleanOp::Cut, material, cavity).unwrap();
+            }
+            // An unrelated legitimate cavity must never excuse a component
+            // that still contains the removed tool's material.
+            let wrong_cut = joined_outer_shells(&mut topo, &[material, b]);
+            assert!(is_closed_manifold(&topo, wrong_cut).unwrap());
+            assert!(validate_boolean_result(&topo, wrong_cut).is_ok());
+            assert!(matches!(
+                require_exact_boolean_result(&topo, BooleanOp::Cut, a, b, wrong_cut),
+                Err(crate::OperationsError::ExactOnlyUnattainable)
+            ));
+        }
+    }
+
+    fn thin_hollow_piece(topo: &mut Topology) -> SolidId {
+        let outer = box_at(topo, 4.0, 0.0);
+        let cavity = box_at(topo, 3.98, 0.01);
+        crate::transform::transform_solid(topo, cavity, &Mat4::translation(0.0, 0.01, 0.01))
+            .unwrap();
+        boolean(topo, BooleanOp::Cut, outer, cavity).unwrap()
+    }
+
+    #[test]
+    fn planar_material_search_refuses_walls_below_its_tolerance_floor() {
+        let mut topo = Topology::new();
+        let hollow = thin_hollow_piece(&mut topo);
+        let faces = assembly::face_components(&topo, hollow).remove(0);
+        let prepared = remus_check::classify::PreparedSolid::prepare(&topo, hollow).unwrap();
+        let centre = Point3::new(2.0, 2.0, 2.0);
+        let bounds = (Point3::new(0.0, 0.0, 0.0), Point3::new(4.0, 4.0, 4.0));
+        assert!(
+            component_material_probe(
+                &topo,
+                &faces,
+                centre,
+                bounds,
+                Some(&prepared),
+                Tolerance::new()
+            )
+            .is_some()
+        );
+        // At this operation tolerance, the entire 0.01 wall lies within the
+        // boundary band. Neither extra search nor a boundary classification
+        // can stand in for a strict material witness.
+        let tolerance = Tolerance {
+            linear: 0.02,
+            ..Tolerance::new()
+        };
+        assert!(
+            component_material_probe(&topo, &faces, centre, bounds, Some(&prepared), tolerance)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn exact_gate_refuses_thin_material_retained_inside_the_tool() {
+        let mut topo = Topology::new();
+        let blank = box_at(&mut topo, 10.0, 0.0);
+        let tool = box_at(&mut topo, 4.0, 0.0);
+        let material = thin_hollow_piece(&mut topo);
+        let untouched = box_at(&mut topo, 2.0, 6.0);
+        let wrong_cut = joined_outer_shells(&mut topo, &[material, untouched]);
+        assert!(is_closed_manifold(&topo, wrong_cut).unwrap());
+        assert!(validate_boolean_result(&topo, wrong_cut).is_ok());
+        // The adaptive witness must find the thin wall, then the final tool
+        // classifier must reject it: the whole hollow piece is removed by B.
+        assert!(matches!(
+            require_exact_boolean_result(&topo, BooleanOp::Cut, blank, tool, wrong_cut),
+            Err(crate::OperationsError::ExactOnlyUnattainable)
+        ));
+    }
+}
