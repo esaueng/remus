@@ -360,7 +360,7 @@ impl ClassificationCache {
         let mut trims = Vec::with_capacity(faces.len());
         for (i, &fid) in faces.iter().enumerate() {
             crate::perf::bump_classify_face_aabb_eval();
-            if let Ok(bounds) = crate::util::face_aabb(topo, fid) {
+            if let Ok(bounds) = crate::util::face_ray_bound(topo, fid) {
                 face_aabbs.push((i, bounds));
             }
             let trim = super::boundary::FaceTrimData::build(topo, fid).ok();

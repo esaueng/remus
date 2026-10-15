@@ -102,7 +102,7 @@ fn hull_excludes(hull: Aabb3, point: Point3, tolerance: f64) -> bool {
 /// mutation or arena restore ends the borrow, so stale reuse cannot compile.
 ///
 /// Preparation is conservative by construction: bounds come from the same
-/// `face_aabb` the one-shot path filters with, the BVH is the same `Bvh` over
+/// `face_ray_bound` the one-shot path filters with, the BVH is the same `Bvh` over
 /// the same `(face-index, bound)` pairs, trim polygons come from the same
 /// `face_polygon` / `face_hole_polygons` builders, and queries run the shared
 /// `classify_point_with_source` vote loop. A prepared query and a
@@ -146,7 +146,7 @@ impl<'a> PreparedSolid<'a> {
         let mut prepared_faces = Vec::with_capacity(faces.len());
         for (i, &fid) in faces.iter().enumerate() {
             crate::perf::bump_classify_face_aabb_eval();
-            if let Ok(bounds) = crate::util::face_aabb(topo, fid) {
+            if let Ok(bounds) = crate::util::face_ray_bound(topo, fid) {
                 face_aabbs.push((i, bounds));
             }
             let trim = super::boundary::FaceTrimData::build(topo, fid).ok();
@@ -196,7 +196,7 @@ impl<'a> PreparedSolid<'a> {
 
     /// Number of faces contributing bounds to the shared BVH.
     ///
-    /// Faces whose `face_aabb` fails are pruned, exactly as the one-shot
+    /// Faces whose `face_ray_bound` fails are pruned, exactly as the one-shot
     /// `.ok()` filter prunes them per ray.
     #[must_use]
     pub fn bounded_face_count(&self) -> usize {
