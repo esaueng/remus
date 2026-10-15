@@ -4,12 +4,13 @@
 //! Each workload runs once and prints a digest of its result: per face in
 //! solid order, the surface type and exact `Debug` geometry, orientation, and
 //! every wire's ordered traversal with vertex position bits, curve geometry,
-//! each use's coedge authority (stored pcurve, periodic winding) and the
-//! solid's connectivity: which edge and vertices each use names (first-seen
-//! ordinals) and how many uses share each. Tessellation workloads digest position bits and indices. Two
-//! builds whose digests match produced bit-identical output. Solids also
-//! print a `canonical` digest of the same content that ignores face order
-//! and closed-wire start, for workloads whose order varies run to run.
+//! each use's coedge authority (its edge, stored pcurve, periodic winding)
+//! and the solid's connectivity: which edge and vertices each use names
+//! (first-seen ordinals) and how many uses share each. Tessellation
+//! workloads digest position bits and indices. Two builds whose digests
+//! match produced bit-identical output. Solids also print a `canonical`
+//! digest of the same content that ignores face order and closed-wire
+//! start, for workloads whose order varies run to run.
 //!
 //! glibc selects libm variants by CPU feature, and valgrind's virtual CPU
 //! reports fewer features, so digests compare native with native and
@@ -109,14 +110,30 @@ fn oriented_edge_hash(
     // The use's own authority: its stored pcurve and periodic winding.
     scratch.clear();
     match coedge.map(|id| topo.coedge(id).unwrap()) {
-        Some(c) => write!(
-            scratch,
-            "{}|{:?}|{:?}",
-            c.is_forward(),
-            c.pcurve(),
-            c.periodic_winding()
-        )
-        .unwrap(),
+        Some(c) => {
+            write!(
+                scratch,
+                "{}|{:?}|{:?}",
+                c.is_forward(),
+                c.pcurve(),
+                c.periodic_winding()
+            )
+            .unwrap();
+            // The coedge names its own edge. Agreement leaves the hash as
+            // is; any other edge is hashed by its sharing and geometry.
+            if c.edge() != oe.edge() {
+                let other = topo.edge(c.edge()).unwrap();
+                write!(
+                    scratch,
+                    "|other-edge|{}|{:?}|{:?}|{:?}",
+                    sharing.edge_uses.get(&c.edge()).copied().unwrap_or(0),
+                    other.curve(),
+                    other.trim(),
+                    other.tolerance()
+                )
+                .unwrap();
+            }
+        }
         None => scratch.push_str("no-coedge"),
     }
     h.str(scratch);
