@@ -75,7 +75,13 @@ pub fn import_mesh(
     // multi-body file, which one flip cannot tell apart; those, and open
     // meshes, keep the previous rule: no global flip with stored normals, the
     // origin-relative signed volume without.
-    let inward = closed.then(|| closed_components_inward(&mesh.positions, &vertex_ids, &triangles));
+    let inward = closed.then(|| {
+        closed_components_inward(
+            &welded_positions(&mesh.positions, &vertex_ids),
+            &vertex_ids,
+            &triangles,
+        )
+    });
     let flip_all = match inward.flatten() {
         Some(inward) => inward,
         None if has_normals => false,
@@ -128,6 +134,19 @@ fn signed_six_volume(positions: &[Point3], triangles: &[[usize; 3]], reference: 
             a.dot(b.cross(c))
         })
         .sum()
+}
+
+/// Each position replaced by the position of the vertex it was welded to,
+/// the first position that created that vertex. The orientation test then
+/// measures the geometry the faces are built from: sub-tolerance cracks
+/// between repeated copies (as in STL) do not enter the volume.
+fn welded_positions(positions: &[Point3], vertex_ids: &[VertexId]) -> Vec<Point3> {
+    let mut first: HashMap<usize, Point3> = HashMap::new();
+    positions
+        .iter()
+        .zip(vertex_ids)
+        .map(|(&position, id)| *first.entry(id.index()).or_insert(position))
+        .collect()
 }
 
 /// `Some(true)` when every connected component of a closed, coherently wound
@@ -439,6 +458,42 @@ mod tests {
 
     use super::*;
     use crate::stl::reader::read_stl;
+
+    /// The orientation test measures welded positions, not the raw copies:
+    /// here the raw copies of one corner sit far enough apart to turn an
+    /// outward tetrahedron's volume negative, but all weld to one vertex.
+    #[test]
+    fn orientation_uses_welded_positions() {
+        let corners = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(0.0, 0.0, 1.0),
+        ];
+        // Outward tetrahedron; the slanted face uses a second copy of the
+        // apex, pushed below the base, that still welds to the apex.
+        let triangles = [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 4]];
+        let mut positions = corners.to_vec();
+        positions.push(Point3::new(0.0, 0.0, -10.0));
+        let mut topo = Topology::new();
+        let ids: Vec<VertexId> = corners
+            .iter()
+            .map(|&p| topo.add_vertex(Vertex::new(p, 1e-7)))
+            .collect();
+        let vertex_ids = [ids[0], ids[1], ids[2], ids[3], ids[3]];
+        assert!(
+            closed_components_inward(&positions, &vertex_ids, &triangles) != Some(false),
+            "raw copies alone must not read as outward for this test to matter"
+        );
+        assert_eq!(
+            closed_components_inward(
+                &welded_positions(&positions, &vertex_ids),
+                &vertex_ids,
+                &triangles
+            ),
+            Some(false)
+        );
+    }
     use crate::stl::writer::{self, StlFormat};
 
     #[test]
