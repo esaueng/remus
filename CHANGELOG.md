@@ -109,6 +109,13 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **algo,operations:** an exact box − pointed-cone cut whose cone crosses one
+  box face returns the closed-form volume ([B132](docs/kernel-maturity/roadmap.md#b132)).
+  With the base cap inside it removed the apex piece instead; with the apex
+  inside it refused. The face splitter now bands a pointed cone lateral at the
+  apex, and shell assembly and `remove_wire_spurs` keep the seam pair that
+  turns at a cone face's apex instead of excising it as a spur; the holed
+  cone mesher ignores that seam pair and synthesizes the apex chart as before.
 * **algo,check,operations,wasm:** the sphere-minus-box cut in finding F6
   retains the seven spherical octants with closed meshes and correct material
   queries. Sphere primitives use exact circular equator arcs. The no-seam
