@@ -576,7 +576,12 @@ fn degree_one_deviation_bound(
 }
 
 /// Euclidean norm that neither underflows nor overflows in its squares.
+/// A non-finite component (an overflowed difference, or ∞ − ∞) makes it
+/// infinite: `f64::max` would drop a NaN and report a smaller norm.
 fn scaled_norm(v: [f64; 3]) -> f64 {
+    if v.iter().any(|c| !c.is_finite()) {
+        return f64::INFINITY;
+    }
     let m = v[0].abs().max(v[1].abs()).max(v[2].abs());
     if m == 0.0 || !m.is_finite() {
         return m;

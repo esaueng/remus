@@ -427,3 +427,26 @@ fn certified_reduction_still_gets_its_candidate_past_the_ratio_gate() {
         Err(other) => panic!("unexpected refusal {other:?}"),
     }
 }
+
+#[test]
+fn an_overflowed_coordinate_difference_does_not_vanish() {
+    // Review follow-up: with x = -MAX, MAX, MAX both differences from the
+    // first point overflow to ∞ and the excess is ∞ − ∞ = NaN, which
+    // `f64::max` dropped, so the bound was 0 and the removal was accepted at
+    // tolerance 0 although the curve sits at MAX at the knot.
+    let curve = polyline(
+        vec![0.0, 0.0, 0.5, 1.0, 1.0],
+        &[
+            [-f64::MAX, 0.0, 0.0],
+            [f64::MAX, 0.0, 0.0],
+            [f64::MAX, 0.0, 0.0],
+        ],
+        vec![1.0; 3],
+    );
+    for tol in [0.0, 1.0, 1e300] {
+        assert!(
+            is_refused(&curve_knot_remove(&curve, 0.5, tol)),
+            "removed at tolerance {tol:e}"
+        );
+    }
+}
