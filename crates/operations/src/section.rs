@@ -117,7 +117,7 @@ pub fn section(
                 let face_normal = *face_normal;
                 let face_d = *face_d;
 
-                let verts = curved::trim_polygon(topo, face.outer_wire())?;
+                let verts = curved::trim_polygon(topo, face.outer_wire(), Some((normal, d)))?;
                 if let Some(seg) =
                     intersect_planar_face_with_plane(&verts, face_normal, face_d, normal, d, tol)
                 {
@@ -1483,28 +1483,44 @@ mod curved {
     /// same points. It is [`crate::boolean::wire_polygon`] for lines and
     /// closed curves, but a partial curved edge is sampled along its curve
     /// instead of reduced to its endpoint chord: an arc whose ends lie on one
-    /// side of the plane can still cross it twice.
+    /// side of the plane can still cross it twice. With a cutting `plane`,
+    /// each circle or ellipse edge also gains its exact crossings with it as
+    /// vertices, so a near-tangent plane crossing twice between two samples
+    /// is still seen, at the curve rather than at a chord.
     pub(super) fn trim_polygon(
         topo: &Topology,
         wire: WireId,
+        plane: Option<(Vec3, f64)>,
     ) -> Result<Vec<Point3>, OperationsError> {
         let mut points = Vec::new();
         for oriented in topo.wire(wire)?.edges() {
             let edge = topo.edge(oriented.edge())?;
             let closed = edge.start() == edge.end();
             let curve = edge.curve();
-            // Lines and closed curves exactly as `wire_polygon` lays them down.
+            let roots = plane.map_or_else(Vec::new, |(normal, d)| conic_roots(curve, normal, d));
+            // Lines and closed curves as `wire_polygon` lays them down, plus
+            // the roots in parameter order.
             if closed
                 && matches!(
                     curve,
                     EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_)
                 )
             {
-                let mut sampled = crate::boolean::sample_edge_curve(curve, WIRE_POLYGON_SAMPLES);
+                let sampled = crate::boolean::sample_edge_curve(curve, WIRE_POLYGON_SAMPLES);
+                #[allow(clippy::cast_precision_loss)]
+                let step = TAU / WIRE_POLYGON_SAMPLES as f64;
+                #[allow(clippy::cast_precision_loss)]
+                let mut run: Vec<(f64, Point3)> = sampled
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, p)| (step * i as f64, p))
+                    .chain(roots.iter().map(|&(t, p)| (t, p)))
+                    .collect();
+                run.compact_sort_by(|l, r| l.0.total_cmp(&r.0));
                 if !oriented.is_forward() {
-                    sampled.reverse();
+                    run.reverse();
                 }
-                points.extend(sampled);
+                points.extend(run.into_iter().map(|(_, p)| p));
                 continue;
             }
             if closed || matches!(curve, EdgeCurve::Line) {
@@ -1515,17 +1531,73 @@ mod curved {
             let end = topo.vertex(edge.end())?.point();
             let (t0, t1) = edge_range(edge, start, end)?;
             let n = PARTIAL_EDGE_SAMPLES;
-            // The vertex itself, as every other trim polygon has it, then
-            // the curve's interior.
-            points.push(topo.vertex(oriented.oriented_start(edge))?.point());
-            points.extend((1..n).map(|k| {
+            // Positions s along the edge from its start vertex (s = 0): the
+            // traversal's first vertex itself, the curve's interior, and the
+            // roots that fall strictly inside the trimmed range.
+            let first = if oriented.is_forward() { 0.0 } else { 1.0 };
+            let mut run: Vec<(f64, Point3)> =
+                vec![(first, topo.vertex(oriented.oriented_start(edge))?.point())];
+            run.extend((1..n).map(|k| {
                 let s = f64::from(k) / f64::from(n);
-                let s = if oriented.is_forward() { s } else { 1.0 - s };
-                edge.curve()
-                    .evaluate_with_endpoints(t0 + (t1 - t0) * s, start, end)
+                (
+                    s,
+                    edge.curve()
+                        .evaluate_with_endpoints(t0 + (t1 - t0) * s, start, end),
+                )
             }));
+            for &(t, p) in &roots {
+                // The root's turn that lands in the range, as a fraction of it.
+                let turns = ((t0.min(t1) - t) / TAU).ceil();
+                let t = t + turns * TAU;
+                let s = (t - t0) / (t1 - t0);
+                if s > 0.0 && s < 1.0 && (p - start).length() > 0.0 && (p - end).length() > 0.0 {
+                    run.push((s, p));
+                }
+            }
+            run.compact_sort_by(|l, r| l.0.total_cmp(&r.0));
+            if !oriented.is_forward() {
+                run.reverse();
+            }
+            points.extend(run.into_iter().map(|(_, p)| p));
         }
         Ok(points)
+    }
+
+    /// Where a circle or ellipse crosses the plane `n·p = d`, as its own
+    /// parameters in [0, 2π) with the points: `n·p(t) − d = C + A cos t +
+    /// B sin t`, solved in closed form. A tangency or a miss gives none.
+    fn conic_roots(curve: &EdgeCurve, normal: Vec3, d: f64) -> Vec<(f64, Point3)> {
+        let (center, u, v) = match curve {
+            EdgeCurve::Circle(c) => (c.center(), c.u_axis() * c.radius(), c.v_axis() * c.radius()),
+            EdgeCurve::Ellipse(e) => (
+                e.center(),
+                e.u_axis() * e.semi_major(),
+                e.v_axis() * e.semi_minor(),
+            ),
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return Vec::new(),
+        };
+        let (a, b) = (normal.dot(u), normal.dot(v));
+        let c = dot_normal_point(normal, center) - d;
+        let amplitude = a.hypot(b);
+        if amplitude <= f64::EPSILON * u.length().max(v.length()) {
+            return Vec::new();
+        }
+        let ratio = -c / amplitude;
+        if ratio.abs() >= 1.0 {
+            return Vec::new();
+        }
+        let (phase, half) = (b.atan2(a), ratio.acos());
+        [phase - half, phase + half]
+            .into_iter()
+            .map(|t| {
+                let t = t.rem_euclid(TAU);
+                let (sin_t, cos_t) = t.sin_cos();
+                (t, center + u * cos_t + v * sin_t)
+            })
+            .collect()
     }
 
     fn boundary_edges(topo: &Topology, face: FaceId) -> Result<Vec<BoundaryEdge>, OperationsError> {
@@ -1611,7 +1683,7 @@ mod curved {
         let face = topo.face(face)?;
         let mut crossings = Vec::new();
         for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-            let polygon = trim_polygon(topo, wire)?;
+            let polygon = trim_polygon(topo, wire, Some((normal, d)))?;
             let dists: Vec<f64> = polygon
                 .iter()
                 .map(|v| dot_normal_point(normal, *v) - d)
@@ -1934,7 +2006,8 @@ mod curved {
         /// (3.5, −h) through (4, 0) to (3.5, h), and two lines back to
         /// (1, −h). The plane z = 0.5 crosses the arc inside, at
         /// x = 3 + √0.75, while both its ends lie above it at |z| = h: its
-        /// end chord (x = 3.5) never crosses, so a section ended there.
+        /// end chord (x = 3.5) never crosses, so a section ended there; the
+        /// chords of a sampled arc would end it a sagitta short.
         #[test]
         fn partial_arc_trims_are_crossed_where_the_arc_is() {
             let mut topo = Topology::new();
@@ -1960,7 +2033,7 @@ mod curved {
             let edges = [bottom, arc, top, inner].map(|e| OrientedEdge::new(e, true));
             let wire = topo.add_wire(Wire::new(edges.to_vec(), true).unwrap());
 
-            let polygon = trim_polygon(&topo, wire).unwrap();
+            let polygon = trim_polygon(&topo, wire, Some((Vec3::new(0.0, 0.0, 1.0), 0.5))).unwrap();
             let (p, q) = super::super::intersect_planar_face_with_plane(
                 &polygon,
                 Vec3::new(0.0, -1.0, 0.0),
@@ -1971,11 +2044,10 @@ mod curved {
             )
             .expect("the plane crosses the profile");
             let (lo, hi) = (p.x().min(q.x()), p.x().max(q.x()));
-            // 32 samples over the arc's 2π/3: chord sagitta (π/96)²/2.
-            let sagitta = (PI / 96.0).powi(2) / 2.0;
+            // The arc's crossing is a root of the circle itself, so exact.
             assert!((lo - 1.0).abs() < 1e-9, "inner end {lo}");
             assert!(
-                (hi - (3.0 + 0.75_f64.sqrt())).abs() <= sagitta,
+                (hi - (3.0 + 0.75_f64.sqrt())).abs() < 1e-9,
                 "outer end {hi}, the arc crosses at {}",
                 3.0 + 0.75_f64.sqrt()
             );
@@ -1994,7 +2066,7 @@ mod curved {
                     std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
                 {
                     assert_eq!(
-                        trim_polygon(&topo, wire).unwrap(),
+                        trim_polygon(&topo, wire, None).unwrap(),
                         crate::boolean::wire_polygon(&topo, wire).unwrap()
                     );
                 }
