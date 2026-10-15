@@ -60,7 +60,11 @@ fn assert_area(area: f64, expected: f64, what: &str) {
 /// The unit sphere's cap above `z = 0.5`: a sphere face and a planar disc
 /// sharing one closed rim circle.
 fn dome(topo: &mut Topology) -> SolidId {
-    let cut = 0.5_f64;
+    dome_above(topo, 0.5)
+}
+
+/// The unit sphere's cap above `z = cut`, as [`dome`].
+fn dome_above(topo: &mut Topology, cut: f64) -> SolidId {
     let up = Vec3::new(0.0, 0.0, 1.0);
     let rim = Circle3D::new(Point3::new(0.0, 0.0, cut), up, (1.0 - cut * cut).sqrt()).unwrap();
     let vertex = topo.add_vertex(Vertex::new(rim.evaluate(0.0), 1e-7));
@@ -195,6 +199,35 @@ fn b125_plane_below_a_dome_misses_it() {
         PointClassification::Inside
     );
 
+    let faces = section(
+        &mut topo,
+        solid,
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+    )
+    .unwrap()
+    .faces;
+    assert!(faces.is_empty(), "phantom section of {} faces", faces.len());
+}
+
+/// A dome whose rim sits 5e-6 above `z = 0`: 50 × `tol.linear` off the
+/// plane, so the plane misses the body, but within the 100 × `tol.linear`
+/// that once counted a rim as lying in the plane. The equator's carrier
+/// pieces were then kept along that rim unclassified, a phantom disc of area
+/// π at `z = 0`.
+#[test]
+fn b125_plane_just_below_a_dome_rim_misses_it() {
+    let mut topo = Topology::new();
+    let solid = dome_above(&mut topo, 5e-6);
+    let probe = |p: Point3| classify_point(&topo, solid, p, 0.01, 1e-7).unwrap();
+    assert_eq!(
+        probe(Point3::new(0.0, 0.0, 0.0)),
+        PointClassification::Outside
+    );
+    assert_eq!(
+        probe(Point3::new(0.0, 0.0, 0.5)),
+        PointClassification::Inside
+    );
     let faces = section(
         &mut topo,
         solid,
