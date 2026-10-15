@@ -632,17 +632,24 @@ fn parse_placement(
     let mut object_id = None;
     let mut transform = None;
     for attr in e.attributes().flatten() {
+        // Core attributes are unqualified; a prefixed `transform` or
+        // `objectid` belongs to an extension and must not override them.
+        let qualified = attr.key.prefix().is_some();
         match attr.key.local_name().as_ref() {
-            "objectid" => {
+            "objectid" if !qualified => {
                 object_id = Some(parse_u32_attr(
                     attr.value.as_ref(),
                     &format!("{what} objectid"),
                 )?);
             }
-            "transform" => transform = Some(parse_transform(attr.value.as_ref(), unit_scale)?),
-            // Production extension: the object lives in another model part,
-            // where `objectid` names a different object than it does here.
-            "path" => {
+            "transform" if !qualified => {
+                transform = Some(parse_transform(attr.value.as_ref(), unit_scale)?);
+            }
+            // Production extension (`p:path`): the object lives in another
+            // model part, where `objectid` names a different object than it
+            // does here. Prefixes are not resolved to namespaces, so any
+            // qualified `path` is refused rather than risk a wrong placement.
+            "path" if qualified => {
                 return Err(IoError::ParseError {
                     reason: format!(
                         "3MF {what} references another model part (production extension), \
