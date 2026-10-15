@@ -1639,8 +1639,24 @@ mod curved {
             let edge = topo.edge(oriented.edge())?;
             let closed = edge.start() == edge.end();
             let curve = edge.curve();
+            // A NURBS edge's crossings are isolated over its own range only:
+            // the rest of a longer curve must not refuse its section.
+            let range = match curve {
+                EdgeCurve::NurbsCurve(_) => {
+                    let (start, end) = (
+                        topo.vertex(edge.start())?.point(),
+                        topo.vertex(edge.end())?.point(),
+                    );
+                    Some(edge_range(edge, start, end)?)
+                }
+                EdgeCurve::Line
+                | EdgeCurve::Circle(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => None,
+            };
             let (roots, periodic) = match plane {
-                Some((normal, d)) => plane_roots(curve, normal, d)?,
+                Some((normal, d)) => plane_roots(curve, normal, d, range)?,
                 None => (Vec::new(), false),
             };
             // A closed NURBS edge is its whole curve only when its range is
@@ -1858,6 +1874,7 @@ mod curved {
         curve: &EdgeCurve,
         normal: Vec3,
         d: f64,
+        range: Option<(f64, f64)>,
     ) -> Result<(Vec<(f64, Point3)>, bool), OperationsError> {
         let signed = |p: Point3| dot_normal_point(normal, p) - d;
         let with_points = |ts: Vec<f64>, at: &dyn Fn(f64) -> Point3| -> Vec<(f64, Point3)> {
@@ -1920,7 +1937,8 @@ mod curved {
             }
             EdgeCurve::NurbsCurve(nc) => {
                 let at = |t: f64| nc.evaluate(t);
-                (with_points(nurbs_roots(nc, normal, d)?, &at), false)
+                let range = range.unwrap_or_else(|| nc.domain());
+                (with_points(nurbs_roots(nc, normal, d, range)?, &at), false)
             }
             EdgeCurve::Line => (Vec::new(), false),
         })
@@ -1968,6 +1986,7 @@ mod curved {
         curve: &remus_math::nurbs::curve::NurbsCurve,
         normal: Vec3,
         d: f64,
+        range: (f64, f64),
     ) -> Result<Vec<f64>, OperationsError> {
         const MAX_HALVINGS: usize = 52;
         // A bound on the spans examined: each root and tangency costs at most
@@ -1980,8 +1999,22 @@ mod curved {
             ));
         }
         let signed = |p: Point3| dot_normal_point(normal, p) - d;
+        let split = |c: &remus_math::nurbs::curve::NurbsCurve, t: f64| {
+            remus_math::nurbs::knot_ops::curve_split(c, t)
+                .map_err(|error| unsupported(format!("section of a NURBS trim: {error}")))
+        };
+        // Only the range is isolated: cut the curve down to it first.
+        let (u0, u1) = curve.domain();
+        let (t0, t1) = (range.0.min(range.1).max(u0), range.0.max(range.1).min(u1));
+        let mut start = curve.clone();
+        if t0 > u0 && t0 < u1 {
+            start = split(&start, t0)?.1;
+        }
+        if t1 > start.domain().0 && t1 < start.domain().1 {
+            start = split(&start, t1)?.0;
+        }
         let mut roots = Vec::new();
-        let mut stack = vec![(curve.clone(), 0_usize)];
+        let mut stack = vec![(start, 0_usize)];
         let mut examined = 0_usize;
         while let Some((span, depth)) = stack.pop() {
             examined += 1;
@@ -2047,8 +2080,7 @@ mod curved {
                     roots.push(mid);
                 }
             }
-            let (left, right) = remus_math::nurbs::knot_ops::curve_split(&span, mid)
-                .map_err(|error| unsupported(format!("section of a NURBS trim: {error}")))?;
+            let (left, right) = split(&span, mid)?;
             stack.push((left, depth + 1));
             stack.push((right, depth + 1));
         }
@@ -2831,7 +2863,7 @@ mod curved {
             .unwrap();
             let z = Vec3::new(0.0, 0.0, 1.0);
             let (roots, _) =
-                super::plane_roots(&EdgeCurve::NurbsCurve(bezier.clone()), z, 0.0).unwrap();
+                super::plane_roots(&EdgeCurve::NurbsCurve(bezier.clone()), z, 0.0, None).unwrap();
             assert!(roots.is_empty(), "{roots:?}");
             // The same curve stood up in the plane y = 0 crosses it three
             // times, at s = 0, 1/2 and 1 of its parameter.
@@ -2839,6 +2871,7 @@ mod curved {
                 &EdgeCurve::NurbsCurve(bezier),
                 Vec3::new(0.0, 1.0, 0.0),
                 0.0,
+                None,
             )
             .unwrap();
             assert!(
@@ -3283,6 +3316,50 @@ mod curved {
                 super::cone_section(&topo, face, &cone, axis, height),
                 Err(crate::OperationsError::Unsupported { .. })
             ));
+        }
+
+        /// An edge holding the first two segments of a 20 000-segment
+        /// degree-1 NURBS curve: those stay at z = 1, while the unused rest
+        /// zigzags across z = 0 at every segment. Isolating crossings over the
+        /// whole curve exhausted the span budget and refused the section; the
+        /// edge's own range has none.
+        #[test]
+        fn crossings_outside_a_nurbs_edge_range_do_not_refuse_it() {
+            let n = 20_001_u32;
+            let step = 1.0 / f64::from(n - 1);
+            let curve = NurbsCurve::new(
+                1,
+                [0.0, 0.0]
+                    .into_iter()
+                    .chain((1..n - 1).map(|k| f64::from(k) * step))
+                    .chain([1.0, 1.0])
+                    .collect(),
+                (0..n)
+                    .map(|k| {
+                        let z = if k < 3 || k % 2 == 0 { 1.0 } else { -1.0 };
+                        Point3::new(f64::from(k) * 1e-3, 0.0, z)
+                    })
+                    .collect(),
+                vec![1.0; n as usize],
+            )
+            .unwrap();
+            let mut topo = Topology::new();
+            let [a, b] = [Point3::new(0.0, 0.0, 1.0), Point3::new(2e-3, 0.0, 1.0)]
+                .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+            let mut out = Edge::new(a, b, EdgeCurve::NurbsCurve(curve));
+            out.set_trim(Some((0.0, 2.0 * step)));
+            let out = topo.add_edge(out);
+            let back = topo.add_edge(Edge::new(b, a, EdgeCurve::Line));
+            let edges = [out, back].map(|e| OrientedEdge::new(e, true));
+            let wire = topo.add_wire(Wire::new(edges.to_vec(), true).unwrap());
+            let polygon = trim_polygon(
+                &topo,
+                wire,
+                Some((Vec3::new(0.0, 0.0, 1.0), 0.0)),
+                Tolerance::new(),
+            )
+            .expect("the edge's own range crosses nothing");
+            assert!(polygon.iter().all(|p| (p.z() - 1.0).abs() < 1e-12));
         }
 
         /// At R = 1e6 a band of `1e-6` of the rim's length (≈ 4.7) swallowed
