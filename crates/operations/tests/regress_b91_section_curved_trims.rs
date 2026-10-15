@@ -383,3 +383,61 @@ fn b91_section_flush_with_one_rim_keeps_clipping() {
     );
     assert_area(area, PI * (3.5 * 3.5 - 1.0), "z = h");
 }
+
+/// A vertical plane nearly tangent to the dome's closed rim (radius √0.75 at
+/// z = 0.5), at distance c = 0.865 from the axis and turned π/32, midway
+/// between two of the rim's 32 polygon samples. It crosses the rim twice
+/// within that one sample interval, so no polygon vertex changed side: the
+/// cap's narrow section was dropped. The section is the sphere's circle of
+/// radius √(1 − c²) above its chord at z = 0.5, and that chord must end
+/// exactly where the rim crosses the plane.
+#[test]
+fn b91_section_crosses_a_closed_rim_between_its_samples() {
+    let mut topo = Topology::new();
+    let solid = dome(&mut topo);
+    let (c, turn) = (0.865_f64, PI / 32.0);
+    let normal = Vec3::new(turn.cos(), turn.sin(), 0.0);
+    let probe = |p: Point3| classify_point(&topo, solid, p, 1e-4, 1e-7).unwrap();
+    assert_eq!(
+        probe(Point3::new(0.0, 0.0, 0.5) + normal * c + Vec3::new(0.0, 0.0, 1e-3)),
+        PointClassification::Inside
+    );
+
+    let faces = section(
+        &mut topo,
+        solid,
+        Point3::new(0.0, 0.0, 0.0) + normal * c,
+        normal,
+    )
+    .unwrap()
+    .faces;
+    assert_eq!(faces.len(), 1, "one narrow section");
+    // Its base runs along z = 0.5 between the rim's two exact crossings.
+    let half_chord = (0.75 - c * c).sqrt();
+    let face = topo.face(faces[0]).unwrap();
+    let mut base: Vec<Point3> = Vec::new();
+    for oriented in topo.wire(face.outer_wire()).unwrap().edges() {
+        let edge = topo.edge(oriented.edge()).unwrap();
+        for vertex in [edge.start(), edge.end()] {
+            let p = topo.vertex(vertex).unwrap().point();
+            if (p.z() - 0.5).abs() < 1e-9 {
+                base.push(p);
+            }
+        }
+    }
+    let along = |p: Point3| p.y() * turn.cos() - p.x() * turn.sin();
+    let extent = base.iter().map(|&p| along(p).abs()).fold(0.0_f64, f64::max);
+    assert!(
+        (extent - half_chord).abs() < 1e-9,
+        "base reaches {extent}, the rim crosses at ±{half_chord}"
+    );
+    // The circular segment, against its 64-chord sampling: its arc spans
+    // under two chords, so only a lower bound is meaningful.
+    let r = (1.0 - c * c).sqrt();
+    let segment = r * r * (0.5 / r).acos() - 0.5 * (r * r - 0.25).sqrt();
+    let area = face_area(&topo, faces[0], 1e-3).unwrap();
+    assert!(
+        area > 0.0 && area <= segment * (1.0 + 1e-9),
+        "{area} vs {segment}"
+    );
+}
