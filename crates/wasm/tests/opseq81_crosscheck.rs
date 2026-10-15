@@ -7,9 +7,9 @@
 //! test appends read-only probes (`validateSolid`, `volume`, `meshQuality`)
 //! on the final produced solid and checks the pinned acceptance or defect signature:
 //!
-//! - fixed orientation findings F1/F2/F5/F12 must validate clean and mesh
+//! - fixed orientation findings F1/F2/F5/F11/F12 must validate clean and mesh
 //!   watertight with their closed-form volumes through batch.
-//! - open orientation findings F10/F11/F16 must show validation errors through
+//! - open orientation findings F10/F16 must show validation errors through
 //!   batch with matching volumes: an engine defect, not a binding one. A
 //!   batch-side refusal or a clean validation would mean the defect moved
 //!   or the binding diverges — either fails loudly here.
@@ -205,9 +205,11 @@ fn cross_checks() -> Vec<CrossCheck> {
         CrossCheck {
             file: "opseq81-pointed-cone-fuse-orientation.json",
             signature: Signature::Probes {
-                volume_near: (4.187_30, 0.05),
-                validate: ValidateExpect::Defect,
-                watertight: None,
+                // Fixed (B99): the apex-down cone's rim is shared in
+                // opposite senses. Disjoint operands: π + π/3.
+                volume_near: (4.0 / 3.0 * std::f64::consts::PI, 0.05),
+                validate: ValidateExpect::Clean,
+                watertight: Some(true),
             },
         },
         CrossCheck {
