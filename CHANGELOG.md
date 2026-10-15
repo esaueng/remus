@@ -154,6 +154,13 @@ historical predecessor-line records, retained for provenance. The
   apex, and shell assembly and `remove_wire_spurs` keep the seam pair that
   turns at a cone face's apex instead of excising it as a spur; the holed
   cone mesher ignores that seam pair and synthesizes the apex chart as before.
+  Adaptive mass integration evaluates cone volume flux relative to its apex,
+  so a cavity apex at the integration reference converges without chasing
+  cancellation noise; fixed quadrature and refinement limits are unchanged.
+* **io:** STEP plane locations and reference directions follow the canonical
+  chart for non-unit normals, including the normalized seed threshold.
+  Unrepresentable canonical origins return a typed error instead of emitting
+  non-finite placements.
 * **algo,check,operations,wasm:** the sphere-minus-box cut in finding F6
   retains the seven spherical octants with closed meshes and correct material
   queries. Sphere primitives use exact circular equator arcs. The no-seam
