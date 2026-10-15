@@ -120,7 +120,7 @@ fn hemisphere_with_planar_cap_preserves_the_shared_partitioned_equator() {
 
 #[test]
 fn mixed_stored_equator_directions_preserve_both_hemispheres() {
-    use remus_topology::wire::OrientedEdge;
+    use remus_topology::wire::{OrientedEdge, Wire};
     let mut topo = Topology::new();
     let sphere = make_sphere(&mut topo, 10.0, 4).unwrap();
     let faces = remus_topology::explorer::solid_faces(&topo, sphere).unwrap();
@@ -144,13 +144,24 @@ fn mixed_stored_equator_directions_preserve_both_hemispheres() {
         edge.set_end(start);
         edge.set_trim(Some((b, a)));
         for &wire in &wires {
-            for oriented in topo.wire_mut(wire).unwrap().edges_mut() {
-                if oriented.edge() == edge_id {
-                    *oriented = OrientedEdge::new(edge_id, !oriented.is_forward());
-                }
-            }
+            let uses = topo
+                .wire(wire)
+                .unwrap()
+                .edges()
+                .iter()
+                .map(|oriented| {
+                    if oriented.edge() == edge_id {
+                        OrientedEdge::new(edge_id, !oriented.is_forward())
+                    } else {
+                        *oriented
+                    }
+                })
+                .collect();
+            topo.replace_boundary_wire(wire, Wire::new(uses, true).unwrap())
+                .unwrap();
         }
     }
+    remus_topology::validation::validate_boundary_authority(&topo).unwrap();
     let (mesh, _) = tessellate_solid_grouped_with_tolerance(&topo, sphere, 0.004, 0.06).unwrap();
     assert!(mesh.positions.iter().any(|p| p.z() > 9.9));
     assert!(mesh.positions.iter().any(|p| p.z() < -9.9));
