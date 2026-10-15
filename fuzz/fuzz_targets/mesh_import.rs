@@ -166,8 +166,10 @@ fuzz_target!(|data: &[u8]| {
                         topo.num_faces(),
                         topo.num_shells(),
                         topo.num_solids(),
+                        topo.num_loops(),
+                        topo.num_coedges(),
                     ),
-                    (0, 0, 0, 0, 0),
+                    (0, 0, 0, 0, 0, 0, 0),
                     "post-weld refusal allocated topology: {message}"
                 );
             }
