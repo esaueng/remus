@@ -2842,6 +2842,8 @@ fn validate_arena_point(point: Point3, subject: &str) -> Result<(), IoError> {
 /// refusing a hand-edited or corrupted frame long before it can distort
 /// evaluation.
 const ARENA_FRAME_TOLERANCE: f64 = 1e-9;
+/// The kernel's default linear tolerance (`Tolerance::new().linear`).
+const ARENA_LINEAR_TOLERANCE: f64 = 1e-7;
 
 fn arena_geometry_error(code: &'static str, subject: &str, reason: &str) -> IoError {
     IoError::InvalidGeometry {
@@ -2882,12 +2884,33 @@ fn validate_arena_positive(value: f64, subject: &str, label: &str) -> Result<(),
     }
 }
 
+/// Frame error times carrier size is how far a point on the carrier can sit
+/// from where its declared radius puts it. The bound is the kernel's default
+/// linear tolerance, or the rounding of a kernel-built frame (64 ulp relative)
+/// on a carrier so large that rounding alone exceeds it.
+fn arena_frame_bound(scale: f64) -> f64 {
+    if scale > 0.0 {
+        ARENA_FRAME_TOLERANCE.min(ARENA_LINEAR_TOLERANCE.max(scale * 64.0 * f64::EPSILON) / scale)
+    } else {
+        ARENA_FRAME_TOLERANCE
+    }
+}
+
 fn validate_arena_unit(direction: Vec3, subject: &str, label: &str) -> Result<(), IoError> {
+    validate_arena_scaled_unit(direction, 0.0, subject, label)
+}
+
+fn validate_arena_scaled_unit(
+    direction: Vec3,
+    scale: f64,
+    subject: &str,
+    label: &str,
+) -> Result<(), IoError> {
     for component in direction.0 {
         validate_arena_finite(component, subject, label)?;
     }
     let length = direction.length();
-    if (length - 1.0).abs() <= ARENA_FRAME_TOLERANCE {
+    if (length - 1.0).abs() <= arena_frame_bound(scale) {
         Ok(())
     } else {
         Err(arena_geometry_error(
@@ -2898,16 +2921,18 @@ fn validate_arena_unit(direction: Vec3, subject: &str, label: &str) -> Result<()
     }
 }
 
-/// Every axis must be a unit vector and every pair orthogonal. Handedness
-/// is not checked: a reflected carrier keeps a left-handed frame.
-fn validate_arena_frame(axes: &[(Vec3, &str)], subject: &str) -> Result<(), IoError> {
+/// Every axis must be a unit vector and every pair orthogonal, within
+/// [`arena_frame_bound`] for a carrier of size `scale` (0 when it has none).
+/// Handedness is not checked: a reflected carrier keeps a left-handed frame.
+fn validate_arena_frame(axes: &[(Vec3, &str)], scale: f64, subject: &str) -> Result<(), IoError> {
     for &(axis, label) in axes {
-        validate_arena_unit(axis, subject, label)?;
+        validate_arena_scaled_unit(axis, scale, subject, label)?;
     }
+    let bound = arena_frame_bound(scale);
     for (index, &(first, first_label)) in axes.iter().enumerate() {
         for &(second, second_label) in &axes[index + 1..] {
             let dot = first.dot(second);
-            if dot.abs() > ARENA_FRAME_TOLERANCE {
+            if dot.abs() > bound {
                 return Err(arena_geometry_error(
                     "non-orthogonal-frame",
                     subject,
@@ -2937,6 +2962,7 @@ fn validate_arena_edge_curve(curve: &EdgeCurve, subject: &str) -> Result<(), IoE
                     (circle.u_axis(), "circle u axis"),
                     (circle.v_axis(), "circle v axis"),
                 ],
+                circle.radius(),
                 subject,
             )
         }
@@ -2965,6 +2991,7 @@ fn validate_arena_edge_curve(curve: &EdgeCurve, subject: &str) -> Result<(), IoE
                     (ellipse.u_axis(), "ellipse u axis"),
                     (ellipse.v_axis(), "ellipse v axis"),
                 ],
+                ellipse.semi_major(),
                 subject,
             )
         }
@@ -2978,6 +3005,7 @@ fn validate_arena_edge_curve(curve: &EdgeCurve, subject: &str) -> Result<(), IoE
                     (hyperbola.u_axis(), "hyperbola u axis"),
                     (hyperbola.v_axis(), "hyperbola v axis"),
                 ],
+                hyperbola.semi_major(),
                 subject,
             )
         }
@@ -2989,6 +3017,7 @@ fn validate_arena_edge_curve(curve: &EdgeCurve, subject: &str) -> Result<(), IoE
                     (parabola.axis_dir(), "parabola axis"),
                     (parabola.u_axis(), "parabola u axis"),
                 ],
+                parabola.focal_length(),
                 subject,
             )
         }
@@ -3014,6 +3043,7 @@ fn validate_arena_face_surface(surface: &FaceSurface, subject: &str) -> Result<(
                     (cylinder.x_axis(), "cylinder x axis"),
                     (cylinder.y_axis(), "cylinder y axis"),
                 ],
+                cylinder.radius(),
                 subject,
             )
         }
@@ -3034,6 +3064,7 @@ fn validate_arena_face_surface(surface: &FaceSurface, subject: &str) -> Result<(
                     (cone.x_axis(), "cone x axis"),
                     (cone.y_axis(), "cone y axis"),
                 ],
+                0.0,
                 subject,
             )
         }
@@ -3046,6 +3077,7 @@ fn validate_arena_face_surface(surface: &FaceSurface, subject: &str) -> Result<(
                     (sphere.y_axis(), "sphere y axis"),
                     (sphere.z_axis(), "sphere z axis"),
                 ],
+                sphere.radius(),
                 subject,
             )
         }
@@ -3059,6 +3091,7 @@ fn validate_arena_face_surface(surface: &FaceSurface, subject: &str) -> Result<(
                     (torus.y_axis(), "torus y axis"),
                     (torus.z_axis(), "torus z axis"),
                 ],
+                torus.major_radius() + torus.minor_radius(),
                 subject,
             )
         }

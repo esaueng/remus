@@ -154,6 +154,33 @@ fn circle_edges_check_radius_and_frame() {
     assert_refused(&document, "non-unit-direction");
 }
 
+/// The frame bound scales with the carrier: a u axis 5e-10 too long is
+/// rounding on a radius-1.5 circle but puts a radius-1e12 circle's start
+/// point 500 units off its declared radius.
+#[test]
+fn frame_error_is_bounded_by_carrier_size() {
+    let stretched = |radius: f64| {
+        let mut document = cylinder();
+        let circle = curve(&mut document, "Circle");
+        circle["radius"] = json!(radius);
+        circle["u_axis"] = json!([0.0, 1.0 + 5e-10, 0.0]);
+        document
+    };
+    assert_refused(&stretched(1e12), "non-unit-direction");
+    // 5e-10 on radius 100 is a 5e-8 displacement, inside the linear tolerance.
+    if let Err(IoError::InvalidGeometry { code, reason }) = decode(&stretched(100.0)).0 {
+        panic!("a 5e-8 frame displacement was refused ({code}): {reason}");
+    }
+
+    // Exact unit axes on a huge carrier still pass carrier validation.
+    let mut document = cylinder();
+    curve(&mut document, "Circle")["radius"] = json!(1e12);
+    assert!(!matches!(
+        decode(&document).0,
+        Err(IoError::InvalidGeometry { .. })
+    ));
+}
+
 #[test]
 fn rotated_analytic_carriers_stay_within_the_frame_tolerance() {
     // A rigid transform's rounding must stay far inside the 1e-9 band, so
