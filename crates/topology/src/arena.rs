@@ -206,7 +206,13 @@ impl<T> Arena<T> {
         self.live_len
     }
 
-    pub(crate) fn slot_len(&self) -> usize {
+    /// Returns the number of slots ever allocated, live or retired.
+    ///
+    /// Slots are never reused, so every entry allocated from now on gets an
+    /// index at or above this value: it separates the entries an operation
+    /// creates from the ones it was handed.
+    #[must_use]
+    pub fn slot_len(&self) -> usize {
         self.items.len()
     }
 
