@@ -4157,11 +4157,13 @@ pub fn fillet_rolling_ball_with_origins(
         // called directly (not through `try_fillet`'s closed-shell gate): no new
         // validation errors against the input baseline, and the volume change
         // must be one a fillet of this radius can physically produce.
-        crate::blend_ops::validate_blend_solid_against_input(topo, "fillet", solid, solid_id)?;
+        // `blend_ops::planar_fillet_result` relies on these two checks, with
+        // exactly these arguments, instead of repeating them.
+        let mut baseline = crate::blend_ops::BlendBaseline::new(topo, solid);
+        crate::blend_ops::validate_blend_solid_against_input(&mut baseline, "fillet", solid_id)?;
         crate::blend_ops::validate_blend_volume(
-            topo,
+            &mut baseline,
             "fillet",
-            solid,
             solid_id,
             edges,
             crate::blend_ops::BlendSize::Fillet { radius },

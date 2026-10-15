@@ -452,11 +452,11 @@ fn fillet_transacted(
     // validation against the input, and a convex-edge bevel must REMOVE a
     // bounded amount of material (an oversized radius used to "succeed" with
     // the volume growing — e.g. r=50 on a 10 mm box returned 3833 mm³).
-    crate::blend_ops::validate_blend_solid_against_input(topo, "fillet", solid, result)?;
+    let mut baseline = crate::blend_ops::BlendBaseline::new(topo, solid);
+    crate::blend_ops::validate_blend_solid_against_input(&mut baseline, "fillet", result)?;
     crate::blend_ops::validate_blend_volume(
-        topo,
+        &mut baseline,
         "fillet",
-        solid,
         result,
         edges,
         crate::blend_ops::BlendSize::Fillet { radius },
@@ -1619,7 +1619,8 @@ fn fillet_variable_transacted(
     // of this size can physically produce — an oversized radius used to
     // "succeed" here with the volume GROWING (r=50 on a 10 mm box returned
     // 3242 mm³), and holed-plate selections returned invalid shells as Ok.
-    crate::blend_ops::validate_blend_solid_against_input(topo, "fillet", solid, solid_id)?;
+    let mut baseline = crate::blend_ops::BlendBaseline::new(topo, solid);
+    crate::blend_ops::validate_blend_solid_against_input(&mut baseline, "fillet", solid_id)?;
     let (min_radius, max_radius) = edge_laws.iter().fold(
         (f64::INFINITY, 0.0_f64),
         |(min_radius, max_radius), (_, law)| {
@@ -1629,9 +1630,8 @@ fn fillet_variable_transacted(
     );
     let edges: Vec<EdgeId> = edge_laws.iter().map(|(edge_id, _)| *edge_id).collect();
     crate::blend_ops::validate_blend_volume(
-        topo,
+        &mut baseline,
         "fillet",
-        solid,
         solid_id,
         &edges,
         crate::blend_ops::BlendSize::VariableFillet {

@@ -255,6 +255,60 @@ impl BlendSize {
     }
 }
 
+/// The input-only facts the blend postconditions read, each computed at most
+/// once: the part-scaled validation options and the input's per-check error
+/// magnitudes.
+///
+/// [`validate_blend_solid_against_input`] and [`validate_blend_volume`] run
+/// back to back on one topology state, and each recomputed both: an
+/// edge-length pass over the input and a whole-solid validation of it. Both
+/// are deterministic functions of that state, so the value the first check
+/// computes is the one the second would, and an error still surfaces from
+/// the first check that computes the fact. The borrow on the topology keeps
+/// a baseline from outliving the state it describes.
+pub(crate) struct BlendBaseline<'a> {
+    topo: &'a Topology,
+    input: SolidId,
+    options: Option<remus_check::validate::ValidateOptions>,
+    magnitudes: Option<std::collections::HashMap<remus_check::validate::CheckId, f64>>,
+}
+
+impl<'a> BlendBaseline<'a> {
+    /// A baseline for blends of `input` in the current topology state.
+    pub(crate) const fn new(topo: &'a Topology, input: SolidId) -> Self {
+        Self {
+            topo,
+            input,
+            options: None,
+            magnitudes: None,
+        }
+    }
+
+    /// [`postcondition_options`] of the input.
+    fn options(&mut self) -> Result<&remus_check::validate::ValidateOptions, OperationsError> {
+        match self.options {
+            Some(ref options) => Ok(options),
+            None => Ok(self
+                .options
+                .insert(postcondition_options(self.topo, self.input)?)),
+        }
+    }
+
+    /// [`error_magnitudes`] of the input under [`Self::options`].
+    fn magnitudes(
+        &mut self,
+    ) -> Result<&std::collections::HashMap<remus_check::validate::CheckId, f64>, OperationsError>
+    {
+        if let Some(ref magnitudes) = self.magnitudes {
+            Ok(magnitudes)
+        } else {
+            let (topo, input) = (self.topo, self.input);
+            let magnitudes = error_magnitudes(topo, input, self.options()?)?;
+            Ok(self.magnitudes.insert(magnitudes))
+        }
+    }
+}
+
 /// Reject a blend whose volume change is geometrically impossible.
 ///
 /// A blend only moves material inside a bounded tube around each edge the
@@ -285,16 +339,17 @@ impl BlendSize {
 /// `pub(crate)` so the legacy v1 engines (`fillet::fillet`,
 /// `fillet::fillet_variable`, `fillet::fillet_rolling_ball_with_origins`)
 /// apply the same oracle: they are public API and must be fail-closed even
-/// when called without the v2 dispatcher's guards.
+/// when called without the v2 dispatcher's guards. `baseline` describes the
+/// input solid in the current topology state.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn validate_blend_volume(
-    topo: &Topology,
+    baseline: &mut BlendBaseline<'_>,
     operation: &'static str,
-    input_solid: SolidId,
     result_solid: SolidId,
     edges: &[EdgeId],
     size: BlendSize,
 ) -> Result<(), OperationsError> {
+    let (topo, input_solid) = (baseline.topo, baseline.input);
     let before = crate::measure::solid_volume(topo, input_solid, 0.1)?;
     let after = crate::measure::solid_volume(topo, result_solid, 0.1)?;
     let delta = after - before;
@@ -403,8 +458,7 @@ pub(crate) fn validate_blend_volume(
     // The blend postcondition deliberately permits repairing baseline defects,
     // so do not turn an inherited orientation error into a confident sign
     // verdict. The angle-adjusted magnitude bound still applies.
-    let options = postcondition_options(topo, input_solid)?;
-    let input_is_validation_clean = error_magnitudes(topo, input_solid, &options)?.is_empty();
+    let input_is_validation_clean = baseline.magnitudes()?.is_empty();
     if input_is_validation_clean
         && convexities.len() == budget_edges.len()
         && !convexities.is_empty()
@@ -476,12 +530,15 @@ fn error_magnitudes(
 
 /// Validate the blend result against the INPUT solid as a baseline: defects
 /// already present in the input (e.g. boolean-inherited orientation quirks
-/// on closed circle edges) do not fail the blend; only regressions do.
+/// on closed circle edges) do not fail the blend; only regressions do. Then
+/// apply [`validate_blend_volume`] on the same baseline.
 fn validate_complete_blend(
     topo: &Topology,
     operation: &'static str,
     input_solid: SolidId,
     result: &BlendResult,
+    edges: &[EdgeId],
+    size: BlendSize,
 ) -> Result<(), OperationsError> {
     if result.is_partial {
         return Err(OperationsError::PartialResult {
@@ -490,7 +547,9 @@ fn validate_complete_blend(
             failed: result.failed.len(),
         });
     }
-    validate_blend_solid_against_input(topo, operation, input_solid, result.solid)
+    let mut baseline = BlendBaseline::new(topo, input_solid);
+    validate_blend_solid_against_input(&mut baseline, operation, result.solid)?;
+    validate_blend_volume(&mut baseline, operation, result.solid, edges, size)
 }
 
 /// The baseline-regression half of [`validate_complete_blend`], for engines
@@ -533,13 +592,12 @@ fn postcondition_options(
 }
 
 pub(crate) fn validate_blend_solid_against_input(
-    topo: &Topology,
+    baseline: &mut BlendBaseline<'_>,
     operation: &'static str,
-    input_solid: SolidId,
     result_solid: SolidId,
 ) -> Result<(), OperationsError> {
-    let options = postcondition_options(topo, input_solid)?;
-    let report = remus_check::validate::validate_solid(topo, result_solid, &options)?;
+    let topo = baseline.topo;
+    let report = remus_check::validate::validate_solid(topo, result_solid, baseline.options()?)?;
     if report.is_valid() {
         return Ok(());
     }
@@ -552,7 +610,7 @@ pub(crate) fn validate_blend_solid_against_input(
         }
         map
     };
-    let before = error_magnitudes(topo, input_solid, &options)?;
+    let before = baseline.magnitudes()?;
     let regressed = after
         .iter()
         .any(|(check, &mag)| mag > before.get(check).copied().unwrap_or(0.0));
@@ -925,15 +983,14 @@ fn planar_chamfer_result(
         face_origins: Some(face_origins),
         engine: BlendEngine::PlanarBevel,
     };
-    validate_complete_blend(topo, "chamfer", solid, &result)?;
     // The fast path gets the same volume guard as the walking path. Closedness
     // and manifoldness alone do not prove a bevel is right: a setback that
     // overruns its face folds the polygon through itself and still validates.
-    validate_blend_volume(
+    validate_complete_blend(
         topo,
         "chamfer",
         solid,
-        result_solid,
+        &result,
         edges,
         BlendSize::Chamfer { d1, d2 },
     )?;
@@ -962,28 +1019,20 @@ fn planar_fillet_result(
 ) -> Result<BlendResult, OperationsError> {
     let (result_solid, face_origins) =
         crate::fillet::fillet_rolling_ball_with_origins(topo, solid, edges, radius)?;
-    let result = BlendResult {
+    // The fast path gets the same postconditions as the walking path — and
+    // needs the volume guard more since it learned to rebuild holed caps: a
+    // setback that crosses an inner loop folds the cap through itself and
+    // still validates as a closed 2-manifold. The engine applies both checks,
+    // with exactly these arguments, to the state it returns, so they are not
+    // repeated here.
+    Ok(BlendResult {
         solid: result_solid,
         succeeded: edges.to_vec(),
         failed: Vec::new(),
         is_partial: false,
         face_origins: Some(face_origins),
         engine: BlendEngine::RollingBall,
-    };
-    validate_complete_blend(topo, "fillet", solid, &result)?;
-    // The fast path gets the same volume guard as the walking path — and needs
-    // it more since it learned to rebuild holed caps: a setback that crosses an
-    // inner loop folds the cap through itself and still validates as a closed
-    // 2-manifold. Only the volume rules catch that.
-    validate_blend_volume(
-        topo,
-        "fillet",
-        solid,
-        result_solid,
-        edges,
-        BlendSize::Fillet { radius },
-    )?;
-    Ok(result)
+    })
 }
 
 /// Sample an edge into a polyline whose chords are no longer than `step`.
@@ -1332,12 +1381,11 @@ fn fillet_group(
         let mut builder = FilletBuilder::new(t, solid);
         builder.add_edges(edges, radius);
         let result = builder.build()?;
-        validate_complete_blend(t, "fillet", solid, &result)?;
-        validate_blend_volume(
+        validate_complete_blend(
             t,
             "fillet",
             solid,
-            result.solid,
+            &result,
             edges,
             BlendSize::Fillet { radius },
         )?;
@@ -1375,12 +1423,11 @@ fn fillet_group(
         let mut builder = FilletBuilder::new(t, solid);
         builder.add_edges_with_law(edges, remus_blend::radius_law::RadiusLaw::Constant(radius));
         let result = builder.build()?;
-        validate_complete_blend(t, "fillet", solid, &result)?;
-        validate_blend_volume(
+        validate_complete_blend(
             t,
             "fillet",
             solid,
-            result.solid,
+            &result,
             edges,
             BlendSize::Fillet { radius },
         )?;
@@ -1592,12 +1639,11 @@ fn fillet_by_feature(
     // Per-feature validation compared each step with the step before it; this
     // compares the finished body with what the caller actually handed in, so
     // the volume budget covers every named edge at once.
-    validate_complete_blend(topo, "fillet", solid, &result)?;
-    validate_blend_volume(
+    validate_complete_blend(
         topo,
         "fillet",
         solid,
-        current,
+        &result,
         edges,
         BlendSize::Fillet { radius },
     )?;
@@ -1781,12 +1827,11 @@ pub fn chamfer_v2(
         let mut builder = ChamferBuilder::new(t, solid);
         builder.add_edges_asymmetric(edges, d1, d2);
         let result = builder.build()?;
-        validate_complete_blend(t, "chamfer", solid, &result)?;
-        validate_blend_volume(
+        validate_complete_blend(
             t,
             "chamfer",
             solid,
-            result.solid,
+            &result,
             edges,
             BlendSize::Chamfer { d1, d2 },
         )?;
@@ -1836,12 +1881,11 @@ pub fn chamfer_distance_angle(
         let mut builder = ChamferBuilder::new(t, solid);
         builder.add_edges_distance_angle(edges, distance, angle);
         let result = builder.build()?;
-        validate_complete_blend(t, "chamfer", solid, &result)?;
-        validate_blend_volume(
+        validate_complete_blend(
             t,
             "chamfer",
             solid,
-            result.solid,
+            &result,
             edges,
             BlendSize::Chamfer { d1: distance, d2 },
         )?;
@@ -2045,7 +2089,8 @@ mod tests {
                 },
             ),
         ] {
-            let error = validate_blend_volume(&topo, name, solid, copy, &selection, size)
+            let mut baseline = super::BlendBaseline::new(&topo, solid);
+            let error = validate_blend_volume(&mut baseline, name, copy, &selection, size)
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("must move at least"), "{size:?}: {error}");
@@ -2054,9 +2099,8 @@ mod tests {
         // The noise band scales with the request, not the body, so on planar
         // faces (measured exactly) even a hairline no-op is visible.
         let error = validate_blend_volume(
-            &topo,
+            &mut super::BlendBaseline::new(&topo, solid),
             "fillet",
-            solid,
             copy,
             &selection,
             BlendSize::Fillet { radius: 0.01 },
