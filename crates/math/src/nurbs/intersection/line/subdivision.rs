@@ -28,10 +28,11 @@
 //!
 //! Each surviving box runs the shared Newton refinement clamped to the box
 //! (with a margin), so it cannot slide off to a different root, and accepts
-//! only a residual below `1e-9` of the surface's extent plus a round-off
-//! allowance for its distance from the origin: a root this pass reports is a
-//! genuine crossing, never the grid pass's looser `1e-5` near-miss, and the
-//! thresholds do not grow when the geometry is translated. A box proven to
+//! only a residual below the round-off floor of the coordinates involved
+//! (`256 ε` times their magnitude, the line origin rebased next to the
+//! surface): a root this pass reports is a genuine crossing, never the grid
+//! pass's looser `1e-5` near-miss, whatever the surface's size, shape or
+//! position. A box proven to
 //! hold at most one root that already holds a reported one is not refined
 //! again. A box that reaches the split-depth limit unproven (a near-tangent
 //! line) is always refined.
@@ -66,16 +67,14 @@ const AFFINE_FRACTION: f64 = 0.05;
 /// Parameter margin around a leaf box for its clamped Newton, as a fraction
 /// of the box extent per side.
 const LEAF_MARGIN: f64 = 0.25;
-/// Acceptance residual of a completion root, relative to the surface's extent
-/// (its control box diagonal). Translation-invariant: position enters only
-/// through [`ROUNDOFF`].
-const ROOT_TOLERANCE: f64 = 1e-9;
-/// Slab-test padding, relative to the surface's extent, so rounding in the
-/// box test never rejects a box the line touches.
-const BOX_PADDING: f64 = 1e-9;
-/// Round-off allowance per unit of coordinate magnitude, added to both: a
-/// surface far from the origin computes differences no finer than this.
-const ROUNDOFF: f64 = 64.0 * f64::EPSILON;
+/// Acceptance residual of a completion root, and the slab-test padding, per
+/// unit of coordinate magnitude (the larger of the surface's control points
+/// and the rebased line origin): what rounding cannot resolve at those
+/// coordinates, with margin for high-degree and rational evaluation. No
+/// geometric term: a tolerance scaled by the surface's size accepts real
+/// misses on a large or elongated surface, and translating the geometry
+/// changes only the magnitude.
+const ROUNDOFF: f64 = 256.0 * f64::EPSILON;
 
 /// Knot spans per direction in one leaf block of the span tree. A leaf
 /// box covers a block of up to `BLOCK × BLOCK` spans, which keeps the tree
@@ -95,8 +94,6 @@ pub(super) struct SpanHull {
     v_spans: Vec<usize>,
     /// Control-point boxes of the implicit block-range tree, in preorder.
     boxes: Vec<Aabb3>,
-    /// Diagonal of the control-point box.
-    extent: f64,
     /// Largest absolute control-point coordinate.
     magnitude: f64,
     /// Control-point grid size, with the degrees the layout the spans index.
@@ -118,7 +115,6 @@ impl SpanHull {
             u_spans,
             v_spans,
             boxes: Vec::new(),
-            extent: 0.0,
             magnitude: 0.0,
             rows: cps.len(),
             cols: cps.first().map_or(0, Vec::len),
@@ -127,7 +123,6 @@ impl SpanHull {
         if root.leaves() > 0 {
             hull.boxes.reserve(2 * root.leaves() - 1);
             let bounds = hull.build_box(surface, root);
-            hull.extent = (bounds.max - bounds.min).length();
             hull.magnitude = [bounds.min, bounds.max]
                 .iter()
                 .flat_map(|corner| corner.0)
@@ -584,7 +579,7 @@ pub(super) fn complete_line_roots(
         .iter()
         .fold(hull.magnitude, |acc, c| acc.max(c.abs()));
     let roundoff = ROUNDOFF * magnitude;
-    let pad = BOX_PADDING * hull.extent + roundoff;
+    let pad = roundoff;
     if !line_meets_box(line.origin, line.direction, dir_len, hull.boxes[0], pad) {
         return;
     }
@@ -613,7 +608,7 @@ pub(super) fn complete_line_roots(
         // bounded by the plane distances.
         slack: pad,
         max_weight: surface.max_weight(),
-        tolerance: ROOT_TOLERANCE * hull.extent + roundoff,
+        tolerance: roundoff,
         nodes: 0,
         refinements: 0,
         scratch: Scratch::default(),
