@@ -57,7 +57,7 @@ pub const DEFAULT_NURBS_AREA_MEMO_CAPACITY: usize = 512;
 pub const DEFAULT_NURBS_AREA_MEMO_BYTE_BUDGET: usize = 8 * 1024 * 1024;
 
 /// Bump when the key's content or request encoding changes.
-const KEY_VERSION: u64 = 0x5245_4d55_534e_4133;
+const KEY_VERSION: u64 = 0x5245_4d55_534e_4134;
 
 /// Deterministic counters and current bounds of the thread's NURBS-area memo.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -417,6 +417,13 @@ impl KeyWriter {
                     None => self.word(0),
                 }
             }
+        }
+        // The boundary pool inserts edges in arena-index order and keeps the
+        // first point landing in each merge cell, so that order is content.
+        let mut by_arena: Vec<(usize, u64)> = edge_ordinals.into_iter().collect();
+        by_arena.sort_unstable();
+        for (_, ordinal) in by_arena {
+            self.word(ordinal);
         }
         Some(())
     }

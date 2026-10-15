@@ -298,6 +298,55 @@ fn boundary_vertex_change_misses() {
     assert_eq!((stats.hits, stats.misses), (0, 2));
 }
 
+/// The same square with its four edges allocated in a different arena order.
+fn square_allocated_in_order(
+    topo: &mut Topology,
+    order: [usize; 4],
+) -> remus_topology::wire::WireId {
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+    let corners = [(0.5, 0.5), (1.5, 0.5), (1.5, 1.5), (0.5, 1.5)];
+    let vertices: Vec<_> = corners
+        .iter()
+        .map(|&(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, 0.0), 1e-7)))
+        .collect();
+    let mut edges = [None; 4];
+    for side in order {
+        let edge = Edge::new(vertices[side], vertices[(side + 1) % 4], EdgeCurve::Line);
+        edges[side] = Some(topo.add_edge(edge));
+    }
+    let oriented = edges
+        .iter()
+        .map(|edge| OrientedEdge::new(edge.unwrap(), true))
+        .collect();
+    topo.add_wire(Wire::new(oriented, true).unwrap())
+}
+
+/// The boundary pool reads edges in arena-index order, so the same face
+/// content allocated in another edge order is a different key.
+#[test]
+fn boundary_edge_arena_order_misses() {
+    let _reset = fresh_memo();
+    let mut measured = Vec::new();
+    for order in [[0, 1, 2, 3], [2, 0, 3, 1], [0, 1, 2, 3]] {
+        let mut topo = Topology::new();
+        let outer = square_allocated_in_order(&mut topo, order);
+        let face = topo.add_face(remus_topology::face::Face::new(
+            outer,
+            Vec::new(),
+            FaceSurface::Nurbs(flat_patch()),
+        ));
+        measured.push(assert_area_bits(&topo, face, DEFLECTION));
+    }
+    assert!(
+        measured.iter().all(|area| (area - 1.0).abs() < 1e-12),
+        "{measured:?}"
+    );
+    let stats = thread_nurbs_area_memo_stats().unwrap();
+    assert_eq!((stats.hits, stats.misses), (1, 2));
+}
+
 /// An edge's own tolerance feeds `Edge::strict_domain` in the face mesher, so
 /// setting or changing it changes the key.
 #[test]
