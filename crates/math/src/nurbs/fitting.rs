@@ -47,8 +47,8 @@ fn check_sparse_entries(entries: usize) -> Result<(), MathError> {
 /// Most arithmetic a fit may do, about a second at full optimization.
 ///
 /// Counts multiply-adds for least squares (`n·m² + m³`) and basis-value
-/// visits for LSPIA (`n·(p + 1)·(3·(max_iterations + 1) + 40)`, see
-/// [`lspia_work`]).
+/// visits for LSPIA (`n·(p + 1)·(3·(max_iterations + 1) + 40)`, plus `n·m`
+/// when unsorted parameters force a linear nearest-parameter scan).
 pub const MAX_FIT_WORK: usize = 1 << 30;
 
 /// LSPIA's basis-value visits: every measured iterate evaluates each point
