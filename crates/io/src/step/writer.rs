@@ -1698,7 +1698,13 @@ fn compute_ref_direction(normal: Vec3) -> Vec3 {
     let ax = Vec3::new(1.0, 0.0, 0.0);
     let ay = Vec3::new(0.0, 1.0, 0.0);
 
-    let candidate = if normal.dot(ax).abs() < 0.9 { ax } else { ay };
+    // Seed from the unit normal, as `PlaneChart::canonical` does; a stored
+    // plane normal need not be unit length.
+    let candidate = if normal.dot(ax).abs() < 0.9 * normal.length() {
+        ax
+    } else {
+        ay
+    };
     let ref_dir = normal.cross(candidate);
     ref_dir.normalize().unwrap_or(ax)
 }
