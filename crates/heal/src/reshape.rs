@@ -80,6 +80,39 @@ pub struct ReShape {
     shells: HashMap<ShellId, ShellAction>,
 }
 
+/// A reorder can flip a use's sense, and the rebuilt boundary keeps a pcurve
+/// only for a use whose sense it still has. A use that changed sense, and has
+/// no pcurve in either sense now, takes its old one with the range reversed:
+/// the same 2D curve traversed the other way.
+fn carry_flipped_pcurves(
+    topo: &mut Topology,
+    face_id: FaceId,
+    before: Vec<(EdgeId, bool, remus_topology::pcurve::PCurve)>,
+) -> Result<(), HealError> {
+    let mut uses: Vec<OrientedEdge> = Vec::new();
+    let face = topo.face(face_id)?;
+    for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        uses.extend_from_slice(topo.wire(wid)?.edges());
+    }
+    for (edge, forward, pcurve) in before {
+        let flipped = uses
+            .iter()
+            .any(|oe| oe.edge() == edge && oe.is_forward() != forward);
+        if flipped
+            && topo.pcurve_oriented(edge, face_id, forward).is_none()
+            && topo.pcurve_oriented(edge, face_id, !forward).is_none()
+        {
+            let reversed = remus_topology::pcurve::PCurve::new(
+                pcurve.curve().clone(),
+                pcurve.t_end(),
+                pcurve.t_start(),
+            );
+            topo.set_pcurve_oriented(edge, face_id, !forward, reversed)?;
+        }
+    }
+    Ok(())
+}
+
 impl ReShape {
     /// Create an empty reshape tracker.
     #[must_use]
@@ -622,7 +655,13 @@ impl ReShape {
                 .collect();
 
             if new_outer != old_outer || new_inner != old_inner {
+                let before: Vec<(EdgeId, bool, remus_topology::pcurve::PCurve)> = topo
+                    .pcurves_for_face(face_id)
+                    .into_iter()
+                    .map(|(edge, forward, pcurve)| (edge, forward, pcurve.clone()))
+                    .collect();
                 topo.set_face_boundary_wires(face_id, new_outer, new_inner)?;
+                carry_flipped_pcurves(topo, face_id, before)?;
             }
         }
         Ok(())
