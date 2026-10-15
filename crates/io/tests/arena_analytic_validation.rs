@@ -181,6 +181,49 @@ fn frame_error_is_bounded_by_carrier_size() {
     ));
 }
 
+/// A cone or parabola has no size of its own: its trimmed extent multiplies
+/// any frame error, so the frame must be unit to rounding.
+#[test]
+fn unbounded_carriers_need_a_rounding_exact_frame() {
+    use remus_math::curves::Parabola3D;
+    use remus_math::vec::{Point3, Vec3};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+
+    let mut document = document(|topo| make_cone(topo, 2.0, 1.0, 3.0).unwrap());
+    surface(&mut document, "Cone")["axis"] = json!([0.0, 0.0, 1.0 + 5e-10]);
+    assert_refused(&document, "non-unit-direction");
+
+    // f = 1e-6 trimmed at t = ±1: a 5e-10 axis error moves the ends 1.25e-4.
+    let mut topo = Topology::new();
+    let parabola =
+        Parabola3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0), 1e-6).unwrap();
+    let start = topo.add_vertex(Vertex::new(parabola.evaluate(-1.0), 1e-7));
+    let end = topo.add_vertex(Vertex::new(parabola.evaluate(1.0), 1e-7));
+    let edge = topo.add_edge(Edge::new(start, end, EdgeCurve::Parabola(parabola)));
+    let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap());
+    let bytes = remus_io::arena_io::serialize_wire(&topo, wire).unwrap();
+    let mut restored = Topology::new();
+    assert_eq!(
+        remus_io::arena_io::deserialize_wires(&bytes, &mut restored)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let mut document: Value = serde_json::from_slice(&bytes).unwrap();
+    curve(&mut document, "Parabola")["axis_dir"] = json!([1.0 + 5e-10, 0.0, 0.0]);
+    let mut restored = Topology::new();
+    match remus_io::arena_io::deserialize_wires(
+        &serde_json::to_vec(&document).unwrap(),
+        &mut restored,
+    ) {
+        Err(IoError::InvalidGeometry { code, .. }) => assert_eq!(code, "non-unit-direction"),
+        other => panic!("expected the stretched parabola to be refused, got {other:?}"),
+    }
+}
+
 #[test]
 fn rotated_analytic_carriers_stay_within_the_frame_tolerance() {
     // A rigid transform's rounding must stay far inside the 1e-9 band, so
