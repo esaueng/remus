@@ -556,7 +556,7 @@ fn knot_remove(
 /// a common weight scale, so it is evaluated relative to `prev` and already
 /// divided by `w_k`: with ρ = w/w_k,
 ///   e/w_k = Δ_mid − α·ρ_next·Δ_next,
-///   ε/w_k = 1 − α·ρ_next − (1 − α)·ρ_prev.
+///   ε/w_k = (1 − α)·(w_k − w_prev)/w_k + α·(w_k − w_next)/w_k.
 /// Forming e itself would underflow for a tiny middle weight and a tiny
 /// offset together.
 #[allow(clippy::suboptimal_flops)]
@@ -579,7 +579,10 @@ fn degree_one_deviation_bound(
     }
     let dm = mid.0 - prev.0;
     let dn = next.0 - prev.0;
-    let eps = 1.0 - alpha * rho_next - (1.0 - alpha) * rho_prev;
+    // ε/w_k from weight differences: each term then carries a relative
+    // error, where `1 − α·ρ_next − …` cancels to an absolute one (α = 1e-100
+    // lost a 9e-100 excess that, times a 1e200 offset, is the whole bound).
+    let eps = (1.0 - alpha) * ((mid.1 - prev.1) / mid.1) + alpha * ((mid.1 - next.1) / mid.1);
     let e = [
         dm.x() - alpha * rho_next * dn.x(),
         dm.y() - alpha * rho_next * dn.y(),

@@ -462,3 +462,23 @@ fn an_overflowed_coordinate_difference_does_not_vanish() {
     );
     assert!(is_refused(&curve_knot_remove(&spike, 0.5, f64::MAX)));
 }
+
+#[test]
+fn a_weight_excess_across_widely_separated_spans_is_kept() {
+    // Review follow-up: knots 0, 1, 1e100 put the removed knot at
+    // α = 1e-100. The weight excess ε/w_k = −9e-100 cancelled to 0 in
+    // `1 − α·ρ_next − (1 − α)·ρ_prev`, and with it ε·dn ≈ 9e100, the whole
+    // bound; the removal was accepted at tolerance 0 although the curve
+    // moves (by about 1.55e85 at u = 0.9).
+    let curve = polyline(
+        vec![0.0, 0.0, 1.0, 1e100, 1e100],
+        &[[1.0, 0.0, 0.0], [-1e101, 0.0, 0.0], [-1e200, 0.0, 0.0]],
+        vec![1.0, 1.0, 10.0],
+    );
+    for tol in [0.0, 1e85, 1e100] {
+        assert!(
+            is_refused(&curve_knot_remove(&curve, 1.0, tol)),
+            "removed at tolerance {tol:e}"
+        );
+    }
+}
