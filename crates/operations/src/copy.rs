@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::ops::Range;
 
-use remus_math::det_hash::DetHashMap;
+use remus_math::det_hash::{DetHashMap, DetLookupHashMap};
 use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::attributes::EntityAttributes;
@@ -1299,6 +1299,49 @@ pub(crate) fn copy_solid_with_entity_map(
     solid_id: SolidId,
 ) -> Result<CopiedSolidEntities, crate::OperationsError> {
     copy_solid_ids(topo, solid_id).map(CopyIds::into_entities)
+}
+
+/// Geometry that stands in for a source solid's own in a copy, keyed by
+/// source index.
+#[derive(Default)]
+pub(crate) struct CopyReplacements {
+    /// Vertex positions.
+    pub vertices: DetLookupHashMap<usize, Point3>,
+    /// Edge curves with their trims.
+    pub edges: DetLookupHashMap<usize, (EdgeCurve, Option<(f64, f64)>)>,
+    /// Face surfaces.
+    pub surfaces: DetLookupHashMap<usize, FaceSurface>,
+}
+
+/// [`copy_solid_with_entity_map`] of `solid_id` as it would read with the
+/// `replacements` written into it. The copy is the one
+/// [`copy_solid_between_with_entity_map`] makes from a document holding that
+/// edited solid under the same handles — the same entities, values and
+/// allocation order — without such a document existing.
+pub(crate) fn copy_solid_replacing_with_entity_map(
+    topo: &mut Topology,
+    solid_id: SolidId,
+    mut replacements: CopyReplacements,
+) -> Result<CopiedSolidEntities, crate::OperationsError> {
+    let mut plan = build_copy_plan(topo, solid_id)?;
+    for vertex in &mut plan.vertices {
+        if let Some(&point) = replacements.vertices.get(&vertex.old_index) {
+            vertex.point = point;
+        }
+    }
+    for edge in &mut plan.edges {
+        if let Some((curve, trim)) = replacements.edges.remove(&edge.old_index) {
+            edge.curve = curve;
+            edge.trim = trim;
+        }
+    }
+    for face in plan.shells.iter_mut().flatten() {
+        if let Some(surface) = replacements.surfaces.get(&face.old_index) {
+            face.surface = surface.clone();
+        }
+    }
+    let face_count = plan.shells.iter().map(Vec::len).sum();
+    materialize_copy(topo, plan, face_count).map(CopyIds::into_entities)
 }
 
 /// Create a deep copy of a solid with a simultaneous affine transform.

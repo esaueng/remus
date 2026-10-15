@@ -122,6 +122,50 @@ where
     Ok(false)
 }
 
+fn is_analytic_sphere(
+    topo: &Topology,
+    faces: &[FaceId],
+    deflection: f64,
+    angular_tol: f64,
+) -> Result<bool, crate::OperationsError> {
+    if faces.len() != 2 {
+        return Ok(false);
+    }
+    let a = topo.face(faces[0])?;
+    let b = topo.face(faces[1])?;
+    if super::nonplanar::analytic_sphere_equator_direction(topo, a)?.is_none()
+        || super::nonplanar::analytic_sphere_equator_direction(topo, b)?.is_none()
+    {
+        return Ok(false);
+    }
+    let (FaceSurface::Sphere(sa), FaceSurface::Sphere(sb)) = (a.surface(), b.surface()) else {
+        return Ok(false);
+    };
+    if !super::face::sphere_display_grid_is_fine(sa.radius(), deflection, angular_tol) {
+        return Ok(false);
+    }
+    // The independent hemisphere grids must agree exactly. Even an in-tolerance
+    // radius change can cross a chord-count rounding boundary.
+    if sa.center() != sb.center()
+        || sa.radius().to_bits() != sb.radius().to_bits()
+        || sa.x_axis() != sb.x_axis()
+        || sa.y_axis() != sb.y_axis()
+        || sa.z_axis() != sb.z_axis()
+    {
+        return Ok(false);
+    }
+    let wa = topo.wire(a.outer_wire())?.edges();
+    let wb = topo.wire(b.outer_wire())?.edges();
+    if wa.len() != wb.len() {
+        return Ok(false);
+    }
+    let uses: DetHashMap<_, _> = wa.iter().map(|e| (e.edge(), e.is_forward())).collect();
+    Ok(uses.len() == wa.len()
+        && wb
+            .iter()
+            .all(|e| uses.get(&e.edge()) == Some(&!e.is_forward())))
+}
+
 /// Tessellate all faces of a solid into a single watertight triangle mesh.
 ///
 /// Unlike per-face `tessellate()`, this function coordinates tessellation across
@@ -1566,6 +1610,12 @@ fn tessellate_faces_core(
     // content key (surface, wires, final boundary chains, tolerances) matches
     // a retained capture up to a rigid translation is replayed instead of
     // re-meshed; every other face is meshed as before and captured.
+    // Exact equators changed primitive spheres from the analytic grid to the
+    // denser trimmed-cap path. Restore the display grid only when the entire
+    // solid is two complementary hemispheres with the same equator. A planar
+    // cap or a trimmed neighbour still needs every shared rim sample.
+    let allow_analytic_hemisphere =
+        !circle_floor && is_analytic_sphere(topo, all_faces, deflection, angular_tol)?;
     let mut cache_session = face_cache::Session::begin(retention);
     for &fi in &other_face_indices {
         let face_id = all_faces[fi];
@@ -1581,6 +1631,7 @@ fn tessellate_faces_core(
                     angular_tol: plan.angular_tol,
                     circle_floor: plan.policy.circle_floor,
                     allow_latitude_cap,
+                    allow_analytic_hemisphere,
                 },
                 &plan.edge_chains,
                 &plan.merged.positions,
@@ -1617,6 +1668,7 @@ fn tessellate_faces_core(
             plan.angular_tol,
             plan.policy.circle_floor,
             allow_latitude_cap,
+            allow_analytic_hemisphere,
             &plan.edge_chains,
             &mut plan.merged,
             &mut plan.point_to_global,
@@ -1785,6 +1837,31 @@ fn tessellate_faces_core(
         fill_sub_deflection_triangular_gaps(&mut plan.merged, plan.deflection, tri_faces.as_mut());
     }
 
+    if allow_analytic_hemisphere {
+        // The smooth equator's topology partitions need not coincide with the
+        // analytic grid. Discard unused pool samples before transferring the
+        // display mesh; keep face groups and all used vertex values verbatim.
+        let mesh = &mut plan.merged;
+        let mut remap = vec![u32::MAX; mesh.positions.len()];
+        for &index in &mesh.indices {
+            remap[index as usize] = 0;
+        }
+        let mut next = 0;
+        for old in 0..mesh.positions.len() {
+            if remap[old] != u32::MAX {
+                remap[old] = next as u32;
+                mesh.positions[next] = mesh.positions[old];
+                mesh.normals[next] = mesh.normals[old];
+                next += 1;
+            }
+        }
+        mesh.positions.truncate(next);
+        mesh.normals.truncate(next);
+        for index in &mut mesh.indices {
+            *index = remap[*index as usize];
+        }
+    }
+
     Ok((plan.merged, tri_faces, all_faces.len()))
 }
 
@@ -1917,6 +1994,7 @@ pub(super) fn tessellate_face_with_shared_edges(
     angular_tol: f64,
     circle_floor: bool,
     allow_latitude_cap: bool,
+    allow_analytic_hemisphere: bool,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
     point_to_global: &mut PointMergeMap,
@@ -1928,7 +2006,19 @@ pub(super) fn tessellate_face_with_shared_edges(
     let idx_start = merged.indices.len();
     let pos_start = merged.positions.len();
 
-    if let FaceSurface::Plane { normal, .. } = face_data.surface() {
+    if allow_analytic_hemisphere {
+        tessellate_nonplanar_snap(
+            topo,
+            face_id,
+            face_data,
+            deflection,
+            angular_tol,
+            circle_floor,
+            edge_global_indices,
+            merged,
+            point_to_global,
+        )?;
+    } else if let FaceSurface::Plane { normal, .. } = face_data.surface() {
         let normal = *normal;
         let wire = topo.wire(face_data.outer_wire())?;
 
@@ -2312,6 +2402,7 @@ pub(super) fn tessellate_face_with_shared_edges(
                     deflection,
                     angular_tol,
                     allow_latitude_cap,
+                    allow_analytic_hemisphere,
                     edge_global_indices,
                     merged,
                     point_to_global,
