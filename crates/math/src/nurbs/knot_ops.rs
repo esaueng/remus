@@ -466,10 +466,12 @@ pub fn curve_knot_remove(
     // and every exactly inserted knot) it is |P_k - Q|, attained at `u`.
     if p == 1 {
         let denom = removed_knots[k + 1] - removed_knots[k];
+        // The stored knot, not the caller's `u`: they may differ by up to
+        // KNOT_EPS, and that roundoff must not count as spatial deviation.
         let alpha = if denom.abs() < KNOT_EPS {
             0.0
         } else {
-            (u - removed_knots[k]) / denom
+            (knots[r] - removed_knots[k]) / denom
         };
         let at = |i: usize| (cps[i], ws[i]);
         if degree_one_deviation_bound(at(k - 1), at(k), at(k + 1), alpha) > tolerance {
