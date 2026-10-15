@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 
 use remus_math::curves::Circle3D;
+use remus_math::det_hash::DetHashMap;
 use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
@@ -17,6 +18,7 @@ use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::analytic;
+use crate::body_edit::EditScope;
 use crate::builder_utils::{
     add_certified_curve_edge, project_onto_axis, radial_distance, refuse_non_line_rim_neighbors,
     sample_nurbs_endpoints, wire_axial_range, wire_radial_extremum,
@@ -167,6 +169,9 @@ impl<'a> ChamferBuilder<'a> {
         let shell_id = solid_data.outer_shell();
         let inner_shells = solid_data.inner_shells().to_vec();
         let original_faces: Vec<FaceId> = topo.shell(shell_id)?.faces().to_vec();
+        // The result shares every face it does not rebuild with the input, so
+        // boundary rewrites go copy-on-write through this scope.
+        let scope = EditScope::new(topo, original_faces.iter().copied())?;
 
         let mut touched_faces: HashSet<FaceId> = HashSet::new();
 
@@ -209,8 +214,7 @@ impl<'a> ChamferBuilder<'a> {
             });
         }
 
-        let mut face_replacements: std::collections::HashMap<FaceId, FaceId> =
-            std::collections::HashMap::new();
+        let mut face_replacements: DetHashMap<FaceId, FaceId> = DetHashMap::default();
         // Every chamfer face beside the two base faces it was built between —
         // exact provenance, taken from the stripe that produced it.
         let mut blend_face_origins: Vec<(FaceId, Vec<FaceId>)> = Vec::new();
@@ -286,6 +290,7 @@ impl<'a> ChamferBuilder<'a> {
                 &[(0.0, 0.0), (1.0, 0.0)],
                 TrimKeep::Side(keep_side1),
                 stripe.spine.edges(),
+                &mut scope.edit(&mut face_replacements),
             );
 
             match trim1 {
@@ -311,6 +316,7 @@ impl<'a> ChamferBuilder<'a> {
                 &[(0.0, 0.0), (1.0, 0.0)],
                 TrimKeep::Side(keep_side2),
                 stripe.spine.edges(),
+                &mut scope.edit(&mut face_replacements),
             );
 
             match trim2 {
@@ -347,7 +353,9 @@ impl<'a> ChamferBuilder<'a> {
 
         for &fid in &original_faces {
             if !touched_faces.contains(&fid) {
-                result_faces.push(fid);
+                // An untouched face is copied when a trim splits one of its
+                // edges.
+                result_faces.push(face_replacements.get(&fid).copied().unwrap_or(fid));
             }
         }
 
@@ -708,7 +716,7 @@ fn assemble_closed_rim(
     topo: &mut Topology,
     stripe: &Stripe,
     rim: &ClosedRimInfo,
-    face_replacements: &mut std::collections::HashMap<FaceId, FaceId>,
+    face_replacements: &mut DetHashMap<FaceId, FaceId>,
 ) -> Result<FaceId, BlendError> {
     const TOL: f64 = 1e-7;
 
