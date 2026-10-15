@@ -10681,6 +10681,57 @@ fn scaling_nway_ff_seeds_junctions_once_per_run() {
     );
 }
 
+/// The coplanar phase reads only the existing sections of the face pair it
+/// checks. Before, every check scanned every section curve in the arena:
+/// the checks grow with the grid's coplanar face pairs and the arena with
+/// its body pairs, so the scan grew with the square of the body count.
+/// Measured from 3x3 to 6x6 (4x the bodies): 31 760 → 960 335 curves
+/// examined (30x) scanning the arena, 2 298 → 16 101 (7x) reading the
+/// pair's own sections.
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_nway_coplanar_reads_only_the_pairs_sections() {
+    use remus_math::mat::Mat4;
+
+    let fuse_grid = |n: usize| -> u64 {
+        let mut topo = Topology::new();
+        let mut ids = Vec::new();
+        for row in 0..n {
+            for col in 0..n {
+                let s = crate::primitives::make_box(&mut topo, 1.01, 1.01, 1.0).unwrap();
+                crate::transform::transform_solid(
+                    &mut topo,
+                    s,
+                    &Mat4::translation(col as f64, row as f64, 0.0),
+                )
+                .unwrap();
+                ids.push(s);
+            }
+        }
+        remus_algo::perf::reset();
+        let fused = crate::compound_ops::fuse_solids(&mut topo, &ids).unwrap();
+        let probes = remus_algo::perf::snapshot().coplanar_section_probes;
+        let vol = crate::measure::solid_volume(&topo, fused, 0.01).unwrap();
+        let side = n as f64 + 0.01;
+        let expected = side * side;
+        assert!(
+            (vol - expected).abs() < 1e-9 * expected,
+            "{n}x{n} overlapping grid fuse volume {vol} != {expected}"
+        );
+        probes
+    };
+
+    let p3 = fuse_grid(3);
+    let p6 = fuse_grid(6);
+    eprintln!("coplanar section probes @ 3x3 -> 6x6 overlapping grids: {p3} -> {p6}");
+    assert!(p3 > 0, "the coplanar section checks were not exercised");
+    assert!(
+        p6 < 12 * p3,
+        "coplanar section checks regressed toward whole-arena scans: {p3} -> {p6} \
+         probes (pair sections 7x, whole arena 30x)"
+    );
+}
+
 /// The holed plate of the boolean bench (`single_boolean_at_face_count`,
 /// F~54): a 100 x 100 x 10 box cut by sixteen r = 2 cylinders on a 20 mm
 /// grid, each spanning z = -5..15, plus one more such tool at `(x, y)`.
