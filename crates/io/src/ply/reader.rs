@@ -176,6 +176,11 @@ fn header_error(reason: impl Into<String>) -> crate::IoError {
     }
 }
 
+/// Most element and property declarations a header may hold. Real files
+/// declare a few dozen; each one is kept in memory, so the bound stops a
+/// header of millions of empty declarations from amplifying the input.
+const MAX_HEADER_DECLARATIONS: usize = 4096;
+
 fn parse_header(text: &str, limits: ImportLimits) -> Result<PlyHeader, crate::IoError> {
     let mut lines = text.lines().map(str::trim);
     if lines.next() != Some("ply") {
@@ -188,9 +193,20 @@ fn parse_header(text: &str, limits: ImportLimits) -> Result<PlyHeader, crate::Io
     // Hashed so that a header of many declarations parses in linear time.
     let mut element_names: HashSet<&str> = HashSet::new();
     let mut property_names: HashSet<&str> = HashSet::new();
+    // Each declaration is kept in memory, so they share one budget too.
+    let mut declarations = 0_usize;
     for line in lines {
         let mut tokens = line.split_whitespace();
-        match tokens.next() {
+        let keyword = tokens.next();
+        if matches!(keyword, Some("element" | "property")) {
+            declarations = declarations.saturating_add(1);
+            ensure_limit(
+                "PLY header declarations",
+                declarations,
+                MAX_HEADER_DECLARATIONS,
+            )?;
+        }
+        match keyword {
             None | Some("comment" | "obj_info") => {}
             Some("end_header") => break,
             Some("format") => {

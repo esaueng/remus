@@ -313,3 +313,25 @@ property float z\nend_header\n1e39 0 0\n";
         Err(IoError::ParseError { .. })
     ));
 }
+
+/// Every element and property declaration is kept in memory, so a header of
+/// many empty declarations is bounded independently of the entity limits.
+#[test]
+fn header_declarations_are_bounded() {
+    let header = |properties: usize| {
+        let mut text = String::from("ply\nformat ascii 1.0\nelement extra 0\n");
+        for i in 0..properties {
+            writeln!(text, "property int p{i}").unwrap();
+        }
+        text + "end_header\n"
+    };
+    assert!(read_ply(header(4095).as_bytes()).is_ok());
+    assert!(matches!(
+        read_ply(header(4096).as_bytes()),
+        Err(IoError::LimitExceeded {
+            resource: "PLY header declarations",
+            limit: 4096,
+            actual: 4097
+        })
+    ));
+}
