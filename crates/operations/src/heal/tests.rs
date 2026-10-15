@@ -468,6 +468,12 @@ fn fusing_a_short_edge_leaves_a_sharing_solid_alone() {
             ),
         )
         .unwrap();
+        let coedge = use_coedge(&topo, oe.edge(), shared_face, oe.is_forward()).unwrap();
+        topo.set_coedge_periodic_winding(
+            coedge,
+            remus_topology::coedge::PeriodicWinding::new(1, 0),
+        )
+        .unwrap();
     }
 
     assert_eq!(remove_degenerate_edges(&mut topo, solid, 1e-7).unwrap(), 2);
@@ -479,6 +485,13 @@ fn fusing_a_short_edge_leaves_a_sharing_solid_alone() {
             topo.pcurve_oriented(oe.edge(), shared_face, oe.is_forward())
                 .is_some(),
             "use of {:?} lost its pcurve",
+            oe.edge()
+        );
+        let coedge = use_coedge(&topo, oe.edge(), shared_face, oe.is_forward()).unwrap();
+        assert_eq!(
+            topo.coedge(coedge).unwrap().periodic_winding(),
+            remus_topology::coedge::PeriodicWinding::new(1, 0),
+            "use of {:?} lost its winding",
             oe.edge()
         );
     }
