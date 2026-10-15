@@ -539,21 +539,27 @@ fn degree_one_deviation_bound(
     if !(prev.1 > 0.0 && mid.1 > 0.0 && next.1 > 0.0 && scale.is_finite()) {
         return f64::INFINITY;
     }
-    let homogeneous = |(q, w): (Point3, f64)| {
-        let w = w / scale;
-        [q.x() * w, q.y() * w, q.z() * w, w]
-    };
-    let (hp, hm, hn) = (homogeneous(prev), homogeneous(mid), homogeneous(next));
-    let e: [f64; 4] = std::array::from_fn(|i| hm[i] - (alpha * hn[i] + (1.0 - alpha) * hp[i]));
-    let excess_at = |end: Point3| {
-        let (dx, dy, dz) = (
-            e[0] - e[3] * end.x(),
-            e[1] - e[3] * end.y(),
-            e[2] - e[3] * end.z(),
-        );
-        (dx * dx + dy * dy + dz * dz).sqrt()
-    };
-    let bound = excess_at(prev.0).max(excess_at(next.0)) / hm[3];
+    // The bound is invariant under translation (e − ε·P is unchanged by
+    // P → P − T), so work relative to `prev`: a large common offset would
+    // otherwise cancel a small deviation when the chord is formed.
+    let (wp, wm, wn) = (prev.1 / scale, mid.1 / scale, next.1 / scale);
+    let dm = mid.0 - prev.0;
+    let dn = next.0 - prev.0;
+    let eps = wm - (alpha * wn + (1.0 - alpha) * wp);
+    let e = [
+        wm * dm.x() - alpha * wn * dn.x(),
+        wm * dm.y() - alpha * wn * dn.y(),
+        wm * dm.z() - alpha * wn * dn.z(),
+    ];
+    // At `prev` (the origin now) the excess is |e|; at `next` it is
+    // |e − ε·dn|.
+    let at_prev = scaled_norm(e);
+    let at_next = scaled_norm([
+        e[0] - eps * dn.x(),
+        e[1] - eps * dn.y(),
+        e[2] - eps * dn.z(),
+    ]);
+    let bound = at_prev.max(at_next) / wm;
     // The normalized middle weight can underflow when the weights span the
     // whole f64 range; no finite bound is available then.
     if bound.is_finite() {
@@ -561,6 +567,16 @@ fn degree_one_deviation_bound(
     } else {
         f64::INFINITY
     }
+}
+
+/// Euclidean norm that neither underflows nor overflows in its squares.
+fn scaled_norm(v: [f64; 3]) -> f64 {
+    let m = v[0].abs().max(v[1].abs()).max(v[2].abs());
+    if m == 0.0 || !m.is_finite() {
+        return m;
+    }
+    let (x, y, z) = (v[0] / m, v[1] / m, v[2] / m);
+    m * (x * x + y * y + z * z).sqrt()
 }
 
 /// Refine a curve by inserting multiple knots at once (A5.4).
