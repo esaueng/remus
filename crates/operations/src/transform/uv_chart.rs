@@ -247,11 +247,15 @@ impl UvAffine {
                 let mapped = (ellipse.semi_major() * scale, ellipse.semi_minor() * scale);
                 // As for the circle. The edge keeps its axes in order, so a
                 // map that swaps them (only possible at roundoff) drops the
-                // pcurve rather than relabel its parameter.
+                // pcurve rather than relabel its parameter. Axes equal within
+                // roundoff leave that order ambiguous, since the edge may have
+                // swapped them with a quarter-turn shift the pcurve cannot see,
+                // so such a near-circular ellipse drops its pcurve too.
                 let (semi_major, semi_minor) = match edge {
                     Some(EdgeExtent::Ellipse(a, b)) => {
-                        if !(equal_within_analytic_roundoff(a, mapped.0)
-                            && equal_within_analytic_roundoff(b, mapped.1))
+                        if equal_within_analytic_roundoff(a, b)
+                            || !(equal_within_analytic_roundoff(a, mapped.0)
+                                && equal_within_analytic_roundoff(b, mapped.1))
                         {
                             return None;
                         }
@@ -624,6 +628,17 @@ mod tests {
         );
         assert!(
             map.map_pcurve(&ellipse, Some(EdgeExtent::Ellipse(1.0, 2.0)))
+                .is_none()
+        );
+        // Near-circular: the edge may have swapped axes unseen by the pcurve.
+        let minor = 1.0 - 2.0 * f64::EPSILON;
+        let near_circle = PCurve::new(
+            Curve2D::Ellipse(Ellipse2D::new(Point2::new(0.0, 0.0), 1.0, minor, 0.0).unwrap()),
+            0.0,
+            1.0,
+        );
+        assert!(
+            map.map_pcurve(&near_circle, Some(EdgeExtent::Ellipse(1.0, minor)))
                 .is_none()
         );
     }
