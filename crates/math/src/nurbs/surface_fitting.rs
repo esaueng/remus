@@ -155,7 +155,9 @@ pub struct LspiaSurfaceFit {
 /// comes back with `converged: true`. Otherwise the first iterate with the
 /// smallest maximum deviation comes back with `converged: false`: LSPIA's
 /// least-squares residual falls monotonically, but its maximum deviation need
-/// not, so the last iterate can be worse than an earlier one.
+/// not, so the last iterate can be worse than an earlier one. A diverging run
+/// stops at the first later iterate that overflows (non-finite control points
+/// or deviation) and returns the best iterate measured before it.
 ///
 /// # Errors
 ///
@@ -248,16 +250,23 @@ pub fn approximate_surface_lspia(
     let mut best: Option<(f64, usize, Vec<Vec<Point3>>)> = None;
 
     for iter in 0..=max_iterations {
-        let surface = NurbsSurface::new(
+        let surface = match NurbsSurface::new(
             pu,
             pv,
             knots_u.clone(),
             knots_v.clone(),
             cps.clone(),
             weights.clone(),
-        )?;
+        ) {
+            Ok(surface) => surface,
+            // A diverging run overflows its control points; keep the best
+            // iterate measured so far rather than turning it into an error.
+            Err(_) if best.is_some() => break,
+            Err(e) => return Err(e),
+        };
 
         let mut max_err = 0.0f64;
+        let mut finite = true;
         let mut deltas = vec![vec![(0.0f64, 0.0f64, 0.0f64); mv]; mu];
 
         for (i, (su, nu)) in basis_u_data.iter().enumerate() {
@@ -268,6 +277,7 @@ pub fn approximate_surface_lspia(
                 let err_z = points[i][j].z() - q.z();
                 let err_mag = (err_x * err_x + err_y * err_y + err_z * err_z).sqrt();
                 max_err = max_err.max(err_mag);
+                finite &= err_mag.is_finite();
 
                 for (ku, &bu) in nu.iter().enumerate() {
                     for (kv, &bv) in nv.iter().enumerate() {
@@ -282,6 +292,11 @@ pub fn approximate_surface_lspia(
                     }
                 }
             }
+        }
+
+        // `f64::max` skips NaN, so an unmeasurable iterate could look good.
+        if !finite && best.is_some() {
+            break;
         }
 
         if max_err < tolerance {
@@ -609,6 +624,35 @@ mod tests {
             (lspia_max_deviation(&grid, &fit.surface) - fit.max_error).abs() < 1e-12,
             "{fit:?}"
         );
+    }
+
+    /// Codex review on #1092: on this plane the iteration diverges (see B97)
+    /// and overflows near iterate 1,050. A larger budget, up to the WASM
+    /// binding's 10,000, must still return the best fit, not an
+    /// `InvalidControlPointValue` error.
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn lspia_surface_overflowing_run_keeps_best_fit() {
+        let grid: Vec<Vec<Point3>> = (0..10)
+            .map(|i| {
+                (0..10)
+                    .map(|j| Point3::new(i as f64 / 9.0, j as f64 / 9.0, 0.5))
+                    .collect()
+            })
+            .collect();
+        let short = approximate_surface_lspia(&grid, 3, 3, 6, 6, 1e-6, 1000).unwrap();
+        for budget in [1100, 10_000] {
+            let fit = approximate_surface_lspia(&grid, 3, 3, 6, 6, 1e-6, budget).unwrap();
+            assert!(!fit.converged, "budget {budget}: {fit:?}");
+            assert_eq!(fit.iteration, short.iteration, "budget {budget}");
+            assert_eq!(fit.max_error.to_bits(), short.max_error.to_bits());
+            let deviation = lspia_max_deviation(&grid, &fit.surface);
+            assert!(
+                (deviation - fit.max_error).abs() < 1e-12,
+                "budget {budget}: reported {} vs re-measured {deviation}",
+                fit.max_error
+            );
+        }
     }
 
     #[test]
