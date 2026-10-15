@@ -432,17 +432,38 @@ pub fn curve_knot_remove(
     // They should be identical for a perfectly removable knot.
     // Check all overlapping points.
     for idx in 0..p.saturating_sub(1) {
-        if homogeneous_distance(left_pts[idx], right_pts[idx + 1]) > tolerance {
+        let lp = left_pts[idx];
+        let rp = right_pts[idx + 1];
+        let dist = if lp[3].abs() > KNOT_EPS && rp[3].abs() > KNOT_EPS {
+            let dx = lp[0] / lp[3] - rp[0] / rp[3];
+            let dy = lp[1] / lp[3] - rp[1] / rp[3];
+            let dz = lp[2] / lp[3] - rp[2] / rp[3];
+            (dx * dx + dy * dy + dz * dz).sqrt()
+        } else {
+            let dx = lp[0] - rp[0];
+            let dy = lp[1] - rp[1];
+            let dz = lp[2] - rp[2];
+            let dw = lp[3] - rp[3];
+            (dx * dx + dy * dy + dz * dz + dw * dw).sqrt()
+        };
+        if dist > tolerance {
             return Err(MathError::ConvergenceFailure { iterations: 0 });
         }
     }
 
     // At degree 1 the sweeps have no overlap: no unknown survives, so the
-    // loop above checks nothing. A5.8's odd-count branch applies instead —
-    // the one blended point, new[k], must lie on the chord of its fixed
-    // neighbours old[k-1] = new[k-1] and old[k] = new[k+1] at `u`. For a
-    // non-rational polyline that distance is the whole parametric deviation:
-    // both curves are linear on either side of `u` and agree at the ends.
+    // loop above checks nothing. A5.8's odd-count branch applies instead:
+    // the dropped point pw[k] is compared with the homogeneous chord of its
+    // fixed neighbours at `u`, chord = (1-α)·pw[k-1] + α·pw[k+1].
+    //
+    // With the excess E = pw[k] - chord = (e, ε), the old curve is the new
+    // one plus N(t)·E, where N is the dropped hat function, so
+    //   C_old(t) - C_new(t) = N(t)·(e - ε·C_new(t)) / W_old(t).
+    // C_new(t) runs along the segment pw[k-1]..pw[k+1], so |e - ε·C_new| is
+    // at most its value at one of those two points, and N/W_old ≤ 1/w_k on
+    // both spans (all weights positive). That bounds the whole parametric
+    // deviation, not just the one at `u`; for ε = 0 (the non-rational case
+    // and every exactly inserted knot) it is |P_k - Q|, attained at `u`.
     if p == 1 {
         let denom = removed_knots[k + 1] - removed_knots[k];
         let alpha = if denom.abs() < KNOT_EPS {
@@ -450,14 +471,7 @@ pub fn curve_knot_remove(
         } else {
             (u - removed_knots[k]) / denom
         };
-        let (prev, next) = (pw[k - 1], pw[k + 1]);
-        let chord = [
-            alpha * next[0] + (1.0 - alpha) * prev[0],
-            alpha * next[1] + (1.0 - alpha) * prev[1],
-            alpha * next[2] + (1.0 - alpha) * prev[2],
-            alpha * next[3] + (1.0 - alpha) * prev[3],
-        ];
-        if homogeneous_distance(pw[k], chord) > tolerance {
+        if degree_one_deviation_bound(pw[k - 1], pw[k], pw[k + 1], alpha) > tolerance {
             return Err(MathError::ConvergenceFailure { iterations: 0 });
         }
     }
@@ -502,22 +516,22 @@ pub fn curve_knot_remove(
     NurbsCurve::new(p, new_knots, new_cps, new_ws)
 }
 
-/// Distance between two homogeneous points as [`curve_knot_remove`] measures
-/// it: Cartesian once both weights are usable, 4D otherwise.
+/// Upper bound on the parametric deviation caused by removing the middle
+/// control point `mid` of a degree-1 curve, `alpha` being the knot's
+/// position between its neighbours (see the derivation in
+/// [`curve_knot_remove`]). Infinite when a weight is not positive.
 #[allow(clippy::suboptimal_flops)]
-fn homogeneous_distance(a: [f64; 4], b: [f64; 4]) -> f64 {
-    if a[3].abs() > KNOT_EPS && b[3].abs() > KNOT_EPS {
-        let dx = a[0] / a[3] - b[0] / b[3];
-        let dy = a[1] / a[3] - b[1] / b[3];
-        let dz = a[2] / a[3] - b[2] / b[3];
-        (dx * dx + dy * dy + dz * dz).sqrt()
-    } else {
-        let dx = a[0] - b[0];
-        let dy = a[1] - b[1];
-        let dz = a[2] - b[2];
-        let dw = a[3] - b[3];
-        (dx * dx + dy * dy + dz * dz + dw * dw).sqrt()
+fn degree_one_deviation_bound(prev: [f64; 4], mid: [f64; 4], next: [f64; 4], alpha: f64) -> f64 {
+    if !(prev[3] > 0.0 && mid[3] > 0.0 && next[3] > 0.0) {
+        return f64::INFINITY;
     }
+    let e: [f64; 4] = std::array::from_fn(|i| mid[i] - (alpha * next[i] + (1.0 - alpha) * prev[i]));
+    let excess_at = |end: [f64; 4]| {
+        let (x, y, z) = (end[0] / end[3], end[1] / end[3], end[2] / end[3]);
+        let (dx, dy, dz) = (e[0] - e[3] * x, e[1] - e[3] * y, e[2] - e[3] * z);
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    };
+    excess_at(prev).max(excess_at(next)) / mid[3]
 }
 
 /// Refine a curve by inserting multiple knots at once (A5.4).
