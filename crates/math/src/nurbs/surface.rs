@@ -4,6 +4,7 @@ use crate::MathError;
 use crate::aabb::Aabb3;
 use crate::nurbs::basis;
 use crate::nurbs::evaluator::SurfaceEvaluator;
+use crate::nurbs::projection::SurfaceSeedGrid;
 use crate::vec::{Point3, Vec3};
 
 /// A Non-Uniform Rational B-Spline (NURBS) surface in 3D space.
@@ -38,6 +39,32 @@ pub struct NurbsSurface {
     #[cfg_attr(feature = "serde", serde(skip))]
     #[cfg_attr(feature = "simd", allow(dead_code))]
     uniform_weights: std::sync::OnceLock<bool>,
+    /// Coarse projection seed grid, built on the first projection and shared
+    /// by clones (see [`Self::seed_grid`]).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    seed_grid: SeedGridCache,
+}
+
+/// Lazily built [`SurfaceSeedGrid`] of one surface.
+///
+/// The grid is a pure function of the immutable surface, so it never goes
+/// stale. Clones share it. It takes no part in equality or serialization, and
+/// `Debug` prints a constant so a read-only projection never changes a
+/// formatted snapshot of the topology. Like the other lazily filled caches
+/// here it is not counted by memory estimates (about 3.3 KB once built).
+#[derive(Default)]
+struct SeedGridCache(std::sync::OnceLock<std::sync::Arc<SurfaceSeedGrid>>);
+
+impl Clone for SeedGridCache {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl std::fmt::Debug for SeedGridCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SeedGridCache")
+    }
 }
 
 impl Clone for NurbsSurface {
@@ -53,6 +80,7 @@ impl Clone for NurbsSurface {
             weights: self.weights.clone(),
             max_weight: self.max_weight.clone(),
             uniform_weights: self.uniform_weights.clone(),
+            seed_grid: self.seed_grid.clone(),
         }
     }
 }
@@ -578,9 +606,18 @@ impl NurbsSurface {
             weights: weights.into(),
             max_weight: std::sync::OnceLock::new(),
             uniform_weights: std::sync::OnceLock::new(),
+            seed_grid: SeedGridCache::default(),
         };
         let _ = surface.max_weight();
         Ok(surface)
+    }
+
+    /// The coarse grid [`crate::nurbs::projection::project_point_to_surface`]
+    /// seeds Newton from, evaluated on first use and kept with the surface.
+    pub(crate) fn seed_grid(&self) -> &SurfaceSeedGrid {
+        self.seed_grid
+            .0
+            .get_or_init(|| std::sync::Arc::new(SurfaceSeedGrid::build(self)))
     }
 
     /// Polynomial degree in the u direction.
