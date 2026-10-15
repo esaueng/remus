@@ -2060,6 +2060,9 @@ fn build_collar_row(
     row
 }
 
+/// A vertex's position bits and the outward reference taken there.
+type VertexReference = ([u64; 3], Vec3);
+
 /// Emit a default-oriented (non-reversed) triangle, mirroring the orientation
 /// convention of [`tessellate_revolution_band_shared`]: the geometric normal is
 /// flipped to match the surface outward normal. The caller applies the global
@@ -2068,6 +2071,11 @@ fn make_band_emit<'a>(
     project: &'a dyn Fn(Point3) -> (f64, f64),
     surf_normal: &'a dyn Fn(f64, f64) -> Vec3,
 ) -> impl Fn(&mut TriangleMesh, u32, u32, u32) + 'a {
+    // The outward reference at a vertex is a function of its position alone,
+    // and a band vertex is in about six triangles: keep each vertex's value,
+    // keyed by its index and checked against its position bits (a caller may
+    // truncate and refill the pool), instead of projecting it per triangle.
+    let reference = std::cell::RefCell::new(Vec::<Option<VertexReference>>::new());
     move |merged: &mut TriangleMesh, a: u32, b: u32, c: u32| {
         if a == b || b == c || a == c {
             return;
@@ -2086,11 +2094,24 @@ fn make_band_emit<'a>(
         // can sit nearly tangent to the surface, where the single-vertex normal
         // makes `geo.dot(outward)` sign-unstable and flips the triangle relative
         // to its neighbours. The averaged normal is stable across the triangle.
-        let n_at = |p: Point3| -> Vec3 {
+        let mut reference = reference.borrow_mut();
+        let mut n_at = |index: u32, p: Point3| -> Vec3 {
+            let bits = [p.x().to_bits(), p.y().to_bits(), p.z().to_bits()];
+            let index = index as usize;
+            if reference.len() <= index {
+                reference.resize(merged.positions.len().max(index + 1), None);
+            }
+            if let Some((cached, normal)) = reference[index]
+                && cached == bits
+            {
+                return normal;
+            }
             let (u, v) = project(p);
-            surf_normal(u, v)
+            let normal = surf_normal(u, v);
+            reference[index] = Some((bits, normal));
+            normal
         };
-        let outward = n_at(pa) + n_at(pb) + n_at(pc);
+        let outward = n_at(a, pa) + n_at(b, pb) + n_at(c, pc);
         let mut tri = [a, b, c];
         if geo.dot(outward) < 0.0 {
             tri.swap(1, 2);
@@ -2631,6 +2652,10 @@ mod boundary_clearance_tests;
 #[cfg(test)]
 #[path = "nonplanar/sphere_chart_tests.rs"]
 mod sphere_chart_tests;
+
+#[cfg(test)]
+#[path = "nonplanar/band_emit_oracle_tests.rs"]
+mod band_emit_oracle_tests;
 
 /// CDT-based tessellation for non-planar faces with exact boundary constraints.
 ///
@@ -4695,6 +4720,12 @@ fn fill_sphere_latitude_cap(
     let project = |p| sphere.project_point(p);
     let emit = make_band_emit(&project, &surf_normal);
 
+    // The rows add up to `(n_v - 1) * n_u` vertices plus the pole; growing the
+    // merge map to that one rehash at a time cost more than filling it.
+    let added = (n_v - 1) * n_u + 1;
+    point_to_global.reserve(added);
+    merged.positions.reserve(added);
+    merged.normals.reserve(added);
     let mut prev = ring;
     for iv in 1..n_v {
         let t = iv as f64 / n_v as f64;
