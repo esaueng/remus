@@ -9,7 +9,9 @@
 //! Oracles: an accepted mesh yields one solid whose faces are planar
 //! triangles, no more than the input triangle count, with every edge used by
 //! at most two face uses (import refuses over-shared edges); a refusal that
-//! input validation can decide must leave the topology empty.
+//! input validation can decide must leave the topology empty, and an
+//! over-shared or all-degenerate refusal must allocate no edge, wire, face,
+//! shell or solid.
 
 #![no_main]
 
@@ -116,10 +118,28 @@ fuzz_target!(|data: &[u8]| {
             }
             assert!(uses.values().all(|&count| count <= 2), "over-shared edge");
         }
-        Err(_) => {
+        Err(error) => {
             if decidable_refusal {
                 assert_eq!(topo.num_vertices(), 0, "input-validation refusal allocated");
                 assert_eq!(topo.num_faces(), 0, "input-validation refusal allocated");
+            }
+            // An over-shared edge and an all-degenerate mesh are refused after
+            // welding but before any edge, face, shell or solid exists (welded
+            // vertices are allocated first, which import_mesh documents).
+            let message = error.to_string();
+            if message.contains("non-manifold mesh edge") || message.contains("no valid triangles")
+            {
+                assert_eq!(
+                    (
+                        topo.num_edges(),
+                        topo.num_wires(),
+                        topo.num_faces(),
+                        topo.num_shells(),
+                        topo.num_solids(),
+                    ),
+                    (0, 0, 0, 0, 0),
+                    "post-weld refusal allocated topology: {message}"
+                );
             }
         }
     }
