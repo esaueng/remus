@@ -496,9 +496,18 @@ pub(super) fn complete_line_roots(
     if hull.boxes.is_empty() {
         return;
     }
+    let caller_origin = line.origin;
+    // The same line through the point nearest the surface's box centre: the
+    // control values and Newton residuals are differences from the origin,
+    // so a far origin would otherwise inflate the round-off allowance below
+    // although sliding the origin along the line changes nothing.
+    let centre = hull.boxes[0].center();
+    let along = (centre - line.origin).dot(line.direction) / line.dir_len_sq;
+    let line = LineQuery {
+        origin: line.origin + line.direction * along,
+        ..line
+    };
     let dir_len = line.dir_len_sq.sqrt();
-    // The control values are differences from the line origin, so its
-    // position bounds their rounding too.
     let magnitude = line
         .origin
         .0
@@ -540,36 +549,53 @@ pub(super) fn complete_line_roots(
         scratch: Scratch::default(),
     };
 
-    let mut stack = vec![(0_usize, hull.root())];
-    while let Some((slot, range)) = stack.pop() {
-        if slot > 0
-            && !line_meets_box(
-                line.origin,
-                line.direction,
-                dir_len,
-                hull.boxes[slot],
-                pass.pad,
-            )
-        {
-            continue;
-        }
-        match range.split() {
-            Some((left, right)) => {
-                let right_slot = slot + 1 + (2 * left.leaves() - 1);
-                // Right first so the left subtree is visited first.
-                stack.push((right_slot, right));
-                stack.push((slot + 1, left));
-            }
-            None => {
-                if !pass.block(range.u0, range.v0, workspace, results) {
-                    return;
-                }
-            }
-        }
+    let reported = results.len();
+    pass.traverse(dir_len, workspace, results);
+    // Line parameters of the appended roots relative to the caller's origin,
+    // as the grid pass reports them.
+    for hit in &mut results[reported..] {
+        hit.param2.0 = (hit.point - caller_origin).dot(line.direction) / line.dir_len_sq;
     }
 }
 
 impl Completion<'_> {
+    /// Walk the span-block tree along the line, solving every block it meets.
+    fn traverse(
+        &mut self,
+        dir_len: f64,
+        workspace: &mut NewtonWorkspace,
+        results: &mut Vec<IntersectionPoint>,
+    ) {
+        let (hull, line) = (self.hull, self.line);
+        let mut stack = vec![(0_usize, hull.root())];
+        while let Some((slot, range)) = stack.pop() {
+            if slot > 0
+                && !line_meets_box(
+                    line.origin,
+                    line.direction,
+                    dir_len,
+                    hull.boxes[slot],
+                    self.pad,
+                )
+            {
+                continue;
+            }
+            match range.split() {
+                Some((left, right)) => {
+                    let right_slot = slot + 1 + (2 * left.leaves() - 1);
+                    // Right first so the left subtree is visited first.
+                    stack.push((right_slot, right));
+                    stack.push((slot + 1, left));
+                }
+                None => {
+                    if !self.block(range.u0, range.v0, workspace, results) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     /// Screen and solve every span of block `(bu, bv)`. Returns `false` once
     /// a work budget is exhausted.
     fn block(

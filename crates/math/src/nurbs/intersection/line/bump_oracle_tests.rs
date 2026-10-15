@@ -266,3 +266,29 @@ fn common_weight_factor_keeps_narrow_bump_crossings() {
         "heavy weights",
     );
 }
+
+/// Sliding the origin along the line does not change the line, so it must
+/// not change the answer: a parallel miss one unit off a unit patch stays a
+/// miss from an origin 1e15 away, and a crossing stays one crossing.
+#[test]
+fn far_origin_along_the_line_reports_no_near_miss() {
+    let surface = bump_graph(5, &[]);
+    let x = Vec3::new(1.0, 0.0, 0.0);
+    for start in [-1.0, -1e6, -1e15] {
+        let hits = intersect_line_nurbs(&surface, Point3::new(start, 0.5, 2.0), x, 20).unwrap();
+        assert!(hits.is_empty(), "origin x = {start}: {hits:?}");
+    }
+    let target = Point3::new(0.4, 0.6, 1.0);
+    let dir = Vec3::new(0.3, -0.2, 1.0);
+    for back in [2.0, 1e6] {
+        let origin = target - dir * back;
+        let hits = intersect_line_nurbs(&surface, origin, dir, 20).unwrap();
+        assert_eq!(hits.len(), 1, "back {back}: {hits:?}");
+        assert!(
+            (hits[0].point - target).length() < 1e-6,
+            "back {back}: {hits:?}"
+        );
+        let t = hits[0].param2.0;
+        assert!((t - back).abs() < 1e-6 * back, "back {back}: t {t}");
+    }
+}
