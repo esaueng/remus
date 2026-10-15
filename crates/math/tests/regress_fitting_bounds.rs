@@ -252,3 +252,21 @@ fn banded_and_basis_storage_is_bounded() {
     // A cubic fit through every admitted point stays inside the budget.
     const { assert!(MAX_FIT_POINTS * (3 * 3 + 1) <= MAX_SPARSE_FIT_ENTRIES) };
 }
+
+#[test]
+fn lspia_scan_fallback_is_budgeted_for_overflowed_parameters() {
+    // Review follow-up: finite points alternating between 0 and 1e200
+    // overflow the chord lengths, so every chord-length parameter is NaN and
+    // the nearest-parameter search falls back to its n·m scan. 2²⁰ points
+    // and 2048 control points at zero iterations pass the iteration budget
+    // (n·4) but would scan 2·10⁹ pairs.
+    let n = MAX_FIT_POINTS;
+    let points: Vec<Point3> = (0..n)
+        .map(|i| Point3::new(if i % 2 == 0 { 0.0 } else { 1e200 }, 0.0, 0.0))
+        .collect();
+    let m = 2048;
+    assert_eq!(
+        limit(approximate_lspia(&points, 3, m, 0.0, 0)),
+        ("fit_work", MAX_FIT_WORK, n * m)
+    );
+}

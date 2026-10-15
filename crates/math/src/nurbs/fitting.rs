@@ -967,6 +967,11 @@ pub fn approximate_lspia(
 
     // Initialize control points by sampling closest data points.
     let sorted = params_sorted(&params);
+    if !sorted {
+        // The scan fallback costs n·m comparisons. Finite coordinates that
+        // overflow the chord lengths reach it too, so it is budgeted.
+        check_fit_work(n.saturating_mul(m))?;
+    }
     let mut control_points = Vec::with_capacity(m);
     for i in 0..m {
         let t = if m > 1 {
@@ -1098,6 +1103,11 @@ pub(crate) fn approximate_lspia_weighted(
 
     // Initialize control points by sampling closest data points.
     let sorted = params_sorted(&params);
+    if !sorted {
+        // The scan fallback costs n·m comparisons. Finite coordinates that
+        // overflow the chord lengths reach it too, so it is budgeted.
+        check_fit_work(n.saturating_mul(m))?;
+    }
     let mut control_points = Vec::with_capacity(m);
     for i in 0..m {
         let t = if m > 1 {
