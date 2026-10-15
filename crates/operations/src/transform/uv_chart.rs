@@ -39,6 +39,18 @@ pub struct UvAffine {
     b: Vec2,
 }
 
+/// The extents of a retained planar conic edge, already transformed. A
+/// conic pcurve on a plane takes them when they agree with its own mapped
+/// extents within analytic roundoff, so the pcurve and the edge carrier
+/// share one scale convention.
+#[derive(Debug, Clone, Copy)]
+pub enum EdgeExtent {
+    /// A circle's radius.
+    Circle(f64),
+    /// An ellipse's semi-major and semi-minor axes.
+    Ellipse(f64, f64),
+}
+
 /// How a transformed face's chart relates to its source chart.
 #[derive(Debug, Clone, Copy)]
 pub enum FaceChartMap {
@@ -181,11 +193,12 @@ impl UvAffine {
     /// with a parameter affine in the old one (a conic under a non-conformal
     /// map) or the image is degenerate.
     ///
-    /// On a plane, `circle_radius` is the retained 3D circle's radius.
-    /// Its frame chooses the scale inside the analytic roundoff band;
-    /// independently averaging UV scales can move a large circle beyond
-    /// the linear tolerance. Other surfaces' UV radii are not 3D lengths.
-    fn map_pcurve(&self, pcurve: &PCurve, circle_radius: Option<f64>) -> Option<PCurve> {
+    /// On a plane, `edge` is the retained 3D circle's radius or ellipse's
+    /// semi-axes. Its frame chooses the scale inside the analytic roundoff
+    /// band; independently averaging UV scales can move a large conic
+    /// beyond the linear tolerance. Other surfaces' UV extents are not 3D
+    /// lengths.
+    fn map_pcurve(&self, pcurve: &PCurve, edge: Option<EdgeExtent>) -> Option<PCurve> {
         let (t0, t1) = (pcurve.t_start(), pcurve.t_end());
         let positive = self.determinant() > 0.0;
         let (curve, start, end) = match pcurve.curve() {
@@ -210,7 +223,10 @@ impl UvAffine {
                 let axis = self.vector(Vec2::new(1.0, 0.0));
                 let phase = axis.y().atan2(axis.x());
                 let mapped_radius = circle.radius() * scale;
-                let radius = circle_radius.unwrap_or(mapped_radius);
+                let radius = match edge {
+                    Some(EdgeExtent::Circle(radius)) => radius,
+                    _ => mapped_radius,
+                };
                 // Only reconcile the existing analytic roundoff convention,
                 // never an unrelated disagreement between input carriers.
                 if !equal_within_analytic_roundoff(radius, mapped_radius) {
@@ -228,10 +244,25 @@ impl UvAffine {
                 let scale = self.conformal_scale()?;
                 let (sin, cos) = ellipse.rotation().sin_cos();
                 let major = self.vector(Vec2::new(cos, sin));
+                let mapped = (ellipse.semi_major() * scale, ellipse.semi_minor() * scale);
+                // As for the circle. The edge keeps its axes in order, so a
+                // map that swaps them (only possible at roundoff) drops the
+                // pcurve rather than relabel its parameter.
+                let (semi_major, semi_minor) = match edge {
+                    Some(EdgeExtent::Ellipse(a, b)) => {
+                        if !(equal_within_analytic_roundoff(a, mapped.0)
+                            && equal_within_analytic_roundoff(b, mapped.1))
+                        {
+                            return None;
+                        }
+                        (a, b)
+                    }
+                    _ => mapped,
+                };
                 let image = Ellipse2D::new(
                     self.point(ellipse.center()),
-                    ellipse.semi_major() * scale,
-                    ellipse.semi_minor() * scale,
+                    semi_major,
+                    semi_minor,
                     major.y().atan2(major.x()),
                 );
                 let (start, end) = if positive { (t0, t1) } else { (-t0, -t1) };
@@ -368,15 +399,24 @@ pub fn apply_face_chart_map(
     for &loop_id in topo.face(face)?.boundary_loops() {
         uses.extend_from_slice(topo.face_loop(loop_id)?.coedges());
     }
-    for coedge in uses {
+    // Edges whose pcurve was dropped on this face.
+    let mut dropped = Vec::new();
+    for &coedge in &uses {
         let Some(pcurve) = topo.coedge(coedge)?.pcurve() else {
             continue;
         };
-        let circle_radius = if surface.is_planar() {
-            if let EdgeCurve::Circle(circle) = topo.edge(topo.coedge(coedge)?.edge())?.curve() {
-                Some(circle.radius())
-            } else {
-                None
+        let edge_id = topo.coedge(coedge)?.edge();
+        let edge_extent = if surface.is_planar() {
+            match topo.edge(edge_id)?.curve() {
+                EdgeCurve::Circle(circle) => Some(EdgeExtent::Circle(circle.radius())),
+                EdgeCurve::Ellipse(ellipse) => Some(EdgeExtent::Ellipse(
+                    ellipse.semi_major(),
+                    ellipse.semi_minor(),
+                )),
+                EdgeCurve::Line
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => None,
             }
         } else {
             None
@@ -385,7 +425,7 @@ pub fn apply_face_chart_map(
             None => pcurve.clone(),
             Some(target) => {
                 if let Some(image) =
-                    target.and_then(|affine| affine.map_pcurve(pcurve, circle_radius))
+                    target.and_then(|affine| affine.map_pcurve(pcurve, edge_extent))
                 {
                     topo.set_coedge_pcurve(coedge, image.clone())?;
                     image
@@ -394,6 +434,7 @@ pub fn apply_face_chart_map(
                     if topo.coedge(coedge)?.periodic_winding() != PeriodicWinding::ZERO {
                         topo.set_coedge_periodic_winding(coedge, PeriodicWinding::ZERO)?;
                     }
+                    dropped.push(edge_id);
                     continue;
                 }
             }
@@ -424,8 +465,27 @@ pub fn apply_face_chart_map(
                 if stored != PeriodicWinding::ZERO {
                     topo.set_coedge_periodic_winding(coedge, PeriodicWinding::ZERO)?;
                 }
+                dropped.push(edge_id);
             }
             None => {}
+        }
+    }
+    // A repeated edge (a seam or slit) carries a pcurve on both of its uses
+    // or on neither, so dropping one branch drops its partner too.
+    if !dropped.is_empty() {
+        for &coedge in &uses {
+            let data = topo.coedge(coedge)?;
+            let (edge_id, has_pcurve, winding) = (
+                data.edge(),
+                data.pcurve().is_some(),
+                data.periodic_winding(),
+            );
+            if has_pcurve && dropped.contains(&edge_id) {
+                topo.remove_coedge_pcurve(coedge)?;
+                if winding != PeriodicWinding::ZERO {
+                    topo.set_coedge_periodic_winding(coedge, PeriodicWinding::ZERO)?;
+                }
+            }
         }
     }
     Ok(())
@@ -532,7 +592,109 @@ mod tests {
             1.0,
         );
         assert!(map.map_pcurve(&circle, None).is_none());
-        assert!(map.map_pcurve(&circle, Some(3.0)).is_none());
+        assert!(
+            map.map_pcurve(&circle, Some(EdgeExtent::Circle(3.0)))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn retained_ellipse_axes_only_reconcile_analytic_roundoff() {
+        let map = rotation(0.3, 1.0, false);
+        let ellipse = PCurve::new(
+            Curve2D::Ellipse(Ellipse2D::new(Point2::new(1.0, -2.0), 2.0, 1.0, 0.2).unwrap()),
+            0.0,
+            1.0,
+        );
+        // The edge scaled each axis on its own, 4 ulp apart: the pcurve takes
+        // the edge's extents exactly.
+        let edge = (2.0 * (1.0 + 4.0 * f64::EPSILON), 1.0);
+        let image = map
+            .map_pcurve(&ellipse, Some(EdgeExtent::Ellipse(edge.0, edge.1)))
+            .expect("roundoff-close ellipse image");
+        let Curve2D::Ellipse(mapped) = image.curve() else {
+            unreachable!("an ellipse maps to an ellipse");
+        };
+        assert_eq!(mapped.semi_major().to_bits(), edge.0.to_bits());
+        assert_eq!(mapped.semi_minor().to_bits(), edge.1.to_bits());
+        // Genuinely different or swapped extents never rescue the pcurve.
+        assert!(
+            map.map_pcurve(&ellipse, Some(EdgeExtent::Ellipse(2.1, 1.0)))
+                .is_none()
+        );
+        assert!(
+            map.map_pcurve(&ellipse, Some(EdgeExtent::Ellipse(1.0, 2.0)))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn seam_pcurves_are_dropped_as_a_pair() {
+        // The cylinder's seam is used twice by its lateral face. A uniform
+        // scale stretches only the axial `v`, so the chart map is not
+        // conformal: an ellipse branch has no image while a line branch has.
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+        let lateral = solid_faces(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Cylinder(_)))
+            .unwrap();
+        let mut uses = Vec::new();
+        for &loop_id in topo.face(lateral).unwrap().boundary_loops() {
+            uses.extend_from_slice(topo.face_loop(loop_id).unwrap().coedges());
+        }
+        let seam: Vec<CoedgeId> = uses
+            .into_iter()
+            .filter(|&coedge| {
+                let edge = topo.coedge(coedge).unwrap().edge();
+                matches!(topo.edge(edge).unwrap().curve(), EdgeCurve::Line)
+            })
+            .collect();
+        assert_eq!(seam.len(), 2, "cylinder seam uses");
+        // The line branch lies exactly on its use, so it maps and certifies
+        // on its own; only the pairing can drop it.
+        let surface = topo.face(lateral).unwrap().surface().clone();
+        let data = topo.coedge(seam[0]).unwrap();
+        let edge = topo.edge(data.edge()).unwrap();
+        let (from, to) = if data.is_forward() {
+            (edge.start(), edge.end())
+        } else {
+            (edge.end(), edge.start())
+        };
+        let from = surface
+            .project_point(topo.vertex(from).unwrap().point())
+            .unwrap();
+        let to = surface
+            .project_point(topo.vertex(to).unwrap().point())
+            .unwrap();
+        let line = PCurve::new(
+            Curve2D::Line(
+                Line2D::new(Point2::new(from.0, from.1), Vec2::new(0.0, to.1 - from.1)).unwrap(),
+            ),
+            0.0,
+            (to.1 - from.1).abs(),
+        );
+        let ellipse = PCurve::new(
+            Curve2D::Ellipse(Ellipse2D::new(Point2::new(0.0, 1.0), 1.0, 0.5, 0.0).unwrap()),
+            0.0,
+            1.0,
+        );
+        topo.set_coedge_pcurve(seam[0], line).unwrap();
+        topo.set_coedge_pcurve(seam[1], ellipse).unwrap();
+
+        super::super::transform_solid(&mut topo, solid, &Mat4::scale(2.0, 2.0, 2.0)).unwrap();
+        let kept: Vec<bool> = seam
+            .iter()
+            .map(|&coedge| topo.coedge(coedge).unwrap().pcurve().is_some())
+            .collect();
+        assert_eq!(kept, [false, false], "a half-populated seam is invalid");
+        for &coedge in &seam {
+            assert_eq!(
+                topo.coedge(coedge).unwrap().periodic_winding(),
+                PeriodicWinding::ZERO
+            );
+        }
     }
 
     #[test]
@@ -544,8 +706,14 @@ mod tests {
             1.0,
         );
         // A different 3D radius must not rescue an inconsistent pcurve.
-        assert!(map.map_pcurve(&circle, Some(1.01)).is_none());
-        assert!(map.map_pcurve(&circle, Some(f64::NAN)).is_none());
+        assert!(
+            map.map_pcurve(&circle, Some(EdgeExtent::Circle(1.01)))
+                .is_none()
+        );
+        assert!(
+            map.map_pcurve(&circle, Some(EdgeExtent::Circle(f64::NAN)))
+                .is_none()
+        );
     }
 
     /// Every pcurve use on the curved faces of `solid`, keyed by face
