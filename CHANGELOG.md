@@ -147,6 +147,13 @@ historical predecessor-line records, retained for provenance. The
   its base circle in the lateral face opposite to the cap. The cone carried one
   shared edge used the same way by both faces and a lateral face wound against
   its normal, and fuses consuming it inherited the defect (finding F11).
+* **algo,operations:** an exact box − pointed-cone cut whose cone crosses one
+  box face returns the closed-form volume ([B261](docs/kernel-maturity/roadmap.md#b261)).
+  With the base cap inside it removed the apex piece instead; with the apex
+  inside it refused. The face splitter now bands a pointed cone lateral at the
+  apex, and shell assembly and `remove_wire_spurs` keep the seam pair that
+  turns at a cone face's apex instead of excising it as a spur; the holed
+  cone mesher ignores that seam pair and synthesizes the apex chart as before.
 * **algo,check,operations,wasm:** the sphere-minus-box cut in finding F6
   retains the seven spherical octants with closed meshes and correct material
   queries. Sphere primitives use exact circular equator arcs. The no-seam

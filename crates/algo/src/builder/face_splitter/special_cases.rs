@@ -2520,6 +2520,17 @@ pub(super) fn split_periodic_face_into_bands(
     }
     let close_tol = tol * 100.0;
 
+    // A pointed cone lateral has ONE rim circle; its other end is the apex,
+    // reached by a doubled seam Line. The apex is a degenerate band level.
+    // Without it, the generic wire builder mistraces the doubled seam, drops
+    // the rim-side band and returns one sub-face missing the rim edge.
+    let apex = if let FaceSurface::Cone(cone) = surface {
+        Some(cone.apex())
+    } else {
+        None
+    };
+    let at_apex = |p: Point3| apex.is_some_and(|a| (p - a).length() < close_tol);
+
     // Partition boundary into closed circle edges and seam Line edges.
     let mut boundary_circles: Vec<&OrientedPCurveEdge> = Vec::new();
     let mut seam_edges: Vec<&OrientedPCurveEdge> = Vec::new();
@@ -2539,14 +2550,26 @@ pub(super) fn split_periodic_face_into_bands(
             ) => return None,
         }
     }
-    if boundary_circles.len() != 2 || seam_edges.is_empty() {
+    let pointed = boundary_circles.len() == 1
+        && seam_edges
+            .iter()
+            .any(|e| at_apex(e.start_3d) || at_apex(e.end_3d));
+    if !(boundary_circles.len() == 2 || pointed) || seam_edges.is_empty() {
         return None;
     }
 
-    // Seam u — shared by every seam edge endpoint (mod 2π).
-    let (seam_u, _) = surface.project_point(seam_edges[0].start_3d)?;
+    // Seam u — shared by every seam edge endpoint (mod 2π) except the apex,
+    // where u is undefined.
+    let seam_ref = seam_edges
+        .iter()
+        .flat_map(|e| [e.start_3d, e.end_3d])
+        .find(|&p| !at_apex(p))?;
+    let (seam_u, _) = surface.project_point(seam_ref)?;
     for e in &seam_edges {
         for p in [e.start_3d, e.end_3d] {
+            if at_apex(p) {
+                continue;
+            }
             let (u, _) = surface.project_point(p)?;
             let du = (u - seam_u + PI).rem_euclid(TAU) - PI;
             if du.abs() > 1e-6 {
@@ -2562,17 +2585,6 @@ pub(super) fn split_periodic_face_into_bands(
         ((on_seam - e.start_3d).length() < close_tol).then_some(v)
     };
 
-    let v0 = circle_v(boundary_circles[0])?;
-    let v1 = circle_v(boundary_circles[1])?;
-    let (v_bot, bot_edge, v_top, top_edge) = if v0 < v1 {
-        (v0, boundary_circles[0], v1, boundary_circles[1])
-    } else {
-        (v1, boundary_circles[1], v0, boundary_circles[0])
-    };
-    if v_top - v_bot < close_tol {
-        return None;
-    }
-
     // Reference traversal tangent: how the original bottom circle is
     // traversed at the seam. Section circles in the lower role must
     // traverse the same way; in the upper role, the opposite way.
@@ -2583,7 +2595,38 @@ pub(super) fn split_periodic_face_into_bands(
         let t = c.tangent(c.project(e.start_3d));
         Some(if e.forward { t } else { -t })
     };
-    let ref_tan = traversal_tangent(bot_edge)?;
+
+    // End levels, bottom then top. `None` marks the apex level: it has no
+    // edge, so a band ending there closes on its two seam segments.
+    let v0 = circle_v(boundary_circles[0])?;
+    let (v_bot, bot_edge, v_top, top_edge, ref_tan) = if pointed {
+        let (_, v_apex) = surface.project_point(apex?)?;
+        let rim = boundary_circles[0];
+        if v_apex < v0 {
+            // The rim is the top level, used in the upper role: the lower
+            // role traverses it the opposite way.
+            (v_apex, None, v0, Some(rim), -traversal_tangent(rim)?)
+        } else {
+            (v0, Some(rim), v_apex, None, traversal_tangent(rim)?)
+        }
+    } else {
+        let v1 = circle_v(boundary_circles[1])?;
+        let (bot, top) = if v0 < v1 {
+            (boundary_circles[0], boundary_circles[1])
+        } else {
+            (boundary_circles[1], boundary_circles[0])
+        };
+        (
+            v0.min(v1),
+            Some(bot),
+            v0.max(v1),
+            Some(top),
+            traversal_tangent(bot)?,
+        )
+    };
+    if v_top - v_bot < close_tol {
+        return None;
+    }
 
     // Collect section circles with their v and natural-direction alignment.
     #[allow(clippy::items_after_statements)]
@@ -2670,25 +2713,25 @@ pub(super) fn split_periodic_face_into_bands(
     };
 
     // Assemble bands bottom-to-top. Levels: bot boundary, sections, top
-    // boundary. Each band: lower circle, seam up, upper circle, seam down.
-    let mut levels: Vec<(f64, OrientedPCurveEdge, OrientedPCurveEdge)> = Vec::new();
-    levels.push((v_bot, bot_edge.clone(), bot_edge.clone()));
+    // boundary. Each band: lower circle, seam up, upper circle, seam down;
+    // the apex level contributes no circle.
+    let mut levels: Vec<(f64, Option<OrientedPCurveEdge>, Option<OrientedPCurveEdge>)> = Vec::new();
+    levels.push((v_bot, bot_edge.cloned(), bot_edge.cloned()));
     for m in mids {
-        levels.push((m.v, m.lower, m.upper));
+        levels.push((m.v, Some(m.lower), Some(m.upper)));
     }
-    levels.push((v_top, top_edge.clone(), top_edge.clone()));
+    levels.push((v_top, top_edge.cloned(), top_edge.cloned()));
 
     let mut bands = Vec::with_capacity(levels.len() - 1);
     for w in levels.windows(2) {
         let (va, lower, _) = &w[0];
         let (vb, _, upper) = &w[1];
         let (va, vb) = (*va, *vb);
-        let wire = vec![
-            lower.clone(),
-            mk_seam(va, vb)?,
-            upper.clone(),
-            mk_seam(vb, va)?,
-        ];
+        let mut wire = Vec::with_capacity(4);
+        wire.extend(lower.clone());
+        wire.push(mk_seam(va, vb)?);
+        wire.extend(upper.clone());
+        wire.push(mk_seam(vb, va)?);
         let interior = surface.evaluate((seam_u + PI).rem_euclid(TAU), f64::midpoint(va, vb))?;
         bands.push(SplitSubFace {
             surface: surface.clone(),
