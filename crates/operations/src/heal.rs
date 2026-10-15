@@ -617,49 +617,59 @@ pub fn remove_degenerate_edges(
     };
     let tol_sq = tol * tol;
 
-    let solid_data = topo.solid(solid)?;
-    let shell = topo.shell(solid_data.outer_shell())?;
-    let face_ids: Vec<_> = shell.faces().to_vec();
-
-    let mut removed_count = 0;
-
-    for &fid in &face_ids {
+    let face_ids = remus_topology::explorer::solid_faces(topo, solid)?;
+    let mut loops = Vec::new();
+    let mut drop = std::collections::BTreeSet::new();
+    let mut keep = std::collections::BTreeSet::new();
+    for fid in face_ids {
         let face = topo.face(fid)?;
-        let wire_id = face.outer_wire();
-        let wire = topo.wire(wire_id)?;
-
-        let mut new_edges = Vec::new();
-        let mut any_removed = false;
-
-        for oe in wire.edges() {
-            if edge_is_degenerate(topo, oe.edge(), tol_sq)? {
-                any_removed = true;
-                removed_count += 1;
-            } else {
-                new_edges.push(*oe);
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            let wire = topo.wire(wid)?;
+            let mut short = Vec::new();
+            for oe in wire.edges() {
+                if edge_is_degenerate(topo, oe.edge(), tol_sq)? {
+                    short.push(oe.edge());
+                }
             }
-        }
-
-        if any_removed && !new_edges.is_empty() {
-            // Create a NEW wire instead of modifying in-place. In-place
-            // modification via wire_mut corrupts other solids that share
-            // the same wire ID (analytic_boolean shares edges/wires across
-            // faces via edge_map dedup in a single topology arena).
-            let new_wire = remus_topology::wire::Wire::new(new_edges, wire.is_closed())?;
-            let new_wire_id = topo.add_wire(new_wire);
-            let face = topo.face(fid)?;
-            let outer = if face.outer_wire() == wire_id {
-                new_wire_id
+            // A loop cannot be rebuilt empty. Keep its short edges on all
+            // adjacent faces too, rather than unpairing their boundary uses.
+            if short.len() == wire.edges().len() {
+                keep.extend(short);
             } else {
-                face.outer_wire()
-            };
-            let inner = face
-                .inner_wires()
-                .iter()
-                .map(|&wire| if wire == wire_id { new_wire_id } else { wire })
-                .collect();
-            topo.set_face_boundary_wires(fid, outer, inner)?;
+                drop.extend(short);
+            }
+            loops.push((fid, wid));
         }
+    }
+    drop.retain(|edge| !keep.contains(edge));
+    let mut removed_count = 0;
+    for (fid, wire_id) in loops {
+        let wire = topo.wire(wire_id)?;
+        let new_edges: Vec<_> = wire
+            .edges()
+            .iter()
+            .filter(|oe| !drop.contains(&oe.edge()))
+            .copied()
+            .collect();
+        let removed = wire.edges().len() - new_edges.len();
+        if removed == 0 {
+            continue;
+        }
+        let new_wire = remus_topology::wire::Wire::new(new_edges, wire.is_closed())?;
+        let new_wire_id = topo.add_wire(new_wire);
+        let face = topo.face(fid)?;
+        let outer = if face.outer_wire() == wire_id {
+            new_wire_id
+        } else {
+            face.outer_wire()
+        };
+        let inner = face
+            .inner_wires()
+            .iter()
+            .map(|&wid| if wid == wire_id { new_wire_id } else { wid })
+            .collect();
+        topo.set_face_boundary_wires(fid, outer, inner)?;
+        removed_count += removed;
     }
 
     Ok(removed_count)

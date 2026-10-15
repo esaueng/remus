@@ -1935,3 +1935,78 @@ fn unify_still_reverts_a_merge_that_breaks_a_valid_input() {
         "the forged plans must exercise the revert rule"
     );
 }
+
+#[test]
+fn collapsed_edge_is_removed_from_hole_and_lateral_together() {
+    let mut topo = Topology::new();
+    let bx = crate::primitives::make_box(&mut topo, 4.0, 4.0, 4.0).unwrap();
+    let tool = crate::primitives::make_cylinder(&mut topo, 1.0, 6.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        tool,
+        &remus_math::mat::Mat4::translation(2.0, 2.0, -1.0),
+    )
+    .unwrap();
+    let solid =
+        crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, bx, tool).unwrap();
+    assert!(
+        crate::validate::validate_solid(&topo, solid)
+            .unwrap()
+            .is_valid()
+    );
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let cap = faces
+        .iter()
+        .copied()
+        .find(|&f| !topo.face(f).unwrap().inner_wires().is_empty())
+        .unwrap();
+    let hole = topo.face(cap).unwrap().inner_wires()[0];
+    let rim = topo.wire(hole).unwrap().edges()[0].edge();
+    let vertex = topo.edge(rim).unwrap().start();
+    let collapsed = topo.add_edge(Edge::new(vertex, vertex, EdgeCurve::Line));
+    let mut inserted = 0;
+    for &f in &faces {
+        let face = topo.face(f).unwrap();
+        let (outer, inner) = (face.outer_wire(), face.inner_wires().to_vec());
+        let mut wires = Vec::new();
+        for w in std::iter::once(outer).chain(inner.iter().copied()) {
+            let old = topo.wire(w).unwrap();
+            let mut uses = old.edges().to_vec();
+            if let Some(i) = uses.iter().position(|o| o.edge() == rim) {
+                uses.insert(i, OrientedEdge::new(collapsed, true));
+                inserted += 1;
+                wires.push(topo.add_wire(Wire::new(uses, old.is_closed()).unwrap()));
+            } else {
+                wires.push(w);
+            }
+        }
+        topo.set_face_boundary_wires(f, wires[0], wires[1..].to_vec())
+            .unwrap();
+    }
+    assert_eq!(inserted, 2);
+    let count = |t: &Topology| {
+        faces
+            .iter()
+            .flat_map(|&f| {
+                let f = t.face(f).unwrap();
+                std::iter::once(f.outer_wire())
+                    .chain(f.inner_wires().iter().copied())
+                    .collect::<Vec<_>>()
+            })
+            .flat_map(|w| t.wire(w).unwrap().edges().to_vec())
+            .filter(|o| o.edge() == collapsed)
+            .count()
+    };
+    assert_eq!(count(&topo), 2);
+    remove_degenerate_edges(&mut topo, solid, 1e-7).unwrap();
+    assert_eq!(
+        count(&topo),
+        0,
+        "collapsed shared edge remained on a hole after its lateral use was deleted"
+    );
+    assert!(
+        crate::validate::validate_solid(&topo, solid)
+            .unwrap()
+            .is_valid()
+    );
+}
