@@ -236,23 +236,24 @@ fn weld_positions(
     mut add_vertex: impl FnMut(Point3) -> VertexId,
 ) -> (Vec<VertexId>, usize) {
     let tol_sq = tolerance * tolerance;
-    let grid = WeldGrid::new(positions, tolerance);
-    let mut buckets: HashMap<(i64, i64, i64), Vec<(Point3, VertexId)>> = HashMap::new();
+    let grid = WeldGrid::new(tolerance);
+    let mut buckets: HashMap<[u64; 3], Vec<(Point3, VertexId)>> = HashMap::new();
     let mut map = Vec::with_capacity(positions.len());
     let mut checks = 0_usize;
 
     for &pos in positions {
-        let (cx, cy, cz) = grid.cell(pos);
+        let cells = [grid.axis(pos.x()), grid.axis(pos.y()), grid.axis(pos.z())];
 
         // Among every candidate within tolerance, take the earliest-created
         // vertex. Insertion order decided the winner in the linear scan this
         // replaces, and vertex ids are allocated in order, so picking the
         // smallest id keeps welding deterministic and order-independent.
         let mut best: Option<VertexId> = None;
-        for dx in -1..=1 {
-            for dy in -1..=1 {
-                for dz in -1..=1 {
-                    let Some(bucket) = buckets.get(&(cx + dx, cy + dy, cz + dz)) else {
+        for &dx in cells[0].offsets() {
+            for &dy in cells[1].offsets() {
+                for &dz in cells[2].offsets() {
+                    let key = [cells[0].key(dx), cells[1].key(dy), cells[2].key(dz)];
+                    let Some(bucket) = buckets.get(&key) else {
                         continue;
                     };
                     checks += bucket.len();
@@ -274,7 +275,8 @@ fn weld_positions(
             map.push(vid);
         } else {
             let vid = add_vertex(pos);
-            buckets.entry((cx, cy, cz)).or_default().push((pos, vid));
+            let key = [cells[0].key(0.0), cells[1].key(0.0), cells[2].key(0.0)];
+            buckets.entry(key).or_default().push((pos, vid));
             map.push(vid);
         }
     }
@@ -282,66 +284,89 @@ fn weld_positions(
     (map, checks)
 }
 
-/// Cell keys of the weld hash, measured from the bounding-box minimum.
+/// The weld hash's cell geometry.
 ///
-/// Keying absolute coordinates by `coordinate / tolerance` saturated `as i64`
-/// once that ratio passed 2^63 (x = 1e12 at the 1e-7 default), putting every
-/// vertex in one bucket and making the weld quadratic. Measuring from the box
-/// minimum keeps far-from-origin parts as cheap as parts at the origin, and
-/// the cell edge is widened so no index exceeds 2^40 whatever the extent.
+/// Keying by `(coordinate / tolerance).floor() as i64` saturated once the
+/// ratio passed 2^63 (x = 1e12 at the 1e-7 default), so every vertex of a
+/// far-placed part shared one bucket and the weld went quadratic. Cells are
+/// keyed by the bits of the floored `f64` index instead, which never
+/// saturates, and the cell edge is the smallest power of two at least twice
+/// the tolerance, so the index is the coordinate scaled exactly: a pair
+/// within tolerance is under half a cell apart and its indices differ by at
+/// most one, with no rounding to widen that. Keys depend only on the point
+/// itself, so an outlier vertex cannot coarsen the cells of the rest.
 struct WeldGrid {
-    /// Half the box minimum: halves keep `p - min` finite even when the box
-    /// spans most of the `f64` range.
-    half_origin: [f64; 3],
-    /// Half the cell edge, so `(p/2 - min/2) / (cell/2)` is `(p - min)/cell`.
-    half_cell: f64,
+    /// `1 / cell` as two exact power-of-two factors, so neither overflows
+    /// when the tolerance is subnormal.
+    scale: [f64; 2],
+}
+
+/// One axis of a point's cell.
+#[derive(Clone, Copy)]
+enum AxisCell {
+    /// The floored, exactly scaled index, below 2^53 in magnitude: integer
+    /// neighbours are exact, and a partner within tolerance is at most one
+    /// cell away.
+    Index(f64),
+    /// The index reached 2^53 (or overflowed): the coordinate's float
+    /// spacing is already more than twice the tolerance, so only an
+    /// identical coordinate is within tolerance and the cell needs no
+    /// neighbours. The key is the coordinate's own bits.
+    Exact(u64),
 }
 
 impl WeldGrid {
-    /// Upper bound on a cell index along any axis.
-    const MAX_INDEX: f64 = (1_u64 << 40) as f64;
-
-    fn new(positions: &[Point3], tolerance: f64) -> Self {
-        let mut min = [f64::INFINITY; 3];
-        let mut max = [f64::NEG_INFINITY; 3];
-        for position in positions {
-            for axis in 0..3 {
-                min[axis] = min[axis].min(position.0[axis]);
-                max[axis] = max[axis].max(position.0[axis]);
-            }
+    fn new(tolerance: f64) -> Self {
+        // Smallest k with 2^k >= 2 * tol, clamped to the f64 exponent range.
+        let target = 2.0 * tolerance;
+        #[allow(clippy::cast_possible_truncation)]
+        let mut k = target.log2().ceil().clamp(-1074.0, 1023.0) as i32;
+        while k < 1023 && pow2(k) < target {
+            k += 1;
         }
-        let mut half_extent = 0.0_f64;
-        let mut magnitude = 0.0_f64;
-        for axis in 0..3 {
-            if min[axis] <= max[axis] {
-                half_extent = half_extent.max(max[axis] * 0.5 - min[axis] * 0.5);
-                magnitude = magnitude.max(min[axis].abs()).max(max[axis].abs());
-            } else {
-                min[axis] = 0.0;
-            }
+        while k > -1074 && pow2(k - 1) >= target {
+            k -= 1;
         }
-        // The cell edge is at least twice the tolerance, so a pair within
-        // tolerance is under half a cell apart, and at least 2^-49 of the
-        // largest coordinate, which keeps the rounding of `p - min` for the
-        // pair under a quarter of a cell. Their keys therefore differ by at
-        // most one. No widening changes which points weld: every candidate
-        // is still distance-checked.
-        let half_cell = tolerance
-            .max(half_extent / Self::MAX_INDEX)
-            .max(magnitude * 2.0_f64.powi(-50));
+        let first = -k / 2;
         Self {
-            half_origin: min.map(|value| value * 0.5),
-            half_cell,
+            scale: [pow2(first), pow2(-k - first)],
         }
     }
 
-    #[allow(clippy::cast_possible_truncation)]
-    fn cell(&self, position: Point3) -> (i64, i64, i64) {
-        // In range by construction: 0 <= (p - min) / cell <= 2^40.
-        let index = |axis: usize| {
-            ((position.0[axis] * 0.5 - self.half_origin[axis]) / self.half_cell).floor() as i64
-        };
-        (index(0), index(1), index(2))
+    fn axis(&self, coordinate: f64) -> AxisCell {
+        const EXACT_LIMIT: f64 = 9_007_199_254_740_992.0; // 2^53
+        let scaled = coordinate * self.scale[0] * self.scale[1];
+        if scaled.is_finite() && scaled.abs() < EXACT_LIMIT {
+            AxisCell::Index(scaled.floor())
+        } else {
+            // `+ 0.0` folds -0.0 onto 0.0 so equal coordinates share a key.
+            AxisCell::Exact((coordinate + 0.0).to_bits())
+        }
+    }
+}
+
+/// Exactly 2^k for k in [-1074, 1023], subnormals included.
+fn pow2(k: i32) -> f64 {
+    if k >= -1022 {
+        f64::from_bits(u64::from(k.wrapping_add(1023).unsigned_abs()) << 52)
+    } else {
+        f64::from_bits(1_u64 << k.wrapping_add(1074).unsigned_abs())
+    }
+}
+
+impl AxisCell {
+    fn offsets(self) -> &'static [f64] {
+        match self {
+            Self::Index(_) => &[-1.0, 0.0, 1.0],
+            Self::Exact(_) => &[0.0],
+        }
+    }
+
+    fn key(self, offset: f64) -> u64 {
+        match self {
+            Self::Index(index) => (index + offset + 0.0).to_bits(),
+            Self::Exact(bits) => bits,
+        }
     }
 }
 
@@ -665,7 +690,7 @@ mod tests {
     #[test]
     fn far_from_origin_weld_stays_linear() {
         let count = 2000;
-        for x0 in [0.0, 1e12, -3e13] {
+        for x0 in [0.0, 1e12, -3e13, -3e15] {
             let positions = doubled_strip(x0, count);
             let (map, checks) = weld(&positions, 1e-7);
             let mut unique = map.clone();
@@ -676,6 +701,54 @@ mod tests {
                 "x0 = {x0}: {checks} distance checks for {} positions",
                 positions.len()
             );
+        }
+    }
+
+    /// One far vertex must not coarsen the cells of every other vertex, as a
+    /// grid sized from the bounding box would (a strip at the origin plus an
+    /// unused vertex at 1e308).
+    #[test]
+    fn far_outlier_vertex_does_not_coarsen_the_other_cells() {
+        let count = 2000;
+        let mut positions = doubled_strip(0.0, count);
+        positions.push(Point3::new(1e308, -1e308, 1e308));
+        let (map, checks) = weld(&positions, 1e-7);
+        let mut unique = map;
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), count + 1);
+        assert!(checks <= 4 * positions.len(), "{checks} distance checks");
+    }
+
+    #[test]
+    fn overflowing_cell_indices_weld_only_identical_coordinates() {
+        // At 1e-150 the scaled index of 1e160 overflows and that of 1.0 is
+        // past 2^53, so both use exact-coordinate keys.
+        let tolerance = 1e-150;
+        let positions = [
+            Point3::new(1.0, 2.0, 3.0),
+            Point3::new(1e160, -0.0, 7.0),
+            Point3::new(1.0, 2.0, 3.0),
+            Point3::new(1e160, 0.0, 7.0),
+            Point3::new(1e160 * (1.0 + f64::EPSILON), 0.0, 7.0),
+        ];
+        let (map, _) = weld(&positions, tolerance);
+        assert_eq!(map[0], map[2]);
+        assert_eq!(map[1], map[3], "-0.0 and 0.0 are the same coordinate");
+        assert_ne!(map[3], map[4]);
+        assert_ne!(map[0], map[1]);
+    }
+
+    #[test]
+    fn power_of_two_cells_bracket_twice_the_tolerance() {
+        for tolerance in [1e-320, 5e-324, 1e-300, 1e-7, 0.5, 1.0, 3.0, 1e300, f64::MAX] {
+            let grid = WeldGrid::new(tolerance);
+            let cell = (1.0 / grid.scale[0]) * (1.0 / grid.scale[1]);
+            assert!(grid.scale.iter().all(|s| s.is_finite() && *s > 0.0));
+            if (2.0 * tolerance).is_finite() && cell.is_finite() {
+                assert!(cell >= 2.0 * tolerance, "tol {tolerance}: cell {cell}");
+                assert!(cell < 4.0 * tolerance, "tol {tolerance}: cell {cell}");
+            }
         }
     }
 
