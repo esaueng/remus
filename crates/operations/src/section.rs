@@ -1698,14 +1698,20 @@ mod curved {
     /// diminishing), so a span whose control points sit on one side has no
     /// root, and one with a single sign change and opposite-signed ends has
     /// exactly one, found by bisection. A span still undecided after
-    /// [`MAX_HALVINGS`] halvings is a tangency within floating point and does
-    /// not cross; a curve whose weights do not certify this is refused.
+    /// `MAX_HALVINGS` halvings is a tangency within floating point and does
+    /// not cross, and one lying in the plane is skipped. A curve whose
+    /// weights do not certify this, or whose spans do not isolate within a
+    /// fixed budget, is refused.
     fn nurbs_roots(
         curve: &remus_math::nurbs::curve::NurbsCurve,
         normal: Vec3,
         d: f64,
     ) -> Result<Vec<f64>, OperationsError> {
         const MAX_HALVINGS: usize = 52;
+        // A bound on the spans examined: each root and tangency costs at most
+        // MAX_HALVINGS pairs of them, so this is far above any real trim.
+        const MAX_SPANS: usize = 1 << 14;
+        let in_plane = Tolerance::new().linear;
         if curve.weights().iter().any(|&w| !(w.is_finite() && w > 0.0)) {
             return Err(unsupported(
                 "section of a NURBS trim without positive weights".into(),
@@ -1714,9 +1720,22 @@ mod curved {
         let signed = |p: Point3| dot_normal_point(normal, p) - d;
         let mut roots = Vec::new();
         let mut stack = vec![(curve.clone(), 0_usize)];
+        let mut examined = 0_usize;
         while let Some((span, depth)) = stack.pop() {
+            examined += 1;
+            if examined > MAX_SPANS {
+                return Err(unsupported(
+                    "section of a NURBS trim whose crossings do not isolate".into(),
+                ));
+            }
             let distances: Vec<f64> = span.control_points().iter().map(|&p| signed(p)).collect();
             if distances.iter().all(|&x| x > 0.0) || distances.iter().all(|&x| x < 0.0) {
+                continue;
+            }
+            // A span whose control hull lies in the plane is an in-plane
+            // stretch of boundary, not a crossing: it never becomes
+            // one-sided, so halving it would not end.
+            if distances.iter().all(|&x| x.abs() <= in_plane) {
                 continue;
             }
             let (lo, hi) = span.domain();
@@ -2321,6 +2340,43 @@ mod curved {
                 ),
                 [bezier.evaluate(s(-1.0)), bezier.evaluate(s(1.0))],
                 "NURBS",
+            );
+        }
+
+        /// A NURBS trim lying in the cutting plane: every control distance is
+        /// zero, no span ever becomes one-sided, and halving went on towards
+        /// 2⁵² spans. It is in-plane boundary, with no crossings to insert,
+        /// and a wiggle that only grazes the plane within its budget still
+        /// resolves.
+        #[test]
+        fn in_plane_nurbs_trim_terminates() {
+            let bezier = NurbsCurve::new(
+                3,
+                vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                vec![
+                    Point3::new(0.0, 0.0, 0.0),
+                    Point3::new(1.0, 2.0, 0.0),
+                    Point3::new(2.0, -2.0, 0.0),
+                    Point3::new(3.0, 0.0, 0.0),
+                ],
+                vec![1.0; 4],
+            )
+            .unwrap();
+            let z = Vec3::new(0.0, 0.0, 1.0);
+            let (roots, _) =
+                super::plane_roots(&EdgeCurve::NurbsCurve(bezier.clone()), z, 0.0).unwrap();
+            assert!(roots.is_empty(), "{roots:?}");
+            // The same curve stood up in the plane y = 0 crosses it three
+            // times, at s = 0, 1/2 and 1 of its parameter.
+            let (roots, _) = super::plane_roots(
+                &EdgeCurve::NurbsCurve(bezier),
+                Vec3::new(0.0, 1.0, 0.0),
+                0.0,
+            )
+            .unwrap();
+            assert!(
+                roots.iter().any(|&(t, _)| (t - 0.5).abs() < 1e-12),
+                "{roots:?}"
             );
         }
 
