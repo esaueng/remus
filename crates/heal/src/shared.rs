@@ -49,8 +49,24 @@ pub fn ensure_exclusive_shell(
     let owned_shells: BTreeSet<_> = std::iter::once(selected.outer_shell())
         .chain(selected.inner_shells().iter().copied())
         .collect();
+    let foreign_shells: BTreeSet<_> = topo
+        .solids()
+        .iter()
+        .filter(|(id, _)| *id != solid_id)
+        .flat_map(|(_, solid)| {
+            std::iter::once(solid.outer_shell()).chain(solid.inner_shells().iter().copied())
+        })
+        .collect();
     for (sid, shell) in topo.shells().iter() {
-        if !owned_shells.contains(&sid) && shell.faces().iter().any(|fid| faces.contains(fid)) {
+        // Match Topology's lifecycle roots: an ordinary shell abandoned by
+        // an earlier boundary reconstruction is retained history, not an
+        // independent body. Explicit sheets and other solids remain owners.
+        let foreign_root =
+            foreign_shells.contains(&sid) || shell.body_class() == remus_topology::BodyClass::Sheet;
+        if !owned_shells.contains(&sid)
+            && foreign_root
+            && shell.faces().iter().any(|fid| faces.contains(fid))
+        {
             return Err(refused());
         }
     }
@@ -98,6 +114,31 @@ mod tests {
     use remus_topology::face::Face;
     use remus_topology::shell::Shell;
     use remus_topology::solid::Solid;
+
+    #[test]
+    fn stale_solid_shell_is_history_while_sheet_and_foreign_solid_are_owners() {
+        let mut topo = Topology::new();
+        let solid = hollow_block(&mut topo);
+        let cavity = cavity_shell(&topo, solid);
+        let alias =
+            topo.add_shell(Shell::new(topo.shell(cavity).unwrap().faces().to_vec()).unwrap());
+        // Repartitioning a shell leaves the old unrooted shell in its arena.
+        // It must not prevent repairs to the solid's replacement boundary.
+        ensure_exclusive_shell(&topo, solid, cavity).unwrap();
+        topo.set_shell_body_class(alias, remus_topology::BodyClass::Sheet)
+            .unwrap();
+        assert!(matches!(
+            ensure_exclusive_shell(&topo, solid, cavity),
+            Err(HealError::FixFailed(_))
+        ));
+        topo.set_shell_body_class(alias, remus_topology::BodyClass::Solid)
+            .unwrap();
+        let _foreign = topo.add_solid(Solid::new(alias, vec![]));
+        assert!(matches!(
+            ensure_exclusive_shell(&topo, solid, cavity),
+            Err(HealError::FixFailed(_))
+        ));
+    }
 
     #[test]
     fn cavity_merge_refuses_foreign_boundary_and_rolls_back() {

@@ -598,7 +598,7 @@ impl<'a> FilletBuilder<'a> {
 /// spanned by its circle normal (`make_end_arc` always mints circles, so a
 /// line arc refuses here).
 ///
-/// `stitch_end` scans every wire in the arena for a corner run through the
+/// `stitch_end` searches the live body wires for a corner run through the
 /// spine-end vertex; without a plane gate it matches wall wires that merely
 /// pass through the same vertices and splices the end arc into the wrong
 /// face. The radius bounds how far cap material reaches from the section
@@ -725,12 +725,15 @@ fn stitch_end(
     // corner run would win the arena-order race and swallow the arc. The run
     // must also lie in the arc's own plane, or wall wires passing through the
     // same vertices win the same race and corrupt the wall.
-    let wire_ids: Vec<_> = topo.wires().iter().map(|(id, _)| id).collect();
+    // Keep the old arena traversal order: Case A chooses the first match;
+    // Case B retains the last matching sub-edge. Hash-set iteration would
+    // change those choices. Neither search should visit unrelated wires.
+    let mut wire_ids: Vec<_> = live.iter().copied().collect();
+    wire_ids.sort_unstable_by_key(|wire| wire.index());
     let mut case_a: Option<(remus_topology::wire::WireId, Vec<usize>, VertexId, VertexId)> = None;
     'outer: for &wid in &wire_ids {
-        if !live.contains(&wid) {
-            continue;
-        }
+        #[cfg(test)]
+        crate::body_edit::lookup_work::wire();
         let wire = topo.wire(wid)?;
         let oes = wire.edges();
         if oes
@@ -838,6 +841,8 @@ fn stitch_end(
     let mut sub1: Option<EdgeId> = None;
     let mut sub2: Option<EdgeId> = None;
     for &wid in &wire_ids {
+        #[cfg(test)]
+        crate::body_edit::lookup_work::wire();
         let wire = topo.wire(wid)?;
         let oes = wire.edges();
         if oes
@@ -3316,9 +3321,18 @@ mod tests {
         // Spine edge far away so the exclusion never fires on the test wires.
         let spine_vertex = topo.add_vertex(Vertex::new(Point3::new(9.0, 9.0, 0.0), 1e-7));
         let spine_edge = topo.add_edge(Edge::new(spine_vertex, spine_vertex, EdgeCurve::Line));
+        // A second eligible cap must lose to the earlier wire, regardless
+        // of the hash set's iteration order.
+        let later_wire = topo.add_wire(topo.wire(wire_id).unwrap().clone());
+        let later_face = topo.add_face(Face::new(
+            later_wire,
+            Vec::new(),
+            topo.face(face_id).unwrap().surface().clone(),
+        ));
         let mut live = std::collections::HashSet::new();
+        live.insert(later_wire);
         live.insert(wire_id);
-        let mut scope = EditScope::new(&topo, [face_id]).unwrap();
+        let mut scope = EditScope::new(&topo, [later_face, face_id]).unwrap();
         let mut replacements = DetHashMap::default();
         let patched = stitch_end(
             &mut topo,
@@ -3342,6 +3356,10 @@ mod tests {
             3,
             "the stale wire must be untouched"
         );
+        assert!(
+            !replacements.contains_key(&later_face),
+            "first eligible wire wins"
+        );
         // The cap takes the arc in a copy; the input cap keeps its corner.
         let cap = replacements[&face_id];
         assert!(
@@ -3358,6 +3376,108 @@ mod tests {
             5,
             "the input cap wire must be untouched"
         );
+    }
+
+    #[test]
+    fn stitch_end_corner_patch_uses_last_live_sub_edges_in_arena_order() {
+        let mut topo = Topology::new();
+        let v = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+        let c1 = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let c2 = topo.add_vertex(Vertex::new(Point3::new(0.0, 1.0, 0.0), 1e-7));
+        let mut sub = |contact| {
+            let edge = topo.add_edge(Edge::new(v, contact, EdgeCurve::Line));
+            let wire =
+                topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap());
+            let face = topo.add_face(Face::new(
+                wire,
+                Vec::new(),
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            ));
+            (edge, wire, face)
+        };
+        // Earlier and later live duplicates pin the fallback's last-match
+        // rule. Foreign duplicates on both sides must never compete.
+        sub(c1);
+        sub(c2);
+        let first1 = sub(c1);
+        let first2 = sub(c2);
+        let last1 = sub(c1);
+        let last2 = sub(c2);
+        let foreign1 = sub(c1);
+        let foreign2 = sub(c2);
+        let live = [first1.1, last2.1, first2.1, last1.1].into_iter().collect();
+        let mut scope = EditScope::new(&topo, [last2.2, first1.2, last1.2, first2.2]).unwrap();
+        let arc = make_end_arc(
+            &mut topo,
+            c1,
+            c2,
+            Point3::new(1.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Point3::new(0.0, 0.0, 0.0),
+        )
+        .unwrap()
+        .unwrap();
+        let mut replacements = DetHashMap::default();
+        let patch = stitch_end(
+            &mut topo,
+            &[],
+            v,
+            arc,
+            c1,
+            c1,
+            c2,
+            Vec3::new(0.0, 0.0, 1.0),
+            &live,
+            &mut scope.edit(&mut replacements),
+        )
+        .unwrap()
+        .unwrap();
+        let wire = topo.wire(topo.face(patch).unwrap().outer_wire()).unwrap();
+        let edges: Vec<_> = wire.edges().iter().map(OrientedEdge::edge).collect();
+        assert_eq!(edges, [arc, last1.0, last2.0]);
+        assert!(!edges.contains(&foreign1.0) && !edges.contains(&foreign2.0));
+        assert!(replacements.is_empty());
+    }
+
+    #[test]
+    fn blend_lookup_work_is_independent_of_unrelated_arena_contents() {
+        fn run(padding: usize) -> (usize, usize) {
+            let mut topo = Topology::new();
+            // Coincident bodies precede and follow the input: neither their
+            // geometry nor their insertion order makes them candidates.
+            for _ in 0..padding {
+                let _ = make_unit_cube_manifold(&mut topo);
+            }
+            let input = make_unit_cube_manifold(&mut topo);
+            for _ in 0..padding {
+                let _ = make_unit_cube_manifold(&mut topo);
+            }
+            let edge = remus_topology::explorer::solid_edges(&topo, input).unwrap()[0];
+            crate::body_edit::lookup_work::take();
+            let mut builder = FilletBuilder::new(&mut topo, input);
+            builder.add_edges(&[edge], 0.1);
+            let result = builder.build().unwrap();
+            let work = crate::body_edit::lookup_work::take();
+            assert_eq!(result.succeeded, vec![edge]);
+            assert!(result.failed.is_empty());
+            assert!(!result.is_partial);
+            assert_eq!(
+                remus_topology::explorer::solid_faces(&topo, result.solid)
+                    .unwrap()
+                    .len(),
+                7
+            );
+            assert!(work.0 > 0 && work.1 > 0, "both lookup paths must run");
+            work
+        }
+        let baseline = run(0);
+        for padding in [1, 64, 1024] {
+            assert_eq!(run(padding), baseline, "padding bodies per side: {padding}");
+        }
     }
 
     #[test]

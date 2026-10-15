@@ -45,7 +45,7 @@ pub struct EditScope {
     wire_mark: usize,
     vertex_mark: usize,
     /// The faces of the input body.
-    input_faces: DetHashSet<FaceId>,
+    input_faces: Vec<FaceId>,
     /// The vertices of the input body.
     input_vertices: DetHashSet<VertexId>,
     /// Spatial hash over the body's vertices, built on the first lookup.
@@ -64,7 +64,11 @@ impl EditScope {
         topo: &Topology,
         input_faces: impl IntoIterator<Item = FaceId>,
     ) -> Result<Self, BlendError> {
-        let input_faces: DetHashSet<FaceId> = input_faces.into_iter().collect();
+        // Arena order is part of rewrite ordering, regardless of the caller's
+        // face order. All later allocations have indices above this prefix.
+        let mut input_faces: Vec<FaceId> = input_faces.into_iter().collect();
+        input_faces.sort_unstable_by_key(|face| face.index());
+        input_faces.dedup();
         let mut input_vertices = DetHashSet::default();
         for &face in &input_faces {
             input_vertices.extend(face_vertices(topo, face)?);
@@ -215,9 +219,19 @@ impl BodyEdit<'_> {
         self.replacements
     }
 
-    fn owns(&self, face: FaceId) -> bool {
-        self.scope.allocated_face(face)
-            || (self.scope.input_faces.contains(&face) && !self.replacements.contains_key(&face))
+    /// Enumerate the same owned faces as an arena scan, in arena order,
+    /// without visiting other bodies or pre-build history. Recompute on
+    /// every rewrite so copies and newly allocated faces are visible.
+    fn candidate_faces<'a>(&'a self, topo: &'a Topology) -> impl Iterator<Item = FaceId> + 'a {
+        self.scope
+            .input_faces
+            .iter()
+            .copied()
+            .filter(|face| !self.replacements.contains_key(face))
+            .chain(
+                (self.scope.face_mark..topo.faces().slot_len())
+                    .filter_map(|index| topo.faces().id_from_index(index)),
+            )
     }
 
     /// The body's vertex at `point` (within `tolerance`), or a new one.
@@ -262,10 +276,16 @@ impl BodyEdit<'_> {
     ) -> Result<Vec<FaceId>, BlendError> {
         // Plan against one consistent state, then apply.
         let mut plans: Vec<(FaceId, Vec<(WireId, Wire)>)> = Vec::new();
-        for (face_id, face) in topo.faces().iter() {
-            if Some(face_id) == skip || !self.owns(face_id) {
+        for face_id in self.candidate_faces(topo) {
+            #[cfg(test)]
+            lookup_work::face();
+            if Some(face_id) == skip {
                 continue;
             }
+            // Match arena iteration's treatment of retired slots.
+            let Ok(face) = topo.face(face_id) else {
+                continue;
+            };
             let mut changed = Vec::new();
             for wire_id in
                 std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
@@ -367,6 +387,31 @@ fn copy_face(
     Ok(copy_id)
 }
 
+// Count candidates actually visited by the production lookup loops. These
+// thread-local counters are absent from shipped builds and timing-independent.
+#[cfg(test)]
+pub mod lookup_work {
+    use std::cell::Cell;
+
+    std::thread_local! {
+        static WORK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    }
+
+    pub fn face() {
+        let (faces, wires) = WORK.get();
+        WORK.set((faces + 1, wires));
+    }
+
+    pub fn wire() {
+        let (faces, wires) = WORK.get();
+        WORK.set((faces, wires + 1));
+    }
+
+    pub fn take() -> (usize, usize) {
+        WORK.replace((0, 0))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -409,6 +454,66 @@ mod tests {
                 d: 0.0,
             },
         ))
+    }
+
+    #[test]
+    fn rewrite_candidates_match_arena_order_after_replacements() {
+        let mut topo = Topology::new();
+        let corners = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        ];
+        let foreign = triangle(&mut topo, corners);
+        let a = triangle(&mut topo, corners);
+        triangle(&mut topo, corners);
+        let b = triangle(&mut topo, corners);
+        // Both outer and inner wires must be offered to the rewrite.
+        let inner = topo.face(foreign).unwrap().outer_wire();
+        let outer = topo.face(b).unwrap().outer_wire();
+        topo.set_face_boundary_wires(b, outer, vec![inner]).unwrap();
+        let mut scope = EditScope::new(&topo, [b, a, b]).unwrap();
+        let mut replacements = DetHashMap::default();
+        let allocated = triangle(&mut topo, corners);
+
+        for skip in [Some(a), None, Some(allocated)] {
+            // The original full scan, including its ownership and skip rules.
+            let expected: Vec<_> = topo
+                .faces()
+                .iter()
+                .filter_map(|(id, face)| {
+                    let owned = id.index() >= scope.face_mark
+                        || (scope.input_faces.contains(&id) && !replacements.contains_key(&id));
+                    (owned && Some(id) != skip).then(|| {
+                        (
+                            id,
+                            std::iter::once(face.outer_wire())
+                                .chain(face.inner_wires().iter().copied())
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                })
+                .collect();
+            let expected_wires: Vec<_> = expected
+                .iter()
+                .flat_map(|(_, wires)| wires.iter().copied())
+                .collect();
+            let mut visited = Vec::new();
+            let rewritten = scope
+                .edit(&mut replacements)
+                .rewrite_wires(&mut topo, skip, |id, wire| {
+                    visited.push(id);
+                    Ok(Some(wire.clone()))
+                })
+                .unwrap();
+            assert_eq!(visited, expected_wires);
+            let expected_faces: Vec<_> = expected
+                .iter()
+                .map(|(id, _)| replacements.get(id).copied().unwrap_or(*id))
+                .collect();
+            assert_eq!(rewritten, expected_faces);
+        }
+        assert!(!replacements.contains_key(&foreign));
     }
 
     #[test]

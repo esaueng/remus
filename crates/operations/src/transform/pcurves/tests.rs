@@ -532,3 +532,32 @@ fn replaced_chart_drops_pcurves_and_their_windings() {
     );
     remus_topology::validation::validate_boundary_authority(&topo).unwrap();
 }
+
+/// Retained carrier reconciliation must not replace an exact nonconformal
+/// ellipse or adopt an unrelated edge's radius.
+#[test]
+fn retained_planar_circle_reconciles_only_analytic_roundoff() {
+    let radius = 1e9;
+    let source = PCurve::new(
+        Curve2D::Circle(Circle2D::new(Point2::new(0.0, 0.0), radius).unwrap()),
+        0.0,
+        PI,
+    );
+    let near = UvAffine::diagonal(1.0, 1.0 + 3e-15);
+    assert!(matches!(
+        near.apply(&source).unwrap().curve(),
+        Curve2D::Ellipse(_)
+    ));
+    let retained = near.apply_retained_planar_circle(&source, radius).unwrap();
+    let Curve2D::Circle(circle) = retained.curve() else {
+        panic!("locally retained circle")
+    };
+    assert_eq!(circle.radius().to_bits(), radius.to_bits());
+    for map in [UvAffine::diagonal(2.0, 1.0), UvAffine::diagonal(1.0, 1.0)] {
+        let expected = map.apply(&source).unwrap();
+        let guarded = map
+            .apply_retained_planar_circle(&source, 1.01 * radius)
+            .unwrap();
+        assert_eq!(format!("{guarded:?}"), format!("{expected:?}"));
+    }
+}
