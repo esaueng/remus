@@ -1486,9 +1486,9 @@ mod curved {
     /// side of the plane can still cross it twice. With a cutting `plane`,
     /// each curved edge also gains its crossings with it as vertices (see
     /// [`plane_roots`]), so a near-tangent plane crossing twice between two
-    /// samples is still seen, at the curve rather than at a chord. A fixed
-    /// sample within `tol.linear` of the plane beside such a crossing is
-    /// dropped (see [`drop_samples_beside_roots`]).
+    /// samples is still seen, at the curve rather than at a chord. Each run
+    /// of vertices within `tol.linear` of the plane is then reduced to the
+    /// crossings it stands for (see [`collapse_near_plane_runs`]).
     pub(super) fn trim_polygon(
         topo: &Topology,
         wire: WireId,
@@ -1598,9 +1598,9 @@ mod curved {
             points.extend(run.into_iter().map(|(_, p)| p));
         }
         Ok(match plane {
-            Some((normal, d)) => drop_samples_beside_roots(points, |p| {
-                (dot_normal_point(normal, p) - d).abs() < tol.linear
-            }),
+            Some((normal, d)) => {
+                collapse_near_plane_runs(points, |p| dot_normal_point(normal, p) - d, tol.linear)
+            }
             None => points.into_iter().map(|(p, _)| p).collect(),
         })
     }
@@ -1616,38 +1616,54 @@ mod curved {
         Root,
     }
 
-    /// The polygon without the fixed samples that lie `near` the plane in
-    /// one cyclic run with a root. Such a sample is that root's crossing
-    /// seen again: on a shallow crossing it can lie well over `tol.linear`
-    /// from the root along the curve, so it would be counted as a second,
-    /// spurious crossing. A near-plane run without a root (a tangency, or
-    /// a corner on the plane) is kept as laid.
-    fn drop_samples_beside_roots(
+    /// The polygon with each cyclic run of vertices within `tol` of the
+    /// plane (by `signed` distance) reduced to the crossings it stands for.
+    /// Every vertex of a run counts as a crossing downstream, yet on a
+    /// shallow crossing the run's vertices can lie well over `tol` apart, so
+    /// one crossing would be counted twice:
+    /// - a run holding a corner or a root drops its fixed samples, which
+    ///   only see that crossing again;
+    /// - a run between opposite sides is one crossing, so if it holds a
+    ///   corner it drops its roots too. The corner is kept because every
+    ///   face meeting at that vertex lays it down, while only the faces on
+    ///   this edge lay down its root.
+    ///
+    /// A run between points on one side holds two crossings or none, and
+    /// keeps its corners and roots; a run of samples alone (a tangency) is
+    /// kept as laid.
+    fn collapse_near_plane_runs(
         laid: Vec<(Point3, Laid)>,
-        near: impl Fn(Point3) -> bool,
+        signed: impl Fn(Point3) -> f64,
+        tol: f64,
     ) -> Vec<Point3> {
-        let near: Vec<bool> = laid.iter().map(|&(p, _)| near(p)).collect();
+        let signed: Vec<f64> = laid.iter().map(|&(p, _)| signed(p)).collect();
+        let near = |i: usize| signed[i].abs() < tol;
         // Walk from a point off the plane, so no run wraps past the end.
-        let Some(start) = near.iter().position(|&on| !on) else {
+        let Some(start) = (0..laid.len()).find(|&i| !near(i)) else {
             return laid.into_iter().map(|(p, _)| p).collect();
         };
         let n = laid.len();
         let mut keep = vec![true; n];
         let mut run = Vec::new();
+        let mut before = start;
         for k in 1..=n {
             let i = (start + k) % n;
-            if near[i] {
+            if near(i) {
                 run.push(i);
                 continue;
             }
-            if run.iter().any(|&j| laid[j].1 == Laid::Root) {
-                for &j in &run {
-                    if laid[j].1 == Laid::Sample {
-                        keep[j] = false;
-                    }
-                }
+            let holds = |kind: Laid| run.iter().any(|&j| laid[j].1 == kind);
+            let one_crossing = (signed[before] > 0.0) != (signed[i] > 0.0);
+            let corner = holds(Laid::Corner);
+            for &j in &run {
+                keep[j] = match laid[j].1 {
+                    Laid::Sample => !(corner || holds(Laid::Root)),
+                    Laid::Root => !(corner && one_crossing),
+                    Laid::Corner => true,
+                };
             }
             run.clear();
+            before = i;
         }
         laid.into_iter()
             .zip(keep)
@@ -1883,12 +1899,48 @@ mod curved {
         Ok(edges)
     }
 
-    /// One segment of an in-plane boundary edge's polyline: the edge's index
-    /// among the face's boundary edges, and the segment's ends.
-    type InPlaneSegment = (usize, Point3, Point3);
+    /// A boundary edge lying in the cutting plane, as a polyline.
+    struct InPlaneEdge {
+        chain: Vec<Point3>,
+        closed: bool,
+    }
+
+    impl InPlaneEdge {
+        fn new(chain: Vec<Point3>, tol: f64) -> Self {
+            let closed = chain
+                .first()
+                .zip(chain.last())
+                .is_some_and(|(a, b)| chain.len() > 2 && (*a - *b).length() <= tol);
+            Self { chain, closed }
+        }
+
+        /// Arc-length positions along the polyline of its points within
+        /// `band` of `x` (one per segment that near).
+        fn positions(&self, band: f64, x: Point3) -> Vec<f64> {
+            let mut at = 0.0;
+            let mut found = Vec::new();
+            for w in self.chain.windows(2) {
+                let ab = w[1] - w[0];
+                let length = ab.length();
+                if segment_distance(x, w[0], w[1]) <= band {
+                    let t = if length > 0.0 {
+                        ((x - w[0]).dot(ab) / (length * length)).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    found.push(t.mul_add(length, at));
+                }
+                at += length;
+            }
+            found
+        }
+
+        fn length(&self) -> f64 {
+            self.chain.windows(2).map(|w| (w[1] - w[0]).length()).sum()
+        }
+    }
 
     /// The boundary edges of `face` that lie in the plane, as polylines
-    /// whose segments carry their edge's index
     /// within an absolute sagitta of `100 × tol.linear` of their curves, and
     /// the largest sagitta reached. The bound is absolute so that scaling a
     /// body cannot widen it past the gap to another section loop; an edge
@@ -1899,12 +1951,12 @@ mod curved {
         normal: Vec3,
         d: f64,
         tol: Tolerance,
-    ) -> Result<(Vec<InPlaneSegment>, f64), OperationsError> {
+    ) -> Result<(Vec<InPlaneEdge>, f64), OperationsError> {
         const MAX_STEPS: u32 = 1 << 16;
         let coplanar_tol = tol.linear * 100.0;
-        let mut segments = Vec::new();
+        let mut edges = Vec::new();
         let mut sagitta: f64 = 0.0;
-        for (index, edge) in boundary_edges(topo, face)?.into_iter().enumerate() {
+        for edge in boundary_edges(topo, face)? {
             let mut steps = 32;
             let mut chain = edge.chain(steps);
             if !chain
@@ -1934,9 +1986,9 @@ mod curved {
                 steps *= 2;
                 chain = edge.chain(steps);
             }
-            segments.extend(chain.windows(2).map(|w| (index, w[0], w[1])));
+            edges.push(InPlaneEdge::new(chain, tol.linear));
         }
-        Ok((segments, sagitta))
+        Ok((edges, sagitta))
     }
 
     /// Where the cutting plane crosses the face's boundary polygons, by the
@@ -2125,18 +2177,33 @@ mod curved {
         Ok((chords, cuts))
     }
 
-    /// Whether both ends of a piece lie within `band` of one same in-plane
-    /// edge. Ends on two different edges span the gap between them, which a
-    /// piece narrower than a chord would otherwise keep; shared vertices are
-    /// crossings, so a piece never straddles two edges that meet.
-    fn along_one_edge(in_plane: &[InPlaneSegment], band: f64, p: Point3, q: Point3) -> bool {
-        let near = |x: Point3| {
-            in_plane
-                .iter()
-                .filter(move |&&(_, a, b)| segment_distance(x, a, b) <= band)
-                .map(|&(index, _, _)| index)
-        };
-        near(p).any(|index| near(q).any(|other| other == index))
+    /// Whether a piece runs along one in-plane edge: both its ends lie
+    /// within `band` of the same edge, at most twice the piece's length
+    /// (plus the band's slack) apart along it, the short way round a closed
+    /// edge. Ends on two different edges span the gap between them, and
+    /// ends near the two ends of one edge that almost closes span the gap
+    /// it leaves; a piece narrower than a chord would otherwise keep
+    /// either. Shared vertices are crossings, so a piece never straddles
+    /// two edges that meet.
+    fn along_one_edge(in_plane: &[InPlaneEdge], band: f64, p: Point3, q: Point3) -> bool {
+        // An arc is at most twice its chord while it turns under 3.79 rad;
+        // a carrier piece turns far less.
+        let reach = 2.0_f64.mul_add((q - p).length(), 2.0 * band);
+        in_plane.iter().any(|edge| {
+            let (at_p, at_q) = (edge.positions(band, p), edge.positions(band, q));
+            let length = edge.length();
+            at_p.iter().any(|&s| {
+                at_q.iter().any(|&r| {
+                    let apart = (r - s).abs();
+                    let apart = if edge.closed {
+                        apart.min(length - apart)
+                    } else {
+                        apart
+                    };
+                    apart <= reach
+                })
+            })
+        })
     }
 
     fn segment_distance(p: Point3, a: Point3, b: Point3) -> f64 {
@@ -2426,6 +2493,59 @@ mod curved {
             );
         }
 
+        /// The plane x = 1 − 5e-8 passes within `tol.linear` of the corner
+        /// A = (1, 0, 0), where an arc of the unit circle leaves for
+        /// B = (0, 1, 0), and crosses the arc at y ≈ 3.2e-4.
+        /// - Wire A → arc → B → (2, 2) → A: the run {A, root} lies between
+        ///   the line arriving from x = 2 and the arc leaving towards x < 1,
+        ///   so it is one crossing, kept as the corner. The segment runs
+        ///   from A to the line B–(2, 2), not from A to the root.
+        /// - Wire A → arc → B → A: the chord arrives from x < 1 too, so the
+        ///   run holds two crossings (the sliver between chord and arc) and
+        ///   keeps both.
+        #[test]
+        fn a_corner_grazing_the_plane_beside_a_root_is_one_crossing() {
+            let c: f64 = 1.0 - 5e-8;
+            let x = Vec3::new(1.0, 0.0, 0.0);
+            let z = Vec3::new(0.0, 0.0, 1.0);
+            let (a, b, q) = (
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(2.0, 2.0, 0.0),
+            );
+            let unit = Circle3D::new_with_ref(Point3::new(0.0, 0.0, 0.0), z, 1.0, x).unwrap();
+
+            let mut topo = Topology::new();
+            let [va, vb, vq] = [a, b, q].map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+            let arc = topo.add_edge(Edge::new(va, vb, EdgeCurve::Circle(unit.clone())));
+            let out = topo.add_edge(Edge::new(vb, vq, EdgeCurve::Line));
+            let back = topo.add_edge(Edge::new(vq, va, EdgeCurve::Line));
+            let edges = [arc, out, back].map(|e| OrientedEdge::new(e, true));
+            let wire = topo.add_wire(Wire::new(edges.to_vec(), true).unwrap());
+            let polygon = trim_polygon(&topo, wire, Some((x, c)), Tolerance::new()).unwrap();
+            let segment = super::super::intersect_planar_face_with_plane(
+                &polygon,
+                z,
+                0.0,
+                x,
+                c,
+                Tolerance::new(),
+            )
+            .expect("the plane crosses the face");
+            assert_ends_at(
+                segment,
+                [a, Point3::new(c, 1.0 + c / 2.0, 0.0)],
+                "one crossing",
+            );
+
+            let root = Point3::new(c, (1.0 - c * c).sqrt(), 0.0);
+            assert_ends_at(
+                cut_curve_and_chord(EdgeCurve::Circle(unit), a, b, x, c),
+                [a, root],
+                "sliver",
+            );
+        }
+
         /// Parabola, hyperbola and NURBS trims, each dipping across the plane
         /// between two of its 32 samples (at ±1/32 of a span offset by half a
         /// sample) while every sample stays on one side: the segment must
@@ -2539,7 +2659,10 @@ mod curved {
         #[test]
         fn a_piece_spanning_two_in_plane_edges_is_not_boundary() {
             let x = |v: f64| Point3::new(v, 0.0, 0.0);
-            let in_plane = [(0, x(0.0), x(1.0)), (1, x(1.03), x(2.0))];
+            let in_plane = [
+                super::InPlaneEdge::new(vec![x(0.0), x(1.0)], 1e-7),
+                super::InPlaneEdge::new(vec![x(1.03), x(2.0)], 1e-7),
+            ];
             let band = 1e-5;
             assert!(!super::along_one_edge(&in_plane, band, x(1.0), x(1.03)));
             assert!(super::along_one_edge(&in_plane, band, x(0.2), x(0.9)));
@@ -2550,6 +2673,32 @@ mod curved {
                 x(0.5),
                 Point3::new(0.6, 0.1, 0.0)
             ));
+        }
+
+        /// An in-plane arc of the unit circle leaving a 0.01 rad gap at angle
+        /// 0: a piece across the gap has its ends at the arc's two ends, each
+        /// on the edge but a whole turn apart along it, so it is not
+        /// boundary. A piece along the arc is, and so is a piece across the
+        /// seam of a closed rim.
+        #[test]
+        fn a_piece_across_the_gap_of_one_almost_closed_edge_is_not_boundary() {
+            let at = |a: f64| Point3::new(a.cos(), a.sin(), 0.0);
+            let arc = |from: f64, to: f64| -> Vec<Point3> {
+                (0..=4096)
+                    .map(|k| at((to - from).mul_add(f64::from(k) / 4096.0, from)))
+                    .collect()
+            };
+            let band = 1e-5;
+            let open = [super::InPlaneEdge::new(arc(0.005, TAU - 0.005), 1e-7)];
+            assert!(!super::along_one_edge(
+                &open,
+                band,
+                at(TAU - 0.005),
+                at(0.005)
+            ));
+            assert!(super::along_one_edge(&open, band, at(1.0), at(1.05)));
+            let rim = [super::InPlaneEdge::new(arc(0.0, TAU), 1e-7)];
+            assert!(super::along_one_edge(&rim, band, at(-0.02), at(0.02)));
         }
 
         /// Without partial curved edges the trim polygon is `wire_polygon`'s,
