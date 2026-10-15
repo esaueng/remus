@@ -2888,9 +2888,17 @@ fn validate_arena_positive(value: f64, subject: &str, label: &str) -> Result<(),
 /// from where its declared radius puts it. The bound is the kernel's default
 /// linear tolerance, or the rounding of a kernel-built frame (64 ulp relative)
 /// on a carrier so large that rounding alone exceeds it.
+///
+/// An unbounded carrier (`scale` infinite: cone, parabola, hyperbola) moves
+/// points by its trimmed extent times the frame error, which the carrier alone
+/// does not bound, so it gets the rounding bound. Planes pass 0 and keep the
+/// plain bound: STEP imports carry plane normals up to 5e-10 off unit length.
 fn arena_frame_bound(scale: f64) -> f64 {
-    if scale > 0.0 {
-        ARENA_FRAME_TOLERANCE.min(ARENA_LINEAR_TOLERANCE.max(scale * 64.0 * f64::EPSILON) / scale)
+    let rounding = 64.0 * f64::EPSILON;
+    if scale.is_infinite() {
+        rounding
+    } else if scale > 0.0 {
+        ARENA_FRAME_TOLERANCE.min(ARENA_LINEAR_TOLERANCE.max(scale * rounding) / scale)
     } else {
         ARENA_FRAME_TOLERANCE
     }
@@ -3005,7 +3013,7 @@ fn validate_arena_edge_curve(curve: &EdgeCurve, subject: &str) -> Result<(), IoE
                     (hyperbola.u_axis(), "hyperbola u axis"),
                     (hyperbola.v_axis(), "hyperbola v axis"),
                 ],
-                hyperbola.semi_major(),
+                f64::INFINITY,
                 subject,
             )
         }
@@ -3017,7 +3025,7 @@ fn validate_arena_edge_curve(curve: &EdgeCurve, subject: &str) -> Result<(), IoE
                     (parabola.axis_dir(), "parabola axis"),
                     (parabola.u_axis(), "parabola u axis"),
                 ],
-                parabola.focal_length(),
+                f64::INFINITY,
                 subject,
             )
         }
@@ -3064,7 +3072,7 @@ fn validate_arena_face_surface(surface: &FaceSurface, subject: &str) -> Result<(
                     (cone.x_axis(), "cone x axis"),
                     (cone.y_axis(), "cone y axis"),
                 ],
-                0.0,
+                f64::INFINITY,
                 subject,
             )
         }
