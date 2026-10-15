@@ -1472,11 +1472,13 @@ pub fn fillet_rolling_ball_with_origins(
 
         // Phase 2b: Validate that the fillet band fits within adjacent face geometry.
         // On each planar support face the band's contact line runs one setback
-        // from the target edge — `radius · tan(β/2)` between planes, so the radius
-        // itself only on a right angle (`rolling_ball_setback`). At each end of
-        // the edge that line must land on the face's adjacent non-target edge, so
-        // the adjacent edge has to reach farther from the target edge's line than
-        // the setback: its perpendicular extent, not its length, bounds the band.
+        // from the target edge: `radius · tan(θ/2)` between planes
+        // (`blend_ops::fillet_contact_setback`), never taken below `radius`, the
+        // reach of the cross-product fallback for a stripe this rebuild cannot
+        // classify (the hole guard keeps the same floor). At each end of the edge
+        // that line must land on the face's adjacent non-target edge, so the
+        // adjacent edge has to reach farther from the target edge's line than the
+        // setback: its perpendicular extent, not its length, bounds the band.
         for &edge_id in &filtered_edges {
             let edge = topo.edge(edge_id)?;
             let p_start = topo.vertex(edge.start())?.point();
@@ -1490,28 +1492,15 @@ pub fn fillet_rolling_ball_with_origins(
             let Some(face_list) = edge_to_faces.get(&edge_id.index()) else {
                 continue;
             };
+            let setback = if straight {
+                crate::blend_ops::fillet_contact_setback(topo, face_list, radius)?.max(radius)
+            } else {
+                radius
+            };
             for &fid in face_list {
                 let poly = match face_polygons.get(&fid.index()) {
                     Some(p) => p,
                     None => continue,
-                };
-                let setback = match face_list.iter().copied().find(|&f| f != fid) {
-                    Some(other) if straight => {
-                        crate::blend_ops::rolling_ball_setback(topo, edge_id, fid, other, radius)?
-                    }
-                    _ => radius,
-                };
-                // Contacts sit at the exact setback only on a qualified two-plane
-                // stripe. An unqualified one, and a curved-neighbour stripe whose
-                // section solve (below) fails, take the cross-product fallback,
-                // which lays them one radius out.
-                let both_planar = face_list
-                    .iter()
-                    .all(|f| face_polygons.contains_key(&f.index()));
-                let setback = if both_planar && planar_edge_sides.contains_key(&edge_id.index()) {
-                    setback
-                } else {
-                    setback.max(radius)
                 };
                 for &edge_pt in &[p_start, p_end] {
                     // (the reach the band needs, what the face offers) at the
