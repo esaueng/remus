@@ -252,6 +252,7 @@ fn affines() -> [(&'static str, UvAffine); 5] {
         origin: Point2::new(4.0, -7.5),
         u_image: u,
         v_image: v,
+        conformal: u.dot(v).abs() < 1e-12 && (u.length() - v.length()).abs() < 1e-12,
     };
     [
         ("rotation", at(Vec2::new(c, s), Vec2::new(-s, c))),
@@ -366,6 +367,46 @@ fn conic_images_keep_their_family_and_orientation() {
             "{what}"
         );
     }
+}
+
+/// A deliberate near-unit anisotropy is kept: the circle's image becomes the
+/// exact ellipse instead of a circle with averaged radii, which would miss a
+/// far vertex by the dropped stretch times the radius.
+#[test]
+fn near_unit_anisotropy_keeps_the_ellipse() {
+    let stretch = 1.0 + 2e-15;
+    let map = UvAffine {
+        origin: Point2::new(0.0, 0.0),
+        u_image: Vec2::new(stretch, 0.0),
+        v_image: Vec2::new(0.0, 1.0),
+        conformal: false,
+    };
+    let radius = 1e9;
+    let circle = PCurve::new(
+        Curve2D::Circle(Circle2D::new(Point2::new(0.0, 0.0), radius).unwrap()),
+        0.0,
+        1.0,
+    );
+    let image = map.apply(&circle).unwrap();
+    assert!(
+        matches!(image.curve(), Curve2D::Ellipse(_)),
+        "{:?}",
+        image.curve()
+    );
+    let expected = Point2::new(radius * stretch, 0.0);
+    let actual = image.evaluate(image.t_start());
+    assert!(
+        (actual - expected).length() < 1e-7,
+        "{actual:?} != {expected:?}"
+    );
+    // The exactly conformal image of a circle stays a circle.
+    let identity = UvAffine::diagonal(1.0, 1.0);
+    let same = identity.apply(&circle).unwrap();
+    assert!(
+        matches!(same.curve(), Curve2D::Circle(_)),
+        "{:?}",
+        same.curve()
+    );
 }
 
 #[test]

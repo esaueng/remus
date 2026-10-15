@@ -25,12 +25,6 @@ use remus_topology::coedge::PeriodicWinding;
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::pcurve::PCurve;
 
-/// Relative roundoff under which a mapped circle's conjugate radii still
-/// describe a circle. The radii come out of a few dot products of unit
-/// vectors, so a similarity leaves them equal to a handful of ulps; a real
-/// anisotropy sits many orders above.
-const CIRCLE_ROUNDOFF_REL: f64 = 64.0 * f64::EPSILON;
-
 /// How one face's UV chart changed under a transform.
 #[derive(Debug, Clone, Copy)]
 pub enum ChartMap {
@@ -50,6 +44,10 @@ pub struct UvAffine {
     origin: Point2,
     u_image: Vec2,
     v_image: Vec2,
+    /// The map is known to be a similarity of the UV plane (it came from a
+    /// matrix the kernel routes as a similarity), so a circle maps to a
+    /// circle. Never inferred from the mapped radii.
+    conformal: bool,
 }
 
 impl UvAffine {
@@ -60,6 +58,7 @@ impl UvAffine {
             origin: Point2::new(0.0, 0.0),
             u_image: Vec2::new(u_scale, 0.0),
             v_image: Vec2::new(0.0, v_scale),
+            conformal: false,
         }
     }
 
@@ -72,13 +71,15 @@ impl UvAffine {
     /// right-handed then sweeps `u` the other way). `v_scale` is the
     /// similarity's scale for an axial or slant `v`, `1` for an angle.
     /// `carried` says the new frame was built from the moved `old.x`, so
-    /// `φ = 0` by construction rather than by a roundoff test.
+    /// `φ = 0` by construction rather than by a roundoff test. `conformal`
+    /// says the caller knows the UV map is a similarity.
     pub fn revolved(
         matrix: &Mat4,
         old: (Vec3, Vec3),
         new: (Vec3, Vec3),
         v_scale: f64,
         carried: bool,
+        conformal: bool,
     ) -> Self {
         let in_new = |d: Vec3| {
             let image = linear(matrix, d);
@@ -95,6 +96,7 @@ impl UvAffine {
             origin: Point2::new(phi, 0.0),
             u_image: Vec2::new(sign, 0.0),
             v_image: Vec2::new(0.0, v_scale),
+            conformal,
         }
     }
 
@@ -107,10 +109,13 @@ impl UvAffine {
     /// x axis `normal × seed` (the same chart the `SameParameter` proofs and
     /// the STEP reader and writer use). It is rebuilt from the new normal
     /// alone, so the map is a general 2D affine map, not an identity.
+    /// `similarity` is the kernel's routing verdict on `matrix`: the
+    /// in-plane map of a similarity is one.
     pub fn plane(
         old: (Vec3, f64),
         new: (Vec3, f64),
         matrix: &Mat4,
+        similarity: bool,
     ) -> Result<Self, crate::OperationsError> {
         let before = plane_chart(old.0, old.1)?;
         let after = plane_chart(new.0, new.1)?;
@@ -122,6 +127,7 @@ impl UvAffine {
             origin: Point2::new(offset.dot(after.x), offset.dot(after.y)),
             u_image: in_chart(u_image),
             v_image: in_chart(v_image),
+            conformal: similarity,
         })
     }
 
@@ -174,7 +180,7 @@ impl UvAffine {
                 self.point(circle.center()),
                 self.vector(Vec2::new(circle.radius(), 0.0)),
                 self.vector(Vec2::new(0.0, circle.radius())),
-                true,
+                Some(self.conformal),
             )?,
             Curve2D::Ellipse(ellipse) => {
                 let (sin_r, cos_r) = ellipse.rotation().sin_cos();
@@ -182,7 +188,7 @@ impl UvAffine {
                     self.point(ellipse.center()),
                     self.vector(Vec2::new(cos_r, sin_r) * ellipse.semi_major()),
                     self.vector(Vec2::new(-sin_r, cos_r) * ellipse.semi_minor()),
-                    false,
+                    None,
                 )?
             }
         };
@@ -218,22 +224,25 @@ pub fn linear(matrix: &Mat4, d: Vec3) -> Vec3 {
 /// Returns the curve with `(sign, shift)` such that the image's parameter is
 /// `sign·t + shift`. `p` and `q` are conjugate semi-diameters: an anisotropic
 /// map skews them, and a reflection turns them clockwise.
+///
+/// `circle` is `Some(conformal)` for a circle's image: it stays a circle
+/// when the map is known conformal, or when its radii come out exactly equal
+/// and orthogonal. Everything else, a near-circular image included, becomes
+/// the exact ellipse.
+#[allow(clippy::float_cmp)] // Exact conformality only; a tolerance would drop real anisotropy.
 fn conic_image(
     center: Point2,
     p: Vec2,
     q: Vec2,
-    prefer_circle: bool,
+    circle: Option<bool>,
 ) -> Result<(Curve2D, f64, f64), crate::OperationsError> {
     // c + p cos t + q sin t = c + p cos(−t) + (−q) sin(−t): a clockwise pair
     // becomes counter-clockwise under t ↦ −t.
     let clockwise = p.x().mul_add(q.y(), -(p.y() * q.x())) < 0.0;
     let (q, sign) = if clockwise { (-q, -1.0) } else { (q, 1.0) };
     let (lp, lq) = (p.length(), q.length());
-    let scale = lp.max(lq);
-    if prefer_circle
-        && (lp - lq).abs() <= CIRCLE_ROUNDOFF_REL * scale
-        && p.dot(q).abs() <= CIRCLE_ROUNDOFF_REL * scale * scale
-    {
+    let exactly_conformal = lp == lq && p.dot(q) == 0.0;
+    if circle.is_some_and(|conformal| conformal || exactly_conformal) {
         // Counter-clockwise equal orthogonal radii: c + R(cos(s + ρ), sin(s + ρ)).
         let circle = Circle2D::new(center, 0.5 * (lp + lq))?;
         return Ok((Curve2D::Circle(circle), sign, p.y().atan2(p.x())));

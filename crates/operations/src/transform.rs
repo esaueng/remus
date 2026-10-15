@@ -1446,7 +1446,12 @@ pub(crate) fn transform_face_surface_recorded(
             // as covectors): nothing to record, no flag to carry. The chart
             // is rebuilt canonically from the new plane, so pcurves follow
             // an exact 2D affine map.
-            ChartMap::Affine(UvAffine::plane((n, old_d), (new_normal, new_d), matrix)?)
+            ChartMap::Affine(UvAffine::plane(
+                (n, old_d),
+                (new_normal, new_d),
+                matrix,
+                is_uniform_scale(matrix),
+            )?)
         }
         FaceSurface::Nurbs(s) => {
             let s_clone = s.clone();
@@ -1493,6 +1498,10 @@ pub(crate) fn transform_face_surface_recorded(
                     (new_cyl.x_axis(), new_cyl.y_axis()),
                     axial_scale(matrix, cyl_clone.axis()),
                     false,
+                    // `(±u + φ, s·v)` is conformal only at unit scale (`u` is
+                    // an angle, `v` a length); the arm already routes this
+                    // matrix as a similarity.
+                    equal_within_analytic_roundoff(axial_scale(matrix, cyl_clone.axis()), 1.0),
                 );
                 topo.face_mut(fid)?
                     .set_surface(FaceSurface::Cylinder(new_cyl));
@@ -1540,6 +1549,10 @@ pub(crate) fn transform_face_surface_recorded(
                     (new_cone.x_axis(), new_cone.y_axis()),
                     axial_scale(matrix, cone_clone.axis()),
                     false,
+                    // `(±u + φ, s·v)` is conformal only at unit scale (`u` is
+                    // an angle, `v` a length); the arm already routes this
+                    // matrix as a similarity.
+                    equal_within_analytic_roundoff(axial_scale(matrix, cone_clone.axis()), 1.0),
                 );
                 topo.face_mut(fid)?.set_surface(FaceSurface::Cone(new_cone));
                 ChartMap::Affine(chart)
@@ -1582,6 +1595,7 @@ pub(crate) fn transform_face_surface_recorded(
                     (sph_clone.x_axis(), sph_clone.y_axis()),
                     (new_sph.x_axis(), new_sph.y_axis()),
                     1.0,
+                    true,
                     true,
                 );
                 topo.face_mut(fid)?
@@ -1663,6 +1677,7 @@ pub(crate) fn transform_face_surface_recorded(
                     (tor_clone.x_axis(), tor_clone.y_axis()),
                     (new_tor.x_axis(), new_tor.y_axis()),
                     1.0,
+                    true,
                     true,
                 );
                 topo.face_mut(fid)?.set_surface(FaceSurface::Torus(new_tor));
