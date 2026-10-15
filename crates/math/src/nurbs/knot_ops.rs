@@ -234,16 +234,36 @@ pub fn surface_knot_insert_v(
 /// control points, and dropping one would unclamp it.
 ///
 /// Returns an error if the resulting curve cannot be constructed.
+pub fn curve_knot_remove(
+    curve: &NurbsCurve,
+    u: f64,
+    tolerance: f64,
+) -> Result<NurbsCurve, MathError> {
+    knot_remove(curve, u, tolerance, true)
+}
+
+/// The removal [`curve_knot_remove`] would make, without holding it to a
+/// tolerance: a candidate for the certified reduction, which certifies the
+/// result over the whole domain itself. At degree 1 the deviation bound is
+/// skipped, so a knot whose bound is unavailable still yields a candidate.
+pub(crate) fn curve_knot_remove_candidate(
+    curve: &NurbsCurve,
+    u: f64,
+) -> Result<NurbsCurve, MathError> {
+    knot_remove(curve, u, f64::MAX, false)
+}
+
 #[allow(
     clippy::similar_names,
     clippy::too_many_lines,
     clippy::many_single_char_names,
     clippy::suboptimal_flops
 )]
-pub fn curve_knot_remove(
+fn knot_remove(
     curve: &NurbsCurve,
     u: f64,
     tolerance: f64,
+    bound_degree_one: bool,
 ) -> Result<NurbsCurve, MathError> {
     let p = curve.degree();
     let knots = curve.knots();
@@ -474,7 +494,9 @@ pub fn curve_knot_remove(
             (knots[r] - removed_knots[k]) / denom
         };
         let at = |i: usize| (cps[i], ws[i]);
-        if degree_one_deviation_bound(at(k - 1), at(k), at(k + 1), alpha) > tolerance {
+        if bound_degree_one
+            && degree_one_deviation_bound(at(k - 1), at(k), at(k + 1), alpha) > tolerance
+        {
             return Err(MathError::ConvergenceFailure { iterations: 0 });
         }
     }
@@ -524,11 +546,11 @@ pub fn curve_knot_remove(
 /// position between its neighbours (see the derivation in
 /// [`curve_knot_remove`]). Each point is `(position, weight)`.
 ///
-/// `f64::MAX` stands for "no usable bound": a weight that is not positive, a
+/// Infinite when there is no usable bound: a weight that is not positive, a
 /// weight ratio outside the normal range, or a bound that is not
-/// representable. Every finite tolerance below it refuses the removal; a
-/// caller passing `f64::MAX` itself (the certified reduction path, which
-/// certifies the candidate independently) still gets its candidate.
+/// representable. Every tolerance then refuses the removal; the certified
+/// reduction, which certifies its candidates itself, takes them from
+/// [`curve_knot_remove_candidate`] instead.
 ///
 /// The bound `max(|e − ε·P|) / w_k` is invariant under translation and under
 /// a common weight scale, so it is evaluated relative to `prev` and already
@@ -546,14 +568,14 @@ fn degree_one_deviation_bound(
 ) -> f64 {
     let finite_positive = |w: f64| w > 0.0 && w.is_finite();
     if !(finite_positive(prev.1) && finite_positive(mid.1) && finite_positive(next.1)) {
-        return f64::MAX;
+        return f64::INFINITY;
     }
     let (rho_prev, rho_next) = (prev.1 / mid.1, next.1 / mid.1);
     // A ratio that leaves the normal range has lost its relative precision
     // (or, at zero, a contribution ρ·dn the coordinates can still carry), so
     // the bound would not be one.
     if !(rho_prev.is_normal() && rho_next.is_normal()) {
-        return f64::MAX;
+        return f64::INFINITY;
     }
     let dm = mid.0 - prev.0;
     let dn = next.0 - prev.0;
@@ -572,7 +594,11 @@ fn degree_one_deviation_bound(
         e[2] - eps * dn.z(),
     ]);
     let bound = at_prev.max(at_next);
-    if bound.is_finite() { bound } else { f64::MAX }
+    if bound.is_finite() {
+        bound
+    } else {
+        f64::INFINITY
+    }
 }
 
 /// Euclidean norm that neither underflows nor overflows in its squares.
