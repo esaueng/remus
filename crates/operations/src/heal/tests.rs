@@ -286,6 +286,103 @@ fn an_all_degenerate_loop_is_left_whole_and_not_counted() {
     assert_eq!(topo.face(face).unwrap().outer_wire(), wire);
 }
 
+/// Splits an edge of `hollow_block_with_corner_gap`'s first outer- or
+/// cavity-shell face 1e-9 short of its end, threading the short piece into
+/// every loop that uses the edge; returns the short edge.
+fn split_off_a_short_edge(topo: &mut Topology, solid: SolidId, in_cavity: bool) -> EdgeId {
+    let data = topo.solid(solid).unwrap();
+    let shell = if in_cavity {
+        data.inner_shells()[0]
+    } else {
+        data.outer_shell()
+    };
+    let face = topo.shell(shell).unwrap().faces()[0];
+    let wire = topo.face(face).unwrap().outer_wire();
+    let long = topo.wire(wire).unwrap().edges()[0].edge();
+    let corner = topo.edge(long).unwrap().end();
+    let p = topo.vertex(corner).unwrap().point();
+    let start = topo
+        .vertex(topo.edge(long).unwrap().start())
+        .unwrap()
+        .point();
+    let toward = (start - p).normalize().unwrap() * 1e-9;
+    let w = topo.add_vertex(remus_topology::vertex::Vertex::new(p + toward, 1e-7));
+    topo.edge_mut(long).unwrap().set_end(w);
+    let short = topo.add_edge(Edge::new(w, corner, EdgeCurve::Line));
+    for fid in remus_topology::explorer::solid_faces(topo, solid).unwrap() {
+        let face = topo.face(fid).unwrap();
+        let (outer, inner) = (face.outer_wire(), face.inner_wires().to_vec());
+        let mut rebuilt = Vec::new();
+        for wid in std::iter::once(outer).chain(inner.iter().copied()) {
+            let old = topo.wire(wid).unwrap();
+            let mut uses = Vec::new();
+            for oe in old.edges() {
+                if oe.edge() != long {
+                    uses.push(*oe);
+                } else if oe.is_forward() {
+                    uses.extend([*oe, OrientedEdge::new(short, true)]);
+                } else {
+                    uses.extend([OrientedEdge::new(short, false), *oe]);
+                }
+            }
+            let closed = old.is_closed();
+            rebuilt.push(topo.add_wire(Wire::new(uses, closed).unwrap()));
+        }
+        topo.set_face_boundary_wires(fid, rebuilt[0], rebuilt[1..].to_vec())
+            .unwrap();
+    }
+    short
+}
+
+/// Dropping a short edge with two distinct vertices fuses them, so every
+/// loop that used it stays connected, on the outer shell and in the cavity.
+#[test]
+fn dropping_a_short_edge_keeps_every_loop_connected() {
+    for in_cavity in [false, true] {
+        let mut topo = Topology::new();
+        let outer = crate::primitives::make_box(&mut topo, 3.0, 3.0, 3.0).unwrap();
+        let void = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        crate::transform::transform_solid(
+            &mut topo,
+            void,
+            &remus_math::mat::Mat4::translation(1.0, 1.0, 1.0),
+        )
+        .unwrap();
+        let solid = crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, outer, void)
+            .unwrap();
+        let short = split_off_a_short_edge(&mut topo, solid, in_cavity);
+
+        let removed = remove_degenerate_edges(&mut topo, solid, 1e-7).unwrap();
+        assert_eq!(removed, 2, "in_cavity = {in_cavity}: one use per face");
+        for fid in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
+            let face = topo.face(fid).unwrap();
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                let uses = topo.wire(wid).unwrap().edges().to_vec();
+                assert!(uses.iter().all(|oe| oe.edge() != short));
+                for (k, oe) in uses.iter().enumerate() {
+                    let next = uses[(k + 1) % uses.len()];
+                    let end = oe.oriented_end(topo.edge(oe.edge()).unwrap());
+                    let start = next.oriented_start(topo.edge(next.edge()).unwrap());
+                    assert_eq!(end, start, "in_cavity = {in_cavity}: face {fid:?} use {k}");
+                }
+            }
+        }
+        assert_eq!(
+            crate::validate::validate_solid(&topo, solid)
+                .unwrap()
+                .error_count(),
+            0,
+            "in_cavity = {in_cavity}"
+        );
+        let volume = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+        assert!(
+            (volume - 26.0).abs() < 1e-6,
+            "in_cavity = {in_cavity}: {volume}"
+        );
+    }
+}
+
 #[test]
 fn merge_coincident_vertices_reaches_the_cavity() {
     let mut topo = Topology::new();
