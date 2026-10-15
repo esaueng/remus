@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use remus_math::curves::Circle3D;
 use remus_math::curves2d::{Curve2D, NurbsCurve2D};
+use remus_math::det_hash::DetHashMap;
 use remus_math::surfaces::ToroidalSurface;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
@@ -20,6 +21,7 @@ use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::analytic;
 use crate::blend_func::{BorrowedEvolRadBlend, ConstRadBlend};
+use crate::body_edit::{BodyEdit, EditScope};
 use crate::builder_utils::{
     FlippedNormalSurface, add_certified_curve_edge, cylinder_of, plane_of, project_onto_axis,
     radial_distance, refuse_non_line_rim_neighbors, surface_ref_or_adapter, wire_axial_range,
@@ -151,6 +153,9 @@ impl<'a> FilletBuilder<'a> {
         let shell_id = solid_data.outer_shell();
         let inner_shells = solid_data.inner_shells().to_vec();
         let original_faces: Vec<FaceId> = topo.shell(shell_id)?.faces().to_vec();
+        // The result shares every face it does not rebuild with the input, so
+        // boundary rewrites go copy-on-write through this scope.
+        let scope = EditScope::new(topo, original_faces.iter().copied())?;
 
         // Track which faces are touched (adjacent to a fillet edge).
         let mut touched_faces: HashSet<FaceId> = HashSet::new();
@@ -321,8 +326,7 @@ impl<'a> FilletBuilder<'a> {
         // Every blend face beside the two base faces it was built between —
         // exact provenance, taken from the stripe that produced it.
         let mut blend_face_origins: Vec<(FaceId, Vec<FaceId>)> = Vec::new();
-        let mut face_replacements: std::collections::HashMap<FaceId, FaceId> =
-            std::collections::HashMap::new();
+        let mut face_replacements: DetHashMap<FaceId, FaceId> = DetHashMap::default();
         let mut regular_results: Vec<&StripeResult> = Vec::new();
         for sr in &stripe_results {
             if let Some(rim) = closed_rim_info(topo, &sr.stripe)? {
@@ -423,6 +427,7 @@ impl<'a> FilletBuilder<'a> {
                 &stripe.contact1,
                 keep,
                 stripe.spine.edges(),
+                &mut scope.edit(&mut face_replacements),
             );
 
             let tr1 = match trim1 {
@@ -448,6 +453,7 @@ impl<'a> FilletBuilder<'a> {
                 &stripe.contact2,
                 keep,
                 stripe.spine.edges(),
+                &mut scope.edit(&mut face_replacements),
             );
 
             let tr2 = match trim2 {
@@ -476,7 +482,14 @@ impl<'a> FilletBuilder<'a> {
             // Preserve the fork's stitched planar path when it can close the
             // spine ends directly; otherwise reuse the upstream trimmer
             // contact edges and notch the remaining end caps below.
-            match stitch_planar_blend(topo, self.solid, stripe, tr1, tr2, &face_replacements) {
+            match stitch_planar_blend(
+                topo,
+                self.solid,
+                stripe,
+                tr1,
+                tr2,
+                &mut scope.edit(&mut face_replacements),
+            ) {
                 Ok(Some(mut faces)) => {
                     blend_face_origins
                         .extend(faces.iter().map(|&f| (f, vec![stripe.face1, stripe.face2])));
@@ -680,7 +693,8 @@ fn make_end_arc(
 ///
 /// - **Cap trim**: one wire holds both sub-edges `c → v → c'` (a
 ///   perpendicular cap face, e.g. the bottom of a plate). The pair is
-///   replaced in place by the end arc.
+///   replaced by the end arc, in a copy of the cap when the input body still
+///   uses it.
 /// - **Corner patch**: the sub-edges live in two different wires (coplanar
 ///   neighbor faces continuing past the spine end, e.g. a wall seated on the
 ///   plate). A new planar patch face `arc → sub → v → sub` is created,
@@ -701,17 +715,16 @@ fn stitch_end(
     c1: VertexId,
     c2: VertexId,
     cap_normal: Vec3,
-    live: &std::collections::HashSet<remus_topology::wire::WireId>,
+    live: &HashSet<WireId>,
+    edit: &mut BodyEdit<'_>,
 ) -> Result<Option<FaceId>, BlendError> {
     // --- Case A: a wire runs c → … → v → … → c' through the spine end. ---
     // A concave-notch contact splits the corner edge, so the cap may reach
     // the arc endpoints over up to four consecutive edges. Only live
-    // face-boundary wires are eligible: the trimmer's `propagate_split`
-    // rewrites dangling sketch wires alongside face wires, so a stale
-    // profile wire can present the same corner run and would otherwise win
-    // the arena-order race and swallow the arc. The run must also lie in the
-    // arc's own plane, or wall wires passing through the same vertices win
-    // the same race and corrupt the wall.
+    // face-boundary wires are eligible, or a stale wire presenting the same
+    // corner run would win the arena-order race and swallow the arc. The run
+    // must also lie in the arc's own plane, or wall wires passing through the
+    // same vertices win the same race and corrupt the wall.
     let wire_ids: Vec<_> = topo.wires().iter().map(|(id, _)| id).collect();
     let mut case_a: Option<(remus_topology::wire::WireId, Vec<usize>, VertexId, VertexId)> = None;
     'outer: for &wid in &wire_ids {
@@ -815,7 +828,9 @@ fn stitch_end(
             }
         }
         let replacement = Wire::new(new_edges, true)?;
-        topo.replace_boundary_wire(wid, replacement)?;
+        edit.rewrite_wires(topo, None, |id, _| {
+            Ok((id == wid).then(|| replacement.clone()))
+        })?;
         return Ok(None);
     }
 
@@ -886,6 +901,30 @@ fn stitch_end(
     Ok(Some(topo.add_face(face)))
 }
 
+/// The boundary wires of the body under construction: the input solid's face
+/// boundaries, each through its current replacement. Anything else — a stale
+/// 2D profile wire the extruded solid was built from, or an input face a
+/// replacement has superseded — must not compete for an end arc.
+fn live_boundary_wires(
+    topo: &Topology,
+    solid: SolidId,
+    replacements: &DetHashMap<FaceId, FaceId>,
+) -> HashSet<WireId> {
+    let mut set = HashSet::new();
+    let solid_faces = remus_topology::explorer::solid_faces(topo, solid).unwrap_or_default();
+    for face_id in solid_faces {
+        let current = replacements.get(&face_id).copied().unwrap_or(face_id);
+        let Ok(current_face) = topo.face(current) else {
+            continue;
+        };
+        set.insert(current_face.outer_wire());
+        for &inner in current_face.inner_wires() {
+            set.insert(inner);
+        }
+    }
+    set
+}
+
 /// Watertight assembly for a finite straight-edge fillet: reuse the
 /// trimmer's contact edges as the blend wall's long boundaries, close the
 /// two spine ends with exact circular arcs, and stitch those arcs into the
@@ -903,7 +942,7 @@ fn stitch_planar_blend(
     stripe: &Stripe,
     tr1: &trimmer::TrimResult,
     tr2: &trimmer::TrimResult,
-    face_replacements: &std::collections::HashMap<FaceId, FaceId>,
+    edit: &mut BodyEdit<'_>,
 ) -> Result<Option<Vec<FaceId>>, BlendError> {
     // A straight run: every edge on the chain is a line, and the chain is an
     // open path so it has two free ends to close against. A single edge is
@@ -993,11 +1032,13 @@ fn stitch_planar_blend(
         };
 
     // Blend wall traverses each contact edge opposite to its trimmed face.
-    let f1_now = face_replacements
+    let f1_now = edit
+        .replacements()
         .get(&stripe.face1)
         .copied()
         .unwrap_or(tr1.trimmed_face);
-    let f2_now = face_replacements
+    let f2_now = edit
+        .replacements()
         .get(&stripe.face2)
         .copied()
         .unwrap_or(tr2.trimmed_face);
@@ -1149,27 +1190,9 @@ fn stitch_planar_blend(
             1 - k1,
         ),
     ];
-    // Live boundary wires: the input solid's face boundaries plus the
-    // trimmed replacements built above. Anything else (notably the stale
-    // 2D profile wire the extruded solid was built from, which
-    // `propagate_split` rewrites in place) must not compete for the arc.
-    let live: std::collections::HashSet<remus_topology::wire::WireId> = {
-        let mut set = std::collections::HashSet::new();
-        let solid_faces = remus_topology::explorer::solid_faces(topo, solid).unwrap_or_default();
-        for face_id in solid_faces {
-            // Current boundary: the trimmed replacement when one exists.
-            let current = face_replacements.get(&face_id).copied().unwrap_or(face_id);
-            let Ok(current_face) = topo.face(current) else {
-                continue;
-            };
-            set.insert(current_face.outer_wire());
-            for &inner in current_face.inner_wires() {
-                set.insert(inner);
-            }
-        }
-        set
-    };
     for &(v_end, arc, arc_from, cap_normal, k) in &ends {
+        // Recomputed per end: closing the first end can replace a cap.
+        let live = live_boundary_wires(topo, solid, edit.replacements());
         if let Some(patch) = stitch_end(
             topo,
             spine_edges,
@@ -1180,6 +1203,7 @@ fn stitch_planar_blend(
             c2[k],
             cap_normal,
             &live,
+            edit,
         )? {
             faces.push(patch);
         }
@@ -1603,7 +1627,7 @@ fn assemble_closed_rim(
     topo: &mut Topology,
     stripe: &Stripe,
     rim: &ClosedRimInfo,
-    face_replacements: &mut std::collections::HashMap<FaceId, FaceId>,
+    face_replacements: &mut DetHashMap<FaceId, FaceId>,
 ) -> Result<FaceId, BlendError> {
     const TOL: f64 = 1e-7;
 
@@ -1955,7 +1979,7 @@ fn assemble_closed_quadric_rim(
     topo: &mut Topology,
     stripe: &Stripe,
     rim: &ClosedQuadricRimInfo,
-    face_replacements: &mut HashMap<FaceId, FaceId>,
+    face_replacements: &mut DetHashMap<FaceId, FaceId>,
 ) -> Result<FaceId, BlendError> {
     const TOL: f64 = 1e-7;
     let FaceSurface::Torus(torus) = &stripe.surface else {
@@ -2280,7 +2304,7 @@ fn reverse_face_outer_wire(topo: &mut Topology, face_id: FaceId) -> Result<FaceI
 fn assemble_closed_walking_rim(
     topo: &mut Topology,
     stripe: &Stripe,
-    face_replacements: &mut HashMap<FaceId, FaceId>,
+    face_replacements: &mut DetHashMap<FaceId, FaceId>,
 ) -> Result<FaceId, BlendError> {
     let section = stripe
         .sections
@@ -3229,7 +3253,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let _face_id = topo.add_face(Face::new(
+        let face_id = topo.add_face(Face::new(
             wire_id,
             Vec::new(),
             FaceSurface::Plane {
@@ -3277,6 +3301,8 @@ mod tests {
         let spine_edge = topo.add_edge(Edge::new(spine_vertex, spine_vertex, EdgeCurve::Line));
         let mut live = std::collections::HashSet::new();
         live.insert(wire_id);
+        let scope = EditScope::new(&topo, [face_id]).unwrap();
+        let mut replacements = DetHashMap::default();
         let patched = stitch_end(
             &mut topo,
             &[spine_edge],
@@ -3287,6 +3313,7 @@ mod tests {
             vb,
             Vec3::new(0.0, 0.0, -1.0),
             &live,
+            &mut scope.edit(&mut replacements),
         )
         .unwrap();
         assert!(
@@ -3298,14 +3325,21 @@ mod tests {
             3,
             "the stale wire must be untouched"
         );
-        // And the live wire must have taken the arc.
+        // The cap takes the arc in a copy; the input cap keeps its corner.
+        let cap = replacements[&face_id];
         assert!(
-            topo.wire(wire_id)
+            topo.wire(topo.face(cap).unwrap().outer_wire())
                 .unwrap()
                 .edges()
                 .iter()
                 .any(|oe| oe.edge() == arc),
-            "the live cap wire must carry the arc"
+            "the cap copy must carry the arc"
+        );
+        assert_eq!(topo.face(face_id).unwrap().outer_wire(), wire_id);
+        assert_eq!(
+            topo.wire(wire_id).unwrap().edges().len(),
+            5,
+            "the input cap wire must be untouched"
         );
     }
 

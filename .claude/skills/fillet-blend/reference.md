@@ -62,6 +62,7 @@ Both `validateSolid` and Euler pass because the input was valid. Detection: asse
 | `analytic.rs` | Analytic fast paths. `try_analytic_fillet` / `try_analytic_chamfer` route to typed closed-form arms (`plane_plane_fillet`, `plane_cylinder_fillet`, `plane_cone_fillet`, `plane_sphere_fillet`, `cylinder_cylinder_fillet`, `cone_cone_coaxial_fillet`, plus chamfer variants). Pairs with no arm (anything × torus, cyl × cone, perpendicular cyl × cyl, non-coaxial cone × cone) fall to the walker → NURBS blend. |
 | `corner.rs`, `spherical_triangle.rs` | Vertex/corner blend where several stripes meet. |
 | `trimmer.rs` | Trims neighbor faces along contact curves. `trim_face`, `trim_face_general`, private `split_edge_at`. |
+| `body_edit.rs` | Copy-on-write for every boundary rewrite in a build (`propagate_split`, the end-cap stitch). A blend result shares untouched faces with its input, so a face the input still uses is copied, never edited: the input stays byte-identical. Guarded by `crates/io/tests/fillet_preserves_input.rs`. |
 | `fillet_builder.rs`, `chamfer_builder.rs` | Orchestration: spine → stripe (analytic or walker) → trim → corner → assemble. `fillet_builder.rs` has a closed-rim path with a fallback (`rg "closed-rim assembly failed"`). |
 
 ## Known open bug classes
