@@ -1544,14 +1544,24 @@ mod curved {
                 Some((normal, d)) => plane_roots(curve, normal, d)?,
                 None => (Vec::new(), false),
             };
-            // Lines and closed curves as `wire_polygon` lays them down, plus
-            // the roots in parameter order.
-            if closed
-                && matches!(
-                    curve,
-                    EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_)
-                )
-            {
+            // A closed NURBS edge is its whole curve only when its range is
+            // the curve's domain; a stored subrange (one loop of a longer
+            // curve) is sampled along that range like a partial edge.
+            let whole = closed
+                && match curve {
+                    EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => true,
+                    EdgeCurve::NurbsCurve(nc) => {
+                        let vertex = topo.vertex(edge.start())?.point();
+                        let (t0, t1) = edge_range(edge, vertex, vertex)?;
+                        let (u0, u1) = nc.domain();
+                        let eps = 1e-12 * (u1 - u0).abs();
+                        (t0 - u0).abs() <= eps && (t1 - u1).abs() <= eps
+                    }
+                    EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => false,
+                };
+            // Lines and whole closed curves as `wire_polygon` lays them down,
+            // plus the roots in parameter order.
+            if whole {
                 let sampled = crate::boolean::sample_edge_curve(curve, WIRE_POLYGON_SAMPLES);
                 // The samples' parameters, as `sample_edge_curve` spaces them.
                 let (lo, span, divisor) = match curve {
@@ -1610,7 +1620,9 @@ mod curved {
                 points.extend(run.into_iter().map(|(_, p)| p));
                 continue;
             }
-            if closed || matches!(curve, EdgeCurve::Line) {
+            if matches!(curve, EdgeCurve::Line)
+                || (closed && !matches!(curve, EdgeCurve::NurbsCurve(_)))
+            {
                 points.push((
                     topo.vertex(oriented.oriented_start(edge))?.point(),
                     Laid::Corner,
@@ -3037,6 +3049,52 @@ mod curved {
                 super::in_plane_edges(&topo, face, Vec3::new(0.0, 0.0, 1.0), 0.0, Tolerance::new())
                     .unwrap();
             assert_eq!(in_plane.len(), 1, "only the closing line is in the plane");
+        }
+
+        /// A closed NURBS edge holding one loop of a two-loop curve: the
+        /// degree-1 curve runs the unit square from the origin for
+        /// t ∈ [0, 4/7], then a triangle out to x = 3 and back for
+        /// t ∈ [4/7, 1], and the edge's stored range is [0, 4/7]. Its trim
+        /// polygon must hold only the square, and the plane x = 2.5, which
+        /// crosses only the other loop, must not cross it.
+        #[test]
+        fn a_closed_nurbs_edge_keeps_to_its_stored_range() {
+            let p = |x: f64, y: f64| Point3::new(x, y, 0.0);
+            let loops = NurbsCurve::new(
+                1,
+                [0.0, 0.0]
+                    .into_iter()
+                    .chain((1..7).map(|k| f64::from(k) / 7.0))
+                    .chain([1.0, 1.0])
+                    .collect(),
+                vec![
+                    p(0.0, 0.0),
+                    p(1.0, 0.0),
+                    p(1.0, 1.0),
+                    p(0.0, 1.0),
+                    p(0.0, 0.0),
+                    p(3.0, -1.0),
+                    p(0.0, -2.0),
+                    p(0.0, 0.0),
+                ],
+                vec![1.0; 8],
+            )
+            .unwrap();
+            let mut topo = Topology::new();
+            let v = topo.add_vertex(Vertex::new(p(0.0, 0.0), 1e-7));
+            let mut edge = Edge::new(v, v, EdgeCurve::NurbsCurve(loops));
+            edge.set_trim(Some((0.0, 4.0 / 7.0)));
+            let edge = topo.add_edge(edge);
+            let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+            let x = Vec3::new(1.0, 0.0, 0.0);
+            let polygon = trim_polygon(&topo, wire, Some((x, 2.5)), Tolerance::new()).unwrap();
+            assert!(polygon.len() > 4, "{polygon:?}");
+            for q in &polygon {
+                assert!(
+                    (-1e-9..=1.0 + 1e-9).contains(&q.x()) && (-1e-9..=1.0 + 1e-9).contains(&q.y()),
+                    "point off the square: {q:?}"
+                );
+            }
         }
 
         /// At R = 1e6 a band of `1e-6` of the rim's length (≈ 4.7) swallowed
