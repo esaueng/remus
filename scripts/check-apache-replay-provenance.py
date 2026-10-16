@@ -48,6 +48,14 @@ EXPECTED_ALLOWED_AUTHORS = {
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
+def normalized_replay_author(name: str, email: str) -> tuple[str, str]:
+    """Display the renamed account consistently without altering pinned history."""
+    if re.fullmatch(r"171875562\+[A-Za-z0-9-]+@users\.noreply\.github\.com", email):
+        email = "171875562+petertoday@users.noreply.github.com"
+    return name, email
+
+
+
 def fail(message: str) -> None:
     print(f"Apache replay provenance violation: {message}", file=sys.stderr)
     raise SystemExit(1)
@@ -329,7 +337,7 @@ def validate_available_history(
         require(result.returncode == 0, f"cannot inspect replay commit {commit}")
         author_name, author_email, subject = result.stdout.rstrip("\n").split("\t", 2)
         require(
-            (author_name, author_email) in EXPECTED_ALLOWED_AUTHORS,
+            normalized_replay_author(author_name, author_email) in EXPECTED_ALLOWED_AUTHORS,
             f"unexpected author on replay commit {commit}",
         )
         if commit in recorded_subjects:

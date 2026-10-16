@@ -46,6 +46,7 @@ if [ -n "$license_hits" ]; then
 fi
 
 python3 scripts/check-apache-replay-provenance.py
+python3 scripts/test-provenance-identity.py
 python3 scripts/check-truck-reuse-provenance.py
 
 echo "Apache lineage and project-license metadata verified."
