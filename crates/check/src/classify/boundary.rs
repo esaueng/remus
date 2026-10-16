@@ -113,7 +113,7 @@ const POLE_REL_EPS: f64 = 1e-9;
 ///
 /// Returns `None` when no sample is at the pole (or every sample is), leaving
 /// the caller's ordinary unwrapping in charge.
-fn insert_pole_segments(
+pub fn insert_pole_segments(
     uv: &[(f64, f64)],
     pole_v: f64,
     u_period: Option<f64>,

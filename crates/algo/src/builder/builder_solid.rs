@@ -803,6 +803,24 @@ fn measure_revolved_wire_uv_area(
     uv.push(uv[0]);
     let (u_period, v_period) = super::pcurve_compute::surface_periods(surface);
     super::pcurve_compute::unwrap_periodic_params_pub(&mut uv, u_period, v_period);
+    // A notched apex cap winds once around u. Its doubled seam has no
+    // chart area until the singularity is lifted to an entire pole segment;
+    // the sign of the rim winding still fixes the stored-normal convention.
+    if let FaceSurface::Cone(cone) = surface
+        && topo.wire(wire_id)?.edges().iter().any(|oe| {
+            topo.edge(oe.edge()).is_ok_and(|e| {
+                [e.start(), e.end()].iter().any(|&v| {
+                    topo.vertex(v)
+                        .is_ok_and(|v| (v.point() - cone.apex()).length() <= v.tolerance())
+                })
+            })
+        })
+    {
+        let winding = uv.last().map_or(0.0, |last| last.x() - uv[0].x());
+        if winding.abs() > std::f64::consts::PI {
+            return Ok(Some(-winding));
+        }
+    }
     let last = uv[uv.len() - 1];
     if u_period.is_some_and(|period| (last.x() - uv[0].x()).abs() > period * 0.5)
         || v_period.is_some_and(|period| (last.y() - uv[0].y()).abs() > period * 0.5)

@@ -1852,8 +1852,9 @@ fn split_periodic_face_by_winding_chain(
 /// touched rim is split at the chain ends, the rim span between them bounds
 /// the region clear of the seam, and the chains are spliced in its place.
 ///
-/// Returns `None` (caller falls through) unless: the boundary is exactly two
-/// closed rim circles plus seam lines; every section is a marched NURBS piece
+/// Returns `None` (caller falls through) unless: the boundary is two closed
+/// rim circles or one circle and a cone apex, plus seam lines; every section
+/// is a NURBS piece (including rational conics)
 /// (lines, rings and conics keep the calibrated ruling/rectilinear paths); the
 /// sections chain into one same-rim chain or two rim-to-rim chains; every
 /// chain stays strictly between the rims away from its ends, spans less than
@@ -1891,7 +1892,8 @@ fn split_periodic_face_by_rim_chains(
         return Ok(None);
     }
 
-    // Boundary: exactly two closed rim circles plus seam Line edges.
+    // Two rim circles, or one rim and a pointed cone apex. The latter
+    // has no lower rim edge; the kept band closes along its doubled seam.
     let mut rims: Vec<&OrientedPCurveEdge> = Vec::new();
     let mut seam_edges: Vec<&OrientedPCurveEdge> = Vec::new();
     for e in boundary_edges {
@@ -1912,10 +1914,21 @@ fn split_periodic_face_by_rim_chains(
             ) => return Ok(None),
         }
     }
-    if rims.len() != 2 || seam_edges.is_empty() {
+    let apex = if let FaceSurface::Cone(cone) = surface {
+        Some(cone.apex())
+    } else {
+        None
+    };
+    let pointed = rims.len() == 1
+        && apex.is_some_and(|apex| {
+            seam_edges
+                .iter()
+                .any(|e| (e.start_3d - apex).length() <= tol || (e.end_3d - apex).length() <= tol)
+        });
+    if !(rims.len() == 2 || pointed) || seam_edges.is_empty() {
         return Ok(None);
     }
-    let Some((seam_u, _)) = surface.project_point(seam_edges[0].start_3d) else {
+    let Some((seam_u, _)) = surface.project_point(rims[0].start_3d) else {
         return Ok(None);
     };
     let wrap_pi = |d: f64| -> f64 { (d + PI).rem_euclid(TAU) - PI };
@@ -1924,13 +1937,20 @@ fn split_periodic_face_by_rim_chains(
         let on_seam = surface.evaluate(seam_u, v)?;
         ((on_seam - e.start_3d).length() < close_tol).then_some(v)
     };
-    let (Some(v0), Some(v1)) = (rim_v(rims[0]), rim_v(rims[1])) else {
+    let Some(v0) = rim_v(rims[0]) else {
         return Ok(None);
     };
-    let (v_bot, bot_edge, v_top, top_edge) = if v0 < v1 {
-        (v0, rims[0], v1, rims[1])
+    let (v_bot, bot_edge, v_top, top_edge) = if pointed {
+        (0.0, None, v0, rims[0])
     } else {
-        (v1, rims[1], v0, rims[0])
+        let Some(v1) = rim_v(rims[1]) else {
+            return Ok(None);
+        };
+        if v0 < v1 {
+            (v0, Some(rims[0]), v1, rims[1])
+        } else {
+            (v1, Some(rims[1]), v0, rims[0])
+        }
     };
     if v_top - v_bot < close_tol {
         return Ok(None);
@@ -2066,7 +2086,7 @@ fn split_periodic_face_by_rim_chains(
         });
     }
     let notch = infos.len() == 1 && infos[0].start_bot == infos[0].end_bot;
-    let sectors = infos.len() == 2 && infos.iter().all(|c| c.start_bot != c.end_bot);
+    let sectors = !pointed && infos.len() == 2 && infos.iter().all(|c| c.start_bot != c.end_bot);
     if !notch && !sectors {
         return Ok(None);
     }
@@ -2196,9 +2216,16 @@ fn split_periodic_face_by_rim_chains(
         rank,
         precomputed_interior: Some(interior),
     };
+    let bot_point = if let Some(edge) = bot_edge {
+        edge.start_3d
+    } else if let Some(apex) = apex {
+        apex
+    } else {
+        return Ok(None);
+    };
     let (Some(seam_up), Some(seam_down)) = (
-        mk_seam(v_bot, v_top, bot_edge.start_3d, top_edge.start_3d),
-        mk_seam(v_top, v_bot, top_edge.start_3d, bot_edge.start_3d),
+        mk_seam(v_bot, v_top, bot_point, top_edge.start_3d),
+        mk_seam(v_top, v_bot, top_edge.start_3d, bot_point),
     ) else {
         return Ok(None);
     };
@@ -2206,7 +2233,10 @@ fn split_periodic_face_by_rim_chains(
     if notch {
         let c = &infos[0];
         let (notched, v_rim, far, v_far) = if c.start_bot {
-            (bot_edge, v_bot, top_edge, v_top)
+            let Some(bot_edge) = bot_edge else {
+                return Ok(None);
+            };
+            (bot_edge, v_bot, Some(top_edge), v_top)
         } else {
             (top_edge, v_top, bot_edge, v_bot)
         };
@@ -2219,7 +2249,10 @@ fn split_periodic_face_by_rim_chains(
             build_chain(c, x, pieces[ix].end_uv.x()),
             build_chain(c, y, pieces[iy].end_uv.x()),
             span_mid(floor),
-            span_mid(std::slice::from_ref(far)),
+            far.map_or_else(
+                || span_mid(floor).map(|(u, _)| (u, v_far)),
+                |far| span_mid(std::slice::from_ref(far)),
+            ),
         ) else {
             return Ok(None);
         };
@@ -2243,7 +2276,7 @@ fn split_periodic_face_by_rim_chains(
         let (bot_wire, top_wire) = if c.start_bot {
             (notched_rim, vec![top_edge.clone()])
         } else {
-            (vec![bot_edge.clone()], notched_rim)
+            (bot_edge.into_iter().cloned().collect(), notched_rim)
         };
         let mut band = bot_wire;
         band.push(seam_up);
@@ -2258,6 +2291,9 @@ fn split_periodic_face_by_rim_chains(
     }
 
     // Sectors: split both rims at the chain ends.
+    let Some(bot_edge) = bot_edge else {
+        return Ok(None);
+    };
     let bot_end = |c: &Chain| if c.start_bot { c.start } else { c.end };
     let top_end = |c: &Chain| if c.start_bot { c.end } else { c.start };
     let (Some((bp, bx, by)), Some((tp, tx, ty))) = (

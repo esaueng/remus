@@ -27,6 +27,7 @@ use crate::ds::{GfaArena, Interference, IntersectionCurveDS, Pave, PaveBlock};
 use crate::error::AlgoError;
 
 mod circular_cap_clip;
+mod cone_plane;
 mod cylinder_section_fit;
 
 /// Default number of samples for NURBS intersection.
@@ -6790,7 +6791,14 @@ fn compute_raw_curves(
 
         (FaceSurface::Plane { normal, d }, other) if other.as_analytic().is_some() => {
             if let Some(analytic) = other.as_analytic() {
-                plane_analytic_intersection(*normal, *d, &analytic, bbox_b, context.tolerance)
+                plane_analytic_intersection(
+                    *normal,
+                    *d,
+                    &analytic,
+                    bbox_b,
+                    v_range_b.is_some_and(|(v0, _)| v0.abs() <= context.tolerance.linear),
+                    context.tolerance,
+                )
             } else {
                 Ok(Vec::new())
             }
@@ -6798,7 +6806,14 @@ fn compute_raw_curves(
 
         (other, FaceSurface::Plane { normal, d }) if other.as_analytic().is_some() => {
             if let Some(analytic) = other.as_analytic() {
-                plane_analytic_intersection(*normal, *d, &analytic, bbox_a, context.tolerance)
+                plane_analytic_intersection(
+                    *normal,
+                    *d,
+                    &analytic,
+                    bbox_a,
+                    v_range_a.is_some_and(|(v0, _)| v0.abs() <= context.tolerance.linear),
+                    context.tolerance,
+                )
             } else {
                 Ok(Vec::new())
             }
@@ -7278,6 +7293,7 @@ fn plane_analytic_intersection(
     d: f64,
     analytic: &analytic_intersection::AnalyticSurface<'_>,
     analytic_bbox: &Aabb3,
+    includes_apex: bool,
     tolerance: Tolerance,
 ) -> Result<Vec<RawCurve>, AlgoError> {
     let cone_v_max = match analytic {
@@ -7303,6 +7319,15 @@ fn plane_analytic_intersection(
         }
         _ => None,
     };
+    // Qualify the pointed-cone repair only. Finite two-rim frustums keep
+    // their established section partition and downstream tessellation.
+    if includes_apex
+        && let analytic_intersection::AnalyticSurface::Cone(cone) = analytic
+        && let Some(v_max) = cone_v_max
+        && let Some(curves) = cone_plane::parallel_section(cone, normal, d, v_max)
+    {
+        return Ok(curves);
+    }
     let exact_curves =
         analytic_intersection::exact_plane_analytic_bounded(*analytic, normal, d, cone_v_max)?;
 
