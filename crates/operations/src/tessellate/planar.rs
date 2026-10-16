@@ -524,6 +524,60 @@ fn cylinder_band_strands_above(uvs: &[CylinderUv], range: (usize, usize), u: f64
         .count()
 }
 
+/// Certify the complete native rim before replacing a doubled apex seam.
+/// Sampled endpoint coverage cannot distinguish a full rim from backtracking
+/// arcs, and a compatibility wire's closed flag does not prove connectivity.
+fn is_closed_full_turn_circle_rim(
+    topo: &Topology,
+    uses: &[remus_topology::wire::OrientedEdge],
+) -> Result<bool, crate::OperationsError> {
+    use remus_topology::edge::EdgeCurve;
+    let Some(first) = uses.first() else {
+        return Ok(false);
+    };
+    let EdgeCurve::Circle(reference) = topo.edge(first.edge())?.curve() else {
+        return Ok(false);
+    };
+    let mut turn = 0.0_f64;
+    let mut direction = 0.0_f64;
+    let tol = remus_math::tolerance::Tolerance::default().linear;
+    for (i, oriented) in uses.iter().enumerate() {
+        let edge = topo.edge(oriented.edge())?;
+        let next = uses[(i + 1) % uses.len()];
+        if oriented.oriented_end(edge) != next.oriented_start(topo.edge(next.edge())?) {
+            return Ok(false);
+        }
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            return Ok(false);
+        };
+        // Split native rims share their carrier. Other parameter frames keep
+        // the established path rather than inferring a phase from samples.
+        if circle.center() != reference.center()
+            || circle.radius().to_bits() != reference.radius().to_bits()
+            || circle.u_axis() != reference.u_axis()
+            || circle.v_axis() != reference.v_axis()
+        {
+            return Ok(false);
+        }
+        let Ok((a, b)) = edge.strict_domain() else {
+            return Ok(false);
+        };
+        for (parameter, vertex) in [(a, edge.start()), (b, edge.end())] {
+            let residual = (circle.evaluate(parameter) - topo.vertex(vertex)?.point()).length();
+            if !residual.is_finite() || residual > tol {
+                return Ok(false);
+            }
+        }
+        let delta = (b - a) * if oriented.is_forward() { 1.0 } else { -1.0 };
+        if !delta.is_finite() || delta == 0.0 || direction * delta < 0.0 {
+            return Ok(false);
+        }
+        direction = delta;
+        turn += delta;
+    }
+    Ok((turn.abs() - std::f64::consts::TAU).abs() <= 1e-10)
+}
+
 /// Tessellate a cylindrical or conical face with inner wires in its unwrapped
 /// UV chart. All wire polylines become CDT constraints; inner-loop cells are
 /// then removed before the vertices are mapped back to the analytic surface.
@@ -550,6 +604,48 @@ pub(super) fn tessellate_revolved_with_holes(
     use remus_math::vec::Point2;
 
     let outer_wire = topo.wire(face_data.outer_wire())?;
+    // Only a doubled use of the same edge is a removable chart seam. Two
+    // distinct generator edges can bound a partial cone and must remain.
+    let rim_only;
+    let outer_wire = if let Some((_, apex_point)) = apex {
+        let tol = remus_math::tolerance::Tolerance::default().linear;
+        let boundary = outer_wire.edges();
+        let mut use_counts = DetHashMap::default();
+        for oriented in boundary {
+            *use_counts.entry(oriented.edge()).or_insert(0_usize) += 1;
+        }
+        let mut omit = vec![false; boundary.len()];
+        for (i, &outgoing) in boundary.iter().enumerate() {
+            let j = (i + 1) % boundary.len();
+            let incoming = boundary[j];
+            if outgoing.edge() != incoming.edge()
+                || outgoing.is_forward() == incoming.is_forward()
+                || use_counts.get(&outgoing.edge()) != Some(&2)
+            {
+                continue;
+            }
+            let edge = topo.edge(outgoing.edge())?;
+            if matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line)
+                && (topo.vertex(outgoing.oriented_end(edge))?.point() - apex_point).length() <= tol
+            {
+                omit[i] = true;
+                omit[j] = true;
+            }
+        }
+        let kept: Vec<_> = boundary
+            .iter()
+            .zip(omit)
+            .filter_map(|(&oriented, omit)| (!omit).then_some(oriented))
+            .collect();
+        if kept.len() == boundary.len() || !is_closed_full_turn_circle_rim(topo, &kept)? {
+            outer_wire
+        } else {
+            rim_only = remus_topology::wire::Wire::new(kept, true)?;
+            &rim_only
+        }
+    } else {
+        outer_wire
+    };
     let (mut all_positions, mut outer_uvs) =
         sample_cylinder_wire(topo, outer_wire, cyl, deflection, angular_tol, edge_points)?;
     if outer_uvs.len() < 3 {
@@ -2299,6 +2395,63 @@ pub(super) fn run_planar_cdt(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::{MAX_CONSTRAINT_INDEX_ENTRIES, MAX_CYLINDER_GRID_POINTS, cylinder_grid_rows};
+
+    #[test]
+    fn native_apex_rim_requires_one_connected_non_backtracking_full_turn() {
+        use remus_math::curves::Circle3D;
+        use remus_math::vec::{Point3, Vec3};
+        use remus_topology::Topology;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::OrientedEdge;
+        use std::f64::consts::{FRAC_PI_2, PI, TAU};
+
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let a = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(circle.evaluate(1.5 * PI), 1e-7));
+        let mut major = Edge::new(a, b, EdgeCurve::Circle(circle.clone()));
+        major.set_trim(Some((0.0, 1.5 * PI)));
+        let major = topo.add_edge(major);
+        let mut minor = Edge::new(b, a, EdgeCurve::Circle(circle.clone()));
+        minor.set_trim(Some((1.5 * PI, TAU)));
+        let minor = topo.add_edge(minor);
+        let full = [
+            OrientedEdge::new(major, true),
+            OrientedEdge::new(minor, true),
+        ];
+        assert!(super::is_closed_full_turn_circle_rim(&topo, &full).unwrap());
+        let reverse = [
+            OrientedEdge::new(minor, false),
+            OrientedEdge::new(major, false),
+        ];
+        assert!(super::is_closed_full_turn_circle_rim(&topo, &reverse).unwrap());
+
+        let mut back = Edge::new(b, a, EdgeCurve::Circle(circle.clone()));
+        back.set_trim(Some((1.5 * PI, 0.0)));
+        let back = topo.add_edge(back);
+        let backtracking = [
+            OrientedEdge::new(major, true),
+            OrientedEdge::new(back, true),
+        ];
+        assert!(!super::is_closed_full_turn_circle_rim(&topo, &backtracking).unwrap());
+        // A closed endpoint and compatibility flag do not certify a full trim.
+        for trim in [None, Some((0.0, FRAC_PI_2))] {
+            let mut forged = Edge::new(a, a, EdgeCurve::Circle(circle.clone()));
+            forged.set_trim(trim);
+            let forged = topo.add_edge(forged);
+            assert!(
+                !super::is_closed_full_turn_circle_rim(&topo, &[OrientedEdge::new(forged, true)])
+                    .unwrap()
+            );
+        }
+        let disconnected = [
+            OrientedEdge::new(major, true),
+            OrientedEdge::new(minor, false),
+        ];
+        assert!(!super::is_closed_full_turn_circle_rim(&topo, &disconnected).unwrap());
+    }
 
     #[test]
     fn cylinder_grid_rows_accepts_bounded_grid() {
