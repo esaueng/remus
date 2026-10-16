@@ -1612,6 +1612,49 @@ pub(super) fn validate_boolean_result_with_tolerance(
         });
     }
 
+    // Pointed-cone cuts can be closed by edge counts while a cap wire
+    // pinches against a side wall. In particular an inscribed circular
+    // opening on the box floor was accepted as Exact with a self-crossing
+    // wire. Check the native topology contract whenever the retained cone
+    // reaches its apex; the regular fallback policy handles any refusal.
+    let has_apex = remus_topology::explorer::solid_faces(topo, solid)?
+        .iter()
+        .any(|&fid| {
+            let Ok(face) = topo.face(fid) else {
+                return false;
+            };
+            let remus_topology::face::FaceSurface::Cone(cone) = face.surface() else {
+                return false;
+            };
+            topo.wire(face.outer_wire()).is_ok_and(|wire| {
+                wire.edges().iter().any(|oe| {
+                    topo.edge(oe.edge()).is_ok_and(|edge| {
+                        [edge.start(), edge.end()].iter().any(|&vid| {
+                            topo.vertex(vid).is_ok_and(|vertex| {
+                                (vertex.point() - cone.apex()).length() <= vertex.tolerance()
+                            })
+                        })
+                    })
+                })
+            })
+        });
+    if has_apex {
+        let report = remus_check::validate::validate_solid(
+            topo,
+            solid,
+            &remus_check::validate::ValidateOptions {
+                tolerance_scale: tolerance.linear / remus_math::tolerance::Tolerance::new().linear,
+                ..Default::default()
+            },
+        )?;
+        if !report.is_valid() {
+            log::debug!("pointed-cone result rejected: {:?}", report.issues);
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "pointed-cone boolean result violates native topology validation".into(),
+            });
+        }
+    }
+
     // Orientation sense (H-9b): every edge shared by exactly two faces must
     // be used once forward and once reversed (RAW wire sense, ignoring the
     // face's `reversed` flag). Edge-use COUNTS cannot see this — a face
