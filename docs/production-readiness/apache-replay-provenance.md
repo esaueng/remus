@@ -21,6 +21,11 @@ All 119 source pull requests were authored by `petertoday`. Each record pins
 the exact head SHA, title, state, and merge date inspected on 2026-08-14. This
 matters for PRs that were still open when audited.
 
+Contributor handles and noreply addresses in this ledger are normalized to the
+current public account name. Historical commit identities are matched by the
+stable GitHub account ID 171875562; pinned SHAs, contribution mappings, subjects,
+and tree checks remain unchanged.
+
 ## Lineage and staging sequence
 
 - Fork cutoff: `047c9b5a3136a84031219b6347341bdf4d43854f`
@@ -46,7 +51,7 @@ PRs #132 and #134 supplied the replayed trees.
   through `7aeb36a802188de0e158326c15049ebaaa634ddc`
 - Local replay commits: 73
 - Credited source pull requests: 73
-- Replay commit author: Peter, using the two recorded GitHub noreply addresses
+- Replay commit author: Peter, using the recorded account’s GitHub noreply address
 
 The replay preserves contribution deltas rather than importing post-license
 branch ancestry. Where the Apache staging architecture differed, the delta was
