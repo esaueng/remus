@@ -5218,6 +5218,12 @@ fn validate_exact_result(
         solid,
         &remus_check::validate::ValidateOptions::default(),
     )?;
+    #[cfg(test)]
+    if let Some(call) = translation_oracle_tests::forced_validation_failure(solid, &report) {
+        return Err(reconstruction(format!(
+            "{label} forced to fail validation call {call}"
+        )));
+    }
     if report.is_valid() {
         return Ok(());
     }

@@ -6,11 +6,13 @@
 //! NURBS bands, refusals and documents holding other bodies. Both must leave
 //! the document in the same state and return the same result, maps and
 //! refusal text, with and without the content-keyed memos, on the face
-//! integral path and on the whole-body mesh fallback.
+//! integral path and on the whole-body mesh fallback. A test hook also forces
+//! the copy's validation to fail, which no natural fixture does, and compares
+//! the reports both validate.
 
-#![allow(clippy::unwrap_used, clippy::too_many_lines)]
+#![allow(clippy::unwrap_used, clippy::panic, clippy::too_many_lines)]
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use super::*;
 
@@ -18,6 +20,32 @@ thread_local! {
     /// Makes `translated_faces_volume_change` decline, so the move takes the
     /// whole-body mesh comparison.
     pub(super) static FORCE_MESH_VOLUME: Cell<bool> = const { Cell::new(false) };
+    /// While set, sees every `validate_exact_result` call.
+    static VALIDATION_PROBE: RefCell<Option<ValidationProbe>> = const { RefCell::new(None) };
+}
+
+struct ValidationProbe {
+    /// How many of the first calls fail whatever their report says.
+    fail: usize,
+    /// Every call's solid and report, in call order.
+    reports: Vec<String>,
+}
+
+/// Records the validated `solid` and its `report` while a probe is set, and
+/// returns the call's index when the probe fails it.
+pub(super) fn forced_validation_failure(
+    solid: SolidId,
+    report: &remus_check::validate::ValidationReport,
+) -> Option<usize> {
+    VALIDATION_PROBE.with(|probe| {
+        let mut probe = probe.borrow_mut();
+        let probe = probe.as_mut()?;
+        let call = probe.reports.len();
+        probe
+            .reports
+            .push(format!("solid {}: {report:?}", solid.index()));
+        (call < probe.fail).then_some(call)
+    })
 }
 
 fn legacy_move_translation_invariant_blend_region(
@@ -311,6 +339,7 @@ impl Drop for Reset {
     fn drop(&mut self) {
         set_memos(false);
         FORCE_MESH_VOLUME.with(|force| force.set(false));
+        VALIDATION_PROBE.with(|probe| probe.replace(None));
     }
 }
 
@@ -373,6 +402,91 @@ fn assert_same_moves(
         }
     }
     moved
+}
+
+/// [`run`] with the first `fail` validations forced to fail, and every
+/// report the run validated.
+fn run_probed(
+    source: &Topology,
+    mover: Mover,
+    solid: SolidId,
+    faces: &[FaceId],
+    distance: f64,
+    memos: bool,
+    fail: usize,
+) -> (Outcome, String, Vec<String>) {
+    VALIDATION_PROBE.with(|probe| {
+        probe.replace(Some(ValidationProbe {
+            fail,
+            reports: Vec::new(),
+        }))
+    });
+    let (outcome, state) = run(source, mover, solid, faces, distance, memos);
+    let reports = VALIDATION_PROBE
+        .with(|probe| probe.replace(None))
+        .map(|probe| probe.reports)
+        .unwrap_or_default();
+    (outcome, state, reports)
+}
+
+/// Both versions with the copy's validation forced to fail, and with the
+/// translated input's after it too: the same outcome, document state and
+/// reports. Returns how many runs reached the copy's validation.
+fn assert_same_copy_validation_refusals(
+    source: &Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+    distances: &[f64],
+) -> usize {
+    let _reset = Reset;
+    let mut reached = 0;
+    for &distance in distances {
+        for fail in [1, 2] {
+            for memos in [false, true] {
+                let context = format!("distance {distance}, {fail} forced, memos {memos}");
+                let legacy = run_probed(
+                    source,
+                    legacy_move_translation_invariant_blend_region,
+                    solid,
+                    faces,
+                    distance,
+                    memos,
+                    fail,
+                );
+                let current = run_probed(
+                    source,
+                    move_translation_invariant_blend_region,
+                    solid,
+                    faces,
+                    distance,
+                    memos,
+                    fail,
+                );
+                assert_eq!(legacy.0, current.0, "{context}");
+                assert!(legacy.1 == current.1, "document state differs: {context}");
+                assert_eq!(legacy.2, current.2, "validation reports differ: {context}");
+                if current.2.is_empty() {
+                    continue;
+                }
+                // The copy failed; the translated input was validated next
+                // and, when forced as well, refused in its place.
+                assert_eq!(current.2.len(), 2, "{context}");
+                assert!(
+                    current.2[1].starts_with(&format!("solid {}: ", solid.index())),
+                    "{context}"
+                );
+                let Outcome::Refused(reason) = &current.0 else {
+                    panic!("a forced validation failure moved: {context}");
+                };
+                assert!(
+                    reason.ends_with(&format!("forced to fail validation call {}", fail - 1)),
+                    "{reason}: {context}"
+                );
+                reached += 1;
+            }
+        }
+    }
+    reached
 }
 
 fn face_facing(topo: &Topology, solid: SolidId, axis: Vec3) -> FaceId {
@@ -465,6 +579,100 @@ fn translation_refusals_match_the_scratch_document_path() {
     // A selection holding the (non-planar) band itself.
     let (topo, solid, support, band, _) = super::tests::filleted_cube_support_and_band();
     assert_same_moves(&topo, solid, &[support, band], &[1.0]);
+}
+
+/// The planar face of `solid` facing `axis` that lies farthest along it: the
+/// outer one, where a cavity has a face facing the same way.
+fn outer_face_facing(topo: &Topology, solid: SolidId, axis: Vec3) -> FaceId {
+    let reach = |face| {
+        axis.dot(face_anchor(topo, face).unwrap() - remus_math::vec::Point3::new(0.0, 0.0, 0.0))
+    };
+    remus_topology::explorer::solid_faces(topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&face| {
+            topo.face(face)
+                .unwrap()
+                .effective_plane_normal()
+                .is_some_and(|normal| normal.dot(axis) > 0.99)
+        })
+        .max_by(|&a, &b| reach(a).total_cmp(&reach(b)))
+        .unwrap()
+}
+
+#[test]
+fn copy_validation_refusals_match_the_scratch_document_path() {
+    let mut fixtures = Vec::new();
+    let (topo, solid, support, _, direction) = super::tests::filleted_cube_support_and_band();
+    fixtures.push(("cube", topo.clone(), solid, support));
+
+    let mut far = topo.clone();
+    crate::transform::transform_solid(
+        &mut far,
+        solid,
+        &remus_math::mat::Mat4::translation(4.0e4, -2.5e4, 6.0e4),
+    )
+    .unwrap();
+    fixtures.push(("far offset", far, solid, support));
+
+    // Reflected beside the original: every boundary runs the other way.
+    let mut mirrored = topo.clone();
+    let plane = Vec3::new(0.0, 1.0, 0.0);
+    let image = crate::mirror::mirror(
+        &mut mirrored,
+        solid,
+        remus_math::vec::Point3::new(0.0, -2.0, 0.0),
+        plane,
+    )
+    .unwrap();
+    let reflected = direction - plane * (2.0 * direction.dot(plane));
+    let face = outer_face_facing(&mirrored, image, reflected);
+    fixtures.push(("mirrored", mirrored, image, face));
+
+    // An inner shell: the cavity has a face facing the move too.
+    let mut hollow = topo;
+    let core = crate::primitives::make_box(&mut hollow, 2.0, 3.0, 4.0).unwrap();
+    crate::transform::transform_solid(
+        &mut hollow,
+        core,
+        &remus_math::mat::Mat4::translation(4.0, 3.5, 3.0),
+    )
+    .unwrap();
+    let cut =
+        crate::boolean::boolean(&mut hollow, crate::boolean::BooleanOp::Cut, solid, core).unwrap();
+    assert_eq!(hollow.solid(cut).unwrap().inner_shells().len(), 1);
+    let face = outer_face_facing(&hollow, cut, direction);
+    fixtures.push(("cavity", hollow, cut, face));
+
+    // Both vertical edges of one side blended: that side drags two bands.
+    let mut two_band = Topology::new();
+    let sharp = crate::primitives::make_box(&mut two_band, 10.0, 8.0, 6.0).unwrap();
+    let side: Vec<EdgeId> = remus_topology::explorer::solid_edges(&two_band, sharp)
+        .unwrap()
+        .into_iter()
+        .filter(|&edge| {
+            let edge = two_band.edge(edge).unwrap();
+            let (start, end) = (
+                two_band.vertex(edge.start()).unwrap().point(),
+                two_band.vertex(edge.end()).unwrap().point(),
+            );
+            start.x() > 5.0
+                && end.x() > 5.0
+                && (end - start).cross(Vec3::new(0.0, 0.0, 1.0)).length() < 1e-9
+        })
+        .collect();
+    assert_eq!(side.len(), 2);
+    let blended = fillet_v2(&mut two_band, sharp, &side, 1.5).unwrap().solid;
+    let face = face_facing(&two_band, blended, Vec3::new(1.0, 0.0, 0.0));
+    fixtures.push(("two bands", two_band, blended, face));
+
+    for (name, topo, solid, face) in fixtures {
+        let reached = assert_same_copy_validation_refusals(&topo, solid, &[face], &[1.0, -0.5]);
+        assert_eq!(
+            reached, 8,
+            "{name}: {reached} runs reached the copy's validation"
+        );
+    }
 }
 
 /// The edge images written into the copy are `transform_edges`'s, field for
