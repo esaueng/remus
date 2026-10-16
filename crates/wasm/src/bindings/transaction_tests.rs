@@ -249,3 +249,152 @@ mod exact_boolean_gate_tests {
         }
     }
 }
+
+// ── Checkpoint restore of the value the kernel still holds ─────────
+
+/// Per-arena slot high-water marks.
+pub(super) fn slot_marks(t: &remus_topology::Topology) -> [usize; 8] {
+    [
+        t.vertices().slot_len(),
+        t.edges().slot_len(),
+        t.wires().slot_len(),
+        t.faces().slot_len(),
+        t.shells().slot_len(),
+        t.solids().slot_len(),
+        t.compounds().slot_len(),
+        t.compsolids().slot_len(),
+    ]
+}
+
+/// Slot and journal-id high-water marks: never rewound, never reissued.
+pub(super) fn high_water(t: &remus_topology::Topology) -> String {
+    let journal = t.journal().snapshot();
+    format!(
+        "{:?} {} {} {}",
+        slot_marks(t),
+        t.allocated_slot_count(),
+        journal.next_op,
+        journal.next_ordinal
+    )
+}
+
+/// Takes the document off the restore fixed point the way a sketch workflow
+/// does: a profile face extruded (the solid's bottom cap shares the
+/// profile's edges), then the solid deleted. The shared edges retire with
+/// it, and so do the standalone profile face's index entries, while its
+/// loops and coedges stay live. A sheet body stands beside it.
+pub(super) fn break_fixed_point(k: &mut BrepKernel) {
+    let square = |x: f64| {
+        vec![
+            x,
+            30.0,
+            0.0,
+            x + 4.0,
+            30.0,
+            0.0,
+            x + 4.0,
+            33.0,
+            0.0,
+            x,
+            33.0,
+            0.0,
+        ]
+    };
+    let profile = k.make_polygon(square(30.0)).unwrap();
+    let body = k.extrude_face(profile, 0.0, 0.0, 1.0, 2.0).unwrap();
+    let sheet = k.make_polygon(square(40.0)).unwrap();
+    k.make_sheet_body(vec![sheet]).unwrap();
+    k.delete_solid(body).unwrap();
+    assert!(!k.topo().is_restore_fixed_point());
+}
+
+/// The same short modeling history in each kernel.
+fn shared_history(kernels: [&mut BrepKernel; 2]) -> u32 {
+    let mut small = 0;
+    for k in kernels {
+        k.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        small = k.make_box_solid(4.0, 4.0, 4.0).unwrap();
+        k.transform_solid_binding(small, SHIFT.to_vec()).unwrap();
+    }
+    small
+}
+
+const SINGULAR: [f64; 16] = [0.0; 16];
+
+const SHIFT: [f64; 16] = [
+    1.0, 0.0, 0.0, 0.25, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+];
+
+fn assert_same_topology(a: &BrepKernel, b: &BrepKernel, context: &str) {
+    assert_eq!(
+        format!("{:?}", a.topo()),
+        format!("{:?}", b.topo()),
+        "{context}"
+    );
+    assert_eq!(high_water(a.topo()), high_water(b.topo()), "{context}");
+}
+
+fn shares_checkpoint(k: &BrepKernel, saved: u32) -> bool {
+    std::rc::Rc::ptr_eq(&k.topo, &k.checkpoints.get(saved as usize).unwrap().topo)
+}
+
+#[test]
+fn restoring_the_still_shared_value_copies_nothing_and_matches_the_copying_restore() {
+    let mut skipped = BrepKernel::new();
+    let mut copied = BrepKernel::new();
+    let small = shared_history([&mut skipped, &mut copied]);
+    let saved = skipped.checkpoint().unwrap();
+    assert_eq!(copied.checkpoint().unwrap(), saved);
+    // Nothing mutated since the checkpoint: the restore copies nothing and
+    // keeps sharing the checkpoint's value.
+    let identity = skipped.topo().cache_identity();
+    skipped.restore(saved).unwrap();
+    assert!(shares_checkpoint(&skipped, saved));
+    assert_eq!(skipped.topo().cache_identity(), identity);
+    // The same restore through the copy the restore used to make.
+    copied.topo_mut();
+    assert!(!shares_checkpoint(&copied, saved));
+    copied.restore(saved).unwrap();
+    assert_same_topology(&skipped, &copied, "restore");
+    // Later edits, refusals and restores behave identically.
+    let refused = serde_json::json!([
+        {"op":"transform","args":{"solid":small,"matrix":SHIFT}},
+        {"op":"transform","args":{"solid":small,"matrix":SINGULAR}},
+    ]);
+    for round in 0..2 {
+        for k in [&mut skipped, &mut copied] {
+            let rows = batch(k, &refused);
+            assert!(rows[0].get("error").is_none(), "{rows}");
+            assert!(rows[1]["error"].is_string(), "{rows}");
+        }
+        assert_same_topology(&skipped, &copied, &format!("edit {round}"));
+        skipped.restore(saved).unwrap();
+        copied.restore(saved).unwrap();
+        assert_same_topology(&skipped, &copied, &format!("restore {round}"));
+    }
+}
+
+#[test]
+fn restoring_a_still_shared_value_off_the_fixed_point_still_restores() {
+    // The skip holds only on a restore fixed point: off it, the restore
+    // rebuilds the pcurve index, so the still-shared value must be restored
+    // (copied) like any other.
+    let mut skipped = BrepKernel::new();
+    let mut copied = BrepKernel::new();
+    shared_history([&mut skipped, &mut copied]);
+    for k in [&mut skipped, &mut copied] {
+        break_fixed_point(k);
+    }
+    let saved = skipped.checkpoint().unwrap();
+    assert_eq!(copied.checkpoint().unwrap(), saved);
+    skipped.restore(saved).unwrap();
+    assert!(!shares_checkpoint(&skipped, saved));
+    assert!(skipped.topo().is_restore_fixed_point());
+    let snapshot = std::rc::Rc::clone(&copied.checkpoints.get(saved as usize).unwrap().topo);
+    copied.topo_mut().restore_preserving_handle_slots(&snapshot);
+    assert_same_topology(&skipped, &copied, "off the fixed point");
+}
+
+fn batch(k: &mut BrepKernel, operations: &serde_json::Value) -> serde_json::Value {
+    serde_json::from_str(&k.execute_batch(&operations.to_string())).unwrap()
+}

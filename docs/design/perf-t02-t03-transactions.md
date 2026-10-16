@@ -198,6 +198,20 @@ mutation lands:
   scope, such a restore starts a fresh lineage instead. Restoring a scope
   mark into a different `Topology` value remains outside the snapshot
   contract.
+- **Checkpoint restore of the value the kernel still holds:** restoring a
+  checkpoint before any edit restores the very value the kernel shares.
+  When that value is a restore fixed point the kernel skips the
+  copy-on-write copy and the restore (they would rewrite identical state)
+  and keeps sharing it, cache identity included; off the fixed point it
+  restores as before, rebuilding the pcurve index. Diagnostics change while
+  the value stays shared: `checkpointMemoryStats` counts it once, so
+  `uniqueTopologies`, `estimatedBytes`, `allocatedSlots` and `retiredSlots`
+  read lower than after the old copying restore, and
+  `nextMutationEstimatedBytes` includes the pending first-mutation copy; the
+  `checkpoint.first-mutation-clone` trace span fires at the next mutation
+  instead of at the restore. Restores rewrite arenas in place, so the
+  capacity-based `arena_bytes` behind those byte estimates reflects the
+  existing allocation rather than a fresh exact-capacity one.
 - **Handles allocated in failed scopes remain permanently stale:** rollback
   retires their slots; later allocations append above the preserved
   high-water mark; typed lookups and `id_from_index` fail for them forever,

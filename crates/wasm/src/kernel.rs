@@ -112,6 +112,22 @@ impl BrepKernel {
         &self.topo
     }
 
+    /// Restores `snapshot` with checkpoint-barrier semantics
+    /// ([`Topology::restore_preserving_handle_slots`]).
+    ///
+    /// When the kernel still holds that very value (nothing mutated since it
+    /// was shared) and the restore would leave it unchanged, nothing is
+    /// copied: a restore would first copy it on write, then overwrite the
+    /// copy with identical state. Skipping also keeps its cache identity,
+    /// which is sound because the shared value is immutable — the identity
+    /// still names exactly this content.
+    pub(crate) fn restore_topology_barrier(&mut self, snapshot: &Rc<Topology>) {
+        if Rc::ptr_eq(&self.topo, snapshot) && snapshot.is_restore_fixed_point() {
+            return;
+        }
+        self.topo_mut().restore_preserving_handle_slots(snapshot);
+    }
+
     /// Runs `operation` so that a failure leaves topology exactly as it was.
     ///
     /// The snapshot is a deep copy taken up front, so `self.topo` stays
