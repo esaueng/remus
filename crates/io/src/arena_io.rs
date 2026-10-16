@@ -39,6 +39,7 @@ use remus_math::curves2d::Curve2D;
 use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
+use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::BodyClass;
 use remus_topology::compound::{Compound, CompoundId};
@@ -2925,6 +2926,21 @@ fn validate_arena_point(point: Point3, subject: &str) -> Result<(), IoError> {
 /// not frames that are imprecise.
 const ARENA_FRAME_TOLERANCE: f64 = 1e-9;
 
+/// Bound frame error by its displacement on a finite carrier. Unbounded
+/// carriers cannot bound that displacement without a trim, so permit only
+/// constructor roundoff. Even a large carrier must admit a kernel-built
+/// frame; the relative roundoff floor is not an absolute geometry certificate.
+fn arena_frame_bound(scale: f64) -> f64 {
+    let roundoff = 64.0 * f64::EPSILON;
+    if scale.is_infinite() {
+        roundoff
+    } else if scale > 0.0 {
+        ARENA_FRAME_TOLERANCE.min((Tolerance::new().linear / scale).max(roundoff))
+    } else {
+        ARENA_FRAME_TOLERANCE
+    }
+}
+
 /// What makes an analytic edge carrier one its constructors could not have
 /// built, if anything. The derived `Deserialize` fills the private fields
 /// directly, so the arena re-establishes the constructors' invariants on both
@@ -2936,11 +2952,13 @@ fn curve_carrier_defect(curve: &EdgeCurve) -> Option<&'static str> {
         EdgeCurve::Circle(circle) => frame_defect(
             circle.center(),
             &[circle.normal(), circle.u_axis(), circle.v_axis()],
+            circle.radius(),
         )
         .or_else(|| positive_defect(circle.radius(), "radius is not positive and finite")),
         EdgeCurve::Ellipse(ellipse) => frame_defect(
             ellipse.center(),
             &[ellipse.normal(), ellipse.u_axis(), ellipse.v_axis()],
+            ellipse.semi_major().max(ellipse.semi_minor()),
         )
         .or_else(|| {
             positive_defect(
@@ -2953,10 +2971,15 @@ fn curve_carrier_defect(curve: &EdgeCurve) -> Option<&'static str> {
                 ellipse.semi_minor(),
                 "semi-minor axis is not positive and finite",
             )
+        })
+        .or_else(|| {
+            (ellipse.semi_minor() > ellipse.semi_major() * (1.0 + ARENA_FRAME_TOLERANCE))
+                .then_some("semi-minor axis exceeds semi-major axis")
         }),
         EdgeCurve::Hyperbola(hyperbola) => frame_defect(
             hyperbola.center(),
             &[hyperbola.normal(), hyperbola.u_axis(), hyperbola.v_axis()],
+            f64::INFINITY,
         )
         .or_else(|| {
             positive_defect(
@@ -2970,16 +2993,17 @@ fn curve_carrier_defect(curve: &EdgeCurve) -> Option<&'static str> {
                 "semi-minor axis is not positive and finite",
             )
         }),
-        EdgeCurve::Parabola(parabola) => {
-            frame_defect(parabola.vertex(), &[parabola.axis_dir(), parabola.u_axis()]).or_else(
-                || {
-                    positive_defect(
-                        parabola.focal_length(),
-                        "focal length is not positive and finite",
-                    )
-                },
+        EdgeCurve::Parabola(parabola) => frame_defect(
+            parabola.vertex(),
+            &[parabola.axis_dir(), parabola.u_axis()],
+            f64::INFINITY,
+        )
+        .or_else(|| {
+            positive_defect(
+                parabola.focal_length(),
+                "focal length is not positive and finite",
             )
-        }
+        }),
     }
 }
 
@@ -2993,11 +3017,17 @@ fn surface_carrier_defect(surface: &FaceSurface) -> Option<&'static str> {
         FaceSurface::Cylinder(cylinder) => frame_defect(
             cylinder.origin(),
             &[cylinder.axis(), cylinder.x_axis(), cylinder.y_axis()],
+            f64::INFINITY,
         )
         .or_else(|| positive_defect(cylinder.radius(), "radius is not positive and finite")),
         FaceSurface::Cone(cone) => {
             let half_angle = cone.half_angle();
-            frame_defect(cone.apex(), &[cone.axis(), cone.x_axis(), cone.y_axis()]).or_else(|| {
+            frame_defect(
+                cone.apex(),
+                &[cone.axis(), cone.x_axis(), cone.y_axis()],
+                f64::INFINITY,
+            )
+            .or_else(|| {
                 (!(half_angle > 0.0 && half_angle < std::f64::consts::FRAC_PI_2))
                     .then_some("half-angle is outside (0, π/2)")
             })
@@ -3005,11 +3035,13 @@ fn surface_carrier_defect(surface: &FaceSurface) -> Option<&'static str> {
         FaceSurface::Sphere(sphere) => frame_defect(
             sphere.center(),
             &[sphere.x_axis(), sphere.y_axis(), sphere.z_axis()],
+            sphere.radius(),
         )
         .or_else(|| positive_defect(sphere.radius(), "radius is not positive and finite")),
         FaceSurface::Torus(torus) => frame_defect(
             torus.center(),
             &[torus.x_axis(), torus.y_axis(), torus.z_axis()],
+            torus.major_radius() + torus.minor_radius(),
         )
         .or_else(|| {
             positive_defect(
@@ -3032,17 +3064,18 @@ fn analytic_carrier_error(entity: std::fmt::Arguments<'_>, kind: &str, defect: &
 
 /// A finite placement with unit, mutually perpendicular axes, or what is
 /// wrong with it.
-fn frame_defect(origin: Point3, axes: &[Vec3]) -> Option<&'static str> {
+fn frame_defect(origin: Point3, axes: &[Vec3], scale: f64) -> Option<&'static str> {
     if origin.0.iter().any(|coordinate| !coordinate.is_finite()) {
         return Some("placement is not finite");
     }
-    if !axes.iter().all(|&axis| is_unit(axis)) {
+    let bound = arena_frame_bound(scale);
+    if !axes.iter().all(|axis| (axis.length() - 1.0).abs() <= bound) {
         return Some("an axis is not unit length");
     }
     let perpendicular = axes.iter().enumerate().all(|(index, &axis)| {
         axes.iter()
             .skip(index + 1)
-            .all(|&other| axis.dot(other).abs() <= ARENA_FRAME_TOLERANCE)
+            .all(|&other| axis.dot(other).abs() <= bound)
     });
     (!perpendicular).then_some("axes are not mutually perpendicular")
 }

@@ -227,7 +227,13 @@ impl UvAffine {
                 // `Line2D::new` re-normalizes, so the parameter stretches by
                 // the direction's growth.
                 let scale = direction.length() / line.direction().length();
-                let image = Line2D::new(self.point(line.origin()), direction)?;
+                let origin = self.point(line.origin());
+                // A valid scale may put a nonzero direction below Line2D's
+                // constructor floor. Normalize that direction first, retaining
+                // its growth in the parameter range. Ordinary maps keep their
+                // existing constructor arithmetic and bits.
+                let image = Line2D::new(origin, direction)
+                    .or_else(|_| Line2D::new(origin, direction.normalize()?))?;
                 (Curve2D::Line(image), scale, 0.0)
             }
             Curve2D::Nurbs(nurbs) => {
@@ -383,7 +389,8 @@ pub fn reexpress_face_pcurves(
     if affine.is_none() && !periodic {
         return Ok(());
     }
-    for id in face_uses(topo, face)? {
+    let uses = face_uses(topo, face)?;
+    for &id in &uses {
         let coedge = topo.coedge(id)?;
         let Some(pcurve) = coedge.pcurve() else {
             continue;
@@ -423,13 +430,34 @@ pub fn reexpress_face_pcurves(
                 (edge.end(), edge.start())
             };
             let (start, end) = (topo.vertex(start)?.point(), topo.vertex(end)?.point());
-            derived_winding(
+            let derived = derived_winding(
                 topo.face(face)?.surface(),
                 image.as_ref().unwrap_or(pcurve),
                 start,
                 end,
-            )
-            .filter(|derived| *derived != coedge.periodic_winding())
+            );
+            if derived.is_none() && matches!(topo.face(face)?.surface(), FaceSurface::Cone(_)) {
+                // A cone's apex has no unique angular coordinate. A chart
+                // turn can make an otherwise exact hint unexportable there.
+                // Retain the native 3D boundary and discard both seam hints
+                // if either use can no longer certify its periodic lift.
+                let edge = coedge.edge();
+                for &other in &uses {
+                    let data = topo.coedge(other)?;
+                    if data.edge() == edge {
+                        let has_pcurve = data.pcurve().is_some();
+                        let has_winding = data.periodic_winding() != PeriodicWinding::ZERO;
+                        if has_pcurve {
+                            topo.remove_coedge_pcurve(other)?;
+                        }
+                        if has_winding {
+                            topo.set_coedge_periodic_winding(other, PeriodicWinding::ZERO)?;
+                        }
+                    }
+                }
+                continue;
+            }
+            derived.filter(|derived| *derived != coedge.periodic_winding())
         } else {
             None
         };
