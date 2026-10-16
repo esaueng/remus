@@ -55,8 +55,7 @@ impl Frame3 {
         ref_dir: Vec3,
     ) -> Result<Self, MathError> {
         let z = normal.normalize()?;
-        let ref_proj = ref_dir - z * ref_dir.dot(z);
-        let x = if let Ok(v) = ref_proj.normalize() {
+        let x = if let Ok(v) = perpendicular_unit(z, ref_dir) {
             v
         } else {
             // ref_dir is parallel to z — fall back to arbitrary choice.
@@ -65,6 +64,19 @@ impl Frame3 {
         };
         let y = z.cross(x);
         Ok(Self { origin, x, y, z })
+    }
+}
+
+/// Project a reference perpendicular to a unit primary axis. Reproject only
+/// when cancellation in a nearly parallel input amplified axial roundoff.
+/// Parallel references still return an error so callers choose their policy.
+pub(crate) fn perpendicular_unit(axis: Vec3, reference: Vec3) -> Result<Vec3, MathError> {
+    let projected = (reference - axis * reference.dot(axis)).normalize()?;
+    let residual = projected.dot(axis);
+    if residual.abs() > 8.0 * f64::EPSILON {
+        (projected - axis * residual).normalize()
+    } else {
+        Ok(projected)
     }
 }
 
@@ -130,6 +142,22 @@ mod tests {
         .expect("non-zero");
         assert!(f.x.dot(f.z).abs() < 1e-14);
         assert!((f.x.length() - 1.0).abs() < 1e-14);
+    }
+
+    #[test]
+    fn nearly_parallel_reference_retains_orthonormal_frame() {
+        let normal = Vec3::new(1.0, 2.0, 3.0);
+        for delta in [1e-3, 1e-6, 1e-9] {
+            let reference = normal + Vec3::new(delta, -delta, 2.0 * delta);
+            let frame =
+                Frame3::from_normal_and_ref(Point3::new(0.0, 0.0, 0.0), normal, reference).unwrap();
+            for axis in [frame.x, frame.y, frame.z] {
+                assert!((axis.length() - 1.0).abs() <= 64.0 * f64::EPSILON);
+            }
+            assert!(frame.x.dot(frame.z).abs() <= 64.0 * f64::EPSILON);
+            assert!(frame.y.dot(frame.z).abs() <= 64.0 * f64::EPSILON);
+            assert!((frame.x.cross(frame.y) - frame.z).length() <= 64.0 * f64::EPSILON);
+        }
     }
 
     #[test]

@@ -24,7 +24,7 @@ use remus_topology::naming::{PersistentRef, Provenance, Resolution, resolve};
 
 use crate::error::StructuredWasmError;
 use crate::error::validate_finite;
-use crate::helpers::get_u32;
+use crate::helpers::{get_optional_bool, get_optional_f64, get_u32};
 use crate::kernel::BrepKernel;
 
 /// Visibility note: `pub(crate)` triggers `clippy::redundant_pub_crate`
@@ -328,7 +328,7 @@ impl BrepKernel {
                 get_u32(args, "solid").and_then(|solid| self.journal_barrier_json(&kind, solid))
             }),
             "propagateAttributesForOp" => get_u32(args, "op").and_then(|op_id| {
-                let allow_inferred = args["allowInferred"].as_bool().unwrap_or(false);
+                let allow_inferred = get_optional_bool(args, "allowInferred")?.unwrap_or(false);
                 self.propagate_attributes_json(op_id, allow_inferred)
             }),
             "resolveOperationOutput" => get_u32(args, "op").and_then(|op_id| {
@@ -338,7 +338,10 @@ impl BrepKernel {
                 })
             }),
             "setFaceName" => get_u32(args, "face").and_then(|face| {
-                let name = args["name"].as_str();
+                let name = match args.get("name") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(_) => Some(get_str(args, "name")?),
+                };
                 self.set_face_name_json(face, name)
             }),
             "getFaceName" => get_u32(args, "face").and_then(|face| self.get_face_name_json(face)),
@@ -356,7 +359,7 @@ impl BrepKernel {
             }),
             "captureSignatureRef" => get_str(args, "kind").map(str::to_owned).and_then(|kind| {
                 get_u32(args, "handle").and_then(|handle| {
-                    let quantum = args["quantum"].as_f64().unwrap_or(1e-7);
+                    let quantum = get_optional_f64(args, "quantum")?.unwrap_or(1e-7);
                     self.capture_signature_ref_json(&kind, handle, quantum)
                 })
             }),

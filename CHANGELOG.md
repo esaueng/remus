@@ -115,6 +115,18 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **wasm:** malformed optional naming and journaled-extrusion arguments
+  refuse before mutation in both batch APIs; omitted and null values keep
+  their existing defaults.
+* **io:** arena carrier validation preserves scale-sensitive frame bounds
+  and ellipse axis ordering on both encode and decode.
+* **math:** re-orthogonalize nearly parallel analytic-frame references when
+  cancellation amplifies roundoff, preserving valid arena round trips.
+* **operations,io:** transformed cone-apex pcurves that lose their periodic
+  lift are discarded together with their seam partner, preserving STEP
+  export. Nonzero line pcurves survive valid scales below their constructor's
+  direction floor without changing the mapped parameter range.
+
 * **io:** validate analytic carrier frames and dimensions on arena encode
   and decode, and normalize STEP plane direction ratios before computing
   their offset so valid imports retain the arena contract (B216).
