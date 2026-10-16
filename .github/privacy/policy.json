@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "baseline": "7428d2b412510c6623f163e3a27f252857f4ad57",
+  "redaction_passes": [
+    "2026-10-16-initial",
+    "2026-10-16-email-followup"
+  ],
+  "verification_digest": "04745b2b484c61ff51027d5ff2fc372a6658b628b6fa4564d49bfdc6971b6580",
+  "blocked_file_sha256": "cebcef27bfb595581b6dd7032fedf1d70bfa08f5c2faf4c4f25bf9e1850824b1",
+  "blocked_object_count": 61268,
+  "identifiers": [
+    {
+      "length": 15,
+      "prefix_digest": "e9405b13d2e02e7e8821fb1e776ba8c899006e3877855386c3eef88a44bf2113",
+      "digest": "11f55a20f882a19c0c5be12bb4f589f6fac0ca7c95c44ce3ef3c0568317fa2dc"
+    },
+    {
+      "length": 17,
+      "prefix_digest": "e9405b13d2e02e7e8821fb1e776ba8c899006e3877855386c3eef88a44bf2113",
+      "digest": "48b8f6410214cb1eb0cd45c3b858bdc920ac0fb05a2e2a129fc01367ba0c4ba0"
+    },
+    {
+      "length": 11,
+      "prefix_digest": "e9405b13d2e02e7e8821fb1e776ba8c899006e3877855386c3eef88a44bf2113",
+      "digest": "eda2011ce36fb9884faa9b4f34a5d34e39244874319f55ccf24689f26248fb71"
+    },
+    {
+      "length": 19,
+      "prefix_digest": "e9405b13d2e02e7e8821fb1e776ba8c899006e3877855386c3eef88a44bf2113",
+      "digest": "35eefb476ec7fe43a1b24a946e1507c57fb5ef8f0512b1a88af489347ef41b37"
+    },
+    {
+      "length": 30,
+      "prefix_digest": "e9405b13d2e02e7e8821fb1e776ba8c899006e3877855386c3eef88a44bf2113",
+      "digest": "24347563d9086609f28c07c9b34757a0d971086e3c16ffaf804ab85961f67e60"
+    },
+    {
+      "length": 33,
+      "prefix_digest": "7afd12c32d22b55e21a9a2b636db34e9000bbddfb774785d2ae5f8009f871287",
+      "digest": "b367456454918964a9cf31017b17b04ecef411c48da08bfb269a4537899fa1dd"
+    }
+  ],
+  "object_ledger_scope": [
+    "esaueng/OpenFEA",
+    "esaueng/OpenLattice3D",
+    "esaueng/OpenZCAD",
+    "esaueng/glimpse",
+    "esaueng/isitjunk",
+    "esaueng/remus"
+  ]
+}
