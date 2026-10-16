@@ -37,8 +37,8 @@ jobs:
 
           # Public GitHub handles and explicitly approved public display names only.
           # Never put private names, emails, or a denylist here.
-          PROTECTED_LOGINS = {"petergstfsn"}
-          PUBLIC_DISPLAY_NAMES = {"petergstfsn": {"Peter"}}
+          PROTECTED_LOGINS = {"petertoday"}
+          PUBLIC_DISPLAY_NAMES = {"petertoday": {"Peter"}}
           # Public automation identities; do not exempt an entire actor or commit.
           PUBLIC_BOT_IDENTITIES = {"noreply@anthropic.com": {"claude", "claude code"}}
           BOT_DISPLAY_NAMES = {
