@@ -1340,6 +1340,22 @@ pub(crate) fn copy_solid_replacing_with_entity_map(
             face.surface = surface.clone();
         }
     }
+    debug_assert!(
+        replacements.edges.is_empty()
+            && replacements.vertices.keys().all(|index| {
+                plan.vertices
+                    .iter()
+                    .any(|vertex| vertex.old_index == *index)
+            })
+            && replacements.surfaces.keys().all(|index| {
+                plan.shells
+                    .iter()
+                    .flatten()
+                    .any(|face| face.old_index == *index)
+            }),
+        "copy replacements name entities outside solid {}",
+        solid_id.index()
+    );
     let face_count = plan.shells.iter().map(Vec::len).sum();
     materialize_copy(topo, plan, face_count).map(CopyIds::into_entities)
 }
@@ -1859,6 +1875,52 @@ mod tests {
         let orig = make_unit_cube_manifold(&mut topo);
         let copy = copy_solid(&mut topo, orig).unwrap();
         assert_ne!(orig.index(), copy.index());
+    }
+
+    /// A debug build stops a replacing copy whose replacements name a
+    /// vertex, edge or face outside the solid, which the copy would ignore.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn replacing_copy_asserts_every_replacement_names_the_solid() {
+        use remus_topology::explorer::{solid_edges, solid_faces, solid_vertices};
+
+        let mut topo = Topology::new();
+        let source = make_unit_cube_manifold(&mut topo);
+        let other = make_unit_cube_manifold(&mut topo);
+        for owner in [source, other] {
+            let vertex = solid_vertices(&topo, owner).unwrap()[0];
+            let edge = solid_edges(&topo, owner).unwrap()[0];
+            let face = solid_faces(&topo, owner).unwrap()[0];
+            for kind in 0..3 {
+                let mut replacements = CopyReplacements::default();
+                match kind {
+                    0 => {
+                        let point = topo.vertex(vertex).unwrap().point();
+                        replacements.vertices.insert(vertex.index(), point);
+                    }
+                    1 => {
+                        let edge_data = topo.edge(edge).unwrap();
+                        let image = (edge_data.curve().clone(), edge_data.trim());
+                        replacements.edges.insert(edge.index(), image);
+                    }
+                    _ => {
+                        let surface = topo.face(face).unwrap().surface().clone();
+                        replacements.surfaces.insert(face.index(), surface);
+                    }
+                }
+                let mut work = topo.clone();
+                let copied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    copy_solid_replacing_with_entity_map(&mut work, source, replacements)
+                        .map(|copied| copied.solid)
+                }));
+                assert_eq!(
+                    copied.is_err(),
+                    owner == other,
+                    "replacement kind {kind} from solid {}",
+                    owner.index()
+                );
+            }
+        }
     }
 
     #[test]
