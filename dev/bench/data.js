@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792173676790,
+  "lastUpdate": 1792185661496,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -108583,6 +108583,294 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 86971,
             "range": "± 261",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7db6f69c60a3a567e62b2951a16ed78af8086a73",
+          "message": "Prevent reintroduction of redacted Git history (#1164)\n\nA clean branch tip could conceal reintroduced redacted commits,\nmetadata, deleted files, tags, gitlinks, or retired dependency pins. The\nhistory-privacy gate inspects raw incoming objects against the immutable\nclean baseline, known-identifier HMAC fingerprints, and the shared\nledger of 61,268 retired objects across all six public Esau\nrepositories.\n\nPrivileged audits run from trusted default-branch events with an\nimmutable scanner/policy pin. Branch pushes and merge groups use a\nread-only requester; its GitHub event metadata selects the exact commit\nfor a separate trusted workflow_run audit. The fingerprint and App keys\nlive only in an environment restricted to main (and an exact protected\ntag during bootstrap). The dedicated Esau History Privacy App publishes\nboth required history-privacy and commit-privacy results on the real\nPR/queue head; Actions cannot impersonate that app binding. No incoming\ncode, dependencies, artifacts, or configuration are executed with audit\ncredentials.\n\nExisting required checks, review/conversation rules and merge queues\nremain enforced, with administrator enforcement and force-push/deletion\nblocks. Policy tags cannot be updated or deleted. Daily and manual full\naudits cover all owner branches/tags and baseline ancestry. The existing\ncommit-privacy check also publishes its real-head verdict and enforces\nthe public protected-user display identity.\n\nValidation: 29 synthetic privacy/workflow regressions, actionlint, full\nlocal history audits with rotated fingerprints, retired-history\nrejection fixtures, Gitleaks on outgoing commits, and the shared local\nGit privacy guard. Hosted CI and post-merge full audits are required\nbefore delivery. Checks run after GitHub receives public data; local\nguarded pushes remain necessary.\n\nPush audits preserve the originally requested head and scan every\nadvertised owner ref, including unpeeled annotated tags and their\nmetadata. Requester paths accept GitHub’s documented ref-qualified form.\nThe identity workflow is read-only; its authoritative App verdict runs\nwith pinned metadata policy in the protected audit job. Read-only\ncontent requests and App check publication use separate tokens.\nSynthetic coverage exercises dirty annotated tags on clean commits and\ntoken separation.\n\n\nAll public tags are now protected by an active all-tag ruleset that\nblocks updates and deletions without bypass actors. This keeps\nannotated-tag objects stable between their push event and the trusted\naudit, closing the ref-mutation race. Replacement releases use new tag\nnames.",
+          "timestamp": "2026-10-16T20:33:22Z",
+          "tree_id": "5ea4cb5fbac05a5b271a79910605a1659898bef4",
+          "url": "https://github.com/esaueng/remus/commit/7db6f69c60a3a567e62b2951a16ed78af8086a73"
+        },
+        "date": 1792185657692,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1140214,
+            "range": "± 1848",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1226717,
+            "range": "± 2463",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 24307,
+            "range": "± 89",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 6857198,
+            "range": "± 10490",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 6844649,
+            "range": "± 10154",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 6721011,
+            "range": "± 32549",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 24884,
+            "range": "± 60",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3575652,
+            "range": "± 9420",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 26713840,
+            "range": "± 265228",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 101,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 44,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 207,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 139,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 706,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 148,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 353,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 188,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 489,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 672,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2904,
+            "range": "± 62",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 11,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 34,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 78,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 78,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 3291,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 13490,
+            "range": "± 40",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 49793,
+            "range": "± 161",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 4759,
+            "range": "± 17",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 549970,
+            "range": "± 1875",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 13540373,
+            "range": "± 39776",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 155366,
+            "range": "± 679",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 823960,
+            "range": "± 3440",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 340415,
+            "range": "± 741",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 62064,
+            "range": "± 170",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 32363,
+            "range": "± 54",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 20297,
+            "range": "± 99",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 116413,
+            "range": "± 480",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 137895,
+            "range": "± 250",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 703891,
+            "range": "± 21298",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 8385473,
+            "range": "± 150692",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 525507,
+            "range": "± 1648",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1146582,
+            "range": "± 6638",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 74595,
+            "range": "± 197",
             "unit": "ns/iter"
           }
         ]
