@@ -204,12 +204,22 @@ groups always use hosted runners: the owner-only single-PR authorization does
 not authorize a group containing other contributors' code.
 
 `.github/merge-queue-ruleset.json` is an initially disabled, additive ruleset.
-It limits speculative merge builds to two, requires every group's PR merge
-commit to pass (`ALLGREEN`), and adds no bypass actor. It neither replaces
+It uses squash merging, limits speculative merge builds to two, requires every
+group's PR merge commit to pass (`ALLGREEN`), and adds no bypass actor. It neither replaces
 existing branch protection nor changes review requirements. Do not enable it
 until the caller, pinned callee and passing exact-head CI are on main. Creating
 or enabling the rule does not itself enqueue PRs; enqueuing a PR authorizes its
 automatic merge and still requires the maintainer's merge approval.
+
+The repository allows squash merging only. Squash commit titles use the PR
+title, and their bodies use the PR description, so each focused PR lands as
+one commit describing the finished change. Start subsequent work from updated
+`main` on a new branch. Reusable workflow pins must reference the landed main
+commit rather than a branch commit discarded by squash merging.
+
+Queue merge limits do not combine CI builds. The queue removes the need to
+update each PR manually after another PR merges; it still validates the
+combined changes against current main. Keep all required checks and reviews.
 
 After that approval and workflow merge, create the disabled rule with:
 
@@ -219,7 +229,9 @@ gh api --method POST repos/esaueng/remus/rulesets \
 ```
 
 Inspect the returned ID and existing rules before updating, to avoid duplicate
-rules. Activate this exact rule, verify it is active on main, then change only
+rules. If the rule already exists, update that rule instead of creating another.
+Ensure its merge method is `SQUASH` and squash merging is allowed in repository
+settings. Activate this exact rule, verify it is active on main, then change only
 `strict` to `false` under the existing required-status-check protection. Keep
 `checks / CI Pass`, its GitHub Actions app identity, and every review/protection setting.
 This ordering leaves protection in place throughout and lets the merge queue
