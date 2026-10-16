@@ -33,7 +33,10 @@ fn model_xml(bytes: &[u8]) -> String {
 
 fn archive_names(bytes: &[u8]) -> Vec<String> {
     let archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
-    archive.file_names().map(str::to_string).collect()
+    archive
+        .file_names()
+        .map(|name| name.unwrap().into_owned())
+        .collect()
 }
 
 fn tetra_mesh() -> TriangleMesh {
@@ -238,7 +241,7 @@ fn archive_entries_order_and_compression_are_preserved() {
             f.compression(),
             zip::CompressionMethod::Deflated,
             "entry {} must stay Deflated",
-            f.name()
+            f.name().unwrap()
         );
     }
 
