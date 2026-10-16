@@ -489,11 +489,65 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 topo,
                 face_id,
                 |p| s.project_point(p),
-                outline,
+                outline.clone(),
                 true,
                 false,
                 true,
             )?;
+            let polar_notch = topo.wire(face.outer_wire())?.edges().iter().any(|oe| {
+                topo.edge(oe.edge())
+                    .is_ok_and(|e| matches!(e.curve(), EdgeCurve::NurbsCurve(_)))
+            }) && topo.wire(face.outer_wire())?.edges().iter().any(|oe| {
+                topo.edge(oe.edge()).is_ok_and(|e| {
+                    [e.start(), e.end()].iter().any(|&v| {
+                        topo.vertex(v)
+                            .is_ok_and(|v| (v.point() - s.apex()).length() <= v.tolerance())
+                    })
+                })
+            });
+            // Keep the apex as a pole segment in this single chart. A second
+            // shortest-step unwrap collapses that segment and integrates the
+            // whole rectangular cone band, including the side-wall notch.
+            if polar_notch {
+                if let Some(polar) = outline.and_then(|outline| {
+                    crate::classify::boundary::insert_pole_segments(
+                        &outline,
+                        0.0,
+                        Some(std::f64::consts::TAU),
+                    )
+                }) {
+                    uv.boundary = UvLoop::new(
+                        polar.into_iter().map(|(u, v)| Point2::new(u, v)).collect(),
+                        false,
+                        false,
+                    );
+                    uv.u_periodic = false;
+                    let lo = uv
+                        .boundary
+                        .points
+                        .iter()
+                        .map(|p| p.x())
+                        .fold(f64::INFINITY, f64::min);
+                    let hi = uv
+                        .boundary
+                        .points
+                        .iter()
+                        .map(|p| p.x())
+                        .fold(f64::NEG_INFINITY, f64::max);
+                    return integrate_parametric::<_, AREA_ONLY>(
+                        s,
+                        (lo, hi),
+                        v_range,
+                        rule,
+                        sign,
+                        &UvTrim::boundary_of(&uv),
+                        PatchScale::ANGULAR,
+                    );
+                }
+                return Err(CheckError::IntegrationFailed(
+                    "unresolved apex chart".into(),
+                ));
+            }
             uv.hole_vs = full_revolution_hole_vs(topo, face_id, s);
             integrate_with_trimming_to_pole::<_, AREA_ONLY>(
                 s,

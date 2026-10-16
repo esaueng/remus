@@ -1026,20 +1026,24 @@ mod tests {
     }
 
     #[test]
-    fn actual_xml_size_is_bounded_even_when_metadata_understates_it() {
+    fn understated_xml_size_is_rejected_before_the_import_limit() {
         let mut bytes = tiny_archive();
         forge_declared_size(&mut bytes, 1);
         let limits = ImportLimits {
             max_archive_entry_bytes: 8,
             ..ImportLimits::default()
         };
-        assert!(matches!(
-            extract_model_xml(&bytes, limits),
-            Err(IoError::LimitExceeded {
-                resource: "3MF model XML bytes",
-                ..
-            })
-        ));
+        // zip rejects output beyond the declared byte count before our
+        // bounded read reaches the higher application limit.
+        let error = extract_model_xml(&bytes, limits).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                IoError::Io(error) if error.kind() == std::io::ErrorKind::InvalidData
+                    && error.to_string().contains("declared uncompressed size")
+            ),
+            "unexpected refusal: {error}"
+        );
     }
 
     #[test]

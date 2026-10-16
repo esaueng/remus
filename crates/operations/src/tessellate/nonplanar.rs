@@ -130,6 +130,47 @@ pub(super) fn tessellate_band_face_local(
         }
         cycles.push(cycle);
     }
+    if cycles.len() == 1 && matches!(face_data.surface(), FaceSurface::Cone(_)) {
+        let mut mesh = TriangleMesh::default();
+        let mut pool = DetHashMap::default();
+        let mut points = PointMergeMap::default();
+        for oriented in wire.edges() {
+            if pool.contains_key(&oriented.edge().index()) {
+                continue;
+            }
+            let edge = topo.edge(oriented.edge())?;
+            let mut ids = Vec::new();
+            for point in sample_edge(topo, edge, deflection, angular_tol, false)? {
+                let next = u32::try_from(mesh.positions.len()).map_err(|_| {
+                    crate::OperationsError::InvalidInput {
+                        reason: "cone face mesh exceeds index capacity".into(),
+                    }
+                })?;
+                let id = *points
+                    .entry(point_merge_key(point, MERGE_GRID))
+                    .or_insert_with(|| {
+                        mesh.positions.push(point);
+                        let (u, v) = project(point);
+                        mesh.normals.push(surf_normal(u, v));
+                        next
+                    });
+                ids.push(id);
+            }
+            pool.insert(oriented.edge().index(), ids);
+        }
+        if tessellate_cone_apex_fan_shared(topo, face_data, &pool, &mut mesh)? {
+            let uvs = mesh
+                .positions
+                .iter()
+                .map(|&p| {
+                    let (u, v) = project(p);
+                    [u, v]
+                })
+                .collect();
+            return Ok(Some(super::TriangleMeshUV { mesh, uvs }));
+        }
+        return Ok(None);
+    }
     if cycles.len() != 2 {
         return Ok(None);
     }
@@ -690,58 +731,73 @@ pub(super) fn tessellate_cone_apex_fan_shared(
         return Ok(false);
     }
 
-    // Exactly one closed rim circle; every other edge must be a (seam) line.
+    // A connected, monotone full-turn rim can include exact rational
+    // side-wall sections. Its generators still fan to the same apex.
+    // Distinct sector generators and reversing rims must decline.
     let wire = topo.wire(face_data.outer_wire())?;
-    let mut rim_edge_idx: Option<usize> = None;
-    let mut seam_edge_indices: Vec<usize> = Vec::new();
+    let mut seam_edge_indices = Vec::new();
+    let mut rim = Vec::new();
+    let mut has_nurbs = false;
+    let mut seam_uses = Vec::new();
     for oe in wire.edges() {
-        let e = topo.edge(oe.edge())?;
-        let idx = oe.edge().index();
-        match e.curve() {
-            EdgeCurve::Circle(_) if e.start() == e.end() => match rim_edge_idx {
-                None => rim_edge_idx = Some(idx),
-                Some(existing) if existing == idx => {}
-                Some(_) => return Ok(false),
-            },
-            EdgeCurve::Line => {
-                if !seam_edge_indices.contains(&idx) {
-                    seam_edge_indices.push(idx);
-                }
-            }
-            // An open rim arc, a trimmed cone, a NURBS boundary: not the
-            // pointed-cone pattern. Let the caller decide.
-            // B24: exhaustive over `EdgeCurve` — closed circles and
-            // seam lines are handled above; every other carrier
-            // declines.
-            EdgeCurve::NurbsCurve(_)
+        let edge = topo.edge(oe.edge())?;
+        if matches!(edge.curve(), EdgeCurve::Line) {
+            seam_edge_indices.push(oe.edge().index());
+            seam_uses.push(*oe);
+            continue;
+        }
+        match edge.curve() {
+            EdgeCurve::Circle(_) => {}
+            EdgeCurve::NurbsCurve(_) => has_nurbs = true,
+            EdgeCurve::Line
             | EdgeCurve::Ellipse(_)
             | EdgeCurve::Hyperbola(_)
-            | EdgeCurve::Parabola(_)
-            | EdgeCurve::Circle(_) => return Ok(false),
+            | EdgeCurve::Parabola(_) => return Ok(false),
         }
+        let Some(ids) = edge_global_indices.get(&oe.edge().index()) else {
+            return Ok(false);
+        };
+        let ordered: Vec<u32> = if oe.is_forward() {
+            ids.clone()
+        } else {
+            ids.iter().rev().copied().collect()
+        };
+        if let Some(&last) = rim.last()
+            && ordered.first() != Some(&last)
+        {
+            return Ok(false);
+        }
+        rim.extend(ordered.into_iter().skip(usize::from(!rim.is_empty())));
     }
-    let Some(rim_idx) = rim_edge_idx else {
-        return Ok(false);
-    };
-    if seam_edge_indices.is_empty() {
-        return Ok(false);
-    }
-
-    // Shared rim vertices, closing duplicate dropped.
-    let Some(rim_ids) = edge_global_indices.get(&rim_idx) else {
-        return Ok(false);
-    };
-    let mut rim: Vec<u32> = rim_ids.clone();
-    if rim.len() > 1 && rim.first() == rim.last() {
-        rim.pop();
-    }
-    if rim.len() < 3 {
+    if seam_uses.len() != 2
+        || seam_uses[0].edge() != seam_uses[1].edge()
+        || seam_uses[0].is_forward() == seam_uses[1].is_forward()
+    {
         return Ok(false);
     }
+    if rim.len() < 4 || rim.first() != rim.last() {
+        return Ok(false);
+    }
+    rim.pop();
     if rim.iter().any(|&g| (g as usize) >= merged.positions.len()) {
         return Ok(false);
     }
-
+    if has_nurbs {
+        let mut winding = 0.0;
+        let mut travel = 0.0;
+        for i in 0..rim.len() {
+            let a = cone.project_point(merged.positions[rim[i] as usize]).0;
+            let b = cone
+                .project_point(merged.positions[rim[(i + 1) % rim.len()] as usize])
+                .0;
+            let step = (b - a + std::f64::consts::PI).rem_euclid(TAU) - std::f64::consts::PI;
+            winding += step;
+            travel += step.abs();
+        }
+        if (winding.abs() - TAU).abs() > 1e-6 || travel - winding.abs() > 1e-6 {
+            return Ok(false);
+        }
+    }
     // The fan tip is the shared pool vertex sitting on the cone's apex. Take it
     // from the seam lines rather than interning a fresh point, so the cone and
     // any neighbour that also meets the apex agree on one vertex id.
