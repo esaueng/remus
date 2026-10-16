@@ -766,7 +766,7 @@ impl Parabola3D {
         // Gram-Schmidt: drop the component of u along the axis. If u is
         // parallel to the axis the remainder is zero and `normalize`
         // reports `ZeroVector` rather than silently inventing a plane.
-        let u = (u_axis - axis * u_axis.dot(axis)).normalize()?;
+        let u = crate::frame::perpendicular_unit(axis, u_axis)?;
         Ok(Self {
             vertex,
             axis_dir: axis,
@@ -980,7 +980,7 @@ impl Hyperbola3D {
             });
         }
         let n = normal.normalize()?;
-        let u = (u_axis - n * u_axis.dot(n)).normalize()?;
+        let u = crate::frame::perpendicular_unit(n, u_axis)?;
         Ok(Self {
             center,
             normal: n,

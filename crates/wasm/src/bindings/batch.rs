@@ -28,8 +28,8 @@ use crate::handles::{
     wire_id_to_u32,
 };
 use crate::helpers::{
-    TOL, classify_to_string, get_bool, get_f64, get_f64_array, get_u32, get_u32_array,
-    get_u32_array_optional, panic_message, try_chamfer,
+    TOL, classify_to_string, get_bool, get_f64, get_f64_array, get_optional_bool, get_optional_f64,
+    get_u32, get_u32_array, get_u32_array_optional, panic_message, try_chamfer,
 };
 use crate::kernel::BrepKernel;
 use crate::types::SolidOperationDetailedResult;
@@ -86,22 +86,6 @@ fn get_optional_work_budget(
     }
 }
 
-/// Optional boolean argument: absent or `null` reads as `None`.
-fn get_optional_bool(
-    args: &serde_json::Value,
-    name: &str,
-) -> Result<Option<bool>, StructuredWasmError> {
-    match args.get(name) {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(value) => value.as_bool().map(Some).ok_or_else(|| {
-            StructuredWasmError::invalid_argument(
-                format!("invalid '{name}': expected boolean"),
-                Some(name),
-            )
-        }),
-    }
-}
-
 /// Parse a transform twin's batch arguments before entering its shared body.
 /// Parsing failures still become the twin's typed result envelope.
 fn transform_detailed_batch_args(
@@ -126,23 +110,6 @@ fn get_optional_u32(
     match args.get(name) {
         None | Some(serde_json::Value::Null) => Ok(None),
         Some(_) => get_u32(args, name).map(Some),
-    }
-}
-
-/// Optional number argument: absent or `null` reads as `None`. Range checks
-/// stay with the operation so direct and batch calls refuse identically.
-fn get_optional_f64(
-    args: &serde_json::Value,
-    name: &str,
-) -> Result<Option<f64>, StructuredWasmError> {
-    match args.get(name) {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(value) => value.as_f64().map(Some).ok_or_else(|| {
-            StructuredWasmError::invalid_argument(
-                format!("invalid '{name}': expected number"),
-                Some(name),
-            )
-        }),
     }
 }
 

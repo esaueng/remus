@@ -282,6 +282,140 @@ fn serializer_refuses_what_the_reader_would() {
     );
 }
 
+/// Keep endpoints on the forged curve so only carrier validation can refuse
+/// the document, rather than the independent endpoint residual checks.
+fn replace_wire_curve(bytes: &[u8], curve: &EdgeCurve, encoded: Value) -> Vec<u8> {
+    edit(bytes, |doc| {
+        doc["edges"][0]["curve"] = encoded;
+        for (index, parameter) in [(0, 0.25), (1, 1.25)] {
+            let point = curve.evaluate_with_endpoints(
+                parameter,
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(0.0, 0.0, 0.0),
+            );
+            doc["vertices"][index]["point"] = json!(point);
+        }
+    })
+}
+
+#[test]
+fn large_carrier_frame_error_must_fit_the_linear_budget() {
+    let normal = Vec3::new(0.0, 0.0, 1.0);
+    for radius in [100.0, 1e6] {
+        let good = Circle3D::new(Point3::new(0.0, 0.0, 0.0), normal, radius).unwrap();
+        let bad = Circle3D::with_axes(
+            good.center(),
+            normal,
+            radius,
+            good.u_axis() * (1.0 + 5e-10),
+            good.v_axis(),
+        )
+        .unwrap();
+        let bytes = wire_document(EdgeCurve::Circle(good.clone()), 0.25, 1.25);
+        let forged = replace_wire_curve(
+            &bytes,
+            &EdgeCurve::Circle(bad.clone()),
+            json!({"Circle": bad}),
+        );
+        let mut topo = Topology::new();
+        let wire = single_edge_wire(&mut topo, EdgeCurve::Circle(bad), 0.25, 1.25);
+        if radius > 100.0 {
+            // 5e-10 of radius 1e6 is 5e-4 mm, far above the linear tolerance.
+            assert_wire_refused(&forged, "large circle with a stretched frame");
+            assert!(
+                serialize_wire(&topo, wire)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("analytic")
+            );
+        } else {
+            // The same dimensionless error displaces this carrier by only 5e-8.
+            deserialize_wire(&forged, &mut Topology::new()).unwrap();
+            serialize_wire(&topo, wire).unwrap();
+        }
+    }
+}
+
+#[test]
+fn unbounded_carrier_frames_allow_roundoff_but_not_extent_dependent_drift() {
+    let bytes = solid_document(|topo| make_cylinder(topo, 2.0, 5.0).unwrap());
+    for factor in [1.0 + 5e-10, 1.0 - 5e-10] {
+        let stretched = edit(&bytes, |doc| {
+            scale(&mut surface(doc, "Cylinder")["axis"], factor);
+        });
+        assert_solid_refused(&stretched, "unbounded cylinder axis drift");
+    }
+    let roundoff = edit(&bytes, |doc| {
+        scale(
+            &mut surface(doc, "Cylinder")["axis"],
+            1.0 + 4.0 * f64::EPSILON,
+        );
+    });
+    deserialize_solids(&roundoff, &mut Topology::new()).unwrap();
+
+    let bytes = solid_document(|topo| make_cone(topo, 2.0, 1.0, 3.0).unwrap());
+    let stretched = edit(&bytes, |doc| {
+        scale(&mut surface(doc, "Cone")["axis"], 1.0 + 5e-10);
+    });
+    assert_solid_refused(&stretched, "unbounded cone axis drift");
+}
+
+#[test]
+fn ellipse_axes_must_be_ordered_even_when_endpoints_match() {
+    let (center, normal, u) = tilted_frame();
+    let good = Ellipse3D::new_with_ref(center, normal, 3.0, 1.0, u).unwrap();
+    let bad = Ellipse3D::with_axes(center, normal, 1.0, 3.0, good.v_axis(), good.u_axis()).unwrap();
+    let bytes = wire_document(EdgeCurve::Ellipse(good), 0.25, 1.25);
+    let forged = replace_wire_curve(
+        &bytes,
+        &EdgeCurve::Ellipse(bad.clone()),
+        json!({"Ellipse": bad}),
+    );
+    assert_wire_refused(&forged, "ellipse with a longer semi-minor axis");
+    let mut topo = Topology::new();
+    let wire = single_edge_wire(&mut topo, EdgeCurve::Ellipse(bad), 0.25, 1.25);
+    assert!(
+        serialize_wire(&topo, wire)
+            .unwrap_err()
+            .to_string()
+            .contains("analytic")
+    );
+}
+
+#[test]
+fn nearly_equal_inverted_ellipse_axes_are_refused() {
+    let (center, normal, u) = tilted_frame();
+    let good = Ellipse3D::new_with_ref(center, normal, 1.0, 1.0, u).unwrap();
+    let bytes = wire_document(EdgeCurve::Ellipse(good.clone()), 0.25, 1.25);
+    for minor in [1.0 + 5e-10, 1.0_f64.next_up()] {
+        let bad =
+            Ellipse3D::with_axes(center, normal, 1.0, minor, good.u_axis(), good.v_axis()).unwrap();
+        let forged = replace_wire_curve(
+            &bytes,
+            &EdgeCurve::Ellipse(bad.clone()),
+            json!({"Ellipse": bad}),
+        );
+        assert_wire_refused(&forged, "slightly inverted ellipse axes");
+        let mut topo = Topology::new();
+        let wire = single_edge_wire(&mut topo, EdgeCurve::Ellipse(bad), 0.25, 1.25);
+        assert!(serialize_wire(&topo, wire).is_err());
+    }
+}
+
+#[test]
+fn constructors_with_nearly_parallel_references_cross_the_arena() {
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let normal = Vec3::new(1.0, 2.0, 3.0);
+    let reference = Vec3::new(1.001, 1.999, 3.002);
+    for carrier in [
+        EdgeCurve::Hyperbola(Hyperbola3D::with_axes(origin, normal, reference, 2.0, 1.0).unwrap()),
+        EdgeCurve::Parabola(Parabola3D::with_axes(origin, normal, reference, 1.0).unwrap()),
+        EdgeCurve::Circle(Circle3D::new_with_ref(origin, normal, 1e6, reference).unwrap()),
+    ] {
+        wire_document(carrier, 0.25, 1.25);
+    }
+}
+
 /// ISO 10303-42 direction ratios need not be unit. The STEP reader rescales
 /// a `PLANE` normal, so a file that states its axes unnormalized still
 /// crosses the arena: the WASM translator serializes every STEP import.

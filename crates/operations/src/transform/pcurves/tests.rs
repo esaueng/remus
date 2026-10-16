@@ -660,3 +660,36 @@ fn seam_pcurves_keep_both_exact_images_or_drop_both_replaced_uses() {
         );
     }
 }
+
+#[test]
+fn sub_floor_line_images_keep_their_normalized_parameter() {
+    let scale = 1e-16;
+    let (sin, cos) = 0.3_f64.sin_cos();
+    let map = UvAffine {
+        origin: Point2::new(0.0, 0.0),
+        u_image: Vec2::new(scale * cos, scale * sin),
+        v_image: Vec2::new(-scale * sin, scale * cos),
+        conformal: true,
+    };
+    let source = PCurve::new(
+        Curve2D::Line(Line2D::new(Point2::new(2e16, -1e16), Vec2::new(0.6, 0.8)).unwrap()),
+        -3e16,
+        5e16,
+    );
+    let image = map.apply(&source).unwrap();
+    for k in 0..=8 {
+        let fraction = f64::from(k) / 8.0;
+        let expected = map.point(
+            source.evaluate(source.t_start() + fraction * (source.t_end() - source.t_start())),
+        );
+        let actual = image.evaluate(image.t_start() + fraction * (image.t_end() - image.t_start()));
+        assert!(
+            (actual - expected).length() < 1e-12,
+            "sample {k}: {actual:?} != {expected:?}"
+        );
+    }
+    assert!(
+        UvAffine::diagonal(0.0, 0.0).apply(&source).is_err(),
+        "a collapsed direction must still refuse"
+    );
+}

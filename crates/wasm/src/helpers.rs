@@ -20,6 +20,39 @@ use crate::shapes::JsMesh;
 /// Default tolerance for vertices created by the kernel.
 pub const TOL: f64 = 1e-7;
 
+/// Optional boolean argument: absent or `null` reads as `None`.
+pub fn get_optional_bool(
+    args: &serde_json::Value,
+    name: &str,
+) -> Result<Option<bool>, StructuredWasmError> {
+    match args.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value.as_bool().map(Some).ok_or_else(|| {
+            StructuredWasmError::invalid_argument(
+                format!("invalid '{name}': expected boolean"),
+                Some(name),
+            )
+        }),
+    }
+}
+
+/// Optional number argument: absent or `null` reads as `None`. Range checks
+/// stay with the operation so direct and batch calls refuse identically.
+pub fn get_optional_f64(
+    args: &serde_json::Value,
+    name: &str,
+) -> Result<Option<f64>, StructuredWasmError> {
+    match args.get(name) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value.as_f64().map(Some).ok_or_else(|| {
+            StructuredWasmError::invalid_argument(
+                format!("invalid '{name}': expected number"),
+                Some(name),
+            )
+        }),
+    }
+}
+
 // ── Parsing helpers ───────────────────────────────────────────────
 
 /// Parse flat `[x,y,z, ...]` coordinates into `Vec<Point3>`.

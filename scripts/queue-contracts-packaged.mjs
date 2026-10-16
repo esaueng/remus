@@ -86,10 +86,19 @@ function optionalArgumentsWitness({ BrepKernel }) {
     const kernel = new BrepKernel();
     try {
       const solid = kernel.makeBox(2, 3, 4), other = kernel.makeBox(1, 1, 1);
+      const face = kernel.makeRectangle(4, 2);
+      kernel.setFaceName(face, 'retained name');
       for (const [op, args, argument] of [
         ['mirror', { solid, nx: '0' }, 'nx'],
         ['makeSphere', { radius: 1, segments: 1.5 }, 'segments'],
         ['fuseWithOptions', { solidA: solid, solidB: other, unifyFaces: 'false' }, 'unifyFaces'],
+        ['propagateAttributesForOp', { op: 0, allowInferred: 'false' }, 'allowInferred'],
+        ['captureSignatureRef', { kind: 'face', handle: face, quantum: 'bad' }, 'quantum'],
+        ['setFaceName', { face, name: 123 }, 'name'],
+        ['extrudeJournaled', { face, dx: 'bad' }, 'dx'],
+        ['extrudeJournaled', { face, dy: false }, 'dy'],
+        ['extrudeJournaled', { face, dz: {} }, 'dz'],
+        ['extrudeJournaled', { face, distance: [1] }, 'distance'],
       ]) {
         const before = state(kernel, [solid, other]); const row = batch(kernel, route, op, args);
         assert.ok(row.error, `${route} ${op}: malformed optional must refuse`);
@@ -98,6 +107,20 @@ function optionalArgumentsWitness({ BrepKernel }) {
           assert.equal(row.error.details.argument, argument);
         } else assert.equal(typeof row.error, 'string');
         assert.deepEqual(state(kernel, [solid, other]), before, `${route} ${op}: atomic`);
+        assert.equal(kernel.getFaceName(face), 'retained name', `${route} ${op}: face name retained`);
+      }
+      const first = okay(batch(kernel, route, 'captureSignatureRef', { kind: 'face', handle: face }), 'omitted quantum');
+      assert.deepEqual(okay(batch(kernel, route, 'captureSignatureRef', { kind: 'face', handle: face, quantum: null }), 'null quantum'), first);
+      for (const clear of [{ face }, { face, name: null }]) {
+        kernel.setFaceName(face, 'datum');
+        okay(batch(kernel, route, 'setFaceName', clear), 'clear name');
+        assert.equal(kernel.getFaceName(face), undefined);
+      }
+      for (const args of [{ face }, { face, dx: null, dy: null, dz: null, distance: null }]) {
+        const result = okay(batch(kernel, route, 'extrudeJournaled', args), 'default journaled extrude');
+        close(kernel.volume(result.solid, 0.01), 8, `${route}: default extrusion volume`);
+        const propagation = okay(batch(kernel, route, 'propagateAttributesForOp', { op: result.op }), 'omitted inferred flag');
+        assert.deepEqual(okay(batch(kernel, route, 'propagateAttributesForOp', { op: result.op, allowInferred: null }), 'null inferred flag'), propagation);
       }
       const omitted = okay(batch(kernel, route, 'mirror', { solid }), 'omitted default');
       const nullable = okay(batch(kernel, route, 'mirror', { solid, nx: null }), 'null default');
@@ -272,11 +295,122 @@ function threemfWitness({ BrepKernel, RemusIo }) {
       /unknown object id 99/, 'unknown build item refuses');
   } finally { kernel.free(); io.free(); }
 }
+// Independent document witnesses avoid endpoint failures masking missing carrier checks.
+function analyticCarrierWitness({ BrepKernel, RemusIo }) {
+  const kernel = new BrepKernel(), io = new RemusIo();
+  const document = (wire) => JSON.parse(new TextDecoder().decode(kernel.serializeWire(wire)));
+  try {
+    const circleEdge = kernel.makeCircleEdge(0, 0, 0, 0, 0, 1, 1e6);
+    const circle = document(kernel.makeWire(Uint32Array.of(circleEdge), true));
+    circle.edges[0].curve.Circle.u_axis = circle.edges[0].curve.Circle.u_axis.map((x) => x * (1 + 5e-10));
+    circle.vertices[0].point = circle.edges[0].curve.Circle.u_axis.map((x) => x * 1e6);
+    circle.edges[0].trim = [0, 2 * Math.PI];
+    regularError(() => kernel.deserializeWire(bytes(JSON.stringify(circle))), /analytic.*axis/i, 'large circle frame drift');
+
+    const ellipseEdge = kernel.makeEllipseEdge(0, 0, 0, 0, 0, 1, 2, 1);
+    const ellipse = document(kernel.makeWire(Uint32Array.of(ellipseEdge), true));
+    const curve = ellipse.edges[0].curve.Ellipse;
+    [curve.semi_major, curve.semi_minor] = [curve.semi_minor, curve.semi_major];
+    [curve.u_axis, curve.v_axis] = [curve.v_axis, curve.u_axis];
+    ellipse.edges[0].trim = [Math.PI / 2, 5 * Math.PI / 2];
+    regularError(() => kernel.deserializeWire(bytes(JSON.stringify(ellipse))), /analytic.*semi/i, 'ellipse axis order');
+
+    const equalEdge = kernel.makeEllipseEdge(0, 0, 0, 0, 0, 1, 1, 1);
+    const nearlyEqual = document(kernel.makeWire(Uint32Array.of(equalEdge), true));
+    nearlyEqual.edges[0].trim = [0, 2 * Math.PI];
+    for (const excess of [5e-10, Number.EPSILON]) {
+      // A closed ellipse's endpoints depend only on the unchanged major axis.
+      nearlyEqual.edges[0].curve.Ellipse.semi_minor = 1 + excess;
+      regularError(() => kernel.deserializeWire(bytes(JSON.stringify(nearlyEqual))),
+        /analytic.*semi/i, 'nearly equal inverted ellipse axes');
+    }
+
+    const cone = kernel.makeCone(2, 1, 3);
+    const coneDoc = JSON.parse(new TextDecoder().decode(kernel.serializeSolid(cone)));
+    const carrier = coneDoc.faces.find((face) => face.surface.Cone).surface.Cone;
+    carrier.axis = carrier.axis.map((x) => x * (1 + 5e-10));
+    const forged = bytes(JSON.stringify(coneDoc));
+    regularError(() => kernel.deserializeSolid(forged), /analytic.*axis/i, 'unbounded cone frame drift');
+    regularError(() => io.exportStep(forged), /analytic.*axis/i, 'translator refuses unbounded cone frame drift');
+  } finally { kernel.free(); io.free(); }
+}
+const rotationZ = (angle) => {
+  const c = Math.cos(angle), s = Math.sin(angle);
+  return [c, -s, 0, 0, s, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+};
+function transformVia(kernel, route, solid, matrix) {
+  if (route === 'direct') kernel.transformSolid(solid, Float64Array.from(matrix));
+  else okay(batch(kernel, route, 'transform', { solid, matrix }), `${route} transform`);
+}
+function apexChartWitness({ BrepKernel, RemusIo }) {
+  for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
+    const kernel = new BrepKernel(), io = new RemusIo();
+    try {
+      const source = kernel.makeCone(2, 0, 3);
+      kernel.transformSolid(source, Float64Array.from(rotationZ(1.5 * Math.PI)));
+      const doc = JSON.parse(new TextDecoder().decode(kernel.serializeSolid(source)));
+      const seamUses = doc.boundary_authority.coedges.filter((use) => doc.edges[use.edge].curve === 'Line');
+      assert.equal(seamUses.length, 2);
+      const slant = Math.sqrt(13);
+      seamUses.forEach((use, index) => {
+        use.pcurve = { curve: { Line: { origin: [index * 2 * Math.PI, index ? 0 : slant],
+          direction: [0, index ? 1 : -1] } }, t_start: 0, t_end: slant };
+        use.periodic_winding = [index, 0];
+      });
+      const cone = kernel.deserializeSolid(bytes(JSON.stringify(doc)));
+      io.exportStep(kernel.serializeSolid(cone));
+      transformVia(kernel, route, cone, rotationZ(0.3));
+      const result = JSON.parse(new TextDecoder().decode(kernel.serializeSolid(cone)));
+      const seams = result.boundary_authority.coedges.filter((use) => result.edges[use.edge].curve === 'Line');
+      assert.equal(seams.length, 2);
+      for (const use of seams) {
+        assert.ok(!use.pcurve, `${route}: uncertifiable apex pcurve removed`);
+        assert.deepEqual(use.periodic_winding, [0, 0]);
+      }
+      assert.equal(JSON.parse(kernel.validateSolidDetailed(cone)).errorCount, 0);
+      const roundTrip = kernel.deserializeSolids(io.importStep(io.exportStep(kernel.serializeSolid(cone))));
+      assert.equal(roundTrip.length, 1);
+      close(kernel.volume(roundTrip[0], 0.01), 4 * Math.PI, `${route}: cone STEP volume`, 1e-6);
+      close(kernel.volume(source, 0.01), 4 * Math.PI, `${route}: source unchanged`, 1e-6);
+    } finally { kernel.free(); io.free(); }
+  }
+}
+function smallScaleChartWitness({ BrepKernel, RemusIo }) {
+  const dot = (a, b) => a.reduce((sum, x, i) => sum + x * b[i], 0);
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
+    const kernel = new BrepKernel(), io = new RemusIo();
+    try {
+      const source = kernel.makeBox(1e16, 1e16, 1e16);
+      const doc = JSON.parse(new TextDecoder().decode(kernel.serializeSolid(source)));
+      const face = doc.faces[0], { normal, d } = face.surface.Plane;
+      const x = cross(normal, Math.abs(normal[0]) > 0.9 ? [0, 1, 0] : [1, 0, 0]);
+      const y = cross(normal, x), foot = normal.map((n) => n * d / dot(normal, normal));
+      const use = doc.boundary_authority.coedges[doc.boundary_authority.loops[doc.boundary_authority.faces[0].outer_loop].coedges[0]];
+      const edge = doc.edges[use.edge];
+      const project = (p) => { const q = p.map((v, i) => v - foot[i]); return [dot(q, x), dot(q, y)]; };
+      const a = project(doc.vertices[use.forward ? edge.start : edge.end].point);
+      const b = project(doc.vertices[use.forward ? edge.end : edge.start].point);
+      const direction = b.map((v, i) => v - a[i]), length = Math.hypot(...direction);
+      use.pcurve = { curve: { Line: { origin: a, direction: direction.map((v) => v / length) } }, t_start: 0, t_end: length };
+      const solid = kernel.deserializeSolid(bytes(JSON.stringify(doc)));
+      io.exportStep(kernel.serializeSolid(solid));
+      transformVia(kernel, route, solid, [1e-16, 0, 0, 0, 0, 1e-16, 0, 0, 0, 0, 1e-16, 0, 0, 0, 0, 1]);
+      bounds(kernel, solid, [0, 0, 0, 1, 1, 1], `${route}: unit box after normalization`);
+      assert.equal(JSON.parse(kernel.validateSolidDetailed(solid)).errorCount, 0);
+      const roundTrip = kernel.deserializeSolids(io.importStep(io.exportStep(kernel.serializeSolid(solid))));
+      close(kernel.volume(roundTrip[0], 0.01), 1, `${route}: normalized STEP volume`);
+      bounds(kernel, source, [0, 0, 0, 1e16, 1e16, 1e16], `${route}: source unchanged`);
+    } finally { kernel.free(); io.free(); }
+  }
+}
+
 export function runPackageQueueWitness(exports) {
   const failures = [];
   for (const [name, witness] of Object.entries({ fromBREP: brepWitness, optionalArguments: optionalArgumentsWitness,
     legacySketch: legacySketchWitness, ellipsePublication: ellipseWitness, sweepRollback: sweepWitness,
-    headerDrivenPLY: plyWitness, buildItem3MF: threemfWitness })) {
+    headerDrivenPLY: plyWitness, buildItem3MF: threemfWitness,
+    analyticCarriers: analyticCarrierWitness, apexCharts: apexChartWitness, smallScaleCharts: smallScaleChartWitness })) {
     try { witness(exports); console.log(`ok - queue package ${name}`); }
     catch (error) { failures.push(error); console.error(`FAIL - queue package ${name}: ${error.message}`); }
   }

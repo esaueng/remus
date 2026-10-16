@@ -196,6 +196,163 @@ fn malformed_optional_arguments_are_refused_not_defaulted() {
     assert_eq!(checked, 2 * 59);
 }
 
+/// Naming and journaled dispatch have the same strict optional-argument
+/// contract as the main batch arms, including on the legacy route.
+#[test]
+fn naming_and_journaled_options_refuse_before_mutating_state() {
+    for v2 in [false, true] {
+        let (mut kernel, solid, face, _) = fixture();
+        kernel
+            .set_face_name(face, Some("retained name".to_owned()))
+            .unwrap();
+        let before = (
+            kernel.serialize_solids(&[solid]).unwrap(),
+            kernel.journal_summary(),
+            kernel.topo().num_solids(),
+            kernel.topo().num_vertices(),
+        );
+        for (op, args, key) in [
+            (
+                "propagateAttributesForOp",
+                serde_json::json!({"op": 0, "allowInferred": "false"}),
+                "allowInferred",
+            ),
+            (
+                "captureSignatureRef",
+                serde_json::json!({"kind": "face", "handle": face, "quantum": "bad"}),
+                "quantum",
+            ),
+            (
+                "setFaceName",
+                serde_json::json!({"face": face, "name": 123}),
+                "name",
+            ),
+            (
+                "setFaceName",
+                serde_json::json!({"face": face, "name": ["bad"]}),
+                "name",
+            ),
+            (
+                "extrudeJournaled",
+                serde_json::json!({"face": face, "dx": "bad"}),
+                "dx",
+            ),
+            (
+                "extrudeJournaled",
+                serde_json::json!({"face": face, "dy": false}),
+                "dy",
+            ),
+            (
+                "extrudeJournaled",
+                serde_json::json!({"face": face, "dz": {}}),
+                "dz",
+            ),
+            (
+                "extrudeJournaled",
+                serde_json::json!({"face": face, "distance": [1]}),
+                "distance",
+            ),
+        ] {
+            let request = serde_json::json!([{"op": op, "args": args}]).to_string();
+            let response = if v2 {
+                kernel.execute_batch_v2(&request)
+            } else {
+                kernel.execute_batch(&request)
+            };
+            let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+            if v2 {
+                assert_eq!(
+                    response[0]["error"]["code"], "invalid_argument",
+                    "{op}: {response}"
+                );
+                assert_eq!(
+                    response[0]["error"]["details"]["argument"], key,
+                    "{op}: {response}"
+                );
+            } else {
+                assert!(
+                    response[0]["error"]
+                        .as_str()
+                        .is_some_and(|error| error.contains(key)),
+                    "{op}: {response}"
+                );
+            }
+            assert_eq!(
+                (
+                    kernel.serialize_solids(&[solid]).unwrap(),
+                    kernel.journal_summary(),
+                    kernel.topo().num_solids(),
+                    kernel.topo().num_vertices(),
+                ),
+                before,
+                "{op}.{key} must preserve geometry, attributes and journal"
+            );
+        }
+    }
+}
+
+#[test]
+fn naming_and_journaled_options_keep_absent_and_null_defaults() {
+    for v2 in [false, true] {
+        let mut kernel = BrepKernel::new();
+        let face = kernel.make_rectangle(4.0, 2.0).unwrap();
+        let mut run = |op: &str, args: serde_json::Value| {
+            let request = serde_json::json!([{"op": op, "args": args}]).to_string();
+            let result = if v2 {
+                kernel.execute_batch_v2(&request)
+            } else {
+                kernel.execute_batch(&request)
+            };
+            let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+            assert!(result[0].get("ok").is_some(), "{op}: {result}");
+            result[0]["ok"].clone()
+        };
+        let signature = run(
+            "captureSignatureRef",
+            serde_json::json!({"kind": "face", "handle": face}),
+        );
+        assert_eq!(
+            signature,
+            run(
+                "captureSignatureRef",
+                serde_json::json!({"kind": "face", "handle": face, "quantum": null})
+            )
+        );
+        for name in [serde_json::json!({}), serde_json::json!({"name": null})] {
+            run(
+                "setFaceName",
+                serde_json::json!({"face": face, "name": "datum"}),
+            );
+            let mut clear = name;
+            clear["face"] = serde_json::json!(face);
+            run("setFaceName", clear);
+            assert!(run("getFaceName", serde_json::json!({"face": face})).is_null());
+        }
+        let first = run("extrudeJournaled", serde_json::json!({"face": face}));
+        let second = run(
+            "extrudeJournaled",
+            serde_json::json!({"face": face, "dx": null, "dy": null, "dz": null, "distance": null}),
+        );
+        assert_eq!(
+            run(
+                "propagateAttributesForOp",
+                serde_json::json!({"op": first["op"]})
+            ),
+            run(
+                "propagateAttributesForOp",
+                serde_json::json!({"op": first["op"], "allowInferred": null})
+            )
+        );
+        for solid in [
+            first["solid"].as_u64().unwrap(),
+            second["solid"].as_u64().unwrap(),
+        ] {
+            let volume = run("volume", serde_json::json!({"solid": solid}));
+            assert!((volume.as_f64().unwrap() - 8.0).abs() < 1e-9);
+        }
+    }
+}
+
 /// Integer options also refuse values outside the `u32` range, which used to
 /// read as the default too.
 #[test]
