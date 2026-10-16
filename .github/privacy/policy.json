@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "baseline": "7428d2b412510c6623f163e3a27f252857f4ad57",
+  "redaction_passes": [
+    "2026-10-16-initial",
+    "2026-10-16-email-followup"
+  ],
+  "verification_digest": "a69ba7692865219d00127cd0dfbe478db0473deacd71348d2410cd943769f44b",
+  "blocked_file_sha256": "c241c7213ae8274c73bf00c7ea3e7c089c12e87461499bf62809dc00c8112b9b",
+  "blocked_object_count": 35911,
+  "identifiers": [
+    {
+      "length": 15,
+      "prefix_digest": "bd07dfe273c556fe09062ce43e5371566241da99697e20cf7fc9b04a9f2c448e",
+      "digest": "118daf3f3a34e5a08a77a238ee16ea06dde6c3abde1214812155f9d086e509aa"
+    },
+    {
+      "length": 17,
+      "prefix_digest": "bd07dfe273c556fe09062ce43e5371566241da99697e20cf7fc9b04a9f2c448e",
+      "digest": "d0837573494a269184e03b3a9e5bf4d9789d6a310de667800f31535dad8b49b1"
+    },
+    {
+      "length": 19,
+      "prefix_digest": "bd07dfe273c556fe09062ce43e5371566241da99697e20cf7fc9b04a9f2c448e",
+      "digest": "abe5a9aceef74b50974be6682a8d86ff0982f507f7f9cbb9bbc7b1f1802dcdd2"
+    },
+    {
+      "length": 30,
+      "prefix_digest": "bd07dfe273c556fe09062ce43e5371566241da99697e20cf7fc9b04a9f2c448e",
+      "digest": "72203f2e68ec8fb3fe2b9a89f66fc73e9caca28f0e3dfedea6d126518dc836a8"
+    },
+    {
+      "length": 11,
+      "prefix_digest": "bd07dfe273c556fe09062ce43e5371566241da99697e20cf7fc9b04a9f2c448e",
+      "digest": "2967b40083defeee3a379428f55d0f3a72bef9ef872e03bb93cb5d4dda472bf4"
+    }
+  ]
+}
