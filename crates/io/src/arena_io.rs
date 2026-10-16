@@ -2973,7 +2973,7 @@ fn curve_carrier_defect(curve: &EdgeCurve) -> Option<&'static str> {
             )
         })
         .or_else(|| {
-            (ellipse.semi_minor() > ellipse.semi_major() * (1.0 + ARENA_FRAME_TOLERANCE))
+            (ellipse.semi_minor() > ellipse.semi_major())
                 .then_some("semi-minor axis exceeds semi-major axis")
         }),
         EdgeCurve::Hyperbola(hyperbola) => frame_defect(

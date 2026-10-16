@@ -315,6 +315,16 @@ function analyticCarrierWitness({ BrepKernel, RemusIo }) {
     ellipse.edges[0].trim = [Math.PI / 2, 5 * Math.PI / 2];
     regularError(() => kernel.deserializeWire(bytes(JSON.stringify(ellipse))), /analytic.*semi/i, 'ellipse axis order');
 
+    const equalEdge = kernel.makeEllipseEdge(0, 0, 0, 0, 0, 1, 1, 1);
+    const nearlyEqual = document(kernel.makeWire(Uint32Array.of(equalEdge), true));
+    nearlyEqual.edges[0].trim = [0, 2 * Math.PI];
+    for (const excess of [5e-10, Number.EPSILON]) {
+      // A closed ellipse's endpoints depend only on the unchanged major axis.
+      nearlyEqual.edges[0].curve.Ellipse.semi_minor = 1 + excess;
+      regularError(() => kernel.deserializeWire(bytes(JSON.stringify(nearlyEqual))),
+        /analytic.*semi/i, 'nearly equal inverted ellipse axes');
+    }
+
     const cone = kernel.makeCone(2, 1, 3);
     const coneDoc = JSON.parse(new TextDecoder().decode(kernel.serializeSolid(cone)));
     const carrier = coneDoc.faces.find((face) => face.surface.Cone).surface.Cone;

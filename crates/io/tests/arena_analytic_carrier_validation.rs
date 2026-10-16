@@ -382,6 +382,40 @@ fn ellipse_axes_must_be_ordered_even_when_endpoints_match() {
     );
 }
 
+#[test]
+fn nearly_equal_inverted_ellipse_axes_are_refused() {
+    let (center, normal, u) = tilted_frame();
+    let good = Ellipse3D::new_with_ref(center, normal, 1.0, 1.0, u).unwrap();
+    let bytes = wire_document(EdgeCurve::Ellipse(good.clone()), 0.25, 1.25);
+    for minor in [1.0 + 5e-10, 1.0_f64.next_up()] {
+        let bad =
+            Ellipse3D::with_axes(center, normal, 1.0, minor, good.u_axis(), good.v_axis()).unwrap();
+        let forged = replace_wire_curve(
+            &bytes,
+            &EdgeCurve::Ellipse(bad.clone()),
+            json!({"Ellipse": bad}),
+        );
+        assert_wire_refused(&forged, "slightly inverted ellipse axes");
+        let mut topo = Topology::new();
+        let wire = single_edge_wire(&mut topo, EdgeCurve::Ellipse(bad), 0.25, 1.25);
+        assert!(serialize_wire(&topo, wire).is_err());
+    }
+}
+
+#[test]
+fn constructors_with_nearly_parallel_references_cross_the_arena() {
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let normal = Vec3::new(1.0, 2.0, 3.0);
+    let reference = Vec3::new(1.001, 1.999, 3.002);
+    for carrier in [
+        EdgeCurve::Hyperbola(Hyperbola3D::with_axes(origin, normal, reference, 2.0, 1.0).unwrap()),
+        EdgeCurve::Parabola(Parabola3D::with_axes(origin, normal, reference, 1.0).unwrap()),
+        EdgeCurve::Circle(Circle3D::new_with_ref(origin, normal, 1e6, reference).unwrap()),
+    ] {
+        wire_document(carrier, 0.25, 1.25);
+    }
+}
+
 /// ISO 10303-42 direction ratios need not be unit. The STEP reader rescales
 /// a `PLANE` normal, so a file that states its axes unnormalized still
 /// crosses the arena: the WASM translator serializes every STEP import.
