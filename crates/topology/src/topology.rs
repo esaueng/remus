@@ -37,6 +37,10 @@ use undo_log::{UndoBase, UndoLog, UndoOrigin};
 mod memory;
 pub use memory::MemoryEstimate;
 
+#[cfg(test)]
+#[path = "topology/restore_oracle_tests.rs"]
+mod restore_oracle_tests;
+
 /// Dimensional class of a topological body.
 ///
 /// `General` reserves the future mixed-dimensional body model. No current

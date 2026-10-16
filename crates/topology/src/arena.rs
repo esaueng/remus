@@ -318,22 +318,12 @@ impl<T: Clone> Arena<T> {
     /// transaction semantics, where the retirement was never observed and
     /// must be undone.
     pub(crate) fn restore_preserving_slots(&mut self, snapshot: &Self) {
-        let previous_items = std::mem::take(&mut self.items);
-        let previous_live = std::mem::take(&mut self.live);
-        let previous_slots = previous_items.len();
-
-        self.items.clone_from(&snapshot.items);
-        self.live.clone_from(&snapshot.live);
-        for (restored_live, was_live) in self.live.iter_mut().zip(&previous_live) {
-            *restored_live &= *was_live;
+        let previous_slots = self.live.len();
+        self.restore_items_in_place(snapshot);
+        for (is_live, &was_live) in self.live.iter_mut().zip(&snapshot.live) {
+            *is_live &= was_live;
         }
-
-        if previous_slots > self.items.len() {
-            self.items
-                .extend_from_slice(&previous_items[self.items.len()..]);
-            self.live.resize(previous_slots, false);
-        }
-        self.live_len = self.live.iter().filter(|is_live| **is_live).count();
+        self.finish_live_restore(snapshot, previous_slots);
     }
 
     /// Whether a slot live in `snapshot` is retired here — a retirement
@@ -358,6 +348,64 @@ impl<T: Clone> Arena<T> {
     /// snapshot remain reserved tombstones, so handles issued inside the
     /// window can never alias a later entity.
     pub(crate) fn restore_for_rollback(&mut self, snapshot: &Self) {
+        let previous_slots = self.live.len();
+        self.restore_items_in_place(snapshot);
+        for (is_live, &was_live) in self.live.iter_mut().zip(&snapshot.live) {
+            *is_live = was_live;
+        }
+        self.finish_live_restore(snapshot, previous_slots);
+    }
+
+    /// Writes the snapshot's slots over this arena's in place, appending any
+    /// it has beyond them. Slots past the snapshot keep their tombstones
+    /// where they are: nothing is reallocated, cloned or dropped for them.
+    fn restore_items_in_place(&mut self, snapshot: &Self) {
+        for (slot, value) in self.items.iter_mut().zip(&snapshot.items) {
+            slot.clone_from(value);
+        }
+        let len = self.items.len();
+        self.items
+            .extend_from_slice(snapshot.items.get(len..).unwrap_or_default());
+    }
+
+    /// Retires every slot past the snapshot, appends the snapshot's liveness
+    /// for slots this arena never had, and recounts.
+    fn finish_live_restore(&mut self, snapshot: &Self, previous_slots: usize) {
+        for is_live in self.live.iter_mut().skip(snapshot.live.len()) {
+            *is_live = false;
+        }
+        self.live
+            .extend_from_slice(snapshot.live.get(previous_slots..).unwrap_or_default());
+        self.live_len = self.live.iter().filter(|is_live| **is_live).count();
+    }
+}
+
+#[cfg(test)]
+impl<T: Clone> Arena<T> {
+    /// [`Self::restore_preserving_slots`] before the in-place rewrite,
+    /// verbatim: the differential oracle.
+    pub(crate) fn legacy_restore_preserving_slots(&mut self, snapshot: &Self) {
+        let previous_items = std::mem::take(&mut self.items);
+        let previous_live = std::mem::take(&mut self.live);
+        let previous_slots = previous_items.len();
+
+        self.items.clone_from(&snapshot.items);
+        self.live.clone_from(&snapshot.live);
+        for (restored_live, was_live) in self.live.iter_mut().zip(&previous_live) {
+            *restored_live &= *was_live;
+        }
+
+        if previous_slots > self.items.len() {
+            self.items
+                .extend_from_slice(&previous_items[self.items.len()..]);
+            self.live.resize(previous_slots, false);
+        }
+        self.live_len = self.live.iter().filter(|is_live| **is_live).count();
+    }
+
+    /// [`Self::restore_for_rollback`] before the in-place rewrite, verbatim:
+    /// the differential oracle.
+    pub(crate) fn legacy_restore_for_rollback(&mut self, snapshot: &Self) {
         let previous_items = std::mem::take(&mut self.items);
         let previous_slots = previous_items.len();
 
@@ -730,5 +778,60 @@ mod tests {
         assert_eq!(arena.get(first).copied(), Some(10));
         assert_eq!(arena.get(last).copied(), Some(30));
         assert!(arena.get(retired).is_none());
+    }
+
+    /// An arena of `len` slots whose values name their origin, retired
+    /// where bit `i` of `dead` is set.
+    fn sample(tag: &str, len: usize, dead: u32) -> Arena<Vec<String>> {
+        let mut arena = Arena::new();
+        for index in 0..len {
+            let id = arena.alloc(vec![format!("{tag}{index}"); index % 3 + 1]);
+            if dead & (1 << index) != 0 {
+                assert!(arena.retire(id));
+            }
+        }
+        arena
+    }
+
+    #[test]
+    fn in_place_restores_match_their_verbatim_predecessors() {
+        // Every length pair up to five slots, each with a spread of
+        // liveness patterns on both sides. Debug renders tombstones too, so
+        // their contents must match as well as the live view.
+        for current_len in 0..=5 {
+            for snapshot_len in 0..=5 {
+                for current_dead in [0, 0b1, 0b10110, 0b11111] {
+                    for snapshot_dead in [0, 0b100, 0b1001, 0b11111] {
+                        let current = sample("now", current_len, current_dead);
+                        let snapshot = sample("then", snapshot_len, snapshot_dead);
+                        let mut new = current.clone();
+                        let mut old = current.clone();
+                        new.restore_preserving_slots(&snapshot);
+                        old.legacy_restore_preserving_slots(&snapshot);
+                        assert_eq!(format!("{new:?}"), format!("{old:?}"));
+                        let mut new = current.clone();
+                        let mut old = current;
+                        new.restore_for_rollback(&snapshot);
+                        old.legacy_restore_for_rollback(&snapshot);
+                        assert_eq!(format!("{new:?}"), format!("{old:?}"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn restores_reuse_the_allocation_and_leave_tombstones_in_place() {
+        let mut arena = sample("now", 6, 0b1);
+        let snapshot = sample("then", 4, 0);
+        let (items, live) = (arena.items.as_ptr(), arena.live.as_ptr());
+        let tombstone = arena.items[5].as_ptr();
+        arena.restore_preserving_slots(&snapshot);
+        assert_eq!(arena.items.as_ptr(), items);
+        assert_eq!(arena.live.as_ptr(), live);
+        assert_eq!(arena.items[5].as_ptr(), tombstone, "tombstone moved");
+        arena.restore_for_rollback(&snapshot);
+        assert_eq!(arena.items.as_ptr(), items);
+        assert_eq!(arena.items[5].as_ptr(), tombstone, "tombstone moved");
     }
 }

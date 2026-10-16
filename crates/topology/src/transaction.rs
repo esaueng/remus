@@ -437,4 +437,4 @@ mod tests {
 
 #[cfg(test)]
 #[path = "transaction/savepoint_tests.rs"]
-mod savepoint_tests;
+pub(crate) mod savepoint_tests;

@@ -248,6 +248,7 @@ Quick reference — find the right file for any task:
 | Mutation-local undo log, scope marks, append-only guard (`run_append_only`) | `undo_log.rs` |
 | Chunk/page COW comparison prototype (test-only, never shipped) | `cow_prototype.rs` |
 | Nested savepoint state, failure injection, and stale-handle contract tests | `transaction/savepoint_tests.rs` |
+| Differential oracle: the handle-slot-preserving restore with the arena restores it had before they were rewritten in place, kept verbatim, plus restore fixed points (tests) | `topology/restore_oracle_tests.rs` |
 | Attribute store (names, colors, app ids) | `attributes.rs` |
 | Append-only evolution journal | `journal.rs` |
 | Persistent references and their resolver | `naming.rs` |

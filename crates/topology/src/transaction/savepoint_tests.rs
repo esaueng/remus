@@ -81,7 +81,7 @@ fn attributes(name: &str) -> EntityAttributes {
     }
 }
 
-fn fixture() -> (Topology, crate::FaceId, crate::SolidId, PersistentRef) {
+pub fn fixture() -> (Topology, crate::FaceId, crate::SolidId, PersistentRef) {
     let mut t = Topology::new();
     let face = triangle_face(&mut t);
     t.set_face_attributes(face, attributes("before")).unwrap();
@@ -113,7 +113,7 @@ fn fixture() -> (Topology, crate::FaceId, crate::SolidId, PersistentRef) {
 
 // Each stage is a real public mutation. Every prefix can fail, including after
 // retirement and publication into the history index.
-fn mutate(
+pub fn mutate(
     t: &mut Topology,
     face: crate::FaceId,
     solid: crate::SolidId,
