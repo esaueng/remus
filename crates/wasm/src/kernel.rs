@@ -63,12 +63,12 @@ impl BrepKernel {
     pub fn new() -> Self {
         crate::panics::install_hook();
         // Content-keyed face integrals, NURBS areas, face boxes, planar arc
-        // pcurves and revolved wire areas, plus identity-keyed volume readings (off in
-        // the library by default). Module-wide on purpose: a body validated
-        // in one kernel is a content-keyed hit when a short-lived probe
-        // kernel validates its deserialized copy, and an unchanged hole rim
-        // or wall is a hit on every later cut of the same body. Every hit is
-        // bit-identical to recomputing. Idempotent.
+        // pcurves and revolved wire areas, plus identity-keyed volume
+        // readings (off in the library by default). Module-wide on purpose:
+        // a body validated in one kernel is a content-keyed hit when a
+        // short-lived probe kernel validates its deserialized copy, and an
+        // unchanged hole rim or wall is a hit on every later cut of the same
+        // body. Every hit is bit-identical to recomputing. Idempotent.
         remus_check::properties::face_cache::enable_thread_face_cache();
         remus_operations::measure::enable_thread_volume_memo();
         remus_operations::measure::enable_thread_nurbs_area_memo();
