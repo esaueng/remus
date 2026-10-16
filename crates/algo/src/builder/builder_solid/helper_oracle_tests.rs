@@ -910,3 +910,42 @@ fn memoized_wire_areas_are_bit_identical_and_keyed_on_content() {
     let n = wires.len() as u64;
     assert_eq!((stats.misses, stats.hits), (n, n), "{stats:?}");
 }
+
+#[test]
+fn spur_excision_keeps_only_the_actual_apex_turn() {
+    for rotation in 0..5 {
+        let mut topo = Topology::new();
+        let apex = Point3::new(0.0, 0.0, 0.0);
+        let cone = ConicalSurface::new(apex, Z, (4.0_f64 / 0.5).atan()).unwrap();
+        let rim = Circle3D::new(Point3::new(0.0, 0.0, 4.0), Z, 0.5).unwrap();
+        let point = rim.evaluate(0.0);
+        let rim_vertex = topo.add_vertex(Vertex::new(point, 1e-7));
+        let apex_vertex = topo.add_vertex(Vertex::new(apex, 1e-7));
+        let direction = point - apex;
+        let near = apex + direction * (5e-6 / direction.length());
+        let near_vertex = topo.add_vertex(Vertex::new(near, 1e-7));
+        let mut rim = Edge::new(rim_vertex, rim_vertex, EdgeCurve::Circle(rim));
+        rim.set_trim(Some((0.0, TAU)));
+        let rim = topo.add_edge(rim);
+        let seam = topo.add_edge(Edge::new(rim_vertex, apex_vertex, EdgeCurve::Line));
+        let spur = topo.add_edge(Edge::new(rim_vertex, near_vertex, EdgeCurve::Line));
+        let mut uses = vec![
+            OrientedEdge::new(rim, true),
+            OrientedEdge::new(seam, true),
+            OrientedEdge::new(seam, false),
+            OrientedEdge::new(spur, true),
+            OrientedEdge::new(spur, false),
+        ];
+        uses.rotate_left(rotation);
+        let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+        let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Cone(cone)));
+        let mut faces = vec![face];
+        super::excise_out_and_back_spurs(&mut topo, &mut faces, &mut vec![None]);
+        assert_eq!(faces, vec![face]);
+        let wire = topo.face(face).unwrap().outer_wire();
+        let uses = topo.wire(wire).unwrap().edges();
+        assert_eq!(uses.len(), 3, "rotation {rotation}");
+        assert_eq!(uses.iter().filter(|use_| use_.edge() == seam).count(), 2);
+        assert!(uses.iter().all(|use_| use_.edge() != spur));
+    }
+}

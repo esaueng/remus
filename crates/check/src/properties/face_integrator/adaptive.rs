@@ -83,6 +83,16 @@ fn values(a: &Accumulator) -> Components {
     ]
 }
 
+/// Cone generators are tangent to the surface: `(P - apex)·N = 0`.
+/// Use this identity before estimating convergence; a reference at the apex
+/// otherwise asks refinement to converge floating cancellation noise to zero.
+/// Moments retain the actual position relative to the requested reference.
+fn stable_cone_volume(a: &mut Accumulator, apex: Option<Point3>, reference: Point3) {
+    if let Some(apex) = apex {
+        a.vol = (apex - reference).dot(a.flux(1.0)) / 3.0;
+    }
+}
+
 fn contribution(a: Components, sign: f64) -> FaceContribution {
     Accumulator {
         area: a[0],
@@ -159,6 +169,7 @@ struct Integrator<'a, S> {
     surface: &'a S,
     options: &'a PropertiesOptions,
     reference: Point3,
+    cone_apex: Option<Point3>,
     scratch: DerivativeScratch,
     work: Work,
 }
@@ -181,6 +192,7 @@ impl<S: ParametricSurface> Integrator<'_, S> {
                     self.reference,
                     &mut self.scratch,
                 );
+                stable_cone_volume(&mut a, self.cone_apex, self.reference);
                 for (i, x) in values(&a).into_iter().enumerate() {
                     result.value[i] += x;
                     result.magnitude[i] += x.abs();
@@ -240,6 +252,7 @@ pub(super) fn integrate<S: ParametricSurface>(
     scale: PatchScale,
     options: &PropertiesOptions,
     reference: Point3,
+    cone_apex: Option<Point3>,
 ) -> Result<FaceContribution, CheckError> {
     if ![u.0, u.1, v.0, v.1].iter().all(|x| x.is_finite()) || u.0 >= u.1 || v.0 >= v.1 {
         return Err(CheckError::IntegrationFailed(
@@ -252,6 +265,7 @@ pub(super) fn integrate<S: ParametricSurface>(
         surface,
         options,
         reference,
+        cone_apex,
         scratch: DerivativeScratch::new(),
         work: Work::new(options.gauss_order),
     };
@@ -359,6 +373,7 @@ impl SpanModel {
 struct SlicedIntegrator<'a> {
     surface: &'a dyn ParametricSurface,
     reference: Point3,
+    cone_apex: Option<Point3>,
     domain: &'a Sliced<'a>,
     options: &'a PropertiesOptions,
     scratch: DerivativeScratch,
@@ -451,6 +466,7 @@ impl SlicedIntegrator<'_> {
                             self.reference,
                             &mut self.scratch,
                         );
+                        stable_cone_volume(&mut acc, self.cone_apex, self.reference);
                         for (i, x) in values(&acc).into_iter().enumerate() {
                             result.value[i] += x;
                             result.magnitude[i] += x.abs();
@@ -558,6 +574,7 @@ pub(super) fn integrate_sliced(
     sign: f64,
     options: &PropertiesOptions,
     reference: Point3,
+    cone_apex: Option<Point3>,
 ) -> Result<FaceContribution, CheckError> {
     if domain.breaks.iter().any(|x| !x.is_finite()) {
         return Err(CheckError::IntegrationFailed(
@@ -567,6 +584,7 @@ pub(super) fn integrate_sliced(
     let mut integrator = SlicedIntegrator {
         surface,
         reference,
+        cone_apex,
         domain,
         options,
         scratch: DerivativeScratch::new(),
