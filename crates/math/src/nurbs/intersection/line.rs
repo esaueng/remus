@@ -364,7 +364,7 @@ const GRID_ROOT_TOLERANCE: f64 = 1e-5;
 /// clamped to the domain. The grid pass keeps a hit closer than
 /// `GRID_ROOT_TOLERANCE` to the line, and the completion pass one within its
 /// round-off allowance, which grows with the coordinates involved
-/// ([`subdivision::hit_reach`]). The sum covers both, with the rounding of
+/// (`subdivision::hit_reach`). The sum covers both, with the rounding of
 /// their residuals, so a caller that bounds the surface may skip a line that
 /// stays farther than this from the bound.
 #[must_use]
