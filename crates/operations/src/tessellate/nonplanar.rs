@@ -6269,6 +6269,7 @@ fn classify_dense_candidate(
     };
     // `boundary_cdt` is mapped from `boundary_uv` one-to-one at the call
     // site, so both walk the same segments, in `point_in_polygon_2d`'s order.
+    debug_assert_eq!(boundary_uv.len(), boundary_cdt.len());
     for (uv, cdt) in boundary_uv.windows(2).zip(boundary_cdt.windows(2)) {
         segment(uv[0], uv[1], cdt[0], cdt[1]);
     }
@@ -6678,6 +6679,26 @@ mod interior_grid_limit_tests {
                 }
             }
         }
+    }
+
+    /// A debug build stops a dense scan whose CDT boundary does not map the
+    /// UV boundary one-to-one, which the pairwise walk would truncate.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "assertion `left == right` failed")]
+    fn dense_classification_asserts_matching_boundaries() {
+        use remus_math::vec::Point2;
+
+        let boundary_uv = [(0.0, 0.0), (2.0, 0.0), (0.0, 2.0)];
+        let boundary_cdt = [Point2::new(0.0, 0.0), Point2::new(2.0, 0.0)];
+        let _ = super::classify_dense_candidate(
+            &boundary_uv,
+            &boundary_cdt,
+            0.5,
+            0.5,
+            Point2::new(0.5, 0.5),
+            0.01,
+        );
     }
 }
 
