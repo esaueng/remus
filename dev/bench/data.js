@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792114569944,
+  "lastUpdate": 1792138648320,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -107143,6 +107143,294 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 73917,
             "range": "± 495",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c8754ffcb0638e1e2d8fac7095b20e5cd938ef7f",
+          "message": "fix(boolean): qualify pointed-cone side-wall cuts (#1158)\n\n## Change\n\nOn main `b3a6653f`, a 2×3×4 box cut by `make_cone(0.5, 0, 4)` translated\nto `(0.4, 1.5, 0)` refuses under `ExactOnly`. Moving the axis to x=0.5\ninstead returns `Exact` with a self-intersecting floor wire and a\nnon-manifold mesh. PR #1156 has merged and explicitly excluded these\nside-wall cases; the related open/closed cone PRs contain no repair.\n\nQualify a focused exact subset: a pointed cone whose one rim is notched\nby an axis-parallel side wall, with the retained patch reaching its\napex. Construct the side-wall section as a rational quadratic by central\nprojection, extend the existing rim-chain splitter to the degenerate\napex level, orient the polar boundary, and preserve its chart during\nmass integration. Both shared-edge and standalone face tessellation fan\nthe connected full-turn mixed rim to the shared apex. Two-rim frustums\nkeep their established section path.\n\nThe exact-result gate now applies native topology validation to\nretained-apex cone results. Pinched tangent openings and an unresolved\nrotated crossing return the existing typed exact-only refusal and roll\nback, instead of escaping as invalid `Exact` results.\n\n## Merge-queue dependency repair\n\nThe first merge-group audit found no vulnerabilities but reported the\nnewly yanked zip 8.6.0, then failed while publishing that warning with a\nread-only token. The registry marks all zip 8 releases yanked. Upgrade\nthe existing archive dependency to supported zip 9.0.3; its Rust minimum\nremains 1.88. This major dependency update adds nix on macOS/BSD and\nchanges the filename iterator used by our tests. No production Remus API\nadaptation is needed. The third-party error type wrapped by\n`IoError::Zip` now comes from zip 9; Rust consumers matching that\nunderlying type may need to update their zip dependency or matches.\n\nPreserve import-limit checks and update the forged-size test to require\nzip's earlier InvalidData refusal for an understated uncompressed size.\nExisting over-limit, streaming, round-trip and topology assertions\nremain active. No audit exceptions, workflow permissions or CI gates are\nrelaxed.\n\nThe next queue attempt exposed a separate account-rename mismatch:\nGitHub's squash candidate uses the current public handle, while the\ncommit-privacy policy still mapped the old handle. Update only that\nprotected-login/display-name mapping, matching the current account's\nunchanged numeric ID. Synthetic privacy regressions pass, and a negative\ncontrol proves the old policy rejects the same valid queue identity that\nthe corrected policy accepts. Reusable workflow pins and all privacy\nchecks remain intact.\n\n## Verification\n\n- Failure-first check against unchanged main: the new crossing,\ntangent-refusal, and rotated-refusal regressions all fail. The two\ncontrols pass.\n- Native library suites at `6135fe161`: math, algo, check and operations\npassed (3,467 tests; 9 ignored).\n- Cone integration coverage at `6135fe161`: 47 tests passed across the\npointed-cone, apex chart/orientation, shared rim, box fuse, coaxial\ncone, torus/cone and sphere/cone suites, including all five new\nregressions.\n- New coverage checks apex-up/down, two crossing depths, three scales,\ntranslation, unchanged serialized operands, rollback of live topology\nand journal counts, native validation, retained analytic cone faces,\nindependent material probes, closed manifold solid meshes at two\ndeflections, and standalone face trimming. Separate section tests check\nthe independent cone and plane equations between rational knots,\nincluding rigid carrier placement and non-unit plane equations.\n- Workspace all-target/all-feature Clippy with warnings denied,\nformatting, normal pre-commit hooks, layer boundaries, deterministic\nhashes, wildcard-arm policy, edge-domain authority, Apache lineage and\nGit privacy verification passed. Optional commitlint is unavailable; the\ncommit message follows the required conventional form.\n- Not run locally: WASM package rebuild/JavaScript consumers or GPU\ntests. This change is qualified by native geometry tests; hosted CI\nremains pending.\n\n- Review-repair validation: all five pointed-cone regressions passed\nlocally with zip 9.0.3; native 3MF reader/writer, streaming and\nmesh-import regressions passed. Normal hooks include workspace\nall-target/all-feature strict Clippy. Hosted current-head and\nmerge-group validation remain required.\n\n## Compatibility and risks\n\nNo Remus public signature, file-format, unit, tolerance-default or\ncommitted WASM package changes. The new behavior is deliberately\nbounded: sections through the apex plane, mixed side-wall/axial-face\ncrossings and unresolved rotated rim subdivisions are not newly\nqualified. The explicit refusal witnesses must remain fail-closed.\n\nDefault native mass properties retain their sampled-trim accuracy\ncontract. The crossing volume regression uses an independent\ncircular-segment integral with an absolute tolerance of 5e-4 on the\nunscaled 24-unit-volume box; it does not claim machine-precision mass\nproperties from the exact boundary representation.\n\n## WASM module tier\n\nExisting core boolean, validation, measurement and tessellation paths.\nBinary delta is unmeasured locally.\n\nWASM-Size: exact pointed-cone side-wall cuts and fail-closed tangent\nqualification, Tier: core (constructs and validates solid topology\nduring live boolean editing).\n\n---------\n\nCo-authored-by: petertoday <171875562+petertoday@users.noreply.github.com>",
+          "timestamp": "2026-10-16T04:08:25-04:00",
+          "tree_id": "38762b67cc1891db2905bd4ed32d6c8fee58b17c",
+          "url": "https://github.com/esaueng/remus/commit/c8754ffcb0638e1e2d8fac7095b20e5cd938ef7f"
+        },
+        "date": 1792138646363,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1186955,
+            "range": "± 3029",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1275163,
+            "range": "± 3849",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27813,
+            "range": "± 163",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7328795,
+            "range": "± 6047",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7312158,
+            "range": "± 125647",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7186359,
+            "range": "± 146043",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 28119,
+            "range": "± 67",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3540447,
+            "range": "± 5138",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 30456243,
+            "range": "± 574270",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 41,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 116,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 240,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 157,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 877,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 171,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 395,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 211,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 594,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 627,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3561,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 4246,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 15207,
+            "range": "± 23",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 53148,
+            "range": "± 116",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5517,
+            "range": "± 139",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 507582,
+            "range": "± 678",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 14480079,
+            "range": "± 18377",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 143953,
+            "range": "± 395",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 880070,
+            "range": "± 1352",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 364171,
+            "range": "± 291",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 61964,
+            "range": "± 95",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 34697,
+            "range": "± 50",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 21364,
+            "range": "± 63",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 117630,
+            "range": "± 181",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 141909,
+            "range": "± 224",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 650507,
+            "range": "± 29764",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 7890022,
+            "range": "± 154016",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 554105,
+            "range": "± 2613",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1180025,
+            "range": "± 4313",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 86142,
+            "range": "± 345",
             "unit": "ns/iter"
           }
         ]
