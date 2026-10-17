@@ -4,7 +4,7 @@ use crate::nurbs::surface::NurbsSurface;
 use crate::vec::{Point3, Vec3};
 
 use super::surface_marching::march_intersection;
-use super::surface_marching::{SsiScratch, near_existing_segment, second_order_tangent};
+use super::surface_marching::{SsiScratch, point_to_segment_dist, second_order_tangent};
 use super::surface_seeding::{
     find_ssi_seeds_grid, find_ssi_seeds_subdivision, find_ssi_seeds_subdivision_with_context,
     refine_ssi_point, refine_ssi_point_with_context,
@@ -1299,7 +1299,7 @@ fn ssi_perpendicular_cylinders_two_loops() {
 
 #[test]
 fn segment_distance_dedup_works() {
-    // Verify that near_existing_segment uses segment distance,
+    // Verify that the projection search uses segment distance,
     // not just point distance.
     let p0 = IntersectionPoint {
         point: Point3::new(0.0, 0.0, 0.0),
@@ -1311,7 +1311,7 @@ fn segment_distance_dedup_works() {
         param1: (1.0, 0.0),
         param2: (1.0, 0.0),
     };
-    let segment = vec![p0, p1];
+    let segment = [p0, p1];
 
     // Point near the middle of the segment (y=0.01).
     let near_mid = IntersectionPoint {
@@ -1319,11 +1319,7 @@ fn segment_distance_dedup_works() {
         param1: (0.5, 0.0),
         param2: (0.5, 0.0),
     };
-    assert!(near_existing_segment(
-        std::slice::from_ref(&segment),
-        &near_mid,
-        0.1
-    ));
+    assert!(point_to_segment_dist(near_mid.point, segment[0].point, segment[1].point) < 0.1);
 
     // Point far from the segment (y=2.0).
     let far = IntersectionPoint {
@@ -1331,11 +1327,7 @@ fn segment_distance_dedup_works() {
         param1: (0.5, 0.0),
         param2: (0.5, 0.0),
     };
-    assert!(!near_existing_segment(
-        std::slice::from_ref(&segment),
-        &far,
-        0.1
-    ));
+    assert!(point_to_segment_dist(far.point, segment[0].point, segment[1].point) >= 0.1);
 }
 
 #[test]
@@ -3234,5 +3226,209 @@ mod steep_section_36309258004 {
             s.weights().to_vec(),
         )
         .unwrap()
+    }
+}
+
+// Issue #1050: the two z=0 sections of this rational surface are exact
+// concentric circles. z(v)=(v-1/4)(v-3/4), r(v)=0.1+0.2v.
+fn two_circle_sections(radial_step: f64) -> (NurbsSurface, NurbsSurface) {
+    let cylinder = cylinder_at(0.0, 0.0, 1.0, 0.0, 1.0);
+    let radii = [
+        0.15 - radial_step * 0.5,
+        0.15 + radial_step * 0.5,
+        0.15 + radial_step * 1.5,
+    ];
+    let heights = [0.1875, -0.3125, 0.1875];
+    let cps = cylinder.control_points()[0]
+        .iter()
+        .map(|row| {
+            (0..3)
+                .map(|j| Point3::new(row.x() * radii[j], row.y() * radii[j], heights[j]))
+                .collect()
+        })
+        .collect();
+    let weights = cylinder.weights()[0]
+        .iter()
+        .map(|weight| vec![*weight; 3])
+        .collect();
+    let curved = NurbsSurface::new(
+        2,
+        2,
+        cylinder.knots_v().to_vec(),
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        cps,
+        weights,
+    )
+    .unwrap();
+    let plane = NurbsSurface::new(
+        1,
+        1,
+        vec![-0.5, -0.5, 0.5, 0.5],
+        vec![-0.5, -0.5, 0.5, 0.5],
+        vec![
+            vec![Point3::new(-0.5, -0.5, 0.0), Point3::new(-0.5, 0.5, 0.0)],
+            vec![Point3::new(0.5, -0.5, 0.0), Point3::new(0.5, 0.5, 0.0)],
+        ],
+        vec![vec![1.0; 2]; 2],
+    )
+    .unwrap();
+    (curved, plane)
+}
+
+fn circle_seed(surface: &NurbsSurface, u: f64, v: f64) -> IntersectionPoint {
+    let point = surface.evaluate(u, v);
+    IntersectionPoint {
+        point,
+        param1: (u, v),
+        param2: (point.x(), point.y()),
+    }
+}
+
+#[test]
+fn curved_seed_projection_keeps_the_physical_band_and_other_component() {
+    use super::surface_seeding::near_traced_curve;
+    use crate::context::OperationContext;
+    let (curved, plane) = two_circle_sections(0.1);
+    let a = circle_seed(&curved, 0.1, 0.25);
+    let b = circle_seed(&curved, 1.4, 0.25);
+    let seed = circle_seed(&curved, 0.75, 0.25);
+    let traces = vec![vec![a, b]];
+    assert!(point_to_segment_dist(seed.point, a.point, b.point) > 1e-4);
+    assert!(
+        near_traced_curve(
+            &curved,
+            &plane,
+            &traces,
+            &seed,
+            1e-6,
+            &OperationContext::new(),
+            &mut SsiScratch::new()
+        )
+        .unwrap()
+    );
+    let other = circle_seed(&curved, 0.75, 0.75);
+    assert!(
+        !near_traced_curve(
+            &curved,
+            &plane,
+            &traces,
+            &other,
+            1e-6,
+            &OperationContext::new(),
+            &mut SsiScratch::new()
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn curved_seed_projection_handles_uv_coordinate_extrema() {
+    use super::surface_seeding::near_traced_curve;
+    use crate::context::OperationContext;
+    let (curved, plane) = two_circle_sections(0.1);
+    let u = std::f64::consts::FRAC_PI_2;
+    let traces = vec![vec![
+        circle_seed(&curved, u - 0.65, 0.25),
+        circle_seed(&curved, u + 0.65, 0.25),
+    ]];
+    let seed = circle_seed(&curved, u, 0.25);
+    assert!(
+        near_traced_curve(
+            &curved,
+            &plane,
+            &traces,
+            &seed,
+            1e-6,
+            &OperationContext::new(),
+            &mut SsiScratch::new()
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn chord_error_allowance_does_not_merge_close_disjoint_circles() {
+    use super::surface_seeding::near_traced_curve;
+    use crate::context::OperationContext;
+    // The second circle is only 2e-4 away: outside the 1e-4 physical band,
+    // but much closer than the first circle's chord sagitta.
+    let (curved, plane) = two_circle_sections(0.0002);
+    let traces = vec![vec![
+        circle_seed(&curved, 0.1, 0.25),
+        circle_seed(&curved, 1.4, 0.25),
+    ]];
+    let seed = circle_seed(&curved, 0.75, 0.75);
+    assert!(
+        !near_traced_curve(
+            &curved,
+            &plane,
+            &traces,
+            &seed,
+            1e-6,
+            &OperationContext::new(),
+            &mut SsiScratch::new()
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn default_ssi_discovers_both_curved_components() {
+    let (curved, plane) = two_circle_sections(0.1);
+    let curves = intersect_nurbs_nurbs(&curved, &plane, 20, 0.02).unwrap();
+    for radius in [0.15, 0.25] {
+        let points: Vec<_> = curves
+            .iter()
+            .flat_map(|c| &c.points)
+            .filter(|p| (p.point.x().hypot(p.point.y()) - radius).abs() < 1e-5)
+            .collect();
+        assert!(points.len() > 10, "missing radius {radius} component");
+        for (xsign, ysign) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+            assert!(
+                points
+                    .iter()
+                    .any(|p| p.point.x() * xsign > radius * 0.3
+                        && p.point.y() * ysign > radius * 0.3),
+                "radius {radius} must cover every quadrant"
+            );
+        }
+    }
+}
+
+#[test]
+fn curved_component_seeds_leave_budget_for_a_second_circle() {
+    use super::surface_seeding::trace_seeds;
+    use crate::context::{OperationContext, WorkBudgets};
+    let (curved, plane) = two_circle_sections(0.1);
+    // Group 49 seeds from the first circle ahead of the second circle.
+    let mut seeds: Vec<_> = (0..49)
+        .map(|i| circle_seed(&curved, 0.1 + f64::from(i) * 0.12, 0.25))
+        .collect();
+    seeds.push(circle_seed(&curved, 0.1, 0.75));
+    for segments in [WorkBudgets::default().segments, 2] {
+        let ctx =
+            OperationContext::new().with_budgets(WorkBudgets::default().with_segments(segments));
+        let traces = trace_seeds(
+            &curved,
+            &plane,
+            seeds.clone(),
+            0.02,
+            1e-6,
+            &ctx,
+            &mut SsiScratch::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            traces.len(),
+            2,
+            "one trace per circle within {segments} segments"
+        );
+        for (trace, radius) in traces.iter().zip([0.15, 0.25]) {
+            assert!(trace.len() > 10);
+            for sample in trace {
+                assert!((sample.point.x().hypot(sample.point.y()) - radius).abs() < 1e-5);
+                assert!(sample.point.z().abs() < 1e-5);
+            }
+        }
     }
 }
