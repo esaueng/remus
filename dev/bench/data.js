@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792185661496,
+  "lastUpdate": 1792216618138,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -108871,6 +108871,294 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 74595,
             "range": "± 197",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e9eed69f265ec9c44fe95c235b3fae28a3b3c52a",
+          "message": "perf: session rollback scopes, boolean ray memo and culls, recognition prefilter (#1161)\n\n## Change\n\nThe follow-ups to esaueng/remus#1089 that #1152 left \"open for separate\nqualification\", rebased onto current `main` (5e7e5c3). There are three\ngroups of commits. Each group was reviewed separately, and each commit\nstands on its own.\n\n**Sessions and transactions** (7 commits). Edits on documents with many\nbodies no longer cost time proportional to the document.\n- `fix(topology)`: keep outer rollback exact across restores in a scope.\nThree gaps remained on `main`, and each has a regression test that fails\nthere:\n- a barrier restore of a snapshot off the restore fixed point was\ntreated as exact;\n- a clone changed only by tick-free attribute or journal writes passed\nas unchanged;\n- a log cut below the copy point and then regrown passed the length\ncheck.\n- `perf(topology)`: a face that is re-derived drops its pcurve index\nentries by key instead of retaining over the whole registry.\n- `perf(topology)`: arenas are restored in place, and the restore\nfixed-point check works by index lookup.\n- `perf(wasm)`: restoring a checkpoint that the kernel still holds is\nskipped when that value is a restore fixed point.\n- `perf(wasm)`: the WASM boundary opens rollback scopes instead of\ncloning the document. This covers `with_topology_transaction`, the\nmutating `executeBatch` arm, `fromBREP` and the typed modifier twins. A\nsuccessful call commits its scope.\n- A refusal rewinds like the old copy did, then rebuilds the pcurve\nindex exactly as `main`'s restore did.\n- `perf(offset)`: a refused surface replacement rolls back through a\nscope.\n\n**Booleans and recognition** (8 commits)\n- `perf(algo)`: a content-keyed per-thread memo of torus-trim ray\ngeometry (bounded at 1,024 faces / 8 MiB, enabled in `BrepKernel::new`).\nHits are bit-identical to recomputing.\n- The same commit adds a conservative cull of torus faces whose ray line\nclears the grown carrier box. The cull applies only up to a reach of\n1e10; beyond that every ray goes to the solver as before.\n- `perf(algo)`: shell assembly skips the arc-refinement search for\nvertices more than 2 snap from every NURBS span box.\n- `perf(operations)`: the flatten pre-pass gate runs only the plane and\nline tests.\n- `perf(check)`: an exact knot-span prefilter in\n`PreparedSolid::count_ray_crossings`. A NURBS face is skipped only when\nthe ray provably misses all of its span boxes.\n- The scan is bounded on dense faces: grouped runs of span boxes, a\n400-span cap, and a payoff gate. Crossing counts never depend on which\nfaces were scanned.\n- Tests and fixes:\n  - tests that pin each memo key input;\n  - the memo budget now counts both stored copies of a key;\n  - the arc-refine oracle calls the production skip test.\n\n**Edit-track hardening** (6 commits). Test, assertion and comment\nchanges only; release builds compile byte-identical machine code.\n- Tests:\n  - the closed-edge word in the face-box memo key;\n  - the translation move's copy-validation refusal.\n- Debug assertions:\n  - a replacing copy consumes every replacement;\n  - the dense candidate's two boundary lists have equal lengths.\n- Comments: a note at the face-box reads pointing to the memo key, and\nthe `BrepKernel::new` comment reflow.\n\n## Verification\n\n**Bit-identity against `main`.** Both trees were built from the same\ncheckout and each harness ran at least twice per build.\n- Scratch digest of meshes, volumes, face integrals, mass properties,\nvalidation, recognition, point classification, every planar-face move\nwith its journal, and a 300-body document: 408/408 lines identical.\n- Boolean digest (serialized result arenas and refusals for the\nhammer-holder slot and pocket cuts, general and store-local paths):\n79/79 identical.\n- Fillet digest: the fillet engine is not run-to-run deterministic on\n`main` (std `RandomState`), so each build ran 8 times. Every head value\nappears among `main`'s values. 6 lines vary on every run in both builds.\n\n**Oracles (committed).** Each compares against `main`'s code kept\nverbatim:\n- the old full-copy WASM dispatcher run in lockstep with the new one. It\ncovers 15 operation families, with and without a retained checkpoint, on\nand off the restore fixed point, comparing full `Topology` `Debug`;\n- the modifier-twin envelope, the offset replacement, and the topology\nrestores;\n- `cast_rays` without the cull, with far-field and near-miss margin\ntests;\n- the unfiltered `count_ray_crossings`, over 144k rays on the STEP\nfixtures and the dragged hammer holder, with the skip asserted to fire;\n- the arc-refine search, and memo key coverage.\n\n**Tests (`--profile ci-test`).**\n- Lib: algo 740, geometry 269, check 491, math 934, offset 40,\noperations 1545, io 456, wasm 764, topology 445.\n- Integration: topology and offset in full. io: `boundary_prune_oracle`,\n`hammer_ray_geom_oracle`, `move_faces_hammer_holder`,\n`resize_blend_step`, `edit_aware_measurement`,\n`tessellation_digest_hammer`, `tessellation_reuse_hammer`,\n`fillet_preserves_input`. operations: `golden_regression`,\n`measurement_memos`, `regress_entity_evolution_gate`,\n`edit_pipeline_recognition`, `perf_o06_recognition_golden`,\n`qualify_feature_recognition`.\n- All pass. Clippy is clean with `-D warnings` on every touched crate,\nand every Repository Policy script passes locally.\n\n**Review.** Each group had an output-equivalence reviewer and a\nrepo-rules / perf-reproduction reviewer (one combined reviewer for the\nhardening group). All approved on this base. Earlier rounds on the old\nbase found three issues, which are fixed here:\n- an undisclosed pcurve-index difference on refusals;\n- a far-field gap in the torus cull's no-root argument;\n- an unbounded prefilter scan on dense faces.\n\n**Performance** (callgrind Ir, `main` → this branch):\n\n| Workload | `main` | this PR |\n|---|---:|---:|\n| Direct `transformSolid`, 10,000-box document | 247.4 M | 0.10 M |\n| Refused batch item, 10,000 boxes | 670.5 M | 66.0 M |\n| `filletDetailed` twin, 10,000 boxes | 499.7 M | 5.1 M |\n| Refused bore `moveFaces`, 10,000 boxes | 1,557.7 M | 132.0 M |\n| Restore right after a checkpoint, 10,000 boxes | 484.9 M | 65.9 M |\n| Hammer drag (restore + batch `moveFaces`), 10,000 boxes | 6,510 M |\n6,032 M |\n| Hammer slot cut, 2 booleans (general path) | 1,104 M | 670 M (−39%) |\n| Same cut, store-local path | 626 M | 394 M (−37%) |\n| `kernel_perf_probe hammer recognize 2` | 9,012 M | 8,802 M (−2.3%) |\n| `kernel_perf_probe plate boolean 2` | 3,227.5 M | 3,227.8 M (+0.01%,\nwithin run spread) |\n\nIn the hammer cut, the second boolean on an unchanged body falls from\n477 M to 168 M Ir, because torus-trim hits and the arc-refine skip do\nmost of the work.\n\nOn synthetic dense NURBS domes, the prefilter is at most +0.17% slower\nwhere it never skips (2×2 and 4×4 grids) and up to 14% faster where it\ndoes.\n\n## Compatibility and risks\n\n**Intended behaviour change:** when a WASM boundary call fails, the\nentities it retired are revived by the rollback instead of staying\nretired. This applies to any `with_topology_transaction` binding, a\nnon-boolean mutating batch item, and `fromBREP`. Faces whose loops the\nfailed call retired keep their original handles. The state is otherwise\nidentical to `main`'s full-copy restore, including the pcurve index\nrebuild and tombstone contents.\n\n**Diagnostics only:**\n- After a skipped checkpoint restore, `checkpointMemoryStats` changes:\n`uniqueTopologies`, `estimatedBytes`, `allocatedSlots` and\n`retiredSlots` read lower, and `nextMutationEstimatedBytes` includes the\npending first-mutation copy.\n- `checkpoint.first-mutation-clone` fires at the next mutation rather\nthan at the restore.\n- Capacity-based `arena_bytes` can read differently because arenas are\nrestored in place.\n- All of this is documented in\n`docs/design/perf-t02-t03-transactions.md`.\n\n**Memory:** `BrepKernel::new` also enables the torus-trim memo, up to\nabout 8 MiB per thread.\n\n**Public API (additive):**\n- `Topology::{is_restore_fixed_point, normalize_as_restored}` and\n`RollbackSnapshot::{restore_like_copy, is_open_in}`.\n- `remus_algo::ray_geom_memo`.\n- `remus_geometry::convert::{recognize_plane, recognize_line}` and\n`remus_math::nurbs::intersection::line_hit_reach`.\n- Doc-hidden: `Topology::undo_record_count`, `ray_cast_rays_cached`,\n`PreparedSolid::{count_ray_crossings_unfiltered,\ncount_ray_crossings_and_skips}`.\n- `RayWorkCounts` gains a `torus_culls` field, under\n`test`/`perf-counters` only. This breaks struct literals.\n- `PCurveRegistry::remove_face` becomes test-only.\n\n**Residual risks:**\n- Each refusal through a boundary scope still scans the boundary once to\ncheck the restore fixed point: about 33 M Ir at 10,000 boxes, about 10×\ncheaper than `main` but not O(1).\n- A caught panic in a modifier twin is rewound from the undo log, not\nfrom a full copy. This affects native hosts only.\n- The boundary scope's guard against an operation re-sharing or\nreplacing the kernel topology while the scope is open is a debug\nassertion only. No current operation does either.\n- The torus cull below its reach cap rests on the residual-filter\nargument plus fuzz evidence (1.6 M lines over 4,000 tori). Prefilter\nexactness depends on `line_hit_reach` staying an upper bound on what the\nNURBS line solver reports.\n\nNo units, tolerances, formats or dependencies change.\n\n## WASM module tier\n\nNo new capability; every change is in existing `core` paths\n(live-session transactions, booleans and recognition). WASM size could\nnot be built locally; native symbol growth is about +18 KB. The CI size\ncomment will give the figure, and I'll add a `WASM-Size:` line if growth\nexceeds 64 KiB.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01CpuW6U8FHCF9saaSBUNCnp\n\n---\n_Generated by [Claude\nCode](https://claude.ai/code/session_01CpuW6U8FHCF9saaSBUNCnp)_\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-10-17T04:02:00Z",
+          "tree_id": "c045401c254f98aa89df2b364e48ff2dea30946a",
+          "url": "https://github.com/esaueng/remus/commit/e9eed69f265ec9c44fe95c235b3fae28a3b3c52a"
+        },
+        "date": 1792216614749,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1177314,
+            "range": "± 2967",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1263663,
+            "range": "± 39530",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27505,
+            "range": "± 411",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7260594,
+            "range": "± 55716",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7238675,
+            "range": "± 12494",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7101875,
+            "range": "± 8163",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 28685,
+            "range": "± 187",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3389517,
+            "range": "± 6724",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 29285337,
+            "range": "± 710044",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 40,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 116,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 240,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 157,
+            "range": "± 35",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 877,
+            "range": "± 23",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 199,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 393,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 212,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 592,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 626,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3515,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 4012,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 14980,
+            "range": "± 20",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 53005,
+            "range": "± 175",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5298,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 506846,
+            "range": "± 2154",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 14447233,
+            "range": "± 27878",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 143053,
+            "range": "± 323",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 877122,
+            "range": "± 2842",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 361765,
+            "range": "± 635",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 66695,
+            "range": "± 1017",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 35035,
+            "range": "± 131",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 21293,
+            "range": "± 106",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 117147,
+            "range": "± 1061",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 141878,
+            "range": "± 557",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 649707,
+            "range": "± 30229",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 7810173,
+            "range": "± 125805",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 546468,
+            "range": "± 5476",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1180860,
+            "range": "± 8649",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 86430,
+            "range": "± 514",
             "unit": "ns/iter"
           }
         ]
