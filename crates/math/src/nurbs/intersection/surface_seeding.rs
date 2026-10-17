@@ -285,7 +285,7 @@ pub(super) fn near_traced_curve(
                 let u = i * 2;
                 ((bv[u] - av[u]) / scales[u]).hypot((bv[u + 1] - av[u + 1]) / scales[u + 1]) * 0.5
             });
-            for _ in 0..context.budgets.newton_iterations {
+            for iteration in 0..=context.budgets.newton_iterations {
                 context.check_cancelled()?;
                 // Stay near this sampled parameter interval. A failed or
                 // singular projection leaves the seed eligible for marching.
@@ -315,6 +315,11 @@ pub(super) fn near_traced_curve(
                     if (p1 - seed.point).length() < dist {
                         return Ok(true);
                     }
+                    break;
+                }
+                // The budget counts updates. Always evaluate their final
+                // result, including when the last permitted step converges.
+                if iteration == context.budgets.newton_iterations {
                     break;
                 }
                 let (su1, sv1) = scratch.partials1(s1, eval[0], eval[1]);

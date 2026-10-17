@@ -3520,3 +3520,49 @@ fn curved_seed_projection_crosses_periodic_seams_on_either_surface_axis() {
         }
     }
 }
+
+#[test]
+fn curved_seed_projection_accepts_the_last_budgeted_newton_update() {
+    use super::surface_seeding::near_traced_curve;
+    use crate::context::{OperationContext, WorkBudgets};
+    let (curved, plane) = two_circle_sections(0.1);
+    // At the symmetric midpoint, the curved-surface parameters already
+    // identify the exact circle point. Only the plane parameters need a
+    // correction, and that projection is linear: exactly one Newton step.
+    let traces = vec![vec![
+        circle_seed(&curved, 0.0, 0.25),
+        circle_seed(&curved, std::f64::consts::FRAC_PI_2, 0.25),
+    ]];
+    let seed = circle_seed(&curved, std::f64::consts::FRAC_PI_4, 0.25);
+    for iterations in [0, 1] {
+        let context = OperationContext::new()
+            .with_budgets(WorkBudgets::new().with_newton_iterations(iterations));
+        assert_eq!(
+            near_traced_curve(
+                &curved,
+                &plane,
+                &traces,
+                &seed,
+                1e-6,
+                &context,
+                &mut SsiScratch::new()
+            )
+            .unwrap(),
+            iterations == 1,
+            "one correction must suffice, and zero must not spend a step"
+        );
+        let other = circle_seed(&curved, std::f64::consts::FRAC_PI_4, 0.75);
+        assert!(
+            !near_traced_curve(
+                &curved,
+                &plane,
+                &traces,
+                &other,
+                1e-6,
+                &context,
+                &mut SsiScratch::new()
+            )
+            .unwrap()
+        );
+    }
+}
