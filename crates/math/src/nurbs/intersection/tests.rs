@@ -3432,3 +3432,91 @@ fn curved_component_seeds_leave_budget_for_a_second_circle() {
         }
     }
 }
+
+#[test]
+fn curved_seed_projection_crosses_periodic_seams_on_either_surface_axis() {
+    use super::surface_seeding::near_traced_curve;
+    use crate::context::OperationContext;
+    let (curved, plane) = two_circle_sections(0.1);
+    let tau = std::f64::consts::TAU;
+    for swap_axes in [false, true] {
+        let surface = if swap_axes {
+            let cps = (0..curved.control_points()[0].len())
+                .map(|v| curved.control_points().iter().map(|row| row[v]).collect())
+                .collect();
+            let weights = (0..curved.weights()[0].len())
+                .map(|v| curved.weights().iter().map(|row| row[v]).collect())
+                .collect();
+            NurbsSurface::new(
+                curved.degree_v(),
+                curved.degree_u(),
+                curved.knots_v().to_vec(),
+                curved.knots_u().to_vec(),
+                cps,
+                weights,
+            )
+            .unwrap()
+        } else {
+            curved.clone()
+        };
+        assert!(if swap_axes {
+            surface.is_periodic_v()
+        } else {
+            surface.is_periodic_u()
+        });
+        for reverse in [false, true] {
+            for swap_operands in [false, true] {
+                let make_seed = |u, v| {
+                    let mut seed = circle_seed(&curved, u, v);
+                    if swap_axes {
+                        seed.param1 = (seed.param1.1, seed.param1.0);
+                    }
+                    if swap_operands {
+                        std::mem::swap(&mut seed.param1, &mut seed.param2);
+                    }
+                    seed
+                };
+                let mut trace = vec![make_seed(tau - 0.3, 0.25), make_seed(0.3, 0.25)];
+                if reverse {
+                    trace.reverse();
+                }
+                let traces = vec![trace];
+                let (s1, s2) = if swap_operands {
+                    (&plane, &surface)
+                } else {
+                    (&surface, &plane)
+                };
+                for u in [tau - 0.05, 0.0, 0.05] {
+                    let seed = make_seed(u, 0.25);
+                    assert!(
+                        near_traced_curve(
+                            s1,
+                            s2,
+                            &traces,
+                            &seed,
+                            1e-6,
+                            &OperationContext::new(),
+                            &mut SsiScratch::new()
+                        )
+                        .unwrap(),
+                        "seam seed {u}: swap_axes={swap_axes}, reverse={reverse}, swap_operands={swap_operands}"
+                    );
+                    let other = make_seed(u, 0.75);
+                    assert!(
+                        !near_traced_curve(
+                            s1,
+                            s2,
+                            &traces,
+                            &other,
+                            1e-6,
+                            &OperationContext::new(),
+                            &mut SsiScratch::new()
+                        )
+                        .unwrap(),
+                        "the second component must stay eligible for tracing"
+                    );
+                }
+            }
+        }
+    }
+}
