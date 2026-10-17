@@ -31,9 +31,13 @@
 //! write-guard rule and its §8 amendment in
 //! `docs/design/perf-t02-t03-transactions.md`), slots are never reused and
 //! slot counts never shrink, rewinds apply exact inverses, and an unchanged
-//! same-lineage restore truncates to its source prefix. A changed clone or
-//! unrelated restore instead records the complete pre-restore state so older
-//! records remain valid after that inverse lands.
+//! same-lineage restore that lands exactly on its snapshot truncates to its
+//! source prefix only while that prefix still rewinds the snapshot to every
+//! live scope's entry state (an unchanged clone of this very value, taken
+//! after every live scope opened, cut at its own copy point with that prefix
+//! intact; see `Topology::undo_truncate_for_foreign_restore`). Any other restore inside a
+//! live scope records the complete pre-restore state so older records remain
+//! valid after that inverse lands.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -163,6 +167,30 @@ pub enum UndoRecord {
     },
 }
 
+impl UndoRecord {
+    /// The arena slot a slot record writes back, if it is one.
+    const fn slot(&self) -> Option<(ArenaTag, usize)> {
+        match self {
+            Self::Vertex { index, .. } => Some((ArenaTag::Vertex, *index)),
+            Self::Edge { index, .. } => Some((ArenaTag::Edge, *index)),
+            Self::Wire { index, .. } => Some((ArenaTag::Wire, *index)),
+            Self::Face { index, .. } => Some((ArenaTag::Face, *index)),
+            Self::Shell { index, .. } => Some((ArenaTag::Shell, *index)),
+            Self::Solid { index, .. } => Some((ArenaTag::Solid, *index)),
+            Self::Compound { index, .. } => Some((ArenaTag::Compound, *index)),
+            Self::CompSolid { index, .. } => Some((ArenaTag::CompSolid, *index)),
+            Self::Loop { index, .. } => Some((ArenaTag::Loop, *index)),
+            Self::Coedge { index, .. } => Some((ArenaTag::Coedge, *index)),
+            Self::PcurveUse { .. }
+            | Self::SolidAttribute { .. }
+            | Self::FaceAttribute { .. }
+            | Self::JournalCreated { .. }
+            | Self::JournalReplace { .. }
+            | Self::ForeignRestore { .. } => None,
+        }
+    }
+}
+
 /// A scope's entry position: log length, journal length, tick count, and
 /// per-arena slot counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,11 +266,36 @@ pub struct UndoBase {
     pub(crate) seq: u64,
 }
 
+/// The exact point in its direct source's history at which a clone was
+/// copied: the soundness half of the truncation certificate (see
+/// `Topology::undo_truncate_for_foreign_restore`).
+#[derive(Debug, Clone, Copy)]
+pub struct UndoOrigin {
+    /// Cache lineage of the source value: unique per value, kept by restores.
+    pub(crate) cache_lineage: u64,
+    /// Source cache generation at clone time. Every mutation route bumps it,
+    /// tick-free writes included, so an equal value proves the clone (which
+    /// carries it) unchanged.
+    pub(crate) cache_generation: u64,
+    /// Source journal fingerprint at clone time; journal appends do not bump
+    /// the cache generation.
+    pub(crate) journal: (usize, u64, u64),
+    /// Source log length at clone time.
+    pub(crate) log_len: usize,
+    /// Serial of the source log's last record at clone time (0: empty log).
+    pub(crate) last_serial: u64,
+}
+
 /// Mutation-local rollback storage plus append-only guards.
 #[derive(Clone)]
 pub struct UndoLog {
     /// Reversible records for all active scopes, oldest first.
     pub(crate) records: Vec<UndoRecord>,
+    /// One serial per record, parallel to `records`: never reissued, so a
+    /// serial still at its index proves every record up to it unchanged.
+    serials: Vec<u64>,
+    /// Serial of the most recently pushed record (0: none yet).
+    last_serial: u64,
     /// Active scope entries, outermost first. Entries whose snapshot was
     /// dropped without restore or commit are reclaimed lazily as commits.
     pub(crate) scopes: Vec<ActiveScope>,
@@ -260,6 +313,9 @@ pub struct UndoLog {
     /// Whether `base` came from another topology value and must propagate
     /// through further clones even after this clone is mutated.
     pub(crate) inherited_lineage: bool,
+    /// Where in its direct source's history this value was cloned (`None`
+    /// for a value never cloned).
+    pub(crate) origin: Option<UndoOrigin>,
 }
 
 impl Default for UndoLog {
@@ -268,6 +324,8 @@ impl Default for UndoLog {
         let lineage_id = NEXT_LINEAGE_ID.fetch_add(1, Ordering::Relaxed);
         Self {
             records: Vec::new(),
+            serials: Vec::new(),
+            last_serial: 0,
             scopes: Vec::new(),
             generation: 0,
             lineage_id,
@@ -281,22 +339,62 @@ impl Default for UndoLog {
                 seq: 0,
             },
             inherited_lineage: false,
+            origin: None,
         }
     }
 }
 
 impl UndoLog {
     /// Fresh log for a clone: no active scopes or guards, but carrying the
-    /// source's lineage so same-lineage foreign restores stay exact.
-    pub(crate) fn fresh_for_clone(base: UndoBase) -> Self {
+    /// source's lineage so same-lineage foreign restores stay exact, and the
+    /// source's exact position for the soundness half of that certificate.
+    pub(crate) fn fresh_for_clone(base: UndoBase, origin: UndoOrigin) -> Self {
         Self {
             lineage_id: base.lineage_id,
             // Scopes the clone opens order after the clone point.
             next_seq: base.seq,
             base,
             inherited_lineage: true,
+            origin: Some(origin),
             ..Self::default()
         }
+    }
+
+    /// Appends one record, issuing its serial.
+    fn push(&mut self, record: UndoRecord) {
+        self.last_serial = self.last_serial.wrapping_add(1);
+        self.records.push(record);
+        self.serials.push(self.last_serial);
+    }
+
+    /// Removes the newest record.
+    fn pop(&mut self) -> Option<UndoRecord> {
+        self.serials.pop();
+        self.records.pop()
+    }
+
+    /// Keeps the oldest `len` records.
+    fn truncate(&mut self, len: usize) {
+        self.records.truncate(len);
+        self.serials.truncate(len);
+    }
+
+    /// Drops every record.
+    fn clear(&mut self) {
+        self.records.clear();
+        self.serials.clear();
+    }
+
+    /// Serial of the newest record (0 for an empty log).
+    pub(crate) fn newest_serial(&self) -> u64 {
+        self.serials.last().copied().unwrap_or(0)
+    }
+
+    /// Whether the oldest `len` records are the ones present when the
+    /// newest of them carried `serial`: records are only ever appended or
+    /// cut from the end, and serials are never reissued.
+    fn holds_prefix(&self, len: usize, serial: u64) -> bool {
+        len == 0 || self.serials.get(len - 1) == Some(&serial)
     }
 
     /// See [`Topology::scopes_alive`]. Lives on the log so a caller holding
@@ -329,7 +427,7 @@ impl UndoLog {
             self.scopes.retain(ActiveScope::is_alive);
         }
         if self.scopes.is_empty() && !self.records.is_empty() {
-            self.records.clear();
+            self.clear();
         }
     }
 
@@ -374,7 +472,7 @@ impl UndoLog {
                 self.guard_append_use(key.edge, key.face)?;
             }
             if self.scopes_alive() {
-                self.records.push(UndoRecord::PcurveUse { key, old });
+                self.push(UndoRecord::PcurveUse { key, old });
             }
             Ok(())
         })
@@ -427,7 +525,7 @@ macro_rules! undo_slot_api {
             let Some(old) = self.$field.get(id).cloned() else {
                 return Err(TopologyError::$err(id));
             };
-            self.undo.records.push(UndoRecord::$variant {
+            self.undo.push(UndoRecord::$variant {
                 index: id.index(),
                 old,
             });
@@ -447,7 +545,7 @@ macro_rules! undo_slot_api {
             if self.undo.keeps_slot_record($tag, id.index())
                 && let Some(old) = self.$field.get(id).cloned()
             {
-                self.undo.records.push(UndoRecord::$variant {
+                self.undo.push(UndoRecord::$variant {
                     index: id.index(),
                     old,
                 });
@@ -483,7 +581,7 @@ macro_rules! undo_record_only {
             let Some(old) = self.$field.get(id).cloned() else {
                 return Err(TopologyError::$err(id));
             };
-            self.undo.records.push(UndoRecord::$variant {
+            self.undo.push(UndoRecord::$variant {
                 index: id.index(),
                 old,
             });
@@ -663,7 +761,7 @@ impl Topology {
         if !self.scopes_alive() {
             return Ok(());
         }
-        self.undo.records.push(UndoRecord::PcurveUse {
+        self.undo.push(UndoRecord::PcurveUse {
             key: PCurveKey::new(edge, face, forward),
             old,
         });
@@ -697,7 +795,7 @@ impl Topology {
         if !self.scopes_alive() {
             return Ok(());
         }
-        self.undo.records.push(UndoRecord::SolidAttribute {
+        self.undo.push(UndoRecord::SolidAttribute {
             id,
             old: self.attributes.solid(id).cloned(),
         });
@@ -711,7 +809,7 @@ impl Topology {
         if !self.scopes_alive() {
             return Ok(());
         }
-        self.undo.records.push(UndoRecord::FaceAttribute {
+        self.undo.push(UndoRecord::FaceAttribute {
             id,
             old: self.attributes.face(id).cloned(),
         });
@@ -723,7 +821,7 @@ impl Topology {
         if pairs.is_empty() || !self.scopes_alive() {
             return;
         }
-        self.undo.records.push(UndoRecord::JournalCreated { pairs });
+        self.undo.push(UndoRecord::JournalCreated { pairs });
     }
 
     /// Records a wholesale journal replacement (`load_journal`) while scopes
@@ -732,7 +830,7 @@ impl Topology {
         if !self.scopes_alive() {
             return;
         }
-        self.undo.records.push(UndoRecord::JournalReplace {
+        self.undo.push(UndoRecord::JournalReplace {
             old: self.journal.clone(),
         });
     }
@@ -742,9 +840,16 @@ impl Topology {
         self.undo.generation
     }
 
-    /// Number of retained undo records (diagnostic for tests and benchmarks).
-    #[cfg(test)]
-    pub(crate) fn undo_record_count(&self) -> usize {
+    /// Whether the scope opened at `mark` is still on this value's stack.
+    pub(crate) fn undo_scope_is_open(&self, mark: UndoMark) -> bool {
+        self.undo.scopes.iter().any(|scope| scope.mark == mark)
+    }
+
+    /// Number of retained undo records: a diagnostic for tests (a value
+    /// with no open scope, such as a stored checkpoint, should hold none).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn undo_record_count(&self) -> usize {
         self.undo.records.len()
     }
 
@@ -790,7 +895,7 @@ impl Topology {
         self.purge_dead_scopes();
         self.undo.scopes.retain(|scope| scope.mark.seq != mark.seq);
         if self.undo.scopes.is_empty() {
-            self.undo.records.clear();
+            self.undo.clear();
         }
     }
 
@@ -803,6 +908,22 @@ impl Topology {
     /// transaction API restores each snapshot at most once, so this is
     /// unreachable through it).
     pub(crate) fn undo_rewind_scope(&mut self, mark: UndoMark) {
+        self.undo_rewind_scope_with(mark, None);
+    }
+
+    /// [`Self::undo_rewind_scope`] that lands where restoring a full copy
+    /// taken at the mark lands, tombstones included: every slot the scope
+    /// allocated keeps its last contents when it retires, instead of the
+    /// contents a record or a foreign-restore inverse held for it. Live
+    /// state is identical either way; only those inaccessible tombstones
+    /// differ.
+    pub(crate) fn undo_rewind_scope_like_copy(&mut self, mark: UndoMark) {
+        self.undo_rewind_scope_with(mark, Some(mark.slot_marks));
+    }
+
+    /// Rewinds to `mark`; with `keep_from`, slots at or above those per-arena
+    /// counts keep their contents (see [`Self::undo_rewind_scope_like_copy`]).
+    fn undo_rewind_scope_with(&mut self, mark: UndoMark, keep_from: Option<[usize; 10]>) {
         // Any rewind invalidates persistent preparation, even when the
         // restored tick equals an earlier generation (ABA). The cache
         // generation only moves forward; the journal tick still rolls back.
@@ -811,15 +932,26 @@ impl Topology {
         if self.undo.records.len() >= mark.log_len {
             let mut created = Vec::new();
             while self.undo.records.len() > mark.log_len {
-                let Some(record) = self.undo.records.pop() else {
+                let Some(record) = self.undo.pop() else {
                     break;
                 };
-                match record {
-                    UndoRecord::JournalCreated { mut pairs } => created.append(&mut pairs),
-                    UndoRecord::JournalReplace { old } => {
+                match (record, keep_from) {
+                    (UndoRecord::JournalCreated { mut pairs }, _) => created.append(&mut pairs),
+                    (UndoRecord::JournalReplace { old }, _) => {
                         self.journal.restore_preserving_ids(&old);
                     }
-                    other => self.apply_undo_record(other),
+                    (UndoRecord::ForeignRestore { old }, Some(limits)) => {
+                        self.restore_rollback_fields_below(&old, limits);
+                    }
+                    (other, Some(limits)) => {
+                        if other
+                            .slot()
+                            .is_none_or(|(tag, index)| index < limits[tag as usize])
+                        {
+                            self.apply_undo_record(other);
+                        }
+                    }
+                    (other, None) => self.apply_undo_record(other),
                 }
             }
             // After every record inverse: a foreign-restore inverse may
@@ -830,19 +962,27 @@ impl Topology {
         }
         self.undo.scopes.retain(|scope| scope.mark.seq < mark.seq);
         if self.undo.scopes.is_empty() {
-            self.undo.records.clear();
+            self.undo.clear();
         }
     }
 
-    /// Prepares for a full restore. `exact` is whether the restore lands on
+    /// Prepares for a full restore. `lands_on_snapshot` answers, for this
+    /// value before the restore, whether the restore lands exactly on
     /// `snapshot`'s state; only then can an unchanged same-lineage snapshot,
     /// cloned while every live scope was already open, truncate to its
-    /// source prefix. A changed clone, a foreign snapshot or
-    /// an inexact restore needs one full inverse while scopes are live;
+    /// source prefix, and while scopes are live only if that prefix still
+    /// rewinds the snapshot to their entry states (see
+    /// [`Self::copy_prefix_is_intact`]). It is asked last, once the rest of
+    /// the certificate holds. A changed clone, a foreign snapshot or an
+    /// inexact restore needs one full inverse while scopes are live;
     /// otherwise its state cannot be reconstructed from the destination's
     /// mutation log. An armed append-only guard always trips: its slot marks
     /// no longer describe the swapped state.
-    pub(crate) fn undo_truncate_for_foreign_restore(&mut self, snapshot: &Self, exact: bool) {
+    pub(crate) fn undo_truncate_for_foreign_restore(
+        &mut self,
+        snapshot: &Self,
+        lands_on_snapshot: impl FnOnce(&Self) -> bool,
+    ) {
         // Foreign restores swap state underneath live scopes. The caller
         // (`restore_*`) already bumped, but invalidate here as well so a
         // direct caller can never miss it; extra bumps are harmless.
@@ -850,28 +990,29 @@ impl Topology {
         self.trip_append_if_armed();
         self.purge_dead_scopes();
         let base = snapshot.undo.base;
-        if exact
-            && base.lineage_id == self.undo.lineage_id
+        if base.lineage_id == self.undo.lineage_id
             && base.generation == self.undo.generation
             && base.log_len <= self.undo.records.len()
             && base.ticks == snapshot.mutation_ticks
             // A scope opened after the clone has an entry state the snapshot
             // does not hold, whatever the log lengths say.
             && self.undo.scopes.iter().all(|scope| scope.mark.seq < base.seq)
+            && (self.undo.scopes.is_empty() || self.copy_prefix_is_intact(snapshot, base.log_len))
+            && lands_on_snapshot(self)
         {
-            self.undo.records.truncate(base.log_len);
+            self.undo.truncate(base.log_len);
             self.undo
                 .scopes
                 .retain(|scope| scope.mark.log_len <= base.log_len);
             if self.undo.scopes.is_empty() {
-                self.undo.records.clear();
+                self.undo.clear();
             }
         } else if self.scopes_alive() {
-            self.undo.records.push(UndoRecord::ForeignRestore {
+            self.undo.push(UndoRecord::ForeignRestore {
                 old: Box::new(self.clone()),
             });
         } else {
-            self.undo.records.clear();
+            self.undo.clear();
             self.undo.scopes.clear();
             self.undo.generation = self.undo.generation.wrapping_add(1);
             // The swapped state has no source prefix in this log (an inexact
@@ -889,6 +1030,31 @@ impl Topology {
             };
             self.undo.inherited_lineage = false;
         }
+    }
+
+    /// Whether cutting this log to its first `cut` records leaves records
+    /// that rewind `snapshot` to every live scope's entry state, given that
+    /// every live scope was opened before the snapshot's clone point. The
+    /// lineage counters cannot tell on their own: a clone of a clone carries
+    /// its ancestor's position, attribute, body-class and journal writes
+    /// move no tick, and a bare length cannot see records replaced by a
+    /// rewind.
+    ///
+    /// - The snapshot was cloned from this very value, at a position `cut`
+    ///   records long, and is unchanged since (cache generation, which
+    ///   every write bumps, and the journal fingerprint).
+    /// - This log still holds those records: the serial at the copy point
+    ///   is the clone-time one (serials are never reissued, so a rewind or
+    ///   an earlier cut that replaced a record shows).
+    fn copy_prefix_is_intact(&self, snapshot: &Self, cut: usize) -> bool {
+        snapshot.undo.origin.is_some_and(|origin| {
+            origin.cache_lineage == self.cache_lineage
+                && !snapshot.is_cache_poisoned()
+                && origin.cache_generation == snapshot.cache_generation
+                && origin.journal == snapshot.journal.append_fingerprint()
+                && origin.log_len == cut
+                && self.undo.holds_prefix(cut, origin.last_serial)
+        })
     }
 
     /// Retires every live slot at or above `marks` (in [`ArenaTag`] order):
@@ -1492,5 +1658,180 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(live_state(&topo), before);
         assert!(topo.face(face).is_ok());
+    }
+
+    /// Documents off the restore fixed point: a standalone face whose index
+    /// entries went with a deleted solid that shared its edges (a profile
+    /// face whose extrusion was deleted), a face whose loop was retired, and
+    /// a stale index entry.
+    fn off_fixed_point_documents() -> Vec<(&'static str, Topology, FaceId)> {
+        let mut shared = Topology::new();
+        let (profile, edges) = triangle(&mut shared);
+        let uses = edges
+            .iter()
+            .rev()
+            .map(|&edge| OrientedEdge::new(edge, false))
+            .collect();
+        let cap_wire = shared.add_wire(Wire::new(uses, true).unwrap());
+        let cap = shared.add_face(Face::new(cap_wire, vec![], plane()));
+        let shell = shared.add_shell(Shell::new(vec![cap]).unwrap());
+        let body = shared.add_solid(Solid::new(shell, vec![]));
+        unit_box(&mut shared, 5.0);
+        assert!(shared.is_restore_fixed_point());
+        shared.delete_solid(body).unwrap();
+
+        let mut dead_loop = Topology::new();
+        let (face, _) = triangle(&mut dead_loop);
+        unit_box(&mut dead_loop, 5.0);
+        let loop_id = dead_loop.loops_of_face(face).unwrap()[0];
+        assert!(dead_loop.loops.retire(loop_id));
+
+        let mut stale_use = Topology::new();
+        let (stale_face, [edge, ..]) = triangle(&mut stale_use);
+        unit_box(&mut stale_use, 5.0);
+        let coedge = stale_use.coedges_of_edge(edge)[0];
+        stale_use.pcurves.index_use(edge, stale_face, false, coedge);
+
+        let documents = vec![
+            ("shared edges deleted", shared, profile),
+            ("dead loop", dead_loop, face),
+            ("stale use", stale_use, stale_face),
+        ];
+        for (name, document, _) in &documents {
+            assert!(!document.is_restore_fixed_point(), "{name}");
+        }
+        documents
+    }
+
+    #[test]
+    fn barrier_restore_off_the_fixed_point_inside_a_scope_keeps_the_outer_rollback_exact() {
+        // A barrier restore rebuilds the pcurve index from loop/coedge
+        // authority and re-derives faces whose authority is not live, so on
+        // a snapshot off the restore fixed point it lands on that rebuild,
+        // not on the snapshot, even with nothing retired. The enclosing
+        // scope must still rewind to its own entry state.
+        for (name, mut t, face) in off_fixed_point_documents() {
+            let before = live_state(&t);
+            let outer = crate::transaction::RollbackSnapshot::capture(&mut t);
+            let barrier = t.clone();
+            t.face_mut(face).unwrap().set_reversed(true);
+            t.restore_preserving_handle_slots(&barrier);
+            assert!(t.is_restore_fixed_point(), "{name}");
+            assert_ne!(
+                live_state(&t),
+                before,
+                "{name}: the rebuild changed the index"
+            );
+            outer.restore(&mut t);
+            assert_eq!(live_state(&t), before, "{name}");
+        }
+    }
+
+    /// A refused operation: it edits its own allocation inside a nested
+    /// scope that commits, restores an inner copy (inexact when `retire`
+    /// deletes a solid the copy holds, so the outer scope records a full
+    /// inverse), edits pre-existing and own state again and fails.
+    fn refused_operation(topo: &mut Topology, face: FaceId, retire: bool) -> TopologyError {
+        let point = |x: f64| Point3::new(x, x, x);
+        let own = topo.add_vertex(Vertex::new(point(1.0), 1e-7));
+        let nested = crate::transaction::RollbackSnapshot::capture(topo);
+        topo.vertex_mut(own).unwrap().set_point(point(2.0));
+        nested.commit(topo);
+        let extra = unit_box(topo, 9.0);
+        let copy = topo.clone();
+        unit_box(topo, 13.0);
+        topo.set_face_attributes(
+            face,
+            EntityAttributes {
+                name: Some("staged".into()),
+                ..EntityAttributes::default()
+            },
+        )
+        .unwrap();
+        if retire {
+            topo.delete_solid(extra).unwrap();
+        }
+        topo.restore_preserving_handle_slots(&copy);
+        topo.vertex_mut(own).unwrap().set_point(point(3.0));
+        topo.face_mut(face).unwrap().set_reversed(true);
+        TopologyError::WireNotClosed
+    }
+
+    #[test]
+    fn a_copy_like_rewind_and_rebuild_land_where_the_full_copy_restore_lands() {
+        // The boundaries that replaced "copy, run, barrier-restore the copy
+        // on refusal" rewind their scope like a copy and then rebuild the
+        // index; those that replaced "copy, run, rollback-restore the copy"
+        // only rewind like a copy. The complete state (`Debug`: tombstones
+        // and the pcurve index included) must match the copy's restore, on
+        // and off the restore fixed point.
+        let mut documents = off_fixed_point_documents();
+        let mut consistent = Topology::new();
+        let (face, _) = triangle(&mut consistent);
+        documents.push(("consistent", consistent, face));
+        for (name, document, face) in &documents {
+            for retire in [false, true] {
+                let context = format!("{name}, inner retirement {retire}");
+                let mut legacy = document.clone();
+                let copy = legacy.clone();
+                refused_operation(&mut legacy, *face, retire);
+                legacy.restore_preserving_handle_slots(&copy);
+
+                let mut current = document.clone();
+                let scope = crate::transaction::RollbackSnapshot::capture(&mut current);
+                refused_operation(&mut current, *face, retire);
+                scope.restore_like_copy(&mut current);
+                current.normalize_as_restored();
+                assert_eq!(format!("{current:?}"), format!("{legacy:?}"), "{context}");
+                assert!(current.is_restore_fixed_point(), "{context}");
+                assert_eq!(current.undo_record_count(), 0, "{context}");
+
+                // Without the rebuild it lands where the copy's exact
+                // rollback restore lands.
+                let mut exact_legacy = document.clone();
+                let copy = exact_legacy.clone();
+                refused_operation(&mut exact_legacy, *face, retire);
+                exact_legacy.restore_for_rollback(&copy);
+                let mut exact = document.clone();
+                let scope = crate::transaction::RollbackSnapshot::capture(&mut exact);
+                refused_operation(&mut exact, *face, retire);
+                scope.restore_like_copy(&mut exact);
+                assert_eq!(
+                    format!("{exact:?}"),
+                    format!("{exact_legacy:?}"),
+                    "{context}"
+                );
+
+                // A plain rewind reaches the same live state, but writes the
+                // nested record's value into the operation's own tombstone.
+                let mut plain = document.clone();
+                let scope = crate::transaction::RollbackSnapshot::capture(&mut plain);
+                refused_operation(&mut plain, *face, retire);
+                scope.restore(&mut plain);
+                plain.normalize_as_restored();
+                assert_eq!(live_state(&plain), live_state(&legacy), "{context}");
+                assert_ne!(format!("{plain:?}"), format!("{legacy:?}"), "{context}");
+            }
+        }
+    }
+
+    #[test]
+    fn normalizing_matches_a_self_restore_and_copies_nothing_on_a_fixed_point() {
+        let mut consistent = Topology::new();
+        triangle(&mut consistent);
+        unit_box(&mut consistent, 5.0);
+        let identity = consistent.cache_identity();
+        let before = format!("{consistent:?}");
+        consistent.normalize_as_restored();
+        assert_eq!(consistent.cache_identity(), identity, "nothing was touched");
+        assert_eq!(format!("{consistent:?}"), before);
+        for (name, mut document, _) in off_fixed_point_documents() {
+            let mut restored = document.clone();
+            let copy = restored.clone();
+            restored.restore_preserving_handle_slots(&copy);
+            document.normalize_as_restored();
+            assert_eq!(format!("{document:?}"), format!("{restored:?}"), "{name}");
+            assert!(document.is_restore_fixed_point(), "{name}");
+        }
     }
 }

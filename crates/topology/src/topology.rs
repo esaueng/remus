@@ -31,11 +31,15 @@ use crate::{DeleteSolidError, TopologyError};
 #[path = "undo_log.rs"]
 pub(crate) mod undo_log;
 
-use undo_log::{UndoBase, UndoLog};
+use undo_log::{UndoBase, UndoLog, UndoOrigin};
 
 #[path = "memory.rs"]
 mod memory;
 pub use memory::MemoryEstimate;
+
+#[cfg(test)]
+#[path = "topology/restore_oracle_tests.rs"]
+mod restore_oracle_tests;
 
 /// Dimensional class of a topological body.
 ///
@@ -123,8 +127,9 @@ pub struct CacheIdentity {
 /// create or query topological entities take a reference to this struct.
 ///
 /// `Clone` copies every arena and map but starts independent transaction
-/// coordination: the clone keeps the source's undo lineage (so a snapshot taken
-/// from it restores exactly) and an empty undo log. Cache identity is *not*
+/// coordination: the clone keeps the source's undo lineage and position (so
+/// a snapshot taken from it restores exactly) and an empty undo log. Cache
+/// identity is *not*
 /// shared: the clone receives a fresh [`CacheIdentity::lineage`] so two
 /// diverging documents can never alias one persistent preparation.
 ///
@@ -271,9 +276,9 @@ impl Clone for Topology {
     /// Keep in sync with the struct definition: every arena, map, and
     /// counter below must be cloned, except cache lineage which is always
     /// fresh (see [`CacheIdentity`]). The undo log itself is never shared —
-    /// the clone records the source's lineage and starts empty. Cache
-    /// generation and poison state are carried so a saturated source cannot
-    /// become cacheable by cloning.
+    /// the clone records the source's lineage and exact position, and starts
+    /// empty. Cache generation and poison state are carried so a saturated
+    /// source cannot become cacheable by cloning.
     fn clone(&self) -> Self {
         // An intermediate clone retains its source lineage even after a
         // private mutation. Foreign restores of that changed state must be
@@ -289,8 +294,17 @@ impl Clone for Topology {
                 seq: self.undo.next_seq,
             }
         };
+        // The origin is always this value's own position, never one it
+        // inherited: positions index one value's log only.
+        let origin = UndoOrigin {
+            cache_lineage: self.cache_lineage,
+            cache_generation: self.cache_generation,
+            journal: self.journal.append_fingerprint(),
+            log_len: self.undo.records.len(),
+            last_serial: self.undo.newest_serial(),
+        };
         Self {
-            undo: UndoLog::fresh_for_clone(base),
+            undo: UndoLog::fresh_for_clone(base, origin),
             vertices: self.vertices.clone(),
             edges: self.edges.clone(),
             wires: self.wires.clone(),
@@ -722,9 +736,11 @@ impl Topology {
     /// transactional operation — whose retirements were never observed —
     /// use [`Self::restore_for_rollback`], which undoes them.
     ///
-    /// Inside a live transaction scope, a restore that keeps a retirement
-    /// records the full pre-restore state, so an enclosing rollback still
-    /// returns the scope's exact entry state.
+    /// Inside a live transaction scope, a restore that keeps a retirement,
+    /// or whose snapshot is off the restore fixed point
+    /// ([`Self::is_restore_fixed_point`]), records the full pre-restore
+    /// state, so an enclosing rollback still returns the scope's exact entry
+    /// state.
     pub fn restore_preserving_handle_slots(&mut self, snapshot: &Self) {
         // Persistent preparation invalidates on every restore, even when the
         // restored state is bit-identical: the journal tick rolls back with
@@ -732,11 +748,14 @@ impl Topology {
         // Lineage stays with the destination; only the generation moves
         // forward.
         self.bump_cache_generation();
-        // A kept retirement (and the faces it orphans, re-promoted below)
-        // means the restore does not land on `snapshot`, so live scopes
-        // cannot treat it as a rewind to the clone point (TOPO-3).
-        let exact = !self.retires_live_entity_of(snapshot);
-        self.undo_truncate_for_foreign_restore(snapshot, exact);
+        // A kept retirement (and the faces it orphans, re-promoted below),
+        // or a snapshot whose index or face boundaries the rebuild below
+        // re-derives, means the restore does not land on `snapshot`, so live
+        // scopes cannot treat it as a rewind to the clone point. Checked
+        // only once the rest of the truncation certificate holds.
+        self.undo_truncate_for_foreign_restore(snapshot, |destination| {
+            !destination.retires_live_entity_of(snapshot) && snapshot.is_restore_fixed_point()
+        });
         self.vertices.restore_preserving_slots(&snapshot.vertices);
         self.edges.restore_preserving_slots(&snapshot.edges);
         self.wires.restore_preserving_slots(&snapshot.wires);
@@ -841,7 +860,7 @@ impl Topology {
     /// to an external handle holder and must stay retired.
     pub fn restore_for_rollback(&mut self, snapshot: &Self) {
         self.bump_cache_generation();
-        self.undo_truncate_for_foreign_restore(snapshot, true);
+        self.undo_truncate_for_foreign_restore(snapshot, |_| true);
         self.restore_rollback_fields(snapshot);
     }
 
@@ -858,6 +877,101 @@ impl Topology {
             || self.compsolids.retires_live_slot_of(&snapshot.compsolids)
             || self.loops.retires_live_slot_of(&snapshot.loops)
             || self.coedges.retires_live_slot_of(&snapshot.coedges)
+    }
+
+    /// Whether [`Self::restore_preserving_handle_slots`] from an identical
+    /// value certainly leaves this one unchanged: every live face's loops
+    /// and coedges are live, and the pcurve index holds exactly the uses
+    /// that restore re-indexes from them.
+    ///
+    /// A restore always re-derives the boundary of a face whose authority
+    /// is not live and rebuilds the index from authority, so a value that
+    /// fails the first condition, or whose index differs, is not a fixed
+    /// point. The check is conservative: a malformed boundary in which two
+    /// coedges claim one oriented use answers `false` even when the rebuilt
+    /// index would match. O(boundary uses), with no map built.
+    #[must_use]
+    pub fn is_restore_fixed_point(&self) -> bool {
+        // Every use resolves to its own coedge, and the index holds no more
+        // entries than there are distinct coedges: then the rebuilt index
+        // (one entry per distinct coedge, each under its own key) is equal.
+        let mut seen = vec![false; self.coedges.slot_len()];
+        let mut distinct = 0usize;
+        for (face_id, face) in self.faces.iter() {
+            if face.boundary_loops().is_empty() {
+                return false;
+            }
+            for &loop_id in face.boundary_loops() {
+                let Some(boundary) = self.loops.get(loop_id) else {
+                    return false;
+                };
+                for &coedge_id in boundary.coedges() {
+                    let Some(coedge) = self.coedges.get(coedge_id) else {
+                        return false;
+                    };
+                    let indexed = self
+                        .pcurves
+                        .get_use(coedge.edge(), face_id, coedge.is_forward());
+                    if indexed != Some(coedge_id) {
+                        return false;
+                    }
+                    if let Some(first) = seen.get_mut(coedge_id.index())
+                        && !*first
+                    {
+                        *first = true;
+                        distinct += 1;
+                    }
+                }
+            }
+        }
+        distinct == self.pcurves.len()
+    }
+
+    /// Leaves this value exactly as [`Self::restore_preserving_handle_slots`]
+    /// from an identical copy would: the pcurve compatibility index rebuilt
+    /// from loop/coedge authority, and live faces whose authority is not
+    /// live re-derived onto fresh handles.
+    ///
+    /// For a boundary that replaced a full-copy barrier restore with an
+    /// exact rollback: the rollback returns the index as the entry state had
+    /// it, while the barrier restore always rebuilt it. Applying this after
+    /// the rollback lands where that restore did, apart from the failed
+    /// operation's own retirements, which the rollback revives. Nothing is
+    /// copied on a restore fixed point (the usual document); otherwise this
+    /// costs the one copy and restore the barrier paid.
+    pub fn normalize_as_restored(&mut self) {
+        if self.is_restore_fixed_point() {
+            return;
+        }
+        let copy = self.clone();
+        self.restore_preserving_handle_slots(&copy);
+    }
+
+    /// [`Self::restore_rollback_fields`] for slots below `limits` (per arena,
+    /// in `ArenaTag` order) only: slots at or above keep their
+    /// contents and liveness. `snapshot` must be an earlier state of this
+    /// value, so it holds at least `limits` slots and no more than this does.
+    pub(crate) fn restore_rollback_fields_below(&mut self, snapshot: &Self, limits: [usize; 10]) {
+        self.bump_cache_generation();
+        let [v, e, w, f, sh, so, c, cs, l, ce] = limits;
+        self.vertices
+            .restore_for_rollback_below(&snapshot.vertices, v);
+        self.edges.restore_for_rollback_below(&snapshot.edges, e);
+        self.wires.restore_for_rollback_below(&snapshot.wires, w);
+        self.faces.restore_for_rollback_below(&snapshot.faces, f);
+        self.shells.restore_for_rollback_below(&snapshot.shells, sh);
+        self.solids.restore_for_rollback_below(&snapshot.solids, so);
+        self.compounds
+            .restore_for_rollback_below(&snapshot.compounds, c);
+        self.compsolids
+            .restore_for_rollback_below(&snapshot.compsolids, cs);
+        self.loops.restore_for_rollback_below(&snapshot.loops, l);
+        self.coedges
+            .restore_for_rollback_below(&snapshot.coedges, ce);
+        self.attributes.clone_from(&snapshot.attributes);
+        self.pcurves.clone_from(&snapshot.pcurves);
+        self.journal.restore_preserving_ids(&snapshot.journal);
+        self.mutation_ticks = snapshot.mutation_ticks;
     }
 
     pub(crate) fn restore_rollback_fields(&mut self, snapshot: &Self) {
@@ -1520,10 +1634,16 @@ impl Topology {
             // Record every removed index entry before destroying it; entries
             // of a pre-existing face trip an armed append-only guard here,
             // before any retirement or write lands.
-            for (edge, forward, _) in self.pcurves.uses_for_face(face_id) {
+            let removed = self.pcurves.uses_for_face(face_id);
+            for &(edge, forward, _) in &removed {
                 self.record_pcurve_write(edge, face_id, forward)?;
             }
-            self.pcurves.remove_face(face_id);
+            // Exactly the face's entries: removing them by key avoids a
+            // second pass over every use in the document.
+            for (edge, forward, _) in removed {
+                self.pcurves
+                    .remove_key(PCurveKey::new(edge, face_id, forward));
+            }
             let old_loops = self
                 .faces
                 .get(face_id)

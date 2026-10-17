@@ -24,6 +24,7 @@ use remus_math::vec::{Point2, Point3, Vec2, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::face::{Face, FaceSurface};
+use remus_topology::transaction::RollbackSnapshot;
 use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire};
 use wasm_bindgen::prelude::*;
@@ -63,12 +64,13 @@ impl BrepKernel {
     pub fn new() -> Self {
         crate::panics::install_hook();
         // Content-keyed face integrals, NURBS areas, face boxes, planar arc
-        // pcurves and revolved wire areas, plus identity-keyed volume readings (off in
-        // the library by default). Module-wide on purpose: a body validated
-        // in one kernel is a content-keyed hit when a short-lived probe
-        // kernel validates its deserialized copy, and an unchanged hole rim
-        // or wall is a hit on every later cut of the same body. Every hit is
-        // bit-identical to recomputing. Idempotent.
+        // pcurves, revolved wire areas and the ray classifier's torus trims,
+        // plus identity-keyed volume readings (off in the library by
+        // default). Module-wide on purpose: a body validated in one kernel is
+        // a content-keyed hit when a short-lived probe kernel validates its
+        // deserialized copy, and an unchanged hole rim, wall or blend is a
+        // hit on every later cut of the same body. Every hit is bit-identical
+        // to recomputing. Idempotent.
         remus_check::properties::face_cache::enable_thread_face_cache();
         remus_operations::measure::enable_thread_volume_memo();
         remus_operations::measure::enable_thread_nurbs_area_memo();
@@ -76,6 +78,7 @@ impl BrepKernel {
         remus_operations::tessellate::enable_face_mesh_cache();
         remus_algo::pcurve_memo::enable_thread_pcurve_memo();
         remus_algo::wire_area_memo::enable_thread_wire_area_memo();
+        remus_algo::ray_geom_memo::enable_thread_ray_geom_memo();
         Self {
             topo: Rc::new(Topology::new()),
             assemblies: HandleStore::default(),
@@ -98,6 +101,20 @@ impl Default for BrepKernel {
 
 // ── Private helpers ────────────────────────────────────────────────
 
+/// What a refused boundary call leaves of the topology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    /// Exactly the entry state (a plain scope rewind).
+    Exact,
+    /// What the full-copy boundary these calls used left, apart from the
+    /// call's own retirements, which are revived: the entry state as a
+    /// checkpoint-barrier restore of the copy leaves it
+    /// ([`Topology::normalize_as_restored`]), with the slots the call
+    /// allocated keeping their last contents as tombstones
+    /// ([`RollbackSnapshot::restore_like_copy`]).
+    Restored,
+}
+
 impl BrepKernel {
     /// Returns a mutable reference to the topology, cloning if shared
     /// with any checkpoints (copy-on-write).
@@ -112,26 +129,85 @@ impl BrepKernel {
         &self.topo
     }
 
-    /// Runs `operation` so that a failure leaves topology exactly as it was.
+    /// Restores `snapshot` with checkpoint-barrier semantics
+    /// ([`Topology::restore_preserving_handle_slots`]).
     ///
-    /// The snapshot is a deep copy taken up front, so `self.topo` stays
-    /// unshared and `operation` mutates it in place. Sharing the `Rc` instead
-    /// would defer the copy to `Rc::make_mut`, but every caller of this
-    /// helper mutates, so the copy would still happen — and `make_mut`
-    /// rebuilds the arenas at exact capacity, forcing an immediate
-    /// reallocation on the operation's first `push`. Deferral only pays off
-    /// where an operation may not mutate at all; see `is_read_only_op` in
-    /// `bindings::batch`.
+    /// When the kernel still holds that very value (nothing mutated since it
+    /// was shared) and the restore would leave it unchanged, nothing is
+    /// copied: a restore would first copy it on write, then overwrite the
+    /// copy with identical state. Skipping also keeps its cache identity,
+    /// which is sound because the shared value is immutable — the identity
+    /// still names exactly this content.
+    pub(crate) fn restore_topology_barrier(&mut self, snapshot: &Rc<Topology>) {
+        if Rc::ptr_eq(&self.topo, snapshot) && snapshot.is_restore_fixed_point() {
+            return;
+        }
+        self.topo_mut().restore_preserving_handle_slots(snapshot);
+    }
+
+    /// Runs `operation` so that a failure leaves topology as the full-copy
+    /// boundary these bindings used to restore left it
+    /// ([`Refusal::Restored`]), apart from the failed operation's own
+    /// retirements, which are revived.
+    ///
+    /// A mutation-local rollback scope: capture is O(1) and a failure
+    /// rewinds only what the operation wrote instead of copying the
+    /// document up front. Retirements the failed operation staged are undone
+    /// too, since it never reported a commit; handles it allocated stay
+    /// permanently stale and the journal tick rolls back with the state.
     pub(crate) fn with_topology_transaction<T, E>(
         &mut self,
         operation: impl FnOnce(&mut Topology) -> Result<T, E>,
     ) -> Result<T, E> {
-        let snapshot = self.topo().clone();
-        let result = operation(self.topo_mut());
-        if result.is_err() {
-            self.topo_mut().restore_preserving_handle_slots(&snapshot);
+        self.with_kernel_transaction(Refusal::Restored, |kernel| operation(kernel.topo_mut()))
+    }
+
+    /// Runs a kernel-level operation inside a mutation-local rollback scope,
+    /// for bodies that need the whole kernel (handle resolution, session
+    /// state) rather than the topology. Success commits the scope; failure
+    /// rewinds it and leaves what `refusal` names. Only topology state is
+    /// rolled back.
+    pub(crate) fn with_kernel_transaction<T, E>(
+        &mut self,
+        refusal: Refusal,
+        operation: impl FnOnce(&mut Self) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let snapshot = RollbackSnapshot::capture(self.topo_mut());
+        let result = operation(self);
+        self.debug_assert_scope_held(&snapshot);
+        let topo = self.topo_mut();
+        match result {
+            Ok(value) => {
+                snapshot.commit(topo);
+                Ok(value)
+            }
+            Err(error) => {
+                match refusal {
+                    Refusal::Exact => snapshot.restore(topo),
+                    Refusal::Restored => {
+                        snapshot.restore_like_copy(topo);
+                        topo.normalize_as_restored();
+                    }
+                }
+                Err(error)
+            }
         }
-        result
+    }
+
+    /// A boundary scope can only commit or rewind in the value it was opened
+    /// in: an operation that shared the topology (a checkpoint) would make
+    /// `topo_mut` copy it, and one that replaced it wholesale would leave a
+    /// value without the scope. Either would lose the rollback silently.
+    pub(crate) fn debug_assert_scope_held(&self, snapshot: &RollbackSnapshot) {
+        debug_assert_eq!(
+            Rc::strong_count(&self.topo),
+            1,
+            "the topology was shared inside a boundary rollback scope"
+        );
+        debug_assert!(
+            snapshot.is_open_in(&self.topo),
+            "the topology was replaced inside a boundary rollback scope"
+        );
     }
 
     pub(crate) fn curve_point(curve: &EdgeCurve, parameter: f64) -> Point3 {
@@ -742,16 +818,13 @@ impl BrepKernel {
     /// for easier testing in native (non-WASM) contexts.
     #[allow(clippy::wrong_self_convention)]
     pub(crate) fn from_brep_impl(&mut self, json: &str) -> Result<u32, WasmError> {
-        let snapshot = self.topo().clone();
-        let result = self.from_brep_impl_unchecked(json);
-        if result.is_err() {
-            self.topo_mut().restore_preserving_handle_slots(&snapshot);
-        }
-        result
+        self.with_kernel_transaction(Refusal::Restored, |kernel| {
+            kernel.from_brep_impl_unchecked(json)
+        })
     }
 
     #[allow(clippy::too_many_lines, clippy::wrong_self_convention)]
-    fn from_brep_impl_unchecked(&mut self, json: &str) -> Result<u32, WasmError> {
+    pub(crate) fn from_brep_impl_unchecked(&mut self, json: &str) -> Result<u32, WasmError> {
         let parsed: serde_json::Value =
             serde_json::from_str(json).map_err(|e| WasmError::InvalidInput {
                 reason: format!("invalid BREP JSON: {e}"),

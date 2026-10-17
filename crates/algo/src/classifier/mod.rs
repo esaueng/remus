@@ -8,7 +8,7 @@
 mod analytic;
 mod ray_cast;
 mod torus_patch;
-pub(crate) use torus_patch::rectangular_torus_domain;
+pub(crate) use torus_patch::{TorusTrim, rectangular_torus_domain};
 
 pub use analytic::{
     AnalyticClassifier, classify_analytic, classify_analytic_with_tolerance,
@@ -19,7 +19,7 @@ pub use ray_cast::{
     classify_ray_cast_cached_with_tolerance, classify_ray_cast_with_tolerance, compute_solid_bbox,
     planar_face_polygons, point_in_face_3d, point_in_planar_region, ray_cast_inside_votes,
     ray_cast_inside_votes_cached, ray_cast_inside_votes_cached_with_tolerance,
-    ray_cast_inside_votes_with_tolerance,
+    ray_cast_inside_votes_with_tolerance, ray_cast_rays_cached,
 };
 pub(crate) use ray_cast::{largest_u_gap, u_in_gap};
 

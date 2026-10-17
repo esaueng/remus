@@ -6714,20 +6714,18 @@ fn solid_has_flattenable_nurbs(
     solid: SolidId,
     tol: f64,
 ) -> Result<bool, crate::OperationsError> {
-    use remus_geometry::convert::{
-        RecognizedCurve, RecognizedSurface, recognize_curve, recognize_surface,
-    };
+    use remus_geometry::convert::{recognize_line, recognize_plane};
     use remus_topology::edge::EdgeCurve;
     use remus_topology::explorer::solid_faces;
 
+    // The plane and line tests are the first `recognize_surface` and
+    // `recognize_curve` run, so these verdicts are theirs; the other fits
+    // they try on a curved face or edge cannot make it flattenable.
     let mut seen = HashSet::default();
     for fid in solid_faces(topo, solid)? {
         let face = topo.face(fid)?;
         if let FaceSurface::Nurbs(nurbs) = face.surface()
-            && matches!(
-                recognize_surface(nurbs, tol),
-                RecognizedSurface::Plane { .. }
-            )
+            && recognize_plane(nurbs, tol).is_some()
         {
             return Ok(true);
         }
@@ -6739,7 +6737,7 @@ fn solid_has_flattenable_nurbs(
                     continue;
                 }
                 if let EdgeCurve::NurbsCurve(nurbs) = topo.edge(eid)?.curve()
-                    && matches!(recognize_curve(nurbs, tol), RecognizedCurve::Line { .. })
+                    && recognize_line(nurbs, tol).is_some()
                 {
                     return Ok(true);
                 }

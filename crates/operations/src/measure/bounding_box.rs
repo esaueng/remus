@@ -145,6 +145,7 @@ pub fn face_set_bounding_box(
     topo: &Topology,
     faces: &[FaceId],
 ) -> Result<Aabb3, crate::OperationsError> {
+    // Any new input this box reads must also join `face_box_memo`'s key.
     let mut aabb = face_set_vertex_bounding_box(topo, faces)?;
     for &fid in faces {
         expand_aabb_for_face(topo, &mut aabb, fid, topo.face(fid)?.surface());
@@ -214,6 +215,8 @@ fn expand_aabb_for_face(
     face_id: remus_topology::face::FaceId,
     surface: &FaceSurface,
 ) {
+    // Any new input read here must also join `face_box_memo`'s key.
+    //
     // Always sample wire midpoints — captures curvature of curved boundary
     // edges (Circle, Ellipse, NurbsCurve) regardless of surface type.
     // Critical for: cone base discs (Plane face with circle edge), partial

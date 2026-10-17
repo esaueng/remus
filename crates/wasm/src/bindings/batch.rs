@@ -31,7 +31,7 @@ use crate::helpers::{
     TOL, classify_to_string, get_bool, get_f64, get_f64_array, get_optional_bool, get_optional_f64,
     get_u32, get_u32_array, get_u32_array_optional, panic_message, try_chamfer,
 };
-use crate::kernel::BrepKernel;
+use crate::kernel::{BrepKernel, Refusal};
 use crate::types::SolidOperationDetailedResult;
 
 /// Maximum encoded JSON accepted by one `executeBatch` call (16 MiB).
@@ -169,13 +169,15 @@ enum BatchOpKind {
 
 /// Classify operations before doing any work that scales with topology size.
 ///
-/// Keeping unknown operations out of the mutating fallback is important: an
-/// attacker must not be able to trigger a full topology snapshot with an
-/// arbitrary operation name.
+/// Keeping unknown operations out of the mutating path is important: opening
+/// its rollback scope takes mutable access, which copies the whole document
+/// while a checkpoint shares it, and an arbitrary operation name must not be
+/// able to trigger that copy.
 ///
 /// `ReadOnly` is a performance hint, never a correctness claim. Those ops take
-/// an `Rc` share of the topology instead of a deep copy; if one does mutate,
-/// `Rc::make_mut` still materialises the pre-op state, so rollback stays exact.
+/// an `Rc` share of the topology instead of mutable access; if one does
+/// mutate, `Rc::make_mut` still materialises the pre-op state, so rollback
+/// stays exact.
 fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
     match op {
         #[cfg(feature = "io")]
@@ -536,33 +538,28 @@ impl BrepKernel {
 
     /// Runs one batch operation, undoing its topology changes if it fails.
     ///
-    /// The qualified boolean family coordinates its entry snapshot with native
-    /// savepoints. Other operation families retain their existing dispatch
-    /// policy until separately qualified. See [`batch_op_kind`].
+    /// Mutating operations run in a mutation-local rollback scope that
+    /// coordinates with native savepoints (see
+    /// [`BrepKernel::with_kernel_transaction`]): each item commits or rolls
+    /// back on its own. A refused boolean leaves exactly its entry state, as
+    /// that family's scope always did; every other family used to restore a
+    /// full copy, so its refusal still leaves what that restore left
+    /// ([`Refusal::Restored`]). See [`batch_op_kind`].
     fn dispatch_with_rollback(
         &mut self,
         kind: BatchOpKind,
         op: &str,
         args: &serde_json::Value,
     ) -> BatchItemResult {
-        if matches!(op, "fuse" | "cut" | "intersect") {
-            let snapshot = remus_topology::transaction::RollbackSnapshot::capture(self.topo_mut());
-            let result = self.dispatch_op(op, args);
-            if result.is_err() {
-                snapshot.restore(self.topo_mut());
-            }
-            result
-        } else if kind == BatchOpKind::ReadOnly {
+        if kind == BatchOpKind::ReadOnly {
             self.run_read_only(|kernel| kernel.dispatch_op(op, args))
         } else {
-            // Copy aside so `self.topo` stays unshared and the operation
-            // mutates it in place, keeping its arena capacity.
-            let snapshot = self.topo().clone();
-            let result = self.dispatch_op(op, args);
-            if result.is_err() {
-                self.topo_mut().restore_preserving_handle_slots(&snapshot);
-            }
-            result
+            let refusal = if matches!(op, "fuse" | "cut" | "intersect") {
+                Refusal::Exact
+            } else {
+                Refusal::Restored
+            };
+            self.with_kernel_transaction(refusal, |kernel| kernel.dispatch_op(op, args))
         }
     }
 }
@@ -5210,3 +5207,7 @@ mod rollback_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "batch_rollback_oracle_tests.rs"]
+mod rollback_oracle_tests;

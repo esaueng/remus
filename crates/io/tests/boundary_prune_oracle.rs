@@ -1,8 +1,14 @@
-//! Differential oracle for the prepared boundary test's trim-window prune, over the
-//! imported STEP fixtures and synthetic bodies: `PreparedSolid::is_point_on_boundary`
-//! with the trim-window prune against the unpruned loop, on points on and
-//! within a few tolerances of every face (seams, sphere caps, NURBS faces
-//! included).
+//! Differential oracles for the prepared classifier's exact skips, over the
+//! imported STEP fixtures and synthetic bodies:
+//!
+//! * `PreparedSolid::is_point_on_boundary` with the trim-window prune against
+//!   the unpruned loop, on points on and within a few tolerances of every face
+//!   (seams, sphere caps, NURBS faces included);
+//! * `PreparedSolid::count_ray_crossings` with the NURBS knot-span prefilter
+//!   against the unfiltered count, from the same kind of points along the
+//!   classifier's vote directions (the dragged hammer holder and boxes with a
+//!   dense NURBS dome on either side of the prefilter's span cap included),
+//!   with the faces the prefilter skips counted so the oracle knows it fires.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,15 +23,18 @@ use std::path::Path;
 
 use remus_check::classify::PreparedSolid;
 use remus_math::mat::Mat4;
-use remus_math::vec::Point3;
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::vec::{Point3, Vec3};
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::chamfer::chamfer;
 use remus_operations::fillet::fillet_rolling_ball;
 use remus_operations::primitives::{make_box, make_cone, make_cylinder, make_sphere, make_torus};
+use remus_operations::push_pull::move_faces;
 use remus_operations::tessellate::tessellate_solid;
 use remus_operations::transform::transform_solid;
 use remus_topology::Topology;
-use remus_topology::explorer::{solid_edges, solid_vertices};
+use remus_topology::explorer::{face_vertices, solid_edges, solid_faces, solid_vertices};
+use remus_topology::face::FaceSurface;
 use remus_topology::solid::SolidId;
 
 type Body = (String, Topology, SolidId);
@@ -63,6 +72,68 @@ fn step_bodies() -> Vec<Body> {
         bodies.len()
     );
     bodies
+}
+
+/// The hammer holder after the face drag `kernel_perf_probe` analyses: its
+/// +X arm face moved out by 5.
+fn hammer_edit() -> Body {
+    let text = std::fs::read_to_string(data_dir().join("shapr3d_hammer_holder.step")).unwrap();
+    let mut topo = Topology::new();
+    let solid = remus_io::step::reader::read_step(&text, &mut topo).unwrap()[0];
+    let face = solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&face| {
+            topo.face(face)
+                .unwrap()
+                .effective_plane_normal()
+                .is_some_and(|n| n.x() > 0.999)
+                && face_vertices(&topo, face)
+                    .unwrap()
+                    .iter()
+                    .all(|&v| (topo.vertex(v).unwrap().point().x() - 48.0).abs() < 1e-7)
+        })
+        .unwrap();
+    let edited = move_faces(&mut topo, solid, &[face], 5.0).unwrap();
+    ("hammer edit".to_string(), topo, edited)
+}
+
+/// A 20 x 20 x 10 box whose top is a bicubic NURBS dome of height 6 with
+/// `k x k` uniform knot spans; its boundary rows stay on the box's top edges.
+fn dome_box(k: usize) -> Body {
+    let mut topo = Topology::new();
+    let solid = make_box(&mut topo, 20.0, 20.0, 10.0).unwrap();
+    let top = solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&face| {
+            topo.face(face)
+                .unwrap()
+                .effective_plane_normal()
+                .is_some_and(|n| n.z() > 0.999)
+        })
+        .unwrap();
+    let n = k + 3;
+    let mut knots = vec![0.0; 4];
+    knots.extend((1..k).map(|i| i as f64 / k as f64));
+    knots.extend([1.0; 4]);
+    let control = (0..n)
+        .map(|i| {
+            (0..n)
+                .map(|j| {
+                    let (s, t) = (i as f64 / (n - 1) as f64, j as f64 / (n - 1) as f64);
+                    let bump = (std::f64::consts::PI * s).sin() * (std::f64::consts::PI * t).sin();
+                    Point3::new(20.0 * s, 20.0 * t, 6.0_f64.mul_add(bump, 10.0))
+                })
+                .collect()
+        })
+        .collect();
+    let dome =
+        NurbsSurface::new(3, 3, knots.clone(), knots, control, vec![vec![1.0; n]; n]).unwrap();
+    topo.face_mut(top)
+        .unwrap()
+        .set_surface(FaceSurface::Nurbs(dome));
+    (format!("dome {k}x{k}"), topo, solid)
 }
 
 fn translated(topo: &mut Topology, solid: SolidId, x: f64, y: f64, z: f64) {
@@ -194,5 +265,90 @@ fn pruned_boundary_test_matches_unpruned_loop() {
     assert!(
         on_boundary * 10 > checked,
         "the corpus must reach the boundary"
+    );
+}
+
+/// The NURBS knot-span prefilter never changes a crossing count.
+#[test]
+fn nurbs_ray_prefilter_matches_unfiltered_counts() {
+    let directions = [
+        Vec3::new(
+            0.573_576_436_351_046,
+            0.740_535_693_464_567_5,
+            0.350_889_803_483_932_2,
+        ),
+        Vec3::new(
+            -0.350_889_803_483_932_2,
+            0.573_576_436_351_046,
+            0.740_535_693_464_567_5,
+        ),
+        Vec3::new(
+            0.740_535_693_464_567_5,
+            -0.350_889_803_483_932_2,
+            0.573_576_436_351_046,
+        ),
+        Vec3::new(-0.6, 0.0, -0.8),
+        Vec3::new(0.0, 0.0, 1.0),
+    ];
+    let mut bodies = step_bodies();
+    bodies.extend(synthetic_bodies());
+    bodies.push(hammer_edit());
+    // 400 spans is the prefilter's cap.
+    bodies.push(dome_box(20));
+    bodies.push(dome_box(21));
+    let (mut rays, mut skips) = (0usize, 0usize);
+    for (name, topo, solid) in &bodies {
+        let prepared = PreparedSolid::prepare(topo, *solid).unwrap();
+        let mut probes: Vec<(Point3, Vec3)> = Vec::new();
+        if name.starts_with("dome") {
+            // Every corpus ray that reaches the dome starts on it or hits it;
+            // these level rays cross its box over the low rim instead. They
+            // come first: after a run of hits the prefilter tests only one
+            // ray in 32 until its skips catch up.
+            for a in 0..32 {
+                let y = if a < 16 {
+                    0.1 * f64::from(a)
+                } else {
+                    20.0 - 0.1 * f64::from(a - 16)
+                };
+                for c in 0..16 {
+                    let z = 10.5 + 0.35 * f64::from(c);
+                    probes.push((Point3::new(-5.0, y, z), Vec3::new(1.0, 0.0, 0.0)));
+                    probes.push((Point3::new(y, 25.0, z), Vec3::new(0.0, -1.0, 0.0)));
+                }
+            }
+        }
+        probes.extend(
+            boundary_corpus(topo, *solid, 1.0e-3)
+                .into_iter()
+                .step_by(3)
+                .flat_map(|point| directions.map(|direction| (point, direction))),
+        );
+        let (mut body_rays, mut body_skips) = (0usize, 0usize);
+        for (point, direction) in probes {
+            let filtered = prepared.count_ray_crossings_and_skips(point, direction);
+            let reference = prepared.count_ray_crossings_unfiltered(point, direction);
+            assert_eq!(
+                format!("{:?}", filtered.as_ref().map(|&(crossings, _)| crossings)),
+                format!("{reference:?}"),
+                "{name} from {point:?} along {direction:?}"
+            );
+            body_skips += filtered.map_or(0, |(_, skips)| skips);
+            body_rays += 1;
+        }
+        eprintln!("{name}: {body_rays} rays, {body_skips} NURBS faces skipped");
+        match name.as_str() {
+            "dome 20x20" => assert!(body_skips * 10 > body_rays, "{name}: the skip must fire"),
+            "dome 21x21" => assert_eq!(body_skips, 0, "{name}: past the span cap"),
+            _ => {}
+        }
+        rays += body_rays;
+        skips += body_skips;
+    }
+    eprintln!("NURBS ray prefilter: {rays} rays compared, {skips} NURBS faces skipped");
+    assert!(rays > 100_000, "only {rays} rays compared");
+    assert!(
+        skips > 5_000,
+        "only {skips} NURBS faces skipped on {rays} rays"
     );
 }

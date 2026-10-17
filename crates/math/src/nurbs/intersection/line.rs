@@ -355,6 +355,23 @@ pub fn intersect_line_nurbs_with_grid(
 const GRID_CONVERGENCE: f64 = 1e-10;
 const GRID_ROOT_TOLERANCE: f64 = 1e-5;
 
+/// Bound on how far from the line a reported hit can lie.
+///
+/// Covers every hit [`intersect_line_nurbs_with_grid`] reports on a surface
+/// whose control points have no coordinate larger than `magnitude` in
+/// absolute value, for a line through `origin`. Every hit is a surface
+/// evaluation at an in-domain parameter: seeds and Newton iterates are
+/// clamped to the domain. The grid pass keeps a hit closer than
+/// `GRID_ROOT_TOLERANCE` to the line, and the completion pass one within its
+/// round-off allowance, which grows with the coordinates involved
+/// (`subdivision::hit_reach`). The sum covers both, with the rounding of
+/// their residuals, so a caller that bounds the surface may skip a line that
+/// stays farther than this from the bound.
+#[must_use]
+pub fn line_hit_reach(magnitude: f64, origin: Point3) -> f64 {
+    GRID_ROOT_TOLERANCE + subdivision::hit_reach(magnitude, origin)
+}
+
 #[derive(Clone, Copy)]
 struct LineQuery {
     origin: Point3,

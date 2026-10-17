@@ -28,9 +28,7 @@ impl BrepKernel {
             .get(idx)
             .ok_or_else(|| format!("invalid checkpoint id: {checkpoint_id}"))?
             .clone();
-        let snapshot_topo = Rc::clone(&cp.topo);
-        self.topo_mut()
-            .restore_preserving_handle_slots(&snapshot_topo);
+        self.restore_topology_barrier(&cp.topo);
         self.assemblies
             .restore(&cp.assemblies, crate::state::AssemblyState::restore);
         self.sketches

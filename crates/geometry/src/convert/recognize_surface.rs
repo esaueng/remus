@@ -60,6 +60,16 @@ pub enum RecognizedSurface {
     NotRecognized,
 }
 
+/// The plane test [`recognize_surface`] runs first, alone.
+///
+/// `Some((normal, d))` exactly when [`recognize_surface`] returns
+/// [`RecognizedSurface::Plane`] with those values, without the cylinder,
+/// sphere, cone and torus fits a surface that is not a plane goes on to.
+#[must_use]
+pub fn recognize_plane(surface: &NurbsSurface, tolerance: f64) -> Option<(Vec3, f64)> {
+    try_recognize_plane(surface, tolerance)
+}
+
 /// Attempt to recognize a NURBS surface as an elementary analytic surface.
 ///
 /// Tries recognition in order: plane, cylinder, sphere, cone. Returns
@@ -1943,5 +1953,66 @@ mod tests {
         let cone = ConicalSurface::new(Point3::new(1.5, -2.0, 0.5), tilted_axis(), 0.35).unwrap();
         let nurbs = cone_to_nurbs(&cone, (1.5, 5.0)).unwrap();
         assert_eq!(detect_surface_kind(&nurbs), DetectedSurfaceKind::BSpline);
+    }
+
+    /// `recognize_plane` answers exactly when `recognize_surface` returns a
+    /// plane, with the same bits, on planes in every pose, near-planes at the
+    /// tolerance, the analytic carriers and free-form patches.
+    #[test]
+    fn recognize_plane_is_recognize_surface_plane_verdict() {
+        let mut surfaces = vec![
+            flat_patch(false),
+            flat_patch(true),
+            tilted_plane_patch_opposed(),
+            tilted_plane_patch_agreeing(),
+            free_form_patch(),
+            cylinder_to_nurbs(
+                &CylindricalSurface::new(origin(), z_axis(), 3.0).unwrap(),
+                (0.0, 5.0),
+            )
+            .unwrap(),
+            sphere_to_nurbs(&SphericalSurface::new(origin(), 5.0).unwrap()).unwrap(),
+            cone_to_nurbs(
+                &ConicalSurface::new(origin(), z_axis(), 0.5).unwrap(),
+                (1.0, 4.0),
+            )
+            .unwrap(),
+            torus_to_nurbs(&ToroidalSurface::new(origin(), 6.0, 1.5).unwrap()).unwrap(),
+            exact_tilted_cylinder_patch(Point3::new(1.5, -2.5, 0.75), 2.5, 12.0),
+            exact_tilted_sphere_patch(Point3::new(-1.0, 2.0, 3.0), 4.0),
+            exact_tilted_torus_patch(Point3::new(2.0, 1.0, -3.0), 5.0, 1.25),
+        ];
+        // A plane patch with its middle control point lifted off the plane by
+        // amounts around the tolerances below.
+        for lift in [0.0, 5e-8, 1e-7, 2e-7, 1e-3] {
+            let grid: Vec<Vec<Point3>> = (0..3)
+                .map(|i| {
+                    (0..3)
+                        .map(|j| {
+                            let p = plane_point(f64::from(i), f64::from(j));
+                            if i == 1 && j == 1 {
+                                p + tilted_axis() * lift
+                            } else {
+                                p
+                            }
+                        })
+                        .collect()
+                })
+                .collect();
+            surfaces.push(surface_from_grid(2, &[0.0, 0.0, 0.0, 1.0, 1.0, 1.0], grid));
+        }
+        let mut planes = 0;
+        for surface in &surfaces {
+            for tolerance in [1e-7, 1e-4, 0.05] {
+                let full = match recognize_surface(surface, tolerance) {
+                    RecognizedSurface::Plane { normal, d } => Some((normal, d)),
+                    _ => None,
+                };
+                let first = recognize_plane(surface, tolerance);
+                assert_eq!(format!("{first:?}"), format!("{full:?}"));
+                planes += usize::from(first.is_some());
+            }
+        }
+        assert!(planes >= 10, "only {planes} plane verdicts");
     }
 }

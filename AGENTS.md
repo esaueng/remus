@@ -248,6 +248,7 @@ Quick reference — find the right file for any task:
 | Mutation-local undo log, scope marks, append-only guard (`run_append_only`) | `undo_log.rs` |
 | Chunk/page COW comparison prototype (test-only, never shipped) | `cow_prototype.rs` |
 | Nested savepoint state, failure injection, and stale-handle contract tests | `transaction/savepoint_tests.rs` |
+| Differential oracle: the handle-slot-preserving restore with the arena restores it had before they were rewritten in place, kept verbatim, plus restore fixed points (tests) | `topology/restore_oracle_tests.rs` |
 | Attribute store (names, colors, app ids) | `attributes.rs` |
 | Append-only evolution journal | `journal.rs` |
 | Persistent references and their resolver | `naming.rs` |
@@ -282,6 +283,7 @@ Quick reference — find the right file for any task:
 | Opt-in per-thread content-keyed memo of planar arc pcurves (bit-identical hits; the WASM kernel enables it) | `pcurve_memo.rs` |
 | Opt-in per-thread content-keyed memo of revolved-face wire areas for shell-assembly orientation (bit-identical hits; the WASM kernel enables it) | `wire_area_memo.rs` |
 | Bounded content-keyed FIFO store shared by the opt-in memos | `memo.rs` |
+| Opt-in per-thread content-keyed memo of the ray classifier's sampled torus trims (bit-identical hits; the WASM kernel enables it) | `ray_geom_memo.rs` |
 | Differential oracle for the hole-containment box gate (the ungated test kept verbatim, tests) | `builder/face_splitter/containment/gate_oracle_tests.rs` |
 | Plane frame (3D↔UV projection) | `builder/plane_frame.rs` |
 | Wire loop reconstruction | `builder/wire_builder.rs` |
@@ -293,6 +295,7 @@ Quick reference — find the right file for any task:
 | Analytic classifier (7 variants) | `classifier/analytic.rs` |
 | Ray-cast classifier | `classifier/ray_cast.rs` |
 | Closed-form and differential oracles for the ray-cast polygon gate and shared plane hits (tests) | `classifier/ray_cast/gate_oracle_tests.rs` |
+| Differential oracles for the ray-cast torus line cull: no quartic roots on a cleared line, ray triples against the unculled vote loop, near and far past the reach cap, near-miss roots only the margin keeps (tests) | `classifier/ray_cast/torus_cull_oracle_tests.rs` |
 | Recognition of bounded rectangular torus patches | `classifier/torus_patch.rs` |
 | Shell assembly (4-phase `BuilderSolid`) | `builder/builder_solid.rs` |
 | Boolean preflight diagnostics | `diagnostic.rs` |
@@ -306,6 +309,7 @@ Quick reference — find the right file for any task:
 | Independent-oracle tests for phase-FF exact-vs-refuse helpers (disc clip, one-hit graze, torus oval trim, one-rim notch) | `pave_filler/phase_ff/helper_oracle_tests.rs` |
 | Differential oracle for the phase-FF junction snap's box gate and per-face boundary cache (the ungated search kept verbatim), the box bound against sampled curve distances, and the untouched-face box gate (tests) | `pave_filler/phase_ff/junction_snap_oracle_tests.rs` |
 | Independent-oracle tests for builder-solid helpers (conic support, closed-pair traversal, revolved wire winding) | `builder/builder_solid/helper_oracle_tests.rs` |
+| Differential oracle for the NURBS arc refinement's knot-span box prefilter: it rejects only vertices the unchanged search rejects (tests) | `builder/builder_solid/arc_refine_oracle_tests.rs` |
 | Independent-oracle tests for fill-images section helpers (cap discs, closed-section containment, curved-face segment classifier) | `builder/fill_images_faces/helper_oracle_tests.rs` |
 
 ### L2: blend (`crates/blend/src/`)
@@ -392,6 +396,7 @@ Quick reference — find the right file for any task:
 | Point-in-solid classification (ray casting) | `classify/mod.rs` |
 | Winding number classifier | `classify/winding.rs` |
 | Operation-local prepared context for repeated point classification (`PreparedSolid`) | `classify/prepared.rs` |
+| Knot-span boxes of NURBS faces and the ray prefilter they drive: a forward ray clear of every box gets no hit, so the prepared crossing count skips the face (boxes scanned in groups; faces past 400 spans left to the solver) | `classify/prepared/ray_prefilter.rs` |
 | Persistent whole-topology classification cache (`ClassificationCache`, PERF-Q02) | `classify/cache.rs` |
 | Narrow-bump far-flank crossing through the classifier's NURBS ray path (tests) | `classify/boundary/nurbs_bump_ray_tests.rs` |
 | Boundary skeleton that makes a ray through an edge or vertex abstain from the classification vote | `classify/graze.rs` |
@@ -545,7 +550,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Direct push/pull face editing | `push_pull.rs` |
 | Exact support-surface replacement with topology-preserving re-limitation | `replace_surface.rs` |
 | Exact constant-radius blend-band resizing | `resize_blend.rs` |
-| Differential oracle for the blend move's translation path: the whole-document scratch-copy version kept verbatim (tests) | `resize_blend/translation_oracle_tests.rs` |
+| Differential oracle for the blend move's translation path: the whole-document scratch-copy version kept verbatim, also with its copy-validation refusal forced through a test hook (tests) | `resize_blend/translation_oracle_tests.rs` |
 | Exact local reconstruction of analytic wounds | `local_wound.rs` |
 | Cylindrical blend removal with certified affine NURBS caps | `affine_blend_caps.rs` |
 | Atomic removal of explicitly selected connected blend groups | `remove_blends.rs` |
@@ -571,7 +576,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Resource limits for untrusted imports | `limits.rs` |
 | Persistent-reference JSON codec | `naming_io.rs` |
 | Differential oracle for the persistent-reference codec (tests) | `naming_io/oracle_tests.rs` |
-| Differential oracle over the STEP fixtures and synthetic bodies for the trim-window prune of the prepared boundary test (tests) | `tests/boundary_prune_oracle.rs` |
+| Differential oracles over the STEP fixtures and synthetic bodies for the prepared classifier's exact skips: the boundary test's trim-window prune and the crossing count's NURBS knot-span prefilter, with its skips counted on either side of its span cap (tests) | `tests/boundary_prune_oracle.rs` |
+| Differential oracles on the hammer holder for the ray classifier's torus-trim memo (boolean result arenas with it off, cold and warm) and torus line cull (ray triples against the unculled vote loop) (tests) | `tests/hammer_ray_geom_oracle.rs` |
 
 ### L4: render (`crates/render/src/`)
 | Task | File(s) |
@@ -603,6 +609,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Modeling operations (extrude, revolve, sweep, loft, fillet, etc.) | `bindings/operations.rs` |
 | Boolean operations (fuse, cut, intersect) | `bindings/booleans.rs` |
 | Typed modifier results (`filletDetailed`, `chamferDetailed`, `shellDetailed`, `offsetDetailed`, and the `filletV2`/`chamferV2`/`chamferDistanceAngle`/`filletVariable` twins) | `bindings/modifier_detailed.rs` |
+| Differential oracle: the modifier twins' full-copy rollback envelope kept verbatim, against the rollback scope (tests) | `bindings/modifier_detailed/envelope_oracle_tests.rs` |
 | Typed construction results (`extrudeDetailed`, `revolveDetailed`) | `bindings/construction_detailed.rs` |
 | Transform, copy, mirror, pattern | `bindings/transforms.rs` |
 | Typed affine transform results and refusals | `bindings/transform_detailed.rs` |
@@ -614,7 +621,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Shape healing, validation, feature recognition | `bindings/heal.rs` |
 | Checkpoint / restore | `bindings/checkpoint.rs` |
 | Accounted checkpoint storage, allocated WASM pages and phase timing bindings | `bindings/performance.rs` |
-| Coordinated boolean batch commits and retained session-state tests | `bindings/transaction_tests.rs` |
+| Boundary rollback fault matrix for every mutating family (batch arms, typed modifier twins, direct transactions, `fromBREP`) and retained session-state tests | `bindings/transaction_tests.rs` |
 | 2D sketch constraint solver | `bindings/sketch.rs` |
 | Sketch input validation contracts: legacy `angle` second line, add-time deferred-constraint checks, positive GCS ellipse semiaxes (tests) | `bindings/sketch_validation_tests.rs` |
 | Directional curve projection (P-Class 7.4 direct + batch, `project-curve:<code>` refusals) | `bindings/project_curve.rs` |
@@ -624,6 +631,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Read-only certified NURBS carrier reduction and cubic fitting | `bindings/nurbs_reuse.rs` |
 | Batch execution & dispatch | `bindings/batch.rs` |
 | Optional `executeBatch` arguments: absent reads as the default, present but malformed is refused (contract tests) | `bindings/batch_optional_args_tests.rs` |
+| Differential oracle: the full-copy batch rollback dispatcher kept verbatim, in lockstep with the rollback scope (tests) | `bindings/batch_rollback_oracle_tests.rs` |
 | Gridfinity integration tests | `bindings/gridfinity_tests.rs` |
 | Fillet fail-closed contract tests | `bindings/fillet_fail_closed_tests.rs` |
 | Sequential fillet onto an earlier blend band (contract test) | `bindings/sequential_fillet_tests.rs` |

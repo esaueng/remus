@@ -271,6 +271,62 @@ fn bounds_disable_and_evict() {
     assert_box_bits(&topo, faces[0]);
 }
 
+/// A disc bounded by one circle edge whose range runs one ULP past a full
+/// turn, as an anchored full turn can. With one vertex the edge is closed and
+/// the preflight accepts the turn; with two distinct vertices at the same
+/// point it is open, its range overruns a turn and the preflight refuses
+/// it. Every other key word is the same for both.
+fn full_turn_disc(closed: bool) -> (Topology, FaceId) {
+    use remus_math::curves::Circle3D;
+
+    let mut topo = Topology::new();
+    let circle = Circle3D::new(Point3::new(3.0, 2.0, 1.0), Vec3::new(0.0, 0.0, 1.0), 1.5).unwrap();
+    let range = (0.0, std::f64::consts::TAU.next_up());
+    let point = circle.evaluate(range.0);
+    let start = topo.add_vertex(Vertex::new(point, 1e-7));
+    let end = if closed {
+        start
+    } else {
+        topo.add_vertex(Vertex::new(point, 1e-7))
+    };
+    let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+    edge.set_trim(Some(range));
+    let edge = topo.add_edge(edge);
+    let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+    let face = topo.add_face(Face::new(
+        wire,
+        Vec::new(),
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 1.0,
+        },
+    ));
+    (topo, face)
+}
+
+#[test]
+fn closed_edge_flag_is_part_of_the_key() {
+    let _reset = fresh_memo();
+    let (closed_topo, closed) = full_turn_disc(true);
+    let (open_topo, open) = full_turn_disc(false);
+    assert!(face_set_bounding_box(&closed_topo, &[closed]).is_ok());
+    let refusal = face_set_bounding_box(&open_topo, &[open])
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refusal.contains("requires an authoritative edge domain"),
+        "{refusal}"
+    );
+    // The closed disc's box is stored first; the open disc must not read it.
+    assert_box_bits(&closed_topo, closed);
+    assert_eq!(
+        face_bounding_box(&open_topo, open).unwrap_err().to_string(),
+        refusal
+    );
+    let stats = thread_face_box_memo_stats().unwrap();
+    assert_eq!((stats.hits, stats.misses, stats.len), (0, 2, 1));
+}
+
 /// Pins every geometry type's size, so a new field fails here until the key
 /// reads it.
 #[test]
