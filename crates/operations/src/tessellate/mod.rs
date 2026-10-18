@@ -30,6 +30,7 @@ mod nonplanar;
 mod nurbs;
 mod planar;
 mod pool_index;
+mod reuse;
 pub(crate) mod rim_chain;
 mod solid;
 mod sphere_pole_patch;
@@ -52,6 +53,10 @@ pub(crate) use mesh_ops::COINCIDENT_DEDUPE_GRID;
 pub use mesh_ops::{
     EdgeLines, WeldedMeshQuality, boundary_edge_count, is_watertight, non_manifold_edge_count,
     sample_solid_edges, sample_solid_edges_filtered, welded_mesh_quality,
+};
+pub use reuse::{
+    DEFAULT_MESH_REUSE_BYTES, DEFAULT_MESH_REUSE_ENTRIES, MeshReuseStats, clear_mesh_reuse,
+    disable_mesh_reuse, enable_mesh_reuse, enable_mesh_reuse_with_limits, mesh_reuse_stats,
 };
 pub use solid::{
     tessellate_body_with_tolerance, tessellate_sheet, tessellate_sheet_with_tolerance,

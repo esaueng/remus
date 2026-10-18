@@ -13,16 +13,12 @@ use remus_topology::{BodyClass, BodyId};
 
 use super::PointMergeMap;
 use super::TriangleMesh;
-#[cfg(not(target_arch = "wasm32"))]
-use super::boundary_plan::SampledEdge;
 use super::boundary_plan::{BoundaryPlan, BoundaryRefinementRequest, SampleChains, SampleParams};
 use super::edge_sampling::{
     circle_param_range, sample_edge, sample_edge_with_params, segments_for_chord_deviation_a,
 };
 use super::face_cache::{self, RetentionClass};
-use super::mesh_ops::{
-    dedupe_coincident_triangles, fill_sub_deflection_triangular_gaps, weld_boundary_vertices,
-};
+use super::mesh_ops::fill_sub_deflection_triangular_gaps;
 use super::nonplanar::{
     tessellate_cone_apex_fan_shared, tessellate_converted_wall_band_shared,
     tessellate_latitude_band_shared, tessellate_nonplanar_cdt, tessellate_nonplanar_snap,
@@ -36,6 +32,7 @@ use super::planar::{
     remove_closing_duplicate_ids, run_planar_cdt, tessellate_planar_shared_with_holes,
     unproject_point,
 };
+use super::reuse;
 use super::{MERGE_GRID, point_merge_key};
 
 const MAX_PLANAR_CONTACT_CANDIDATE_PAIRS: usize = 4_000_000;
@@ -552,112 +549,66 @@ fn tessellate_solid_core(
     )
 }
 
-#[derive(Clone, Copy)]
-enum MeshBoundaryMode {
-    ClosedSolid,
-    OpenSheet,
-    ClosedMeasurement,
-    OpenMeasurement,
-}
-
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    clippy::fn_params_excessive_bools
-)]
-fn tessellate_faces_core(
+#[allow(clippy::too_many_arguments)]
+fn build_boundary_plan(
     topo: &Topology,
     all_faces: &[FaceId],
+    edge_indices: &[usize],
+    edge_keys: Option<&[Vec<u64>]>,
     deflection: f64,
     angular_tol: f64,
-    boundary_mode: MeshBoundaryMode,
-    track_faces: bool,
     circle_floor: bool,
-    retention: RetentionClass,
-) -> Result<(TriangleMesh, Option<Vec<u32>>, usize), crate::OperationsError> {
-    let _total = crate::performance::span("mesh.total");
-    let sampling = crate::performance::span("mesh.boundary-sampling");
-    let edge_face_map = remus_topology::explorer::edge_to_face_map_for_faces(topo, all_faces)?;
-
-    // The map is a std `HashMap`, so sort its keys into ID order before use —
-    // keeping all downstream iteration deterministic regardless of
-    // insertion-order hashing.
-    let mut edge_indices: Vec<usize> = edge_face_map.keys().copied().collect();
-    edge_indices.sort_unstable();
-    // Stage A1 (PERF-D03): sample every shared edge once, retaining the
-    // authoritative curve parameter per sample. Parallel and serial paths
-    // must agree exactly: results are collected then inserted into fresh
-    // maps in sorted edge order, so global identities never depend on
-    // thread scheduling. The `circle_floor` policy travels with the plan
-    // (display vs boolean callers keep their distinct densities).
+    mut reuse: Option<&mut reuse::Session>,
+) -> Result<BoundaryPlan, crate::OperationsError> {
+    // Reuse unchanged edges, then sample only misses. Parallel jobs never
+    // mutate the cache or choose shared identities; collection stays in sorted
+    // edge order, exactly as on the uncached path.
+    let mut edge_points = SampleChains::default();
+    let mut edge_params = SampleParams::default();
+    let mut pending = Vec::new();
+    for (ordinal, &index) in edge_indices.iter().enumerate() {
+        let key = edge_keys.map(|keys| &keys[ordinal]);
+        if let Some((points, params)) = reuse
+            .as_mut()
+            .and_then(|session| key.and_then(|key| session.edge(key)))
+        {
+            edge_points.insert(index, points);
+            edge_params.insert(index, params);
+        } else {
+            pending.push((index, key));
+        }
+    }
+    let sample = |&(index, _): &(usize, Option<&Vec<u64>>)| {
+        let edge_id =
+            topo.edge_id_from_index(index)
+                .ok_or_else(|| crate::OperationsError::InvalidInput {
+                    reason: "shared boundary edge no longer exists".into(),
+                })?;
+        sample_edge_with_params(
+            topo,
+            topo.edge(edge_id)?,
+            deflection,
+            angular_tol,
+            circle_floor,
+        )
+    };
     #[cfg(not(target_arch = "wasm32"))]
-    let (mut edge_points, mut edge_params): (SampleChains, SampleParams) = if edge_indices.len()
-        >= 32
-    {
+    let results: Vec<_> = if pending.len() >= 32 {
         use rayon::prelude::*;
-        let results: Vec<Result<SampledEdge, crate::OperationsError>> = edge_indices
-            .par_iter()
-            .filter_map(|&edge_idx| {
-                let edge_id = topo.edge_id_from_index(edge_idx)?;
-                let edge_data = match topo.edge(edge_id) {
-                    Ok(d) => d,
-                    Err(e) => return Some(Err(crate::OperationsError::Topology(e))),
-                };
-                Some(
-                    sample_edge_with_params(topo, edge_data, deflection, angular_tol, circle_floor)
-                        .map(|(pts, params)| (edge_idx, pts, params)),
-                )
-            })
-            .collect();
-        let mut points_map = DetHashMap::default();
-        let mut params_map = DetHashMap::default();
-        for r in results {
-            let (idx, pts, params) = r?;
-            points_map.insert(idx, pts);
-            params_map.insert(idx, params);
-        }
-        (points_map, params_map)
+        pending.par_iter().map(sample).collect()
     } else {
-        let mut points_map = DetHashMap::default();
-        let mut params_map = DetHashMap::default();
-        for &edge_idx in &edge_indices {
-            if let Some(edge_id) = topo.edge_id_from_index(edge_idx)
-                && let Ok(edge_data) = topo.edge(edge_id)
-            {
-                let (points, params) = sample_edge_with_params(
-                    topo,
-                    edge_data,
-                    deflection,
-                    angular_tol,
-                    circle_floor,
-                )?;
-                points_map.insert(edge_idx, points);
-                params_map.insert(edge_idx, params);
-            }
-        }
-        (points_map, params_map)
+        pending.iter().map(sample).collect()
     };
     #[cfg(target_arch = "wasm32")]
-    let (mut edge_points, mut edge_params): (SampleChains, SampleParams) = {
-        let mut points_map = DetHashMap::default();
-        let mut params_map = DetHashMap::default();
-        for &edge_idx in &edge_indices {
-            if let Some(edge_id) = topo.edge_id_from_index(edge_idx)
-                && let Ok(edge_data) = topo.edge(edge_id)
-            {
-                let (points, params) = sample_edge_with_params(
-                    topo,
-                    edge_data,
-                    deflection,
-                    angular_tol,
-                    circle_floor,
-                )?;
-                points_map.insert(edge_idx, points);
-                params_map.insert(edge_idx, params);
-            }
+    let results: Vec<_> = pending.iter().map(sample).collect();
+    for ((index, key), result) in pending.into_iter().zip(results) {
+        let (points, params) = result?;
+        if let (Some(session), Some(key)) = (reuse.as_mut(), key) {
+            session.store_edge(key.clone(), &points, &params);
         }
-        (points_map, params_map)
-    };
+        edge_points.insert(index, points);
+        edge_params.insert(index, params);
+    }
 
     // Stage A2 (PERF-D03): synchronize circle edge samples with face grid
     // density so a face's rim points line up with its own analytic grid
@@ -1135,7 +1086,7 @@ fn tessellate_faces_core(
 
         // Built on first use: a body without circle edges never pays for it.
         let mut pool_index: Option<Option<super::pool_index::PoolIndex>> = None;
-        for &edge_idx in &edge_indices {
+        for &edge_idx in edge_indices {
             let Some(edge_id) = topo.edge_id_from_index(edge_idx) else {
                 continue;
             };
@@ -1290,6 +1241,97 @@ fn tessellate_faces_core(
         }
     }
 
+    Ok(plan)
+}
+
+#[derive(Clone, Copy)]
+enum MeshBoundaryMode {
+    ClosedSolid,
+    OpenSheet,
+    ClosedMeasurement,
+    OpenMeasurement,
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::fn_params_excessive_bools
+)]
+fn tessellate_faces_core(
+    topo: &Topology,
+    all_faces: &[FaceId],
+    deflection: f64,
+    angular_tol: f64,
+    boundary_mode: MeshBoundaryMode,
+    track_faces: bool,
+    circle_floor: bool,
+    retention: RetentionClass,
+) -> Result<(TriangleMesh, Option<Vec<u32>>, usize), crate::OperationsError> {
+    let _total = crate::performance::span("mesh.total");
+    let sampling = crate::performance::span("mesh.boundary-sampling");
+    let edge_face_map = remus_topology::explorer::edge_to_face_map_for_faces(topo, all_faces)?;
+
+    // The map is a std `HashMap`, so sort its keys into ID order before use —
+    // keeping all downstream iteration deterministic regardless of
+    // insertion-order hashing.
+    let mut edge_indices: Vec<usize> = edge_face_map.keys().copied().collect();
+    edge_indices.sort_unstable();
+    let mut reuse_session = reuse::Session::begin(retention);
+    let edge_keys = if reuse_session.is_some() {
+        Some(
+            edge_indices
+                .iter()
+                .map(|&index| {
+                    let edge = topo.edge_id_from_index(index).ok_or_else(|| {
+                        crate::OperationsError::InvalidInput {
+                            reason: "shared boundary edge no longer exists".into(),
+                        }
+                    })?;
+                    reuse::edge_key(topo, edge, deflection, angular_tol, circle_floor)
+                })
+                .collect::<Result<Vec<_>, crate::OperationsError>>()?,
+        )
+    } else {
+        None
+    };
+    let boundary_key = edge_keys
+        .as_ref()
+        .map(|keys| {
+            reuse::boundary_key(
+                topo,
+                all_faces,
+                &edge_indices,
+                keys,
+                deflection,
+                angular_tol,
+                circle_floor,
+            )
+        })
+        .transpose()?;
+    let retained = reuse_session.as_mut().and_then(|session| {
+        boundary_key
+            .as_ref()
+            .and_then(|key| session.boundary(key, &edge_indices))
+    });
+    let mut plan = if let Some(plan) = retained {
+        plan
+    } else {
+        let plan = build_boundary_plan(
+            topo,
+            all_faces,
+            &edge_indices,
+            edge_keys.as_deref(),
+            deflection,
+            angular_tol,
+            circle_floor,
+            reuse_session.as_mut(),
+        )?;
+        if let (Some(session), Some(key)) = (reuse_session.as_mut(), boundary_key) {
+            session.store_boundary(key, &plan);
+        }
+        plan
+    };
+
     // When tracking, `tri_faces` runs parallel to the mesh triangles:
     // tri_faces[t] is the index (into `all_faces`) of the face that produced
     // triangle t. The ungrouped caller skips this bookkeeping entirely.
@@ -1402,24 +1444,46 @@ fn tessellate_faces_core(
         other_face_indices.push(fi);
     }
 
+    let cdt_keys: Vec<_> = cdt_jobs
+        .iter()
+        .map(|job| {
+            reuse_session
+                .as_ref()
+                .map(|_| reuse::planar_key(&job.pts2d, job.outer_count, &job.inner_wire_ranges))
+        })
+        .collect();
+    let retained: Vec<_> = cdt_keys
+        .iter()
+        .map(|key| {
+            reuse_session
+                .as_mut()
+                .and_then(|session| key.as_ref().and_then(|key| session.planar(key)))
+        })
+        .collect();
+    let run = |(job, retained): (&CdtJob, &Option<super::planar::PlanarCdtOutput>)| {
+        retained.as_ref().map_or_else(
+            || run_planar_cdt(&job.pts2d, job.outer_count, &job.inner_wire_ranges),
+            |output| Ok(output.clone()),
+        )
+    };
     #[cfg(not(target_arch = "wasm32"))]
     let cdt_results: Vec<CdtResult> = if cdt_jobs.len() >= 2 {
         use rayon::prelude::*;
-        cdt_jobs
-            .par_iter()
-            .map(|job| run_planar_cdt(&job.pts2d, job.outer_count, &job.inner_wire_ranges))
-            .collect()
+        cdt_jobs.par_iter().zip(&retained).map(run).collect()
     } else {
-        cdt_jobs
-            .iter()
-            .map(|job| run_planar_cdt(&job.pts2d, job.outer_count, &job.inner_wire_ranges))
-            .collect()
+        cdt_jobs.iter().zip(&retained).map(run).collect()
     };
     #[cfg(target_arch = "wasm32")]
-    let cdt_results: Vec<CdtResult> = cdt_jobs
-        .iter()
-        .map(|job| run_planar_cdt(&job.pts2d, job.outer_count, &job.inner_wire_ranges))
-        .collect();
+    let cdt_results: Vec<CdtResult> = cdt_jobs.iter().zip(&retained).map(run).collect();
+    if let Some(session) = reuse_session.as_mut() {
+        for ((key, retained), result) in cdt_keys.into_iter().zip(&retained).zip(&cdt_results) {
+            if retained.is_none()
+                && let (Some(key), Ok(output)) = (key, result)
+            {
+                session.store_planar(key, output);
+            }
+        }
+    }
 
     // Where the planar CDT jobs' triangles start, so a job whose boundary
     // segment another job Steiner-split can be repaired after all of them
@@ -1823,16 +1887,20 @@ fn tessellate_faces_core(
         boundary_mode,
         MeshBoundaryMode::ClosedSolid | MeshBoundaryMode::ClosedMeasurement
     );
-    let had_boundary =
-        closed && weld_boundary_vertices(&mut plan.merged, plan.deflection, tri_faces.as_mut());
-
-    // Drop coincident/cancelling triangles left by booleans that
-    // produced overlapping coplanar faces (issue #696). Keyed on quantized
-    // positions so position-coincident triangles with distinct vertex IDs
-    // are still caught.
-    let deduped = dedupe_coincident_triangles(&mut plan.merged, tri_faces.as_mut());
-    // Gap fill only acts on boundary half-edges: a mesh the weld found
-    // closed, and that dedupe left unchanged, has none (PERF-D07).
+    let had_boundary = closed
+        && super::mesh_ops::weld_boundary_vertices_cached(
+            &mut plan.merged,
+            plan.deflection,
+            tri_faces.as_mut(),
+            reuse_session.as_mut(),
+        );
+    // Deduplication always sees the post-weld indices and fresh position
+    // equivalence classes. Reuse cannot mask a new weld or coincident face.
+    let deduped = super::mesh_ops::dedupe_coincident_triangles_cached(
+        &mut plan.merged,
+        tri_faces.as_mut(),
+        reuse_session.as_mut(),
+    );
     if closed && (had_boundary || deduped) {
         fill_sub_deflection_triangular_gaps(&mut plan.merged, plan.deflection, tri_faces.as_mut());
     }

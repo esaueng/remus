@@ -186,9 +186,18 @@ pub fn welded_mesh_quality(mesh: &TriangleMesh) -> WeldedMeshQuality {
 /// offsets recomputed from it stay aligned.
 ///
 /// Returns whether any triangle was removed.
+#[cfg(test)]
 pub(super) fn dedupe_coincident_triangles(
     mesh: &mut TriangleMesh,
     tri_faces: Option<&mut Vec<u32>>,
+) -> bool {
+    dedupe_coincident_triangles_cached(mesh, tri_faces, None)
+}
+
+pub(super) fn dedupe_coincident_triangles_cached(
+    mesh: &mut TriangleMesh,
+    tri_faces: Option<&mut Vec<u32>>,
+    mut reuse: Option<&mut super::reuse::Session>,
 ) -> bool {
     #[cfg(test)]
     if super::tests::mesh_passes::use_reference_passes() {
@@ -212,6 +221,16 @@ pub(super) fn dedupe_coincident_triangles(
     let Some(ids) = quantized_vertex_ids(mesh) else {
         return false;
     };
+
+    let reuse_key = reuse
+        .as_ref()
+        .map(|_| super::reuse::cleanup_key(&mesh.indices, &ids.of));
+    if reuse
+        .as_mut()
+        .is_some_and(|session| reuse_key.as_ref().is_some_and(|key| session.clean(key)))
+    {
+        return false;
+    }
 
     let mut keys: Vec<[u32; 3]> = Vec::with_capacity(tri_count);
     let mut parity: Vec<bool> = Vec::with_capacity(tri_count);
@@ -298,6 +317,9 @@ pub(super) fn dedupe_coincident_triangles(
     }
 
     if keep.iter().all(|&k| k) {
+        if let (Some(session), Some(key)) = (reuse, reuse_key) {
+            session.store_clean(key);
+        }
         return false;
     }
 
@@ -546,10 +568,20 @@ pub fn sample_solid_edges_filtered(
 ///
 /// Returns `false` only when the mesh had no boundary half-edge (every
 /// directed edge has its reverse), in which case it was left untouched.
+#[cfg(test)]
 pub(super) fn weld_boundary_vertices(
     mesh: &mut TriangleMesh,
     deflection: f64,
     tri_faces: Option<&mut Vec<u32>>,
+) -> bool {
+    weld_boundary_vertices_cached(mesh, deflection, tri_faces, None)
+}
+
+pub(super) fn weld_boundary_vertices_cached(
+    mesh: &mut TriangleMesh,
+    deflection: f64,
+    tri_faces: Option<&mut Vec<u32>>,
+    mut reuse: Option<&mut super::reuse::Session>,
 ) -> bool {
     #[cfg(test)]
     if super::tests::mesh_passes::use_reference_passes() {
@@ -561,33 +593,44 @@ pub(super) fn weld_boundary_vertices(
         return true;
     }
 
-    // Boundary vertices: incident on half-edges without a matching reverse.
-    // PERF-D07: found through a vertex-indexed half-edge table instead of a
-    // hash map of every half-edge; the set is the same.
-    let Some(table) = HalfEdgeTable::new(&mesh.indices, n_verts) else {
-        return true;
-    };
-    let mut is_boundary = vec![false; n_verts];
-    let mut any_boundary = false;
-    for (a, b, _) in table.edges() {
-        if !table.contains(b, a) {
-            is_boundary[a as usize] = true;
-            is_boundary[b as usize] = true;
-            any_boundary = true;
+    // Directed connectivity is independent of position. Reuse only with
+    // the complete, identical index buffer and vertex count; every spatial
+    // weld distance and union decision is still evaluated on current points.
+    let reuse_key = reuse
+        .as_ref()
+        .map(|_| super::reuse::weld_key(&mesh.indices, n_verts));
+    let retained = reuse
+        .as_mut()
+        .and_then(|session| reuse_key.as_ref().and_then(|key| session.weld(key)));
+    let boundary_verts = if let Some(vertices) = retained {
+        vertices
+    } else {
+        let Some(table) = HalfEdgeTable::new(&mesh.indices, n_verts) else {
+            return true;
+        };
+        let mut is_boundary = vec![false; n_verts];
+        for (a, b, _) in table.edges() {
+            if !table.contains(b, a) {
+                is_boundary[a as usize] = true;
+                is_boundary[b as usize] = true;
+            }
         }
-    }
 
-    if !any_boundary {
+        // Sorted iteration keeps grid-cell contents and union order independent
+        // of DetHashSet iteration order, so welded meshes are reproducible.
+        #[allow(clippy::cast_possible_truncation)]
+        let vertices: Vec<u32> = (0..n_verts)
+            .filter(|&v| is_boundary[v])
+            .map(|v| v as u32)
+            .collect();
+        if let (Some(session), Some(key)) = (reuse.as_mut(), reuse_key) {
+            session.store_weld(key, &vertices);
+        }
+        vertices
+    };
+    if boundary_verts.is_empty() {
         return false;
     }
-
-    // Sorted iteration keeps grid-cell contents and union order independent
-    // of DetHashSet iteration order, so welded meshes are reproducible.
-    #[allow(clippy::cast_possible_truncation)]
-    let boundary_verts: Vec<u32> = (0..n_verts)
-        .filter(|&v| is_boundary[v])
-        .map(|v| v as u32)
-        .collect();
 
     #[allow(clippy::items_after_statements)]
     fn uf_find(parent: &mut [u32], mut x: u32) -> u32 {

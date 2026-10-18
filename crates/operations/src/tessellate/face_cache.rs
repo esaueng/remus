@@ -362,7 +362,8 @@ impl Mixer {
 }
 
 /// Accumulates a [`FaceKey`].
-struct KeyBuilder {
+#[derive(Default)]
+pub(super) struct KeyBuilder {
     tags: Vec<u64>,
     scalars: Vec<u64>,
     dirs: Vec<f64>,
@@ -371,36 +372,36 @@ struct KeyBuilder {
 }
 
 impl KeyBuilder {
-    fn tag(&mut self, value: u64) {
+    pub(super) fn tag(&mut self, value: u64) {
         self.tags.push(value);
     }
 
-    fn flag(&mut self, value: bool) {
+    pub(super) fn flag(&mut self, value: bool) {
         self.tags.push(u64::from(value));
     }
 
-    fn count(&mut self, value: usize) {
+    pub(super) fn count(&mut self, value: usize) {
         self.tags.push(value as u64);
     }
 
-    fn scalar(&mut self, value: f64) {
+    pub(super) fn scalar(&mut self, value: f64) {
         self.scalars.push(value.to_bits());
     }
 
-    fn scalars(&mut self, values: &[f64]) {
+    pub(super) fn scalars(&mut self, values: &[f64]) {
         self.count(values.len());
         self.scalars.extend(values.iter().map(|v| v.to_bits()));
     }
 
-    fn direction(&mut self, v: Vec3) {
+    pub(super) fn direction(&mut self, v: Vec3) {
         self.dirs.extend([v.x(), v.y(), v.z()]);
     }
 
-    fn point(&mut self, p: Point3) {
+    pub(super) fn point(&mut self, p: Point3) {
         self.points.push(p);
     }
 
-    fn surface(&mut self, surface: &FaceSurface) {
+    pub(super) fn surface(&mut self, surface: &FaceSurface) {
         match surface {
             FaceSurface::Plane { normal, d } => {
                 self.tag(1);
@@ -458,7 +459,7 @@ impl KeyBuilder {
         }
     }
 
-    fn curve(&mut self, curve: &EdgeCurve) {
+    pub(super) fn curve(&mut self, curve: &EdgeCurve) {
         match curve {
             EdgeCurve::Line => self.tag(1),
             EdgeCurve::NurbsCurve(c) => {
@@ -507,7 +508,7 @@ impl KeyBuilder {
         }
     }
 
-    fn pcurve(&mut self, pcurve: Option<&remus_topology::pcurve::PCurve>) {
+    pub(super) fn pcurve(&mut self, pcurve: Option<&remus_topology::pcurve::PCurve>) {
         use remus_math::curves2d::Curve2D;
         let Some(pcurve) = pcurve else {
             self.tag(0);
@@ -551,6 +552,28 @@ impl KeyBuilder {
                 self.scalars(c.weights());
             }
         }
+    }
+
+    /// Lossless content, with lengths separating each typed component.
+    /// Unlike translated face reuse, stage reuse compares every float bit.
+    pub(super) fn exact(self) -> Vec<u64> {
+        let mut words = Vec::new();
+        words.push(self.tags.len() as u64);
+        words.extend(self.tags);
+        words.push(self.scalars.len() as u64);
+        words.extend(self.scalars);
+        words.push(self.dirs.len() as u64);
+        words.extend(self.dirs.into_iter().map(f64::to_bits));
+        words.push(self.points.len() as u64);
+        for point in self.points {
+            words.extend(point.0.map(f64::to_bits));
+        }
+        words.push(self.planes.len() as u64);
+        for (normal, d) in self.planes {
+            words.extend(normal.0.map(f64::to_bits));
+            words.push(d.to_bits());
+        }
+        words
     }
 
     fn finish(self, translation: TranslationRule, chart: Vec<u64>) -> FaceKey {
