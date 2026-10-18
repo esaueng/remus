@@ -752,6 +752,19 @@ impl BrepKernel {
         positions: &[f64],
         indices: &[u32],
     ) -> Result<u32, IndexedMeshError> {
+        self.import_indexed_mesh_with_limits_impl(
+            positions,
+            indices,
+            remus_io::ImportLimits::default(),
+        )
+    }
+
+    fn import_indexed_mesh_with_limits_impl(
+        &mut self,
+        positions: &[f64],
+        indices: &[u32],
+        limits: remus_io::ImportLimits,
+    ) -> Result<u32, IndexedMeshError> {
         use remus_math::vec::Point3;
 
         if !positions.len().is_multiple_of(3) {
@@ -770,11 +783,7 @@ impl BrepKernel {
             .into());
         }
 
-        remus_io::validate_indexed_mesh_sizes(
-            positions.len(),
-            indices.len(),
-            remus_io::ImportLimits::default(),
-        )?;
+        remus_io::validate_indexed_mesh_sizes(positions.len(), indices.len(), limits)?;
 
         let verts: Vec<Point3> = positions
             .chunks_exact(3)
@@ -793,9 +802,10 @@ impl BrepKernel {
         // scratch-document bridge as the lazy translator module instead.
         let mut scratch = remus_topology::Topology::new();
         let solid_id = remus_io::stl::import::import_mesh(&mut scratch, &mesh, TOL)?;
-        let document = remus_io::arena_io::serialize_solid(&scratch, solid_id)?;
+        let document = remus_io::arena_io::serialize_solid_with_limits(&scratch, solid_id, limits)?;
         drop(scratch);
-        let solid_id = remus_io::arena_io::deserialize_solid(&document, self.topo_mut())?;
+        let solid_id =
+            remus_io::arena_io::deserialize_solid_with_limits(&document, self.topo_mut(), limits)?;
         Ok(solid_id_to_u32(solid_id))
     }
 }
@@ -805,6 +815,39 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn indexed_mesh_expanded_document_stops_at_the_encoding_budget() {
+        let mut kernel = BrepKernel::new();
+        let existing = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
+        let before = format!("{:?}", kernel.topo());
+        let id = kernel.resolve_solid(existing).unwrap();
+        let shape = remus_io::arena_io::serialize_solid(kernel.topo(), id).unwrap();
+        let positions = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let indices = [0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3];
+        let limits = remus_io::ImportLimits {
+            max_input_bytes: positions.len() * size_of::<f64>() + indices.len() * size_of::<u32>(),
+            ..remus_io::ImportLimits::default()
+        };
+        remus_io::validate_indexed_mesh_sizes(positions.len(), indices.len(), limits).unwrap();
+        let error = kernel
+            .import_indexed_mesh_with_limits_impl(&positions, &indices, limits)
+            .unwrap_err();
+        // This must be the bounded writer's refusal, not a deserializer refusal
+        // after an unlimited encoded document has already been allocated.
+        assert!(matches!(
+            error,
+            IndexedMeshError::Io(remus_io::IoError::LimitExceeded {
+                resource: "arena document bytes",
+                ..
+            })
+        ));
+        assert_eq!(format!("{:?}", kernel.topo()), before);
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(kernel.topo(), id).unwrap(),
+            shape
+        );
+    }
 
     #[test]
     fn indexed_mesh_refusals_do_not_retain_allocations() {
