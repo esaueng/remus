@@ -73,6 +73,26 @@ export function runWasmParserReferencesPackaged({ BrepKernel }) {
     assert.deepEqual(JSON.parse(kernel.sketchSolve(sketch, 20, 1e-8)).points, [[1, 2], [3, 4]]);
     kernel.free();
   }
+  // Issue #1049: optional second-line references must not wrap on wasm32.
+  // Legacy sketch bindings are direct-only; executeBatch exposes typed GCS.
+  for (const field of ['p3', 'p4']) {
+    for (const invalid of [2 ** 32, 2 ** 32 + 1, -1, 0.5, '0']) {
+      const kernel = new BrepKernel();
+      const solid = kernel.makeBox(1, 1, 1);
+      const sketch = kernel.sketchNew();
+      const points = [[0, 0], [1, 0], [0, 1], [1, 1]];
+      for (const [x, y] of points) kernel.sketchAddPoint(sketch, x, y, true);
+      const spec = { type: 'angle', p1: 0, p2: 1, p3: 2, p4: 3, value: 0 };
+      spec[field] = invalid;
+      const before = topologyState(kernel, solid);
+      const dof = kernel.sketchDof(sketch);
+      assert.throws(() => kernel.sketchAddConstraint(sketch, JSON.stringify(spec)), /invalid input/, `${field}: ${invalid}`);
+      assert.deepEqual(topologyState(kernel, solid), before);
+      assert.equal(kernel.sketchDof(sketch), dof);
+      assert.deepEqual(JSON.parse(kernel.sketchSolve(sketch, 20, 1e-8)).points, points);
+      kernel.free();
+    }
+  }
   // Deferred arc constraints are index-checked when added (kernel review
   // WASM-8): an unrepresentable reference is refused before storage, and the
   // sketch and session stay unchanged and solvable.

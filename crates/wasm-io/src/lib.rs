@@ -475,6 +475,11 @@ impl RemusIo {
                 indices.len()
             )));
         }
+        remus_io::validate_indexed_mesh_sizes(
+            positions.len(),
+            indices.len(),
+            ImportLimits::default(),
+        )?;
         let mesh = remus_operations::tessellate::TriangleMesh {
             positions: positions
                 .chunks_exact(3)

@@ -1500,36 +1500,5 @@ pub(super) fn point_to_segment_dist(p: Point3, a: Point3, b: Point3) -> f64 {
     (p - proj).length()
 }
 
-/// Check if a point is near any polyline segment in traced curves.
-///
-/// Uses segment distance (not point distance) to avoid false positives:
-/// a seed near the *middle* of a traced curve won't be rejected just
-/// because it's close to an interior point -- it must be within `dist`
-/// of the actual polyline path. This prevents discarding seeds that
-/// could reach a different branch.
-pub(super) fn near_existing_segment(
-    segments: &[Vec<IntersectionPoint>],
-    point: &IntersectionPoint,
-    dist: f64,
-) -> bool {
-    for seg in segments {
-        if seg.len() < 2 {
-            // Single-point segment: fallback to point distance.
-            if let Some(p) = seg.first()
-                && (p.point - point.point).length() < dist
-            {
-                return true;
-            }
-            continue;
-        }
-        for w in seg.windows(2) {
-            if point_to_segment_dist(point.point, w[0].point, w[1].point) < dist {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 #[cfg(test)]
 mod oracle_tests;
