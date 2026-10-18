@@ -117,6 +117,27 @@ Policy verification: `python3 scripts/test-direct-fleet.py`,
 and `actionlint`. The historical `owner-pr.yml` remains unchanged for old
 immutable callers; new callers use `fleet-ci.yml`.
 
+## Updating immutable workflow dependencies
+
+`.github/fleet-workflows.json` names the active file for each workflow family.
+Routing and policy tests read those selected files and require every caller to
+use a full commit SHA reachable from `origin/main`, with exactly the same bytes
+as the checked-in active callee. Mutable pins and inactive filenames fail closed.
+
+A dependency update to a callee therefore takes two protected PRs. First stage
+new versioned `fleet-*-v2.yml` files while leaving callers and active files
+unchanged. The staging regression compares all nine files with the previous
+main revision and permits only the reviewed Action pins and version comments
+to change. After the staging PR passes the merge queue and lands, switch the
+manifest and callers together to the versioned files at the actual landed main
+commit. Retire the old files from the current tree in that activation PR;
+historical immutable callers can still resolve their original commit.
+
+The runner-group allowlist must separately authorize each exact active filename
+and landed SHA before enabling fleet execution. Preserve existing restrictions
+and entries. Hosted fallback remains available while fleet routing is disabled;
+merging these files does not change repository variables or runner permissions.
+
 ## Convergence and merge queues
 
 The caller cancels superseded runs only for the same ref. There is no global

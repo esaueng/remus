@@ -7,9 +7,10 @@ import re
 import subprocess
 import unittest
 from pathlib import Path
+from fleet_workflows import workflow_path
 
 ROOT = Path(__file__).resolve().parents[1]
-TEXT = (ROOT / ".github/workflows/fleet-ci.yml").read_text()
+TEXT = workflow_path("ci").read_text()
 CALLER = (ROOT / ".github/workflows/ci.yml").read_text()
 EXPRESSIONS = re.findall(
     r"^    runs-on: (?:&fleet(?:-light)?-runner )?(\$\{\{ fromJSON\(.+\) \}\})$", TEXT, re.M

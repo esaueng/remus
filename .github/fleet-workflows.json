@@ -1,0 +1,11 @@
+{
+  "benchmark": "fleet-benchmark.yml",
+  "ci": "fleet-ci.yml",
+  "fuzz": "fleet-fuzz.yml",
+  "gauntlet": "fleet-gauntlet.yml",
+  "mutants-sharded": "fleet-mutants-sharded.yml",
+  "mutation-scope": "fleet-mutation-scope.yml",
+  "osv": "fleet-osv.yml",
+  "wasm-candidate": "fleet-wasm-candidate.yml",
+  "wasm-size": "fleet-wasm-size.yml"
+}

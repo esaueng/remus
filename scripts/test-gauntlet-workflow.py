@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from fleet_workflows import workflow_path
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -15,7 +16,7 @@ class GauntletWorkflowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         caller = WORKFLOW.read_text(encoding="utf-8")
-        callee = WORKFLOW.with_name("fleet-gauntlet.yml").read_text(encoding="utf-8")
+        callee = workflow_path("gauntlet").read_text(encoding="utf-8")
         cls.text = caller + "\n" + callee
         cls.run_job, cls.publish_job = callee.split("\n  publish:\n", maxsplit=1)
 
