@@ -30,7 +30,7 @@ pub mod stl;
 #[cfg(feature = "formats")]
 pub mod threemf;
 
-pub use limits::ImportLimits;
+pub use limits::{ImportLimits, validate_indexed_mesh_sizes};
 
 /// Drop triangles whose exact cross-product area is zero or non-finite from a
 /// tessellated mesh, keeping every finite nonzero-area triangle.
