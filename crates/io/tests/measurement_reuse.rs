@@ -107,7 +107,6 @@ fn filleted_edits_and_reversals_preserve_every_area_and_volume_bit() {
         source_bytes,
         "source geometry is immutable"
     );
-    eprintln!("measurement fixture reuse: {after:?}; volume: {old:?}");
 }
 
 #[test]

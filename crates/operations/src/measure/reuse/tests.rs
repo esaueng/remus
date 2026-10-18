@@ -198,8 +198,10 @@ fn content_hash_collision_does_not_answer_a_different_face() {
     let other = faces
         .into_iter()
         .find(|&face| {
-            measure::face_area(&topo, face, 0.05).unwrap()
-                != measure::face_area(&topo, solid_faces(&topo, solid).unwrap()[0], 0.05).unwrap()
+            measure::face_area(&topo, face, 0.05).unwrap().to_bits()
+                != measure::face_area(&topo, solid_faces(&topo, solid).unwrap()[0], 0.05)
+                    .unwrap()
+                    .to_bits()
         })
         .unwrap();
     let expected = measure::face_area(&topo, other, 0.05).unwrap();
@@ -240,4 +242,113 @@ fn failed_measurements_are_retried_and_never_retained() {
     }
     assert_eq!(measurement_reuse_stats().area_misses, 2);
     assert_eq!(measurement_reuse_stats().area_entries, 0);
+}
+
+#[test]
+fn arena_gaps_match_but_changed_edge_order_is_requalified() {
+    use remus_topology::builder::make_planar_face_from_wire;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+    fn quad(order: [usize; 4], gaps: bool) -> (Topology, FaceId) {
+        let mut topo = Topology::new();
+        let points = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(2.0, 3.0, 0.0),
+            Point3::new(0.0, 3.0, 0.0),
+        ];
+        let vertices: Vec<_> = points
+            .into_iter()
+            .map(|point| {
+                if gaps {
+                    topo.add_vertex(Vertex::new(Point3::new(9.0, 9.0, 9.0), 1e-7));
+                }
+                topo.add_vertex(Vertex::new(point, 1e-7))
+            })
+            .collect();
+        let mut edges = [None; 4];
+        for i in order {
+            if gaps {
+                topo.add_edge(Edge::new(vertices[0], vertices[1], EdgeCurve::Line));
+            }
+            edges[i] = Some(topo.add_edge(Edge::new(
+                vertices[i],
+                vertices[(i + 1) % 4],
+                EdgeCurve::Line,
+            )));
+        }
+        let wire = topo.add_wire(
+            Wire::new(
+                edges
+                    .into_iter()
+                    .map(|edge| OrientedEdge::new(edge.unwrap(), true))
+                    .collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        let face = make_planar_face_from_wire(&mut topo, wire).unwrap();
+        (topo, face)
+    }
+    let _guard = Guard::new();
+    let (a, af) = quad([0, 1, 2, 3], false);
+    let (b, bf) = quad([0, 1, 2, 3], true);
+    let (c, cf) = quad([1, 0, 3, 2], true);
+    let key =
+        |t: &Topology, f| face_content_key(t, f, 0.05, DEFAULT_MEASUREMENT_REUSE_BYTES).unwrap();
+    assert_eq!(key(&a, af), key(&b, bf), "irrelevant arena gaps");
+    assert_ne!(
+        key(&a, af),
+        key(&c, cf),
+        "same polygon with different sorted edge order must miss"
+    );
+    enable_measurement_reuse();
+    let fresh = measure::face_area(&a, af, 0.05).unwrap().to_bits();
+    let before = measurement_reuse_stats();
+    assert_eq!(measure::face_area(&b, bf, 0.05).unwrap().to_bits(), fresh);
+    assert_eq!(
+        measurement_reuse_stats().area_content_hits,
+        before.area_content_hits + 1
+    );
+    assert_eq!(measure::face_area(&c, cf, 0.05).unwrap().to_bits(), fresh);
+    assert_eq!(
+        measurement_reuse_stats().area_misses,
+        before.area_misses + 1
+    );
+}
+
+#[test]
+fn oversized_face_does_not_evict_a_useful_reading() {
+    use remus_topology::builder::{make_planar_face_from_wire, make_polygon_wire};
+    let _guard = Guard::new();
+    let mut topo = Topology::new();
+    let solid = make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+    let face = solid_faces(&topo, solid).unwrap()[0];
+    enable_measurement_reuse();
+    let expected = measure::face_area(&topo, face, 0.05).unwrap().to_bits();
+    let budget = measurement_reuse_stats().area_retained_bytes + 32;
+    set_measurement_reuse_limits(8, budget);
+    let points: Vec<_> = (0..100)
+        .map(|i| {
+            let theta = f64::from(i) * std::f64::consts::TAU / 100.0;
+            Point3::new(theta.cos(), theta.sin(), 0.0)
+        })
+        .collect();
+    let wire = make_polygon_wire(&mut topo, &points, 1e-7).unwrap();
+    let large = make_planar_face_from_wire(&mut topo, wire).unwrap();
+    let before = measurement_reuse_stats();
+    assert!(measure::face_area(&topo, large, 0.05).unwrap() > 3.0);
+    let after = measurement_reuse_stats();
+    assert_eq!(after.area_entries, 1);
+    assert_eq!(after.area_evictions, before.area_evictions);
+    assert_eq!(after.area_retained_bytes, before.area_retained_bytes);
+    assert_eq!(
+        measure::face_area(&topo, face, 0.05).unwrap().to_bits(),
+        expected
+    );
+    assert_eq!(
+        measurement_reuse_stats().area_content_hits,
+        after.area_content_hits + 1
+    );
 }
