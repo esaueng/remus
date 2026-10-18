@@ -234,6 +234,76 @@ fn curve_mutation_and_restoration_never_serve_old_samples() {
 }
 
 #[test]
+fn stricter_edge_tolerance_still_reaches_the_fresh_periodic_domain_refusal() {
+    use crate::primitives::make_cylinder;
+    use crate::tessellate::{disable_face_mesh_cache, tessellate_solid};
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::explorer::solid_edges;
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            disable_mesh_reuse();
+        }
+    }
+    let _guard = Guard;
+    disable_face_mesh_cache();
+    disable_mesh_reuse();
+    let mut topo = Topology::new();
+    let solid = make_cylinder(&mut topo, 2.0, 5.0).unwrap();
+    let edge = solid_edges(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&id| matches!(topo.edge(id).unwrap().curve(), EdgeCurve::Circle(_)))
+        .unwrap();
+    let expected = tessellate_solid(&topo, solid, 0.01).unwrap();
+    enable_mesh_reuse();
+    same(&tessellate_solid(&topo, solid, 0.01).unwrap(), &expected);
+    same(&tessellate_solid(&topo, solid, 0.01).unwrap(), &expected);
+    assert!(mesh_reuse_stats().unwrap().boundary_hits > 0);
+    topo.edge_mut(edge)
+        .unwrap()
+        .set_tolerance(Some(0.0))
+        .unwrap();
+    let cached = tessellate_solid(&topo, solid, 0.01);
+    disable_mesh_reuse();
+    let fresh = tessellate_solid(&topo, solid, 0.01);
+    assert!(
+        fresh.is_err(),
+        "zero tolerance rejects periodic closure roundoff"
+    );
+    assert!(
+        cached.is_err(),
+        "reuse must preserve the periodic domain refusal"
+    );
+    assert_eq!(
+        cached.unwrap_err().to_string(),
+        fresh.unwrap_err().to_string()
+    );
+    topo.edge_mut(edge).unwrap().set_tolerance(None).unwrap();
+    enable_mesh_reuse();
+    same(&tessellate_solid(&topo, solid, 0.01).unwrap(), &expected);
+}
+
+#[test]
+fn mesh_reuse_diagnostics_use_camel_case_keys() {
+    let value = serde_json::to_value(MeshReuseStats {
+        boundary_lookups: 7,
+        retained_bytes: 1234,
+        ..MeshReuseStats::default()
+    })
+    .unwrap();
+    assert_eq!(value["boundaryLookups"], 7);
+    assert_eq!(value["retainedBytes"], 1234);
+    assert!(
+        value
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|key| !key.contains('_'))
+    );
+}
+
+#[test]
 fn changed_triangles_recheck_duplicate_membership_and_opposing_winding() {
     for replacement in [[0, 1, 3], [0, 1, 2], [0, 2, 1]] {
         let mut session = session();

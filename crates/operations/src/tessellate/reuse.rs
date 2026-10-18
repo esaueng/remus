@@ -35,6 +35,7 @@ pub const DEFAULT_MESH_REUSE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Cumulative work and bounded storage of this thread's stage cache.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MeshReuseStats {
     /// Boundary plan lookups.
     pub boundary_lookups: u64,
@@ -650,6 +651,12 @@ pub(super) fn edge_key(
     key.flag(circle_floor);
     key.flag(edge.is_closed());
     key.flag(edge.start() == edge.end());
+    if let Some(tolerance) = edge.tolerance() {
+        key.flag(true);
+        key.scalar(tolerance);
+    } else {
+        key.flag(false);
+    }
     key.point(topo.vertex(edge.start())?.point());
     key.point(topo.vertex(edge.end())?.point());
     key.curve(edge.curve());

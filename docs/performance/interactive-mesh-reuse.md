@@ -1,5 +1,10 @@
 # Exact mesh-stage reuse during interactive edits
 
+Tier: core. Reuse edits the live kernel module's boundary-plan, edge-sampling
+and mesh-connectivity cache state while tessellating its current B-Rep handles.
+It participates in the same session's mutations and checkpoint restores;
+moving it to an arena-document translator would add a transfer to each drag.
+
 The solid tessellator can retain shared-boundary plans, raw edge samples,
 holed-planar CDT results, and mesh connectivity between calls. This supplements
 the existing per-face mesh cache: a face move still creates new B-Rep handles,
@@ -15,7 +20,8 @@ incremental, rather than introducing a GPU or worker-transfer delta format.
 
 A reusable boundary plan records exact floating-point input bits, all curve
 and surface data, trim authority, directed pcurves, sampling quality and
-policy, wire structure, seam uses, face order, and shared-edge incidence.
+policy, edge-tolerance presence and value, wire structure, seam uses, face
+order, and shared-edge incidence.
 Only a complete match can reuse a plan. Sorted edge ordinals remap its
 identities onto a newly allocated or restored arena. On a miss, unchanged
 individual edges reuse their raw samples; circle synchronization, torus
@@ -66,8 +72,9 @@ measurement quality, validation and refusal checks are unchanged.
 
 Native APIs expose `enable_mesh_reuse_with_limits`, `clear_mesh_reuse`,
 `disable_mesh_reuse`, and `mesh_reuse_stats`. WASM exposes `meshReuseStats()`
-and `setMeshReuseEnabled(bool)` for diagnostics and ablation. The latter is
-module-local and constructing a new kernel enables the default cache again.
+and `setMeshReuseEnabled(bool)` for diagnostics and ablation. Statistics use
+camelCase JSON keys such as `boundaryLookups` and `retainedBytes`. The control
+is module-local and constructing a new kernel enables the default cache again.
 The existing `setPerformanceTracing`/`drainPerformanceTrace` scopes measure
 boundary sampling, planar CDT, curved faces, normals and mesh cleanup.
 
