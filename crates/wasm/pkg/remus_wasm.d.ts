@@ -3190,6 +3190,17 @@ export class BrepKernel {
      */
     moveFaces(solid: number, faces: Uint32Array, distance: number): number;
     /**
+     * Move selected faces and return an exact result or a typed refusal.
+     *
+     * Additive twin of [`moveFaces`](Self::move_faces_binding), with the same
+     * supported geometry and work limits. Distances are relative to `solid`
+     * and `faces`; a drag should keep those source handles fixed. Replace
+     * the displayed preview only on `status: "ok"`. A refusal returns no
+     * solid and preserves both the source and earlier successful previews,
+     * so the caller can retain its last valid frame and try another distance.
+     */
+    moveFacesDetailed(solid: number, faces: Uint32Array, distance: number): SolidOperationDetailedResult;
+    /**
      * Move faces with construction history.
      *
      * Planar re-limitation and coaxial bore moves include edge and vertex
