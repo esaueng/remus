@@ -798,14 +798,76 @@ impl BrepKernel {
         };
 
         // Refused input must not consume session slots, including tombstones:
-        // rollback deliberately preserves handle slots. Use the same bounded
-        // scratch-document bridge as the lazy translator module instead.
+        // rollback deliberately preserves handle slots. Validate the complete
+        // mesh, boundary authority, carriers and encoding budget in scratch.
         let mut scratch = remus_topology::Topology::new();
         let solid_id = remus_io::stl::import::import_mesh(&mut scratch, &mesh, TOL)?;
         let document = remus_io::arena_io::serialize_solid_with_limits(&scratch, solid_id, limits)?;
+        drop(document);
+        drop(mesh);
+
+        // Keep only reachable welded vertices, as the arena bridge did. Taking
+        // them from scratch preserves an unused input point that was selected
+        // as the earliest welding representative of a referenced position.
+        let mut positions = Vec::new();
+        let mut indices = Vec::new();
+        let mut vertices = std::collections::HashMap::new();
+        for face in remus_topology::explorer::solid_faces(&scratch, solid_id)
+            .map_err(remus_io::IoError::from)?
+        {
+            let face = scratch.face(face).map_err(remus_io::IoError::from)?;
+            let wire = scratch
+                .wire(face.outer_wire())
+                .map_err(remus_io::IoError::from)?;
+            for oriented in wire.edges() {
+                let edge = scratch
+                    .edge(oriented.edge())
+                    .map_err(remus_io::IoError::from)?;
+                let vertex = if oriented.is_forward() {
+                    edge.start()
+                } else {
+                    edge.end()
+                };
+                let index = match vertices.entry(vertex) {
+                    std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        let index = positions.len() as u32;
+                        positions.push(
+                            scratch
+                                .vertex(vertex)
+                                .map_err(remus_io::IoError::from)?
+                                .point(),
+                        );
+                        entry.insert(index);
+                        index
+                    }
+                };
+                indices.push(index);
+            }
+        }
+        let mesh = remus_operations::tessellate::TriangleMesh {
+            // Winding is already validated/oriented. Explicit neutral normals
+            // prevent a second origin-relative winding guess on open meshes.
+            normals: vec![remus_math::vec::Vec3::new(0.0, 0.0, 0.0); positions.len()],
+            positions,
+            indices,
+        };
+        drop(vertices);
         drop(scratch);
-        let solid_id =
-            remus_io::arena_io::deserialize_solid_with_limits(&document, self.topo_mut(), limits)?;
+
+        // The importer welds only the supplied positions and reads only its
+        // freshly appended entities. Scratch success proves its fallible
+        // construction checks independently of destination geometry. Append
+        // directly instead of arena replay, which clones the entire session.
+        let topo = self.topo_mut();
+        let _ = topo.journal_begin("arena_import");
+        let history = (!topo.journal().is_empty()).then(|| topo.journal().clone());
+        let solid_id = remus_io::stl::import::import_mesh(topo, &mesh, TOL)?;
+        if let Some(history) = history {
+            // Preserve genuine preceding gaps, while independent new geometry
+            // must not sever references to unrelated destination entities.
+            topo.load_journal(history);
+        }
         Ok(solid_id_to_u32(solid_id))
     }
 }
@@ -815,6 +877,163 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    fn import_tetrahedron(kernel: &mut BrepKernel) -> u32 {
+        kernel
+            .import_indexed_mesh_impl(
+                &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                &[0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3],
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn indexed_mesh_append_retains_only_reachable_welded_vertices() {
+        for (indices, expected_vertices) in [
+            (vec![1, 3, 2, 1, 2, 4, 2, 3, 4, 3, 1, 4, 5, 5, 5], 4),
+            (vec![1, 2, 4, 5, 5, 5], 3),
+        ] {
+            // Position zero is unused as an index but wins welding for point
+            // one. The rest include unused vertices and a skipped degenerate.
+            let mut positions = vec![
+                1e-8, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+            ];
+            positions.extend((0..100).flat_map(|i| [100.0 + f64::from(i), 0.0, 0.0]));
+            let input = remus_operations::tessellate::TriangleMesh {
+                positions: positions
+                    .chunks_exact(3)
+                    .map(|p| remus_math::vec::Point3::new(p[0], p[1], p[2]))
+                    .collect(),
+                normals: Vec::new(),
+                indices: indices.clone(),
+            };
+            let mut scratch = remus_topology::Topology::new();
+            let solid = remus_io::stl::import::import_mesh(&mut scratch, &input, TOL).unwrap();
+            let expected = remus_io::arena_io::serialize_solid(&scratch, solid).unwrap();
+            let mut compact = remus_topology::Topology::new();
+            remus_io::arena_io::deserialize_solid(&expected, &mut compact).unwrap();
+            let mut kernel = BrepKernel::new();
+            let checkpoint = kernel.checkpoint().unwrap();
+            let imported = kernel
+                .import_indexed_mesh_impl(&positions, &indices)
+                .unwrap();
+            let id = kernel.resolve_solid(imported).unwrap();
+            assert_eq!(kernel.topo().vertices().len(), expected_vertices);
+            assert_eq!(
+                kernel.topo().allocated_slot_count(),
+                compact.allocated_slot_count()
+            );
+            assert_eq!(
+                remus_io::arena_io::serialize_solid(kernel.topo(), id).unwrap(),
+                expected
+            );
+            kernel.restore(checkpoint).unwrap();
+            assert!(kernel.topo().vertices().is_empty());
+            assert_eq!(
+                kernel.topo().allocated_slot_count(),
+                compact.allocated_slot_count()
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_mesh_append_preserves_history_and_checkpoint() {
+        use remus_topology::journal::EntityKind;
+        use remus_topology::naming::{PersistentRef, Resolution, resolve};
+
+        let mut kernel = BrepKernel::new();
+        let outer = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
+        let inner = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
+        let outer_id = kernel.resolve_solid(outer).unwrap();
+        let inner_id = kernel.resolve_solid(inner).unwrap();
+        let result = remus_operations::journal_ops::boolean_journaled(
+            kernel.topo_mut(),
+            remus_algo::bop::BooleanOp::Fuse,
+            outer_id,
+            inner_id,
+        )
+        .unwrap();
+        let reference = PersistentRef::operation_output(result.op, EntityKind::Face, 0);
+        let bound = resolve(kernel.topo(), &reference);
+        assert!(matches!(bound, Resolution::Bound { .. }));
+        let history = kernel.topo().journal().snapshot();
+        let shape = remus_io::arena_io::serialize_solid(kernel.topo(), result.solid).unwrap();
+        let checkpoint = kernel.checkpoint().unwrap();
+        let imported = import_tetrahedron(&mut kernel);
+        assert_eq!(kernel.topo().journal().snapshot(), history);
+        assert_eq!(resolve(kernel.topo(), &reference), bound);
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(kernel.topo(), result.solid).unwrap(),
+            shape
+        );
+        let pending = kernel.topo_mut().journal_begin("after_indexed_import");
+        kernel
+            .topo_mut()
+            .journal_record_barrier(pending, Vec::new());
+        assert_eq!(resolve(kernel.topo(), &reference), bound);
+        kernel.restore(checkpoint).unwrap();
+        assert!(kernel.resolve_solid(imported).is_err());
+        assert_eq!(resolve(kernel.topo(), &reference), bound);
+        let restored_history = kernel.topo().journal().snapshot();
+        assert_eq!(restored_history.entries, history.entries);
+        assert!(restored_history.next_op > history.next_op);
+        // Restore retains issued operation IDs; geometry and references return
+        // exactly, while the retired journal counter deliberately stays ahead.
+        let mut expected: serde_json::Value = serde_json::from_slice(&shape).unwrap();
+        let mut restored: serde_json::Value = serde_json::from_slice(
+            &remus_io::arena_io::serialize_solid(kernel.topo(), result.solid).unwrap(),
+        )
+        .unwrap();
+        expected.as_object_mut().unwrap().remove("journal");
+        restored.as_object_mut().unwrap().remove("journal");
+        assert_eq!(restored, expected);
+    }
+
+    #[test]
+    fn indexed_mesh_append_preserves_genuine_preceding_gaps() {
+        let mut kernel = BrepKernel::new();
+        let body = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
+        let pending = kernel.topo_mut().journal_begin("existing_geometry");
+        kernel
+            .topo_mut()
+            .journal_record_barrier(pending, Vec::new());
+        let id = kernel.resolve_solid(body).unwrap();
+        let face = remus_topology::explorer::solid_faces(kernel.topo(), id).unwrap()[0];
+        let _ = kernel.topo_mut().face_mut(face).unwrap();
+        let before = kernel.topo().journal().len();
+        import_tetrahedron(&mut kernel);
+        assert_eq!(kernel.topo().journal().len(), before + 1);
+        assert_eq!(
+            kernel.topo().journal().entries().last().unwrap().kind(),
+            remus_topology::journal::UNJOURNALED_MUTATIONS
+        );
+        let pending = kernel.topo_mut().journal_begin("after_indexed_import");
+        kernel
+            .topo_mut()
+            .journal_record_barrier(pending, Vec::new());
+        assert_eq!(kernel.topo().journal().len(), before + 2);
+    }
+
+    #[test]
+    fn indexed_mesh_append_keeps_empty_journal_reserved_counters() {
+        let mut kernel = BrepKernel::new();
+        let checkpoint = kernel.checkpoint().unwrap();
+        let pending = kernel.topo_mut().journal_begin("retired_history");
+        let retired = kernel
+            .topo_mut()
+            .journal_record_barrier(pending, Vec::new());
+        kernel.restore(checkpoint).unwrap();
+        let reserved = kernel.topo().journal().snapshot();
+        assert!(reserved.entries.is_empty());
+        assert!(reserved.next_op > retired.value());
+        import_tetrahedron(&mut kernel);
+        assert_eq!(kernel.topo().journal().snapshot(), reserved);
+        let pending = kernel.topo_mut().journal_begin("after_indexed_import");
+        let fresh = kernel
+            .topo_mut()
+            .journal_record_barrier(pending, Vec::new());
+        assert!(fresh.value() > retired.value());
+    }
 
     #[test]
     fn indexed_mesh_expanded_document_stops_at_the_encoding_budget() {
@@ -830,6 +1049,8 @@ mod tests {
             ..remus_io::ImportLimits::default()
         };
         remus_io::validate_indexed_mesh_sizes(positions.len(), indices.len(), limits).unwrap();
+        let _checkpoint = kernel.checkpoint().unwrap();
+        let shared = std::rc::Rc::as_ptr(&kernel.topo);
         let error = kernel
             .import_indexed_mesh_with_limits_impl(&positions, &indices, limits)
             .unwrap_err();
@@ -842,6 +1063,7 @@ mod tests {
                 ..
             })
         ));
+        assert_eq!(std::rc::Rc::as_ptr(&kernel.topo), shared);
         assert_eq!(format!("{:?}", kernel.topo()), before);
         assert_eq!(
             remus_io::arena_io::serialize_solid(kernel.topo(), id).unwrap(),
@@ -869,12 +1091,14 @@ mod tests {
                 shape
             );
         }
+        let lineage = kernel.topo().cache_identity().lineage;
         let imported = kernel
             .import_indexed_mesh_impl(
                 &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
                 &[0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3],
             )
             .unwrap();
+        assert_eq!(kernel.topo().cache_identity().lineage, lineage);
         let imported_id = kernel.resolve_solid(imported).unwrap();
         let volume =
             remus_operations::measure::solid_volume(kernel.topo(), imported_id, 0.1).unwrap();
