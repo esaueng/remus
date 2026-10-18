@@ -121,6 +121,22 @@ fn filleted_face_drag_reuses_boundaries_and_cdt_without_changing_a_bit() {
         stats.weld_hits > before.weld_hits,
         "mesh connectivity is reused: {stats:?}"
     );
+    assert!(
+        stats.weld_updated_triangles > 0,
+        "changed triangles update the retained edge counts: {stats:?}"
+    );
+    assert!(
+        stats.cleanup_hits > before.cleanup_hits,
+        "coincident-triangle membership is reused: {stats:?}"
+    );
+    assert!(
+        stats.cleanup_updated_triangles > 0,
+        "changed triangles are qualified again: {stats:?}"
+    );
+    assert_eq!(
+        stats.retained_bytes,
+        stats.stage_bytes + stats.connectivity_bytes
+    );
     assert!(stats.retained_bytes <= stats.max_bytes);
     assert!(stats.entries <= stats.max_entries);
     assert_eq!(serialize_solids(&topo, &[source]).unwrap(), source_bytes);

@@ -105,7 +105,7 @@ fn cached_boundary_connectivity_still_rechecks_distances_and_deflection() {
 }
 
 #[test]
-fn connectivity_changes_miss_and_preserve_face_attribution() {
+fn connectivity_changes_update_and_preserve_face_attribution() {
     let mut session = session();
     for indices in [
         vec![0, 1, 2, 3, 5, 4],
@@ -121,7 +121,16 @@ fn connectivity_changes_miss_and_preserve_face_attribution() {
         assert_eq!(actual_boundary, expected_boundary);
         same(&actual, &expected);
     }
-    assert_eq!(session.cache.as_ref().unwrap().counters.weld_hits, 0);
+    assert_eq!(session.cache.as_ref().unwrap().counters.weld_hits, 1);
+    assert_eq!(
+        session
+            .cache
+            .as_ref()
+            .unwrap()
+            .counters
+            .weld_updated_triangles,
+        1
+    );
 }
 
 #[test]
@@ -131,11 +140,19 @@ fn unfit_quantity_admission_preserves_display_and_other_quantity_work() {
         max_bytes: 4096,
         ..Cache::default()
     };
-    cache.insert(vec![1], Value::Clean, RetentionClass::Display);
-    cache.insert(vec![2], Value::Clean, RetentionClass::Quantity);
+    cache.insert(
+        vec![1],
+        Value::Planar((Vec::new(), Vec::new())),
+        RetentionClass::Display,
+    );
+    cache.insert(
+        vec![2],
+        Value::Planar((Vec::new(), Vec::new())),
+        RetentionClass::Quantity,
+    );
     cache.insert(
         vec![3],
-        Value::Weld(vec![0; 1024]),
+        Value::Edge(vec![Point3::new(0.0, 0.0, 0.0); 1024], Vec::new()),
         RetentionClass::Quantity,
     );
     assert!(cache.get(&[1], RetentionClass::Quantity).is_some());
@@ -156,11 +173,19 @@ fn unfit_quantity_admission_preserves_display_and_other_quantity_work() {
 #[test]
 fn zero_bounds_and_oversize_captures_retain_nothing() {
     let mut cache = Cache::default();
-    cache.insert(vec![1], Value::Clean, RetentionClass::Display);
+    cache.insert(
+        vec![1],
+        Value::Planar((Vec::new(), Vec::new())),
+        RetentionClass::Display,
+    );
     assert!(cache.entries.is_empty());
     cache.max_entries = 1;
     cache.max_bytes = 32;
-    cache.insert(vec![1], Value::Clean, RetentionClass::Display);
+    cache.insert(
+        vec![1],
+        Value::Planar((Vec::new(), Vec::new())),
+        RetentionClass::Display,
+    );
     assert!(cache.entries.is_empty());
     assert_eq!(cache.bytes, 0);
 }
@@ -197,4 +222,101 @@ fn curve_mutation_and_restoration_never_serve_old_samples() {
     for (actual, expected) in restored.0.iter().zip(points) {
         assert_eq!(actual.0.map(f64::to_bits), expected.0.map(f64::to_bits));
     }
+}
+
+#[test]
+fn changed_triangles_recheck_duplicate_membership_and_opposing_winding() {
+    for replacement in [[0, 1, 3], [0, 1, 2], [0, 2, 1]] {
+        let mut session = session();
+        let mut seed = two_triangles(1.0);
+        assert!(!mesh_ops::dedupe_coincident_triangles_cached(
+            &mut seed,
+            None,
+            Some(&mut session)
+        ));
+        let mut actual = two_triangles(1.0);
+        actual.indices[3..].copy_from_slice(&replacement);
+        let mut expected = actual.clone();
+        let mut faces = vec![10, 11];
+        let mut expected_faces = faces.clone();
+        let fresh = mesh_ops::dedupe_coincident_triangles(&mut expected, Some(&mut expected_faces));
+        let reused = mesh_ops::dedupe_coincident_triangles_cached(
+            &mut actual,
+            Some(&mut faces),
+            Some(&mut session),
+        );
+        assert_eq!(reused, fresh);
+        same(&actual, &expected);
+        assert_eq!(faces, expected_faces);
+        match replacement {
+            [0, 1, 3] => {
+                assert_eq!(actual.indices.len(), 6);
+                assert_eq!(
+                    session
+                        .cache
+                        .as_ref()
+                        .unwrap()
+                        .counters
+                        .cleanup_updated_triangles,
+                    1
+                );
+            }
+            [0, 1, 2] => assert_eq!(actual.indices.len(), 3),
+            _ => assert!(actual.indices.is_empty()),
+        }
+    }
+}
+
+#[test]
+fn streamed_triangle_edits_match_fresh_cleanup_with_repeated_directed_edges() {
+    let mut session = session();
+    for step in 0_u32..60 {
+        let mut actual = TriangleMesh {
+            positions: (0..25)
+                .map(|i| Point3::new(f64::from(i % 5), f64::from(i / 5), 0.0))
+                .collect(),
+            normals: vec![Vec3::new(0.0, 0.0, 1.0); 25],
+            indices: Vec::new(),
+        };
+        for i in 0_u32..16 {
+            let a = (i / 4) * 5 + i % 4;
+            let (b, c) = if (i + step).is_multiple_of(3) {
+                (a + 6, a + 1)
+            } else {
+                (a + 1, a + 6)
+            };
+            actual.indices.extend([a, b, c, a, a + 6, a + 5]);
+        }
+        // Mix non-manifold duplicates, reverse edges and one changed corner.
+        if step % 4 == 1 {
+            actual.indices[5] = actual.indices[2];
+        }
+        if step % 4 == 2 {
+            actual.indices[9..12].copy_from_slice(&[0, 1, 6]);
+        }
+        let mut expected = actual.clone();
+        let mut faces: (Vec<u32>, Vec<u32>) = ((0..32).collect(), (0..32).collect());
+        assert_eq!(
+            mesh_ops::weld_boundary_vertices_cached(
+                &mut actual,
+                0.001,
+                Some(&mut faces.0),
+                Some(&mut session)
+            ),
+            mesh_ops::weld_boundary_vertices(&mut expected, 0.001, Some(&mut faces.1))
+        );
+        assert_eq!(
+            mesh_ops::dedupe_coincident_triangles_cached(
+                &mut actual,
+                Some(&mut faces.0),
+                Some(&mut session)
+            ),
+            mesh_ops::dedupe_coincident_triangles(&mut expected, Some(&mut faces.1))
+        );
+        same(&actual, &expected);
+        assert_eq!(faces.0, faces.1);
+    }
+    let stats = &session.cache.as_ref().unwrap().counters;
+    assert!(stats.weld_hits > 50);
+    assert!(stats.weld_updated_triangles > 0);
 }

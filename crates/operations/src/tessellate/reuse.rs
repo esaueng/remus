@@ -4,9 +4,10 @@
 //! boundary hit remaps edge identities in sorted order; a miss reuses only
 //! individually identical edge samples. CDT hits retain local 2D triangles
 //! and Steiner points: lifting and shared-boundary reconciliation still run.
-//! Cleanup reuse requires the identical index buffer and freshly recomputed
-//! quantized-position equivalence classes. Those are precisely the inputs
-//! deciding whether the weld and coincident-triangle passes are no-ops.
+//! Incremental connectivity compares every triangle index and updates only
+//! changed directed edges. Duplicate-triangle reuse additionally requires
+//! freshly recomputed, identical quantized-position equivalence classes;
+//! changed triangles must still have unique nondegenerate position keys.
 //!
 //! This opt-in thread-local cache has separate, explicit bounds. Quantity
 //! work cannot evict display work. No tolerance, refinement limit, geometry
@@ -24,6 +25,8 @@ use remus_topology::face::FaceId;
 use super::boundary_plan::BoundaryPlan;
 use super::face_cache::{KeyBuilder, RetentionClass};
 use super::planar::PlanarCdtOutput;
+mod incremental;
+use incremental::{DedupeUpdate, WeldUpdate};
 
 /// Default maximum retained stage entries (shared across all stage kinds).
 pub const DEFAULT_MESH_REUSE_ENTRIES: usize = 4096;
@@ -47,11 +50,19 @@ pub struct MeshReuseStats {
     pub planar_hits: u64,
     /// Boundary-connectivity lookups for the weld pass.
     pub weld_lookups: u64,
-    /// Boundary-connectivity plans reused; spatial welding still runs.
+    /// Boundary-connectivity plans updated; spatial welding still runs.
     pub weld_hits: u64,
+    /// Triangles updated in retained directed connectivity.
+    pub weld_updated_triangles: u64,
+    /// Triangles updated in retained coincident-triangle membership.
+    pub cleanup_updated_triangles: u64,
+    /// Estimated boundary/sample/CDT bytes.
+    pub stage_bytes: usize,
+    /// Estimated incremental mesh-connectivity bytes.
+    pub connectivity_bytes: usize,
     /// Mesh cleanup certificates checked.
     pub cleanup_lookups: u64,
-    /// Identical connectivity and quantized-position partitions reused.
+    /// No-removal proofs updated after checking changed triangle membership.
     pub cleanup_hits: u64,
     /// Retained entries.
     pub entries: usize,
@@ -100,6 +111,7 @@ pub fn clear_mesh_reuse() {
             cache.display.clear();
             cache.quantity.clear();
             cache.bytes = 0;
+            cache.class_bytes = [0; 2];
         }
     });
 }
@@ -115,11 +127,17 @@ enum Value {
     Boundary(Box<BoundaryPlan>),
     Edge(Vec<Point3>, Vec<Option<f64>>),
     Planar(PlanarCdtOutput),
-    Clean,
-    Weld(Vec<u32>),
+    Clean(Box<DedupeUpdate>),
+    Weld(Box<WeldUpdate>),
 }
 
 impl Value {
+    fn class(&self) -> usize {
+        match self {
+            Self::Clean(_) | Self::Weld(_) => 1,
+            _ => 0,
+        }
+    }
     fn bytes(&self) -> usize {
         match self {
             Self::Boundary(plan) => plan.retained_bytes(),
@@ -127,8 +145,8 @@ impl Value {
             Self::Planar((tris, points)) => {
                 tris.capacity() * 3 * size_of::<usize>() + points.capacity() * 16
             }
-            Self::Clean => 0,
-            Self::Weld(vertices) => vertices.capacity() * 4,
+            Self::Clean(state) => state.bytes(),
+            Self::Weld(state) => state.bytes(),
         }
     }
 }
@@ -148,6 +166,7 @@ struct Cache {
     quantity: VecDeque<u64>,
     next: u64,
     bytes: usize,
+    class_bytes: [usize; 2],
     max_entries: usize,
     max_bytes: usize,
     counters: MeshReuseStats,
@@ -155,7 +174,7 @@ struct Cache {
 
 fn hash(words: &[u64]) -> u64 {
     use std::hash::{Hash, Hasher};
-    let mut hasher = remus_math::det_hash::DetHasher::default();
+    let mut hasher = remus_math::det_hash::DetLookupHasher::default();
     words.hash(&mut hasher);
     hasher.finish()
 }
@@ -165,26 +184,96 @@ impl Cache {
         MeshReuseStats {
             entries: self.entries.len(),
             retained_bytes: self.bytes,
+            stage_bytes: self.class_bytes[0],
+            connectivity_bytes: self.class_bytes[1],
             max_entries: self.max_entries,
             max_bytes: self.max_bytes,
             ..self.counters
         }
     }
 
-    fn get(&mut self, key: &[u64], retention: RetentionClass) -> Option<Value> {
-        let id = self
-            .buckets
+    fn find(&self, key: &[u64]) -> Option<u64> {
+        self.buckets
             .get(&hash(key))?
             .iter()
             .find(|&&id| self.entries.get(&id).is_some_and(|entry| entry.key == key))
-            .copied()?;
-        let entry = self.entries.get_mut(&id)?;
-        if retention == RetentionClass::Display && entry.retention == RetentionClass::Quantity {
+            .copied()
+    }
+
+    fn promote(&mut self, id: u64, retention: RetentionClass) {
+        let Some(entry) = self.entries.get_mut(&id) else {
+            return;
+        };
+        if retention == RetentionClass::Display {
             entry.retention = RetentionClass::Display;
-            self.quantity.retain(|&old| old != id);
-            self.display.push_back(id);
         }
-        Some(entry.value.clone())
+        // Refresh successful uses so inserting a newly changed whole-body
+        // plan retires older plans before the edge/CDT work just reused.
+        self.quantity.retain(|&old| old != id);
+        self.display.retain(|&old| old != id);
+        match entry.retention {
+            RetentionClass::Display => self.display.push_back(id),
+            RetentionClass::Quantity => self.quantity.push_back(id),
+        }
+    }
+
+    fn get(&mut self, key: &[u64], retention: RetentionClass) -> Option<Value> {
+        let id = self.find(key)?;
+        self.promote(id, retention);
+        Some(self.entries.get(&id)?.value.clone())
+    }
+
+    fn remove(&mut self, id: u64) {
+        if let Some(entry) = self.entries.remove(&id) {
+            self.bytes -= entry.bytes;
+            self.class_bytes[entry.value.class()] -= entry.bytes;
+            let bucket_hash = hash(&entry.key);
+            if let Some(bucket) = self.buckets.get_mut(&bucket_hash) {
+                bucket.retain(|&old| old != id);
+                if bucket.is_empty() {
+                    self.buckets.remove(&bucket_hash);
+                }
+            }
+            self.display.retain(|&old| old != id);
+            self.quantity.retain(|&old| old != id);
+            self.counters.evictions += 1;
+        }
+    }
+
+    fn class_limit(&self, class: usize) -> usize {
+        // Keep small reusable sampling/CDT work independent of large mesh
+        // connectivity. Both shares remain inside the configured total.
+        let stages = self.max_bytes / 4;
+        if class == 0 {
+            stages
+        } else {
+            self.max_bytes - stages
+        }
+    }
+
+    fn finish_update(&mut self, id: u64, success: bool, retention: RetentionClass) {
+        if !success {
+            self.remove(id);
+            return;
+        }
+        let Some(entry) = self.entries.get(&id) else {
+            return;
+        };
+        let class = entry.value.class();
+        let bytes = entry.key.capacity() * 8 + entry.value.bytes() + size_of::<Entry>() + 256;
+        let old = entry.bytes;
+        if self.bytes - old + bytes > self.max_bytes
+            || self.class_bytes[class] - old + bytes > self.class_limit(class)
+        {
+            self.remove(id);
+            return;
+        }
+        self.bytes = self.bytes - old + bytes;
+        self.class_bytes[class] = self.class_bytes[class] - old + bytes;
+        if let Some(entry) = self.entries.get_mut(&id) {
+            entry.bytes = bytes;
+        }
+        self.promote(id, retention);
     }
 
     fn make_room(&mut self, bytes: usize, count: usize, retention: RetentionClass) -> bool {
@@ -212,17 +301,7 @@ impl Cache {
             let Some(id) = id else {
                 return false;
             };
-            if let Some(entry) = self.entries.remove(&id) {
-                self.bytes -= entry.bytes;
-                let bucket_hash = hash(&entry.key);
-                if let Some(bucket) = self.buckets.get_mut(&bucket_hash) {
-                    bucket.retain(|&old| old != id);
-                    if bucket.is_empty() {
-                        self.buckets.remove(&bucket_hash);
-                    }
-                }
-                self.counters.evictions += 1;
-            }
+            self.remove(id);
         }
         true
     }
@@ -238,6 +317,50 @@ impl Cache {
         // Account for the entry, both indices, allocation slack and key/value
         // buffers. Bounds cover retained storage, not transient working memory.
         let bytes = key.capacity() * 8 + value.bytes() + size_of::<Entry>() + 256;
+        let class = value.class();
+        let limit = self.class_limit(class);
+        if bytes > limit {
+            return;
+        }
+        if retention == RetentionClass::Quantity {
+            let (display_count, display_bytes, display_class_bytes) = self
+                .entries
+                .values()
+                .filter(|entry| entry.retention == RetentionClass::Display)
+                .fold((0, 0, 0), |(n, b, c), entry| {
+                    (
+                        n + 1,
+                        b + entry.bytes,
+                        c + if entry.value.class() == class {
+                            entry.bytes
+                        } else {
+                            0
+                        },
+                    )
+                });
+            if display_count + 1 > self.max_entries
+                || display_bytes + bytes > self.max_bytes
+                || display_class_bytes + bytes > limit
+            {
+                return;
+            }
+        }
+        while self.class_bytes[class] + bytes > limit {
+            let eligible = |id: &&u64| {
+                self.entries
+                    .get(id)
+                    .is_some_and(|entry| entry.value.class() == class)
+            };
+            let id = self.quantity.iter().find(eligible).copied().or_else(|| {
+                (retention == RetentionClass::Display)
+                    .then(|| self.display.iter().find(eligible).copied())
+                    .flatten()
+            });
+            let Some(id) = id else {
+                return;
+            };
+            self.remove(id);
+        }
         if !self.make_room(bytes, 1, retention) {
             return;
         }
@@ -261,6 +384,7 @@ impl Cache {
             RetentionClass::Quantity => self.quantity.push_back(id),
         }
         self.bytes += bytes;
+        self.class_bytes[class] += bytes;
     }
 }
 
@@ -308,7 +432,11 @@ impl Session {
     }
 
     pub(super) fn store_boundary(&mut self, key: Vec<u64>, plan: &BoundaryPlan) {
-        self.insert(key, Value::Boundary(Box::new(plan.clone())));
+        if self.cache.as_ref().is_some_and(|cache| {
+            key.capacity() * 8 + plan.retained_bytes() + 512 <= cache.class_limit(0)
+        }) {
+            self.insert(key, Value::Boundary(Box::new(plan.clone())));
+        }
     }
 
     pub(super) fn edge(&mut self, key: &[u64]) -> Option<(Vec<Point3>, Vec<Option<f64>>)> {
@@ -337,34 +465,96 @@ impl Session {
         self.insert(key, Value::Planar(output.clone()));
     }
 
-    pub(super) fn weld(&mut self, key: &[u64]) -> Option<Vec<u32>> {
-        self.cache.as_mut()?.counters.weld_lookups += 1;
-        let Value::Weld(vertices) = self.get(key)? else {
+    pub(super) fn weld(&mut self, indices: &[u32], vertices: usize) -> Option<Vec<u32>> {
+        let cache = self.cache.as_mut()?;
+        cache.counters.weld_lookups += 1;
+        let key = [4, indices.len() as u64, vertices as u64];
+        let id = cache.find(&key)?;
+        let entry = cache.entries.get_mut(&id)?;
+        let Value::Weld(state) = &mut entry.value else {
             return None;
         };
-        self.cache.as_mut()?.counters.weld_hits += 1;
-        Some(vertices)
-    }
-
-    pub(super) fn store_weld(&mut self, key: Vec<u64>, vertices: &[u32]) {
-        self.insert(key, Value::Weld(vertices.to_vec()));
-    }
-
-    pub(super) fn clean(&mut self, key: &[u64]) -> bool {
-        if let Some(cache) = self.cache.as_mut() {
-            cache.counters.cleanup_lookups += 1;
+        let result = state.update(indices, vertices);
+        if result.is_some() {
+            cache.counters.weld_hits += 1;
+            cache.counters.weld_updated_triangles += state.updated_triangles as u64;
         }
-        if !matches!(self.get(key), Some(Value::Clean)) {
+        cache.finish_update(id, result.is_some(), self.retention);
+        result
+    }
+
+    pub(super) fn store_weld(
+        &mut self,
+        indices: &[u32],
+        vertices: usize,
+        table: super::mesh_ops::HalfEdgeTable,
+        missing: &[(u32, u32)],
+    ) {
+        // The base arrays plus the bounded delta table must fit before any
+        // cache-owned copy is allocated. Oversized bodies keep the fresh path.
+        let Some(cache) = self.cache.as_ref() else {
+            return;
+        };
+        if indices
+            .len()
+            .saturating_mul(12)
+            .saturating_add(vertices.saturating_mul(8))
+            .saturating_add(WeldUpdate::delta_limit(indices.len()).saturating_mul(24))
+            .saturating_add(512)
+            > cache.class_limit(1)
+        {
+            return;
+        }
+        if let Some(state) = WeldUpdate::capture(table, indices, vertices, missing) {
+            self.insert(
+                vec![4, indices.len() as u64, vertices as u64],
+                Value::Weld(Box::new(state)),
+            );
+        }
+    }
+
+    pub(super) fn clean(&mut self, indices: &[u32], partition: &[u32]) -> bool {
+        let Some(cache) = self.cache.as_mut() else {
             return false;
-        }
-        if let Some(cache) = self.cache.as_mut() {
+        };
+        cache.counters.cleanup_lookups += 1;
+        let key = [5, indices.len() as u64, partition.len() as u64];
+        let Some(id) = cache.find(&key) else {
+            return false;
+        };
+        let Some(entry) = cache.entries.get_mut(&id) else {
+            return false;
+        };
+        let Value::Clean(state) = &mut entry.value else {
+            return false;
+        };
+        let clean = state.update(indices, partition).is_some();
+        if clean {
             cache.counters.cleanup_hits += 1;
+            cache.counters.cleanup_updated_triangles += state.updated_triangles as u64;
         }
-        true
+        cache.finish_update(id, clean, self.retention);
+        clean
     }
 
-    pub(super) fn store_clean(&mut self, key: Vec<u64>) {
-        self.insert(key, Value::Clean);
+    pub(super) fn store_clean(&mut self, indices: &[u32], partition: &[u32]) {
+        let Some(cache) = self.cache.as_ref() else {
+            return;
+        };
+        if indices
+            .len()
+            .saturating_mul(20)
+            .saturating_add(partition.len().saturating_mul(4))
+            > cache.class_limit(1)
+        {
+            return;
+        }
+        if let Some(state) = DedupeUpdate::capture(indices, partition) {
+            self.insert(
+                vec![5, indices.len() as u64, partition.len() as u64],
+                Value::Clean(Box::new(state)),
+            );
+        }
     }
 }
 
@@ -460,29 +650,6 @@ pub(super) fn planar_key(points: &[Point2], outer: usize, inner: &[(usize, usize
     for point in points {
         key.extend([point.x().to_bits(), point.y().to_bits()]);
     }
-    key
-}
-
-fn append_indices(key: &mut Vec<u64>, indices: &[u32]) {
-    key.extend(
-        indices
-            .chunks(2)
-            .map(|pair| u64::from(pair[0]) | (u64::from(pair.get(1).copied().unwrap_or(0)) << 32)),
-    );
-}
-
-pub(super) fn weld_key(indices: &[u32], vertices: usize) -> Vec<u64> {
-    let mut key = Vec::with_capacity(indices.len().div_ceil(2) + 3);
-    key.extend([4, indices.len() as u64, vertices as u64]);
-    append_indices(&mut key, indices);
-    key
-}
-
-pub(super) fn cleanup_key(indices: &[u32], partition: &[u32]) -> Vec<u64> {
-    let mut key = Vec::with_capacity(indices.len().div_ceil(2) + partition.len().div_ceil(2) + 3);
-    key.extend([5, indices.len() as u64, partition.len() as u64]);
-    append_indices(&mut key, indices);
-    append_indices(&mut key, partition);
     key
 }
 

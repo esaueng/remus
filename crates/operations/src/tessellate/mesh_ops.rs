@@ -222,12 +222,9 @@ pub(super) fn dedupe_coincident_triangles_cached(
         return false;
     };
 
-    let reuse_key = reuse
-        .as_ref()
-        .map(|_| super::reuse::cleanup_key(&mesh.indices, &ids.of));
     if reuse
         .as_mut()
-        .is_some_and(|session| reuse_key.as_ref().is_some_and(|key| session.clean(key)))
+        .is_some_and(|session| session.clean(&mesh.indices, &ids.of))
     {
         return false;
     }
@@ -317,8 +314,8 @@ pub(super) fn dedupe_coincident_triangles_cached(
     }
 
     if keep.iter().all(|&k| k) {
-        if let (Some(session), Some(key)) = (reuse, reuse_key) {
-            session.store_clean(key);
+        if let Some(session) = reuse {
+            session.store_clean(&mesh.indices, &ids.of);
         }
         return false;
     }
@@ -593,15 +590,12 @@ pub(super) fn weld_boundary_vertices_cached(
         return true;
     }
 
-    // Directed connectivity is independent of position. Reuse only with
-    // the complete, identical index buffer and vertex count; every spatial
-    // weld distance and union decision is still evaluated on current points.
-    let reuse_key = reuse
-        .as_ref()
-        .map(|_| super::reuse::weld_key(&mesh.indices, n_verts));
+    // A retained CSR table plus bounded edge-count deltas updates only
+    // changed triangles. Every current index is compared; a large change or
+    // an exhausted cache budget falls back to the complete table build.
     let retained = reuse
         .as_mut()
-        .and_then(|session| reuse_key.as_ref().and_then(|key| session.weld(key)));
+        .and_then(|session| session.weld(&mesh.indices, n_verts));
     let boundary_verts = if let Some(vertices) = retained {
         vertices
     } else {
@@ -609,22 +603,22 @@ pub(super) fn weld_boundary_vertices_cached(
             return true;
         };
         let mut is_boundary = vec![false; n_verts];
+        let mut missing = Vec::new();
         for (a, b, _) in table.edges() {
             if !table.contains(b, a) {
                 is_boundary[a as usize] = true;
                 is_boundary[b as usize] = true;
+                if reuse.is_some() {
+                    missing.push((a, b));
+                }
             }
         }
-
-        // Sorted iteration keeps grid-cell contents and union order independent
-        // of DetHashSet iteration order, so welded meshes are reproducible.
-        #[allow(clippy::cast_possible_truncation)]
         let vertices: Vec<u32> = (0..n_verts)
             .filter(|&v| is_boundary[v])
-            .map(|v| v as u32)
+            .filter_map(|v| u32::try_from(v).ok())
             .collect();
-        if let (Some(session), Some(key)) = (reuse.as_mut(), reuse_key) {
-            session.store_weld(key, &vertices);
+        if let Some(session) = reuse.as_mut() {
+            session.store_weld(&mesh.indices, n_verts, table, &missing);
         }
         vertices
     };
@@ -840,7 +834,8 @@ pub(super) fn fill_sub_deflection_triangular_gaps(
 /// (compressed rows), each with the triangle that uses it. Rows keep
 /// triangle order. Replaces hash maps keyed by every half-edge in the
 /// whole-mesh passes (PERF-D07).
-struct HalfEdgeTable {
+#[derive(Clone)]
+pub(super) struct HalfEdgeTable {
     /// Row start per vertex (`n + 1` entries).
     start: Vec<u32>,
     /// `(end vertex, triangle)` per half-edge, grouped by start vertex.
@@ -849,7 +844,7 @@ struct HalfEdgeTable {
 
 impl HalfEdgeTable {
     /// `None` when an index is out of range or the counts overflow `u32`.
-    fn new(indices: &[u32], n_verts: usize) -> Option<Self> {
+    pub(super) fn new(indices: &[u32], n_verts: usize) -> Option<Self> {
         let tri_count = indices.len() / 3;
         let total = u32::try_from(tri_count.checked_mul(3)?).ok()?;
         let mut start = vec![0_u32; n_verts + 1];
@@ -873,7 +868,7 @@ impl HalfEdgeTable {
         Some(Self { start, entries })
     }
 
-    fn row(&self, a: u32) -> &[(u32, u32)] {
+    pub(super) fn row(&self, a: u32) -> &[(u32, u32)] {
         let a = a as usize;
         &self.entries[self.start[a] as usize..self.start[a + 1] as usize]
     }

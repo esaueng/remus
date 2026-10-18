@@ -29,14 +29,18 @@ plane, reconciles requests from every incident face, and repairs triangles
 against the final shared subdivision. The existing per-face cache then
 reuses unchanged curved/simple faces against those final chains.
 
-The weld pass may reuse its boundary-vertex list only for the identical
-index buffer and vertex count. It still checks current positions at the
-existing weld distance and performs the same union operations. Coincident
-triangle cleanup can reuse a no-removal certificate only after recomputing
-the exact quantized-position equivalence classes and matching the complete
-post-weld index buffer. New contacts, different winding or new shared
-subdivisions invalidate the corresponding result. Gap filling and solid
-validation retain their existing dispatch and acceptance checks.
+The weld pass retains its directed-edge table, complete previous index
+buffer, and a bounded map of edge-count changes. Every triangle is compared;
+only changed triangles update the counts. Only the presence of a changed
+edge or its reverse can change boundary membership. Current positions and
+the existing weld distance still determine every spatial union decision.
+Coincident-triangle cleanup recomputes the exact position-equivalence
+partition on every call. A retained no-removal proof requires the same
+partition, then removes the old keys and checks every changed triangle
+against both unchanged and newly added triangles. A new coincident pair
+falls back to the complete winding/cancellation/removal policy. Large
+connectivity changes or exhausted delta bounds also use fresh analysis.
+Gap filling and exact solid validation retain their acceptance checks.
 
 Keys retain content, rather than trusting a hash, handle, revision counter or
 operation label. Hash collisions require full key comparison. In-place
@@ -50,8 +54,9 @@ The stage cache is thread-local, bounded by 4,096 entries and 16 MiB of
 estimated retained bytes, including keys and buffers. It is separate from
 the existing 32 MiB face-mesh cache, geometry/measurement memos, application
 checkpoint accounting and WebAssembly linear memory. These are admission
-estimates, not process RSS ceilings. Quantity requests may not evict display
-entries; an unfit quantity request does not flush reusable quantity entries.
+estimates, not process RSS ceilings. One quarter of the total bound is reserved for boundary/sample/CDT
+entries; the remaining three quarters hold incremental mesh connectivity.
+Quantity requests may not evict display entries; an unfit quantity request does not flush reusable quantity entries.
 
 Native APIs expose `enable_mesh_reuse_with_limits`, `clear_mesh_reuse`,
 `disable_mesh_reuse`, and `mesh_reuse_stats`. WASM exposes `meshReuseStats()`
