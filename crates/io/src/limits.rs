@@ -70,6 +70,42 @@ impl ImportLimits {
     }
 }
 
+/// Check flat indexed-mesh lengths before cloning their arrays or building topology.
+///
+/// The bound includes the generated arena: at most one vertex per position,
+/// nine records per triangle, and the shell and solid. Both WASM modules use
+/// this same preflight. The original borrowed input buffers are already owned
+/// by the caller; this bounds the subsequent Rust allocations.
+///
+/// # Errors
+/// Returns a limit error for oversized buffers, arithmetic overflow, or an
+/// excessive generated topology count. Shape validation remains with callers.
+pub fn validate_indexed_mesh_sizes(
+    position_values: usize,
+    index_values: usize,
+    limits: ImportLimits,
+) -> Result<(), IoError> {
+    let bytes = position_values
+        .checked_mul(size_of::<f64>())
+        .and_then(|bytes| {
+            index_values
+                .checked_mul(size_of::<u32>())
+                .and_then(|indices| bytes.checked_add(indices))
+        })
+        .unwrap_or(usize::MAX);
+    ensure_input_size(bytes, limits)?;
+    let generated = (index_values / 3)
+        .checked_mul(9)
+        .and_then(|count| count.checked_add(position_values / 3))
+        .and_then(|count| count.checked_add(2))
+        .unwrap_or(usize::MAX);
+    ensure_limit(
+        "generated arena entities",
+        generated,
+        limits.max_model_entities,
+    )
+}
+
 pub(crate) fn ensure_limit(
     resource: &'static str,
     actual: usize,
@@ -169,5 +205,50 @@ mod tests {
                 actual: 4
             })
         ));
+    }
+}
+
+#[cfg(test)]
+mod indexed_mesh_limit_tests {
+    use super::*;
+
+    #[test]
+    fn indexed_mesh_limits_precede_clones_and_allow_exact_boundaries() {
+        let limits = ImportLimits {
+            max_input_bytes: 84,
+            max_model_entities: 14,
+            ..ImportLimits::default()
+        };
+        assert!(validate_indexed_mesh_sizes(9, 3, limits).is_ok());
+        assert!(matches!(
+            validate_indexed_mesh_sizes(
+                9,
+                3,
+                ImportLimits {
+                    max_input_bytes: 83,
+                    ..limits
+                }
+            ),
+            Err(IoError::LimitExceeded {
+                resource: "input bytes",
+                ..
+            })
+        ));
+        assert!(matches!(
+            validate_indexed_mesh_sizes(
+                9,
+                3,
+                ImportLimits {
+                    max_model_entities: 13,
+                    ..limits
+                }
+            ),
+            Err(IoError::LimitExceeded {
+                resource: "generated arena entities",
+                ..
+            })
+        ));
+        assert!(validate_indexed_mesh_sizes(usize::MAX, 3, ImportLimits::default()).is_err());
+        assert!(validate_indexed_mesh_sizes(3, usize::MAX, ImportLimits::default()).is_err());
     }
 }

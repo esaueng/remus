@@ -470,38 +470,7 @@ impl BrepKernel {
         positions: &[f64],
         indices: &[u32],
     ) -> Result<u32, JsError> {
-        use remus_math::vec::Point3;
-
-        if !positions.len().is_multiple_of(3) {
-            return Err(WasmError::InvalidInput {
-                reason: format!(
-                    "positions length {} is not a multiple of 3",
-                    positions.len()
-                ),
-            }
-            .into());
-        }
-        if !indices.len().is_multiple_of(3) {
-            return Err(WasmError::InvalidInput {
-                reason: format!("indices length {} is not a multiple of 3", indices.len()),
-            }
-            .into());
-        }
-
-        let verts: Vec<Point3> = positions
-            .chunks_exact(3)
-            .map(|c| Point3::new(c[0], c[1], c[2]))
-            .collect();
-        let normals = Vec::new();
-
-        let mesh = remus_operations::tessellate::TriangleMesh {
-            positions: verts,
-            normals,
-            indices: indices.to_vec(),
-        };
-
-        let solid_id = remus_io::stl::import::import_mesh(self.topo_mut(), &mesh, TOL)?;
-        Ok(solid_id_to_u32(solid_id))
+        Ok(self.import_indexed_mesh_impl(positions, indices)?)
     }
 
     /// Export a solid to STEP AP203 format.
@@ -769,11 +738,103 @@ impl BrepKernel {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+enum IndexedMeshError {
+    #[error(transparent)]
+    Input(#[from] WasmError),
+    #[error(transparent)]
+    Io(#[from] remus_io::IoError),
+}
+
+impl BrepKernel {
+    fn import_indexed_mesh_impl(
+        &mut self,
+        positions: &[f64],
+        indices: &[u32],
+    ) -> Result<u32, IndexedMeshError> {
+        use remus_math::vec::Point3;
+
+        if !positions.len().is_multiple_of(3) {
+            return Err(WasmError::InvalidInput {
+                reason: format!(
+                    "positions length {} is not a multiple of 3",
+                    positions.len()
+                ),
+            }
+            .into());
+        }
+        if !indices.len().is_multiple_of(3) {
+            return Err(WasmError::InvalidInput {
+                reason: format!("indices length {} is not a multiple of 3", indices.len()),
+            }
+            .into());
+        }
+
+        remus_io::validate_indexed_mesh_sizes(
+            positions.len(),
+            indices.len(),
+            remus_io::ImportLimits::default(),
+        )?;
+
+        let verts: Vec<Point3> = positions
+            .chunks_exact(3)
+            .map(|c| Point3::new(c[0], c[1], c[2]))
+            .collect();
+        let normals = Vec::new();
+
+        let mesh = remus_operations::tessellate::TriangleMesh {
+            positions: verts,
+            normals,
+            indices: indices.to_vec(),
+        };
+
+        // Refused input must not consume session slots, including tombstones:
+        // rollback deliberately preserves handle slots. Use the same bounded
+        // scratch-document bridge as the lazy translator module instead.
+        let mut scratch = remus_topology::Topology::new();
+        let solid_id = remus_io::stl::import::import_mesh(&mut scratch, &mesh, TOL)?;
+        let document = remus_io::arena_io::serialize_solid(&scratch, solid_id)?;
+        drop(scratch);
+        let solid_id = remus_io::arena_io::deserialize_solid(&document, self.topo_mut())?;
+        Ok(solid_id_to_u32(solid_id))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn indexed_mesh_refusals_do_not_retain_allocations() {
+        let mut kernel = BrepKernel::new();
+        let existing = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
+        let before = format!("{:?}", kernel.topo());
+        let solid_id = kernel.resolve_solid(existing).unwrap();
+        let shape = remus_io::arena_io::serialize_solid(kernel.topo(), solid_id).unwrap();
+        let positions: Vec<f64> = (0..100).flat_map(|i| [f64::from(i), 0.0, 0.0]).collect();
+        for _ in 0..3 {
+            assert!(
+                kernel
+                    .import_indexed_mesh_impl(&positions, &[0, 0, 0])
+                    .is_err()
+            );
+            assert_eq!(format!("{:?}", kernel.topo()), before);
+            assert_eq!(
+                remus_io::arena_io::serialize_solid(kernel.topo(), solid_id).unwrap(),
+                shape
+            );
+        }
+        assert!(
+            kernel
+                .import_indexed_mesh_impl(
+                    &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                    &[0, 1, 2]
+                )
+                .is_ok()
+        );
+    }
 
     #[test]
     fn import_budget_overrides_reject_saturation_and_fractional_counts() {
