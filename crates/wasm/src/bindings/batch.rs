@@ -313,6 +313,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "copyAndTransformSolidDetailed"
         | "pushPullFace"
         | "moveFaces"
+        | "moveFacesDetailed"
         | "resizeCylindricalFace"
         | "extrude"
         | "extrudeDetailed"
@@ -1656,6 +1657,20 @@ impl BrepKernel {
                 let result = move_faces(self.topo_mut(), solid_id, &face_ids, distance)
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
+            }
+            "moveFacesDetailed" => {
+                let result = (|| {
+                    let solid = get_u32(args, "solid")?;
+                    let faces = get_u32_array(args, "faces")?;
+                    let distance = get_f64(args, "distance")?;
+                    Ok::<_, StructuredWasmError>(
+                        self.move_faces_detailed_impl(solid, &faces, distance),
+                    )
+                })()
+                .unwrap_or_else(|error| {
+                    SolidOperationDetailedResult::error(error.with_direct_operation("moveFaces"))
+                });
+                serde_json::to_value(result).map_err(StructuredWasmError::from)
             }
             "resizeCylindricalFace" => {
                 let s = get_u32(args, "solid")?;
