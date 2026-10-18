@@ -498,6 +498,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Spliced copy's aligned coedge-authority restore checked against the per-snapshot search on a drilled plate (tests) | `copy/tests/spliced_authority_oracle.rs` |
 | Measure (bbox, area, volume, CoM) | `measure/` (mod, volume, area, bounding_box, edge_length, helpers) |
 | Opt-in per-thread `solid_volume` memo keyed by topology cache identity and complete solid content | `measure/volume_memo.rs` |
+| Exact reusable face-area and handle-independent volume measurements | `measure/reuse.rs`, `measure/reuse/tests.rs` |
 | Closed-form certificate that a straight-edged, axis-aligned planar outline passes the volume path's area-consistency probe without meshing | `measure/volume/planar_outline.rs` |
 | Certificate-implies-probe oracle, refusal cases and probe-mesh work guard (tests) | `measure/volume/planar_outline_tests.rs` |
 | Hash-map references for the sorted whole-mesh edge censuses (tests) | `measure/volume/edge_census_oracle_tests.rs` |

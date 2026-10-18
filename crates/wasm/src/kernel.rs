@@ -73,6 +73,7 @@ impl BrepKernel {
         // to recomputing. Idempotent.
         remus_check::properties::face_cache::enable_thread_face_cache();
         remus_operations::measure::enable_thread_volume_memo();
+        remus_operations::measure::enable_default_measurement_reuse();
         remus_operations::measure::enable_thread_nurbs_area_memo();
         remus_operations::measure::enable_thread_face_box_memo();
         remus_operations::tessellate::enable_face_mesh_cache();

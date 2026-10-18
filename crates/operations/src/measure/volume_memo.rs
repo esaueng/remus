@@ -29,8 +29,10 @@
 //!   solid) — so equal content means an equal reading even after the
 //!   identity moved on: another solid allocated, an unrelated edit, a
 //!   checkpoint restore that brought the same state back, or a copy-on-write
-//!   clone. Handles are part of the key, so any reliance on handle order is
-//!   reproduced too. Whole keys are compared; the hash only finds candidates.
+//!   clone. Normally handles are recorded verbatim. With measurement reuse
+//!   enabled, sorted ranks remove arena padding while retaining equality and
+//!   relative handle order, allowing exact reuse after rebuilding an arena.
+//!   Whole keys are compared; the hash only finds candidates.
 //!
 //! The deflection is matched as `solid_volume` uses it: the request is
 //! clamped to `volume_tessellation_deflection` (the solid's bounding-box
@@ -61,7 +63,8 @@
 //! and benchmarks keep measuring the uncached computation; an application
 //! enables it with [`enable_thread_volume_memo`] (the WASM kernel does, on
 //! construction). It retains at most `capacity` readings and `byte_budget`
-//! bytes of content keys, evicting oldest first; a reading whose key alone
+//! bytes of content keys, evicting oldest first (least recently used with
+//! measurement reuse enabled); a reading whose key alone
 //! exceeds the budget keeps only its identity.
 
 use std::cell::RefCell;
@@ -113,13 +116,13 @@ pub struct VolumeMemoStats {
 
 /// A solid's content key and its hash.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ContentKey {
-    hash: u64,
-    words: Box<[u64]>,
+pub(super) struct ContentKey {
+    pub(super) hash: u64,
+    pub(super) words: Box<[u64]>,
 }
 
 impl ContentKey {
-    const fn bytes(&self) -> usize {
+    pub(super) const fn bytes(&self) -> usize {
         self.words.len() * std::mem::size_of::<u64>()
     }
 }
@@ -185,7 +188,14 @@ impl VolumeMemo {
         }
         self.hits += 1;
         self.content_hits += u64::from(by_content);
-        Some(entry.volume)
+        let volume = entry.volume;
+        super::reuse::record_volume_hit(by_content);
+        if super::reuse::is_enabled()
+            && let Some(entry) = self.entries.remove(index)
+        {
+            self.entries.push_back(entry);
+        }
+        Some(volume)
     }
 
     fn insert(&mut self, mut entry: Entry) {
@@ -328,6 +338,7 @@ pub(super) fn memoized(
     deflection: f64,
     compute: impl FnOnce() -> Result<f64, crate::OperationsError>,
 ) -> Result<f64, crate::OperationsError> {
+    super::reuse::record_volume_lookup();
     if !memo_enabled() {
         return compute();
     }
@@ -353,7 +364,11 @@ pub(super) fn memoized(
         return Ok(volume);
     }
     // 2. The same content under another identity, at this request.
-    let content = solid_content_key(topo, solid);
+    let content = if super::reuse::is_enabled() {
+        solid_content_key_with_mode(topo, solid, true)
+    } else {
+        solid_content_key(topo, solid)
+    };
     let same_content = |e: &Entry| content.is_some() && e.content == content;
     if content.is_some()
         && let Some(volume) = lookup(&|memo| {
@@ -404,10 +419,49 @@ pub(super) fn memoized(
 /// Word sink for a solid content key.
 struct ContentWriter {
     words: Vec<u64>,
+    // (entity kind, arena index, word offset). Canonical keys retain identity
+    // and relative index order, while removing irrelevant arena padding.
+    handles: Option<Vec<(u8, usize, usize)>>,
+    max_words: Option<usize>,
+    overflowed: bool,
 }
 
 impl ContentWriter {
+    fn new(canonical: bool) -> Self {
+        Self {
+            words: Vec::new(),
+            handles: canonical.then(Vec::new),
+            max_words: None,
+            overflowed: false,
+        }
+    }
+
+    fn handle(&mut self, kind: u8, index: usize) {
+        if self.overflowed {
+            return;
+        }
+        if let Some(handles) = &mut self.handles {
+            if handles.try_reserve(1).is_err() {
+                self.overflowed = true;
+                return;
+            }
+            handles.push((kind, index, self.words.len()));
+        }
+        self.count(index);
+    }
+
     fn word(&mut self, word: u64) {
+        if self.overflowed {
+            return;
+        }
+        if self
+            .max_words
+            .is_some_and(|limit| self.words.len() >= limit)
+            || (self.max_words.is_some() && self.words.try_reserve(1).is_err())
+        {
+            self.overflowed = true;
+            return;
+        }
         self.words.push(word);
     }
 
@@ -596,7 +650,22 @@ impl ContentWriter {
         }
     }
 
-    fn finish(self) -> ContentKey {
+    fn finish(mut self) -> ContentKey {
+        if let Some(mut handles) = self.handles {
+            handles.sort_unstable();
+            let mut previous = None;
+            let mut ordinal = 0_u64;
+            for (kind, index, offset) in handles {
+                match previous {
+                    Some((old_kind, old_index)) if old_kind == kind => {
+                        ordinal += u64::from(old_index != index);
+                    }
+                    _ => ordinal = 0,
+                }
+                self.words[offset] = ordinal;
+                previous = Some((kind, index));
+            }
+        }
         let mut hash = 0_u64;
         for &word in &self.words {
             hash = (hash.rotate_left(5) ^ word).wrapping_mul(0x517c_c1b7_2722_0a95);
@@ -608,14 +677,95 @@ impl ContentWriter {
     }
 }
 
-/// Everything `solid_volume` reads about `solid`, with every handle; see the
-/// module docs. `None` when an entity is missing (the reading itself then
-/// fails and is not memoized).
+/// Full key shared by the existing volume memo and the reusable area memo.
+/// Canonical handles preserve both equality and relative processing order;
+/// geometry, request policy and all tolerances remain bitwise exact.
+fn append_face(
+    w: &mut ContentWriter,
+    topo: &Topology,
+    face_id: remus_topology::face::FaceId,
+    edges_seen: &mut DetHashSet<usize>,
+    vertices_seen: &mut DetHashSet<usize>,
+) -> Option<()> {
+    if w.overflowed {
+        return None;
+    }
+    let face = topo.face(face_id).ok()?;
+    w.handle(3, face_id.index());
+    w.flag(face.is_reversed());
+    w.surface(face.surface());
+    w.count(1 + face.inner_wires().len());
+    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        let wire = topo.wire(wire_id).ok()?;
+        w.handle(4, wire_id.index());
+        w.flag(wire.is_closed());
+        w.body_class(wire.body_class());
+        w.count(wire.edges().len());
+        for oriented in wire.edges() {
+            if w.overflowed {
+                return None;
+            }
+            let edge_id = oriented.edge();
+            w.handle(5, edge_id.index());
+            w.flag(oriented.is_forward());
+            match topo.pcurve_oriented(edge_id, face_id, oriented.is_forward()) {
+                Some(pcurve) => {
+                    w.flag(true);
+                    w.curve2d(pcurve.curve());
+                    w.real(pcurve.t_start());
+                    w.real(pcurve.t_end());
+                }
+                None => w.flag(false),
+            }
+            if !edges_seen.insert(edge_id.index()) {
+                continue;
+            }
+            let edge = topo.edge(edge_id).ok()?;
+            w.curve(edge.curve());
+            match edge.trim() {
+                Some((t0, t1)) => {
+                    w.flag(true);
+                    w.real(t0);
+                    w.real(t1);
+                }
+                None => w.flag(false),
+            }
+            match edge.tolerance() {
+                Some(tolerance) => {
+                    w.flag(true);
+                    w.real(tolerance);
+                }
+                None => w.flag(false),
+            }
+            for vertex_id in [edge.start(), edge.end()] {
+                w.handle(6, vertex_id.index());
+                if vertices_seen.insert(vertex_id.index()) {
+                    let vertex = topo.vertex(vertex_id).ok()?;
+                    w.point(vertex.point());
+                    w.real(vertex.tolerance());
+                }
+            }
+        }
+    }
+    Some(())
+}
+
 fn solid_content_key(topo: &Topology, solid: SolidId) -> Option<ContentKey> {
+    solid_content_key_with_mode(topo, solid, false)
+}
+
+fn solid_content_key_with_mode(
+    topo: &Topology,
+    solid: SolidId,
+    canonical: bool,
+) -> Option<ContentKey> {
     let _key = crate::performance::span("volume.content-key");
-    let mut w = ContentWriter { words: Vec::new() };
-    w.word(KEY_VERSION);
-    w.count(solid.index());
+    let mut w = ContentWriter::new(canonical);
+    if canonical {
+        w.max_words = Some(MEMO.with(|memo| memo.try_borrow().map_or(0, |m| m.byte_budget / 8)));
+    }
+    w.word(KEY_VERSION + u64::from(canonical));
+    w.handle(1, solid.index());
     let solid_data = topo.solid(solid).ok()?;
     let shells: Vec<_> = std::iter::once(solid_data.outer_shell())
         .chain(solid_data.inner_shells().iter().copied())
@@ -625,69 +775,36 @@ fn solid_content_key(topo: &Topology, solid: SolidId) -> Option<ContentKey> {
     let mut vertices_seen = DetHashSet::default();
     for shell_id in shells {
         let shell = topo.shell(shell_id).ok()?;
-        w.count(shell_id.index());
+        w.handle(2, shell_id.index());
         w.body_class(shell.body_class());
         w.count(shell.faces().len());
         for &face_id in shell.faces() {
-            let face = topo.face(face_id).ok()?;
-            w.count(face_id.index());
-            w.flag(face.is_reversed());
-            w.surface(face.surface());
-            w.count(1 + face.inner_wires().len());
-            for wire_id in
-                std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
-            {
-                let wire = topo.wire(wire_id).ok()?;
-                w.count(wire_id.index());
-                w.flag(wire.is_closed());
-                w.body_class(wire.body_class());
-                w.count(wire.edges().len());
-                for oriented in wire.edges() {
-                    let edge_id = oriented.edge();
-                    w.count(edge_id.index());
-                    w.flag(oriented.is_forward());
-                    match topo.pcurve_oriented(edge_id, face_id, oriented.is_forward()) {
-                        Some(pcurve) => {
-                            w.flag(true);
-                            w.curve2d(pcurve.curve());
-                            w.real(pcurve.t_start());
-                            w.real(pcurve.t_end());
-                        }
-                        None => w.flag(false),
-                    }
-                    if !edges_seen.insert(edge_id.index()) {
-                        continue;
-                    }
-                    let edge = topo.edge(edge_id).ok()?;
-                    w.curve(edge.curve());
-                    match edge.trim() {
-                        Some((t0, t1)) => {
-                            w.flag(true);
-                            w.real(t0);
-                            w.real(t1);
-                        }
-                        None => w.flag(false),
-                    }
-                    match edge.tolerance() {
-                        Some(tolerance) => {
-                            w.flag(true);
-                            w.real(tolerance);
-                        }
-                        None => w.flag(false),
-                    }
-                    for vertex_id in [edge.start(), edge.end()] {
-                        w.count(vertex_id.index());
-                        if vertices_seen.insert(vertex_id.index()) {
-                            let vertex = topo.vertex(vertex_id).ok()?;
-                            w.point(vertex.point());
-                            w.real(vertex.tolerance());
-                        }
-                    }
-                }
-            }
+            append_face(&mut w, topo, face_id, &mut edges_seen, &mut vertices_seen)?;
         }
     }
-    Some(w.finish())
+    (!w.overflowed).then(|| w.finish())
+}
+
+pub(super) fn face_content_key(
+    topo: &Topology,
+    face: remus_topology::face::FaceId,
+    deflection: f64,
+    key_byte_budget: usize,
+) -> Option<ContentKey> {
+    let mut w = ContentWriter::new(true);
+    w.max_words = Some(key_byte_budget / 8);
+    w.word(KEY_VERSION + 2);
+    w.real(deflection);
+    // Numerical dispatch and defaults belong to the key as well as geometry.
+    w.real(remus_math::chord::DEFAULT_ANGULAR_TOL);
+    append_face(
+        &mut w,
+        topo,
+        face,
+        &mut DetHashSet::default(),
+        &mut DetHashSet::default(),
+    )?;
+    (!w.overflowed).then(|| w.finish())
 }
 
 #[cfg(test)]

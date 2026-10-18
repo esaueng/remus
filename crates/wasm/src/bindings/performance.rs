@@ -121,6 +121,36 @@ impl BrepKernel {
             .map_err(|error| JsError::new(&error.to_string()))
     }
 
+    /// Enable or disable exact reusable scalar measurements for this module.
+    /// Explicit preferences are preserved when another kernel is constructed.
+    #[wasm_bindgen(js_name = "setMeasurementReuseEnabled")]
+    #[allow(clippy::unused_self)]
+    pub fn set_measurement_reuse_enabled(&self, enabled: bool) {
+        remus_operations::measure::set_measurement_reuse_enabled(enabled);
+    }
+
+    /// Exact measurement reuse counters and independent area storage bounds,
+    /// as camelCase JSON. Existing volume memo bounds are included separately.
+    ///
+    /// # Errors
+    /// Returns an error when the diagnostic cannot be serialized.
+    #[wasm_bindgen(js_name = "measurementReuseStats")]
+    #[allow(clippy::unused_self)]
+    pub fn measurement_reuse_stats(&self) -> Result<String, JsError> {
+        let reuse = remus_operations::measure::measurement_reuse_stats();
+        let volume = remus_operations::measure::thread_volume_memo_stats();
+        serde_json::to_string(&serde_json::json!({
+            "reuse": reuse,
+            "volumeMemo": {
+                "hits": volume.hits, "contentHits": volume.content_hits,
+                "misses": volume.misses, "entries": volume.len,
+                "maxEntries": volume.capacity, "retainedBytes": volume.retained_bytes,
+                "maxBytes": volume.byte_budget,
+            }
+        }))
+        .map_err(|error| JsError::new(&error.to_string()))
+    }
+
     /// Drain up to 4096 completed phase events as JSON.
     ///
     /// # Errors
@@ -135,6 +165,22 @@ impl BrepKernel {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn measurement_diagnostics_and_explicit_disable_survive_new_kernel() {
+        let kernel = super::BrepKernel::new();
+        kernel.set_measurement_reuse_enabled(false);
+        let next = super::BrepKernel::new();
+        let json: serde_json::Value =
+            serde_json::from_str(&next.measurement_reuse_stats().unwrap()).unwrap();
+        assert_eq!(json["reuse"]["enabled"], false);
+        assert_eq!(json["reuse"]["areaMaxEntries"], 512);
+        assert_eq!(json["reuse"]["areaMaxBytes"], 8 * 1024 * 1024);
+        assert_eq!(json["volumeMemo"]["maxEntries"], 64);
+        assert_eq!(json["volumeMemo"]["maxBytes"], 16 * 1024 * 1024);
+        next.set_measurement_reuse_enabled(true);
+    }
+
     #[test]
     fn maximum_wasm_memory_is_four_gibibytes() {
         assert_eq!(super::linear_memory_bytes(65536), 4_294_967_296);

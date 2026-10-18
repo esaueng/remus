@@ -7,6 +7,7 @@ mod edge_length;
 mod face_box_memo;
 pub(crate) mod helpers;
 mod nurbs_area_memo;
+mod reuse;
 mod volume;
 mod volume_memo;
 
@@ -30,6 +31,11 @@ pub use nurbs_area_memo::{
     DEFAULT_NURBS_AREA_MEMO_BYTE_BUDGET, DEFAULT_NURBS_AREA_MEMO_CAPACITY, NurbsAreaMemoStats,
     clear_thread_nurbs_area_memo, disable_thread_nurbs_area_memo, enable_thread_nurbs_area_memo,
     set_thread_nurbs_area_memo_limits, thread_nurbs_area_memo_stats,
+};
+pub use reuse::{
+    DEFAULT_MEASUREMENT_REUSE_BYTES, DEFAULT_MEASUREMENT_REUSE_ENTRIES, MeasurementReuseStats,
+    clear_measurement_reuse, enable_default_measurement_reuse, enable_measurement_reuse,
+    measurement_reuse_stats, set_measurement_reuse_enabled, set_measurement_reuse_limits,
 };
 pub(crate) use volume::{gauss_unqualified_face, negligible_volume, shell_signed_volume};
 pub use volume::{

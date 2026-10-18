@@ -43,8 +43,20 @@ pub fn face_area(
     face_id: FaceId,
     deflection: f64,
 ) -> Result<f64, crate::OperationsError> {
-    let face = topo.face(face_id)?;
+    // Resolve before any identity hit, so retired or invalid handles retain
+    // their original refusal even when a previous reading is present.
+    topo.face(face_id)?;
+    super::reuse::face_area(topo, face_id, deflection, || {
+        face_area_uncached(topo, face_id, deflection)
+    })
+}
 
+fn face_area_uncached(
+    topo: &Topology,
+    face_id: FaceId,
+    deflection: f64,
+) -> Result<f64, crate::OperationsError> {
+    let face = topo.face(face_id)?;
     match face.surface() {
         FaceSurface::Plane { .. } => {
             if planar_boundary_needs_curve_integral(topo, face_id)? {
