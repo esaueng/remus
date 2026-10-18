@@ -93,6 +93,7 @@ pub fn enable_mesh_reuse_with_limits(max_entries: usize, max_bytes: usize) {
         let cache = slot.get_or_insert_with(Cache::default);
         cache.max_entries = max_entries;
         cache.max_bytes = max_bytes;
+        cache.trim_classes();
         cache.make_room(0, 0, RetentionClass::Display);
     });
 }
@@ -129,12 +130,13 @@ enum Value {
     Planar(PlanarCdtOutput),
     Clean(Box<DedupeUpdate>),
     Weld(Box<WeldUpdate>),
+    Seen(bool),
 }
 
 impl Value {
     fn class(&self) -> usize {
         match self {
-            Self::Clean(_) | Self::Weld(_) => 1,
+            Self::Clean(_) | Self::Weld(_) | Self::Seen(_) => 1,
             _ => 0,
         }
     }
@@ -147,6 +149,7 @@ impl Value {
             }
             Self::Clean(state) => state.bytes(),
             Self::Weld(state) => state.bytes(),
+            Self::Seen(_) => 0,
         }
     }
 }
@@ -248,6 +251,59 @@ impl Cache {
             stages
         } else {
             self.max_bytes - stages
+        }
+    }
+
+    fn connectivity_probe(&mut self, key: &[u64], retention: RetentionClass) -> Option<u64> {
+        let Some(id) = self.find(key) else {
+            self.insert(key.to_vec(), Value::Seen(false), retention);
+            return None;
+        };
+        if let Some(Entry {
+            value: Value::Seen(ready),
+            ..
+        }) = self.entries.get_mut(&id)
+        {
+            *ready = true;
+            self.promote(id, retention);
+            None
+        } else {
+            Some(id)
+        }
+    }
+
+    fn capture_ready(&self, key: &[u64]) -> bool {
+        self.find(key)
+            .and_then(|id| self.entries.get(&id))
+            .is_some_and(|entry| matches!(entry.value, Value::Seen(true)))
+    }
+
+    fn replace_marker(&mut self, key: Vec<u64>, value: Value, retention: RetentionClass) {
+        if let Some(id) = self.find(&key) {
+            self.remove(id);
+        }
+        self.insert(key, value, retention);
+    }
+
+    fn trim_classes(&mut self) {
+        for class in 0..2 {
+            while self.class_bytes[class] > self.class_limit(class) {
+                let eligible = |id: &&u64| {
+                    self.entries
+                        .get(id)
+                        .is_some_and(|entry| entry.value.class() == class)
+                };
+                let id = self
+                    .quantity
+                    .iter()
+                    .find(eligible)
+                    .copied()
+                    .or_else(|| self.display.iter().find(eligible).copied());
+                let Some(id) = id else {
+                    break;
+                };
+                self.remove(id);
+            }
         }
     }
 
@@ -403,6 +459,12 @@ impl Drop for Session {
 
 impl Session {
     pub(super) fn begin(retention: RetentionClass) -> Option<Self> {
+        // Measurement already has content-keyed face/volume memos. Its
+        // one-shot fine meshes should neither pay for stage capture nor
+        // compete with interactive display connectivity.
+        if retention == RetentionClass::Quantity {
+            return None;
+        }
         CACHE.with(|slot| {
             slot.borrow_mut().take().map(|cache| Self {
                 cache: Some(cache),
@@ -469,7 +531,7 @@ impl Session {
         let cache = self.cache.as_mut()?;
         cache.counters.weld_lookups += 1;
         let key = [4, indices.len() as u64, vertices as u64];
-        let id = cache.find(&key)?;
+        let id = cache.connectivity_probe(&key, self.retention)?;
         let entry = cache.entries.get_mut(&id)?;
         let Value::Weld(state) = &mut entry.value else {
             return None;
@@ -480,6 +542,9 @@ impl Session {
             cache.counters.weld_updated_triangles += state.updated_triangles as u64;
         }
         cache.finish_update(id, result.is_some(), self.retention);
+        if result.is_none() {
+            cache.insert(key.to_vec(), Value::Seen(false), self.retention);
+        }
         result
     }
 
@@ -495,6 +560,11 @@ impl Session {
         let Some(cache) = self.cache.as_ref() else {
             return;
         };
+        let key = vec![4, indices.len() as u64, vertices as u64];
+        if !cache.capture_ready(&key) {
+            return;
+        }
+
         if indices
             .len()
             .saturating_mul(12)
@@ -505,11 +575,10 @@ impl Session {
         {
             return;
         }
-        if let Some(state) = WeldUpdate::capture(table, indices, vertices, missing) {
-            self.insert(
-                vec![4, indices.len() as u64, vertices as u64],
-                Value::Weld(Box::new(state)),
-            );
+        if let Some(state) = WeldUpdate::capture(table, indices, vertices, missing)
+            && let Some(cache) = self.cache.as_mut()
+        {
+            cache.replace_marker(key, Value::Weld(Box::new(state)), self.retention);
         }
     }
 
@@ -519,7 +588,7 @@ impl Session {
         };
         cache.counters.cleanup_lookups += 1;
         let key = [5, indices.len() as u64, partition.len() as u64];
-        let Some(id) = cache.find(&key) else {
+        let Some(id) = cache.connectivity_probe(&key, self.retention) else {
             return false;
         };
         let Some(entry) = cache.entries.get_mut(&id) else {
@@ -534,6 +603,9 @@ impl Session {
             cache.counters.cleanup_updated_triangles += state.updated_triangles as u64;
         }
         cache.finish_update(id, clean, self.retention);
+        if !clean {
+            cache.insert(key.to_vec(), Value::Seen(false), self.retention);
+        }
         clean
     }
 
@@ -541,6 +613,11 @@ impl Session {
         let Some(cache) = self.cache.as_ref() else {
             return;
         };
+        let key = vec![5, indices.len() as u64, partition.len() as u64];
+        if !cache.capture_ready(&key) {
+            return;
+        }
+
         if indices
             .len()
             .saturating_mul(20)
@@ -549,11 +626,10 @@ impl Session {
         {
             return;
         }
-        if let Some(state) = DedupeUpdate::capture(indices, partition) {
-            self.insert(
-                vec![5, indices.len() as u64, partition.len() as u64],
-                Value::Clean(Box::new(state)),
-            );
+        if let Some(state) = DedupeUpdate::capture(indices, partition)
+            && let Some(cache) = self.cache.as_mut()
+        {
+            cache.replace_marker(key, Value::Clean(Box::new(state)), self.retention);
         }
     }
 }

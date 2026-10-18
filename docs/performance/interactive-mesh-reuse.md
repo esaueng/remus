@@ -29,7 +29,9 @@ plane, reconciles requests from every incident face, and repairs triangles
 against the final shared subdivision. The existing per-face cache then
 reuses unchanged curved/simple faces against those final chains.
 
-The weld pass retains its directed-edge table, complete previous index
+Expensive connectivity storage is admitted only after a mesh layout repeats;
+a first sighting retains a small marker. This avoids capturing large buffers
+for one-off construction results. The weld pass retains its directed-edge table, complete previous index
 buffer, and a bounded map of edge-count changes. Every triangle is compared;
 only changed triangles update the counts. Only the presence of a changed
 edge or its reverse can change boundary membership. Current positions and
@@ -54,9 +56,13 @@ The stage cache is thread-local, bounded by 4,096 entries and 16 MiB of
 estimated retained bytes, including keys and buffers. It is separate from
 the existing 32 MiB face-mesh cache, geometry/measurement memos, application
 checkpoint accounting and WebAssembly linear memory. These are admission
-estimates, not process RSS ceilings. One quarter of the total bound is reserved for boundary/sample/CDT
+estimates, not process RSS ceilings. One quarter of the total bound is
+reserved for boundary/sample/CDT
 entries; the remaining three quarters hold incremental mesh connectivity.
-Quantity requests may not evict display entries; an unfit quantity request does not flush reusable quantity entries.
+Quantity and boolean-fallback paths use the ordinary stages and existing
+face/measurement memos, without creating or looking up new stage entries.
+This avoids redundant capture of one-off fine measurement meshes. Exact
+measurement quality, validation and refusal checks are unchanged.
 
 Native APIs expose `enable_mesh_reuse_with_limits`, `clear_mesh_reuse`,
 `disable_mesh_reuse`, and `mesh_reuse_stats`. WASM exposes `meshReuseStats()`
