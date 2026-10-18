@@ -826,13 +826,21 @@ mod tests {
                 shape
             );
         }
-        assert!(
-            kernel
-                .import_indexed_mesh_impl(
-                    &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-                    &[0, 1, 2]
-                )
-                .is_ok()
+        let imported = kernel
+            .import_indexed_mesh_impl(
+                &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                &[0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3],
+            )
+            .unwrap();
+        let imported_id = kernel.resolve_solid(imported).unwrap();
+        let volume =
+            remus_operations::measure::solid_volume(kernel.topo(), imported_id, 0.1).unwrap();
+        assert!((volume - 1.0 / 6.0).abs() < 1e-9);
+        assert_eq!(
+            remus_topology::explorer::solid_faces(kernel.topo(), imported_id)
+                .unwrap()
+                .len(),
+            4
         );
     }
 
