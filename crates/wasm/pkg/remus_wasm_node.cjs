@@ -5294,6 +5294,29 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Move selected faces and return an exact result or a typed refusal.
+     *
+     * Additive twin of [`moveFaces`](Self::move_faces_binding), with the same
+     * supported geometry and work limits. Distances are relative to `solid`
+     * and `faces`; a drag should keep those source handles fixed. Replace
+     * the displayed preview only on `status: "ok"`. A refusal returns no
+     * solid and preserves both the source and earlier successful previews,
+     * so the caller can retain its last valid frame and try another distance.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {number} distance
+     * @returns {SolidOperationDetailedResult}
+     */
+    moveFacesDetailed(solid, faces, distance) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_moveFacesDetailed(this.__wbg_ptr, solid, ptr0, len0, distance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Move faces with construction history.
      *
      * Planar re-limitation and coaxial bore moves include edge and vertex
