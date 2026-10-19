@@ -3154,6 +3154,15 @@ export class BrepKernel {
      */
     meshQuality(solid: number, deflection: number, angular_tolerance?: number | null): any;
     /**
+     * Bounded, module-local mesh reuse counters and storage estimate as
+     * JSON, or `null` when disabled. Contains no geometry or arena handles.
+     * The estimate is separate from checkpoint bytes and is not RSS.
+     *
+     * # Errors
+     * Returns an error if the diagnostic cannot be serialized.
+     */
+    meshReuseStats(): string;
+    /**
      * Convex Minkowski sum of two solids (`A ⊕ B`).
      *
      * Returns the convex hull of all pairwise vertex sums — exact for convex
@@ -3855,6 +3864,11 @@ export class BrepKernel {
      * name, preserving its other attributes.
      */
     setFaceName(face: number, name?: string | null): void;
+    /**
+     * Enable or disable this module's exact mesh-stage reuse. Disabling
+     * releases its retained entries. New kernels enable the default cache.
+     */
+    setMeshReuseEnabled(enabled: boolean): void;
     /**
      * Enable bounded module-local timings; disabled by default. This does
      * not change tolerances, cache admission or numerical policy.

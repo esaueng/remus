@@ -239,6 +239,7 @@ export const brepkernel_meshBoolean: (a: number, b: number, c: number, d: number
 export const brepkernel_meshEdges: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_meshEdgesAll: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const brepkernel_meshQuality: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+export const brepkernel_meshReuseStats: (a: number) => [number, number, number, number];
 export const brepkernel_minkowskiSum: (a: number, b: number, c: number) => [number, number, number];
 export const brepkernel_mirror: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
 export const brepkernel_moveFaces: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
@@ -305,6 +306,7 @@ export const brepkernel_serializeSolids: (a: number, b: number, c: number) => [n
 export const brepkernel_serializeWire: (a: number, b: number) => [number, number, number, number];
 export const brepkernel_serializeWires: (a: number, b: number, c: number) => [number, number, number, number];
 export const brepkernel_setFaceName: (a: number, b: number, c: number, d: number) => [number, number];
+export const brepkernel_setMeshReuseEnabled: (a: number, b: number) => void;
 export const brepkernel_setPerformanceTracing: (a: number, b: number) => void;
 export const brepkernel_setStoreLocalCuts: (a: number, b: number) => void;
 export const brepkernel_sewFaces: (a: number, b: number, c: number, d: number) => [number, number, number];
