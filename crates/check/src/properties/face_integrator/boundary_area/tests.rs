@@ -34,8 +34,8 @@ fn natural_normal_is_the_outward_normal_with_the_tabulated_jacobian() {
         };
         check(&cylinder, u, v, 2.5);
         check(&cone, u, v, v * 0.6_f64.cos());
-        let latitude = 0.5f64.mul_add(v, -0.6);
-        check(&sphere, u, latitude, 9.0 * latitude.cos());
+        let phi = 0.5f64.mul_add(v, -0.6);
+        check(&sphere, u, phi, 9.0 * phi.cos());
         check(&torus, u, v, 1.5 * 1.5f64.mul_add(v.cos(), 5.0));
     }
 }
