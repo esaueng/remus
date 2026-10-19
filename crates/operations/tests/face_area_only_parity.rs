@@ -1,7 +1,9 @@
 //! Parity of the fixed-order area-only integrator and the full contribution.
 #![allow(clippy::unwrap_used)]
 
-use remus_check::properties::face_integrator::{integrate_face, integrate_face_area};
+use remus_check::properties::face_integrator::{
+    analytic_face_area, integrate_face, integrate_face_area,
+};
 use remus_math::mat::Mat4;
 use remus_operations::{measure, primitives, transform};
 use remus_topology::Topology;
@@ -42,10 +44,19 @@ fn curved_primitive_area_matches_full_integral_after_transform_and_reversal() {
                     full.to_bits(),
                     "primitive {index}, face {face:?}, reversed {reversed}"
                 );
+                // The public area reduces these faces to exact boundary
+                // integrals; on untrimmed primitives the quadrature is
+                // converged, so both agree to its rounding, which grows with
+                // the primitives' 1.5e4 offset from the origin.
+                let public = measure::face_area(&topo, face, 0.1).unwrap();
                 assert_eq!(
-                    measure::face_area(&topo, face, 0.1).unwrap().to_bits(),
-                    full.abs().to_bits(),
+                    public.to_bits(),
+                    analytic_face_area(&topo, face, 8).unwrap().abs().to_bits(),
                     "public face area, primitive {index}, face {face:?}"
+                );
+                assert!(
+                    (public - full.abs()).abs() <= 1e-10 * full.abs(),
+                    "public face area {public} vs quadrature {full}, primitive {index}, face {face:?}"
                 );
             }
         }

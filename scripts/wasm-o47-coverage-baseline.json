@@ -1717,9 +1717,28 @@
       "file": "bindings/operations.rs",
       "gate": "shipped",
       "class": "geometry_mutation",
-      "coverage": "uncovered",
+      "coverage": "covered",
       "owner": "O4.7",
-      "reason": "direct edit; O4.7 solid twin pending"
+      "reason": "typed by moveFacesDetailed; source-relative success/refusal/recovery and direct/batch parity",
+      "twin": "moveFacesDetailed",
+      "batch_ops": [
+        "moveFacesDetailed"
+      ],
+      "witnesses": [
+        "refused_drag_preserves_source_and_last_valid_mesh_then_recovers",
+        "invalid_face_move_inputs_are_data_and_do_not_change_the_source"
+      ],
+      "schema": "solid_envelope"
+    },
+    {
+      "js": "moveFacesDetailed",
+      "rust": "move_faces_detailed",
+      "file": "bindings/modifier_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed surface itself, no further twin required"
     },
     {
       "js": "moveFacesJournaled",
@@ -2452,6 +2471,46 @@
       "coverage": "uncovered",
       "owner": "O4.7",
       "reason": "heal family; O4.7 tsify twin pending"
+    },
+    {
+      "js": "moveFacesPrepared",
+      "rust": "move_faces_prepared",
+      "file": "bindings/prepared_move.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B30",
+      "reason": "prepared drag twin of moveFaces: same result and refusals for the same source and distance; typed results come from moveFacesDetailed"
+    },
+    {
+      "js": "moveFacesPreparedJournaled",
+      "rust": "move_faces_prepared_journaled",
+      "file": "bindings/prepared_move.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B30",
+      "reason": "prepared drag twin of moveFacesJournaled; evolution/journal surface already typed with its payload"
+    },
+    {
+      "js": "prepareMoveFaces",
+      "rust": "prepare_move_faces",
+      "file": "bindings/prepared_move.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B30",
+      "reason": "prepared-move session handle; reads the topology only, no solid twin applicable"
+    },
+    {
+      "js": "releasePreparedMove",
+      "rust": "release_prepared_move",
+      "file": "bindings/prepared_move.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B30",
+      "reason": "prepared-move session disposal; no solid twin applicable"
     }
   ]
 }

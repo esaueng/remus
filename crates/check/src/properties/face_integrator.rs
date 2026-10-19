@@ -20,6 +20,7 @@ use super::PropertiesOptions;
 use crate::CheckError;
 
 mod adaptive;
+mod boundary_area;
 mod loop_index;
 #[cfg(test)]
 mod nurbs_rows_oracle_tests;
@@ -321,6 +322,45 @@ pub fn integrate_face_area(
         },
     )?
     .area)
+}
+
+/// Area of a cylinder, cone, sphere or torus face by exact boundary
+/// integrals, with quadrature as the fallback.
+///
+/// Where the reduction does not qualify, this is [`integrate_face_area`] at
+/// `fallback_order`.
+///
+/// The area element of these surfaces depends on one parameter only, so
+/// Green's theorem turns the trimmed area into a line integral of the edges'
+/// own curves: exact on iso-parametric lines and circles and converged to
+/// rounding by adaptive Gauss–Legendre panels elsewhere, with no trim
+/// chording. Holes, seams, reversed faces and regions that contain a sphere
+/// pole or the cone apex are covered; a boundary through a pole or the apex,
+/// a wire that winds around a torus tube, a hyperbolic or parabolic edge,
+/// an inconsistently wound loop or any other doubt keeps the quadrature.
+/// The reduction answers a positive area; the fallback answers what
+/// [`integrate_face_area`] does, so callers take the absolute value.
+///
+/// # Errors
+///
+/// Returns the topology errors of the reduction, or the errors of
+/// [`integrate_face_area`] when it falls back.
+pub fn analytic_face_area(
+    topo: &Topology,
+    face_id: FaceId,
+    fallback_order: usize,
+) -> Result<f64, CheckError> {
+    let analytic = matches!(
+        topo.face(face_id)?.surface(),
+        FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+    );
+    if analytic && let Some(area) = boundary_area::analytic_face_area(topo, face_id)? {
+        return Ok(area);
+    }
+    integrate_face_area(topo, face_id, fallback_order)
 }
 
 /// Integrate a face with the validated numerical controls in [`PropertiesOptions`].

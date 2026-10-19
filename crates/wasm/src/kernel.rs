@@ -54,6 +54,10 @@ pub struct BrepKernel {
     /// preparation misses instead of reusing. `RefCell` because
     /// `classifyPoint` is a read-only `&self` binding.
     pub(crate) classify_cache: std::cell::RefCell<remus_check::classify::ClassificationCache>,
+    /// Face moves prepared for interactive drags (`prepareMoveFaces`).
+    /// Session state outside the topology: checkpoints neither save nor
+    /// restore it, and each prepared move checks its source on every call.
+    pub(crate) prepared_moves: crate::bindings::prepared_move::PreparedMoves,
 }
 
 #[wasm_bindgen]
@@ -91,6 +95,7 @@ impl BrepKernel {
             classify_cache: std::cell::RefCell::new(
                 remus_check::classify::ClassificationCache::new(),
             ),
+            prepared_moves: crate::bindings::prepared_move::PreparedMoves::default(),
         }
     }
 }

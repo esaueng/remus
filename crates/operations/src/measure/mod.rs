@@ -9,7 +9,7 @@ pub(crate) mod helpers;
 mod nurbs_area_memo;
 mod reuse;
 mod volume;
-mod volume_memo;
+pub(crate) mod volume_memo;
 
 pub use area::{
     body_surface_area, face_area, sheet_center_of_area, sheet_surface_area, solid_surface_area,

@@ -116,7 +116,7 @@ pub struct VolumeMemoStats {
 
 /// A solid's content key and its hash.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ContentKey {
+pub struct ContentKey {
     pub(super) hash: u64,
     pub(super) words: Box<[u64]>,
 }
@@ -750,7 +750,10 @@ fn append_face(
     Some(())
 }
 
-fn solid_content_key(topo: &Topology, solid: SolidId) -> Option<ContentKey> {
+/// Every solid input with its original handles, independent of measurement
+/// reuse settings. Prepared face moves require this identity-sensitive key;
+/// canonical measurement matching uses a separate internal mode.
+pub fn solid_content_key(topo: &Topology, solid: SolidId) -> Option<ContentKey> {
     solid_content_key_with_mode(topo, solid, false)
 }
 
@@ -805,6 +808,44 @@ pub(super) fn face_content_key(
         &mut DetHashSet::default(),
     )?;
     (!w.overflowed).then(|| w.finish())
+}
+
+/// [`solid_content_key`] followed by every face's authoritative loops and
+/// coedges — handles, closure, edge use, pcurve and periodic winding — which
+/// a face move copies alongside the wires. `None` when an entity is missing.
+pub fn solid_move_key(topo: &Topology, solid: SolidId) -> Option<ContentKey> {
+    let base = solid_content_key(topo, solid)?;
+    let mut w = ContentWriter::new(false);
+    w.words = base.words.into_vec();
+    for face_id in remus_topology::explorer::solid_faces(topo, solid).ok()? {
+        let face = topo.face(face_id).ok()?;
+        w.count(face.boundary_loops().len());
+        for &loop_id in face.boundary_loops() {
+            let boundary = topo.face_loop(loop_id).ok()?;
+            w.count(loop_id.index());
+            w.flag(boundary.is_closed());
+            w.count(boundary.coedges().len());
+            for &coedge_id in boundary.coedges() {
+                let coedge = topo.coedge(coedge_id).ok()?;
+                w.count(coedge_id.index());
+                w.count(coedge.edge().index());
+                w.flag(coedge.is_forward());
+                match coedge.pcurve() {
+                    Some(pcurve) => {
+                        w.flag(true);
+                        w.curve2d(pcurve.curve());
+                        w.real(pcurve.t_start());
+                        w.real(pcurve.t_end());
+                    }
+                    None => w.flag(false),
+                }
+                let winding = coedge.periodic_winding();
+                w.word(u64::from(winding.u().cast_unsigned()));
+                w.word(u64::from(winding.v().cast_unsigned()));
+            }
+        }
+    }
+    Some(w.finish())
 }
 
 #[cfg(test)]

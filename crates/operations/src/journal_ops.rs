@@ -907,22 +907,49 @@ pub fn move_faces_journaled(
     faces: &[remus_topology::FaceId],
     distance: f64,
 ) -> Result<JournaledSolidOp, OperationsError> {
+    let _total = crate::performance::span("move_faces.journaled");
     remus_topology::transaction::run_transacted(topo, |topo| {
-        let pending = begin_scoped(topo, "move_faces", &[solid])?;
-        let (result, boundary_pairs) =
+        let pending = crate::performance::timed("move_faces.journal_scope", || {
+            begin_scoped(topo, "move_faces", &[solid])
+        })?;
+        let edit =
             crate::push_pull::move_faces_with_entity_evolution(topo, solid, faces, distance)?;
-        let op = record_entity_evolution(
-            topo,
-            pending,
-            &result.evolution,
-            &[result.solid],
-            &boundary_pairs,
-        )?;
-        Ok(JournaledSolidOp {
-            solid: result.solid,
-            op,
-            map: result.evolution,
-        })
+        record_face_move(topo, pending, edit)
+    })
+}
+
+/// [`move_faces_journaled`] with the pre-operation scope already walked:
+/// `scope` is [`solid_entity_keys`] of the source and `edit` the move.
+pub(crate) fn move_faces_journaled_with_scope(
+    topo: &mut Topology,
+    scope: &[EntityKey],
+    edit: impl FnOnce(&mut Topology) -> Result<crate::push_pull::DirectEditEvolution, OperationsError>,
+) -> Result<JournaledSolidOp, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let mut pending = topo.journal_begin("move_faces");
+        pending.add_scope(scope.to_vec());
+        let edit = edit(topo)?;
+        record_face_move(topo, pending, edit)
+    })
+}
+
+fn record_face_move(
+    topo: &mut Topology,
+    pending: PendingOp,
+    (result, boundary_pairs): crate::push_pull::DirectEditEvolution,
+) -> Result<JournaledSolidOp, OperationsError> {
+    let _record = crate::performance::span("move_faces.journal_record");
+    let op = record_entity_evolution(
+        topo,
+        pending,
+        &result.evolution,
+        &[result.solid],
+        &boundary_pairs,
+    )?;
+    Ok(JournaledSolidOp {
+        solid: result.solid,
+        op,
+        map: result.evolution,
     })
 }
 

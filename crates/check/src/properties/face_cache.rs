@@ -75,7 +75,8 @@
 //! The key holds:
 //!
 //! * the request family (full contribution and volume share one; area is
-//!   another) and the Gauss order;
+//!   another, and the boundary-reduced analytic area a third) and the Gauss
+//!   order;
 //! * the face's reversal flag and every field of its surface;
 //! * per wire, outer first then inner in face order: the closed flag and the
 //!   oriented edges in wire order, each with its direction, every field of
@@ -225,6 +226,10 @@ enum Request {
     Volume { order: usize, reference: Point3 },
     /// [`face_integrator::integrate_face_area`].
     Area { order: usize },
+    /// [`face_integrator::analytic_face_area`]: the boundary reduction, or
+    /// the quadrature of `order` where it does not qualify. A family of its
+    /// own, so neither reading ever answers for the other.
+    AnalyticArea { order: usize },
 }
 
 impl Request {
@@ -233,7 +238,7 @@ impl Request {
     fn validate_reference(self) -> Result<(), CheckError> {
         let reference = match self {
             Self::FixedAbout { reference, .. } | Self::Volume { reference, .. } => reference,
-            Self::Area { .. } => return Ok(()),
+            Self::Area { .. } | Self::AnalyticArea { .. } => return Ok(()),
         };
         if [reference.x(), reference.y(), reference.z()]
             .iter()
@@ -254,6 +259,7 @@ impl Request {
         match self {
             Self::FixedAbout { order, .. } | Self::Volume { order, .. } => (1, order),
             Self::Area { order } => (2, order),
+            Self::AnalyticArea { order } => (3, order),
         }
     }
 
@@ -289,6 +295,15 @@ impl Request {
                     flux: None,
                 })
             }
+            Self::AnalyticArea { order } => {
+                let area = face_integrator::analytic_face_area(topo, face, order)?;
+                Ok(Value {
+                    contribution: area_only(area),
+                    full_contribution: false,
+                    reference: Point3::new(0.0, 0.0, 0.0),
+                    flux: None,
+                })
+            }
         }
     }
 
@@ -300,7 +315,7 @@ impl Request {
                 area: value.contribution.area,
                 volume: value.contribution.volume,
             }),
-            Self::Area { .. } => Answer::Area(value.contribution.area),
+            Self::Area { .. } | Self::AnalyticArea { .. } => Answer::Area(value.contribution.area),
         }
     }
 
@@ -321,7 +336,7 @@ impl Request {
             }),
             // `face_area` is a reported measurement: only identical content
             // answers it, so it stays bit-identical to a fresh reading.
-            Self::Area { .. } => (found == Match::Exact)
+            Self::Area { .. } | Self::AnalyticArea { .. } => (found == Match::Exact)
                 .then_some((Rank::Identical, Answer::Area(value.contribution.area))),
             Self::Volume { reference, .. } => {
                 let area = value.contribution.area;
@@ -782,6 +797,30 @@ pub fn integrate_face_area_memoized(
     gauss_order: usize,
 ) -> Result<f64, CheckError> {
     match memoized(topo, face, Request::Area { order: gauss_order })? {
+        Answer::Area(area) => Ok(area),
+        Answer::Contribution(_) | Answer::Volume(_) => unreachable_answer(),
+    }
+}
+
+/// [`face_integrator::analytic_face_area`] through this thread's cache (a
+/// plain call while it is disabled). The value is bit-identical to the
+/// uncached call either way.
+///
+/// # Errors
+///
+/// Exactly the errors of the uncached computation.
+pub fn analytic_face_area_memoized(
+    topo: &Topology,
+    face: FaceId,
+    fallback_order: usize,
+) -> Result<f64, CheckError> {
+    match memoized(
+        topo,
+        face,
+        Request::AnalyticArea {
+            order: fallback_order,
+        },
+    )? {
         Answer::Area(area) => Ok(area),
         Answer::Contribution(_) | Answer::Volume(_) => unreachable_answer(),
     }

@@ -24,6 +24,7 @@ pub mod nurbs_reuse;
 pub mod operations;
 pub mod performance;
 pub mod polygon2d;
+pub mod prepared_move;
 pub mod primitives;
 pub mod project_curve;
 pub mod query;
@@ -35,6 +36,8 @@ pub mod transforms;
 
 #[cfg(test)]
 mod batch_optional_args_tests;
+#[cfg(test)]
+mod face_move_preview_tests;
 #[cfg(test)]
 mod fillet_fail_closed_tests;
 #[cfg(test)]

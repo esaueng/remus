@@ -1113,3 +1113,93 @@ fn volume_only_nurbs_matches_polynomial_divergence_oracle() {
         }
     }
 }
+
+/// A quarter of a radius-2 cylinder wall, 5 high: two generators and two
+/// quarter arcs. Its area is exactly `5π`.
+fn quarter_wall(topo: &mut Topology) -> FaceId {
+    let cylinder =
+        CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+    let a = topo.add_vertex(Vertex::new(Point3::new(2.0, 0.0, 0.0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(Point3::new(2.0, 0.0, 5.0), 1e-7));
+    let c = topo.add_vertex(Vertex::new(Point3::new(0.0, 2.0, 5.0), 1e-7));
+    let d = topo.add_vertex(Vertex::new(Point3::new(0.0, 2.0, 0.0), 1e-7));
+    let arc = |z: f64| {
+        Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, z),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap()
+    };
+    let ab = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+    let mut bc = Edge::new(b, c, EdgeCurve::Circle(arc(5.0)));
+    bc.set_trim(Some((0.0, std::f64::consts::FRAC_PI_2)));
+    let bc = topo.add_edge(bc);
+    let cd = topo.add_edge(Edge::new(c, d, EdgeCurve::Line));
+    let mut ad = Edge::new(a, d, EdgeCurve::Circle(arc(0.0)));
+    ad.set_trim(Some((0.0, std::f64::consts::FRAC_PI_2)));
+    let ad = topo.add_edge(ad);
+    let wire = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(ab, true),
+                OrientedEdge::new(bc, true),
+                OrientedEdge::new(cd, true),
+                OrientedEdge::new(ad, false),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    topo.add_face(Face::new(wire, vec![], FaceSurface::Cylinder(cylinder)))
+}
+
+/// The boundary-reduced analytic area is its own memo family: it is served
+/// bit-identically to the uncached reading, a quadrature entry for the same
+/// face never answers it (nor it the quadrature), and a boundary the
+/// reduction does not qualify reads the quadrature bit for bit.
+#[test]
+fn analytic_area_is_its_own_family() {
+    let mut topo = Topology::new();
+    let wall = quarter_wall(&mut topo);
+    // Loops around the torus tube: the reduction refuses them.
+    let band = torus_band(&mut topo, Point3::new(13.0, -7.0, 5.0), 0);
+
+    let exact = face_integrator::analytic_face_area(&topo, wall, 8).unwrap();
+    assert!((exact - 5.0 * std::f64::consts::PI).abs() <= 1e-13);
+    assert_eq!(
+        face_integrator::analytic_face_area(&topo, band, 8)
+            .unwrap()
+            .to_bits(),
+        face_integrator::integrate_face_area(&topo, band, 8)
+            .unwrap()
+            .to_bits()
+    );
+
+    clear_thread_face_cache();
+    enable_thread_face_cache();
+    for face in [wall, band] {
+        let quadrature = face_integrator::integrate_face_area(&topo, face, 8).unwrap();
+        let analytic = face_integrator::analytic_face_area(&topo, face, 8).unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                integrate_face_area_memoized(&topo, face, 8)
+                    .unwrap()
+                    .to_bits(),
+                quadrature.to_bits()
+            );
+            assert_eq!(
+                analytic_face_area_memoized(&topo, face, 8)
+                    .unwrap()
+                    .to_bits(),
+                analytic.to_bits()
+            );
+        }
+    }
+    let stats = thread_face_cache_stats();
+    // One entry per face and family; every repeat is a hit.
+    assert_eq!((stats.misses, stats.hits, stats.len), (4, 4, 4));
+    clear_thread_face_cache();
+    set_thread_face_cache_limits(0, 0);
+}

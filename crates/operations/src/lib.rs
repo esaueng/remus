@@ -57,6 +57,7 @@ pub mod offset_face;
 pub mod offset_trim;
 pub mod offset_v2;
 pub mod offset_wire;
+pub mod prepared_move;
 pub mod push_pull;
 pub mod replace_surface;
 

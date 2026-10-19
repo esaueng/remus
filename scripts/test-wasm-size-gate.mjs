@@ -302,7 +302,9 @@ test('command line: a kernel-only artifact (failed build, translator never built
 // Run the checked-in workflow commands, rather than duplicating their shell
 // logic. Cargo metadata is the only stub; size measurement uses the real policy.
 function workflowCommand(file, name) {
-  const workflow = readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), 'utf8');
+  const active = JSON.parse(readFileSync(new URL('../.github/fleet-workflows.json', import.meta.url), 'utf8'));
+  assert.ok(active[file], `Missing active workflow family: ${file}`);
+  const workflow = readFileSync(new URL(`../.github/workflows/${active[file]}`, import.meta.url), 'utf8');
   const step = workflow.split(`      - name: ${name}\n`)[1]?.split('\n      - ')[0];
   assert.ok(step, `Missing workflow step: ${name}`);
   const command = step.split('        run: |\n')[1] ?? step.match(/^        run: (.+)$/m)?.[1];
@@ -312,10 +314,10 @@ function workflowCommand(file, name) {
 
 test('workflow: only fresh build artifacts reach the report, including hard-limit failures', async (t) => {
   const policy = JSON.parse(spawnSync(process.execPath, [POLICY_SCRIPT, '--policy'], { encoding: 'utf8' }).stdout);
-  const mark = workflowCommand('fleet-ci.yml', 'Mark the WASM build start');
-  const prepare = workflowCommand('fleet-ci.yml', 'Prepare WASM size artifacts');
-  const measure = workflowCommand('fleet-wasm-size.yml', 'Measure the kernel against the size policy');
-  const enforce = workflowCommand('fleet-wasm-size.yml', 'Enforce the size policy');
+  const mark = workflowCommand('ci', 'Mark the WASM build start');
+  const prepare = workflowCommand('ci', 'Prepare WASM size artifacts');
+  const measure = workflowCommand('wasm-size', 'Measure the kernel against the size policy');
+  const enforce = workflowCommand('wasm-size', 'Enforce the size policy');
   for (const scenario of ['not-started', 'no-new-module', 'raw-hard', 'gzip-hard', 'both-built']) {
     await t.test(scenario, (t) => {
       const f = fixture(t, 4096, 4096);

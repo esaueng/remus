@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from fleet_workflows import workflow_path
 
 
 sys.dont_write_bytecode = True
@@ -23,7 +24,7 @@ SPEC.loader.exec_module(MODULE)
 
 
 ROOT = MODULE_PATH.resolve().parents[1]
-FLEET_CI = ROOT / ".github/workflows/fleet-ci.yml"
+FLEET_CI = workflow_path("ci")
 # The engine crates below the wasm bindings. A PR touching any of them must
 # rebuild and smoke-test the packaged kernel (PR #618 broke main's WASM
 # Build & Validate from crates/algo, crates/math and crates/operations alone).

@@ -172,7 +172,9 @@ pub enum SolidOperationDetailedResult {
         /// the construction family (`extrudeDetailed`, `revolveDetailed`)
         /// discloses the result's `quality` (`"exact"` or `"approximate"`)
         /// and what was approximated. The construction twins are exact-only
-        /// by construction, so they always report `"exact"`.
+        /// by construction, so they always report `"exact"`. The face-move
+        /// twin (`moveFacesDetailed`) is also exact-only and includes the
+        /// signed source-relative `distance`.
         #[tsify(type = "Record<string, unknown>")]
         details: Map<String, Value>,
         /// Handle of the committed solid.

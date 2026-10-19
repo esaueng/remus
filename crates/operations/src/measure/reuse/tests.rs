@@ -67,6 +67,39 @@ fn rebuilt_arenas_reuse_area_and_volume_without_changing_bits() {
 }
 
 #[test]
+fn prepared_move_keys_keep_original_handles_when_measurement_reuse_is_enabled() {
+    let _guard = Guard::new();
+    let mut source = Topology::new();
+    let original = make_box(&mut source, 2.0, 3.0, 4.0).unwrap();
+    let mut rebuilt = Topology::new();
+    make_box(&mut rebuilt, 1.0, 1.0, 1.0).unwrap();
+    let duplicate = make_box(&mut rebuilt, 2.0, 3.0, 4.0).unwrap();
+    let original_key = measure::volume_memo::solid_move_key(&source, original).unwrap();
+    let rebuilt_key = measure::volume_memo::solid_move_key(&rebuilt, duplicate).unwrap();
+    assert_ne!(original_key, rebuilt_key);
+
+    enable_measurement_reuse();
+    assert_eq!(
+        measure::volume_memo::solid_move_key(&source, original).unwrap(),
+        original_key
+    );
+    assert_eq!(
+        measure::volume_memo::solid_move_key(&rebuilt, duplicate).unwrap(),
+        rebuilt_key
+    );
+    let expected = solid_volume(&source, original, 0.05).unwrap();
+    let before = measurement_reuse_stats();
+    assert_eq!(
+        solid_volume(&rebuilt, duplicate, 0.05).unwrap().to_bits(),
+        expected.to_bits()
+    );
+    assert_eq!(
+        measurement_reuse_stats().volume_content_hits,
+        before.volume_content_hits + 1
+    );
+}
+
+#[test]
 fn vertex_edits_restore_and_quality_requests_match_fresh_area_bits() {
     let _guard = Guard::new();
     let mut topo = Topology::new();

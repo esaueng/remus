@@ -17,7 +17,11 @@ use super::helpers::{collect_solid_face_ids, collect_wire_positions};
 /// boundaries contain circles, ellipses, parabolas, hyperbolas, or NURBS arcs
 /// recognized as one of those forms use the exact Green-theorem boundary
 /// integrator, including inner wires. Other planar boundaries retain the
-/// established 256-sample polygon path. NURBS faces sum the triangle areas
+/// established 256-sample polygon path. Cylinder, cone, sphere and torus
+/// faces reduce their area to exact boundary integrals of their edges
+/// (`remus_check::properties::face_integrator::analytic_face_area`), with
+/// the order-8 Gauss quadrature of the trimmed domain as the fallback for
+/// boundaries the reduction does not qualify. NURBS faces sum the triangle areas
 /// of the face's trimmed tessellation: the region bounded by the outer wire
 /// minus the inner wires, never the whole carrier patch.
 ///
@@ -75,14 +79,16 @@ fn face_area_uncached(
                 planar_face_area(topo, face_id)
             }
         }
-        // Analytic curved faces integrate the exact surface by Gauss
-        // quadrature, so the area is deflection-independent. `deflection`
-        // is accepted for API compatibility and ignored on this path.
+        // Analytic curved faces reduce their area to exact boundary
+        // integrals (Green's theorem), falling back to Gauss quadrature of
+        // the exact surface over the trimmed domain; either way the area is
+        // deflection-independent. `deflection` is accepted for API
+        // compatibility and ignored on this path.
         FaceSurface::Cylinder(_)
         | FaceSurface::Cone(_)
         | FaceSurface::Sphere(_)
         | FaceSurface::Torus(_) => Ok(
-            remus_check::properties::face_cache::integrate_face_area_memoized(topo, face_id, 8)?
+            remus_check::properties::face_cache::analytic_face_area_memoized(topo, face_id, 8)?
                 .abs(),
         ),
         // The standalone per-face mesher skins the whole carrier patch, which
