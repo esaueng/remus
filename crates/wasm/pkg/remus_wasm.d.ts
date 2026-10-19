@@ -3190,6 +3190,17 @@ export class BrepKernel {
      */
     moveFaces(solid: number, faces: Uint32Array, distance: number): number;
     /**
+     * Move selected faces and return an exact result or a typed refusal.
+     *
+     * Additive twin of [`moveFaces`](Self::move_faces_binding), with the same
+     * supported geometry and work limits. Distances are relative to `solid`
+     * and `faces`; a drag should keep those source handles fixed. Replace
+     * the displayed preview only on `status: "ok"`. A refusal returns no
+     * solid and preserves both the source and earlier successful previews,
+     * so the caller can retain its last valid frame and try another distance.
+     */
+    moveFacesDetailed(solid: number, faces: Uint32Array, distance: number): SolidOperationDetailedResult;
+    /**
      * Move faces with construction history.
      *
      * Planar re-limitation and coaxial bore moves include edge and vertex
@@ -3199,6 +3210,33 @@ export class BrepKernel {
      * Returns JSON `{"solid", "op"}`.
      */
     moveFacesJournaled(solid: number, faces: Uint32Array, distance: number): string;
+    /**
+     * `moveFaces` of a prepared selection: moves it `distance` from the
+     * prepared source and returns the new solid handle.
+     *
+     * The result and every refusal are those of `moveFaces` for the same
+     * source, faces and distance; distances are source-relative, as in
+     * `moveFaces`.
+     *
+     * # Errors
+     *
+     * Returns an error for an unknown or released handle, a non-finite
+     * distance, a source that changed since preparation (prepare again), or
+     * any `moveFaces` refusal. A refusal leaves the topology unchanged.
+     */
+    moveFacesPrepared(prepared: number, distance: number): number;
+    /**
+     * `moveFacesJournaled` of a prepared selection.
+     *
+     * Returns the same JSON `{"solid", "op"}` and records the same
+     * `move_faces` evolution entry as `moveFacesJournaled` for the same
+     * source, faces and distance.
+     *
+     * # Errors
+     *
+     * As `moveFacesPrepared`; a refusal restores topology and history.
+     */
+    moveFacesPreparedJournaled(prepared: number, distance: number): string;
     /**
      * Sweep through multiple section profiles along a spine, lofting the
      * rotation-minimizing-frame-placed profiles.
@@ -3433,6 +3471,20 @@ export class BrepKernel {
      */
     polygonsIntersect2d(coords_a: Float64Array, coords_b: Float64Array): boolean;
     /**
+     * Prepare repeated moves of `faces` of `solid` for an interactive drag.
+     *
+     * Reads, once, everything a face move takes from the source rather than
+     * from the distance. Returns an opaque handle for `moveFacesPrepared`
+     * and `moveFacesPreparedJournaled`; release it with
+     * `releasePreparedMove` when the drag ends. Preparing edits nothing.
+     *
+     * # Errors
+     *
+     * Returns an error for an invalid handle, a selection over the
+     * `moveFaces` work limits, or when 16 prepared moves are already live.
+     */
+    prepareMoveFaces(solid: number, faces: Uint32Array): number;
+    /**
      * Project one edge along a direction onto a face's trimmed region.
      * Returns the §8 typed ProjectedCurves object. Refusals throw with the
      * stable `project-curve:<code>` prefix; omitted options use defaults.
@@ -3493,6 +3545,10 @@ export class BrepKernel {
      * Returns a JSON string describing the recognized features.
      */
     recognizeFeatures(solid: number, deflection: number): string;
+    /**
+     * Release a prepared move. Returns whether `prepared` was live.
+     */
+    releasePreparedMove(prepared: number): boolean;
     /**
      * Remove selected blend regions atomically with complete construction history.
      *

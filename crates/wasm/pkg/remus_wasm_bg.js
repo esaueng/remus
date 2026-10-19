@@ -5292,6 +5292,29 @@ export class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Move selected faces and return an exact result or a typed refusal.
+     *
+     * Additive twin of [`moveFaces`](Self::move_faces_binding), with the same
+     * supported geometry and work limits. Distances are relative to `solid`
+     * and `faces`; a drag should keep those source handles fixed. Replace
+     * the displayed preview only on `status: "ok"`. A refusal returns no
+     * solid and preserves both the source and earlier successful previews,
+     * so the caller can retain its last valid frame and try another distance.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {number} distance
+     * @returns {SolidOperationDetailedResult}
+     */
+    moveFacesDetailed(solid, faces, distance) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_moveFacesDetailed(this.__wbg_ptr, solid, ptr0, len0, distance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Move faces with construction history.
      *
      * Planar re-limitation and coaxial bore moves include edge and vertex
@@ -5322,6 +5345,62 @@ export class BrepKernel {
             return getStringFromWasm0(ptr2, len2);
         } finally {
             wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * `moveFaces` of a prepared selection: moves it `distance` from the
+     * prepared source and returns the new solid handle.
+     *
+     * The result and every refusal are those of `moveFaces` for the same
+     * source, faces and distance; distances are source-relative, as in
+     * `moveFaces`.
+     *
+     * # Errors
+     *
+     * Returns an error for an unknown or released handle, a non-finite
+     * distance, a source that changed since preparation (prepare again), or
+     * any `moveFaces` refusal. A refusal leaves the topology unchanged.
+     * @param {number} prepared
+     * @param {number} distance
+     * @returns {number}
+     */
+    moveFacesPrepared(prepared, distance) {
+        const ret = wasm.brepkernel_moveFacesPrepared(this.__wbg_ptr, prepared, distance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * `moveFacesJournaled` of a prepared selection.
+     *
+     * Returns the same JSON `{"solid", "op"}` and records the same
+     * `move_faces` evolution entry as `moveFacesJournaled` for the same
+     * source, faces and distance.
+     *
+     * # Errors
+     *
+     * As `moveFacesPrepared`; a refusal restores topology and history.
+     * @param {number} prepared
+     * @param {number} distance
+     * @returns {string}
+     */
+    moveFacesPreparedJournaled(prepared, distance) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_moveFacesPreparedJournaled(this.__wbg_ptr, prepared, distance);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
         }
     }
     /**
@@ -5828,6 +5907,31 @@ export class BrepKernel {
         return ret[0] !== 0;
     }
     /**
+     * Prepare repeated moves of `faces` of `solid` for an interactive drag.
+     *
+     * Reads, once, everything a face move takes from the source rather than
+     * from the distance. Returns an opaque handle for `moveFacesPrepared`
+     * and `moveFacesPreparedJournaled`; release it with
+     * `releasePreparedMove` when the drag ends. Preparing edits nothing.
+     *
+     * # Errors
+     *
+     * Returns an error for an invalid handle, a selection over the
+     * `moveFaces` work limits, or when 16 prepared moves are already live.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @returns {number}
+     */
+    prepareMoveFaces(solid, faces) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_prepareMoveFaces(this.__wbg_ptr, solid, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Project one edge along a direction onto a face's trimmed region.
      * Returns the §8 typed ProjectedCurves object. Refusals throw with the
      * stable `project-curve:<code>` prefix; omitted options use defaults.
@@ -6013,6 +6117,15 @@ export class BrepKernel {
         } finally {
             wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
         }
+    }
+    /**
+     * Release a prepared move. Returns whether `prepared` was live.
+     * @param {number} prepared
+     * @returns {boolean}
+     */
+    releasePreparedMove(prepared) {
+        const ret = wasm.brepkernel_releasePreparedMove(this.__wbg_ptr, prepared);
+        return ret !== 0;
     }
     /**
      * Remove selected blend regions atomically with complete construction history.
