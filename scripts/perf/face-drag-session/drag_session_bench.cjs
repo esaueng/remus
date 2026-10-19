@@ -105,11 +105,10 @@ function quantiles(values) {
     { p50: percentile(values, 50), p95: percentile(values, 95), max: Math.max(...values) };
 }
 
-function summarize(records, window) {
+function summarize(records, window, before) {
   const accepted = records.filter(record => record.accepted);
   const stageQuantiles = rows => Object.fromEntries(
     [...STAGES, 'tick'].map(stage => [stage, quantiles(rows.map(row => row.stagesMs[stage]))]));
-  const first = records[0].memoryAfter;
   const last = records.at(-1).memoryAfter;
   return {
     ticks: records.length,
@@ -118,8 +117,9 @@ function summarize(records, window) {
     // Early and late windows of accepted ticks expose drift from arena growth.
     firstWindow: stageQuantiles(accepted.slice(0, window)),
     lastWindow: stageQuantiles(accepted.slice(-window)),
-    slotsPerTick: (last.allocatedSlots - first.allocatedSlots) / Math.max(1, records.length - 1),
-    memoryFirst: first,
+    // Measured from before the first tick, so every tick's allocation counts.
+    slotsPerTick: (last.allocatedSlots - before.allocatedSlots) / records.length,
+    memoryBefore: before,
     memoryLast: last,
   };
 }
@@ -154,6 +154,7 @@ function main(argv = process.argv.slice(2)) {
       prepared = timed(() => kernel.prepareMoveFaces(solid, faces()));
       meta.prepareMs = prepared.ms;
     }
+    const before = memory(kernel);
     const records = [];
     for (let tick = 0; tick < args.ticks; tick++) {
       const distance = distanceAt(tick);
@@ -181,7 +182,7 @@ function main(argv = process.argv.slice(2)) {
       records.push({ tick, distance, accepted: validation.result === 0, stagesMs, triangles,
         memoryAfter: memory(kernel) });
     }
-    const result = { label: args.label, metadata: meta, summary: summarize(records, args.window),
+    const result = { label: args.label, metadata: meta, summary: summarize(records, args.window, before),
       records };
     if (args.out) fs.writeFileSync(args.out, JSON.stringify(result, null, 2) + '\n');
     const s = result.summary;
@@ -194,9 +195,9 @@ function main(argv = process.argv.slice(2)) {
       ...[...STAGES, 'tick'].map(stage => line(stage, s.accepted[stage])),
       `tick first ${args.window}: p50 ${s.firstWindow.tick?.p50.toFixed(2)} ms; ` +
         `last ${args.window}: p50 ${s.lastWindow.tick?.p50.toFixed(2)} ms`,
-      `slots ${s.memoryFirst.allocatedSlots} -> ${s.memoryLast.allocatedSlots} ` +
+      `slots ${s.memoryBefore.allocatedSlots} -> ${s.memoryLast.allocatedSlots} ` +
         `(${s.slotsPerTick.toFixed(0)}/tick, ${s.memoryLast.retiredSlots} retired), linear memory ` +
-        `${s.memoryFirst.linearMemoryBytes} -> ${s.memoryLast.linearMemoryBytes} bytes`,
+        `${s.memoryBefore.linearMemoryBytes} -> ${s.memoryLast.linearMemoryBytes} bytes`,
     ].join('\n') + '\n');
   } finally {
     if (prepared) kernel.releasePreparedMove(prepared.result);

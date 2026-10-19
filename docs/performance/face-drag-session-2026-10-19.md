@@ -30,7 +30,7 @@ inside each row's max, but not inside its p50.
 
 Milliseconds over accepted ticks. No tick was refused.
 
-| Row | Restore p50 | Move p50 / p95 | Validate p50 | Mesh p50 / p95 | Tick p50 / p95 | Slots per tick | Linear memory, first → last tick |
+| Row | Restore p50 | Move p50 / p95 | Validate p50 | Mesh p50 / p95 | Tick p50 / p95 | Slots per tick | Linear memory, after first → after last tick |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Prepared | 0.37 | 11.66 / 29.16 | 0.12 | 28.74 / 41.09 | 41.87 / 66.30 | 1,906 | 18.7 → 94.9 MB |
 | Unprepared | 0.35 | 12.84 / 42.83 | 0.12 | 27.34 / 43.86 | 41.04 / 74.18 | 1,906 | 17.7 → 107.0 MB |

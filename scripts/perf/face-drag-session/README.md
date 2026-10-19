@@ -42,7 +42,7 @@ node scripts/perf/face-drag-session/drag_session_bench.cjs \
 
 The summary reports each stage's p50/p95/max over accepted ticks, including
 the cold first tick. It also reports the tick p50 of the first and last
-windows, slots per tick, and memory at the first and last ticks. Pin the
+windows, slots per tick, and memory before the first tick and after the last. Pin the
 process to one CPU with `taskset` and compare packages in separate processes,
 because WASM thread-local memos persist for the life of a process.
 
