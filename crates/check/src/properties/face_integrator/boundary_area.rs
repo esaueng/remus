@@ -481,7 +481,11 @@ fn quadrature_sphere_axis(
             EdgeCurve::Ellipse(c) if (c.semi_major() - c.semi_minor()).abs() <= r * 1e-10 => {
                 (c.center(), c.normal(), c.semi_major())
             }
-            _ => continue,
+            EdgeCurve::Ellipse(_)
+            | EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => continue,
         };
         if (center - sphere.center()).length() <= r * 1e-10
             && (radius - r).abs() <= r * 1e-10
