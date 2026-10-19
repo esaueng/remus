@@ -87,7 +87,7 @@ fn prepared_moves_match_the_unprepared_journaled_move() {
     let checkpoint = topo.clone();
     let source = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
     let mut plain = topo.clone();
-    let mut prepared_topo = topo.clone();
+    let mut prepared_topo = topo;
     let mut prepared = PreparedFaceMove::prepare(&prepared_topo, solid, &[face]).unwrap();
 
     let distances = [-6.0, -6.8, -7.25, -7.6, -7.2, 0.5, 2.0, 0.0, f64::NAN, -6.4];

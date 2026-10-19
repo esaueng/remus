@@ -452,4 +452,19 @@ fn journaled_moves_match_and_a_changed_source_is_refused() {
     topo.restore_preserving_handle_slots(&checkpoint);
     assert!(prepared.is_current(&topo));
     assert!(prepared.move_faces(&mut topo, 1.0).is_ok());
+
+    // So does a change to a face's loop authority alone, which leaves its
+    // wires untouched but which a move copies.
+    topo.restore_preserving_handle_slots(&checkpoint);
+    let loop_id = topo.face(top).unwrap().boundary_loops()[0];
+    let coedge = topo.face_loop(loop_id).unwrap().coedges()[0];
+    let winding = topo.coedge(coedge).unwrap().periodic_winding();
+    topo.set_coedge_periodic_winding(
+        coedge,
+        remus_topology::coedge::PeriodicWinding::new(winding.u() + 1, winding.v()),
+    )
+    .unwrap();
+    assert!(!prepared.is_current(&topo));
+    topo.restore_preserving_handle_slots(&checkpoint);
+    assert!(prepared.is_current(&topo));
 }

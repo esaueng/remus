@@ -25,7 +25,8 @@
 //! # Staleness
 //!
 //! Preparation records the source's complete content key (every entity,
-//! handle and real of the solid a move reads; the volume memo's key). Each
+//! handle and real of the solid a move reads: the volume memo's key plus
+//! every face's authoritative loops and coedges). Each
 //! call recomputes it and refuses with [`OperationsError::InvalidInput`]
 //! when it differs, so a source edited after preparation is never moved
 //! from stale analysis. A checkpoint restore that brings the same content
@@ -41,7 +42,7 @@ use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
 use crate::journal_ops::JournaledSolidOp;
-use crate::measure::volume_memo::{ContentKey, solid_content_key};
+use crate::measure::volume_memo::{ContentKey, solid_move_key};
 use crate::push_pull::{DirectEditEvolution, MoveFacesResult, PreparedPlanarMove};
 
 /// A face selection of one source solid, prepared for repeated moves.
@@ -82,10 +83,9 @@ impl PreparedFaceMove {
     ) -> Result<Self, OperationsError> {
         let _span = crate::performance::span("move_faces.prepare");
         topo.solid(solid)?;
-        let source =
-            solid_content_key(topo, solid).ok_or_else(|| OperationsError::InvalidInput {
-                reason: format!("solid {} has missing entities", solid.index()),
-            })?;
+        let source = solid_move_key(topo, solid).ok_or_else(|| OperationsError::InvalidInput {
+            reason: format!("solid {} has missing entities", solid.index()),
+        })?;
         Ok(Self {
             solid,
             faces: faces.to_vec(),
@@ -111,7 +111,7 @@ impl PreparedFaceMove {
     #[must_use]
     pub fn is_current(&self, topo: &Topology) -> bool {
         let _span = crate::performance::span("move_faces.prepared_source_check");
-        solid_content_key(topo, self.solid).is_some_and(|key| key == self.source)
+        solid_move_key(topo, self.solid).is_some_and(|key| key == self.source)
     }
 
     /// [`crate::push_pull::move_faces_with_evolution`] of the prepared

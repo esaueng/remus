@@ -44,7 +44,9 @@ moves; handles are never reused.
   records its message and later calls go straight to the translation, whose
   combined refusal text is unchanged.
 - **Staleness.** Preparation records the source's complete content key
-  (every entity, handle and real a move reads — the volume memo's key). Each
+  (every entity, handle and real a move reads — the volume memo's key plus
+  every face's authoritative loops and coedges with their pcurves and
+  periodic windings). Each
   call recomputes it and refuses with an `invalid input: prepared face move
   is stale …` error, editing nothing, when it differs. A `restore` that
   brings the same content back under the same handles keeps the preparation
