@@ -42,13 +42,13 @@ use std::collections::VecDeque;
 use std::hash::Hasher;
 
 use remus_math::curves2d::Curve2D;
-use remus_math::det_hash::{DetHashMap, DetHasher};
+use remus_math::det_hash::{DetHashMap, DetHashSet, DetHasher};
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::vec::{Point3, Vec3};
-use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::pcurve::PCurve;
+use remus_topology::{BodyClass, Topology};
 
 /// Default retained NURBS-area readings per thread once enabled.
 pub const DEFAULT_NURBS_AREA_MEMO_CAPACITY: usize = 512;
@@ -59,7 +59,7 @@ pub const DEFAULT_NURBS_AREA_MEMO_BYTE_BUDGET: usize = 8 * 1024 * 1024;
 /// Bump when the key's content or request encoding changes.
 const KEY_VERSION: u64 = 0x5245_4d55_534e_4134;
 /// Leads a face digest's key, so it never equals an area-memo key.
-const FACE_DIGEST_KEY_VERSION: u64 = 0x5245_4d55_5346_4432;
+const FACE_DIGEST_KEY_VERSION: u64 = 0x5245_4d55_5346_4433;
 
 /// Deterministic counters and current bounds of the thread's NURBS-area memo.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -502,9 +502,11 @@ impl KeyWriter {
 
 /// Key words of a face's complete content: its reversal, every field of its
 /// support surface, the boundary this memo's key records (wires, oriented
-/// edges, curves, trims, tolerances, vertex positions and pcurves), and the
-/// authoritative loops and coedges with their periodic windings. Handles
-/// enter as first-occurrence ordinals. `None` when an entity is missing.
+/// edges, curves, trims, tolerances, vertex positions and pcurves), the
+/// authoritative loops and coedges with their periodic windings, and the
+/// wires' body classes and vertices' tolerances: every field of the face and
+/// the entities under it. Handles enter as first-occurrence ordinals. `None`
+/// when an entity is missing.
 pub(super) fn face_content_words(topo: &Topology, face_id: FaceId) -> Option<Vec<u64>> {
     let face = topo.face(face_id).ok()?;
     let mut writer = KeyWriter {
@@ -543,6 +545,27 @@ pub(super) fn face_content_words(topo: &Topology, face_id: FaceId) -> Option<Vec
             let winding = coedge.periodic_winding();
             writer.word(u64::from(winding.u().cast_unsigned()));
             writer.word(u64::from(winding.v().cast_unsigned()));
+        }
+    }
+    // Fields the mesher does not read, so the boundary words above omit
+    // them: each wire's body class and each vertex's tolerance, the vertices
+    // in the boundary's first-occurrence order.
+    let mut vertices_seen: DetHashSet<usize> = DetHashSet::default();
+    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        let wire = topo.wire(wire_id).ok()?;
+        writer.word(match wire.body_class() {
+            BodyClass::Solid => 1,
+            BodyClass::Sheet => 2,
+            BodyClass::Wire => 3,
+            BodyClass::General => 4,
+        });
+        for oriented in wire.edges() {
+            let edge = topo.edge(oriented.edge()).ok()?;
+            for vertex_id in [edge.start(), edge.end()] {
+                if vertices_seen.insert(vertex_id.index()) {
+                    writer.real(topo.vertex(vertex_id).ok()?.tolerance());
+                }
+            }
         }
     }
     writer.key

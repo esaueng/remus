@@ -9,11 +9,12 @@
 //! of its support surface, and the whole boundary the NURBS-area memo keys
 //! (every wire, its closed flag and oriented edges, each edge's curve, trim,
 //! tolerance and vertex positions, and each edge use's pcurve), plus the
-//! authoritative loops and coedges with their periodic windings. Handles enter
-//! only as first-occurrence ordinals, plus the relative arena order of the
-//! face's edges, which the face mesher reads. Reals enter by their bits, so
-//! there is no tolerance: any change to what a face measurement reads changes
-//! the digest. Repeating an edit from the same source repeats the digests of
+//! authoritative loops and coedges with their periodic windings, each wire's
+//! body class and each vertex's tolerance: every field of the face and the
+//! entities under it. Handles enter only as first-occurrence ordinals, plus
+//! the relative arena order of the face's edges, which the face mesher reads.
+//! Reals enter by their bits, so there is no tolerance: any change to the
+//! face's content changes the digest. Repeating an edit from the same source repeats the digests of
 //! the faces it leaves untouched. A copy can still change a face's digest
 //! when it allocates the face's edges in a different relative order.
 //!
@@ -187,6 +188,48 @@ mod tests {
         all.sort_unstable_by_key(|digest| digest.0);
         all.dedup();
         assert_eq!(all.len(), count);
+    }
+
+    /// A vertex tolerance is face content even though the mesher ignores it.
+    #[test]
+    fn vertex_tolerance_is_digested() {
+        let mut topo = Topology::new();
+        let body = primitives::make_box(&mut topo, 10.0, 8.0, 6.0).unwrap();
+        let top = face_with_normal(&topo, body, Vec3::new(0.0, 0.0, 1.0));
+        let before = face_content_digest(&topo, top).unwrap();
+        let wire = topo.face(top).unwrap().outer_wire();
+        let edge = topo.wire(wire).unwrap().edges()[0].edge();
+        let vertex = topo.edge(edge).unwrap().start();
+        let original = topo.vertex(vertex).unwrap().tolerance();
+        topo.vertex_mut(vertex)
+            .unwrap()
+            .set_tolerance(original * 2.0 + 1e-7)
+            .unwrap();
+        assert_ne!(face_content_digest(&topo, top).unwrap(), before);
+    }
+
+    /// Tripwire for the digest's completeness: every entity it reads is
+    /// pinned at its current size, so adding a field fails here until
+    /// `face_content_words` (and this pin) learn about it.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn digest_reads_every_entity_field() {
+        use std::mem::size_of;
+        assert_eq!(
+            [
+                size_of::<remus_topology::vertex::Vertex>(),
+                size_of::<remus_topology::edge::Edge>(),
+                size_of::<remus_topology::wire::Wire>(),
+                size_of::<remus_topology::face::Face>(),
+                size_of::<remus_topology::Loop>(),
+                size_of::<remus_topology::Coedge>(),
+                size_of::<remus_math::surfaces::CylindricalSurface>(),
+                size_of::<remus_math::surfaces::ConicalSurface>(),
+                size_of::<remus_math::surfaces::SphericalSurface>(),
+                size_of::<remus_math::surfaces::ToroidalSurface>(),
+            ],
+            [32, 176, 32, 184, 40, 128, 104, 104, 104, 112]
+        );
     }
 
     /// A coedge's periodic winding is face content: changing only that
