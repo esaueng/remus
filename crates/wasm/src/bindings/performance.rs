@@ -96,6 +96,31 @@ impl BrepKernel {
         remus_operations::performance::configure(enabled.then_some(now_ms));
     }
 
+    /// Enable or disable this module's exact mesh-stage reuse. Disabling
+    /// releases its retained entries. New kernels enable the default cache.
+    #[wasm_bindgen(js_name = "setMeshReuseEnabled")]
+    #[allow(clippy::unused_self)]
+    pub fn set_mesh_reuse_enabled(&self, enabled: bool) {
+        if enabled {
+            remus_operations::tessellate::enable_mesh_reuse();
+        } else {
+            remus_operations::tessellate::disable_mesh_reuse();
+        }
+    }
+
+    /// Bounded, module-local mesh reuse counters and storage estimate as
+    /// JSON, or `null` when disabled. Contains no geometry or arena handles.
+    /// The estimate is separate from checkpoint bytes and is not RSS.
+    ///
+    /// # Errors
+    /// Returns an error if the diagnostic cannot be serialized.
+    #[wasm_bindgen(js_name = "meshReuseStats")]
+    #[allow(clippy::unused_self)]
+    pub fn mesh_reuse_stats(&self) -> Result<String, JsError> {
+        serde_json::to_string(&remus_operations::tessellate::mesh_reuse_stats())
+            .map_err(|error| JsError::new(&error.to_string()))
+    }
+
     /// Drain up to 4096 completed phase events as JSON.
     ///
     /// # Errors

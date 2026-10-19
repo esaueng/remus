@@ -1,0 +1,485 @@
+//! Independent fresh-pass and mutation oracles for retained mesh stages.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+use super::*;
+use crate::tessellate::{TriangleMesh, mesh_ops};
+use remus_math::vec::{Point3, Vec3};
+
+fn session() -> Session {
+    Session {
+        cache: Some(Cache {
+            max_entries: 64,
+            max_bytes: 4 * 1024 * 1024,
+            ..Cache::default()
+        }),
+        retention: RetentionClass::Display,
+    }
+}
+fn same(actual: &TriangleMesh, expected: &TriangleMesh) {
+    assert_eq!(actual.indices, expected.indices);
+    assert_eq!(actual.positions.len(), expected.positions.len());
+    assert_eq!(actual.normals.len(), expected.normals.len());
+    for (a, b) in actual.positions.iter().zip(&expected.positions) {
+        assert_eq!(a.0.map(f64::to_bits), b.0.map(f64::to_bits));
+    }
+    for (a, b) in actual.normals.iter().zip(&expected.normals) {
+        assert_eq!(a.0.map(f64::to_bits), b.0.map(f64::to_bits));
+    }
+}
+fn two_triangles(z: f64) -> TriangleMesh {
+    TriangleMesh {
+        positions: vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(0.0, 0.0, z),
+            Point3::new(1.0, 0.0, z),
+            Point3::new(0.0, 1.0, z),
+        ],
+        normals: vec![Vec3::new(0.0, 0.0, 1.0); 6],
+        indices: vec![0, 1, 2, 3, 5, 4],
+    }
+}
+
+#[test]
+fn new_coincident_opposite_faces_cannot_use_an_old_clean_certificate() {
+    let mut session = session();
+    let mut admission = two_triangles(1.0);
+    mesh_ops::dedupe_coincident_triangles_cached(&mut admission, None, Some(&mut session));
+
+    let mut separated = two_triangles(1.0);
+    assert!(!mesh_ops::dedupe_coincident_triangles_cached(
+        &mut separated,
+        None,
+        Some(&mut session)
+    ));
+    let mut repeated = two_triangles(1.0);
+    assert!(!mesh_ops::dedupe_coincident_triangles_cached(
+        &mut repeated,
+        None,
+        Some(&mut session)
+    ));
+    assert_eq!(session.cache.as_ref().unwrap().counters.cleanup_hits, 1);
+    let mut actual = two_triangles(0.0);
+    let mut expected = actual.clone();
+    let mut faces = vec![10, 11];
+    let mut expected_faces = faces.clone();
+    assert!(mesh_ops::dedupe_coincident_triangles(
+        &mut expected,
+        Some(&mut expected_faces)
+    ));
+    assert!(mesh_ops::dedupe_coincident_triangles_cached(
+        &mut actual,
+        Some(&mut faces),
+        Some(&mut session)
+    ));
+    same(&actual, &expected);
+    assert!(actual.indices.is_empty(), "opposite faces cancel");
+    assert!(faces.is_empty());
+    assert_eq!(faces, expected_faces);
+    assert_eq!(session.cache.as_ref().unwrap().counters.cleanup_hits, 1);
+}
+
+#[test]
+fn cached_boundary_connectivity_still_rechecks_distances_and_deflection() {
+    let mut session = session();
+    let mut admission = two_triangles(1.0);
+    mesh_ops::weld_boundary_vertices_cached(&mut admission, 0.01, None, Some(&mut session));
+
+    for (z, deflection) in [(1.0, 0.01), (0.001, 0.01), (0.001, 0.0001), (1.0, 0.01)] {
+        let mut actual = two_triangles(z);
+        let mut expected = actual.clone();
+        let mut faces = vec![4, 9];
+        let mut expected_faces = faces.clone();
+        let expected_boundary =
+            mesh_ops::weld_boundary_vertices(&mut expected, deflection, Some(&mut expected_faces));
+        let actual_boundary = mesh_ops::weld_boundary_vertices_cached(
+            &mut actual,
+            deflection,
+            Some(&mut faces),
+            Some(&mut session),
+        );
+        assert_eq!(actual_boundary, expected_boundary);
+        same(&actual, &expected);
+        assert_eq!(faces, expected_faces);
+        if z < 0.01 && deflection > 0.001 {
+            assert_eq!(actual.indices, vec![0, 1, 2, 0, 2, 1]);
+        } else {
+            assert_eq!(actual.indices, vec![0, 1, 2, 3, 5, 4]);
+        }
+    }
+    assert_eq!(session.cache.as_ref().unwrap().counters.weld_hits, 3);
+}
+
+#[test]
+fn connectivity_changes_update_and_preserve_face_attribution() {
+    let mut session = session();
+    let mut admission = two_triangles(1.0);
+    mesh_ops::weld_boundary_vertices_cached(&mut admission, 0.01, None, Some(&mut session));
+
+    for indices in [
+        vec![0, 1, 2, 3, 5, 4],
+        vec![0, 1, 2, 3, 4, 5],
+        vec![0, 1, 2],
+    ] {
+        let mut actual = two_triangles(0.001);
+        actual.indices = indices;
+        let mut expected = actual.clone();
+        let expected_boundary = mesh_ops::weld_boundary_vertices(&mut expected, 0.01, None);
+        let actual_boundary =
+            mesh_ops::weld_boundary_vertices_cached(&mut actual, 0.01, None, Some(&mut session));
+        assert_eq!(actual_boundary, expected_boundary);
+        same(&actual, &expected);
+    }
+    assert_eq!(session.cache.as_ref().unwrap().counters.weld_hits, 1);
+    assert_eq!(
+        session
+            .cache
+            .as_ref()
+            .unwrap()
+            .counters
+            .weld_updated_triangles,
+        1
+    );
+}
+
+#[test]
+fn unfit_quantity_admission_preserves_display_and_other_quantity_work() {
+    let mut cache = Cache {
+        max_entries: 2,
+        max_bytes: 4096,
+        ..Cache::default()
+    };
+    cache.insert(
+        vec![1],
+        Value::Planar((Vec::new(), Vec::new())),
+        RetentionClass::Display,
+    );
+    cache.insert(
+        vec![2],
+        Value::Planar((Vec::new(), Vec::new())),
+        RetentionClass::Quantity,
+    );
+    cache.insert(
+        vec![3],
+        Value::Edge(vec![Point3::new(0.0, 0.0, 0.0); 1024], Vec::new()),
+        RetentionClass::Quantity,
+    );
+    assert!(cache.get(&[1], RetentionClass::Quantity).is_some());
+    assert!(cache.get(&[2], RetentionClass::Quantity).is_some());
+    assert_eq!(cache.counters.evictions, 0);
+    cache.max_entries = 1;
+    assert!(!cache.make_room(100, 1, RetentionClass::Quantity));
+    assert_eq!(
+        cache.entries.len(),
+        2,
+        "failed admission does not evict anything"
+    );
+    assert!(cache.make_room(0, 0, RetentionClass::Display));
+    assert!(cache.get(&[1], RetentionClass::Display).is_some());
+    assert!(cache.get(&[2], RetentionClass::Quantity).is_none());
+}
+
+#[test]
+fn zero_bounds_and_oversize_captures_retain_nothing() {
+    let mut cache = Cache::default();
+    cache.insert(
+        vec![1],
+        Value::Planar((Vec::new(), Vec::new())),
+        RetentionClass::Display,
+    );
+    assert!(cache.entries.is_empty());
+    cache.max_entries = 1;
+    cache.max_bytes = 32;
+    cache.insert(
+        vec![1],
+        Value::Planar((Vec::new(), Vec::new())),
+        RetentionClass::Display,
+    );
+    assert!(cache.entries.is_empty());
+    assert_eq!(cache.bytes, 0);
+}
+
+#[test]
+fn curve_mutation_and_restoration_never_serve_old_samples() {
+    use crate::primitives::make_cylinder;
+    use crate::tessellate::edge_sampling::sample_edge_with_params;
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::explorer::solid_edges;
+    let mut topo = Topology::new();
+    let solid = make_cylinder(&mut topo, 2.0, 5.0).unwrap();
+    let edge_id = solid_edges(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&id| matches!(topo.edge(id).unwrap().curve(), EdgeCurve::Circle(_)))
+        .unwrap();
+    let edge = topo.edge(edge_id).unwrap().clone();
+    let mut session = session();
+    let key = edge_key(&topo, edge_id, 0.01, 0.1, false).unwrap();
+    let (points, params) = sample_edge_with_params(&topo, &edge, 0.01, 0.1, false).unwrap();
+    session.store_edge(key.clone(), &points, &params);
+    assert!(session.edge(&key).is_some());
+    // An excessive authoritative trim must still reach the existing sample
+    // budget refusal even though the original edge has a retained chain.
+    topo.edge_mut(edge_id).unwrap().set_trim(Some((0.0, 1e12)));
+    let changed = edge_key(&topo, edge_id, 0.01, 0.1, false).unwrap();
+    assert!(session.edge(&changed).is_none());
+    assert!(sample_edge_with_params(&topo, topo.edge(edge_id).unwrap(), 0.01, 0.1, false).is_err());
+    *topo.edge_mut(edge_id).unwrap() = edge;
+    assert_eq!(edge_key(&topo, edge_id, 0.01, 0.1, false).unwrap(), key);
+    let restored = session.edge(&key).unwrap();
+    assert_eq!(restored.0.len(), points.len());
+    for (actual, expected) in restored.0.iter().zip(points) {
+        assert_eq!(actual.0.map(f64::to_bits), expected.0.map(f64::to_bits));
+    }
+}
+
+#[test]
+fn stricter_edge_tolerance_still_reaches_the_fresh_periodic_domain_refusal() {
+    use crate::primitives::make_cylinder;
+    use crate::tessellate::{disable_face_mesh_cache, tessellate_solid};
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::explorer::solid_edges;
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            disable_mesh_reuse();
+        }
+    }
+    let _guard = Guard;
+    disable_face_mesh_cache();
+    disable_mesh_reuse();
+    let mut topo = Topology::new();
+    let solid = make_cylinder(&mut topo, 2.0, 5.0).unwrap();
+    let edge = solid_edges(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&id| matches!(topo.edge(id).unwrap().curve(), EdgeCurve::Circle(_)))
+        .unwrap();
+    let expected = tessellate_solid(&topo, solid, 0.01).unwrap();
+    enable_mesh_reuse();
+    same(&tessellate_solid(&topo, solid, 0.01).unwrap(), &expected);
+    same(&tessellate_solid(&topo, solid, 0.01).unwrap(), &expected);
+    assert!(mesh_reuse_stats().unwrap().boundary_hits > 0);
+    topo.edge_mut(edge)
+        .unwrap()
+        .set_tolerance(Some(0.0))
+        .unwrap();
+    let cached = tessellate_solid(&topo, solid, 0.01);
+    disable_mesh_reuse();
+    let fresh = tessellate_solid(&topo, solid, 0.01);
+    assert!(
+        fresh.is_err(),
+        "zero tolerance rejects periodic closure roundoff"
+    );
+    assert!(
+        cached.is_err(),
+        "reuse must preserve the periodic domain refusal"
+    );
+    assert_eq!(
+        cached.unwrap_err().to_string(),
+        fresh.unwrap_err().to_string()
+    );
+    topo.edge_mut(edge).unwrap().set_tolerance(None).unwrap();
+    enable_mesh_reuse();
+    same(&tessellate_solid(&topo, solid, 0.01).unwrap(), &expected);
+}
+
+#[test]
+fn mesh_reuse_diagnostics_use_camel_case_keys() {
+    let value = serde_json::to_value(MeshReuseStats {
+        boundary_lookups: 7,
+        retained_bytes: 1234,
+        ..MeshReuseStats::default()
+    })
+    .unwrap();
+    assert_eq!(value["boundaryLookups"], 7);
+    assert_eq!(value["retainedBytes"], 1234);
+    assert!(
+        value
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|key| !key.contains('_'))
+    );
+}
+
+#[test]
+fn changed_triangles_recheck_duplicate_membership_and_opposing_winding() {
+    for replacement in [[0, 1, 3], [0, 1, 2], [0, 2, 1]] {
+        let mut session = session();
+        let mut admission = two_triangles(1.0);
+        mesh_ops::dedupe_coincident_triangles_cached(&mut admission, None, Some(&mut session));
+
+        let mut seed = two_triangles(1.0);
+        assert!(!mesh_ops::dedupe_coincident_triangles_cached(
+            &mut seed,
+            None,
+            Some(&mut session)
+        ));
+        let mut actual = two_triangles(1.0);
+        actual.indices[3..].copy_from_slice(&replacement);
+        let mut expected = actual.clone();
+        let mut faces = vec![10, 11];
+        let mut expected_faces = faces.clone();
+        let fresh = mesh_ops::dedupe_coincident_triangles(&mut expected, Some(&mut expected_faces));
+        let reused = mesh_ops::dedupe_coincident_triangles_cached(
+            &mut actual,
+            Some(&mut faces),
+            Some(&mut session),
+        );
+        assert_eq!(reused, fresh);
+        same(&actual, &expected);
+        assert_eq!(faces, expected_faces);
+        match replacement {
+            [0, 1, 3] => {
+                assert_eq!(actual.indices.len(), 6);
+                assert_eq!(
+                    session
+                        .cache
+                        .as_ref()
+                        .unwrap()
+                        .counters
+                        .cleanup_updated_triangles,
+                    1
+                );
+            }
+            [0, 1, 2] => assert_eq!(actual.indices.len(), 3),
+            _ => assert!(actual.indices.is_empty()),
+        }
+    }
+}
+
+#[test]
+fn streamed_triangle_edits_match_fresh_cleanup_with_repeated_directed_edges() {
+    let mut session = session();
+    for step in 0_u32..60 {
+        let mut actual = TriangleMesh {
+            positions: (0..25)
+                .map(|i| Point3::new(f64::from(i % 5), f64::from(i / 5), 0.0))
+                .collect(),
+            normals: vec![Vec3::new(0.0, 0.0, 1.0); 25],
+            indices: Vec::new(),
+        };
+        for i in 0_u32..16 {
+            let a = (i / 4) * 5 + i % 4;
+            let (b, c) = if (i + step).is_multiple_of(3) {
+                (a + 6, a + 1)
+            } else {
+                (a + 1, a + 6)
+            };
+            actual.indices.extend([a, b, c, a, a + 6, a + 5]);
+        }
+        // Mix non-manifold duplicates, reverse edges and one changed corner.
+        if step % 4 == 1 {
+            actual.indices[5] = actual.indices[2];
+        }
+        if step % 4 == 2 {
+            actual.indices[9..12].copy_from_slice(&[0, 1, 6]);
+        }
+        let mut expected = actual.clone();
+        let mut faces: (Vec<u32>, Vec<u32>) = ((0..32).collect(), (0..32).collect());
+        assert_eq!(
+            mesh_ops::weld_boundary_vertices_cached(
+                &mut actual,
+                0.001,
+                Some(&mut faces.0),
+                Some(&mut session)
+            ),
+            mesh_ops::weld_boundary_vertices(&mut expected, 0.001, Some(&mut faces.1))
+        );
+        assert_eq!(
+            mesh_ops::dedupe_coincident_triangles_cached(
+                &mut actual,
+                Some(&mut faces.0),
+                Some(&mut session)
+            ),
+            mesh_ops::dedupe_coincident_triangles(&mut expected, Some(&mut faces.1))
+        );
+        same(&actual, &expected);
+        assert_eq!(faces.0, faces.1);
+    }
+    let stats = &session.cache.as_ref().unwrap().counters;
+    assert!(stats.weld_hits > 50);
+    assert!(stats.weld_updated_triangles > 0);
+}
+
+#[test]
+fn one_off_display_mesh_does_not_capture_large_connectivity_buffers() {
+    let mut session = session();
+    let mut mesh = TriangleMesh::default();
+    for triangle in 0_u32..2000 {
+        let x = f64::from(triangle) * 3.0;
+        mesh.positions.extend([
+            Point3::new(x, 0.0, 0.0),
+            Point3::new(x + 1.0, 0.0, 0.0),
+            Point3::new(x, 1.0, 0.0),
+        ]);
+        mesh.normals.extend([Vec3::new(0.0, 0.0, 1.0); 3]);
+        mesh.indices
+            .extend([3 * triangle, 3 * triangle + 1, 3 * triangle + 2]);
+    }
+    let mut expected = mesh.clone();
+    mesh_ops::weld_boundary_vertices(&mut expected, 0.01, None);
+    mesh_ops::dedupe_coincident_triangles(&mut expected, None);
+    mesh_ops::weld_boundary_vertices_cached(&mut mesh, 0.01, None, Some(&mut session));
+    mesh_ops::dedupe_coincident_triangles_cached(&mut mesh, None, Some(&mut session));
+    same(&mesh, &expected);
+    assert!(
+        session.cache.as_ref().unwrap().bytes < 4096,
+        "first sightings retain only bounded admission metadata"
+    );
+}
+
+#[test]
+fn shrinking_limits_trims_stage_shares_and_preserves_the_newest_display_entry() {
+    let saved = CACHE.with(|slot| slot.borrow_mut().take());
+    let mut cache = Cache {
+        max_entries: 16,
+        max_bytes: 64 * 1024,
+        ..Cache::default()
+    };
+    for key in [1, 2] {
+        cache.insert(
+            vec![key],
+            Value::Edge(vec![Point3::new(1.0, 2.0, 3.0); 250], Vec::new()),
+            RetentionClass::Display,
+        );
+    }
+    assert_eq!(cache.entries.len(), 2);
+    CACHE.with(|slot| *slot.borrow_mut() = Some(cache));
+    enable_mesh_reuse_with_limits(16, 32 * 1024);
+    let stats = mesh_reuse_stats().unwrap();
+    assert!(stats.stage_bytes <= stats.max_bytes / 4);
+    assert!(stats.retained_bytes <= stats.max_bytes);
+    assert_eq!(stats.entries, 1);
+    CACHE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let cache = slot.as_mut().unwrap();
+        assert!(cache.get(&[1], RetentionClass::Display).is_none());
+        assert!(cache.get(&[2], RetentionClass::Display).is_some());
+        *slot = saved;
+    });
+}
+
+#[test]
+fn quantity_meshes_keep_fresh_geometry_without_stage_capture_or_eviction() {
+    use crate::tessellate::{disable_face_mesh_cache, tessellate_solid};
+    let saved = CACHE.with(|slot| slot.borrow_mut().take());
+    disable_face_mesh_cache();
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_cylinder(&mut topo, 2.0, 5.0).unwrap();
+    let expected =
+        super::super::solid::tessellate_solid_for_measurement(&topo, solid, 0.05).unwrap();
+    enable_mesh_reuse();
+    tessellate_solid(&topo, solid, 0.05).unwrap();
+    let before = mesh_reuse_stats().unwrap();
+    let measured =
+        super::super::solid::tessellate_solid_for_measurement(&topo, solid, 0.05).unwrap();
+    same(&measured, &expected);
+    assert_eq!(
+        mesh_reuse_stats().unwrap(),
+        before,
+        "quantity work leaves the display-stage cache intact"
+    );
+    CACHE.with(|slot| *slot.borrow_mut() = saved);
+}

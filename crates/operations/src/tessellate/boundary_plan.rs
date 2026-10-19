@@ -68,12 +68,6 @@ pub(super) type SampleParams = DetHashMap<usize, Vec<Option<f64>>>;
 /// route.
 pub(super) type BoundarySplits = DetHashMap<(u32, u32), Vec<(f64, u32)>>;
 
-/// One sampled edge: its index, start-to-end points, and parallel curve
-/// parameters. Produced per edge by the plan's sampling stage (in parallel
-/// on native targets) and assembled into [`BoundaryPlan::from_samples`].
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) type SampledEdge = (usize, Vec<Point3>, Vec<Option<f64>>);
-
 /// Per-edge sampling policy retained by the plan.
 ///
 /// Display callers pass `circle_floor = false` (constant-curvature circles
@@ -186,6 +180,7 @@ impl BoundaryRefinementRequest {
 
 /// Explicit shared-boundary plan: authoritative sample chains plus the merged
 /// vertex pool every face triangulates against.
+#[derive(Clone)]
 pub(super) struct BoundaryPlan {
     /// Requested chord deviation.
     pub(super) deflection: f64,
@@ -212,6 +207,49 @@ pub(super) struct BoundaryPlan {
 }
 
 impl BoundaryPlan {
+    /// Remap a retained plan's edge identities onto an exactly matching
+    /// input. Pool identities and iteration order remain unchanged.
+    pub(super) fn remap_edges(&mut self, edges: &[usize]) {
+        fn remap<T>(map: &mut DetHashMap<usize, T>, old: &[usize], new: &[usize]) {
+            let mut previous = std::mem::take(map);
+            for (&before, &after) in old.iter().zip(new) {
+                if let Some(value) = previous.remove(&before) {
+                    map.insert(after, value);
+                }
+            }
+        }
+        remap(&mut self.edge_points, &self.edge_order, edges);
+        remap(&mut self.edge_params, &self.edge_order, edges);
+        remap(&mut self.authorities, &self.edge_order, edges);
+        remap(&mut self.edge_chains, &self.edge_order, edges);
+        self.edge_order = edges.to_vec();
+    }
+
+    /// Conservative admission estimate, including map/allocator overhead.
+    pub(super) fn retained_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self
+                .edge_points
+                .values()
+                .map(|v| v.capacity() * 24 + 128)
+                .sum::<usize>()
+            + self
+                .edge_params
+                .values()
+                .map(|v| v.capacity() * 16 + 128)
+                .sum::<usize>()
+            + self
+                .edge_chains
+                .values()
+                .map(|v| v.capacity() * 4 + 128)
+                .sum::<usize>()
+            + self.authorities.capacity() * 128
+            + self.point_to_global.capacity() * 64
+            + self.edge_order.capacity() * 8
+            + self.merged.positions.capacity() * 24
+            + self.merged.normals.capacity() * 24
+            + self.merged.indices.capacity() * 4
+    }
     /// Assemble a plan from sampled edge points, retaining authority.
     ///
     /// `edge_points` maps edge index to start-to-end sample chains;

@@ -80,6 +80,7 @@ impl BrepKernel {
         remus_operations::measure::enable_thread_nurbs_area_memo();
         remus_operations::measure::enable_thread_face_box_memo();
         remus_operations::tessellate::enable_face_mesh_cache();
+        remus_operations::tessellate::enable_mesh_reuse();
         remus_algo::pcurve_memo::enable_thread_pcurve_memo();
         remus_algo::wire_area_memo::enable_thread_wire_area_memo();
         remus_algo::ray_geom_memo::enable_thread_ray_geom_memo();

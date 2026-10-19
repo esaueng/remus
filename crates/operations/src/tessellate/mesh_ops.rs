@@ -186,9 +186,18 @@ pub fn welded_mesh_quality(mesh: &TriangleMesh) -> WeldedMeshQuality {
 /// offsets recomputed from it stay aligned.
 ///
 /// Returns whether any triangle was removed.
+#[cfg(test)]
 pub(super) fn dedupe_coincident_triangles(
     mesh: &mut TriangleMesh,
     tri_faces: Option<&mut Vec<u32>>,
+) -> bool {
+    dedupe_coincident_triangles_cached(mesh, tri_faces, None)
+}
+
+pub(super) fn dedupe_coincident_triangles_cached(
+    mesh: &mut TriangleMesh,
+    tri_faces: Option<&mut Vec<u32>>,
+    mut reuse: Option<&mut super::reuse::Session>,
 ) -> bool {
     #[cfg(test)]
     if super::tests::mesh_passes::use_reference_passes() {
@@ -212,6 +221,13 @@ pub(super) fn dedupe_coincident_triangles(
     let Some(ids) = quantized_vertex_ids(mesh) else {
         return false;
     };
+
+    if reuse
+        .as_mut()
+        .is_some_and(|session| session.clean(&mesh.indices, &ids.of))
+    {
+        return false;
+    }
 
     let mut keys: Vec<[u32; 3]> = Vec::with_capacity(tri_count);
     let mut parity: Vec<bool> = Vec::with_capacity(tri_count);
@@ -298,6 +314,9 @@ pub(super) fn dedupe_coincident_triangles(
     }
 
     if keep.iter().all(|&k| k) {
+        if let Some(session) = reuse {
+            session.store_clean(&mesh.indices, &ids.of);
+        }
         return false;
     }
 
@@ -546,10 +565,20 @@ pub fn sample_solid_edges_filtered(
 ///
 /// Returns `false` only when the mesh had no boundary half-edge (every
 /// directed edge has its reverse), in which case it was left untouched.
+#[cfg(test)]
 pub(super) fn weld_boundary_vertices(
     mesh: &mut TriangleMesh,
     deflection: f64,
     tri_faces: Option<&mut Vec<u32>>,
+) -> bool {
+    weld_boundary_vertices_cached(mesh, deflection, tri_faces, None)
+}
+
+pub(super) fn weld_boundary_vertices_cached(
+    mesh: &mut TriangleMesh,
+    deflection: f64,
+    tri_faces: Option<&mut Vec<u32>>,
+    mut reuse: Option<&mut super::reuse::Session>,
 ) -> bool {
     #[cfg(test)]
     if super::tests::mesh_passes::use_reference_passes() {
@@ -561,33 +590,41 @@ pub(super) fn weld_boundary_vertices(
         return true;
     }
 
-    // Boundary vertices: incident on half-edges without a matching reverse.
-    // PERF-D07: found through a vertex-indexed half-edge table instead of a
-    // hash map of every half-edge; the set is the same.
-    let Some(table) = HalfEdgeTable::new(&mesh.indices, n_verts) else {
-        return true;
-    };
-    let mut is_boundary = vec![false; n_verts];
-    let mut any_boundary = false;
-    for (a, b, _) in table.edges() {
-        if !table.contains(b, a) {
-            is_boundary[a as usize] = true;
-            is_boundary[b as usize] = true;
-            any_boundary = true;
+    // A retained CSR table plus bounded edge-count deltas updates only
+    // changed triangles. Every current index is compared; a large change or
+    // an exhausted cache budget falls back to the complete table build.
+    let retained = reuse
+        .as_mut()
+        .and_then(|session| session.weld(&mesh.indices, n_verts));
+    let boundary_verts = if let Some(vertices) = retained {
+        vertices
+    } else {
+        let Some(table) = HalfEdgeTable::new(&mesh.indices, n_verts) else {
+            return true;
+        };
+        let mut is_boundary = vec![false; n_verts];
+        let mut missing = Vec::new();
+        for (a, b, _) in table.edges() {
+            if !table.contains(b, a) {
+                is_boundary[a as usize] = true;
+                is_boundary[b as usize] = true;
+                if reuse.is_some() {
+                    missing.push((a, b));
+                }
+            }
         }
-    }
-
-    if !any_boundary {
+        let vertices: Vec<u32> = (0..n_verts)
+            .filter(|&v| is_boundary[v])
+            .filter_map(|v| u32::try_from(v).ok())
+            .collect();
+        if let Some(session) = reuse.as_mut() {
+            session.store_weld(&mesh.indices, n_verts, table, &missing);
+        }
+        vertices
+    };
+    if boundary_verts.is_empty() {
         return false;
     }
-
-    // Sorted iteration keeps grid-cell contents and union order independent
-    // of DetHashSet iteration order, so welded meshes are reproducible.
-    #[allow(clippy::cast_possible_truncation)]
-    let boundary_verts: Vec<u32> = (0..n_verts)
-        .filter(|&v| is_boundary[v])
-        .map(|v| v as u32)
-        .collect();
 
     #[allow(clippy::items_after_statements)]
     fn uf_find(parent: &mut [u32], mut x: u32) -> u32 {
@@ -797,7 +834,8 @@ pub(super) fn fill_sub_deflection_triangular_gaps(
 /// (compressed rows), each with the triangle that uses it. Rows keep
 /// triangle order. Replaces hash maps keyed by every half-edge in the
 /// whole-mesh passes (PERF-D07).
-struct HalfEdgeTable {
+#[derive(Clone)]
+pub(super) struct HalfEdgeTable {
     /// Row start per vertex (`n + 1` entries).
     start: Vec<u32>,
     /// `(end vertex, triangle)` per half-edge, grouped by start vertex.
@@ -806,7 +844,7 @@ struct HalfEdgeTable {
 
 impl HalfEdgeTable {
     /// `None` when an index is out of range or the counts overflow `u32`.
-    fn new(indices: &[u32], n_verts: usize) -> Option<Self> {
+    pub(super) fn new(indices: &[u32], n_verts: usize) -> Option<Self> {
         let tri_count = indices.len() / 3;
         let total = u32::try_from(tri_count.checked_mul(3)?).ok()?;
         let mut start = vec![0_u32; n_verts + 1];
@@ -830,7 +868,7 @@ impl HalfEdgeTable {
         Some(Self { start, entries })
     }
 
-    fn row(&self, a: u32) -> &[(u32, u32)] {
+    pub(super) fn row(&self, a: u32) -> &[(u32, u32)] {
         let a = a as usize;
         &self.entries[self.start[a] as usize..self.start[a + 1] as usize]
     }

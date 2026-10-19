@@ -517,6 +517,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Whole-mesh passes kept verbatim as byte-identity oracles for the rewritten `mesh_ops` and `pool_index` (PERF-D07, tests) | `tessellate/tests/mesh_passes.rs` |
 | Per-vertex analytic grid kept verbatim as a bit-identity oracle for the trig-table `tessellate_analytic` (tests) | `tessellate/tests/analytic_grid_oracle.rs` |
 | Explicit shared-boundary plan and deterministic refinement reconciliation | `tessellate/boundary_plan.rs` |
+| Exact boundary/CDT reuse and incremental mesh connectivity | `tessellate/reuse.rs`, `tessellate/reuse/incremental.rs` |
 | Content-keyed per-face mesh reuse across edits, with display-priority retention inside shared bounds (opt-in, per thread; PERF-D01) | `tessellate/face_cache.rs` |
 | Spatial index of the shared vertex pool for the boundary plan's circle contact refinement (PERF-D07) | `tessellate/pool_index.rs` |
 | Differential oracle for the circle contact candidates: the 27-key neighbour expansion kept verbatim against the merged z-run lookup (tests) | `tessellate/pool_index/oracle_tests.rs` |
