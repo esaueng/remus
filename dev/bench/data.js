@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792385434572,
+  "lastUpdate": 1792395217563,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -111463,6 +111463,294 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 87968,
             "range": "± 514",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3e84c370e48e7bf58351687e888fc3358cd0df3d",
+          "message": "perf: exact boundary-integral areas for analytic faces and prepared face moves for drag previews (#1181)\n\n## Change\n\nTwo kernel changes for interactive face-offset drag previews. OpenZCAD's\nper-frame loop is: restore, then `moveFacesJournaled`, then relaxed\nvalidate, then the display mesh, then a per-face `faceArea` loop.\nRoadmap rows: [PERF-V05](docs/kernel-maturity/roadmap.md) (area slice,\nnow Partial) and [B30](docs/kernel-maturity/roadmap.md) (face-drag\nslice).\n\n**1. Exact areas for analytic faces** (`perf(check)`)\n\n- **What it does.** Cylinder, cone, sphere and torus face areas now come\nfrom a line integral over the face's own edge curves (Green's theorem:\n`A = −∮ G(v) du` with `G' = J`, the surface Jacobian). `du` is taken\nfrom the curve derivatives, and the integral runs on adaptive\nGauss–Legendre panels (order 10) split on NURBS knots and on arcs of at\nmost π/4.\n- **Exactness.** The result is exact for lines and circles in the\nparameter plane, up to panel convergence (1e-14 relative).\n- **Covered shapes.** Holes, seams, two-ring bands, sphere caps (using\nthe same chart and pole rule as the quadrature), spherical cavities and\npointed cones.\n- **Imported wires.** Gaps between edges up to `1e-4` are closed with a\nchord.\n- **Fallback.** Anything outside the qualified family keeps the existing\norder-8 quadrature, bit for bit. That covers:\n  - a boundary within `1e-6` of the axis;\n  - a doubled sphere seam;\n- a sphere region that crosses the pole between panel nodes (the\nper-panel `u` continuity check);\n  - non-converging panels;\n  - more than 16 384 panels.\n- **Memo.** New memo family `face_cache::analytic_face_area_memoized`\n(family 3, exact-match answers only). `measure::face_area`, and\ntherefore WASM `faceArea`, routes analytic faces through it. The\ncontent-keyed memo is unchanged.\n- **Volume path not routed.** Volume terms use a different integrand (`r\n· n` over the face), not this area integrator, so equivalence would have\nto be proven separately. It is listed below as the next lever.\n\n**2. Prepared face moves** (`perf(operations)`,\n[design](docs/design/prepared-face-move.md))\n\n- **Native API:** `remus_operations::prepared_move::PreparedFaceMove`\nwith `prepare`, `move_faces`, `move_faces_journaled` and `is_current`.\n- **WASM, core tier:** `prepareMoveFaces`, `moveFacesPrepared`,\n`moveFacesPreparedJournaled` and `releasePreparedMove`. A kernel holds\nat most 16 handles, and handles are never reused.\n- **What preparation reads once.** Everything that does not depend on\nthe distance: the face list and journal scope, the blend classification,\nthe blend-translation region, carriers and boundary classes, the\nswept-region boxes and the prismatic volume oracle's source readings.\n- **What each call runs.** Only the distance-dependent remainder of the\nsame code, so results and refusals are the same as the unprepared move.\n- **Learned refusal.** A blend remove/rebuild attempt that refuses\nbefore it reaches the distance refuses every distance alike. The\nprepared move records that refusal on the first call and skips the\nattempt afterwards. On the hammer holder this is the torus-support\nrefusal.\n- **Staleness.** Every call recomputes the source's full content key\n(`solid_move_key`: the volume memo's key plus every face's loops and\ncoedges with pcurves and periodic windings) and compares it with the key\ntaken at preparation. If they differ, the call refuses with an `invalid\ninput: prepared face move is stale …` error and edits nothing. A\n`restore` of the same checkpoint keeps the preparation valid, even\nthough it advances the cache generation.\n- **Why an explicit handle, not a transparent memo.** Either way, each\ncall has to prove by content comparison that the source is the prepared\none, and the cost is the same. A handle adds an owned lifetime, holds no\nmemory for one-off moves, and leaves `moveFacesJournaled` unchanged for\nevery other caller.\n- **Refactors in the unprepared path,** with behavior unchanged:\n- the blend remove/rebuild path is split into a distance-independent\nprefix and a suffix;\n  - the blend translation is split into analyze and execute;\n  - the swept-region check is split into prepare and check;\n  - the journal scope can now be passed in.\n\n**Perf spans** (`move_faces.*`, `resize_blend.*`, `push_pull.*`) are\nadded around these phases. When tracing is off they cost one\nthread-local read.\n\n## Verification\n\n### Equivalence and correctness\n\n**Prepared vs unprepared move**\n\n| Test | What it compares | Distances |\n|---|---|---|\n| `crates/io/tests/prepared_face_move_hammer.rs` | Hammer holder,\nlargest +X face (blend translation path). Arena documents byte for byte,\nincluding the journal; face history; journal growth; refusal text. | −6,\n−6.8, −7.25, −7.6, −7.2, 0.5, 2, 0, NaN, −6.4 |\n| `prepared_move/tests.rs`, filleted box | Blend remove/rebuild path,\ncompared by order-free signature. See the note below. | 13 distances in\nboth directions, including ±1e-3, 0, NaN, −16.5, −40 (refused) |\n| `prepared_move/tests.rs`, pocketed and drilled block | Planar path,\ncompared on canonical content (exact). | 11 distances, including ∞, −8\nand −12 (refused) |\n\nFurther coverage:\n\n- **Hammer test assertions.** At least 5 distances are accepted, and the\ntorus-support refusal near −7.25…−7.6 is reproduced exactly.\n- **Without restore.** Three distances are also moved without a restore\nin between.\n- **Uncovered selections.** A bore face and invalid selections take the\nunprepared path.\n- **Staleness test.** Covers the journaled move, an edited source, and a\nchanged coedge periodic winding (an edit that keeps the facade wires).\nEach must be refused, with the topology left unchanged.\n- **WASM tests (3).** Two kernels, one using `moveFacesJournaled` and\none the prepared move, across checkpoint restores: identical JSON,\ndocuments and refusal text. Also stale-then-restored, and handle bounds,\nrelease and no reuse.\n\nNote on the filleted box: the unprepared fillet rebuild orders its\ncorner patches by hash-map iteration. Two unprepared runs already differ\nin entity order, so that path is compared on order-free content and\nhistory.\n\n**Areas against closed forms**\n(`crates/operations/tests/analytic_face_area_boundary.rs`, `EXACT =\n1e-11`)\n\n- full and reversed cylinder walls, quarter cylinders, cone frustum and\npointed cone;\n- sphere caps at cuts −3, −1, 1.5 and 2, a spherical cavity, and\nsphere-primitive hemispheres;\n- filleted-box octants and bands, whose sum must match the closed form;\n- a torus rim band;\n- a cross-drilled wall checked against a 20 000-point rim shoelace (`≤\n1e-8` relative);\n- an unqualified boundary, which must keep the quadrature bit for bit.\n\n**Areas against the quadrature**\n(`crates/io/tests/analytic_face_area_fixtures.rs`)\n\n- On the hammer holder, every analytic face reduces (66 faces; maximum\n|Δ| against the quadrature is 2.5e-5).\n- A 10-fixture corpus pins the expected reduced and fallback counts; the\nwide sphere cap with a doubled seam falls back.\n- `a_hidden_pole_crossing_is_refused` fails without the continuity\ncheck.\n\n### Local checks\n\n- `cargo test --profile ci-test -p remus-check -p remus-operations -p\nremus-io -p remus-wasm`: 5263 passed, 0 failed, 35 ignored\n(pre-existing), before the review fixes. After the fixes, the targeted\nsuites pass:\n  - check lib (272)\n  - prepared_move (4)\n  - analytic area, parity and golden\n  - io fixtures and hammer\n  - wasm prepared (3)\n- `cargo clippy --all-targets -- -D warnings` (check, operations, io,\nwasm) and `cargo fmt --all -- --check` are clean.\n- `scripts/check-boundaries.sh`, det-hash, wildcard-arms,\ndoc-module-map, doc-paths, edge-domain authority and\n`check-wasm-o47-coverage` pass.\n- `cargo build -p remus-wasm --target wasm32-unknown-unknown` is clean.\n- Not run: the apple-silicon or desktop jobs (not applicable).\n\n### Benchmarks\n\nAll numbers come from one 4-vCPU Linux container. `base` is main at\ne07ae8e (the PR base a6fab30 adds only workflow pins, with no crate\nchanges), built in a worktree with the same drag-loop example; `branch`\nis this PR's head code. Every binary uses the `profiling` profile. Runs\nwere interleaved base, unprepared, prepared, and the medians were stable\nacross rounds.\n\n**kernel_perf_probe** (verbatim; `hammer move 25` and `hammer all 25`).\nThe probe's move is the unprepared `moveFacesJournaled`, so it is\nexpected flat. The area reduction shows up in `recognize`.\n\n```text\n# base: kernel_perf_probe hammer move 25\n== hammer holder face drag (median / min / max, n samples) ==\n                  move:       13.877       13.357      555.443    ms  n=25\n# branch: kernel_perf_probe hammer move 25\n== hammer holder face drag (median / min / max, n samples) ==\n                  move:       15.055       13.624      558.217    ms  n=25\n# base: kernel_perf_probe hammer all 25\n== hammer holder face drag (median / min / max, n samples) ==\n                  move:       15.114       13.868      550.393    ms  n=25\n              validate:        1.882        1.659        3.227    ms  n=25\n                  bbox:        0.735        0.693        1.353    ms  n=25\n               display:       25.969       21.171      141.786    ms  n=25\n          display_tris:    58286.000    58286.000    58286.000 count  n=25\n                volume:      273.949      251.192      340.286    ms  n=25\n             recognize:      152.266      135.246      268.455    ms  n=25\n              features:       69.000       69.000       69.000 count  n=25\n# branch: kernel_perf_probe hammer all 25\n== hammer holder face drag (median / min / max, n samples) ==\n                  move:       14.888       13.903      662.082    ms  n=25\n              validate:        1.820        1.615        2.954    ms  n=25\n                  bbox:        0.716        0.670        1.308    ms  n=25\n               display:       24.665       20.625      105.102    ms  n=25\n          display_tris:    58286.000    58286.000    58286.000 count  n=25\n                volume:      263.546      244.080      305.575    ms  n=25\n             recognize:      130.390      121.669      183.975    ms  n=25\n              features:       69.000       69.000       69.000 count  n=25\n```\n\nThe `hammer move` medians (13.9 vs 15.1 ms) are within this machine's\nrun-to-run spread. Four further interleaved runs of the drag-loop hammer\nmove gave these medians (ms):\n\n| | Run 1 | Run 2 | Run 3 | Run 4 |\n|---|---|---|---|---|\n| base | 12.24 | 12.32 | 11.97 | 12.96 |\n| branch, unprepared | 12.30 | 11.81 | 11.46 | 11.71 |\n\nThe unprepared path did not regress.\n\n**Native drag loop** (`crates/wasm/examples/face_drag_loop.rs`,\n`face_drag_loop both 40 [mode]`; verbatim, round 2 of 2)\n\nEvery frame uses a distinct distance, so no frame gets an earlier\nframe's content-keyed answer. Stages: restore, then\n`moveFacesJournaled`, then `validateSolidRelaxed`, then the grouped\ndisplay mesh (0.02 / 0.35), then `faceArea` (0.08) of every result face.\nThe scenarios are:\n\n- **(a) hammer:** the holder's largest +X face, offsets −6…−7.4;\n- **(b) prismatic:** a 24-face pocketed, drilled and notched block, top\nface, −0.5…+2.3;\n- **filleted:** a box with every edge rounded, top face, −4…+6 (the\nblend remove/rebuild path).\n\n```text\n# base (unprepared)\n== hammer holder +X face drag (ms: median / p95 / min / max, n) ==\n                                 restore:     0.255     0.414     0.110     0.440  n=40\n                                    move:    11.435    17.800    10.508   530.726  n=35\n                                validate:     0.093     0.162     0.085     0.207  n=35\n                                 display:    24.693    38.410    23.063    97.937  n=35\n                                   areas:    17.438    28.939    16.464    88.829  n=35\n                                   frame:    54.283    73.688    51.167   717.764  n=35\n                            move_refused:    14.875    15.465    12.912    15.465  n=5\n== 24-face prismatic top-face drag (ms: median / p95 / min / max, n) ==\n                                 restore:     0.153     0.331     0.070     0.510  n=40\n                                    move:     2.057     2.317     1.811     5.027  n=40\n                                validate:     0.020     0.025     0.018     0.034  n=40\n                                 display:     0.996     1.324     0.785     1.395  n=40\n                                   areas:     0.651     0.911     0.551     1.106  n=40\n                                   frame:     3.985     4.588     3.380     6.934  n=40\n== 26-face filleted box top-face drag (ms: median / p95 / min / max, n) ==\n                                 restore:     0.106     0.144     0.032     0.312  n=40\n                                    move:    22.388    31.563    20.869    36.752  n=40\n                                validate:     0.015     0.029     0.013     0.049  n=40\n                                 display:     2.081     2.711     1.793     2.915  n=40\n                                   areas:     8.134     9.992     7.210    13.946  n=40\n                                   frame:    32.619    43.711    31.074    47.861  n=40\n# branch, unprepared\n== hammer holder +X face drag (ms: median / p95 / min / max, n) ==\n                                 restore:     0.243     0.348     0.186     0.505  n=40\n                                    move:    11.235    14.527    10.319   659.313  n=35\n                                validate:     0.096     0.137     0.086     0.247  n=35\n                                 display:    24.667    37.579    20.120    99.898  n=35\n                                   areas:     4.759     8.917     4.173    27.333  n=35\n                                   frame:    41.928    66.611    35.499   786.850  n=35\n                            move_refused:    13.587    15.653    12.724    15.653  n=5\n== 24-face prismatic top-face drag (ms: median / p95 / min / max, n) ==\n                                 restore:     0.136     0.223     0.074     0.237  n=40\n                                    move:     1.976     2.424     1.791     2.905  n=40\n                                validate:     0.020     0.031     0.017     0.054  n=40\n                                 display:     0.914     1.547     0.769     2.010  n=40\n                                   areas:     0.093     0.185     0.078     0.218  n=40\n                                   frame:     3.203     4.046     2.853     4.320  n=40\n== 26-face filleted box top-face drag (ms: median / p95 / min / max, n) ==\n                                 restore:     0.076     0.111     0.039     0.135  n=40\n                                    move:    20.997    25.983    19.452    35.074  n=40\n                                validate:     0.014     0.018     0.013     0.019  n=40\n                                 display:     1.999     2.578     1.608     2.866  n=40\n                                   areas:     0.463     0.602     0.314     0.626  n=40\n                                   frame:    23.488    29.328    21.734    38.156  n=40\n# branch, prepared\n== hammer holder +X face drag (ms: median / p95 / min / max, n) ==\n                                 prepare:     4.532     4.532     4.532     4.532  n=1\n                                 restore:     0.232     0.395     0.130     0.631  n=40\n                                    move:    10.194    15.652     9.298   561.165  n=35\n                                validate:     0.092     0.138     0.086     0.196  n=35\n                                 display:    24.460    38.580    20.673   103.568  n=35\n                                   areas:     4.822     7.121     4.203    27.658  n=35\n                                   frame:    39.597    58.254    34.557   692.650  n=35\n                            move_refused:    10.992    12.179    10.576    12.179  n=5\n== 24-face prismatic top-face drag (ms: median / p95 / min / max, n) ==\n                                 prepare:     0.509     0.509     0.509     0.509  n=1\n                                 restore:     0.139     0.176     0.113     0.236  n=40\n                                    move:     1.903     2.667     1.737     4.102  n=40\n                                validate:     0.019     0.057     0.017     0.069  n=40\n                                 display:     0.938     1.232     0.775     2.413  n=40\n                                   areas:     0.094     0.133     0.081     0.178  n=40\n                                   frame:     3.107     4.140     2.834     5.308  n=40\n== 26-face filleted box top-face drag (ms: median / p95 / min / max, n) ==\n                                 prepare:     0.265     0.265     0.265     0.265  n=1\n                                 restore:     0.082     0.135     0.028     0.165  n=40\n                                    move:    21.470    27.074    19.916    38.503  n=40\n                                validate:     0.014     0.021     0.013     0.040  n=40\n                                 display:     1.990     2.612     1.768     3.007  n=40\n                                   areas:     0.492     0.645     0.319     0.808  n=40\n                                   frame:    24.138    29.387    22.563    41.107  n=40\n```\n\nThe max column holds the first frame's cold display and area work.\n\n**WASM in Node 22** (`wasm32-unknown-unknown` release, wasm-bindgen\n0.2.126 `--target nodejs`)\n\nThe same loop runs through the JS API on the same bodies, serialized\nfrom the native fixtures. Below are the medians of 5 interleaved rounds'\nper-stage medians (ms):\n\n| scenario | stage | base | unprepared | prepared |\n|---|---|---:|---:|---:|\n| hammer | move | 22.75 | 25.10 | 20.80 |\n| hammer | move_refused | 23.93 | 27.77 | 21.25 |\n| hammer | areas | 62.50 | 10.97 | 10.94 |\n| hammer | frame | 125.34 | 75.93 | 68.31 |\n| prismatic | move | 4.60 | 4.97 | 4.43 |\n| prismatic | areas | 3.11 | 0.29 | 0.26 |\n| prismatic | frame | 8.79 | 6.40 | 5.82 |\n| filleted | move | 43.93 | 44.34 | 42.61 |\n| filleted | areas | 34.93 | 1.39 | 1.37 |\n| filleted | frame | 82.99 | 48.48 | 46.69 |\n\nThe WASM move rows vary by ±2 ms between rounds. A move-only loop (120\ndistinct hammer distances, restore and move only, 3 interleaved rounds)\ngave these medians (ms):\n\n| | Round 1 | Round 2 | Round 3 |\n|---|---|---|---|\n| base | 22.25 | 22.56 | 21.25 |\n| branch, unprepared | 23.69 | 20.48 | 22.24 |\n\nThe unprepared move is unchanged in WASM too. Round 1, verbatim, with\np95:\n\n```text\n# base\n== hammer unprepared: 40 frames, 5 refused (ms: median p95)\n       restore:     0.388     0.562  n=40\n          move:    22.754    37.509  n=35\n      validate:     0.168     0.266  n=35\n       display:    34.586    54.325  n=35\n         areas:    62.504    94.612  n=35\n         frame:   122.204   156.249  n=35\n  move_refused:    23.931    27.800  n=5\n== prismatic unprepared: 40 frames, 0 refused (ms: median p95)\n       restore:     0.090     0.136  n=40\n          move:     4.464     8.327  n=40\n      validate:     0.038     0.070  n=40\n       display:     0.867     1.398  n=40\n         areas:     3.011     6.398  n=40\n         frame:     8.492    16.297  n=40\n== filleted unprepared: 40 frames, 0 refused (ms: median p95)\n       restore:     0.114     0.186  n=40\n          move:    44.096    75.566  n=40\n      validate:     0.030     0.056  n=40\n       display:     2.476     3.623  n=40\n         areas:    35.018    64.760  n=40\n         frame:    83.444   142.517  n=40\n# branch, unprepared\n== hammer unprepared: 40 frames, 5 refused (ms: median p95)\n       restore:     0.362     0.739  n=40\n          move:    25.930    43.187  n=35\n      validate:     0.180     0.435  n=35\n       display:    35.653    63.567  n=35\n         areas:    10.649    18.616  n=35\n         frame:    75.930   109.301  n=35\n  move_refused:    25.296    39.692  n=5\n== prismatic unprepared: 40 frames, 0 refused (ms: median p95)\n       restore:     0.079     0.113  n=40\n          move:     4.973     5.693  n=40\n      validate:     0.039     0.063  n=40\n       display:     0.957     1.236  n=40\n         areas:     0.274     0.411  n=40\n         frame:     6.397     7.319  n=40\n== filleted unprepared: 40 frames, 0 refused (ms: median p95)\n       restore:     0.082     0.121  n=40\n          move:    42.350    71.054  n=40\n      validate:     0.029     0.057  n=40\n       display:     2.434     3.736  n=40\n         areas:     1.316     1.783  n=40\n         frame:    46.585    74.495  n=40\n# branch, prepared\n== hammer prepared: 40 frames, 5 refused (ms: median p95)\n       prepare:    17.844    17.844  n=1\n       restore:     0.358     0.502  n=40\n          move:    19.492    24.118  n=35\n      validate:     0.175     0.360  n=35\n       display:    33.206    51.963  n=35\n         areas:     9.991    14.659  n=35\n         frame:    63.297    86.993  n=35\n  move_refused:    21.248    27.486  n=5\n== prismatic prepared: 40 frames, 0 refused (ms: median p95)\n       prepare:     4.979     4.979  n=1\n       restore:     0.068     0.115  n=40\n          move:     4.307     8.076  n=40\n      validate:     0.038     0.078  n=40\n       display:     0.858     1.453  n=40\n         areas:     0.258     0.565  n=40\n         frame:     5.563    10.227  n=40\n== filleted prepared: 40 frames, 0 refused (ms: median p95)\n       prepare:     1.006     1.006  n=1\n       restore:     0.083     0.157  n=40\n          move:    43.685    71.488  n=40\n      validate:     0.030     0.052  n=40\n       display:     2.437     3.715  n=40\n         areas:     1.370     2.606  n=40\n         frame:    47.660    78.025  n=40\n```\n\n**Summary**\n\n- **Areas.** Per-frame area time drops 3.7× native and 5.7× in WASM on\nthe hammer holder; 7× and 11× on the prismatic block; 17× and 25× on the\nfilleted box.\n- **Hammer frame.** The WASM frame median drops from 125 ms to 76 ms\nunprepared and to 68 ms prepared (−45%).\n- **Prepared move.** It saves about 1 ms native and about 4 ms WASM per\nhammer frame (the skipped refused remove/rebuild attempt, seed and\nregion classification, and scope walk). The content check costs about\n0.3 ms. On the filleted box the prepared move gains nothing measurable.\n\n**What remains per frame** is distance-dependent: the result copy or\nrebuild and its strict postconditions.\n\n- On the hammer, about 8 ms native goes to the two strict validators.\nAbout 3 ms of that is the orientation probe re-integrating the trimmed\ncylinder carriers the move changes.\n- On the filleted box, about 70% of the move is the fillet\npostcondition's whole-body mesh volume.\n- A boundary reduction of the analytic volume terms is the next lever\nfor both. It is out of scope here.\n\n## Compatibility and risks\n\n**Area values.** `measure::face_area` and WASM `faceArea` for cylinder,\ncone, sphere and torus faces now return the exact value instead of the\norder-8 quadrature. Values move within the quadrature's own error:\n\n- hammer total: 12615.425689583 → 12615.426178549 (+3.9e-8 relative);\n- filleted box total: 4186.869976882 → 4186.867138194 (−6.8e-7\nrelative);\n- prismatic block: unchanged to 1e-12.\n\nNo tolerance or acceptance threshold changed. Two expectations were\nupdated as a result:\n\n- `tests/golden/data/o06/hammer_holder_features.golden` is regenerated\n(area fields only; e.g. 4.5π is now exact). The relations golden stayed\nwithin its token tolerance.\n- `crates/operations/tests/face_area_only_parity.rs` now asserts the\npublic area equals `analytic_face_area` bitwise and is within 1e-10 of\nthe quadrature, which has round-off at its 1.5e4 offset.\n\n**New public Rust API (additive):**\n\n- `remus_check::properties::face_integrator::analytic_face_area`\n- `remus_check::properties::face_cache::analytic_face_area_memoized`\n- `remus_operations::prepared_move::{PreparedFaceMove}`\n- `measure::volume_memo::{ContentKey, solid_content_key,\nsolid_move_key}` (the module is crate-visible)\n\n**New WASM bindings (additive):** `prepareMoveFaces`,\n`moveFacesPrepared`, `moveFacesPreparedJournaled` and\n`releasePreparedMove`. The O4.7 coverage baseline gains 4 rows (owner\nB30). Existing bindings, JSON shapes and file formats are unchanged.\n\n**Behavior details on the unprepared path:**\n\n- When several moved faces collide in the swept-region check, the\nrefusal now names the lowest-index face. Before, it depended on\n`HashSet` order.\n- The blend remove/rebuild path no longer validates the same solid\ntwice. The second strict validation of an already validated rebuilt\nsolid is skipped; all postconditions still run once.\n\n**Pre-existing issues found, not changed here:**\n\n- The fillet rebuild orders its corner patches by hash-map iteration, so\nrepeated unprepared moves of a filleted body differ in entity order.\nContent and history are the same.\n- The quadrature misreads a wide sphere cap with a doubled seam (fixture\n`wide_sphere_cap`: reads 84.79, true area about 933.05). The reduction\nrefuses that case and falls back, so the value is unchanged here. It\nneeds its own fix.\n\n**Out of scope** (not trivial; to follow): `wasm_fma`, arena slot\ngrowth, and a boundary reduction of the volume terms.\n\n**Related PR.**\n[esaueng/remus#1175](https://github.com/esaueng/remus/pull/1175) (typed\nface-move results) was already merged when this branch started. This PR\nbuilds on it and does not conflict.\n\n**OpenZCAD adoption:**\n\n1. At drag start, after the checkpoint, call `const h =\nkernel.prepareMoveFaces(source, faces)`.\n2. Each frame, call `restore(checkpoint)` and then\n`kernel.moveFacesPreparedJournaled(h, distance)` instead of\n`moveFacesJournaled(source, faces, distance)`. The JSON and refusal text\nare the same, and distances stay source-relative.\n3. If a call fails with an `invalid input: prepared face move is stale`\nerror (the source was edited), prepare again.\n4. On drag end or cancel, call `kernel.releasePreparedMove(h)`.\n\nNo change is needed for the area speed-up: `faceArea` picks it up.\nOpenZCAD tests that pin quadrature-derived areas to tight absolute\ntolerances may need their expectations refreshed to the exact values.\n\n## WASM module tier\n\nTier: core. A prepared move is a session handle that edits the live\narena and writes the journal on every call.\n\nKernel growth per the CI \"WASM Binary Size\" comment: +48.0 KiB raw\n(10,306,165 → 10,355,291 B), +19.7 KiB gzip, +9.6 KiB Brotli, within the\n64 KiB review threshold, so no `WASM-Size:` declaration is required.\nCapability: prepared face moves and analytic boundary-integral face\nareas, Tier: core.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_0179reg6tDLuhXn8eRjUjpNn\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-10-19T06:42:47Z",
+          "tree_id": "d6ad082956815e5a7456f58d10ffccb9ed7020c9",
+          "url": "https://github.com/esaueng/remus/commit/3e84c370e48e7bf58351687e888fc3358cd0df3d"
+        },
+        "date": 1792395214433,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1112436,
+            "range": "± 3065",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1206639,
+            "range": "± 1753",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 24598,
+            "range": "± 70",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 6973809,
+            "range": "± 21869",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 6986725,
+            "range": "± 94371",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 6809349,
+            "range": "± 132111",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 25904,
+            "range": "± 121",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3541096,
+            "range": "± 9670",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 28303658,
+            "range": "± 375828",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 29,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 115,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 55,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 227,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 153,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 848,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 144,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 404,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 200,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 574,
+            "range": "± 19",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 661,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3238,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 12,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 29,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 93,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 93,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 3536,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 14053,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 51093,
+            "range": "± 150",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5056,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 577693,
+            "range": "± 1431",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2430226,
+            "range": "± 4050",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 162132,
+            "range": "± 334",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 302896,
+            "range": "± 1223",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 346792,
+            "range": "± 367",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 61319,
+            "range": "± 138",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 34400,
+            "range": "± 551",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 21347,
+            "range": "± 20",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 113930,
+            "range": "± 517",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 153072,
+            "range": "± 300",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 683610,
+            "range": "± 22920",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 8488599,
+            "range": "± 110008",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 531444,
+            "range": "± 2089",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1119118,
+            "range": "± 1904",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 74382,
+            "range": "± 286",
             "unit": "ns/iter"
           }
         ]
