@@ -41,6 +41,24 @@ def normalize_reviewed_updates(text, updated):
     )
 
 
+def assert_reviewed_workflow_delta(staged, active, active_updated):
+    if normalize_reviewed_updates(staged, updated=True) != normalize_reviewed_updates(active, updated=active_updated):
+        raise AssertionError("Staged workflow would discard an active command, guard or permission")
+
+
+def main_workflow_manifest():
+    path = ".github/fleet-workflows.json"
+    exists = subprocess.run(["git", "cat-file", "-e", f"origin/main:{path}"], cwd=ROOT, capture_output=True)
+    if exists.returncode:
+        # The pre-staging main revision used the canonical filenames. A
+        # missing callee still fails at git show below; never skip its check.
+        return {family: f"fleet-{family}.yml" for family in FAMILIES}
+    manifest = json.loads(subprocess.check_output(["git", "show", f"origin/main:{path}"], cwd=ROOT))
+    if set(manifest) != FAMILIES:
+        raise AssertionError("Main must declare every active workflow family")
+    return manifest
+
+
 class FleetWorkflowTests(unittest.TestCase):
     def test_all_active_callers_keep_exact_bytes_and_main_ancestry(self):
         self.assertGreater(validate_calls(), 0)
@@ -87,11 +105,20 @@ class FleetWorkflowTests(unittest.TestCase):
         for family in FAMILIES:
             self.assertTrue(workflow_path(family).is_file())
 
+    def test_active_workflow_drift_is_rejected(self):
+        active = workflow_path("ci")
+        staged = (ROOT / ".github/workflows/fleet-ci-v2.yml").read_text()
+        drifted = active.read_text().replace("  contents: read", "  contents: write", 1)
+        self.assertNotEqual(drifted, active.read_text())
+        with self.assertRaisesRegex(AssertionError, "active command, guard or permission"):
+            assert_reviewed_workflow_delta(staged, drifted, active.name.endswith("-v2.yml"))
+
     def test_staged_v2_only_changes_reviewed_action_dependencies(self):
         self.assertEqual(subprocess.run(
             ["git", "merge-base", "--is-ancestor", SOURCE, "origin/main"],
             cwd=ROOT, capture_output=True,
         ).returncode, 0)
+        main_manifest = main_workflow_manifest()
         for family in sorted(FAMILIES):
             with self.subTest(family=family):
                 path = f".github/workflows/fleet-{family}.yml"
@@ -102,6 +129,14 @@ class FleetWorkflowTests(unittest.TestCase):
                     normalize_reviewed_updates(source, updated=False),
                     "Staging must retain every command, guard, permission and runner contract",
                 )
+                active = workflow_path(family)
+                assert_reviewed_workflow_delta(staged.read_text(), active.read_text(), active.name.endswith("-v2.yml"))
+                main_file = main_manifest[family]
+                self.assertIn(main_file, (f"fleet-{family}.yml", f"fleet-{family}-v2.yml"))
+                main_active = subprocess.check_output(
+                    ["git", "show", f"origin/main:.github/workflows/{main_file}"], cwd=ROOT, text=True,
+                )
+                assert_reviewed_workflow_delta(staged.read_text(), main_active, main_file.endswith("-v2.yml"))
 
 
 if __name__ == "__main__":
