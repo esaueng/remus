@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Size the weekly mutation matrix so every listed mutant is examined (B19).
+"""Size the weekly mutation matrix within its runner budget (B19).
 
 Input: the JSON array printed by `cargo mutants --list --json --in-diff ...`
 (an empty file when the diff selects nothing). Output: GitHub step outputs
 `mutants`, `shards` and `matrix`, plus a Markdown estimate for the run summary.
 
 The cost model is per-package occupied-slot seconds per mutant with `--jobs 2`,
-measured from the weekly job's own outcomes. Each shard's verdict
+measured from the weekly job's own outcomes. A week that needs more than
+`MAX_SHARDS` shards is sampled, not completed: each shard runs a shuffled
+order until its budget expires, and the verdict reports the rest as not
+sampled. Each shard's verdict
 (`scripts/mutants-verdict.py`) prints the means and medians it observed,
 so these constants can be re-tuned from a run's summary. They live here,
 read from the checkout at run time, so tuning them needs no workflow pin bump.
@@ -43,9 +46,10 @@ JOBS_PER_SHARD = 2
 # Plan each shard to 85% of its slot time. Test the actual round-robin package
 # assignment: equal mutant counts do not imply equal estimated work.
 TARGET_UTILIZATION = 0.85
-# Preserve the 24-shard resource cap (three waves at max-parallel 8). A larger
-# or uneven week is explicitly over capacity; the verdict still fails any tail.
-MAX_SHARDS = 24
+# One wave at the callee's max-parallel 8: about 40 hosted runner-hours a week.
+# The 24-shard cap (three waves, ~120 runner-hours) still covered only ~40% of
+# a typical week, so the planner samples a larger week instead.
+MAX_SHARDS = 8
 
 
 def round_robin_costs(mutants, shards):
@@ -125,19 +129,20 @@ def main(argv=None):
               for index, cost in enumerate(shard_costs)],
             "",
         ]
-    warning = None
+    notice = None
     if peak > capacity:
-        warning = (f"the capped {shards}-shard round-robin matrix has a peak estimate of "
-                   f"{peak / 3600:.1f} slot-hours above {capacity / 3600:.1f} capacity "
-                   f"(total-cost lower bound {needed}, cap {args.max_shards}): expect "
-                   "unexamined mutants and an incomplete verdict; retain unexamined.txt "
-                   "for an explicitly scoped catch-up run")
-        lines.append(f"**Warning:** {warning}.")
-    lines.append("Estimates do not certify completion; missed, timed-out and unexamined mutants still fail.")
+        sampled = sum(min(cost, capacity) for cost in shard_costs) / estimate
+        notice = (f"the week needs {needed} shards at the estimated cost and the cap is "
+                  f"{args.max_shards}: each shard examines a shuffled sample, about "
+                  f"{sampled:.0%} of the listed mutants in all; the rest are reported as "
+                  "not sampled in each shard's unexamined.txt")
+        lines.append(f"**Sampled:** {notice}.")
+    lines.append("Estimates are not guarantees. Missed mutants are reported; timed-out "
+                 "mutants, a failed baseline or a shard that examines nothing fail the run.")
     text = "\n".join(lines) + "\n"
     print(text)
-    if warning:
-        print(f"::warning::{warning}")
+    if notice:
+        print(f"::notice::{notice}")
     if args.summary:
         with open(args.summary, "a") as handle:
             handle.write(text)

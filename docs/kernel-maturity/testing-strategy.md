@@ -181,9 +181,15 @@ fails if one is renamed. The staged
 `fleet-mutants-sharded.yml` sizes a round-robin shard matrix from
 `scripts/plan-mutation-shards.py`'s measured cost model, gives every shard
 its own baseline and a 300-minute budget, and judges each with
-`scripts/mutants-verdict.py`, which fails on any missed, timed-out or
-unexamined mutant and on a baseline that did not finish green
-(`python3 scripts/test-mutants-verdict.py` proves each failure path). A
+`scripts/mutants-verdict.py` (`python3 scripts/test-mutants-verdict.py`
+proves each failure path). Since 2026-10-19 the matrix is capped at one wave
+of 8 shards and a larger week is sampled: each shard runs a shuffled order
+until its budget expires, the rest is reported as not sampled, and missed
+mutants are reported for triage rather than failing the run. A shard still
+fails on a baseline that did not finish green, on examining nothing, on
+timed-out mutants and on unreadable output. Every week from 2026-09-24 to
+2026-10-18 had failed at the 24-shard cap, which left about 60% of a typical
+week unexamined at ~120 runner-hours a run. A
 bounded runner probe of the sharded callee (run 36059529895: math, blend
 and offset, three 45-minute shards) partitioned the week's 121 listed
 mutants exactly and examined every one; each shard failed closed on its

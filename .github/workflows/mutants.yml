@@ -13,12 +13,15 @@ env:
 permissions:
   contents: read
 
-# B19: the sharded, fail-closed callee plans the week's in-diff mutants once,
-# splits them across a round-robin shard matrix sized by
-# scripts/plan-mutation-shards.py, and fails any shard with a missed,
-# timed-out or unexamined mutant (scripts/mutants-verdict.py). The per-mutant
-# settings live in `.cargo/mutants.toml`; both scripts and the config are read
-# from the checkout, so tuning them needs no pin change.
+# B19: the sharded callee plans the week's in-diff mutants once and splits
+# them across a round-robin matrix sized by scripts/plan-mutation-shards.py,
+# capped at one wave of 8 shards. A larger week is sampled: each shard runs a
+# shuffled order until its budget expires. scripts/mutants-verdict.py reports
+# missed mutants for triage and fails a shard only on a broken run (baseline
+# not green, nothing examined, timed-out mutants, unreadable output). The
+# callee's own comment still describes the earlier fail-closed verdict; the
+# per-mutant settings live in `.cargo/mutants.toml`, and both scripts and the
+# config are read from the checkout, so tuning them needs no pin change.
 #
 # Pin rule (scripts/test-ubuntu-ci-routing.py): the pin must be a commit on
 # main whose copy of the callee is byte-identical to the checked-in file. A PR

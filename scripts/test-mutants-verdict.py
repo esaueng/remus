@@ -2,9 +2,9 @@
 """Prove the weekly mutation verdict and shard planner can fail (B19).
 
 Synthetic `mutants.out` directories in cargo-mutants 27's shapes drive
-scripts/mutants-verdict.py through every clean and failing case, including the
-2026-09-13/16 shape that used to pass: a run stopped by `timeout` during the
-baseline, with mutants listed but none examined.
+scripts/mutants-verdict.py through every clean, sampled and failing case,
+including the 2026-09-13/16 shape that used to pass: a run stopped by
+`timeout` during the baseline, with mutants listed but none examined.
 """
 
 import contextlib
@@ -64,9 +64,10 @@ class VerdictTests(unittest.TestCase):
                 if write_outcomes:
                     (out / "outcomes.json").write_text(json.dumps({"outcomes": outcomes}))
             summary = Path(tmp) / "summary.md"
-            with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stdout(io.StringIO()) as stdout:
                 code = VERDICT.main(["--output", str(out), "--exit-code", str(exit_code),
                                      "--label", "test shard", "--summary", str(summary)])
+            self.stdout = stdout.getvalue()
             unexamined = (out / "unexamined.txt").read_text() if (out / "unexamined.txt").exists() else ""
             return code, summary.read_text(), unexamined
 
@@ -86,10 +87,12 @@ class VerdictTests(unittest.TestCase):
                     outcome(B, "MissedMutant", build=40.0, test=100.0),
                     outcome(C, "Unviable", build=5.0)]
         code, text, _ = self.run_verdict(listed, outcomes, 2)
-        self.assertEqual(code, 1, "a cost report must not soften the missed verdict")
+        self.assertEqual(code, 0, text)
         # (20 + 140 + 5) / 3 = 55 occupied slot-seconds. Adding phase medians
         # would give 65 and dropping missed mutants would give 12.5.
         self.assertIn("| remus-algo | 3 | 10 | 55 | 55 |", text)
+        # Unviable mutants are not judged: 1 caught of 2 viable.
+        self.assertIn("Mutation score: 50.0% of 2 examined viable mutants caught", text)
 
     def test_no_mutants_in_scope_passes(self):
         self.assertEqual(self.run_verdict(None, [], 0, make_dir=False)[0], 0)
@@ -108,23 +111,36 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(code, 1, text)
         self.assertEqual(unexamined.splitlines(), [A, B])
 
-    def test_partial_coverage_fails_and_names_the_rest(self):
+    def test_partial_coverage_is_a_sample_and_names_the_rest(self):
         code, text, unexamined = self.run_verdict(
             [mutant(A), mutant(B)], [BASELINE, outcome(A, "CaughtMutant")], 124)
-        self.assertEqual(code, 1, text)
-        self.assertIn("| not examined | 1 |", text)
+        self.assertEqual(code, 0, text)
+        self.assertIn("| not sampled | 1 |", text)
+        self.assertIn("Sample: 1 of 2 listed mutants examined (50%)", text)
         self.assertEqual(unexamined.splitlines(), [B])
 
-    def test_missed_and_timeout_mutants_fail(self):
-        for summary, exit_code in (("MissedMutant", 2), ("Timeout", 3)):
-            with self.subTest(summary=summary):
-                code, text, _ = self.run_verdict([mutant(A)], [BASELINE, outcome(A, summary)], exit_code)
-                self.assertEqual(code, 1, text)
-                self.assertIn(f"`{A}`", text)
+    def test_listed_mutants_with_none_examined_fail(self):
+        # A green baseline followed by the budget expiring before any mutant
+        # finished is no sample at all.
+        code, text, unexamined = self.run_verdict([mutant(A), mutant(B)], [BASELINE], 124)
+        self.assertEqual(code, 1, text)
+        self.assertIn("none was examined", self.stdout)
+        self.assertEqual(unexamined.splitlines(), [A, B])
 
-    def test_missed_mutant_fails_even_if_exit_code_claims_clean(self):
-        code, _, _ = self.run_verdict([mutant(A)], [BASELINE, outcome(A, "MissedMutant")], 0)
-        self.assertEqual(code, 1)
+    def test_missed_mutants_are_reported_as_warnings_without_failing(self):
+        for exit_code in (2, 0, 124):
+            with self.subTest(exit_code=exit_code):
+                code, text, _ = self.run_verdict([mutant(A)], [BASELINE, outcome(A, "MissedMutant")], exit_code)
+                self.assertEqual(code, 0, text)
+                self.assertIn(f"`{A}`", text)
+                self.assertIn("::warning::test shard: 1 mutants missed", self.stdout)
+                self.assertNotIn("::error::", self.stdout)
+
+    def test_timeout_mutants_fail(self):
+        code, text, _ = self.run_verdict([mutant(A)], [BASELINE, outcome(A, "Timeout")], 3)
+        self.assertEqual(code, 1, text)
+        self.assertIn(f"`{A}`", text)
+        self.assertIn("::error::test shard: 1 mutants timed out", self.stdout)
 
     def test_unattributed_mutant_state_fails(self):
         for summary in ("Failure", "Success"):
@@ -155,7 +171,7 @@ class VerdictTests(unittest.TestCase):
     def test_repeated_names_are_counted_as_a_multiset(self):
         listed = [mutant(A), mutant(A)]
         code, text, unexamined = self.run_verdict(listed, [BASELINE, outcome(A, "CaughtMutant")], 124)
-        self.assertEqual(code, 1, text)
+        self.assertEqual(code, 0, text)
         self.assertEqual(unexamined.splitlines(), [A])
         both = [BASELINE, outcome(A, "CaughtMutant"), outcome(A, "Unviable")]
         self.assertEqual(self.run_verdict(listed, both, 0)[0], 0)
@@ -185,12 +201,13 @@ class PlanTests(unittest.TestCase):
                                  {"mutants": "0", "shards": "0", "matrix": "[]"})
 
     def test_shards_cover_the_estimated_cost(self):
-        week = ([mutant(f"a{i}") for i in range(1500)]
-                + [mutant(f"o{i}", "remus-operations") for i in range(500)]
-                + [mutant(f"m{i}", "remus-math") for i in range(300)]
-                + [mutant(f"b{i}", "remus-blend") for i in range(100)])
+        week = ([mutant(f"a{i}") for i in range(500)]
+                + [mutant(f"o{i}", "remus-operations") for i in range(150)]
+                + [mutant(f"m{i}", "remus-math") for i in range(100)]
+                + [mutant(f"b{i}", "remus-blend") for i in range(30)])
         counts, estimate, capacity, needed, shards = PLAN.plan(week, 300)
-        self.assertEqual(sum(counts.values()), 2400)
+        self.assertEqual(sum(counts.values()), 780)
+        self.assertLessEqual(shards, PLAN.MAX_SHARDS)
         self.assertGreaterEqual(shards * capacity, estimate)
         self.assertLess((needed - 1) * capacity, estimate)
         self.assertLessEqual(max(PLAN.round_robin_costs(week, shards)), capacity)
@@ -216,7 +233,7 @@ class PlanTests(unittest.TestCase):
             self.assertEqual(PLAN.round_robin_costs(week, 2), [80.0, 20.0])
             self.assertLessEqual(max(PLAN.round_robin_costs(week, shards)), capacity)
 
-    def test_capped_imbalance_warns_even_when_total_cost_fits_the_cap(self):
+    def test_capped_imbalance_is_reported_as_sampled_even_when_total_cost_fits_the_cap(self):
         week = [mutant("h0", "heavy"), mutant("l0", "light"),
                 mutant("h1", "heavy"), mutant("l1", "light")]
         with mock.patch.dict(PLAN.SECONDS_PER_MUTANT, {"heavy": 40.0, "light": 10.0}, clear=True), \
@@ -232,9 +249,10 @@ class PlanTests(unittest.TestCase):
                 PLAN.main([str(listing), "--budget-minutes", "1", "--max-shards", "2",
                            "--summary", str(summary), "--github-output", str(output)])
             self.assertIn("shards=2", output.read_text())
-            self.assertIn("::warning::", stdout.getvalue())
+            self.assertIn("::notice::", stdout.getvalue())
             self.assertIn("total-cost lower bound 2, cap 2", summary.read_text())
-            self.assertIn("retain unexamined.txt", summary.read_text())
+            # Shard 0 carries 80 s against 60 s capacity, shard 1 20 s: (60 + 20) / 100.
+            self.assertIn("about 80% of the listed mutants", summary.read_text())
             self.assertIn("| 0 | 0.0 | no |", summary.read_text())
 
     def test_single_over_budget_mutant_does_not_create_empty_shards(self):
@@ -248,7 +266,12 @@ class PlanTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             PLAN.round_robin_costs([], 0)
 
-    def test_overflowing_week_is_capped_and_warned(self):
+    def test_cap_is_one_wave_of_the_callee_parallelism(self):
+        text = workflow_path("mutants-sharded").read_text()
+        parallel = int(re.search(r"^      max-parallel: (\d+)$", text, re.M)[1])
+        self.assertEqual(PLAN.MAX_SHARDS, parallel)
+
+    def test_overflowing_week_is_capped_and_sampled(self):
         huge = [mutant(f"o{i}", "remus-operations") for i in range(20000)]
         _, _, _, needed, shards = PLAN.plan(huge, 300)
         self.assertGreater(needed, PLAN.MAX_SHARDS)

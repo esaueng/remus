@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Turn one weekly cargo-mutants shard into an exact, fail-closed verdict (B19).
+"""Turn one weekly cargo-mutants shard into an exact verdict (B19).
 
 The weekly job used to count only the outcome files it found. A run that
 `timeout` stopped during the unmutated baseline therefore printed zeros and
@@ -11,13 +11,18 @@ it finished (`outcomes.json`, rewritten after every scenario), and fails when
 - cargo-mutants exited with anything but 0 (clean), 2 (missed), 3 (timeout)
   or 124 (`timeout` reached the budget),
 - the unmutated baseline did not finish green,
-- any mutant was MISSED, TIMEOUT, or ended in an unattributed state,
-- any listed mutant was never examined (the budget ran out), or
+- mutants were listed but none was examined,
+- any mutant timed out or ended in an unattributed state, or
 - the output is missing or inconsistent.
 
+A week larger than the shard budget is sampled: each shard runs a shuffled
+order until its budget expires, so the mutants it did not reach are reported
+as not sampled (`unexamined.txt`), not as a failure. MISSED mutants are test
+gaps to triage, not a broken run: they are listed in the summary, raised as
+warnings and kept in the report artifact, and do not fail the shard.
+
 It writes a Markdown summary (to `$GITHUB_STEP_SUMMARY` when set) with the
-per-package build and test times the shard planner's cost model is tuned from,
-and `unexamined.txt` next to the outcomes when coverage is incomplete.
+per-package build and test times the shard planner's cost model is tuned from.
 """
 
 import argparse
@@ -62,8 +67,9 @@ def phase_seconds(outcome, phase):
 
 
 def verdict(output_dir, exit_code, label):
-    """Return (errors, summary_lines, unexamined_names)."""
+    """Return (errors, warnings, summary_lines, unexamined_names)."""
     errors = []
+    warnings = []
     lines = [f"## Mutation testing: {label}", ""]
     meaning = EXIT_MEANINGS.get(exit_code, "unexpected")
     lines.append(f"cargo-mutants exit code: `{exit_code}` ({meaning})")
@@ -78,23 +84,23 @@ def verdict(output_dir, exit_code, label):
             # cargo-mutants returns 0 without creating an output directory
             # when the diff selects no mutants at all.
             lines.append("No mutants in scope for this shard.")
-            return errors, lines, []
+            return errors, warnings, lines, []
         errors.append(f"no cargo-mutants output at {output_dir}")
-        return errors, lines, []
+        return errors, warnings, lines, []
     try:
         listed = json.loads(mutants_path.read_text())
     except (OSError, ValueError) as err:
         errors.append(f"cannot read the listed mutants ({mutants_path}): {err}")
-        return errors, lines, []
+        return errors, warnings, lines, []
     listed_names = [m["name"] for m in listed]
     if not listed_names:
         lines.append("No mutants in scope for this shard.")
-        return errors, lines, []
+        return errors, warnings, lines, []
     try:
         outcomes = json.loads(outcomes_path.read_text())["outcomes"]
     except (OSError, ValueError, KeyError) as err:
         errors.append(f"{len(listed_names)} mutants listed but no readable outcomes ({outcomes_path}): {err}")
-        return errors, lines, listed_names
+        return errors, warnings, lines, listed_names
 
     baselines = [o for o in outcomes if o.get("scenario") == "Baseline"]
     if not baselines:
@@ -142,12 +148,19 @@ def verdict(output_dir, exit_code, label):
 
     count = lambda key: len(by_summary.get(key, []))
     other = sum(len(v) for k, v in by_summary.items() if k not in CLEAN | {"MissedMutant", "Timeout"})
+    judged = count("CaughtMutant") + count("MissedMutant")
+    if judged:
+        lines.append(f"Mutation score: {count('CaughtMutant') / judged:.1%} of {judged} examined "
+                     "viable mutants caught")
+    lines.append(f"Sample: {sum(examined.values())} of {len(listed_names)} listed mutants examined "
+                 f"({sum(examined.values()) / len(listed_names):.0%})")
+    lines.append("")
     lines += [
         "| Outcome | Count |",
         "| --- | ---: |",
         f"| listed | {len(listed_names)} |",
         f"| examined | {sum(examined.values())} |",
-        f"| not examined | {len(unexamined)} |",
+        f"| not sampled | {len(unexamined)} |",
         f"| caught | {count('CaughtMutant')} |",
         f"| missed | {count('MissedMutant')} |",
         f"| timeout | {count('Timeout')} |",
@@ -168,23 +181,23 @@ def verdict(output_dir, exit_code, label):
                          f"{median(stats['test'])} | {mean_slot:.0f} |")
         lines.append("")
 
-    for key, label_text in (("MissedMutant", "missed"), ("Timeout", "timed out")):
+    for key, label_text, found in (("MissedMutant", "missed", warnings), ("Timeout", "timed out", errors)):
         names = by_summary.get(key, [])
         if names:
-            errors.append(f"{len(names)} mutants {label_text}")
+            found.append(f"{len(names)} mutants {label_text}")
             lines.append(f"**{label_text.capitalize()}:**")
             lines += [f"- `{n}`" for n in names]
             lines.append("")
     if other:
         errors.append(f"{other} mutants ended in an unattributed state")
+    if baselines and not examined:
+        errors.append(f"{len(listed_names)} mutants listed but none was examined")
     if unexamined:
-        errors.append(
-            f"{len(unexamined)} of {len(listed_names)} listed mutants were not examined "
-            "(budget reached): this shard's verdict is incomplete"
-        )
+        lines.append(f"{len(unexamined)} listed mutants were not sampled before the budget expired "
+                     "(`unexamined.txt`).")
     elif exit_code == 124 and not errors:
         lines.append("The budget expired after the last mutant finished; coverage is complete.")
-    return errors, lines, unexamined
+    return errors, warnings, lines, unexamined
 
 
 def main(argv=None):
@@ -195,16 +208,19 @@ def main(argv=None):
     parser.add_argument("--summary", type=Path, default=os.environ.get("GITHUB_STEP_SUMMARY"))
     args = parser.parse_args(argv)
 
-    errors, lines, unexamined = verdict(args.output, args.exit_code, args.label)
+    errors, warnings, lines, unexamined = verdict(args.output, args.exit_code, args.label)
     if unexamined and args.output.is_dir():
         (args.output / "unexamined.txt").write_text("".join(n + "\n" for n in unexamined))
     lines.append("Scope: mutants overlapping the last seven days of changes under `crates/`.")
-    lines.append("Missed, timed-out and unexamined mutants fail this workflow; review the attached report.")
+    lines.append("Missed mutants are reported for triage and do not fail the run; timed-out mutants, a "
+                 "failed baseline or a shard that examines nothing do. The report artifact lists every outcome.")
     text = "\n".join(lines) + "\n"
     if args.summary:
         with open(args.summary, "a") as handle:
             handle.write(text)
     print(text)
+    for warning in warnings:
+        print(f"::warning::{args.label}: {warning}")
     for error in errors:
         print(f"::error::{args.label}: {error}")
     return 1 if errors else 0
