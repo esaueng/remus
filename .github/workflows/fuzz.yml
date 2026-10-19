@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   checks:
-    uses: esaueng/remus/.github/workflows/fleet-fuzz-v2.yml@e07ae8e345e10085a717988e10fc08776c85d84a
+    uses: esaueng/remus/.github/workflows/fleet-fuzz-v3.yml@59d02a10f498a2b3c24512e8b2d9ba8150bbdb1e
     permissions:
       contents: read
       pull-requests: read

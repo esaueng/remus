@@ -46,6 +46,27 @@ def assert_reviewed_workflow_delta(staged, active, active_updated):
         raise AssertionError("Staged workflow would discard an active command, guard or permission")
 
 
+# The v2 callees landed here (#1179). The families in V3_FAMILIES were retired
+# for v3 copies (#1183) that add only job timeouts and the cargo-fuzz pin.
+V2_LANDED = "e07ae8e345e10085a717988e10fc08776c85d84a"
+V3_FAMILIES = frozenset({"ci", "fuzz", "osv", "wasm-candidate", "wasm-size"})
+V3_TIMEOUT = re.compile(r"(?m)^    timeout-minutes: [0-9]+\n")
+
+
+def landed_v2(family):
+    return subprocess.check_output(
+        ["git", "show", f"{V2_LANDED}:.github/workflows/fleet-{family}-v2.yml"], cwd=ROOT, text=True,
+    )
+
+
+def strip_v3_deltas(text):
+    return V3_TIMEOUT.sub("", text).replace(
+        "install cargo-fuzz --version 0.13.2 --locked", "install cargo-fuzz --locked")
+
+
+def carries_reviewed_updates(filename):
+    return re.search(r"-v[2-9]\.yml$", filename) is not None
+
 def main_workflow_manifest():
     path = ".github/fleet-workflows.json"
     exists = subprocess.run(["git", "cat-file", "-e", f"origin/main:{path}"], cwd=ROOT, capture_output=True)
@@ -107,33 +128,28 @@ class FleetWorkflowTests(unittest.TestCase):
 
     def test_active_workflow_drift_is_rejected(self):
         active = workflow_path("ci")
-        staged = (ROOT / ".github/workflows/fleet-ci-v2.yml").read_text()
+        staged = landed_v2("ci")
         drifted = active.read_text().replace("  contents: read", "  contents: write", 1)
         self.assertNotEqual(drifted, active.read_text())
         with self.assertRaisesRegex(AssertionError, "active command, guard or permission"):
-            assert_reviewed_workflow_delta(staged, drifted, active.name.endswith("-v2.yml"))
+            assert_reviewed_workflow_delta(strip_v3_deltas(staged), strip_v3_deltas(drifted), True)
 
-    def test_staged_v3_only_adds_job_timeouts_and_the_cargo_fuzz_pin(self):
-        # The next workflow version bounds every job and pins cargo-fuzz; every
-        # other byte must match the active callee it will replace.
-        staged = sorted((ROOT / ".github/workflows").glob("fleet-*-v3.yml"))
-        self.assertEqual([path.name for path in staged], [
-            "fleet-ci-v3.yml", "fleet-fuzz-v3.yml", "fleet-osv-v3.yml",
-            "fleet-wasm-candidate-v3.yml", "fleet-wasm-size-v3.yml",
+    def test_v3_only_adds_job_timeouts_and_the_cargo_fuzz_pin(self):
+        # V3 bounds every job and pins cargo-fuzz; every other byte must match
+        # the landed v2 callee it replaced.
+        v3 = sorted((ROOT / ".github/workflows").glob("fleet-*-v3.yml"))
+        self.assertEqual([path.name for path in v3], [
+            f"fleet-{family}-v3.yml" for family in sorted(V3_FAMILIES)
         ])
-        timeout = re.compile(r"(?m)^    timeout-minutes: [0-9]+\n")
-        for path in staged:
+        for path in v3:
             family = path.name[len("fleet-"):-len("-v3.yml")]
             with self.subTest(family=family):
                 text = path.read_text()
                 jobs = re.split(r"(?m)^(?=  [\w-]+:\n)", text.split("\njobs:\n", 1)[1])
                 for job in filter(None, jobs):
                     self.assertRegex(job, r"(?m)^    runs-on: .*\n    timeout-minutes: [0-9]+$")
-                expected = timeout.sub("", workflow_path(family).read_text())
-                actual = timeout.sub("", text).replace(
-                    "install cargo-fuzz --version 0.13.2 --locked", "install cargo-fuzz --locked")
-                self.assertEqual(actual, expected,
-                                 "Staging must retain every command, guard, permission and runner contract")
+                self.assertEqual(strip_v3_deltas(text), strip_v3_deltas(landed_v2(family)),
+                                 "V3 must retain every command, guard, permission and runner contract")
 
     def test_staged_v2_only_changes_reviewed_action_dependencies(self):
         self.assertEqual(subprocess.run(
@@ -145,21 +161,25 @@ class FleetWorkflowTests(unittest.TestCase):
             with self.subTest(family=family):
                 path = f".github/workflows/fleet-{family}.yml"
                 source = subprocess.check_output(["git", "show", f"{SOURCE}:{path}"], cwd=ROOT, text=True)
-                staged = ROOT / f".github/workflows/fleet-{family}-v2.yml"
+                staged = landed_v2(family)
                 self.assertEqual(
-                    normalize_reviewed_updates(staged.read_text(), updated=True),
+                    normalize_reviewed_updates(staged, updated=True),
                     normalize_reviewed_updates(source, updated=False),
                     "Staging must retain every command, guard, permission and runner contract",
                 )
+                retained = ROOT / f".github/workflows/fleet-{family}-v2.yml"
+                if family not in V3_FAMILIES:
+                    self.assertEqual(retained.read_text(), staged)
                 active = workflow_path(family)
-                assert_reviewed_workflow_delta(staged.read_text(), active.read_text(), active.name.endswith("-v2.yml"))
+                assert_reviewed_workflow_delta(strip_v3_deltas(staged), strip_v3_deltas(active.read_text()),
+                                               carries_reviewed_updates(active.name))
                 main_file = main_manifest[family]
-                self.assertIn(main_file, (f"fleet-{family}.yml", f"fleet-{family}-v2.yml"))
+                self.assertIn(main_file, (f"fleet-{family}.yml", f"fleet-{family}-v2.yml", f"fleet-{family}-v3.yml"))
                 main_active = subprocess.check_output(
                     ["git", "show", f"origin/main:.github/workflows/{main_file}"], cwd=ROOT, text=True,
                 )
-                assert_reviewed_workflow_delta(staged.read_text(), main_active, main_file.endswith("-v2.yml"))
-
+                assert_reviewed_workflow_delta(strip_v3_deltas(staged), strip_v3_deltas(main_active),
+                                               carries_reviewed_updates(main_file))
 
 if __name__ == "__main__":
     unittest.main()

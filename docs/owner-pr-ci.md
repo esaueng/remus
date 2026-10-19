@@ -1,6 +1,6 @@
 # Trusted owner CI fleet
 
-Required Linux CI jobs and their completion gate live in `fleet-ci-v2.yml`, called
+Required Linux CI jobs and their completion gate live in `fleet-ci-v3.yml`, called
 at an immutable commit from `ci.yml`. Benchmarks, corpus gauntlets, fuzzing,
 mutation checks, OSV scans, WASM candidates and size reports each have their
 own immutable `fleet-*.yml` callee. Their shared pre-checkout guard is a pinned
@@ -73,7 +73,7 @@ workflow jobs install browser binaries without sudo.
 
 ## Activation and rollback
 
-Approve the exact immutable `fleet-ci-v2.yml` runner-group entry without removing
+Approve the exact immutable `fleet-ci-v3.yml` runner-group entry without removing
 existing restrictions. Configure the external controller's selected repository
 identities and dedicated GitHub credential, then validate both hosts. The
 required completion check is `checks / CI Pass`, the existing gate inside the
@@ -115,7 +115,7 @@ Release workflows are unchanged.
 Policy verification: `python3 scripts/test-direct-fleet.py`,
 `python3 scripts/test-owner-pr-routing.py`, the existing owner policy tests,
 and `actionlint`. The historical `owner-pr.yml` remains unchanged for old
-immutable callers; new callers use `fleet-ci-v2.yml`.
+immutable callers; new callers use `fleet-ci-v3.yml`.
 
 ## Updating immutable workflow dependencies
 
