@@ -81,6 +81,10 @@ const WINDING_PANEL_TOLERANCE: f64 = 1e-13;
 /// that [`bridge`] closes with a chord.
 const MAX_BRIDGED_GAP: f64 = 1e-4;
 
+/// How far a panel's `∫ du` may sit from its endpoints' change of `u`, modulo
+/// whole turns, in radians (see [`continuous_in_u`]).
+const PANEL_CONTINUITY_SLACK: f64 = 1e-7;
+
 /// How far a wire's winding may sit from a whole number of turns.
 const WINDING_SLACK: f64 = 1e-8;
 
@@ -422,7 +426,9 @@ fn sphere_polar_axis(
             let edge = topo.edge(oriented.edge())?;
             let start = topo.vertex(edge.start())?.point();
             let end = topo.vertex(edge.end())?.point();
-            let (t0, t1) = edge.domain_with_endpoints(start, end);
+            let Ok((t0, t1)) = edge.strict_domain() else {
+                return Ok(None);
+            };
             for k in 0..=8 {
                 let t = t0 + (t1 - t0) * f64::from(k) / 8.0;
                 samples.push(edge.curve().evaluate_with_endpoints(t, start, end) - center);
@@ -531,10 +537,11 @@ fn integrate_wire(
         let edge = topo.edge(oriented.edge())?;
         let start = topo.vertex(edge.start())?.point();
         let end = topo.vertex(edge.end())?.point();
-        let (d0, d1) = edge.domain_with_endpoints(start, end);
-        if !(d0.is_finite() && d1.is_finite()) {
+        // The stored trim is the edge's authority (RFC 0002); an edge without
+        // one keeps the quadrature.
+        let Ok((d0, d1)) = edge.strict_domain() else {
             return Ok(false);
-        }
+        };
         let (from, to) = if oriented.is_forward() {
             (d0, d1)
         } else {
@@ -786,6 +793,14 @@ fn integrate_panel(
         && (whole.0 - halves.0).abs() <= tolerance
         && (whole.1 - halves.1).abs() <= WINDING_PANEL_TOLERANCE
     {
+        // Only a sphere's boundary can reach its axis where `G` is non-zero:
+        // a cylinder's and a ring torus's never reach it, and a cone's only
+        // at the apex, where `G = 0` and a jump in `u` carries no area.
+        if matches!(chart.kernel, Kernel::Sphere { .. })
+            && !continuous_in_u(chart, curve, start, end, a, b, halves.1)
+        {
+            return false;
+        }
         sum.area_term += halves.0;
         sum.winding += halves.1;
         sum.tube_angle = angle;
@@ -793,6 +808,32 @@ fn integrate_panel(
     }
     integrate_panel(chart, curve, start, end, a, mid, tolerance, depth + 1, sum)
         && integrate_panel(chart, curve, start, end, mid, b, tolerance, depth + 1, sum)
+}
+
+/// Whether the panel's integrated `∫ du` is the change of `u` between its
+/// ends, modulo whole turns. A curve that crosses the polar axis between
+/// quadrature nodes makes `u` jump by a half turn there, a jump `du` never
+/// sees and which carries `G(pole) · Δu` of area; this refuses it.
+fn continuous_in_u(
+    chart: &Chart,
+    curve: &EdgeCurve,
+    start: Point3,
+    end: Point3,
+    a: f64,
+    b: f64,
+    winding: f64,
+) -> bool {
+    let u_at = |t: f64| {
+        point_and_derivative(curve, t, start, end).map(|(p, _)| {
+            let (x, y, _) = chart.local(p);
+            y.atan2(x)
+        })
+    };
+    let (Some(from), Some(to)) = (u_at(a), u_at(b)) else {
+        return false;
+    };
+    let residual = winding - (to - from);
+    (residual - TAU * (residual / TAU).round()).abs() <= PANEL_CONTINUITY_SLACK
 }
 
 #[cfg(test)]

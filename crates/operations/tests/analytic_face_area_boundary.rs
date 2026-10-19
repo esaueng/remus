@@ -329,7 +329,7 @@ fn cross_drilled_wall_keeps_its_holes() {
                 topo.vertex(edge.start()).unwrap().point(),
                 topo.vertex(edge.end()).unwrap().point(),
             );
-            let (mut t0, mut t1) = edge.domain_with_endpoints(start, end);
+            let (mut t0, mut t1) = edge.strict_domain().unwrap();
             if !oriented.is_forward() {
                 std::mem::swap(&mut t0, &mut t1);
             }

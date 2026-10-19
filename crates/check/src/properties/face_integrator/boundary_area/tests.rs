@@ -39,3 +39,55 @@ fn natural_normal_is_the_outward_normal_with_the_tabulated_jacobian() {
         check(&torus, u, v, 1.5 * 1.5f64.mul_add(v.cos(), 5.0));
     }
 }
+
+/// A meridian arc through the chart's pole carries no `du` on either side
+/// of the pole, yet `u` jumps by a half turn there: the panel continuity
+/// certificate must refuse it rather than integrate a wrong area.
+#[test]
+fn a_hidden_pole_crossing_is_refused() {
+    use remus_math::curves::Circle3D;
+    use remus_topology::edge::EdgeCurve;
+
+    let center = Point3::new(0.0, 0.0, 0.0);
+    let chart = super::Chart {
+        origin: center,
+        x: Vec3::new(1.0, 0.0, 0.0),
+        y: Vec3::new(0.0, 1.0, 0.0),
+        z: Vec3::new(0.0, 0.0, 1.0),
+        kernel: super::Kernel::Sphere {
+            r: 2.0,
+            quadrature_axis: false,
+        },
+        scale: 2.0,
+    };
+    // The great circle in the x-z plane passes the pole at t = π/2.
+    let meridian = EdgeCurve::Circle(
+        Circle3D::new_with_ref(
+            center,
+            Vec3::new(0.0, -1.0, 0.0),
+            2.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap(),
+    );
+    let mut sum = super::WireSum {
+        area_term: 0.0,
+        winding: 0.0,
+        tube_angle: None,
+        panels: 0,
+    };
+    let (a, b) = (0.3, 2.9);
+    assert!(!super::integrate_panel(
+        &chart, &meridian, center, center, a, b, 1e-12, 0, &mut sum
+    ));
+    // The same arc short of the pole integrates.
+    let mut sum = super::WireSum {
+        area_term: 0.0,
+        winding: 0.0,
+        tube_angle: None,
+        panels: 0,
+    };
+    assert!(super::integrate_panel(
+        &chart, &meridian, center, center, a, 1.2, 1e-12, 0, &mut sum
+    ));
+}
