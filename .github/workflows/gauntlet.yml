@@ -25,11 +25,8 @@ concurrency:
   group: gauntlet-results
   cancel-in-progress: false
 
-env:
-  # One basis point is 0.01 percentage points. A smoke-tier model is 2pp, so
-  # any new smoke failure trips the ratchet; abc-1k tolerates at most 0.50pp.
-  MAX_STAGE_DROP_BPS: "50"
-
+# The ratchet allowance (MAX_STAGE_DROP_BPS) lives in the called workflow:
+# a caller's `env` does not reach a reusable workflow.
 jobs:
   checks:
     uses: esaueng/remus/.github/workflows/fleet-gauntlet-v2.yml@e07ae8e345e10085a717988e10fc08776c85d84a
@@ -37,4 +34,5 @@ jobs:
       contents: write
       pull-requests: read
     with:
-      tier: ${{ inputs.tier || 'smoke' }}
+      # The weekly cron above selects abc-1k here, beside its schedule line.
+      tier: ${{ github.event.schedule == '47 3 * * 0' && 'abc-1k' || inputs.tier || 'smoke' }}
