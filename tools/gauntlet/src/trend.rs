@@ -133,13 +133,46 @@ pub fn build_trend_row(
 ///
 /// Returns an error when an existing history cannot be read or parsed.
 pub fn load_latest_trend(history: &Path, tier: &str) -> Result<Option<TrendRow>, GauntletError> {
+    Ok(load_tier_history(history, tier)?.pop())
+}
+
+/// Read the row a new run for `tier` must not regress against: the newest
+/// row that itself passed the ratchet.
+///
+/// The publisher appends every completed run, including one the ratchet
+/// refused. Comparing with the newest row alone would accept such a
+/// regression on the following run, so the history is replayed and refused
+/// rows never become the baseline. The first row of a tier is accepted.
+///
+/// # Errors
+///
+/// Returns an error when an existing history cannot be read or parsed.
+pub fn load_ratchet_baseline(
+    history: &Path,
+    tier: &str,
+    max_drop_basis_points: u32,
+) -> Result<Option<TrendRow>, GauntletError> {
+    let mut baseline: Option<TrendRow> = None;
+    for row in load_tier_history(history, tier)? {
+        let accepted = match &baseline {
+            None => true,
+            Some(previous) => enforce_ratchet(previous, &row, max_drop_basis_points).is_ok(),
+        };
+        if accepted {
+            baseline = Some(row);
+        }
+    }
+    Ok(baseline)
+}
+
+fn load_tier_history(history: &Path, tier: &str) -> Result<Vec<TrendRow>, GauntletError> {
     validate_tier(tier)?;
     let contents = match fs::read_to_string(history) {
         Ok(contents) => contents,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(GauntletError::message(error.to_string())),
     };
-    let mut latest = None;
+    let mut rows = Vec::new();
     for (index, line) in contents.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
@@ -152,10 +185,10 @@ pub fn load_latest_trend(history: &Path, tier: &str) -> Result<Option<TrendRow>,
         })?;
         validate_history_row(&row, index + 1)?;
         if row.tier == tier {
-            latest = Some(row);
+            rows.push(row);
         }
     }
-    Ok(latest)
+    Ok(rows)
 }
 
 /// Refuse a per-stage pass-rate regression beyond `max_drop_basis_points`.
@@ -379,6 +412,74 @@ mod tests {
             std::process::id()
         ));
         assert_eq!(load_latest_trend(&path, "smoke").unwrap(), None);
+    }
+
+    fn history_file(name: &str, rows: &[TrendRow]) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("remus-gauntlet-{name}-{}", std::process::id()));
+        let mut text = String::new();
+        for row in rows {
+            text.push_str(&serde_json::to_string(row).unwrap());
+            text.push('\n');
+        }
+        fs::write(&path, text).unwrap();
+        path
+    }
+
+    #[test]
+    fn refused_row_never_becomes_the_ratchet_baseline() {
+        // A refused 49/50 run is still published; the next 49/50 run must
+        // compare against the last accepted 50/50 row and stay refused.
+        let path = history_file("refused-baseline", &[row(50, 50), row(49, 50)]);
+        let baseline = load_ratchet_baseline(&path, "smoke", 50).unwrap().unwrap();
+        let latest = load_latest_trend(&path, "smoke").unwrap().unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(baseline, row(50, 50));
+        assert_eq!(latest, row(49, 50));
+        let error = enforce_ratchet(&baseline, &row(49, 50), 50).unwrap_err();
+        assert!(
+            error.to_string().contains("gauntlet_pass_rate_regression"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn accepted_rows_advance_the_ratchet_baseline() {
+        // Drops within the allowance and recoveries are accepted in order.
+        let path = history_file(
+            "accepted-baseline",
+            &[
+                row(1000, 1000),
+                row(995, 1000),
+                row(990, 1000),
+                row(989, 1000),
+            ],
+        );
+        let baseline = load_ratchet_baseline(&path, "smoke", 50).unwrap().unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(baseline, row(989, 1000));
+
+        let path = history_file(
+            "recovered-baseline",
+            &[row(50, 50), row(49, 50), row(50, 50)],
+        );
+        let baseline = load_ratchet_baseline(&path, "smoke", 50).unwrap().unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(baseline, row(50, 50));
+        enforce_ratchet(&baseline, &row(50, 50), 50).unwrap();
+    }
+
+    #[test]
+    fn ratchet_baseline_ignores_other_tiers_and_missing_history() {
+        let path = std::env::temp_dir().join(format!(
+            "remus-gauntlet-missing-baseline-{}",
+            std::process::id()
+        ));
+        assert_eq!(load_ratchet_baseline(&path, "smoke", 50).unwrap(), None);
+        let path = history_file("other-tier-baseline", &[row(50, 50)]);
+        let baseline = load_ratchet_baseline(&path, "abc-1k", 50).unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(baseline, None);
     }
 
     #[test]

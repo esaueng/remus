@@ -49,6 +49,8 @@ jobs:
   build-committed-package:
     name: Build committed WASM package
     runs-on: ubuntu-24.04
+    # A warm build takes about 20 minutes.
+    timeout-minutes: 60
     # Package-only PR merges are excluded by the path filter above.
     # A manual run is restricted to main; both jobs check out its exact event SHA.
     if: >-
@@ -112,6 +114,7 @@ jobs:
     name: Propose refreshed WASM package
     needs: [build-committed-package]
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:

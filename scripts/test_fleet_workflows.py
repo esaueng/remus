@@ -113,6 +113,28 @@ class FleetWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "active command, guard or permission"):
             assert_reviewed_workflow_delta(staged, drifted, active.name.endswith("-v2.yml"))
 
+    def test_staged_v3_only_adds_job_timeouts_and_the_cargo_fuzz_pin(self):
+        # The next workflow version bounds every job and pins cargo-fuzz; every
+        # other byte must match the active callee it will replace.
+        staged = sorted((ROOT / ".github/workflows").glob("fleet-*-v3.yml"))
+        self.assertEqual([path.name for path in staged], [
+            "fleet-ci-v3.yml", "fleet-fuzz-v3.yml", "fleet-osv-v3.yml",
+            "fleet-wasm-candidate-v3.yml", "fleet-wasm-size-v3.yml",
+        ])
+        timeout = re.compile(r"(?m)^    timeout-minutes: [0-9]+\n")
+        for path in staged:
+            family = path.name[len("fleet-"):-len("-v3.yml")]
+            with self.subTest(family=family):
+                text = path.read_text()
+                jobs = re.split(r"(?m)^(?=  [\w-]+:\n)", text.split("\njobs:\n", 1)[1])
+                for job in filter(None, jobs):
+                    self.assertRegex(job, r"(?m)^    runs-on: .*\n    timeout-minutes: [0-9]+$")
+                expected = timeout.sub("", workflow_path(family).read_text())
+                actual = timeout.sub("", text).replace(
+                    "install cargo-fuzz --version 0.13.2 --locked", "install cargo-fuzz --locked")
+                self.assertEqual(actual, expected,
+                                 "Staging must retain every command, guard, permission and runner contract")
+
     def test_staged_v2_only_changes_reviewed_action_dependencies(self):
         self.assertEqual(subprocess.run(
             ["git", "merge-base", "--is-ancestor", SOURCE, "origin/main"],

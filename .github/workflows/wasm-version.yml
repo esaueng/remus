@@ -57,6 +57,7 @@ jobs:
     needs: integrity
     if: ${{ always() }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - name: Require successful package integrity
         env:

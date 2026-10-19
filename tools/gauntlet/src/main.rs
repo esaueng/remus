@@ -15,14 +15,16 @@ use remus_gauntlet::manifest::{
 use remus_gauntlet::p85::{
     P85RunConfig, process_p85_model, replay_bundle, run_p85_isolated, write_p85_outputs,
 };
-use remus_gauntlet::trend::{build_trend_row, enforce_ratchet, load_latest_trend, write_trend_row};
+use remus_gauntlet::trend::{
+    build_trend_row, enforce_ratchet, load_ratchet_baseline, write_trend_row,
+};
 use remus_gauntlet::{
     GauntletError, PipelineConfig, RunConfig, Scoreboard, arg_is, process_model,
     run_models_isolated, write_outputs,
 };
 use remus_io::ImportLimits;
 
-const USAGE: &str = "Usage:\n  remus-gauntlet run [--output DIR] [--timeout-ms N] [--jobs N] [--deflection D] [--max-input-bytes N] [--max-model-entities N] MODEL.step...\n  remus-gauntlet fetch MANIFEST.json --cache DIR [--sample N --seed S] [--source-file URL PATH]... [--output-list PATH]\n  remus-gauntlet manifest-archive --archive PATH --output PATH --name NAME --url URL --license-class CLASS --id-prefix PREFIX --sample N --seed S\n  remus-gauntlet trend --scoreboard PATH --history PATH --output-row PATH --tier NAME --date YYYY-MM-DD --sha HEX --manifest-sha256 HEX --max-drop-bps N\n  remus-gauntlet p85-run --manifest MANIFEST.json --cache DIR --output DIR [--timeout-ms N] [--jobs N] [--deflection D] [--max-input-bytes N] [--max-model-entities N] [--kernel-sha HEX] [--sample N --seed S] [--source-file URL PATH]... [MODEL.step...]\n  remus-gauntlet p85-worker [--deflection D] [--max-input-bytes N] [--max-model-entities N] --model-id ID --model-sha256 HEX --kernel-sha HEX --manifest-sha256 HEX MODEL.step\n  remus-gauntlet p85-replay --model MODEL.step --model-id ID --model-sha256 HEX [--bundle-out PATH] [--kernel-sha HEX] [--manifest-sha256 HEX] [--deflection D] [--max-input-bytes N] [--max-model-entities N] [--model-timeout-ms N]\n\nThe run command writes models.jsonl, scoreboard.json, and scoreboard.md. Fetch verifies every byte into a content-addressed cache. Trend writes the current row before enforcing the declared per-stage ratchet. The p85-run command executes the P-Class 8.5 operation/export slice and writes p85-models.jsonl, p85-scoreboard.json, and p85-scoreboard.md; p85-replay re-runs one fixture plus recipe in-process and records a deterministic reproduction bundle.\n";
+const USAGE: &str = "Usage:\n  remus-gauntlet run [--output DIR] [--timeout-ms N] [--jobs N] [--deflection D] [--max-input-bytes N] [--max-model-entities N] MODEL.step...\n  remus-gauntlet fetch MANIFEST.json --cache DIR [--sample N --seed S] [--source-file URL PATH]... [--output-list PATH]\n  remus-gauntlet manifest-archive --archive PATH --output PATH --name NAME --url URL --license-class CLASS --id-prefix PREFIX --sample N --seed S\n  remus-gauntlet trend --scoreboard PATH --history PATH --output-row PATH --tier NAME --date YYYY-MM-DD --sha HEX --manifest-sha256 HEX --max-drop-bps N\n  remus-gauntlet p85-run --manifest MANIFEST.json --cache DIR --output DIR [--timeout-ms N] [--jobs N] [--deflection D] [--max-input-bytes N] [--max-model-entities N] [--kernel-sha HEX] [--sample N --seed S] [--source-file URL PATH]... [MODEL.step...]\n  remus-gauntlet p85-worker [--deflection D] [--max-input-bytes N] [--max-model-entities N] --model-id ID --model-sha256 HEX --kernel-sha HEX --manifest-sha256 HEX MODEL.step\n  remus-gauntlet p85-replay --model MODEL.step --model-id ID --model-sha256 HEX [--bundle-out PATH] [--kernel-sha HEX] [--manifest-sha256 HEX] [--deflection D] [--max-input-bytes N] [--max-model-entities N] [--model-timeout-ms N]\n\nThe run command writes models.jsonl, scoreboard.json, and scoreboard.md. Fetch verifies every byte into a content-addressed cache. Trend writes the current row before enforcing the declared per-stage ratchet against the newest history row that passed it. The p85-run command executes the P-Class 8.5 operation/export slice and writes p85-models.jsonl, p85-scoreboard.json, and p85-scoreboard.md; p85-replay re-runs one fixture plus recipe in-process and records a deterministic reproduction bundle.\n";
 
 fn main() -> ExitCode {
     match run() {
@@ -780,7 +782,7 @@ fn run_trend(args: &[OsString]) -> Result<(), GauntletError> {
         .map_err(|error| GauntletError::message(error.to_string()))?;
     let row = build_trend_row(&scoreboard, &tier, &date, &sha, &manifest_sha256)?;
     write_trend_row(&output_row, &row)?;
-    if let Some(previous) = load_latest_trend(&history, &tier)? {
+    if let Some(previous) = load_ratchet_baseline(&history, &tier, max_drop_bps)? {
         enforce_ratchet(&previous, &row, max_drop_bps)?;
     }
     Ok(())
