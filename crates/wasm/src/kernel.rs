@@ -77,6 +77,7 @@ impl BrepKernel {
         // to recomputing. Idempotent.
         remus_check::properties::face_cache::enable_thread_face_cache();
         remus_operations::measure::enable_thread_volume_memo();
+        remus_operations::measure::enable_default_measurement_reuse();
         remus_operations::measure::enable_thread_nurbs_area_memo();
         remus_operations::measure::enable_thread_face_box_memo();
         remus_operations::tessellate::enable_face_mesh_cache();
@@ -2670,10 +2671,13 @@ mod kernel_correctness_tests {
         impl Drop for ResetMemo {
             fn drop(&mut self) {
                 measure::disable_thread_nurbs_area_memo();
+                measure::clear_measurement_reuse();
             }
         }
 
         measure::disable_thread_nurbs_area_memo();
+        measure::set_measurement_reuse_enabled(true);
+        measure::clear_measurement_reuse();
         let _reset = ResetMemo;
         let surface = NurbsSurface::new(
             1,
@@ -2693,6 +2697,8 @@ mod kernel_correctness_tests {
         let area = first.face_area(face.index() as u32, 0.05).unwrap();
         let before = measure::thread_nurbs_area_memo_stats().unwrap();
         assert_eq!(before.len, 1);
+        let reuse_before = measure::measurement_reuse_stats();
+        assert_eq!(reuse_before.area_entries, 1);
 
         let mut second = BrepKernel::new();
         let after_constructor = measure::thread_nurbs_area_memo_stats().unwrap();
@@ -2700,9 +2706,24 @@ mod kernel_correctness_tests {
         assert_eq!(after_constructor.misses, before.misses);
         assert_eq!(after_constructor.capacity, 3);
         assert_eq!(after_constructor.byte_budget, 4096);
+        assert_eq!(measure::measurement_reuse_stats(), reuse_before);
         let second_face = make_nurbs_face(second.topo_mut(), surface, 1e-7).unwrap();
         let second_area = second.face_area(second_face.index() as u32, 0.05).unwrap();
         assert_eq!(area.to_bits(), second_area.to_bits());
+        assert_eq!(
+            measure::measurement_reuse_stats().area_content_hits,
+            reuse_before.area_content_hits + 1
+        );
+        assert_eq!(
+            measure::thread_nurbs_area_memo_stats().unwrap().hits,
+            before.hits
+        );
+
+        // The scalar cache serves the second call first. Clear only that
+        // layer to prove the underlying NURBS reading also survived.
+        measure::clear_measurement_reuse();
+        let underlying_area = second.face_area(second_face.index() as u32, 0.05).unwrap();
+        assert_eq!(area.to_bits(), underlying_area.to_bits());
         let after = measure::thread_nurbs_area_memo_stats().unwrap();
         assert_eq!(after.hits, before.hits + 1);
         assert_eq!(after.len, before.len);
