@@ -9,10 +9,12 @@ import re
 import subprocess
 import unittest
 from pathlib import Path
+from fleet_workflows import workflow_path
+from test_fleet_workflows import FleetWorkflowTests
 
 
 ROOT = Path(__file__).resolve().parent.parent
-CI = (ROOT / ".github/workflows/fleet-ci.yml").read_text()
+CI = workflow_path("ci").read_text()
 CALLER = (ROOT / ".github/workflows/ci.yml").read_text()
 OWNER = (ROOT / ".github/workflows/owner-pr.yml").read_text()
 
@@ -23,10 +25,10 @@ def job(name):
 
 class OwnerRoutingTests(unittest.TestCase):
     def test_caller_pins_the_reviewed_workflow_content(self):
-        match = re.search(r"uses: esaueng/remus/.github/workflows/fleet-ci.yml@([0-9a-f]{40})", CALLER)
+        match = re.search(r"uses: esaueng/remus/.github/workflows/(fleet-ci(?:-v[1-9][0-9]*)?\.yml)@([0-9a-f]{40})", CALLER)
         self.assertIsNotNone(match)
         pinned = subprocess.check_output(
-            ["git", "show", f"{match[1]}:.github/workflows/fleet-ci.yml"],
+            ["git", "show", f"{match[2]}:.github/workflows/{match[1]}"],
             cwd=ROOT, text=True)
         self.assertEqual(pinned, CI, "Update the immutable pin after changing the callee")
         self.assertNotIn("secrets:", CALLER)
