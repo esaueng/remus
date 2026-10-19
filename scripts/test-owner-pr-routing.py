@@ -16,7 +16,6 @@ from test_fleet_workflows import FleetWorkflowTests
 ROOT = Path(__file__).resolve().parent.parent
 CI = workflow_path("ci").read_text()
 CALLER = (ROOT / ".github/workflows/ci.yml").read_text()
-OWNER = (ROOT / ".github/workflows/owner-pr.yml").read_text()
 
 
 def job(name):
@@ -54,22 +53,6 @@ class OwnerRoutingTests(unittest.TestCase):
         self.assertIn("cargo llvm-cov report --profile ci-test --fail-under-lines 60", job("coverage"))
         self.assertIn("id-token: write", job("coverage"))
         self.assertIn("id-token: write", CALLER)
-
-    def test_vps_preserves_native_commands(self):
-        for command in (
-            "cargo clippy --all-targets --all-features -- -D warnings",
-            "cargo nextest run --workspace --cargo-profile ci-test",
-            "cargo test --workspace --profile ci-test --doc",
-            "cargo nextest run -p remus-operations --features perf-counters --cargo-profile ci-test",
-            "cargo check --manifest-path fuzz/Cargo.toml --bins",
-            "cargo doc --no-deps --all-features",
-            "mdbook build book",
-            "cargo +1.88.0 check --workspace --all-features",
-        ):
-            with self.subTest(command=command):
-                self.assertIn(command, OWNER)
-        self.assertIn("test(scaling_)", OWNER)
-        self.assertNotIn("continue-on-error", OWNER)
 
     def test_ci_pass_rejects_vps_failure_or_cancellation(self):
         block = job("ci-pass")

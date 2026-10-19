@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the pre-checkout runner identity guard in both trusted workflows."""
+"""Exercise the runner identity table in the fleet guard and the trusted pilot."""
 import os
 from pathlib import Path
 import re
@@ -7,12 +7,13 @@ import subprocess
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+SOURCES = ('.github/actions/fleet-guard/action.yml', '.github/workflows/trusted-vps.yml')
 
 
 class FleetRunnerPolicy(unittest.TestCase):
     def test_only_provisioned_runner_names_pass(self):
-        for workflow in ('owner-pr.yml', 'trusted-vps.yml'):
-            text = (ROOT / '.github/workflows' / workflow).read_text()
+        for workflow in SOURCES:
+            text = (ROOT / workflow).read_text()
             guard = re.search(r'case "\$RUNNER_NAME" in\n.*?\besac', text, re.S).group()
             for name, allowed in [('ci-vm-1441561', True), ('ci-server-jane', True), ('ci-server-john', True),
                                   ('ci-server-jane-1', True), ('ci-server-jane-2', True),
@@ -24,8 +25,8 @@ class FleetRunnerPolicy(unittest.TestCase):
                     self.assertEqual(result.returncode == 0, allowed)
 
     def test_profiles_match_each_slots_actual_resources(self):
-        for workflow in ('owner-pr.yml', 'trusted-vps.yml'):
-            text = (ROOT / '.github/workflows' / workflow).read_text()
+        for workflow in SOURCES:
+            text = (ROOT / workflow).read_text()
             guard = re.search(r'case "\$RUNNER_NAME" in\n.*?\besac', text, re.S).group()
             for name, expected in (
                 ('ci-vm-1441561', 'ci-runner /srv/ci ci.slice ci-docker 3221225472 1 1 1'),
@@ -39,8 +40,8 @@ class FleetRunnerPolicy(unittest.TestCase):
                     self.assertEqual(result.strip(), expected)
 
     def test_cpu_validation_rejects_wrong_or_unbounded_quota(self):
-        for workflow in ('owner-pr.yml', 'trusted-vps.yml'):
-            text = (ROOT / '.github/workflows' / workflow).read_text()
+        for workflow in SOURCES:
+            text = (ROOT / workflow).read_text()
             program = re.search(r"awk -v cpus=\"\$CI_CPUS\" '([^']+)'", text).group(1)
             for cpus, quota, expected in [(1, '100000 100000', 0), (6, '600000 100000', 0),
                                            (6, '100000 100000', 1), (6, 'max 100000', 1)]:

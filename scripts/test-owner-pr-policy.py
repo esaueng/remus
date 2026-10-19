@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the exact policy embedded in the immutable VPS workflow."""
+"""Exercise the owner identity policy in the pre-checkout fleet guard."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-WORKFLOW = ROOT / ".github/workflows/owner-pr.yml"
+WORKFLOW = ROOT / ".github/actions/fleet-guard/action.yml"
 TEXT = WORKFLOW.read_text()
 POLICY = {"__name__": "owner_policy"}
-SOURCE = TEXT.split("python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+SOURCE = TEXT.split("python3 - <<'PY'\n", 1)[1].split("\n        PY", 1)[0]
 exec(compile(textwrap.dedent(SOURCE), str(WORKFLOW), "exec"), POLICY)
 
 
@@ -127,34 +127,12 @@ class OwnerPolicyTests(unittest.TestCase):
         event["pull_request"]["head"]["ref"] = "feature/quote'and$commands"
         self.assertTrue(POLICY["eligible"](event, context))
 
-    def test_authorization_has_no_checkout_or_caller_selected_ref(self):
-        gate, rust = TEXT.split("\n  rust:\n", 1)
-        self.assertNotIn("actions/checkout@", gate)
-        self.assertNotIn("inputs.ref", TEXT)
-        self.assertNotIn("inputs.repository", TEXT)
-        self.assertIn("needs: [select, route]", rust)
-        self.assertIn("needs.select.outputs.trusted == 'true'", rust)
-        self.assertIn("ref: ${{ github.sha }}", rust)
-        self.assertIn("persist-credentials: false", rust)
+    def test_guard_fails_closed_and_runs_only_on_self_hosted_prs(self):
+        step = TEXT.split("  steps:\n", 1)[1].split("    - name: Verify runner isolation", 1)[0]
+        self.assertIn("if: runner.environment == 'self-hosted' && github.event_name == 'pull_request'", step)
+        self.assertIn('raise SystemExit("PR identity or merge parents no longer match")', SOURCE)
         self.assertNotIn("secrets.", TEXT)
-        self.assertEqual(re.findall(r"([a-z-]+): write\b", TEXT), ["id-token"])
-        self.assertNotRegex(rust, r": write\b")
-        self.assertNotIn("actions/cache", rust)
-        self.assertNotIn("rust-cache", rust)
-        self.assertNotIn("pull_request_target:", TEXT)
-
-    def test_workflow_and_actions_have_fixed_access_boundaries(self):
-        self.assertIn("  workflow_call:\n", TEXT)
-        self.assertIn("group: ci-trusted-main", TEXT)
-        self.assertIn("labels: ${{ needs.route.outputs.target }}", TEXT)
-        self.assertIn("contains(fromJSON('[\"ci-server-jane\",\"ci-server-john\"]'), needs.route.outputs.target)", TEXT)
-        for reference in re.findall(r"uses: (\S+)", TEXT):
-            self.assertRegex(reference, r"@[0-9a-f]{40}$")
-        self.assertIn('CARGO_BUILD_JOBS: "1"', TEXT)
-        self.assertIn('RUST_TEST_THREADS: "1"', TEXT)
-        self.assertIn("3221225472", TEXT)
-        self.assertIn("memory.swap.max", TEXT)
-
+        self.assertNotIn("actions/checkout@", TEXT)
 
 if __name__ == "__main__":
     unittest.main()

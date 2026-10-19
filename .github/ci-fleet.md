@@ -1,28 +1,32 @@
 # Trusted CI fleet
 
-Owner PR Rust checks and the main diagnostic workflow use the immutable shared
-selector: Jane's two-slot shared label first, John only when Jane is unavailable,
-then GitHub-hosted. Busy Jane keeps its queue. Disabled or unavailable routing
-selects hosted, never the legacy `ci-small` target.
+Fleet jobs choose their runner from repository variables, evaluated in each
+job's `runs-on` expression: an owner PR or a protected-main push runs on the
+runner named by `CI_FLEET_TARGET` (`ci-server-jane` or `ci-server-john`) when
+`CI_FLEET_ENABLED` is `true`, and on GitHub-hosted `ubuntu-24.04` otherwise.
+Nothing checks availability: a job queued for an offline server waits for it.
+The availability selector (`select-runner.yml`) and its only caller,
+`owner-pr.yml`, were retired unused on 2026-10-19. Routing never selects the
+legacy `ci-small` target.
 
-The legacy `REMUS_OWNER_PR_VPS_ENABLED` and `REMUS_TRUSTED_VPS_ENABLED` variable
-names remain compatibility switches; they do not force a VPS target.
-`CI_FLEET_ENABLED` separately enables availability routing. Owner authorization
+`REMUS_TRUSTED_VPS_ENABLED` remains the pilot's activation switch; it does not
+force a VPS target. `REMUS_OWNER_PR_VPS_ENABLED` was read only by `owner-pr.yml`
+and is now unused. `CI_FLEET_ENABLED` separately enables fleet routing. Owner authorization
 still checks repository/actor IDs, current PR metadata and immutable merge
 parents before checkout. The runner group independently permits exact workflow
 revisions; labels alone grant no access.
 
 `trusted-vps.yml` retains its filename for the existing main-only group entry.
-Its default is automatic selection. Explicit manual diagnostics may target Jane,
-one of its two slots, or John. Old VPS labels and arbitrary inputs are rejected;
-main pushes never override the selector. Protected main and the trusted-pilot
+Its default (`auto`) uses the `CI_FLEET_TARGET` runner. Explicit manual
+diagnostics may target Jane, one of its two slots, or John. Old VPS labels and
+arbitrary inputs are rejected; main pushes never override the configured target. Protected main and the trusted-pilot
 activation switch remain required.
 
-Activation still needs the reviewed immutable workflow entry, deployed routing
-endpoint, verified per-slot collectors and John label, and real job/cleanup
-validation. The selector needs hosted Actions capacity. It cannot retarget an
-already queued job or prove GitHub connectivity from a local listener process;
-connectivity verification and bounded queue supervision remain rollout gates.
+Activation still needs the reviewed immutable workflow entry, verified per-slot
+collectors and John label, and real job/cleanup validation. Routing cannot
+retarget an already queued job or prove GitHub connectivity from a local
+listener process; connectivity verification and bounded queue supervision
+remain rollout gates.
 
 Disable `CI_FLEET_ENABLED` to return new ordinary jobs to hosted. Keep old access
 entries until their consumers are retired. Do not rename collector identities
