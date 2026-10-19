@@ -137,7 +137,8 @@ class FleetWorkflowTests(unittest.TestCase):
     def test_v3_only_adds_job_timeouts_and_the_cargo_fuzz_pin(self):
         # V3 bounds every job and pins cargo-fuzz; every other byte must match
         # the landed v2 callee it replaced.
-        v3 = sorted((ROOT / ".github/workflows").glob("fleet-*-v3.yml"))
+        v3 = sorted(path for path in (ROOT / ".github/workflows").glob("fleet-*-v3.yml")
+                    if path.name[len("fleet-"):-len("-v3.yml")] in V3_FAMILIES)
         self.assertEqual([path.name for path in v3], [
             f"fleet-{family}-v3.yml" for family in sorted(V3_FAMILIES)
         ])
@@ -150,6 +151,45 @@ class FleetWorkflowTests(unittest.TestCase):
                     self.assertRegex(job, r"(?m)^    runs-on: .*\n    timeout-minutes: [0-9]+$")
                 self.assertEqual(strip_v3_deltas(text), strip_v3_deltas(landed_v2(family)),
                                  "V3 must retain every command, guard, permission and runner contract")
+
+    def test_staged_versions_only_refresh_comments_and_the_gauntlet_tier(self):
+        # Each staged callee may differ from the active one only by the
+        # reviewed comments (and a version comment on a pin), except that the
+        # gauntlet drops the cron match its caller now owns.
+        removed_tier = (
+            "          SCHEDULE: ${{ github.event.schedule }}\n",
+            "          if [ \"$SCHEDULE\" = \"47 3 * * 0\" ]; then\n"
+            "            tier=abc-1k\n"
+            "          elif [ -n \"$REQUESTED_TIER\" ]; then\n"
+            "            tier=$REQUESTED_TIER\n"
+            "          else\n"
+            "            tier=smoke\n"
+            "          fi\n",
+        )
+        staged = {
+            "wasm-size": ("fleet-wasm-size-v4.yml", ()),
+            "osv": ("fleet-osv-v4.yml", ()),
+            "mutants-sharded": ("fleet-mutants-sharded-v3.yml", ()),
+            "gauntlet": ("fleet-gauntlet-v3.yml", removed_tier),
+        }
+
+        def without_comments(text):
+            text = re.sub(r"(?m)^\s*#.*\n", "", text)
+            return re.sub(r"(?m)^(\s*(?:- )?uses: \S+)[ \t]+#[^\n]*$", r"\1", text)
+
+        for family, (filename, removed) in staged.items():
+            with self.subTest(family=family):
+                active = workflow_path(family).read_text()
+                for block in removed:
+                    self.assertEqual(active.count(block), 1, block)
+                    active = active.replace(block, "")
+                if family == "gauntlet":
+                    active = active.replace(
+                        '        run: |\n', '        run: |\n          tier=${REQUESTED_TIER:-smoke}\n', 1)
+                text = (ROOT / ".github/workflows" / filename).read_text()
+                self.assertNotEqual(text, workflow_path(family).read_text())
+                self.assertEqual(without_comments(text), without_comments(active),
+                                 "Staging may change only comments and the reviewed gauntlet tier step")
 
     def test_staged_v2_only_changes_reviewed_action_dependencies(self):
         self.assertEqual(subprocess.run(
