@@ -59,7 +59,7 @@ pub const DEFAULT_NURBS_AREA_MEMO_BYTE_BUDGET: usize = 8 * 1024 * 1024;
 /// Bump when the key's content or request encoding changes.
 const KEY_VERSION: u64 = 0x5245_4d55_534e_4134;
 /// Leads a face digest's key, so it never equals an area-memo key.
-const FACE_DIGEST_KEY_VERSION: u64 = 0x5245_4d55_5346_4431;
+const FACE_DIGEST_KEY_VERSION: u64 = 0x5245_4d55_5346_4432;
 
 /// Deterministic counters and current bounds of the thread's NURBS-area memo.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -501,9 +501,10 @@ impl KeyWriter {
 }
 
 /// Key words of a face's complete content: its reversal, every field of its
-/// support surface, and the boundary this memo's key records (wires, oriented
-/// edges, curves, trims, tolerances, vertex positions and pcurves, with handles
-/// as first-occurrence ordinals). `None` when an entity is missing.
+/// support surface, the boundary this memo's key records (wires, oriented
+/// edges, curves, trims, tolerances, vertex positions and pcurves), and the
+/// authoritative loops and coedges with their periodic windings. Handles
+/// enter as first-occurrence ordinals. `None` when an entity is missing.
 pub(super) fn face_content_words(topo: &Topology, face_id: FaceId) -> Option<Vec<u64>> {
     let face = topo.face(face_id).ok()?;
     let mut writer = KeyWriter {
@@ -514,6 +515,36 @@ pub(super) fn face_content_words(topo: &Topology, face_id: FaceId) -> Option<Vec
     writer.word(u64::from(face.is_reversed()));
     writer.face_surface(face.surface());
     writer.boundary(topo, face_id)?;
+    // The wires' first-occurrence edge ordinals, so a loop names its edges
+    // the way the boundary words above do.
+    let mut edge_ordinals: DetHashMap<usize, u64> = DetHashMap::default();
+    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        for oriented in topo.wire(wire_id).ok()?.edges() {
+            let next = edge_ordinals.len() as u64;
+            edge_ordinals.entry(oriented.edge().index()).or_insert(next);
+        }
+    }
+    writer.count(face.boundary_loops().len());
+    for &loop_id in face.boundary_loops() {
+        let boundary = topo.face_loop(loop_id).ok()?;
+        writer.word(u64::from(boundary.is_closed()));
+        writer.count(boundary.coedges().len());
+        for &coedge_id in boundary.coedges() {
+            let coedge = topo.coedge(coedge_id).ok()?;
+            // An edge the wires do not use is a different boundary.
+            writer.word(
+                edge_ordinals
+                    .get(&coedge.edge().index())
+                    .copied()
+                    .unwrap_or(u64::MAX),
+            );
+            writer.word(u64::from(coedge.is_forward()));
+            writer.pcurve(coedge.pcurve());
+            let winding = coedge.periodic_winding();
+            writer.word(u64::from(winding.u().cast_unsigned()));
+            writer.word(u64::from(winding.v().cast_unsigned()));
+        }
+    }
     writer.key
 }
 

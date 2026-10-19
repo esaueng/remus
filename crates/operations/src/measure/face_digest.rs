@@ -8,7 +8,8 @@
 //! The digest hashes the face's complete content: its reversal, every field
 //! of its support surface, and the whole boundary the NURBS-area memo keys
 //! (every wire, its closed flag and oriented edges, each edge's curve, trim,
-//! tolerance and vertex positions, and each edge use's pcurve). Handles enter
+//! tolerance and vertex positions, and each edge use's pcurve), plus the
+//! authoritative loops and coedges with their periodic windings. Handles enter
 //! only as first-occurrence ordinals, plus the relative arena order of the
 //! face's edges, which the face mesher reads. Reals enter by their bits, so
 //! there is no tolerance: any change to what a face measurement reads changes
@@ -75,6 +76,7 @@ mod tests {
     use remus_math::mat::Mat4;
     use remus_math::vec::Vec3;
     use remus_topology::Topology;
+    use remus_topology::coedge::PeriodicWinding;
     use remus_topology::explorer::solid_faces;
     use remus_topology::face::FaceId;
     use remus_topology::solid::SolidId;
@@ -185,5 +187,27 @@ mod tests {
         all.sort_unstable_by_key(|digest| digest.0);
         all.dedup();
         assert_eq!(all.len(), count);
+    }
+
+    /// A coedge's periodic winding is face content: changing only that
+    /// branch changes the digest, and restoring it restores the digest.
+    #[test]
+    fn periodic_winding_is_digested() {
+        let mut topo = Topology::new();
+        let body = primitives::make_cylinder(&mut topo, 2.0, 5.0).unwrap();
+        let lateral = solid_faces(&topo, body)
+            .unwrap()
+            .into_iter()
+            .find(|&face| topo.face(face).unwrap().effective_plane_normal().is_none())
+            .unwrap();
+        let before = face_content_digest(&topo, lateral).unwrap();
+        let loop_id = topo.face(lateral).unwrap().boundary_loops()[0];
+        let coedge = topo.face_loop(loop_id).unwrap().coedges()[0];
+        let current = topo.coedge(coedge).unwrap().periodic_winding();
+        let shifted = PeriodicWinding::new(current.u() + 1, current.v());
+        let original = topo.set_coedge_periodic_winding(coedge, shifted).unwrap();
+        assert_ne!(face_content_digest(&topo, lateral).unwrap(), before);
+        topo.set_coedge_periodic_winding(coedge, original).unwrap();
+        assert_eq!(face_content_digest(&topo, lateral).unwrap(), before);
     }
 }
