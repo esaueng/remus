@@ -17,7 +17,8 @@ it finished (`outcomes.json`, rewritten after every scenario), and fails when
 
 A week larger than the shard budget is sampled: each shard runs a shuffled
 order until its budget expires, so the mutants it did not reach are reported
-as not sampled (`unexamined.txt`), not as a failure. MISSED mutants are test
+as not sampled (`unexamined.txt`), not as a failure. Only an expired budget
+(exit 124) may leave listed mutants without an outcome. MISSED mutants are test
 gaps to triage, not a broken run: they are listed in the summary, raised as
 warnings and kept in the report artifact, and do not fail the shard.
 
@@ -192,7 +193,12 @@ def verdict(output_dir, exit_code, label):
         errors.append(f"{other} mutants ended in an unattributed state")
     if baselines and not examined:
         errors.append(f"{len(listed_names)} mutants listed but none was examined")
-    if unexamined:
+    if unexamined and exit_code != 124:
+        # Only the budget's `timeout` (124) can leave listed mutants unreached;
+        # a run cargo-mutants finished itself must account for every one.
+        errors.append(f"{len(unexamined)} listed mutants have no outcome although cargo-mutants "
+                      f"finished (exit {exit_code})")
+    elif unexamined:
         lines.append(f"{len(unexamined)} listed mutants were not sampled before the budget expired "
                      "(`unexamined.txt`).")
     elif exit_code == 124 and not errors:

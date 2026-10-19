@@ -119,6 +119,17 @@ class VerdictTests(unittest.TestCase):
         self.assertIn("Sample: 1 of 2 listed mutants examined (50%)", text)
         self.assertEqual(unexamined.splitlines(), [B])
 
+    def test_unreached_mutants_after_a_finished_run_fail(self):
+        # cargo-mutants exiting by itself (0 clean, 2 missed, 3 timeout) has
+        # examined its whole list; a missing outcome is bad output, not a sample.
+        for exit_code in (0, 2, 3):
+            with self.subTest(exit_code=exit_code):
+                code, text, unexamined = self.run_verdict(
+                    [mutant(A), mutant(B)], [BASELINE, outcome(A, "CaughtMutant")], exit_code)
+                self.assertEqual(code, 1, text)
+                self.assertIn("have no outcome although cargo-mutants finished", self.stdout)
+                self.assertEqual(unexamined.splitlines(), [B])
+
     def test_listed_mutants_with_none_examined_fail(self):
         # A green baseline followed by the budget expiring before any mutant
         # finished is no sample at all.
