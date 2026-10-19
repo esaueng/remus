@@ -655,7 +655,7 @@ impl BrepKernel {
         }))
     }
 
-    fn move_faces_journaled_json(
+    pub(crate) fn move_faces_journaled_json(
         &mut self,
         solid: u32,
         faces: &[u32],

@@ -505,6 +505,7 @@ fn remove_blend_region(
     solid: SolidId,
     band: &BandDescription,
 ) -> Result<SharpResult, OperationsError> {
+    let _span = crate::performance::span("move_faces.blend.remove_band");
     let support_types: Vec<&'static str> = band
         .supports
         .iter()
@@ -538,6 +539,7 @@ fn rebuild_blend_edges(
     new_radius: f64,
     external_support_side: bool,
 ) -> Result<BlendResult, OperationsError> {
+    let _span = crate::performance::span("move_faces.blend.rebuild_fillet");
     if external_support_side {
         let mut builder = FilletBuilder::new(topo, solid);
         builder.use_external_support_side();
@@ -1021,7 +1023,10 @@ pub(crate) fn move_planar_faces_with_blends(
     distance: f64,
 ) -> Result<Option<BlendMoveEntities>, OperationsError> {
     let _discovery_memo = DiscoveryMemoScope::enter();
-    if adjacent_analytic_blend_seed(topo, solid, faces)?.is_none() {
+    let seed = crate::performance::timed("move_faces.blend.seed", || {
+        adjacent_analytic_blend_seed(topo, solid, faces)
+    })?;
+    if seed.is_none() {
         return Ok(None);
     }
 
@@ -1029,23 +1034,125 @@ pub(crate) fn move_planar_faces_with_blends(
     // undone at the cost of what it wrote, independent of document size, and
     // its retirements are undone too so the fallback sees the input intact.
     let snapshot = remus_topology::transaction::RollbackSnapshot::capture(topo);
-    let remove_rebuild_error =
-        match move_planar_faces_with_blends_remove_rebuild(topo, solid, faces, distance) {
-            Ok(Some(result)) => {
-                snapshot.commit(topo);
-                return Ok(Some(result));
-            }
-            Ok(None) => {
-                reconstruction("remove/rebuild could not derive a removable incident blend region")
-            }
-            Err(error) => error,
-        };
-    snapshot.restore(topo);
-    match move_translation_invariant_blend_region(topo, solid, faces, distance) {
+    let remove_rebuild = crate::performance::timed("move_faces.blend.remove_rebuild", || {
+        move_planar_faces_with_blends_remove_rebuild(topo, solid, faces, distance)
+    });
+    let remove_rebuild_error = match remove_rebuild {
+        Ok(Some(result)) => {
+            snapshot.commit(topo);
+            return Ok(Some(result));
+        }
+        Ok(None) => {
+            reconstruction("remove/rebuild could not derive a removable incident blend region")
+        }
+        Err(error) => error,
+    };
+    crate::performance::timed("move_faces.blend.rollback", || snapshot.restore(topo));
+    let translated = crate::performance::timed("move_faces.blend.translation", || {
+        move_translation_invariant_blend_region(topo, solid, faces, distance)
+    });
+    match translated {
         Ok(result) => Ok(Some(result)),
-        Err(translation_error) => Err(reconstruction(format!(
-            "remove/rebuild failed ({remove_rebuild_error}); exact prismatic blend translation failed ({translation_error})"
-        ))),
+        Err(translation_error) => Err(blend_move_refusal(
+            &remove_rebuild_error,
+            &translation_error,
+        )),
+    }
+}
+
+fn blend_move_refusal(
+    remove_rebuild: &dyn std::fmt::Display,
+    translation: &dyn std::fmt::Display,
+) -> OperationsError {
+    reconstruction(format!(
+        "remove/rebuild failed ({remove_rebuild}); exact prismatic blend translation failed ({translation})"
+    ))
+}
+
+/// [`move_planar_faces_with_blends`] for one face selection, prepared from
+/// the source alone so repeated moves of the same source to different
+/// distances skip what does not depend on the distance.
+///
+/// Every call returns what [`move_planar_faces_with_blends`] returns for the
+/// same source, selection and distance, refusals included: the prepared
+/// data is that function's own distance-independent work, run once.
+pub(crate) struct PreparedBlendMove {
+    /// The remove/rebuild attempt's refusal, once a call has seen it refuse
+    /// before reaching the distance: it refuses every distance alike, so
+    /// later calls go straight to the translation.
+    prefix_refusal: Option<String>,
+    /// The translation's distance-independent analysis, or its refusal.
+    translation: Result<TranslationAnalysis, String>,
+}
+
+impl PreparedBlendMove {
+    /// `Ok(None)` when the selection has no tangent analytic blend neighbour,
+    /// so [`move_planar_faces_with_blends`] declines it for every distance.
+    pub(crate) fn prepare(
+        topo: &Topology,
+        solid: SolidId,
+        faces: &[FaceId],
+    ) -> Result<Option<Self>, OperationsError> {
+        let _discovery_memo = DiscoveryMemoScope::enter();
+        if adjacent_analytic_blend_seed(topo, solid, faces)?.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            prefix_refusal: None,
+            translation: analyze_translation(topo, solid, faces).map_err(|error| error.to_string()),
+        }))
+    }
+
+    /// The blend-aware move of the prepared selection by `distance`.
+    pub(crate) fn move_faces(
+        &mut self,
+        topo: &mut Topology,
+        solid: SolidId,
+        faces: &[FaceId],
+        distance: f64,
+    ) -> Result<BlendMoveEntities, OperationsError> {
+        let _discovery_memo = DiscoveryMemoScope::enter();
+        let remove_rebuild_error = if let Some(refusal) = &self.prefix_refusal {
+            refusal.clone()
+        } else {
+            let snapshot = remus_topology::transaction::RollbackSnapshot::capture(topo);
+            let attempt = crate::performance::timed("move_faces.blend.remove_rebuild", || {
+                match remove_rebuild_prefix(topo, solid, faces) {
+                    Ok(Some(prefix)) => Ok(remove_rebuild_suffix(topo, solid, prefix, distance)),
+                    Ok(None) => Err(reconstruction(
+                        "remove/rebuild could not derive a removable incident blend region",
+                    )),
+                    Err(error) => Err(error),
+                }
+            });
+            match attempt {
+                Ok(Ok(result)) => {
+                    snapshot.commit(topo);
+                    return Ok(result);
+                }
+                Ok(Err(error)) => {
+                    snapshot.restore(topo);
+                    error.to_string()
+                }
+                Err(prefix_error) => {
+                    snapshot.restore(topo);
+                    let refusal = prefix_error.to_string();
+                    self.prefix_refusal = Some(refusal.clone());
+                    refusal
+                }
+            }
+        };
+        let translated = crate::performance::timed("move_faces.blend.translation", || {
+            check_translation_distance(distance).map_err(|error| error.to_string())?;
+            match &self.translation {
+                Ok(analysis) => execute_translation(topo, solid, analysis, distance)
+                    .map_err(|error| error.to_string()),
+                Err(refusal) => Err(refusal.clone()),
+            }
+        });
+        translated.map_err(|translation_error| {
+            blend_move_refusal(&remove_rebuild_error, &translation_error)
+        })
     }
 }
 
@@ -1055,6 +1162,36 @@ fn move_planar_faces_with_blends_remove_rebuild(
     faces: &[FaceId],
     distance: f64,
 ) -> Result<Option<BlendMoveEntities>, OperationsError> {
+    match remove_rebuild_prefix(topo, solid, faces)? {
+        Some(prefix) => remove_rebuild_suffix(topo, solid, prefix, distance).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// The sharp support a remove/rebuild move takes its distance from: every
+/// blend band removed, ready for the planar move. Built from the source
+/// alone, so whether it can be built at all does not depend on the distance.
+pub(crate) struct RemoveRebuildPrefix {
+    source_faces: Vec<FaceId>,
+    source_counts: (usize, usize, usize),
+    source_volume: f64,
+    sharp_before: f64,
+    current_solid: SolidId,
+    selected_faces: Vec<FaceId>,
+    plans: Vec<BlendMovePlan>,
+    construction_map: HashMap<usize, FaceId>,
+    lineage_is_exact: bool,
+    moved_area: f64,
+}
+
+/// The distance-independent half of
+/// [`move_planar_faces_with_blends_remove_rebuild`]: removes every incident
+/// blend band. `Ok(None)` means no removable band was found.
+pub(crate) fn remove_rebuild_prefix(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+) -> Result<Option<RemoveRebuildPrefix>, OperationsError> {
     if faces.is_empty() {
         return Ok(None);
     }
@@ -1100,7 +1237,9 @@ fn move_planar_faces_with_blends_remove_rebuild(
         validate_exact_result(topo, sharp.solid, "sharp support reconstruction")?;
         let stage_volume = stage_volume_of(topo, current_solid, current_volume)?;
         source_volume.get_or_insert(stage_volume);
-        let sharp_volume = crate::measure::solid_volume(topo, sharp.solid, 0.05)?;
+        let sharp_volume = crate::performance::timed("move_faces.blend.volume", || {
+            crate::measure::solid_volume(topo, sharp.solid, 0.05)
+        })?;
         current_volume = Some(sharp_volume);
         validate_volume_progress(stage_volume, sharp_volume, sharp_volume, band.radius, 0.0)?;
 
@@ -1135,10 +1274,49 @@ fn move_planar_faces_with_blends_remove_rebuild(
     })?;
     let sharp_before = stage_volume_of(topo, current_solid, current_volume)?;
     let source_volume = source_volume.unwrap_or(sharp_before);
-    let moved =
-        remus_offset::move_faces_with_face_map(topo, current_solid, &selected_faces, distance)?;
-    let sharp_after = crate::measure::solid_volume(topo, moved.solid, 0.05)?;
-    current_volume = Some(sharp_after);
+    Ok(Some(RemoveRebuildPrefix {
+        source_faces,
+        source_counts,
+        source_volume,
+        sharp_before,
+        current_solid,
+        selected_faces,
+        plans,
+        construction_map,
+        lineage_is_exact,
+        moved_area,
+    }))
+}
+
+/// The distance-dependent half of
+/// [`move_planar_faces_with_blends_remove_rebuild`]: moves the sharp support
+/// and rebuilds every removed band around it.
+#[allow(clippy::too_many_lines)]
+fn remove_rebuild_suffix(
+    topo: &mut Topology,
+    solid: SolidId,
+    prefix: RemoveRebuildPrefix,
+    distance: f64,
+) -> Result<BlendMoveEntities, OperationsError> {
+    let RemoveRebuildPrefix {
+        source_faces,
+        source_counts,
+        source_volume,
+        sharp_before,
+        mut current_solid,
+        selected_faces,
+        mut plans,
+        mut construction_map,
+        mut lineage_is_exact,
+        moved_area,
+    } = prefix;
+    let moved = crate::performance::timed("move_faces.blend.sharp_move", || {
+        remus_offset::move_faces_with_face_map(topo, current_solid, &selected_faces, distance)
+    })?;
+    let sharp_after = crate::performance::timed("move_faces.blend.volume", || {
+        crate::measure::solid_volume(topo, moved.solid, 0.05)
+    })?;
+    let mut current_volume = Some(sharp_after);
     validate_expected_volume(
         sharp_before + moved_area * distance,
         sharp_after,
@@ -1150,6 +1328,10 @@ fn move_planar_faces_with_blends_remove_rebuild(
     remap_construction_lineage(&mut construction_map, &moved.face_map, &[])?;
     current_solid = moved.solid;
 
+    // The last solid `validate_exact_result` passed. Validation is a pure
+    // function of a solid nothing below mutates, so the final check of the
+    // same solid would repeat its verdict.
+    let mut validated = None;
     for index in (0..plans.len()).rev() {
         let before_rebuild = stage_volume_of(topo, current_solid, current_volume)?;
         let edges = resolve_support_pair_edges(topo, current_solid, &plans[index])?;
@@ -1162,7 +1344,10 @@ fn move_planar_faces_with_blends_remove_rebuild(
             false,
         )?;
         validate_exact_result(topo, rebuilt.solid, "moved blend reconstruction")?;
-        let rebuilt_volume = crate::measure::solid_volume(topo, rebuilt.solid, 0.05)?;
+        validated = Some(rebuilt.solid);
+        let rebuilt_volume = crate::performance::timed("move_faces.blend.volume", || {
+            crate::measure::solid_volume(topo, rebuilt.solid, 0.05)
+        })?;
         current_volume = Some(rebuilt_volume);
         validate_expected_volume(
             before_rebuild + plans[index].volume_effect,
@@ -1186,7 +1371,9 @@ fn move_planar_faces_with_blends_remove_rebuild(
         current_solid = rebuilt.solid;
     }
 
-    validate_exact_result(topo, current_solid, "blend-aware planar move")?;
+    if validated != Some(current_solid) {
+        validate_exact_result(topo, current_solid, "blend-aware planar move")?;
+    }
     let final_counts = remus_topology::explorer::solid_entity_counts(topo, current_solid)?;
     if final_counts != source_counts {
         return Err(reconstruction(format!(
@@ -1230,11 +1417,11 @@ fn move_planar_faces_with_blends_remove_rebuild(
     // Every stage volume above is a `solid_volume` reading, memoized as
     // measured when the application enabled the memo; the final one is the
     // result's, so there is nothing to derive.
-    Ok(Some(BlendMoveEntities {
+    Ok(BlendMoveEntities {
         solid: current_solid,
         evolution,
         boundary_pairs,
-    }))
+    })
 }
 
 // Rebuilt boundaries are attributable only when the construction face map
@@ -1637,7 +1824,9 @@ fn stage_volume_of(
 ) -> Result<f64, OperationsError> {
     match known {
         Some(volume) => Ok(volume),
-        None => crate::measure::solid_volume(topo, solid, 0.05),
+        None => crate::performance::timed("move_faces.blend.volume", || {
+            crate::measure::solid_volume(topo, solid, 0.05)
+        }),
     }
 }
 
@@ -1942,19 +2131,54 @@ fn face_anchor(topo: &Topology, face: FaceId) -> Result<remus_math::vec::Point3,
     Ok(topo.vertex(oriented.oriented_start(edge))?.point())
 }
 
-#[allow(clippy::too_many_lines)]
 fn move_translation_invariant_blend_region(
     topo: &mut Topology,
     solid: SolidId,
     faces: &[FaceId],
     distance: f64,
 ) -> Result<BlendMoveEntities, OperationsError> {
+    check_translation_distance(distance)?;
+    let analysis = analyze_translation(topo, solid, faces)?;
+    execute_translation(topo, solid, &analysis, distance)
+}
+
+fn check_translation_distance(distance: f64) -> Result<(), OperationsError> {
     if !distance.is_finite() || distance.abs() <= Tolerance::new().linear {
         return Err(remus_offset::OffsetError::InvalidInput {
             reason: "move-face distance must be non-zero and finite".into(),
         }
         .into());
     }
+    Ok(())
+}
+
+/// What a blend-aware translation of a face selection reads off the source:
+/// everything but the distance.
+pub(crate) struct TranslationAnalysis {
+    source_faces: Vec<FaceId>,
+    source_counts: (usize, usize, usize),
+    direction: Vec3,
+    swept: crate::push_pull::SweptRegionCheck,
+    /// The translated entities, or the reason the boundary classification
+    /// refuses them, which the move reports only after the swept-region
+    /// check, as it always has.
+    entities: Result<TranslatedEntities, String>,
+}
+
+struct TranslatedEntities {
+    vertices: HashSet<VertexId>,
+    edges: Vec<EdgeId>,
+    faces: HashSet<FaceId>,
+}
+
+/// The distance-independent half of
+/// [`move_translation_invariant_blend_region`].
+#[allow(clippy::too_many_lines)]
+pub(crate) fn analyze_translation(
+    topo: &Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+) -> Result<TranslationAnalysis, OperationsError> {
     let Some(&reference) = faces.first() else {
         return Err(remus_offset::OffsetError::InvalidInput {
             reason: "move-face requires at least one selected face".into(),
@@ -2022,8 +2246,9 @@ fn move_translation_invariant_blend_region(
         }
     }
 
-    let region = translation_invariant_blend_region(topo, solid, faces, direction)?;
-    let delta = direction * distance;
+    let region = crate::performance::timed("move_faces.blend.translation_region", || {
+        translation_invariant_blend_region(topo, solid, faces, direction)
+    })?;
     let source_counts = remus_topology::explorer::solid_entity_counts(topo, solid)?;
     let mut moved_faces: HashSet<FaceId> = faces.iter().copied().collect();
     moved_faces.extend(region.translated_faces);
@@ -2033,15 +2258,33 @@ fn move_translation_invariant_blend_region(
         invariant_boundary_carriers(topo, &adjacency, &moved_faces, direction)?;
     let swept_faces = faces.iter().copied().collect();
     let excluded_candidates = moved_faces.union(&invariant_carriers).copied().collect();
-    crate::push_pull::refuse_swept_region_intersections(
+    let swept = crate::push_pull::SweptRegionCheck::prepare(
         topo,
         solid,
         &swept_faces,
         &excluded_candidates,
         direction,
-        distance,
     )?;
+    let entities = translated_entities(topo, solid, &adjacency, moved_faces, direction)?;
+    Ok(TranslationAnalysis {
+        source_faces,
+        source_counts,
+        direction,
+        swept,
+        entities,
+    })
+}
 
+/// The vertices, edges and faces a translation moves, or the reason its
+/// boundary cannot follow: `Ok(Err(reason))` is the translation's refusal,
+/// an outer `Err` a topology lookup failure.
+fn translated_entities(
+    topo: &Topology,
+    solid: SolidId,
+    adjacency: &remus_topology::adjacency::AdjacencyIndex,
+    moved_faces: HashSet<FaceId>,
+    direction: Vec3,
+) -> Result<Result<TranslatedEntities, String>, OperationsError> {
     let mut moved_vertices = HashSet::new();
     for &face in &moved_faces {
         moved_vertices.extend(remus_topology::explorer::face_vertices(topo, face)?);
@@ -2057,7 +2300,7 @@ fn move_translation_invariant_blend_region(
                 if !moved_faces.contains(&adjacent)
                     && !surface_translation_invariant(topo.face(adjacent)?.surface(), direction)
                 {
-                    return Err(reconstruction(format!(
+                    return Ok(Err(format!(
                         "boundary edge {} reaches non-invariant unmoved face {}",
                         edge.index(),
                         adjacent.index()
@@ -2071,7 +2314,7 @@ fn move_translation_invariant_blend_region(
             }
             (true, false) | (false, true) => {
                 if !matches!(edge_data.curve(), EdgeCurve::Line) {
-                    return Err(reconstruction(format!(
+                    return Ok(Err(format!(
                         "boundary edge {} would change one endpoint of a curved edge",
                         edge.index()
                     )));
@@ -2079,7 +2322,7 @@ fn move_translation_invariant_blend_region(
                 let span =
                     topo.vertex(edge_data.end())?.point() - topo.vertex(edge_data.start())?.point();
                 if span.cross(direction).length() > Tolerance::new().linear {
-                    return Err(reconstruction(format!(
+                    return Ok(Err(format!(
                         "boundary edge {} is not parallel to the planar move",
                         edge.index()
                     )));
@@ -2088,23 +2331,47 @@ fn move_translation_invariant_blend_region(
             (false, false) => {}
         }
     }
-
-    let translation = BlendTranslation {
+    Ok(Ok(TranslatedEntities {
         vertices: moved_vertices,
         edges: translated_edges,
         faces: moved_faces,
-        delta,
+    }))
+}
+
+/// The distance-dependent half of [`move_translation_invariant_blend_region`]
+/// for an `analysis` of `solid`'s current content.
+#[allow(clippy::too_many_lines)]
+fn execute_translation(
+    topo: &mut Topology,
+    solid: SolidId,
+    analysis: &TranslationAnalysis,
+    distance: f64,
+) -> Result<BlendMoveEntities, OperationsError> {
+    analysis.swept.check(distance)?;
+    let entities = analysis
+        .entities
+        .as_ref()
+        .map_err(|reason| reconstruction(reason.clone()))?;
+    let source_faces = &analysis.source_faces;
+    let source_counts = analysis.source_counts;
+    let translation = BlendTranslation {
+        vertices: entities.vertices.clone(),
+        edges: entities.edges.clone(),
+        faces: entities.faces.clone(),
+        delta: analysis.direction * distance,
     };
     // The result is the copy of the translated solid, written straight from
     // the input with the translated geometry in place of the old: no
     // document-sized scratch copy, the same entities allocated in the same
     // order, and the same mutations of `topo` as copying a translated
     // scratch document.
-    let copied = crate::copy::copy_solid_replacing_with_entity_map(
-        topo,
-        solid,
-        translation.replacements(topo)?,
-    )?;
+    let copied = crate::performance::timed("move_faces.blend.translation_copy", || {
+        crate::copy::copy_solid_replacing_with_entity_map(
+            topo,
+            solid,
+            translation.replacements(topo)?,
+        )
+    })?;
     let result = copied.solid;
     // Validate the deliverable: the copy is entity-for-entity, so one strict
     // pass serves both it and the translated input, and running it here
@@ -2133,13 +2400,14 @@ fn move_translation_invariant_blend_region(
     // negligible next to its area, is refused, independent of body size. A
     // region the integral cannot vouch for keeps the whole-body mesh
     // comparison with its original slack, so those bodies behave as before.
+    let _volume = crate::performance::span("move_faces.blend.translation_volume");
     let (volume_change, volume_slack) = if let Some(read) = translated_faces_volume_change(
         topo,
         topo,
         solid,
         &translation.faces,
         |face| copied.face_map.get(&face.index()).copied(),
-        delta,
+        translation.delta,
     )? {
         (
             read.volume,
@@ -2175,7 +2443,7 @@ fn move_translation_invariant_blend_region(
         solid: result,
         evolution: crate::push_pull::exact_face_evolution(
             topo,
-            &source_faces,
+            source_faces,
             result,
             copied.face_map,
         )?,
@@ -5213,6 +5481,7 @@ fn validate_exact_result(
     solid: SolidId,
     label: &str,
 ) -> Result<(), OperationsError> {
+    let _span = crate::performance::span("move_faces.blend.validate_exact");
     let report = remus_check::validate::validate_solid(
         topo,
         solid,

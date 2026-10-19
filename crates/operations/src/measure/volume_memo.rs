@@ -113,7 +113,7 @@ pub struct VolumeMemoStats {
 
 /// A solid's content key and its hash.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ContentKey {
+pub struct ContentKey {
     hash: u64,
     words: Box<[u64]>,
 }
@@ -611,7 +611,11 @@ impl ContentWriter {
 /// Everything `solid_volume` reads about `solid`, with every handle; see the
 /// module docs. `None` when an entity is missing (the reading itself then
 /// fails and is not memoized).
-fn solid_content_key(topo: &Topology, solid: SolidId) -> Option<ContentKey> {
+///
+/// [`crate::prepared_move`] compares two of these to prove a solid is the
+/// one it prepared: the key holds every entity, handle and real of the solid
+/// that a face move reads.
+pub fn solid_content_key(topo: &Topology, solid: SolidId) -> Option<ContentKey> {
     let _key = crate::performance::span("volume.content-key");
     let mut w = ContentWriter { words: Vec::new() };
     w.word(KEY_VERSION);
@@ -684,6 +688,45 @@ fn solid_content_key(topo: &Topology, solid: SolidId) -> Option<ContentKey> {
                         }
                     }
                 }
+            }
+        }
+    }
+    Some(w.finish())
+}
+
+/// [`solid_content_key`] followed by every face's authoritative loops and
+/// coedges — handles, closure, edge use, pcurve and periodic winding — which
+/// a face move copies alongside the wires. `None` when an entity is missing.
+pub fn solid_move_key(topo: &Topology, solid: SolidId) -> Option<ContentKey> {
+    let base = solid_content_key(topo, solid)?;
+    let mut w = ContentWriter {
+        words: base.words.into_vec(),
+    };
+    for face_id in remus_topology::explorer::solid_faces(topo, solid).ok()? {
+        let face = topo.face(face_id).ok()?;
+        w.count(face.boundary_loops().len());
+        for &loop_id in face.boundary_loops() {
+            let boundary = topo.face_loop(loop_id).ok()?;
+            w.count(loop_id.index());
+            w.flag(boundary.is_closed());
+            w.count(boundary.coedges().len());
+            for &coedge_id in boundary.coedges() {
+                let coedge = topo.coedge(coedge_id).ok()?;
+                w.count(coedge_id.index());
+                w.count(coedge.edge().index());
+                w.flag(coedge.is_forward());
+                match coedge.pcurve() {
+                    Some(pcurve) => {
+                        w.flag(true);
+                        w.curve2d(pcurve.curve());
+                        w.real(pcurve.t_start());
+                        w.real(pcurve.t_end());
+                    }
+                    None => w.flag(false),
+                }
+                let winding = coedge.periodic_winding();
+                w.word(u64::from(winding.u().cast_unsigned()));
+                w.word(u64::from(winding.v().cast_unsigned()));
             }
         }
     }

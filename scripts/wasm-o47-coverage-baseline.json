@@ -2471,6 +2471,46 @@
       "coverage": "uncovered",
       "owner": "O4.7",
       "reason": "heal family; O4.7 tsify twin pending"
+    },
+    {
+      "js": "moveFacesPrepared",
+      "rust": "move_faces_prepared",
+      "file": "bindings/prepared_move.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B30",
+      "reason": "prepared drag twin of moveFaces: same result and refusals for the same source and distance; typed results come from moveFacesDetailed"
+    },
+    {
+      "js": "moveFacesPreparedJournaled",
+      "rust": "move_faces_prepared_journaled",
+      "file": "bindings/prepared_move.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B30",
+      "reason": "prepared drag twin of moveFacesJournaled; evolution/journal surface already typed with its payload"
+    },
+    {
+      "js": "prepareMoveFaces",
+      "rust": "prepare_move_faces",
+      "file": "bindings/prepared_move.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B30",
+      "reason": "prepared-move session handle; reads the topology only, no solid twin applicable"
+    },
+    {
+      "js": "releasePreparedMove",
+      "rust": "release_prepared_move",
+      "file": "bindings/prepared_move.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B30",
+      "reason": "prepared-move session disposal; no solid twin applicable"
     }
   ]
 }
