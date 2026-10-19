@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792434472566,
+  "lastUpdate": 1792436452692,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -112327,6 +112327,294 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 103921,
             "range": "± 912",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "59d02a10f498a2b3c24512e8b2d9ba8150bbdb1e",
+          "message": "ci: fix gauntlet ratchet, bound job runtimes, dedupe privacy runs, harden opseq81 (#1183)\n\n## Change\n\nFixes from the CI/CD review, one commit each:\n\n- **Gauntlet ratchet (`fix(gauntlet)`).** The publisher appends every\ncompleted run, including runs the ratchet refused, and `trend` compared\nonly against the newest row. A regression failed one run and then became\nthe baseline. `trend` now replays the tier history and compares against\nthe newest row that itself passed (`load_ratchet_baseline` in\n`tools/gauntlet/src/trend.rs`). The history format, published rows and\nthe 50 bp allowance are unchanged. This takes effect on the next\nscheduled run, since the tool builds from the checkout.\n- **Gauntlet single source (`ci(gauntlet)`).** Removed the caller's\n`MAX_STAGE_DROP_BPS`: a caller's `env` never reaches a reusable\nworkflow, and the callee defines its own. The caller now maps its weekly\ncron (`47 3 * * 0`) to `abc-1k` itself, so the schedule and the tier\nmapping are edited in one file.\n- **Privacy run dedupe (`ci(privacy)`).**\n- `history-privacy.yml` gets a concurrency group keyed on event plus PR\nnumber, or on requester event plus head SHA. It uses\n`cancel-in-progress: false`, so a running audit is never cancelled and\nonly the newest pending run per group waits.\n- `commit-privacy.yml` supersedes older `pull_request_target` runs for\nthe same PR. Push and merge-group runs keep separate groups because they\ncheck different ranges.\n- **OpSeq 8.1 (`ci(opseq81)`).** The `cases`/`seed` dispatch inputs now\nreach the shell through `env:` instead of being expanded into `run:`.\nThe checkout no longer persists credentials.\n- **Job timeouts and cargo-fuzz pin (`ci:`).**\n- `publish.yml` gets 60 and 15 min limits, and the version job in\n`wasm-version.yml` gets 10 min.\n- The pinned fleet callees can't be edited in place, so their changes\nare **staged** as `fleet-{ci,osv,wasm-candidate,wasm-size,fuzz}-v3.yml`,\nthe same pattern as #1179 → #1170. They add timeouts to every unbounded\njob and pin `cargo install cargo-fuzz --version 0.13.2`, the version the\nlast run installed.\n- Limits are about 3× the observed hosted durations. Coverage gets 180\nmin against an observed 37–88 min.\n- A new staging test,\n`test_staged_v3_only_adds_job_timeouts_and_the_cargo_fuzz_pin`, requires\neach v3 file to equal its active v2 apart from those deltas.\n\n**Follow-up required:** once this lands, a second PR switches\n`.github/fleet-workflows.json` and the caller pins to the landed `-v3`\nfiles. Until then the callee timeouts and the fuzz pin are not active.\n\n## Verification\n\n- `cargo test -p remus-gauntlet`: 24 + 6 tests pass. Regression check:\nthe new `refused_row_never_becomes_the_ratchet_baseline` test fails when\nthe baseline falls back to the newest row.\n- `cargo fmt --all -- --check` and `cargo clippy -p remus-gauntlet\n--all-targets --all-features -- -D warnings` are clean. Workspace-wide\nclippy was not run; the Rust changes are limited to `tools/gauntlet`.\n- The Repository Policy script set passes locally: lineage, boundaries,\ndet-hash, wildcard, O4.7, edge-domain, doc paths and module map, naming,\npublish contract, gauntlet contract, owner-PR policy and routing, fleet\nselector and runner policy, CI convergence and classifier, direct fleet,\nUbuntu routing. Also passing: mutants verdict, WASM version guard,\npackage integrity, privacy unittest suite, commit-metadata tests.\n- Negative controls for the staging test: a changed `--fail-on-vuln` and\na removed timeout are both rejected.\n- `actionlint` 1.7.12 reports zero findings before and after; shellcheck\nwas not installed.\n- `check_public_commit_metadata.py --base origin/main --head HEAD`\npasses.\n- **Not run locally:** `test-mutants-scope.py` needs cargo-mutants, and\n`taplo fmt --check` needs taplo; no TOML changed. The concurrency\nbehaviour of the privacy workflows can only be observed on GitHub.\n\n## Compatibility and risks\n\n- No change to file formats, units, tolerances, dependencies or public\nkernel APIs.\n- `history-privacy.yml` is the protected, App-bound audit. The change\nadds only a concurrency group; triggers, environment, pinned ref,\npermissions and publisher are unchanged, and the trust tests pass.\n- Superseded pending privacy runs show as cancelled runs. They publish\nno check, and the required checks still come from the newest run.\n- The ratchet still has no override path: an intentional pass-rate drop\nstays red until the history is edited. That was already true for one\nrun; it now persists.\n- The timeouts assume hosted-sized runners. The legacy 1-CPU fleet\nprofile would hit them sooner, which already applies to the existing\n30-min Test limit.\n\n## WASM module tier\n\nNone.\n\n---\n_Generated by [Claude\nCode](https://claude.ai/code/session_01RAFdKbytobmE6B5tmrSS1Z)_\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-10-19T17:58:38Z",
+          "tree_id": "257c90606b15e12862b465258ccd6a25d4b68c4c",
+          "url": "https://github.com/esaueng/remus/commit/59d02a10f498a2b3c24512e8b2d9ba8150bbdb1e"
+        },
+        "date": 1792436447681,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1187872,
+            "range": "± 13837",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1278744,
+            "range": "± 44329",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27690,
+            "range": "± 202",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7296121,
+            "range": "± 28381",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7274159,
+            "range": "± 27528",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7130836,
+            "range": "± 13146",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 28571,
+            "range": "± 44",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3385643,
+            "range": "± 4343",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 30385550,
+            "range": "± 494160",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 40,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 118,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 239,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 157,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 884,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 169,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 408,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 211,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 600,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 630,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3517,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 4010,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 14968,
+            "range": "± 109",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 53759,
+            "range": "± 102",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5298,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 503251,
+            "range": "± 1880",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2468640,
+            "range": "± 21517",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 144567,
+            "range": "± 362",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 296475,
+            "range": "± 729",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 361734,
+            "range": "± 705",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 66251,
+            "range": "± 1572",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 34253,
+            "range": "± 82",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 20714,
+            "range": "± 28",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 120009,
+            "range": "± 219",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 142073,
+            "range": "± 249",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 650548,
+            "range": "± 34630",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 7929479,
+            "range": "± 224432",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 550568,
+            "range": "± 1466",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1183467,
+            "range": "± 2966",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 85353,
+            "range": "± 315",
             "unit": "ns/iter"
           }
         ]
