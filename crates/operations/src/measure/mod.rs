@@ -5,6 +5,7 @@ mod area;
 mod bounding_box;
 mod edge_length;
 mod face_box_memo;
+mod face_digest;
 pub(crate) mod helpers;
 mod nurbs_area_memo;
 mod volume;
@@ -26,6 +27,7 @@ pub use face_box_memo::{
     clear_thread_face_box_memo, disable_thread_face_box_memo, enable_thread_face_box_memo,
     set_thread_face_box_memo_limits, thread_face_box_memo_stats,
 };
+pub use face_digest::{FaceDigest, face_content_digest};
 pub use nurbs_area_memo::{
     DEFAULT_NURBS_AREA_MEMO_BYTE_BUDGET, DEFAULT_NURBS_AREA_MEMO_CAPACITY, NurbsAreaMemoStats,
     clear_thread_nurbs_area_memo, disable_thread_nurbs_area_memo, enable_thread_nurbs_area_memo,

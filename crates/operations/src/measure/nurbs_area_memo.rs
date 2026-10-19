@@ -47,7 +47,7 @@ use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
-use remus_topology::face::FaceId;
+use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::pcurve::PCurve;
 
 /// Default retained NURBS-area readings per thread once enabled.
@@ -58,6 +58,8 @@ pub const DEFAULT_NURBS_AREA_MEMO_BYTE_BUDGET: usize = 8 * 1024 * 1024;
 
 /// Bump when the key's content or request encoding changes.
 const KEY_VERSION: u64 = 0x5245_4d55_534e_4134;
+/// Leads a face digest's key, so it never equals an area-memo key.
+const FACE_DIGEST_KEY_VERSION: u64 = 0x5245_4d55_5346_4431;
 
 /// Deterministic counters and current bounds of the thread's NURBS-area memo.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -275,6 +277,56 @@ impl KeyWriter {
         }
     }
 
+    /// Every field of a support surface of any type, for the face digest.
+    fn face_surface(&mut self, surface: &FaceSurface) {
+        match surface {
+            FaceSurface::Plane { normal, d } => {
+                self.word(1);
+                self.vec(*normal);
+                self.real(*d);
+            }
+            FaceSurface::Nurbs(s) => {
+                self.word(2);
+                self.count(s.degree_u());
+                self.count(s.degree_v());
+                self.surface(s);
+            }
+            FaceSurface::Cylinder(s) => {
+                self.word(3);
+                self.point(s.origin());
+                self.vec(s.axis());
+                self.real(s.radius());
+                self.vec(s.x_axis());
+                self.vec(s.y_axis());
+            }
+            FaceSurface::Cone(s) => {
+                self.word(4);
+                self.point(s.apex());
+                self.vec(s.axis());
+                self.real(s.half_angle());
+                self.vec(s.x_axis());
+                self.vec(s.y_axis());
+            }
+            FaceSurface::Sphere(s) => {
+                self.word(5);
+                self.point(s.center());
+                self.real(s.radius());
+                self.vec(s.x_axis());
+                self.vec(s.y_axis());
+                self.vec(s.z_axis());
+            }
+            FaceSurface::Torus(s) => {
+                self.word(6);
+                self.point(s.center());
+                self.real(s.major_radius());
+                self.real(s.minor_radius());
+                self.vec(s.x_axis());
+                self.vec(s.y_axis());
+                self.vec(s.z_axis());
+            }
+        }
+    }
+
     fn curve(&mut self, curve: &EdgeCurve) {
         match curve {
             EdgeCurve::Line => self.word(1),
@@ -446,6 +498,23 @@ impl KeyWriter {
         self.surface(surface);
         self.boundary(topo, face_id)
     }
+}
+
+/// Key words of a face's complete content: its reversal, every field of its
+/// support surface, and the boundary this memo's key records (wires, oriented
+/// edges, curves, trims, tolerances, vertex positions and pcurves, with handles
+/// as first-occurrence ordinals). `None` when an entity is missing.
+pub(super) fn face_content_words(topo: &Topology, face_id: FaceId) -> Option<Vec<u64>> {
+    let face = topo.face(face_id).ok()?;
+    let mut writer = KeyWriter {
+        words: 0,
+        key: Some(Vec::new()),
+    };
+    writer.word(FACE_DIGEST_KEY_VERSION);
+    writer.word(u64::from(face.is_reversed()));
+    writer.face_surface(face.surface());
+    writer.boundary(topo, face_id)?;
+    writer.key
 }
 
 /// Count the complete key, then allocate and write it only when it fits.
