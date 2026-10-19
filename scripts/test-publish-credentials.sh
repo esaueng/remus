@@ -7,6 +7,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly REPO_ROOT
 readonly CHECK_SCRIPT="$SCRIPT_DIR/require-publish-credentials.sh"
 readonly PUBLISH_WORKFLOW="$REPO_ROOT/.github/workflows/publish.yml"
+readonly NOTIFY_WORKFLOW="$REPO_ROOT/.github/workflows/notify-openzcad-package.yml"
 
 assert_failure() {
   local expected=$1
@@ -34,8 +35,8 @@ assert_failure() {
   fi
 }
 
-assert_failure "REMUS_BOT_APP_ID (repository variable), REMUS_BOT_PRIVATE_KEY (repository secret)"
-assert_failure "REMUS_BOT_PRIVATE_KEY (repository secret)" test-app-id
+assert_failure "REMUS_BOT_APP_ID (repository variable), REMUS_BOT_PRIVATE_KEY (remus-bot environment secret)"
+assert_failure "REMUS_BOT_PRIVATE_KEY (remus-bot environment secret)" test-app-id
 assert_failure "REMUS_BOT_APP_ID (repository variable)" "" test-private-key
 
 output=$(REMUS_BOT_APP_ID=test-app-id REMUS_BOT_PRIVATE_KEY=test-private-key "$CHECK_SCRIPT")
@@ -57,7 +58,7 @@ if ! grep -Fq 'app-id: ${{ vars.REMUS_BOT_APP_ID }}' "$PUBLISH_WORKFLOW"; then
   exit 1
 fi
 if ! grep -Fq 'private-key: ${{ secrets.REMUS_BOT_PRIVATE_KEY }}' "$PUBLISH_WORKFLOW"; then
-  echo "publish workflow must read the private key from the repository secret"
+  echo "publish workflow must read the private key from the environment secret"
   exit 1
 fi
 if grep -Fq 'secrets.REMUS_BOT_APP_ID' "$PUBLISH_WORKFLOW"; then
@@ -83,11 +84,30 @@ if grep -Fq 'HEAD:main' "$PUBLISH_WORKFLOW"; then
   exit 1
 fi
 # Inspect each token action block, rather than matching unrelated `with` keys.
-python3 - "$PUBLISH_WORKFLOW" <<'SCOPE'
+python3 - "$PUBLISH_WORKFLOW" "$NOTIFY_WORKFLOW" <<'SCOPE'
 import re
 import sys
 from pathlib import Path
 text = Path(sys.argv[1]).read_text()
+notifier = Path(sys.argv[2]).read_text()
+
+def jobs(workflow):
+    return dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)",
+                           workflow.split("\njobs:\n", 1)[1], re.M | re.S))
+
+publisher_jobs = jobs(text)
+notifier_jobs = jobs(notifier)
+for job in (publisher_jobs["sync-committed-package"], notifier_jobs["notify"]):
+    assert re.findall(r"^    environment: ([^\n]+)$", job, re.M) == ["remus-bot"], \
+        "each App-key consumer must use the protected remus-bot environment"
+assert not re.search(r"^    environment:", publisher_jobs["build-committed-package"], re.M), \
+    "the package build must remain separate from the credential environment"
+for workflow_jobs, expected in ((publisher_jobs, {"sync-committed-package"}),
+                                (notifier_jobs, {"notify"})):
+    consumers = {name for name, job in workflow_jobs.items()
+                 if "secrets.REMUS_BOT_PRIVATE_KEY" in job}
+    assert consumers == expected, "App-key access must stay inside the protected jobs"
+
 blocks = re.findall(r"      - uses: actions/create-github-app-token@[^\n]+\n(.*?)(?=\n      - |\Z)", text, re.S)
 assert len(blocks) == 1, "publisher must have exactly one App-token action"
 expected = {"owner": "esaueng", "repositories": "remus",
