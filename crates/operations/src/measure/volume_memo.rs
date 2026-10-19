@@ -113,7 +113,7 @@ pub struct VolumeMemoStats {
 
 /// A solid's content key and its hash.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ContentKey {
+pub struct ContentKey {
     hash: u64,
     words: Box<[u64]>,
 }
@@ -611,7 +611,11 @@ impl ContentWriter {
 /// Everything `solid_volume` reads about `solid`, with every handle; see the
 /// module docs. `None` when an entity is missing (the reading itself then
 /// fails and is not memoized).
-fn solid_content_key(topo: &Topology, solid: SolidId) -> Option<ContentKey> {
+///
+/// [`crate::prepared_move`] compares two of these to prove a solid is the
+/// one it prepared: the key holds every entity, handle and real of the solid
+/// that a face move reads.
+pub fn solid_content_key(topo: &Topology, solid: SolidId) -> Option<ContentKey> {
     let _key = crate::performance::span("volume.content-key");
     let mut w = ContentWriter { words: Vec::new() };
     w.word(KEY_VERSION);

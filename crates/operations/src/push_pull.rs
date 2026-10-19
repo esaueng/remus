@@ -162,9 +162,9 @@ pub(crate) fn move_faces_with_entity_evolution(
                     replaced.face_map,
                 )?,
             }
-        } else if let Some(result) =
-            crate::resize_blend::move_planar_faces_with_blends(topo, solid, faces, distance)?
-        {
+        } else if let Some(result) = crate::performance::timed("move_faces.blend", || {
+            crate::resize_blend::move_planar_faces_with_blends(topo, solid, faces, distance)
+        })? {
             boundary_pairs = result.boundary_pairs;
             MoveFacesResult {
                 solid: result.solid,
@@ -172,26 +172,19 @@ pub(crate) fn move_faces_with_entity_evolution(
             }
         } else {
             refuse_swept_face_intersections(topo, solid, faces, distance)?;
-            let moved = remus_offset::move_faces_with_entity_map(topo, solid, faces, distance)?;
+            let moved = crate::performance::timed("move_faces.offset_engine", || {
+                remus_offset::move_faces_with_entity_map(topo, solid, faces, distance)
+            })?;
 
             boundary_pairs = boundary_entity_pairs(&moved);
             if move_is_prismatic(topo, solid, faces)? {
+                let _volume = crate::performance::span("move_faces.prismatic_volume");
                 let deflection = verify_deflection(topo, solid);
                 let before = solid_volume(topo, solid, deflection)?;
                 let area = faces.iter().try_fold(0.0, |sum, &face| {
                     crate::measure::face_area(topo, face, deflection).map(|value| sum + value)
                 })?;
-                let expected = distance.mul_add(area, before);
-                let actual = solid_volume(topo, moved.solid, verify_deflection(topo, moved.solid))?;
-                let slack = expected.abs().mul_add(2e-3, 1e-6);
-                if (actual - expected).abs() > slack {
-                    return Err(remus_offset::OffsetError::TopologyChange {
-                        face: faces.first().copied(),
-                        edge: None,
-                        reason: format!("volume is {actual}, expected {expected}"),
-                    }
-                    .into());
-                }
+                check_prismatic_volume(topo, faces, before, area, distance, moved.solid)?;
             }
             MoveFacesResult {
                 solid: moved.solid,
@@ -199,26 +192,7 @@ pub(crate) fn move_faces_with_entity_evolution(
             }
         };
 
-        let report = crate::validate::validate_solid(topo, result.solid)?;
-        if !report.is_valid() {
-            let summary = report
-                .issues
-                .iter()
-                .filter(|issue| issue.severity == crate::validate::Severity::Error)
-                .take(3)
-                .map(|issue| issue.description.as_str())
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(remus_offset::OffsetError::TopologyChange {
-                face: faces.first().copied(),
-                edge: None,
-                reason: format!(
-                    "strict validation failed with {} error(s): {summary}",
-                    report.error_count()
-                ),
-            }
-            .into());
-        }
+        validate_moved_solid(topo, faces, result.solid)?;
         Ok((result, boundary_pairs))
     })();
 
@@ -226,6 +200,179 @@ pub(crate) fn move_faces_with_entity_evolution(
         snapshot.restore(topo);
     }
     outcome
+}
+
+/// The strict validation every face move's result must pass.
+fn validate_moved_solid(
+    topo: &Topology,
+    faces: &[FaceId],
+    result: SolidId,
+) -> Result<(), crate::OperationsError> {
+    let report = crate::performance::timed("move_faces.validate", || {
+        crate::validate::validate_solid(topo, result)
+    })?;
+    if !report.is_valid() {
+        let summary = report
+            .issues
+            .iter()
+            .filter(|issue| issue.severity == crate::validate::Severity::Error)
+            .take(3)
+            .map(|issue| issue.description.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(remus_offset::OffsetError::TopologyChange {
+            face: faces.first().copied(),
+            edge: None,
+            reason: format!(
+                "strict validation failed with {} error(s): {summary}",
+                report.error_count()
+            ),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+/// [`move_faces_with_entity_evolution`] for a planar face selection,
+/// prepared from the source alone (see [`crate::prepared_move`]).
+///
+/// The source's face list, its blend classification and translation
+/// analysis, the swept-region boxes and the prismatic volume oracle's source
+/// readings are taken once; every call runs the distance-dependent rest of
+/// the same code and returns what the unprepared move returns.
+pub(crate) struct PreparedPlanarMove {
+    source_faces: Vec<FaceId>,
+    blend: Option<crate::resize_blend::PreparedBlendMove>,
+    /// The swept-region refusal of a move without blends, when the
+    /// selection has a plane to sweep.
+    swept: Option<SweptRegionCheck>,
+    /// The source volume and moved area of a prismatic move without blends.
+    prismatic: Option<(f64, f64)>,
+}
+
+impl PreparedPlanarMove {
+    /// `Ok(None)` for a selection the unprepared move must keep handling on
+    /// every call: an empty one, or one whose first face is not a planar
+    /// face of `solid` (a bore move, or a refusal).
+    pub(crate) fn prepare(
+        topo: &Topology,
+        solid: SolidId,
+        faces: &[FaceId],
+    ) -> Result<Option<Self>, crate::OperationsError> {
+        let Some(&reference) = faces.first() else {
+            return Ok(None);
+        };
+        let source_faces = solid_faces(topo, solid)?;
+        if !source_faces.contains(&reference)
+            || !matches!(topo.face(reference)?.surface(), FaceSurface::Plane { .. })
+        {
+            return Ok(None);
+        }
+        let blend = crate::resize_blend::PreparedBlendMove::prepare(topo, solid, faces)?;
+        let mut swept = None;
+        let mut prismatic = None;
+        if blend.is_none() {
+            if let Some(normal) = topo.face(reference)?.effective_plane_normal() {
+                let selected: std::collections::HashSet<_> = faces.iter().copied().collect();
+                swept = Some(SweptRegionCheck::prepare(
+                    topo,
+                    solid,
+                    &selected,
+                    &std::collections::HashSet::new(),
+                    normal,
+                )?);
+            }
+            if move_is_prismatic(topo, solid, faces)? {
+                let deflection = verify_deflection(topo, solid);
+                let before = solid_volume(topo, solid, deflection)?;
+                let area = faces.iter().try_fold(0.0, |sum, &face| {
+                    crate::measure::face_area(topo, face, deflection).map(|value| sum + value)
+                })?;
+                prismatic = Some((before, area));
+            }
+        }
+        Ok(Some(Self {
+            source_faces,
+            blend,
+            swept,
+            prismatic,
+        }))
+    }
+
+    /// [`move_faces_with_entity_evolution`] of the prepared selection.
+    pub(crate) fn move_faces(
+        &mut self,
+        topo: &mut Topology,
+        solid: SolidId,
+        faces: &[FaceId],
+        distance: f64,
+    ) -> Result<DirectEditEvolution, crate::OperationsError> {
+        let snapshot = remus_topology::transaction::RollbackSnapshot::capture(topo);
+        let outcome = (|| -> Result<DirectEditEvolution, crate::OperationsError> {
+            let boundary_pairs;
+            let result = if let Some(blend) = &mut self.blend {
+                let moved = crate::performance::timed("move_faces.blend", || {
+                    blend.move_faces(topo, solid, faces, distance)
+                })?;
+                boundary_pairs = moved.boundary_pairs;
+                MoveFacesResult {
+                    solid: moved.solid,
+                    evolution: moved.evolution,
+                }
+            } else {
+                if let Some(swept) = &self.swept {
+                    swept.check(distance)?;
+                }
+                let moved = crate::performance::timed("move_faces.offset_engine", || {
+                    remus_offset::move_faces_with_entity_map(topo, solid, faces, distance)
+                })?;
+                boundary_pairs = boundary_entity_pairs(&moved);
+                if let Some((before, area)) = self.prismatic {
+                    let _volume = crate::performance::span("move_faces.prismatic_volume");
+                    check_prismatic_volume(topo, faces, before, area, distance, moved.solid)?;
+                }
+                MoveFacesResult {
+                    solid: moved.solid,
+                    evolution: exact_face_evolution(
+                        topo,
+                        &self.source_faces,
+                        moved.solid,
+                        moved.face_map,
+                    )?,
+                }
+            };
+            validate_moved_solid(topo, faces, result.solid)?;
+            Ok((result, boundary_pairs))
+        })();
+        if outcome.is_err() {
+            snapshot.restore(topo);
+        }
+        outcome
+    }
+}
+
+/// The prismatic move's volume oracle: the result must hold `before`
+/// plus `distance` times the moved `area`.
+fn check_prismatic_volume(
+    topo: &Topology,
+    faces: &[FaceId],
+    before: f64,
+    area: f64,
+    distance: f64,
+    result: SolidId,
+) -> Result<(), crate::OperationsError> {
+    let expected = distance.mul_add(area, before);
+    let actual = solid_volume(topo, result, verify_deflection(topo, result))?;
+    let slack = expected.abs().mul_add(2e-3, 1e-6);
+    if (actual - expected).abs() > slack {
+        return Err(remus_offset::OffsetError::TopologyChange {
+            face: faces.first().copied(),
+            edge: None,
+            reason: format!("volume is {actual}, expected {expected}"),
+        }
+        .into());
+    }
+    Ok(())
 }
 
 pub(crate) fn boundary_entity_pairs(
@@ -494,35 +641,78 @@ pub(crate) fn refuse_swept_region_intersections(
     normal: Vec3,
     distance: f64,
 ) -> Result<(), crate::OperationsError> {
-    let delta = normal * distance;
-    let edge_faces = remus_topology::explorer::edge_to_face_map(topo, solid)?;
-    let source_faces = solid_faces(topo, solid)?;
+    SweptRegionCheck::prepare(topo, solid, swept_faces, excluded_candidates, normal)?
+        .check(distance)
+}
 
-    for &moved_face in swept_faces {
-        let mut adjacent = std::collections::HashSet::new();
-        for faces in edge_faces.values() {
-            if faces.contains(&moved_face) {
-                adjacent.extend(faces.iter().copied());
+/// The distance-independent half of [`refuse_swept_region_intersections`]:
+/// for each swept face, its box and the box of every nonadjacent face that
+/// does not already touch it.
+#[derive(Debug, Clone)]
+pub(crate) struct SweptRegionCheck {
+    normal: Vec3,
+    /// Swept faces in face order, so a refusal always names the same face.
+    swept: Vec<SweptFace>,
+}
+
+/// A swept face, its box, and every candidate face it may reach with that
+/// candidate's box.
+type SweptFace = (FaceId, Aabb3, Vec<(FaceId, Aabb3)>);
+
+impl SweptRegionCheck {
+    pub(crate) fn prepare(
+        topo: &Topology,
+        solid: SolidId,
+        swept_faces: &std::collections::HashSet<FaceId>,
+        excluded_candidates: &std::collections::HashSet<FaceId>,
+        normal: Vec3,
+    ) -> Result<Self, crate::OperationsError> {
+        let edge_faces = remus_topology::explorer::edge_to_face_map(topo, solid)?;
+        let source_faces = solid_faces(topo, solid)?;
+        let mut ordered: Vec<FaceId> = swept_faces.iter().copied().collect();
+        ordered.compact_sort_by_key(|face| face.index());
+        let mut swept = Vec::with_capacity(ordered.len());
+        for moved_face in ordered {
+            let mut adjacent = std::collections::HashSet::new();
+            for faces in edge_faces.values() {
+                if faces.contains(&moved_face) {
+                    adjacent.extend(faces.iter().copied());
+                }
             }
+            let original = crate::measure::face_bounding_box(topo, moved_face)?;
+            let mut candidates = Vec::new();
+            for &candidate in &source_faces {
+                if swept_faces.contains(&candidate)
+                    || excluded_candidates.contains(&candidate)
+                    || adjacent.contains(&candidate)
+                {
+                    continue;
+                }
+                let candidate_box = crate::measure::face_bounding_box(topo, candidate)?;
+                if !original.intersects(candidate_box) {
+                    candidates.push((candidate, candidate_box));
+                }
+            }
+            swept.push((moved_face, original, candidates));
         }
+        Ok(Self { normal, swept })
+    }
 
-        let original = crate::measure::face_bounding_box(topo, moved_face)?;
-        let destination = Aabb3 {
-            min: original.min + delta,
-            max: original.max + delta,
-        };
-        let swept = original.union(destination);
-        for &candidate in &source_faces {
-            if swept_faces.contains(&candidate)
-                || excluded_candidates.contains(&candidate)
-                || adjacent.contains(&candidate)
+    /// Refuses a move by `distance` whose swept region reaches a candidate.
+    pub(crate) fn check(&self, distance: f64) -> Result<(), crate::OperationsError> {
+        let delta = self.normal * distance;
+        for (moved_face, original, candidates) in &self.swept {
+            let destination = Aabb3 {
+                min: original.min + delta,
+                max: original.max + delta,
+            };
+            let swept = original.union(destination);
+            if let Some((candidate, _)) = candidates
+                .iter()
+                .find(|(_, candidate_box)| swept.intersects(*candidate_box))
             {
-                continue;
-            }
-            let candidate_box = crate::measure::face_bounding_box(topo, candidate)?;
-            if !original.intersects(candidate_box) && swept.intersects(candidate_box) {
                 return Err(remus_offset::OffsetError::TopologyChange {
-                    face: Some(moved_face),
+                    face: Some(*moved_face),
                     edge: None,
                     reason: format!(
                         "swept face reaches nonadjacent face {} before completing the move",
@@ -532,8 +722,8 @@ pub(crate) fn refuse_swept_region_intersections(
                 .into());
             }
         }
+        Ok(())
     }
-    Ok(())
 }
 
 pub(crate) fn move_is_prismatic(
