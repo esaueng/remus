@@ -1,11 +1,11 @@
 {
-  "benchmark": "fleet-benchmark.yml",
-  "ci": "fleet-ci.yml",
-  "fuzz": "fleet-fuzz.yml",
-  "gauntlet": "fleet-gauntlet.yml",
-  "mutants-sharded": "fleet-mutants-sharded.yml",
-  "mutation-scope": "fleet-mutation-scope.yml",
-  "osv": "fleet-osv.yml",
-  "wasm-candidate": "fleet-wasm-candidate.yml",
-  "wasm-size": "fleet-wasm-size.yml"
+  "benchmark": "fleet-benchmark-v2.yml",
+  "ci": "fleet-ci-v2.yml",
+  "fuzz": "fleet-fuzz-v2.yml",
+  "gauntlet": "fleet-gauntlet-v2.yml",
+  "mutants-sharded": "fleet-mutants-sharded-v2.yml",
+  "mutation-scope": "fleet-mutation-scope-v2.yml",
+  "osv": "fleet-osv-v2.yml",
+  "wasm-candidate": "fleet-wasm-candidate-v2.yml",
+  "wasm-size": "fleet-wasm-size-v2.yml"
 }
