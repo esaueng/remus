@@ -5,7 +5,6 @@
 //! asserted with exact counts (undo records and arena slots), not timings, so
 //! they are deterministic. They run in the ordinary suite and in the
 //! `test(scaling_)` step.
-#![allow(clippy::print_stderr)]
 
 use remus_topology::Topology;
 use remus_topology::solid::SolidId;
@@ -67,10 +66,6 @@ fn scaling_face_moves_write_only_the_edited_body() {
                 move_writes(&mut topo, body, 2.5, prepared)
             };
             let (alone, crowded) = (counts(0), counts(BACKGROUND_BODIES));
-            eprintln!(
-                "face-move guard {name} (prepared {prepared}): undo records / slots \
-                 {alone:?} alone, {crowded:?} with {BACKGROUND_BODIES} unrelated boxes"
-            );
             assert!(alone.0 > 0, "{name}: no undo records were observed");
             assert_eq!(
                 alone, crowded,
@@ -103,14 +98,11 @@ fn scaling_prepared_drag_ticks_allocate_a_constant_number_of_slots() {
                 .collect::<Vec<_>>()
         };
         let (alone, crowded) = (ticks(0), ticks(BACKGROUND_BODIES));
-        eprintln!(
-            "drag-tick guard {name}: slots per tick {alone:?} alone, {crowded:?} with \
-             {BACKGROUND_BODIES} unrelated boxes"
-        );
         assert!(alone[0] > 0, "{name}: the move allocated nothing");
-        assert!(
-            alone.iter().all(|&slots| slots == alone[0]),
-            "{name}: per-tick allocation drifts across a drag: {alone:?}"
+        assert_eq!(
+            alone,
+            vec![alone[0]; alone.len()],
+            "{name}: per-tick allocation drifts across a drag"
         );
         assert_eq!(
             alone, crowded,
