@@ -818,18 +818,22 @@ impl BrepKernel {
     /// for easier testing in native (non-WASM) contexts.
     #[allow(clippy::wrong_self_convention)]
     pub(crate) fn from_brep_impl(&mut self, json: &str) -> Result<u32, WasmError> {
+        // Refuse hostile inputs before snapshotting or changing the session.
+        let parsed = crate::helpers::brep_import::parse(json)?;
         self.with_kernel_transaction(Refusal::Restored, |kernel| {
-            kernel.from_brep_impl_unchecked(json)
+            kernel.from_brep_value_unchecked(&parsed)
         })
     }
 
-    #[allow(clippy::too_many_lines, clippy::wrong_self_convention)]
+    #[cfg(test)]
+    #[allow(clippy::wrong_self_convention)]
     pub(crate) fn from_brep_impl_unchecked(&mut self, json: &str) -> Result<u32, WasmError> {
-        let parsed: serde_json::Value =
-            serde_json::from_str(json).map_err(|e| WasmError::InvalidInput {
-                reason: format!("invalid BREP JSON: {e}"),
-            })?;
+        let parsed = crate::helpers::brep_import::parse(json)?;
+        self.from_brep_value_unchecked(&parsed)
+    }
 
+    #[allow(clippy::too_many_lines, clippy::wrong_self_convention)]
+    fn from_brep_value_unchecked(&mut self, parsed: &serde_json::Value) -> Result<u32, WasmError> {
         // 1. Reconstruct vertices
         let vertices = parsed["vertices"]
             .as_array()

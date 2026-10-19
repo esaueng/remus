@@ -7,13 +7,14 @@ import re
 import subprocess
 import unittest
 from pathlib import Path
+from fleet_workflows import workflow_path, is_ci_workflow, validate_calls
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github/workflows"
 SPEC = importlib.util.spec_from_file_location("direct", ROOT / "scripts/test-direct-fleet.py")
 DIRECT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(DIRECT)
-FILES = sorted(p for p in WORKFLOWS.glob("fleet-*.yml") if p.name != "fleet-ci.yml")
+FILES = sorted(p for p in WORKFLOWS.glob("fleet-*.yml") if not is_ci_workflow(p))
 GUARD_PATH = ".github/actions/fleet-guard/action.yml"
 GUARD = (ROOT / GUARD_PATH).read_text()
 # Hosted jobs name an exact image: `ubuntu-latest` moves to a new Ubuntu
@@ -122,18 +123,10 @@ class UbuntuRoutingTests(unittest.TestCase):
                         self.assertNotIn("contents: write", block)
 
     def test_callers_pin_the_checked_in_workflow_content(self):
-        for path in WORKFLOWS.glob("*.yml"):
-            for name, sha in re.findall(r"uses: esaueng/remus/(.github/workflows/fleet-[\w-]+.yml)@([a-f0-9]{40})", path.read_text()):
-                with self.subTest(caller=path.name, workflow=name):
-                    self.assertEqual(subprocess.run(
-                        ["git", "merge-base", "--is-ancestor", sha, "origin/main"],
-                        cwd=ROOT, capture_output=True).returncode, 0,
-                        "Pin reusable workflows to a reachable main ancestor, not a squash-merged branch")
-                    self.assertEqual(subprocess.check_output(
-                        ["git", "show", f"{sha}:{name}"], cwd=ROOT, text=True), (ROOT / name).read_text())
+        self.assertGreater(validate_calls(), 0)
 
     def test_guard_retains_identity_and_isolation_checks(self):
-        original = (WORKFLOWS / "fleet-ci.yml").read_text()
+        original = workflow_path("ci").read_text()
         for anchor in ("fleet-source", "fleet-isolation"):
             block = re.search(r"      - &" + anchor + r"\n(.*?)(?=^      - )", original, re.M | re.S)[1]
             script = block.split("        run: |\n", 1)[1]
@@ -141,7 +134,7 @@ class UbuntuRoutingTests(unittest.TestCase):
             self.assertIn(normalized, GUARD)
 
     def test_osv_keeps_base_comparison_and_blocking_reports(self):
-        text = (WORKFLOWS / "fleet-osv.yml").read_text()
+        text = workflow_path("osv").read_text()
         self.assertIn("github.event.pull_request.base.sha", text)
         checkout = text.index('git checkout --force --detach "$GITHUB_SHA"')
         base_output = text.index("--output=/github/temp/old-results.json")
@@ -166,17 +159,17 @@ class UbuntuRoutingTests(unittest.TestCase):
             self.assertNotIn("continue-on-error", block)
 
     def test_scanners_start_only_after_the_empty_docker_guard(self):
-        core = (WORKFLOWS / "fleet-ci.yml").read_text()
+        core = workflow_path("ci").read_text()
         self.assertNotIn("EmbarkStudios/cargo-deny-action", core)
         self.assertIn("cargo-deny@0.20.2", core)
         self.assertIn("cargo deny --log-level warn --manifest-path ./Cargo.toml --all-features check", core)
-        osv = (WORKFLOWS / "fleet-osv.yml").read_text()
+        osv = workflow_path("osv").read_text()
         self.assertNotIn("uses: google/osv-scanner-action", osv)
         self.assertIn("ghcr.io/google/osv-scanner-action@sha256:", osv)
         self.assertLess(osv.index("fleet-guard@"), osv.index("docker run --rm"))
 
     def test_rust_caches_restore_after_isolation_and_only_main_saves(self):
-        for path in [WORKFLOWS / "fleet-ci.yml", *FILES]:
+        for path in [workflow_path("ci"), *FILES]:
             for name, block in jobs(path.read_text()).items():
                 if "Swatinem/rust-cache@" not in block:
                     continue
@@ -184,11 +177,11 @@ class UbuntuRoutingTests(unittest.TestCase):
                 with self.subTest(file=path.name, job=name):
                     self.assertNotIn("runner.environment != 'self-hosted'", cache)
                     self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' }}", cache)
-                    guard = "*fleet-isolation" if path.name == "fleet-ci.yml" else "fleet-guard@"
+                    guard = "*fleet-isolation" if is_ci_workflow(path) else "fleet-guard@"
                     self.assertLess(block.index(guard), block.index("Swatinem/rust-cache@"))
 
     def test_macos_is_disabled(self):
-        fleet = jobs((WORKFLOWS / "fleet-ci.yml").read_text())
+        fleet = jobs(workflow_path("ci").read_text())
         self.assertNotIn("platform-test", fleet)
         self.assertNotIn("platform-test", fleet["ci-pass"])
         for path in WORKFLOWS.glob("*.yml"):
@@ -196,7 +189,7 @@ class UbuntuRoutingTests(unittest.TestCase):
 
     def test_publish_credentials_stay_separate(self):
         for name, run in (("benchmark", "bench"), ("gauntlet", "run")):
-            blocks = jobs((WORKFLOWS / f"fleet-{name}.yml").read_text())
+            blocks = jobs(workflow_path(name).read_text())
             self.assertIn("contents: read", blocks[run])
             self.assertNotIn("contents: write", blocks[run])
             self.assertIn("contents: write", blocks["publish"])

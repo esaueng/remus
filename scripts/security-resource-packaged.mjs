@@ -50,6 +50,13 @@ export function runSecurityResourceRegressions({ BrepKernel, RemusIo }) {
     assert.throws(() => kernel.restore(history[0]), /invalid checkpoint id/);
 
     const document = kernel.serializeSolids(new Uint32Array([solid]));
+    // Exercise the production JSON-value budget through the actual JS binding.
+    // An unknown field must not bypass accounting before schema validation.
+    const overBudgetBrep = '{"ignored":[' + '0,'.repeat(3_000_000) + '0]}';
+    assert.throws(() => kernel.fromBREP(overBudgetBrep), /BREP JSON value import limit exceeded/);
+    assert.deepEqual(kernel.serializeSolids(new Uint32Array([solid])), document);
+    const restored = kernel.fromBREP(kernel.toBrepJson(solid));
+    assert.equal(kernel.volume(restored, 0.1), 24);
     const step = io.exportStep(document);
     for (const bad of [1e30, Number.MAX_VALUE, Infinity, NaN, 0, -1, 0.5, 1.5]) {
       assert.throws(() => io.importStep(step, bad), /maxInputBytes/);

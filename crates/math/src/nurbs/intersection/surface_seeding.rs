@@ -14,7 +14,7 @@ use crate::vec::{Point3, Vec3};
 
 use super::chaining::build_curves_from_points;
 use super::surface_marching::{
-    SsiScratch, constrain_param, constrain_state, march_with_branches, near_existing_segment,
+    SsiScratch, constrain_param, constrain_state, march_with_branches, point_to_segment_dist,
     surface_newton_step,
 };
 use crate::context::{OperationContext, WorkBudgets};
@@ -75,7 +75,6 @@ pub fn intersect_nurbs_nurbs_with_context(
     context: &OperationContext,
 ) -> Result<Vec<IntersectionCurve>, MathError> {
     context.check_cancelled()?;
-    let budgets: &WorkBudgets = &context.budgets;
     let n = samples.max(5);
     let tolerance = 1e-6;
     // One scratch pair for the whole intersection: surface 1's half only
@@ -131,52 +130,17 @@ pub fn intersect_nurbs_nurbs_with_context(
         return Ok(Vec::new());
     }
 
-    // Phase 2: March from each seed along the intersection curve.
-    // Uses a work-queue to discover branch points during marching and
-    // spawn additional traces from those branches. Segment-distance
-    // dedup avoids redundant marching on already-traced curves.
-    // The marcher step is in parameter units, while `near_existing_segment`
-    // measures 3D distances. Match the physical seed-dedup band below instead
-    // of letting a knot-domain step suppress distinct nearby components.
-    let dedup_dist = tolerance * 100.0;
-    let mut traced_segments: Vec<Vec<IntersectionPoint>> = Vec::new();
-    let mut work_queue: VecDeque<IntersectionPoint> = seeds.into();
-
-    while let Some(seed) = work_queue.pop_front() {
-        context.check_cancelled()?;
-        if traced_segments.len() >= budgets.segments {
-            break;
-        }
-
-        // Segment-distance dedup: check if this seed is near any already-
-        // traced polyline *segment*, not just individual points. This
-        // prevents false positives when a seed is near the middle of a
-        // traced curve but could reach a different branch.
-        if near_existing_segment(&traced_segments, &seed, dedup_dist) {
-            continue;
-        }
-
-        let (traced, branch_seeds) = march_with_branches(
-            surface1,
-            surface2,
-            &seed,
-            march_step,
-            tolerance,
-            context,
-            &mut scratch,
-        )?;
-
-        if !traced.is_empty() {
-            traced_segments.push(traced);
-        }
-
-        // Add branch seeds to the work queue (capped).
-        for bs in branch_seeds {
-            if work_queue.len() < budgets.queue_size {
-                work_queue.push_back(bs);
-            }
-        }
-    }
+    // Phase 2: Discard seeds on an already traced intersection, including
+    // the curved portions between marching samples.
+    let traced_segments = trace_seeds(
+        surface1,
+        surface2,
+        seeds,
+        march_step,
+        tolerance,
+        context,
+        &mut scratch,
+    )?;
 
     let all_points: Vec<IntersectionPoint> = traced_segments.into_iter().flatten().collect();
 
@@ -198,6 +162,195 @@ pub fn intersect_nurbs_nurbs_with_context(
     let validated = validate_intersection_curves(&curves, surface1, surface2, tolerance * 10.0);
 
     Ok(validated)
+}
+
+/// March each untraced seed once; kept separate so candidate ordering and
+/// segment-budget behavior can be tested independently of seed discovery.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn trace_seeds(
+    surface1: &NurbsSurface,
+    surface2: &NurbsSurface,
+    seeds: Vec<IntersectionPoint>,
+    march_step: f64,
+    tolerance: f64,
+    context: &OperationContext,
+    scratch: &mut SsiScratch,
+) -> Result<Vec<Vec<IntersectionPoint>>, MathError> {
+    let budgets: &WorkBudgets = &context.budgets;
+    let mut traced_segments: Vec<Vec<IntersectionPoint>> = Vec::new();
+    let mut work_queue: VecDeque<IntersectionPoint> = seeds.into();
+
+    while let Some(seed) = work_queue.pop_front() {
+        context.check_cancelled()?;
+        if traced_segments.len() >= budgets.segments {
+            break;
+        }
+
+        // Chord-local projection accounts for curvature between samples
+        // without widening the physical distance used to identify a trace.
+        if near_traced_curve(
+            surface1,
+            surface2,
+            &traced_segments,
+            &seed,
+            tolerance,
+            context,
+            scratch,
+        )? {
+            continue;
+        }
+
+        let (traced, branch_seeds) = march_with_branches(
+            surface1, surface2, &seed, march_step, tolerance, context, scratch,
+        )?;
+
+        if !traced.is_empty() {
+            traced_segments.push(traced);
+        }
+
+        // Add branch seeds to the work queue (capped).
+        for bs in branch_seeds {
+            if work_queue.len() < budgets.queue_size {
+                work_queue.push_back(bs);
+            }
+        }
+    }
+
+    Ok(traced_segments)
+}
+
+/// Project onto the intersection in a plane transverse to a traced chord.
+/// A chord only selects a local search interval: accepting a duplicate still
+/// requires a point on both surfaces within the original physical band.
+/// This avoids enlarging that band across a nearby, disjoint component.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub(super) fn near_traced_curve(
+    s1: &NurbsSurface,
+    s2: &NurbsSurface,
+    traces: &[Vec<IntersectionPoint>],
+    seed: &IntersectionPoint,
+    tolerance: f64,
+    context: &OperationContext,
+    scratch: &mut SsiScratch,
+) -> Result<bool, MathError> {
+    let dist = tolerance * 100.0;
+    let domains = [s1.domain_u(), s1.domain_v(), s2.domain_u(), s2.domain_v()];
+    let scales = domains.map(|(lo, hi)| hi - lo);
+    let periodic = [
+        s1.is_periodic_u(),
+        s1.is_periodic_v(),
+        s2.is_periodic_u(),
+        s2.is_periodic_v(),
+    ];
+    for trace in traces {
+        context.check_cancelled()?;
+        if trace.iter().any(|p| (p.point - seed.point).length() < dist) {
+            return Ok(true);
+        }
+        for pair in trace.windows(2) {
+            let a = &pair[0];
+            let b = &pair[1];
+            let chord = b.point - a.point;
+            let length = chord.length();
+            if length <= dist {
+                continue;
+            }
+            // The local plane must cut this chord. Do not extend a trace
+            // past its endpoints or search unrelated distant intervals.
+            let t = (seed.point - a.point).dot(chord) / (length * length);
+            if !(0.0..=1.0).contains(&t)
+                || point_to_segment_dist(seed.point, a.point, b.point) >= length * 0.5 + dist
+            {
+                continue;
+            }
+            let tangent = chord * (1.0 / length);
+            let av = [a.param1.0, a.param1.1, a.param2.0, a.param2.1];
+            let raw_bv = [b.param1.0, b.param1.1, b.param2.0, b.param2.1];
+            // Keep the local interval unwrapped across a periodic seam.
+            // Interpolating canonical endpoints would start on the other
+            // side of the surface and inflate the local search margins.
+            let bv: [f64; 4] = std::array::from_fn(|i| {
+                let delta = raw_bv[i] - av[i];
+                if periodic[i] && delta.abs() > scales[i] * 0.5 {
+                    av[i] + delta - delta.signum() * scales[i]
+                } else {
+                    raw_bv[i]
+                }
+            });
+            let mut state: [f64; 4] = std::array::from_fn(|i| av[i] + t * (bv[i] - av[i]));
+            // Curved UV paths can leave the endpoint coordinate box at a
+            // local extremum. Allow half a parameter-chord of local motion,
+            // normalized separately on each surface's knot domains.
+            let margins: [f64; 2] = std::array::from_fn(|i| {
+                let u = i * 2;
+                ((bv[u] - av[u]) / scales[u]).hypot((bv[u + 1] - av[u + 1]) / scales[u + 1]) * 0.5
+            });
+            for iteration in 0..=context.budgets.newton_iterations {
+                context.check_cancelled()?;
+                // Stay near this sampled parameter interval. A failed or
+                // singular projection leaves the seed eligible for marching.
+                if (0..4).any(|i| {
+                    let slack = scales[i] * (margins[i / 2] + 1e-10);
+                    !state[i].is_finite()
+                        || (!periodic[i] && (state[i] < domains[i].0 || state[i] > domains[i].1))
+                        || state[i] < av[i].min(bv[i]) - slack
+                        || state[i] > av[i].max(bv[i]) + slack
+                }) {
+                    break;
+                }
+                // Evaluate canonical periodic parameters, but retain the
+                // unwrapped Newton state for the local interval checks.
+                let eval: [f64; 4] = std::array::from_fn(|i| {
+                    if periodic[i] {
+                        constrain_param(state[i], domains[i].0, domains[i].1, true)
+                    } else {
+                        state[i]
+                    }
+                });
+                let p1 = s1.evaluate(eval[0], eval[1]);
+                let p2 = s2.evaluate(eval[2], eval[3]);
+                let residual = p1 - p2;
+                let plane = (p1 - seed.point).dot(tangent);
+                if residual.length() < tolerance && plane.abs() < tolerance {
+                    if (p1 - seed.point).length() < dist {
+                        return Ok(true);
+                    }
+                    break;
+                }
+                // The budget counts updates. Always evaluate their final
+                // result, including when the last permitted step converges.
+                if iteration == context.budgets.newton_iterations {
+                    break;
+                }
+                let (su1, sv1) = scratch.partials1(s1, eval[0], eval[1]);
+                let (su2, sv2) = scratch.partials2(s2, eval[2], eval[3]);
+                let j = [su1, sv1, -su2, -sv2];
+                // Normalize parameter columns so knot-domain scaling does
+                // not alter the linear solver's singularity threshold.
+                let matrix = [
+                    std::array::from_fn(|i| j[i].x() * scales[i]),
+                    std::array::from_fn(|i| j[i].y() * scales[i]),
+                    std::array::from_fn(|i| j[i].z() * scales[i]),
+                    [
+                        su1.dot(tangent) * scales[0],
+                        sv1.dot(tangent) * scales[1],
+                        0.0,
+                        0.0,
+                    ],
+                ];
+                let Some(delta) = solve_4x4(
+                    matrix,
+                    [-residual.x(), -residual.y(), -residual.z(), -plane],
+                ) else {
+                    break;
+                };
+                for i in 0..4 {
+                    state[i] += delta[i] * scales[i];
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Validate intersection curves by checking that the fitted NURBS curve

@@ -1734,3 +1734,157 @@ mod tests {
         assert!(validate_all_finite(&m, "matrix").is_err());
     }
 }
+
+pub mod brep_import {
+    //! Bounded JSON decoding for the legacy `fromBREP` representation.
+    //!
+    //! Count every JSON value, including nested references, NURBS arrays and
+    //! unknown fields, before allocating it. Top-level entity counts alone do not
+    //! bound this representation. serde_json retains its normal nesting limit.
+    use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
+    use serde_json::{Map, Number, Value};
+
+    use crate::error::WasmError;
+
+    pub fn parse(json: &str) -> Result<Value, WasmError> {
+        let limits = remus_io::ImportLimits::default();
+        parse_with_limits(json, limits.max_input_bytes, limits.max_model_entities)
+    }
+
+    fn parse_with_limits(
+        json: &str,
+        max_bytes: usize,
+        mut remaining: usize,
+    ) -> Result<Value, WasmError> {
+        let invalid = |reason| WasmError::InvalidInput { reason };
+        if json.len() > max_bytes {
+            return Err(invalid(format!(
+                "BREP JSON exceeds the {max_bytes} byte import limit"
+            )));
+        }
+        let mut deserializer = serde_json::Deserializer::from_str(json);
+        let value = BoundedValue(&mut remaining)
+            .deserialize(&mut deserializer)
+            .map_err(|error| invalid(format!("invalid BREP JSON: {error}")))?;
+        deserializer
+            .end()
+            .map_err(|error| invalid(format!("invalid BREP JSON: {error}")))?;
+        Ok(value)
+    }
+
+    struct BoundedValue<'a>(&'a mut usize);
+
+    impl<'de> DeserializeSeed<'de> for BoundedValue<'_> {
+        type Value = Value;
+
+        fn deserialize<D: serde::Deserializer<'de>>(
+            self,
+            deserializer: D,
+        ) -> Result<Value, D::Error> {
+            if *self.0 == 0 {
+                return Err(serde::de::Error::custom(
+                    "BREP JSON value import limit exceeded",
+                ));
+            }
+            *self.0 -= 1;
+            deserializer.deserialize_any(self)
+        }
+    }
+
+    impl<'de> Visitor<'de> for BoundedValue<'_> {
+        type Value = Value;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("bounded BREP JSON")
+        }
+
+        fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Value, E> {
+            Ok(Value::Bool(value))
+        }
+        fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Value, E> {
+            Ok(Value::Number(value.into()))
+        }
+        fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Value, E> {
+            Ok(Value::Number(value.into()))
+        }
+        fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Value, E> {
+            Number::from_f64(value)
+                .map(Value::Number)
+                .ok_or_else(|| E::custom("non-finite BREP number"))
+        }
+        fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Value, E> {
+            Ok(Value::String(value.to_owned()))
+        }
+        fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Value, E> {
+            Ok(Value::String(value))
+        }
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Value, E> {
+            Ok(Value::Null)
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Value, A::Error> {
+            let mut values = Vec::new();
+            while let Some(value) = sequence.next_element_seed(BoundedValue(self.0))? {
+                values.push(value);
+            }
+            Ok(Value::Array(values))
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+            let mut values = Map::new();
+            while let Some(key) = map.next_key::<String>()? {
+                let value = map.next_value_seed(BoundedValue(self.0))?;
+                values.insert(key, value);
+            }
+            Ok(Value::Object(values))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #![allow(clippy::unwrap_used)]
+        use super::*;
+
+        #[test]
+        fn from_brep_limits_precede_parsing_and_cover_nested_and_duplicate_values() {
+            assert!(
+                parse_with_limits("not JSON", 2, 10)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("byte import limit")
+            );
+            for json in [
+                r#"{"vertices":[[0,1,2]]}"#,
+                r#"{"unknown":{"weights":[0,1,2]}}"#,
+                r#"{"x":0,"x":1,"x":2,"x":3,"x":4}"#,
+            ] {
+                assert!(
+                    parse_with_limits(json, 100, 5)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("value import limit")
+                );
+            }
+            assert_eq!(
+                parse_with_limits("[0,1,2]", 7, 4).unwrap(),
+                serde_json::json!([0, 1, 2])
+            );
+            assert!(parse_with_limits("[0,1,2]", 7, 3).is_err());
+        }
+
+        #[test]
+        fn from_brep_preserves_json_number_string_and_refusal_semantics() {
+            let json =
+                r#"{"s":"a\u0062","i":4294967295,"negative":-1,"f":1e200,"b":true,"n":null}"#;
+            assert_eq!(
+                parse(json).unwrap(),
+                serde_json::from_str::<Value>(json).unwrap()
+            );
+            for json in ["NaN", "Infinity", "1e999", "{} {}"] {
+                assert!(parse(json).is_err());
+            }
+            let nested = format!("{}0{}", "[".repeat(130), "]".repeat(130));
+            assert!(parse(&nested).is_err());
+        }
+    }
+}

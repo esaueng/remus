@@ -66,6 +66,22 @@ fn legacy_angle_refuses_malformed_or_half_specified_second_line() {
     assert!(matches!(error, WasmError::Sketch(_)), "{error}");
 }
 
+/// Issue #1049: overflowing optional references must never attach to a
+/// low-numbered point; on native targets the reference validator rejects them.
+#[test]
+fn legacy_angle_refuses_overflowing_second_line_without_mutation() {
+    let (mut kernel, sketch) = legacy_sketch(4);
+    for field in ["p3", "p4"] {
+        for index in [1_u64 << 32, (1_u64 << 32) + 1, u64::MAX] {
+            let mut spec = serde_json::json!({
+                "type":"angle", "p1":0, "p2":1, "p3":2, "p4":3, "value":0.5
+            });
+            spec[field] = index.into();
+            refused(&mut kernel, sketch, &spec.to_string());
+        }
+    }
+}
+
 #[test]
 fn legacy_angle_keeps_its_two_accepted_forms() {
     let (mut kernel, sketch) = legacy_sketch(4);

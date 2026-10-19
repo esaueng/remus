@@ -48,7 +48,9 @@ use remus_operations::blend_ops::BlendResult;
 use remus_topology::edge::EdgeId;
 
 use super::operations::parse_variable_fillet_specs;
-use crate::error::{StructuredWasmError, WasmError, validate_finite, validate_positive};
+use crate::error::{
+    StructuredWasmError, WasmError, validate_finite, validate_positive, validate_work_count,
+};
 use crate::handles::{face_id_to_u32, solid_id_to_u32};
 use crate::helpers::panic_message;
 use crate::kernel::BrepKernel;
@@ -61,6 +63,27 @@ const QUALITY_APPROXIMATE: &str = "approximate";
 
 #[wasm_bindgen]
 impl BrepKernel {
+    /// Move selected faces and return an exact result or a typed refusal.
+    ///
+    /// Additive twin of [`moveFaces`](Self::move_faces_binding), with the same
+    /// supported geometry and work limits. Distances are relative to `solid`
+    /// and `faces`; a drag should keep those source handles fixed. Replace
+    /// the displayed preview only on `status: "ok"`. A refusal returns no
+    /// solid and preserves both the source and earlier successful previews,
+    /// so the caller can retain its last valid frame and try another distance.
+    #[wasm_bindgen(js_name = "moveFacesDetailed")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn move_faces_detailed(
+        &mut self,
+        solid: u32,
+        faces: Vec<u32>,
+        distance: f64,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        Ok(self
+            .move_faces_detailed_impl(solid, &faces, distance)
+            .into_ts()?)
+    }
+
     /// Fillet edges and return exact, disclosed-approximate, or refused
     /// results as typed data.
     ///
@@ -257,6 +280,38 @@ impl BrepKernel {
 
 /// Natively-testable bodies shared by the direct twins and the batch ops.
 impl BrepKernel {
+    pub(crate) fn move_faces_detailed_impl(
+        &mut self,
+        solid: u32,
+        faces: &[u32],
+        distance: f64,
+    ) -> SolidOperationDetailedResult {
+        self.run_modifier_detailed("moveFaces", "Move faces", |kernel| {
+            validate_finite(distance, "distance")?;
+            validate_work_count(u32::try_from(faces.len()).unwrap_or(u32::MAX), "faces")?;
+            let solid_id = kernel.resolve_solid(solid)?;
+            let face_ids = faces
+                .iter()
+                .map(|&face| kernel.resolve_face(face))
+                .collect::<Result<Vec<_>, _>>()?;
+            super::operations::validate_move_faces_topology_work(
+                kernel.topo(),
+                solid_id,
+                &face_ids,
+            )?;
+            let result = remus_operations::push_pull::move_faces(
+                kernel.topo_mut(),
+                solid_id,
+                &face_ids,
+                distance,
+            )?;
+            let mut details = Map::new();
+            details.insert("quality".into(), Value::from(QUALITY_EXACT));
+            details.insert("distance".into(), Value::from(distance));
+            Ok((solid_id_to_u32(result), details))
+        })
+    }
+
     pub(crate) fn fillet_detailed_impl(
         &mut self,
         solid: u32,

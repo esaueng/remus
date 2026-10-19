@@ -8,11 +8,12 @@ import re
 import subprocess
 import unittest
 from pathlib import Path
+from fleet_workflows import workflow_path
 
 ROOT = Path(__file__).resolve().parents[1]
 CALLER = (ROOT / ".github/workflows/ci.yml").read_text()
-FLEET = (ROOT / ".github/workflows/fleet-ci.yml").read_text()
-BENCH = (ROOT / ".github/workflows/fleet-benchmark.yml").read_text()
+FLEET = workflow_path("ci").read_text()
+BENCH = workflow_path("benchmark").read_text()
 BENCH_CALLER = (ROOT / ".github/workflows/benchmark.yml").read_text()
 SPEC = importlib.util.spec_from_file_location("direct", ROOT / "scripts/test-direct-fleet.py")
 DIRECT = importlib.util.module_from_spec(SPEC)
@@ -293,7 +294,7 @@ class ConvergenceTests(unittest.TestCase):
         self.assertIn("!cancelled()", caller_jobs["wasm-size"])
         self.assertIn("pull-requests: read", caller_jobs["checks"])
         self.assertNotIn("pull-requests: write", caller_jobs["checks"])
-        comment = (ROOT / ".github/workflows/fleet-wasm-size.yml").read_text()
+        comment = workflow_path("wasm-size").read_text()
         self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", comment)
         self.assertIn("node scripts/wasm-size-gate.mjs --github-pr-body", comment)
         self.assertIn("if: steps.gate.outputs.status == '1'", comment)

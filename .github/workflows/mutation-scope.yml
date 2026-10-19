@@ -8,14 +8,14 @@ on:
       - 'crates/math/**'
       - 'scripts/test-mutants-scope.py'
       - '.github/workflows/mutants.yml'
-      - '.github/workflows/fleet-mutants-sharded.yml'
+      - '.github/workflows/fleet-mutants-sharded-v2.yml'
       - 'scripts/mutants-verdict.py'
       - 'scripts/plan-mutation-shards.py'
       - 'scripts/test-mutants-verdict.py'
       # The long-tail tests .cargo/mutants.toml excludes by exact name.
       - 'crates/operations/tests/regress_seam_split_rim_band_mesh.rs'
       - 'crates/operations/tests/pclass_torus_sphere_seams.rs'
-      - '.github/workflows/fleet-mutation-scope.yml'
+      - '.github/workflows/fleet-mutation-scope-v2.yml'
       - '.github/actions/fleet-guard/**'
       - '.github/workflows/mutation-scope.yml'
   push:
@@ -26,14 +26,14 @@ on:
       - 'crates/math/**'
       - 'scripts/test-mutants-scope.py'
       - '.github/workflows/mutants.yml'
-      - '.github/workflows/fleet-mutants-sharded.yml'
+      - '.github/workflows/fleet-mutants-sharded-v2.yml'
       - 'scripts/mutants-verdict.py'
       - 'scripts/plan-mutation-shards.py'
       - 'scripts/test-mutants-verdict.py'
       # The long-tail tests .cargo/mutants.toml excludes by exact name.
       - 'crates/operations/tests/regress_seam_split_rim_band_mesh.rs'
       - 'crates/operations/tests/pclass_torus_sphere_seams.rs'
-      - '.github/workflows/fleet-mutation-scope.yml'
+      - '.github/workflows/fleet-mutation-scope-v2.yml'
       - '.github/actions/fleet-guard/**'
       - '.github/workflows/mutation-scope.yml'
 
@@ -42,7 +42,7 @@ permissions:
 
 jobs:
   checks:
-    uses: esaueng/remus/.github/workflows/fleet-mutation-scope.yml@30206c06d03fd14bb0ee88c24c4fe8b30f509105
+    uses: esaueng/remus/.github/workflows/fleet-mutation-scope-v2.yml@e07ae8e345e10085a717988e10fc08776c85d84a
     permissions:
       contents: read
       pull-requests: read
