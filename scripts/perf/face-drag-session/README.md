@@ -42,7 +42,11 @@ node scripts/perf/face-drag-session/drag_session_bench.cjs \
 
 The summary reports each stage's p50/p95/max over accepted ticks, including
 the cold first tick. It also reports the tick p50 of the first and last
-windows, slots per tick, and memory before the first tick and after the last. Pin the
+windows, and memory before the first tick and after the last. Slot growth is
+split in two: the first tick's slots include a one-time copy of the whole
+document, because the first write after a checkpoint copies the topology and
+the stats count both copies. The recurring slots per tick are measured from
+the first tick onward, and are unavailable for a one-tick run. Pin the
 process to one CPU with `taskset` and compare packages in separate processes,
 because WASM thread-local memos persist for the life of a process.
 

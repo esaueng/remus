@@ -109,6 +109,7 @@ function summarize(records, window, before) {
   const accepted = records.filter(record => record.accepted);
   const stageQuantiles = rows => Object.fromEntries(
     [...STAGES, 'tick'].map(stage => [stage, quantiles(rows.map(row => row.stagesMs[stage]))]));
+  const first = records[0].memoryAfter;
   const last = records.at(-1).memoryAfter;
   return {
     ticks: records.length,
@@ -117,8 +118,12 @@ function summarize(records, window, before) {
     // Early and late windows of accepted ticks expose drift from arena growth.
     firstWindow: stageQuantiles(accepted.slice(0, window)),
     lastWindow: stageQuantiles(accepted.slice(-window)),
-    // Measured from before the first tick, so every tick's allocation counts.
-    slotsPerTick: (last.allocatedSlots - before.allocatedSlots) / records.length,
+    // The first write after the checkpoint copies the whole topology once, and
+    // the stats then count the checkpoint and the live copy separately. That
+    // one-time copy is reported apart from the recurring per-tick growth.
+    firstTickSlots: first.allocatedSlots - before.allocatedSlots,
+    slotsPerTick: records.length > 1 ?
+      (last.allocatedSlots - first.allocatedSlots) / (records.length - 1) : null,
     memoryBefore: before,
     memoryLast: last,
   };
@@ -196,7 +201,9 @@ function main(argv = process.argv.slice(2)) {
       `tick first ${args.window}: p50 ${s.firstWindow.tick?.p50.toFixed(2)} ms; ` +
         `last ${args.window}: p50 ${s.lastWindow.tick?.p50.toFixed(2)} ms`,
       `slots ${s.memoryBefore.allocatedSlots} -> ${s.memoryLast.allocatedSlots} ` +
-        `(${s.slotsPerTick.toFixed(0)}/tick, ${s.memoryLast.retiredSlots} retired), linear memory ` +
+        `(first tick ${s.firstTickSlots} including the one-time checkpoint copy, then ` +
+        `${s.slotsPerTick === null ? 'n/a' : s.slotsPerTick.toFixed(0)}/tick; ` +
+        `${s.memoryLast.retiredSlots} retired), linear memory ` +
         `${s.memoryBefore.linearMemoryBytes} -> ${s.memoryLast.linearMemoryBytes} bytes`,
     ].join('\n') + '\n');
   } finally {
