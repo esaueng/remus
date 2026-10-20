@@ -308,6 +308,35 @@ class ConvergenceTests(unittest.TestCase):
         self.assertIn("PR_BODY: ${{ github.event.pull_request.body }}", comment)
         self.assertEqual(comment.count("github.event.pull_request.body"), 1)
 
+    def test_staged_v4_requires_fuzz_and_render_with_the_first_tier(self):
+        # fleet-ci-v4.yml is staged, not active; run its own completion gate.
+        staged = jobs((ROOT / ".github/workflows/fleet-ci-v4.yml").read_text())
+        command = staged["ci-pass"].rsplit("        run: |\n", 1)[1]
+
+        def complete(results, heavy, full, wasm):
+            return subprocess.run(
+                ["bash", "-c", command], capture_output=True, text=True,
+                env=dict(os.environ, NEEDS=json.dumps(results), HEAVY=heavy, DOCS="true",
+                         FULL=full, WASM=wasm, EVENT="merge_group"),
+            ).returncode
+
+        moved = {"fuzz-check", "render"}
+        for name in moved:
+            self.assertIn("if: needs.changes.outputs.heavy == 'true'", staged[name])
+        results = self.success()
+        for name in (TIER2 - moved) | PACKAGE | {SIZE_GATE}:
+            results[name]["result"] = "skipped"
+        self.assertEqual(complete(results, "true", "false", "false"), 0)
+        for name in moved:
+            with self.subTest(job=name):
+                altered = json.loads(json.dumps(results))
+                altered[name]["result"] = "skipped"
+                self.assertNotEqual(complete(altered, "true", "false", "false"), 0)
+        # A docs-only selection still skips them.
+        for name in HEAVY | {SIZE_GATE}:
+            results[name]["result"] = "skipped"
+        self.assertEqual(complete(results, "false", "false", "false"), 0)
+
     def test_queue_configuration_preserves_every_merge_validation(self):
         config = json.loads((ROOT / ".github/merge-queue-ruleset.json").read_text())
         self.assertEqual(config["enforcement"], "disabled")

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 import subprocess
 import sys
@@ -144,7 +145,8 @@ class ClassifyCiChangesTests(unittest.TestCase):
         self.assertRegex(changes, r"python3 scripts/classify-ci-changes\.py \\\n\s+--base \"\$base\" \\\n"
                                   r"\s+--head \"\$GITHUB_SHA\" \$full_flag \| tee -a \"\$GITHUB_OUTPUT\"")
 
-    def run_cli(self, files: dict[str, str]) -> dict[str, str]:
+    def run_cli(self, files: dict[str, str], *args: str,
+                event: str = "pull_request") -> dict[str, str]:
         """Classify a real two-commit diff through the CLI the changes job runs."""
         with tempfile.TemporaryDirectory(prefix="remus-classify-") as tmp:
             git = ["git", "-c", "user.name=ci", "-c", "user.email=ci@example.invalid",
@@ -162,8 +164,9 @@ class ClassifyCiChangesTests(unittest.TestCase):
             run("add", "-A")
             run("commit", "-q", "-m", "head")
             result = subprocess.run(
-                [sys.executable, str(MODULE_PATH), "--base", "HEAD~1", "--head", "HEAD"],
+                [sys.executable, str(MODULE_PATH), "--base", "HEAD~1", "--head", "HEAD", *args],
                 cwd=tmp, check=True, capture_output=True, text=True,
+                env={**os.environ, "GITHUB_EVENT_NAME": event},
             )
         return dict(line.split("=", 1) for line in result.stdout.splitlines())
 
@@ -264,6 +267,75 @@ class ClassifyCiChangesTests(unittest.TestCase):
         result = MODULE.classify_paths(["crates/io/README.md"])
         self.assertTrue(result.heavy)
 
+
+    def test_merge_group_source_change_runs_the_pr_tier(self) -> None:
+        # The main push of the same tree runs the second tier after the merge.
+        result = MODULE.classify_paths(
+            PR_618_PATHS, force_full=True, merge_group=True
+        )
+        self.assertTrue(result.heavy)
+        self.assertTrue(result.docs)
+        self.assertFalse(result.full)
+        self.assertTrue(result.wasm)
+        self.assertEqual(result.mode, "queue")
+
+    def test_merge_group_without_wasm_paths_skips_the_package_build(self) -> None:
+        result = MODULE.classify_paths(
+            ["scripts/check-boundaries.sh"], force_full=True, merge_group=True
+        )
+        self.assertTrue(result.heavy)
+        self.assertFalse(result.full)
+        self.assertFalse(result.wasm)
+
+    def test_merge_group_keeps_the_second_tier_for_its_inputs(self) -> None:
+        for path in (
+            "Cargo.lock", "Cargo.toml", "crates/math/Cargo.toml", "deny.toml",
+            "rust-toolchain.toml", "clippy.toml", ".cargo/config.toml",
+            ".config/nextest.toml", "fuzz/fuzz_targets/nurbs_surface.rs",
+            "crates/render/src/lib.rs", ".github/workflows/ci.yml",
+        ):
+            with self.subTest(path=path):
+                result = MODULE.classify_paths(
+                    ["crates/math/src/lib.rs", path], force_full=True, merge_group=True
+                )
+                self.assertTrue(result.full)
+                self.assertTrue(result.wasm)
+                self.assertEqual(result.mode, "full")
+
+    def test_merge_group_never_relaxes_what_fails_closed(self) -> None:
+        for paths in ([], ["crates/wasm/pkg/remus_wasm_bg.wasm"]):
+            with self.subTest(paths=paths):
+                result = MODULE.classify_paths(paths, force_full=True, merge_group=True)
+                self.assertTrue(result.full)
+                self.assertEqual(result.mode, "full")
+        # A queue batch that pairs a package refresh with a source PR.
+        result = MODULE.classify_paths(
+            ["crates/wasm/pkg/remus_wasm_bg.wasm", "crates/wasm-io/pkg/package.json",
+             "crates/math/src/lib.rs", "docs/kernel-maturity/roadmap.md"],
+            force_full=True, merge_group=True,
+        )
+        self.assertTrue(result.full)
+        self.assertEqual(result.mode, "full")
+        # A merge group never selects more than the event's own tier.
+        result = MODULE.classify_paths(["Cargo.lock"], merge_group=True)
+        self.assertFalse(result.full)
+
+    def test_main_push_and_labelled_pr_keep_the_full_suite(self) -> None:
+        result = MODULE.classify_paths(PR_618_PATHS, force_full=True)
+        self.assertTrue(result.full)
+        self.assertEqual(result.mode, "full")
+
+    def test_cli_reads_the_merge_group_event_from_the_runner(self) -> None:
+        files = {"crates/algo/src/pave_filler/phase_ff.rs": "// change\n"}
+        queued = self.run_cli(files, "--full", event="merge_group")
+        self.assertEqual(queued["full"], "false")
+        self.assertEqual(queued["wasm"], "true")
+        self.assertEqual(queued["mode"], "queue")
+        pushed = self.run_cli(files, "--full", event="push")
+        self.assertEqual(pushed["full"], "true")
+        self.assertEqual(pushed["mode"], "full")
+        locked = self.run_cli({**files, "Cargo.lock": "# lock\n"}, "--full", event="merge_group")
+        self.assertEqual(locked["full"], "true")
 
 if __name__ == "__main__":
     unittest.main()
