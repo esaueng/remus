@@ -257,11 +257,22 @@ fn torus_wire_wraps_tube(
         let (sp, ep) = (sv.point(), ev.point());
         // Sample ALONG each edge (not just endpoints): a wrapping seam arc bows
         // far in v between its endpoints, so endpoint-only sampling can miss the
-        // wrap and misclassify a notch band as a constant-v circle.
+        // wrap and misclassify a notch band as a constant-v circle. A line is
+        // parameterized over [0, 1]; every other curve over its own trim span.
+        let (t0, t1) = if matches!(e.curve(), EdgeCurve::Line) {
+            (0.0, 1.0)
+        } else {
+            match tessellate::edge_param_span(topo, e) {
+                Ok(span) => span,
+                Err(_) => return false,
+            }
+        };
         for k in 0..=8 {
             let f = f64::from(k) / 8.0;
-            let t = if oe.is_forward() { f } else { 1.0 - f };
-            let p = e.curve().evaluate_with_endpoints(t, sp, ep);
+            let f = if oe.is_forward() { f } else { 1.0 - f };
+            let p = e
+                .curve()
+                .evaluate_with_endpoints((t1 - t0).mul_add(f, t0), sp, ep);
             vs.push(torus.project_point(p).1);
         }
     }
@@ -5841,6 +5852,40 @@ mod notch_patch_qualification_tests {
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
+
+    /// A full tube circle of a torus about Z (R = 2, r = 1) at `u = 0`, as a
+    /// one-edge wire whose stored trim is the whole turn.
+    fn tube_circle_wire(topo: &mut Topology, trim: (f64, f64)) -> remus_topology::wire::WireId {
+        let circle =
+            Circle3D::new(Point3::new(2.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 1.0).unwrap();
+        let start = circle.evaluate(trim.0);
+        let vertex = topo.add_vertex(Vertex::new(start, 1e-7));
+        let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+        edge.set_trim(Some(trim));
+        let edge = topo.add_edge(edge);
+        topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap())
+    }
+
+    #[test]
+    fn tube_wrap_samples_each_edge_over_its_own_span() {
+        let torus = ToroidalSurface::with_axis(
+            Point3::new(0.0, 0.0, 0.0),
+            2.0,
+            1.0,
+            Vec3::new(0.0, 0.0, 1.0),
+        )
+        .unwrap();
+        // The whole turn wraps the tube once. Sampling the circle's raw
+        // parameter over [0, 1] instead walked one radian of it and read no
+        // wrap.
+        let mut topo = Topology::new();
+        let wire = tube_circle_wire(&mut topo, (0.0, std::f64::consts::TAU));
+        assert!(torus_wire_wraps_tube(&topo, wire, &torus));
+        // A trim that starts away from the parameter origin wraps all the same.
+        let mut topo = Topology::new();
+        let wire = tube_circle_wire(&mut topo, (2.0, 2.0 + std::f64::consts::TAU));
+        assert!(torus_wire_wraps_tube(&topo, wire, &torus));
+    }
 
     #[test]
     fn notch_patch_rejects_a_full_turn_hidden_in_a_quarter_seam_trim() {
