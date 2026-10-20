@@ -190,6 +190,22 @@ class PackageRefreshTests(unittest.TestCase):
         self.assertIn(f'{own} (carried from #18)', body.splitlines())
         self.assertEqual(self.gate(body, 70 * KIB), [])
 
+    def test_subject_naming_an_unknown_pr_does_not_abort_collection(self):
+        declared = 'WASM-Size: +80 KiB raw, curve projection, Tier: core (writes the journal)'
+        own = 'WASM-Size: +65 KiB raw, cherry-picked fix, Tier: core'
+        # #69 has no PR in this repo (an upstream-era number): its lookup 404s,
+        # and the commit's own PR (#19) is still found through its association.
+        cherry = pull(19, '1' * 40, own)
+        self.history([commit('1' * 40, 'fix(ops): carried from upstream (#69)'),
+                      commit('2' * 40, 'feat(ops): curve projection (#20)')],
+                     [pull(20, '2' * 40, declared)],
+                     {'1' * 40: [cherry]})
+        body = self.description()
+        self.assertNotIn('Could not collect', body)
+        self.assertEqual([line for line in body.splitlines() if line.startswith('WASM-Size:')],
+                         [f'{own} (carried from #19)', f'{declared} (carried from #20)'])
+        self.assertEqual(self.gate(body, 145 * KIB), [])
+
     def test_growth_within_the_threshold_needs_no_carried_line(self):
         self.history([commit('1' * 40, 'fix(ops): small change (#11)')],
                      [pull(11, '1' * 40, 'No size change worth declaring.')])
