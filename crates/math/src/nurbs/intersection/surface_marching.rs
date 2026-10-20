@@ -1157,8 +1157,6 @@ fn march_direction(
 
             break (y4, accepted);
         };
-        let _ = accepted_h;
-
         // Accept the 4th-order solution (more conservative).
         let next = constrain_state(&y4, s1, s2);
 
@@ -1279,6 +1277,15 @@ fn march_direction(
 
             points.push(refined);
             current = refined;
+        } else if points.is_empty() && accepted_h > h_min {
+            // The first corrector failed, typically because the predictor
+            // overshot a domain edge and the box-clamped Newton cannot reach
+            // the curve from the clamped state. Retry a shorter first step:
+            // a branch whose ends both lie within one initial step of the
+            // seed would otherwise trace nothing and be dropped as a lone
+            // seed. Later failures still end the trace as before, so traces
+            // that already advance are unchanged. `max_evals` bounds this.
+            h = (accepted_h * 0.5).max(h_min);
         } else {
             break;
         }
