@@ -7,16 +7,18 @@ Outputs (all lowercase booleans except ``mode``):
 * ``docs`` — documentation changed: build rustdoc and the book.
 * ``full`` — run the second tier (coverage, MSRV, fuzz compile,
   render, deny, audit). True only for heavy changes on non-PR events or PRs
-  carrying the ``ci:full`` label (``--full``).
+  carrying the ``ci:full`` label (``--full``). A merge group keeps it only
+  for a diff that touches a second-tier path (see ``needs_second_tier``).
 * ``wasm`` — build and validate the distributable WASM packages. True for
   heavy changes when ``full`` is set or the diff touches a WASM-affecting
   path, which includes every crate under ``crates/``.
-* ``mode`` — ``full``, ``pr``, ``docs``, ``package``, or ``ci-only``.
+* ``mode`` — ``full``, ``pr``, ``queue``, ``docs``, or ``ci-only``.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -53,6 +55,16 @@ PACKAGE_DIRECTORIES = ("crates/wasm/pkg/", "crates/wasm-io/pkg/")
 WASM_DIRECTORIES = ("crates/", "xtask/", "tools/vs-bench/")
 # `.cargo/config.toml` defines the `cargo xtask` alias the package build runs.
 WASM_FILENAMES = {"Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"}
+# Paths whose effect a merge group cannot leave to the main push: dependency
+# and toolchain inputs (Cargo Deny, Security Audit, MSRV), the fuzz and
+# render crates only the second tier builds, and the CI definitions. Any other
+# heavy merge group runs the PR tier. The main push of the same squashed tree
+# still runs the second tier, so Coverage (about 40 of a queue entry's 60-70
+# minutes, 2026-10) reports after the merge instead of before it.
+SECOND_TIER_DIRECTORIES = (".cargo/", ".config/", "fuzz/", "crates/render/", ".github/workflows/")
+SECOND_TIER_FILENAMES = {
+    "Cargo.lock", "Cargo.toml", "clippy.toml", "deny.toml", "rust-toolchain.toml",
+}
 
 
 @dataclass(frozen=True)
@@ -101,7 +113,18 @@ def affects_wasm(path: str) -> bool:
     )
 
 
-def classify_paths(paths: list[str], force_full: bool = False) -> Classification:
+def needs_second_tier(path: str) -> bool:
+    normalized = PurePosixPath(path).as_posix()
+    return (
+        normalized.startswith(SECOND_TIER_DIRECTORIES)
+        or normalized in SECOND_TIER_FILENAMES
+        or PurePosixPath(normalized).name == "Cargo.toml"
+    )
+
+
+def classify_paths(
+    paths: list[str], force_full: bool = False, merge_group: bool = False
+) -> Classification:
     # An empty or unrecognized diff must receive the complete suite.
     if not paths:
         return Classification(heavy=True, docs=True, full=True, wasm=True, mode="full")
@@ -117,14 +140,17 @@ def classify_paths(paths: list[str], force_full: bool = False) -> Classification
         for path in paths
     )
     if not lightweight:
-        wasm = force_full or any(affects_wasm(path) for path in paths)
-        return Classification(
-            heavy=True,
-            docs=True,
-            full=force_full,
-            wasm=wasm,
-            mode="full" if force_full else "pr",
+        full = force_full and (
+            not merge_group or any(needs_second_tier(path) for path in paths)
         )
+        wasm = full or any(affects_wasm(path) for path in paths)
+        if full:
+            mode = "full"
+        elif force_full:
+            mode = "queue"
+        else:
+            mode = "pr"
+        return Classification(heavy=True, docs=True, full=full, wasm=wasm, mode=mode)
 
     return Classification(
         heavy=False,
@@ -163,7 +189,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     paths = changed_paths(args.base, args.head)
-    result = classify_paths(paths, force_full=args.full)
+    # The pinned callee passes only --full; the event name comes from the runner.
+    merge_group = os.environ.get("GITHUB_EVENT_NAME") == "merge_group"
+    result = classify_paths(paths, force_full=args.full, merge_group=merge_group)
     print(f"heavy={str(result.heavy).lower()}")
     print(f"docs={str(result.docs).lower()}")
     print(f"full={str(result.full).lower()}")

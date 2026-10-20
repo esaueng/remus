@@ -198,8 +198,17 @@ kernel PR waits only for the checks that can fail on its diff:
   optional I/O. Roughly 12 minutes of runner time.
 - **Tier 2** (`full`): Coverage, MSRV, Fuzz Targets Compile,
   Software Rendering, Cargo Deny, Security Audit. Selected for every main
-  push, merge group and dispatch, and for a PR only while it carries the
-  `ci:full` label (label it, then re-run or push).
+  push and dispatch, and for a PR only while it carries the `ci:full` label
+  (label it, then re-run or push). A merge group selects it only when its
+  diff touches a tier-2 input: a `Cargo.toml`, `Cargo.lock`,
+  `rust-toolchain.toml`, `deny.toml`, `clippy.toml`, `.cargo/`, `.config/`,
+  `fuzz/`, `crates/render/` or `.github/workflows/`. Any other merge group
+  runs tier 1 and the package build (mode `queue`), and the main push of the
+  same squashed tree runs tier 2 after the merge. Coverage took about 40 of a
+  queue entry's 60-70 minutes (2026-10), so this roughly halves the time a PR
+  spends in the queue; a coverage or source-level MSRV regression now turns
+  `main` red instead of blocking the entry. The pinned callee still passes
+  `--full` for merge groups; the classifier reads `GITHUB_EVENT_NAME` itself.
 - **Package build** (`wasm`): WASM Build & Validate and the advisory size
   report. Selected with tier 2, and on any PR whose diff touches any crate
   under `crates/`, `xtask`, `tools/vs-bench`, the WASM scripts,
@@ -211,13 +220,16 @@ kernel PR waits only for the checks that can fail on its diff:
   beside Test (median 13.6 vs 20.6 minutes), so it adds runner time, not PR
   latency. Docs-only and CI-metadata-only PRs still skip it.
 - **Package refresh**: a diff confined to `crates/wasm/pkg` and
-  `crates/wasm-io/pkg` runs the full suite. Paths alone do not prove that the
-  committed bytes came from a trusted build; no package-only validation bypass
-  is enabled.
+  `crates/wasm-io/pkg` runs the full suite, merge groups included. Paths
+  alone do not prove that the committed bytes came from a trusted build; no
+  package-only validation bypass is enabled. When `publish.yml` opens a
+  refresh PR, `scripts/publish-wasm-package-pr.py` closes the open refresh
+  PRs built from an ancestor of its source commit, so only the newest refresh
+  runs CI and the version guard never sees two refreshes claim one version.
 
 CI Pass accepts a skipped job only when its tier flag is false, and rejects
 a tier-2 or package selection without a heavy selection. Every main push
-runs the full suite, and the caller cancels superseded runs only for
+runs the full suite (the backstop for merge groups that ran tier 1 only), and the caller cancels superseded runs only for
 `pull_request` events, so each merge commit keeps a completed verdict. Optimized coverage uses the existing `ci-test`
 profile for running and reporting, with coverage artifacts cleaned first; it retains the entire workspace,
 test assertions and the 60% line threshold. WASM optional-I/O clippy and native
