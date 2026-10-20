@@ -106,7 +106,7 @@ def strip_refresh_deltas(text):
 def carries_reviewed_updates(filename):
     return re.search(r"-v[2-9]\.yml$", filename) is not None
 
-# The staged ci v4 callee (not yet active) moves Fuzz Targets Compile and
+# The ci v4 callee moves Fuzz Targets Compile and
 # Software Rendering from the second tier into the first, so a merge group that
 # runs the first tier only still compiles the fuzz targets and renders. These
 # are the only reviewed edits to the landed v3 callee.
@@ -131,6 +131,13 @@ CI_V4_TIER_MOVE = (
     ('                elif (["coverage", "msrv", "fuzz-check", "render", "deny", "audit"] | index($job)) != null then $full == "false"\n',
      '                elif (["coverage", "msrv", "deny", "audit"] | index($job)) != null then $full == "false"\n'),
 )
+
+
+def revert_ci_v4_tier_move(text):
+    """The active ci v4 callee with the reviewed tier move undone, i.e. v3."""
+    for old, new in CI_V4_TIER_MOVE:
+        text = text.replace(new, old)
+    return text
 
 
 def main_workflow_manifest():
@@ -211,7 +218,7 @@ class FleetWorkflowTests(unittest.TestCase):
                     ["git", "show", f"{V3_LANDED}:.github/workflows/fleet-{family}-v3.yml"], cwd=ROOT, text=True,
                 )
                 path = ROOT / f".github/workflows/fleet-{family}-v3.yml"
-                if family not in REFRESHED:
+                if family not in REFRESHED and family != "ci":
                     self.assertEqual(path.read_text(), text)
                 jobs = re.split(r"(?m)^(?=  [\w-]+:\n)", text.split("\njobs:\n", 1)[1])
                 for job in filter(None, jobs):
@@ -254,7 +261,8 @@ class FleetWorkflowTests(unittest.TestCase):
                     self.assertEqual(retained.read_text(), staged)
                 active = workflow_path(family)
                 assert_reviewed_workflow_delta(strip_refresh_deltas(strip_v3_deltas(staged)),
-                                               strip_refresh_deltas(strip_v3_deltas(active.read_text())),
+                                               strip_refresh_deltas(strip_v3_deltas(
+                                                   revert_ci_v4_tier_move(active.read_text()))),
                                                carries_reviewed_updates(active.name))
                 main_file = main_manifest[family]
                 self.assertIn(main_file, tuple(f"fleet-{family}{suffix}.yml" for suffix in ("", "-v2", "-v3", "-v4")))
@@ -262,7 +270,8 @@ class FleetWorkflowTests(unittest.TestCase):
                     ["git", "show", f"origin/main:.github/workflows/{main_file}"], cwd=ROOT, text=True,
                 )
                 assert_reviewed_workflow_delta(strip_refresh_deltas(strip_v3_deltas(staged)),
-                                               strip_refresh_deltas(strip_v3_deltas(main_active)),
+                                               strip_refresh_deltas(strip_v3_deltas(
+                                                   revert_ci_v4_tier_move(main_active))),
                                                carries_reviewed_updates(main_file))
     def test_staged_ci_v4_only_moves_fuzz_and_render_into_tier_one(self):
         expected = subprocess.check_output(

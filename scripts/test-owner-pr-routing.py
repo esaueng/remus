@@ -35,7 +35,7 @@ class OwnerRoutingTests(unittest.TestCase):
         self.assertNotIn("select-runner.yml", CI)
 
     def test_native_checks_keep_hosted_fallback(self):
-        for name, flag in (("test", "heavy"), ("msrv", "full"), ("fuzz-check", "full"),
+        for name, flag in (("test", "heavy"), ("msrv", "full"), ("fuzz-check", "heavy"),
                            ("docs", "docs")):
             with self.subTest(name=name):
                 block = job(name)

@@ -5,9 +5,9 @@ Outputs (all lowercase booleans except ``mode``):
 
 * ``heavy`` — source changed: build, lint, and test the workspace.
 * ``docs`` — documentation changed: build rustdoc and the book.
-* ``full`` — run the second tier (coverage, MSRV, fuzz compile,
-  render, deny, audit). True only for heavy changes on non-PR events or PRs
-  carrying the ``ci:full`` label (``--full``). A merge group keeps it only
+* ``full`` — run the second tier (coverage, MSRV, deny, audit). True only
+  for heavy changes on non-PR events or PRs carrying the ``ci:full`` label
+  (``--full``). A merge group keeps it only
   for a diff that touches a second-tier path (see ``needs_second_tier``).
 * ``wasm`` — build and validate the distributable WASM packages. True for
   heavy changes when ``full`` is set or the diff touches a WASM-affecting
@@ -56,12 +56,12 @@ WASM_DIRECTORIES = ("crates/", "xtask/", "tools/vs-bench/")
 # `.cargo/config.toml` defines the `cargo xtask` alias the package build runs.
 WASM_FILENAMES = {"Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"}
 # Paths whose effect a merge group cannot leave to the main push: dependency
-# and toolchain inputs (Cargo Deny, Security Audit, MSRV), the fuzz and
-# render crates only the second tier builds, and the CI definitions. Any other
+# and toolchain inputs (Cargo Deny, Security Audit, MSRV) and the CI
+# definitions. Fuzz compile and render run in the first tier. Any other
 # heavy merge group runs the PR tier. The main push of the same squashed tree
 # still runs the second tier, so Coverage (about 40 of a queue entry's 60-70
 # minutes, 2026-10) reports after the merge instead of before it.
-SECOND_TIER_DIRECTORIES = (".cargo/", ".config/", "fuzz/", "crates/render/", ".github/workflows/")
+SECOND_TIER_DIRECTORIES = (".cargo/", ".config/", ".github/workflows/")
 SECOND_TIER_FILENAMES = {
     "Cargo.lock", "Cargo.toml", "clippy.toml", "deny.toml", "rust-toolchain.toml",
 }
