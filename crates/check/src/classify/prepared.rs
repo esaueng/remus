@@ -214,6 +214,24 @@ pub struct PreparedSolid<'a> {
     /// Boundary edges for the grazing-ray test, the same skeleton the
     /// one-shot path builds per query.
     skeleton: super::graze::BoundarySkeleton,
+    /// Remembered per-face crossing counts (see [`FaceCrossingMemo`]).
+    crossing_memo: Option<std::sync::Arc<dyn FaceCrossingMemo>>,
+}
+
+/// A caller's memo of one face's ray crossing count.
+///
+/// A face's crossing count is a pure function of the face's own content (its
+/// surface, reversal and boundary entities, read in wire order and never by
+/// handle value) and of the ray's exact origin and direction bits. A memo
+/// keyed on all of that returns what counting afresh would, so the crossing
+/// loop adds a remembered count in place of counting. Errors are never
+/// remembered.
+pub trait FaceCrossingMemo: std::fmt::Debug + Send + Sync {
+    /// The remembered count for `face` and the ray, if any.
+    fn crossings(&self, face: FaceId, origin: Point3, direction: Vec3) -> Option<u32>;
+
+    /// Remember the count just computed for `face` and the ray.
+    fn record(&self, face: FaceId, origin: Point3, direction: Vec3, crossings: u32);
 }
 
 impl<'a> PreparedSolid<'a> {
@@ -282,7 +300,15 @@ impl<'a> PreparedSolid<'a> {
             bvh,
             prepared_faces,
             skeleton,
+            crossing_memo: None,
         })
+    }
+
+    /// Consult `memo` for every crossing count the loop would compute.
+    #[must_use]
+    pub fn with_crossing_memo(mut self, memo: std::sync::Arc<dyn FaceCrossingMemo>) -> Self {
+        self.crossing_memo = Some(memo);
+        self
     }
 
     /// The solid this context was prepared for.
@@ -519,6 +545,14 @@ impl PreparedSolid<'_> {
                 skipped();
                 continue;
             }
+            if let Some(count) = self
+                .crossing_memo
+                .as_ref()
+                .and_then(|memo| memo.crossings(prepared.fid, origin, direction))
+            {
+                crossings += count;
+                continue;
+            }
             let owned_trim;
             let trim = if let Some(cached) = &prepared.trim {
                 Some(cached)
@@ -526,7 +560,7 @@ impl PreparedSolid<'_> {
                 owned_trim = super::boundary::FaceTrimData::build(self.topo, prepared.fid)?;
                 Some(&owned_trim)
             };
-            crossings += super::boundary::count_face_ray_crossings_cached(
+            let count = super::boundary::count_face_ray_crossings_cached(
                 self.topo,
                 prepared.fid,
                 trim,
@@ -534,6 +568,10 @@ impl PreparedSolid<'_> {
                 origin,
                 direction,
             )?;
+            if let Some(memo) = &self.crossing_memo {
+                memo.record(prepared.fid, origin, direction, count);
+            }
+            crossings += count;
         }
         Ok(crossings)
     }

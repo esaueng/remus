@@ -507,7 +507,7 @@ impl KeyWriter {
 /// wires' body classes and vertices' tolerances: every field of the face and
 /// the entities under it. Handles enter as first-occurrence ordinals. `None`
 /// when an entity is missing.
-pub(super) fn face_content_words(topo: &Topology, face_id: FaceId) -> Option<Vec<u64>> {
+pub fn face_content_words(topo: &Topology, face_id: FaceId) -> Option<Vec<u64>> {
     let face = topo.face(face_id).ok()?;
     let mut writer = KeyWriter {
         words: 0,

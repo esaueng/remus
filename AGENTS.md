@@ -533,6 +533,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Pattern (linear/circular) | `pattern.rs` |
 | Shape queries (edge filtering) | `query.rs` |
 | Oracle for the prepared `ConcavityProbe` against the one-shot edge concavity on primitives, booleans and STEP bodies (tests) | `query/concavity_probe_oracle_tests.rs` |
+| Opt-in per-thread exact-content memo of the edge-concavity probes' per-face ray crossing counts, so relations and recognition after an edit recount only changed faces (the WASM kernel enables it) | `query/crossing_memo.rs` |
 | Sewing | `sew.rs` |
 | Thickening | `thicken.rs` |
 | Untrimming | `untrim.rs` |
@@ -583,6 +584,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Differential oracle for the persistent-reference codec (tests) | `naming_io/oracle_tests.rs` |
 | Differential oracles over the STEP fixtures and synthetic bodies for the prepared classifier's exact skips: the boundary test's trim-window prune and the crossing count's NURBS knot-span prefilter, with its skips counted on either side of its span cap (tests) | `tests/boundary_prune_oracle.rs` |
 | Differential oracles on the hammer holder for the ray classifier's torus-trim memo (boolean result arenas with it off, cold and warm) and torus line cull (ray triples against the unculled vote loop) (tests) | `tests/hammer_ray_geom_oracle.rs` |
+| Differential oracle on the hammer holder for the edge-concavity crossing memo: relations and recognition across two face moves and a cut, memo off against memo carried on (tests) | `tests/hammer_crossing_memo_oracle.rs` |
 
 ### L4: render (`crates/render/src/`)
 | Task | File(s) |

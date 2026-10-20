@@ -28,6 +28,7 @@ pub use face_box_memo::{
     set_thread_face_box_memo_limits, thread_face_box_memo_stats,
 };
 pub use face_digest::{FaceDigest, face_content_digest};
+pub(crate) use nurbs_area_memo::face_content_words;
 pub use nurbs_area_memo::{
     DEFAULT_NURBS_AREA_MEMO_BYTE_BUDGET, DEFAULT_NURBS_AREA_MEMO_CAPACITY, NurbsAreaMemoStats,
     clear_thread_nurbs_area_memo, disable_thread_nurbs_area_memo, enable_thread_nurbs_area_memo,

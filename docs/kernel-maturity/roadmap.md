@@ -1094,7 +1094,7 @@ Inspected entry points: [source 1](https://github.com/esaueng/remus/blob/ec42cea
 | <a id="perf-o03"></a>PERF-O03 | P2 / 5 / S | Reuse adjacent-support intersections, projected trim curves and vertex planning in offsets/re-limitation; current inter3d is already adjacency-based. | Measure local edit cost on a large body; preserve pcurve authority, winding, tolerance composition and construction mappings. | L/high | Q01, M07 | [B30](#b30) | Proposed |
 | <a id="perf-o04"></a>PERF-O04 | P2 / 5 / S | Reuse sweep frames, arc-length maps, profile sampling and compatible loft factorization; avoid reconstructing shared profile geometry. | Benchmark long paths and many sections, including twists/kinks/holes; preserve parameterization, continuity and exact analytic lowering. | M/high | M07, N06 | [B30](#b30) | Proposed |
 | <a id="perf-o05"></a>PERF-O05 | P2 / 5 / H | Use assembly instances and delayed topology materialization for repeated transforms/pattern display where the API can express shared geometry. | Measure 10k instances versus copied solids; retain identity/attributes and explicitly materialize when booleans or exact export require independent topology. | XL/high | T04, Q08 | [O5.4](#o-o5-4) | Proposed |
-| <a id="perf-o06"></a>PERF-O06 | P1 / 2 / M | Profile recognition graph face-area and edge-relation work, then reuse or accelerate qualified unchanged work; rank opposing planar-face candidate bucketing only from workload evidence. | Preserve complete feature records, area values, edge verdicts, holes, blend exclusions and ambiguous matches; measure area/projection/ray work separately and retain exact-output goldens and current-package workflow qualification. | M/high | Q02, M07 | [B16](#b16) | Partial — one prepared classifier, shared normal samples and exact scalar NURBS-area memoization already ship. [Fresh source-32 graph profile](../performance/perf-o06-recognition-graph.md), local paired 2026.1.59: recognition ~347 ms (12 untraced edits/schedule); two byte-qualified shipping CPU profiles attribute ~79% to quadrant ray crossings (line–NURBS ~47%, torus ~26%), area ~14%, setup <1%. Separate counters qualify 1,538 rays/14,549 candidate-face calls and 40/42 NURBS-area memo hits per edit. Maintained CPU/count observers, portable raw evidence and exact geometry/quantity/feature comparisons ship; that profile contains no runtime optimization. Follow-on ray-crossing implementation and qualification tranches are recorded below. Persistent reuse and other-workload bucketing remain open. |
+| <a id="perf-o06"></a>PERF-O06 | P1 / 2 / M | Profile recognition graph face-area and edge-relation work, then reuse or accelerate qualified unchanged work; rank opposing planar-face candidate bucketing only from workload evidence. | Preserve complete feature records, area values, edge verdicts, holes, blend exclusions and ambiguous matches; measure area/projection/ray work separately and retain exact-output goldens and current-package workflow qualification. | M/high | Q02, M07 | [B16](#b16) | Partial — one prepared classifier, shared normal samples and exact scalar NURBS-area memoization already ship. [Fresh source-32 graph profile](../performance/perf-o06-recognition-graph.md), local paired 2026.1.59: recognition ~347 ms (12 untraced edits/schedule); two byte-qualified shipping CPU profiles attribute ~79% to quadrant ray crossings (line–NURBS ~47%, torus ~26%), area ~14%, setup <1%. Separate counters qualify 1,538 rays/14,549 candidate-face calls and 40/42 NURBS-area memo hits per edit. Maintained CPU/count observers, portable raw evidence and exact geometry/quantity/feature comparisons ship; that profile contains no runtime optimization. Follow-on ray-crossing implementation and qualification tranches are recorded below. Crossing counts are reused across edits by content (PERF-O06-CM below); other-workload bucketing remains open. |
 | <a id="perf-o07"></a>PERF-O07 | P2 / 5 / S | Plan local direct edits and resize-blend operations against an affected neighborhood, minimizing copied surfaces and repeated trial rebuilds. | Count touched versus total entities; preserve transactional refusal, contact dependencies and total lineage across zero-radius removal and topology changes. | L/high | T01, Q02, M07 | [P-Class 6.2](#p-6-2) | Partial — [blend-aware planar move volume checks](../performance/perf-o07-blend-move-volume-checks.md) remove whole-body mesh volumes from the translation-invariant blend move. Affected-neighborhood planning, copied-surface minimization and the per-frame remove/rebuild prefix of prepared blend moves remain open. |
 
 #### PERF-O06-NR: bounded NURBS ray evaluation reuse
@@ -1125,6 +1125,30 @@ fresh and installed paired WASM, 36 exact snapshot pairs/180 artifacts and 5,760
 area-bit pairs. The preexisting curved-boundary classifier repro stays open;
 certified trim-support rejection, hosted CI, package refresh, broader workloads
 and browser presentation remain separate.
+
+#### PERF-O06-CM: crossing counts reused across edits
+
+Locally qualified — `operations/src/query/crossing_memo.rs` remembers each
+non-planar face's ray crossing count under the face's complete content (the
+interned words of `measure::face_content_words`, compared exactly) and the
+ray's origin and direction bits; `PreparedSolid::with_crossing_memo` adds a
+remembered count in place of counting. Edge relations and recognition after an
+edit then recount only the faces the edit changed. Off in the library; the WASM
+kernel enables it per thread (65,536 counts, 4,096 face contents, 8 MiB of
+content words). Tier: core (per-session kernel state; it reads live face
+handles). Raw kernel growth +14 KiB.
+
+On the holder's −6 mm wall offset in the OpenZCAD harness (local overlay, one
+core): commit `solidEdgeRelations` 275–338 → 55–63 ms, `recognizeFeatures`
+321–325 → 64–74 ms, commit wall 1,291–1,396 → 801–886 ms. The cold import
+pays 5 ms per call to intern face contents; its analysis stays within run-to-run
+noise (823–994 ms against 873 ms). Natively (`profiling`) the moved body's
+relations go 110 → 52 ms and recognition 134 → 77 ms. Relations and recognition
+output are byte-identical with the memo off, cold and carried across two face
+moves and a cut (`io/tests/hammer_crossing_memo_oracle.rs`) and under eviction
+(`query/crossing_memo.rs` tests). Commit volume is unchanged: the move changes
+the bounding box, so the measurement deflection clamp re-meshes every face
+(owner decision D1).
 
 
 <details>
