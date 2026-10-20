@@ -173,8 +173,9 @@ fn build_loops_for_face(
 
 /// Build a wire from closed circle/ellipse rims and a seam when needed.
 ///
-/// Handles two patterns:
+/// Handles three patterns:
 /// - **Single rim**: one full-turn edge gives a cap wire.
+/// - **Single rim + apex seam**: a pointed cone retains its apex vertex.
 /// - **Two rims + seam**: a lateral face uses both rims and a shared seam.
 fn try_closed_conic_seam_wire(
     topo: &mut Topology,
@@ -199,9 +200,36 @@ fn try_closed_conic_seam_wire(
         return Ok(None);
     }
 
-    // Single full-turn rim: cap face.
+    // A pointed cone needs its apex and doubled seam as well as its rim.
+    // Treating it as a cap leaves a closed topological loop but omits the
+    // shared apex/seam authority used by the cone's structured mesher.
     if rims.len() == 1 && others.is_empty() {
-        let wire = Wire::new(vec![OrientedEdge::new(rims[0], true)], true)?;
+        let rim = rims[0];
+        if let Some(FaceSurface::Cone(cone)) = surface {
+            let rim_vertex = topo.edge(rim)?.start();
+            let rim_point = topo.vertex(rim_vertex)?.point();
+            let (u, v) = cone.project_point(rim_point);
+            let forward =
+                rim_faces_left(topo, rim, cone.normal(u, v), cone.apex() - rim_point, tol)?;
+            let apex = topo.add_vertex(Vertex::new(cone.apex(), tol.linear));
+            let seam = topo.add_edge(Edge::new(rim_vertex, apex, EdgeCurve::Line));
+            let wire = Wire::new(
+                vec![
+                    OrientedEdge::new(rim, forward),
+                    OrientedEdge::new(seam, true),
+                    OrientedEdge::new(seam, false),
+                ],
+                true,
+            )?;
+            return Ok(Some(vec![topo.add_wire(wire)]));
+        }
+        let forward = if let Some(FaceSurface::Plane { normal, .. }) = surface {
+            let (directed_normal, _) = full_turn_rim_directions(topo, rim, tol)?;
+            directed_normal.dot(*normal) > 0.0
+        } else {
+            true
+        };
+        let wire = Wire::new(vec![OrientedEdge::new(rim, forward)], true)?;
         return Ok(Some(vec![topo.add_wire(wire)]));
     }
 
@@ -228,12 +256,38 @@ fn try_closed_conic_seam_wire(
 
         let seam = topo.add_edge(Edge::new(va, vb, EdgeCurve::Line));
 
-        // Wire: rim_a(fwd) → seam(fwd) → rim_b(rev) → seam(rev)
+        // For a cylinder/cone, the interval carries the native traversal, which may be
+        // negative and may differ between the two rims. Each use must put
+        // the retained wall on its left in the carrier's own orientation;
+        // fixed forward/reverse flags can otherwise make shell assembly
+        // invert a correct cap to satisfy edge incidence.
+        let pa = topo.vertex(va)?.point();
+        let pb = topo.vertex(vb)?.point();
+        let wall_normal = |point| match surface {
+            Some(FaceSurface::Cylinder(cylinder)) => {
+                let (u, v) = cylinder.project_point(point);
+                Some(cylinder.normal(u, v))
+            }
+            Some(FaceSurface::Cone(cone)) => {
+                let (u, v) = cone.project_point(point);
+                Some(cone.normal(u, v))
+            }
+            _ => None,
+        };
+        let (first_forward, second_forward) = match (wall_normal(pa), wall_normal(pb)) {
+            (Some(na), Some(nb)) => (
+                rim_faces_left(topo, rims[0], na, pb - pa, tol)?,
+                rim_faces_left(topo, rims[1], nb, pa - pb, tol)?,
+            ),
+            // Preserve the existing non-wall path (including planar annuli).
+            _ => (true, false),
+        };
+
         let wire = Wire::new(
             vec![
-                OrientedEdge::new(rims[0], true),
+                OrientedEdge::new(rims[0], first_forward),
                 OrientedEdge::new(seam, true),
-                OrientedEdge::new(rims[1], false),
+                OrientedEdge::new(rims[1], second_forward),
                 OrientedEdge::new(seam, false),
             ],
             true,
@@ -243,6 +297,55 @@ fn try_closed_conic_seam_wire(
 
     // Mixed rims and other edges require a different trimming strategy.
     Ok(None)
+}
+
+/// Native signed normal and seam tangent of a certified full-turn conic.
+fn full_turn_rim_directions(
+    topo: &Topology,
+    rim: EdgeId,
+    tol: Tolerance,
+) -> Result<(Vec3, Vec3), OffsetError> {
+    let edge = topo.edge(rim)?;
+    let range = edge
+        .strict_domain()
+        .map_err(|error| OffsetError::AssemblyFailed {
+            reason: format!("closed conic rim lacks parameter authority: {error}"),
+        })?;
+    let span = range.1 - range.0;
+    if (span.abs() - std::f64::consts::TAU).abs() > tol.angular.max(64.0 * f64::EPSILON) {
+        return Err(OffsetError::AssemblyFailed {
+            reason: "closed conic rim does not cover exactly one turn".into(),
+        });
+    }
+    let (normal, tangent) = match edge.curve() {
+        EdgeCurve::Circle(circle) => (circle.normal(), circle.tangent(range.0)),
+        EdgeCurve::Ellipse(ellipse) => (ellipse.normal(), ellipse.tangent(range.0)),
+        _ => {
+            return Err(OffsetError::AssemblyFailed {
+                reason: "closed rim is not a native conic".into(),
+            });
+        }
+    };
+    Ok((normal * span.signum(), tangent * span.signum()))
+}
+
+/// Choose the rim use whose tangent puts the wall interior on its left.
+fn rim_faces_left(
+    topo: &Topology,
+    rim: EdgeId,
+    normal: Vec3,
+    inward: Vec3,
+    tol: Tolerance,
+) -> Result<bool, OffsetError> {
+    let (_, tangent) = full_turn_rim_directions(topo, rim, tol)?;
+    let side = tangent.cross(inward).dot(normal);
+    let scale = tangent.length() * inward.length() * normal.length();
+    if !side.is_finite() || !scale.is_finite() || side.abs() <= tol.angular * scale {
+        return Err(OffsetError::AssemblyFailed {
+            reason: "closed rim has no decided interior direction on its carrier".into(),
+        });
+    }
+    Ok(side > 0.0)
 }
 
 /// Reanchor both full-turn rims at one cylinder azimuth. Their trims retain
@@ -896,6 +999,130 @@ mod tests {
     use remus_topology::solid::SolidId;
 
     use crate::data::{OffsetData, OffsetOptions};
+
+    #[test]
+    fn native_rim_signs_keep_caps_and_wall_interiors_on_their_left() {
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::CylindricalSurface;
+        use std::f64::consts::TAU;
+
+        let axis = Vec3::new(0.0, 0.0, 1.0);
+        let surface = FaceSurface::Cylinder(
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), axis, 2.0).unwrap(),
+        );
+        for native_sign in [-1.0, 1.0] {
+            for normal_sign in [-1.0, 1.0] {
+                for swapped in [false, true] {
+                    let mut topo = Topology::new();
+                    let mut rims = Vec::new();
+                    for height in [0.0, 5.0] {
+                        let circle = Circle3D::new_with_ref(
+                            Point3::new(0.0, 0.0, height),
+                            axis * normal_sign,
+                            2.0,
+                            Vec3::new(1.0, 0.0, 0.0),
+                        )
+                        .unwrap();
+                        let vertex = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+                        let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+                        edge.set_trim(Some((0.0, native_sign * TAU)));
+                        rims.push(topo.add_edge(edge));
+                    }
+                    let cap = try_closed_conic_seam_wire(
+                        &mut topo,
+                        &[rims[0]],
+                        Some(&FaceSurface::Plane {
+                            normal: -axis,
+                            d: 0.0,
+                        }),
+                        Tolerance::new(),
+                    )
+                    .unwrap()
+                    .unwrap();
+                    assert_eq!(
+                        topo.wire(cap[0]).unwrap().edges()[0].is_forward(),
+                        native_sign * normal_sign < 0.0
+                    );
+                    if swapped {
+                        rims.reverse();
+                    }
+                    let wires = try_closed_conic_seam_wire(
+                        &mut topo,
+                        &rims,
+                        Some(&surface),
+                        Tolerance::new(),
+                    )
+                    .unwrap()
+                    .unwrap();
+                    let walk = topo.wire(wires[0]).unwrap().edges();
+                    for oe in [walk[0], walk[2]] {
+                        let edge = topo.edge(oe.edge()).unwrap();
+                        let lower = topo.vertex(edge.start()).unwrap().point().z() < 2.5;
+                        assert_eq!(oe.is_forward(), lower == (native_sign * normal_sign > 0.0));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_rim_orientation_refuses_missing_authority_and_undecided_sides() {
+        use remus_math::curves::Circle3D;
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let mut topo = Topology::new();
+        let vertex = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let edge = topo.add_edge(Edge::new(vertex, vertex, EdgeCurve::Circle(circle)));
+        assert!(full_turn_rim_directions(&topo, edge, Tolerance::new()).is_err());
+        topo.edge_mut(edge)
+            .unwrap()
+            .set_trim(Some((0.0, std::f64::consts::TAU)));
+        assert!(
+            rim_faces_left(
+                &topo,
+                edge,
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                Tolerance::new()
+            )
+            .is_err()
+        );
+        topo.edge_mut(edge)
+            .unwrap()
+            .set_trim(Some((0.0, std::f64::consts::PI)));
+        assert!(full_turn_rim_directions(&topo, edge, Tolerance::new()).is_err());
+    }
+
+    #[test]
+    fn planar_two_circle_cap_keeps_its_existing_annular_wire_path() {
+        use remus_math::curves::Circle3D;
+
+        let mut topo = Topology::new();
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let mut rims = Vec::new();
+        for radius in [2.0, 1.0] {
+            let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), normal, radius).unwrap();
+            let vertex = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+            let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+            edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+            rims.push(topo.add_edge(edge));
+        }
+        let surface = FaceSurface::Plane { normal, d: 0.0 };
+        let wires = try_closed_conic_seam_wire(&mut topo, &rims, Some(&surface), Tolerance::new())
+            .unwrap()
+            .unwrap();
+        let walk = topo.wire(wires[0]).unwrap().edges();
+        assert_eq!(walk.len(), 4);
+        assert!(walk[0].is_forward());
+        assert!(!walk[2].is_forward());
+        assert_eq!(walk[1].edge(), walk[3].edge());
+        assert_ne!(walk[1].is_forward(), walk[3].is_forward());
+    }
 
     #[test]
     fn exact_ellipse_rims_form_cap_and_mixed_lateral_wires() {

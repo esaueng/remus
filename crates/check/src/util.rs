@@ -198,9 +198,10 @@ pub fn wire_polygon_curve_sampled(
             // cleanly with adjacent edges; the curve's own parameter origin
             // is unrelated to the vertex.
             let seam_pt = topo.vertex(start_vid)?.point();
-            // Traversal must start at the seam vertex in both directions:
-            // forward covers [t0, t0 + period), reversed covers (t0, t0 + period]
-            // walked backwards — the next edge supplies the closing point.
+            // Native conics follow their signed stored interval. A negative
+            // full turn is distinct from reversing the wire's use; ignoring
+            // it sends a periodic wall's two rims in the same direction.
+            // NURBS keep the existing domain/seam reconstruction below.
             // The samples go straight into `pts`, without a list of their own.
             #[allow(clippy::cast_precision_loss)]
             let params = |n: usize, period: f64| {
@@ -211,16 +212,18 @@ pub fn wire_polygon_curve_sampled(
             };
             match curve {
                 EdgeCurve::Circle(c) => {
-                    let t0 = c.project(seam_pt);
-                    pts.extend(
-                        params(closed_samples, std::f64::consts::TAU).map(|dt| c.evaluate(t0 + dt)),
-                    );
+                    let (t0, t1) = edge
+                        .strict_domain()
+                        .map_err(crate::error::edge_domain_validation)?;
+                    let seam = c.project(seam_pt);
+                    pts.extend(params(closed_samples, t1 - t0).map(|dt| c.evaluate(seam + dt)));
                 }
                 EdgeCurve::Ellipse(e) => {
-                    let t0 = e.project(seam_pt);
-                    pts.extend(
-                        params(closed_samples, std::f64::consts::TAU).map(|dt| e.evaluate(t0 + dt)),
-                    );
+                    let (t0, t1) = edge
+                        .strict_domain()
+                        .map_err(crate::error::edge_domain_validation)?;
+                    let seam = e.project(seam_pt);
+                    pts.extend(params(closed_samples, t1 - t0).map(|dt| e.evaluate(seam + dt)));
                 }
                 EdgeCurve::NurbsCurve(nc) => {
                     let (u0, u1) = nc.domain();
@@ -836,8 +839,77 @@ mod tests {
         forward: bool,
     ) -> remus_topology::wire::WireId {
         let v = topo.add_vertex(Vertex::new(seam, 1e-7));
-        let e = topo.add_edge(Edge::new(v, v, curve));
+        let trim = match &curve {
+            EdgeCurve::Circle(circle) => Some(circle.project(seam)),
+            EdgeCurve::Ellipse(ellipse) => Some(ellipse.project(seam)),
+            _ => None,
+        };
+        let mut edge = Edge::new(v, v, curve);
+        if let Some(start) = trim {
+            edge.set_trim(Some((start, start + std::f64::consts::TAU)));
+        }
+        let e = topo.add_edge(edge);
         topo.add_wire(Wire::new(vec![OrientedEdge::new(e, forward)], true).unwrap())
+    }
+
+    #[test]
+    fn closed_conics_follow_the_signed_interval_and_use_direction() {
+        use remus_math::curves::Ellipse3D;
+
+        let origin = Point3::new(3.0, -5.0, 7.0);
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let x = Vec3::new(1.0, 0.0, 0.0);
+        for (curve, a, b) in [
+            (
+                EdgeCurve::Circle(Circle3D::new_with_ref(origin, z, 2.0, x).unwrap()),
+                2.0,
+                2.0,
+            ),
+            (
+                EdgeCurve::Ellipse(Ellipse3D::new_with_ref(origin, z, 3.0, 1.25, x).unwrap()),
+                3.0,
+                1.25,
+            ),
+        ] {
+            for sign in [-1.0, 1.0] {
+                for forward in [false, true] {
+                    let mut topo = Topology::new();
+                    let seam = topo.add_vertex(Vertex::new(origin + Vec3::new(0.0, b, 0.0), 1e-7));
+                    let mut edge = Edge::new(seam, seam, curve.clone());
+                    let start = std::f64::consts::FRAC_PI_2;
+                    edge.set_trim(Some((start, start + sign * std::f64::consts::TAU)));
+                    let edge = topo.add_edge(edge);
+                    let wire = topo
+                        .add_wire(Wire::new(vec![OrientedEdge::new(edge, forward)], true).unwrap());
+                    let points = wire_polygon_curve_sampled(&topo, wire, 4, 1).unwrap();
+                    let rightward = sign < 0.0 && forward || sign > 0.0 && !forward;
+                    let expected = [
+                        origin + Vec3::new(0.0, b, 0.0),
+                        origin + Vec3::new(if rightward { a } else { -a }, 0.0, 0.0),
+                        origin + Vec3::new(0.0, -b, 0.0),
+                        origin + Vec3::new(if rightward { -a } else { a }, 0.0, 0.0),
+                    ];
+                    for (actual, expected) in points.iter().zip(expected) {
+                        assert!(
+                            (*actual - expected).length() < 1e-12,
+                            "sign={sign}, forward={forward}: {actual:?} != {expected:?}"
+                        );
+                    }
+                    topo.edge_mut(edge).unwrap().set_trim(None);
+                    assert!(
+                        wire_polygon(&topo, wire).is_err(),
+                        "missing authority must refuse"
+                    );
+                    topo.edge_mut(edge)
+                        .unwrap()
+                        .set_trim(Some((start, f64::NAN)));
+                    assert!(
+                        wire_polygon(&topo, wire).is_err(),
+                        "invalid authority must refuse"
+                    );
+                }
+            }
+        }
     }
 
     /// Closed circle, ellipse and NURBS edges sample to exactly the points
@@ -905,8 +977,17 @@ mod tests {
         let mut arc = Edge::new(a, b, EdgeCurve::Circle(circle.clone()));
         arc.set_trim(Some((0.0, 1.5)));
         let arc = topo.add_edge(arc);
-        let ring = Circle3D::new(circle.evaluate(1.5), Vec3::new(0.0, 1.0, 0.0), 0.5).unwrap();
-        let ring = topo.add_edge(Edge::new(b, b, EdgeCurve::Circle(ring)));
+        let ref_ring =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 0.5).unwrap();
+        let ring = Circle3D::new(
+            circle.evaluate(1.5) - (ref_ring.evaluate(0.0) - ref_ring.center()),
+            Vec3::new(0.0, 1.0, 0.0),
+            0.5,
+        )
+        .unwrap();
+        let mut ring = Edge::new(b, b, EdgeCurve::Circle(ring));
+        ring.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let ring = topo.add_edge(ring);
         for forward in [true, false] {
             wires.push(
                 topo.add_wire(
