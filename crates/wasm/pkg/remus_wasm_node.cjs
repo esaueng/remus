@@ -5116,6 +5116,32 @@ class BrepKernel {
         return v1;
     }
     /**
+     * Exact measurement reuse counters and independent area storage bounds,
+     * as camelCase JSON. Existing volume memo bounds are included separately.
+     *
+     * # Errors
+     * Returns an error when the diagnostic cannot be serialized.
+     * @returns {string}
+     */
+    measurementReuseStats() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_measurementReuseStats(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Merge coincident vertices in a solid.
      *
      * Returns the number of vertices merged.
@@ -5221,6 +5247,33 @@ class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Bounded, module-local mesh reuse counters and storage estimate as
+     * JSON, or `null` when disabled. Contains no geometry or arena handles.
+     * The estimate is separate from checkpoint bytes and is not RSS.
+     *
+     * # Errors
+     * Returns an error if the diagnostic cannot be serialized.
+     * @returns {string}
+     */
+    meshReuseStats() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_meshReuseStats(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
     }
     /**
      * Convex Minkowski sum of two solids (`A ⊕ B`).
@@ -6831,6 +6884,22 @@ class BrepKernel {
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
+    }
+    /**
+     * Enable or disable exact reusable scalar measurements for this module.
+     * Explicit preferences are preserved when another kernel is constructed.
+     * @param {boolean} enabled
+     */
+    setMeasurementReuseEnabled(enabled) {
+        wasm.brepkernel_setMeasurementReuseEnabled(this.__wbg_ptr, enabled);
+    }
+    /**
+     * Enable or disable this module's exact mesh-stage reuse. Disabling
+     * releases its retained entries. New kernels enable the default cache.
+     * @param {boolean} enabled
+     */
+    setMeshReuseEnabled(enabled) {
+        wasm.brepkernel_setMeshReuseEnabled(this.__wbg_ptr, enabled);
     }
     /**
      * Enable bounded module-local timings; disabled by default. This does
