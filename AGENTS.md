@@ -548,6 +548,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Offset v2 (delegates to remus-offset) | `offset_v2.rs` |
 | Shared winding utilities | `winding.rs` |
 | Edge projection with hidden-line removal | `projection.rs` |
+| Exact silhouettes of cylinder, cone and sphere faces, trimmed and split by the same occlusion probe (torus/NURBS reported unsupported) | `projection/silhouette.rs` |
+| Closed-form oracles for silhouettes: side, axial and oblique views, seam rulings, bores across scales, notch trims (tests) | `projection/silhouette_tests.rs` |
 | Shared loft/sweep/pipe/revolve end caps | `cap.rs` |
 | Journal ingestion for modeling operations | `journal_ops.rs` |
 | Direct push/pull face editing | `push_pull.rs` |

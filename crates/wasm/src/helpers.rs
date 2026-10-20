@@ -20,6 +20,30 @@ use crate::shapes::JsMesh;
 /// Default tolerance for vertices created by the kernel.
 pub const TOL: f64 = 1e-7;
 
+/// The JSON shape of `projectSilhouettes`, shared by its direct and batch
+/// forms: flat `[x, y, …]` polylines as `projectEdges` returns them, plus the
+/// faces left out by handle and surface tag.
+pub fn silhouettes_json(
+    result: &remus_operations::projection::ProjectedSilhouettes,
+) -> serde_json::Value {
+    let flatten = |polys: &[Vec<Point2>]| -> Vec<Vec<f64>> {
+        polys
+            .iter()
+            .map(|poly| poly.iter().flat_map(|p| [p.x(), p.y()]).collect())
+            .collect()
+    };
+    let unsupported: Vec<serde_json::Value> = result
+        .unsupported
+        .iter()
+        .map(|u| serde_json::json!({ "face": face_id_to_u32(u.face), "surface": u.surface }))
+        .collect();
+    serde_json::json!({
+        "visible": flatten(&result.visible),
+        "hidden": flatten(&result.hidden),
+        "unsupported": unsupported,
+    })
+}
+
 /// Optional boolean argument: absent or `null` reads as `None`.
 pub fn get_optional_bool(
     args: &serde_json::Value,
