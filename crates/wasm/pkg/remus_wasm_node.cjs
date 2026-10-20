@@ -6130,13 +6130,13 @@ class BrepKernel {
     /**
      * Project the silhouettes of a solid's curved faces onto a view plane
      * with hidden-line removal: the outline a drawing shows at the side of a
-     * cylinder, cone or sphere, which no edge carries.
+     * cylinder, cone, sphere or torus, which no edge carries.
      *
      * The view arguments and `hidden_lines` match `projectEdges`, and the two
      * results together make the outline drawing. Returns a JSON string
      * `{"visible": [[x,y,…]], "hidden": [[…]], "unsupported": [{"face": id,
-     * "surface": "torus" | "nurbs"}]}`: cylinder, cone and sphere outlines
-     * are exact curves clipped to the face, and faces whose outline is not
+     * "surface": "nurbs"}]}`: cylinder, cone, sphere and torus outlines are
+     * exact curves clipped to the face, and faces whose outline is not
      * computed are named rather than approximated.
      *
      * # Errors
