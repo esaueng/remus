@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792492587743,
+  "lastUpdate": 1792493283171,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -115783,6 +115783,294 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 54841,
             "range": "± 1066",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "dfea5d623cac1e25a8d81258cc2615559e272506",
+          "message": "fix(math): retry a march's first step when the corrector fails (#1202)\n\nThis signed-off PR replaces #1189, preserving its original branch. Its\ncomplete tree is identical to\n`65d7aeef162177dad59201461fb7f31bfbcb6b78`. The maintainer has confirmed\ncontribution rights and authorized the DCO sign-off. Review discussions\nand verification on #1189 apply to the identical source tree; this new\nhead must pass fresh required checks and the protected merge queue.\n\n## Change\n\nFixes the `nurbs_surface` fuzz crash from Fuzz Smoke run\n[38131028280](https://github.com/esaueng/remus/actions/runs/38131028280)\n(`crash-e85af68c…`): \"bounded NURBS SSI missed a section guaranteed by\nopposite surface corners\". It still reproduced on main `59d02a1`.\n\n**Geometry.** The input decodes to:\n- a 3x3 biquadratic rational height field over [0,1]², with weights up\nto 4.0 on high control points;\n- the plane z = −0.5.\n\nThat leaves two small pockets below the plane: one at the (0,0) corner\nand one at the (1,0) corner. The (1,0) pocket's section runs from (u,v)\n≈ (0.978, 0) to (1, 0.026).\n\n**The kernel was wrong, not the oracle.** Clamped corners interpolate z\n= −1 and z = +1, and the surface's xy projection stays inside the plane\npatch, so a section is guaranteed. Independent checks agree:\n- dense sampling of z − h shows both signs;\n- the dedicated plane–NURBS path finds 2 sections.\n\n**Root cause.** Depth-6 subdivision found a valid seed at (0.990, 0.015)\non the (1,0) branch. Both ends of that branch are closer to the seed\nthan the default 0.02 march step. In each direction the first predictor\nleft the domain, and the box-clamped corrector could not reach the curve\nfrom the clamped state. `march_direction` then stopped with zero points.\nChaining dropped the lone seed, and the SSI returned no curves.\n\n**Fix** (`surface_marching.rs`): when the corrector fails on a\ndirection's first step, halve the step and retry instead of ending the\ntrace. `max_evals` bounds the retries. Later failures still end the\ntrace as before, so any trace that already advances is bit-identical.\nFor this input the result is one 3-point curve through the seed.\n\n**Known gap, not addressed here:** depth-6 subdivision seeding still\nmisses the (0,0) pocket, whereas depths 4, 8 and 10 find it. Subdivision\nseeding is not a completeness guarantee, and closing that needs a\ndecision on seeding strategy. The fuzz oracle only asserts that some\nsection exists, so this does not trip it.\n\n## Verification\n\n- New `corner_pocket_section_38131028280` tests in\n`crates/math/src/nurbs/intersection/tests.rs`:\n  - they replay the decoded geometry;\n- the oracle is independent of the SSI: corner straddle, a\ndense-sampling sign change in the (1,0) pocket, membership on both\nsurfaces, and the plane equation for points and the fitted curve;\n- they cover all fuzz scales (0.1/1/10), both operand orders, and the\nmarch from the seed directly;\n  - all 3 fail on main and pass with the fix.\n- Crash input committed as fuzz corpus seed\n`fuzz/corpus/nurbs_surface/corner-pocket-section-38131028280`, with a\nnote in `fuzz/README.md`.\n- `cargo +nightly fuzz run nurbs_surface <crash>`: panics at\n`nurbs_surface.rs:243` before the fix, passes after.\n- 120 s fuzz smoke on the corpus: 14,976 runs, no crash.\n- `cargo test --release -p remus-math`: all pass.\n- `cargo test --release -p remus-algo`: 742 pass (the phase-FF caller of\nthis code).\n- `cargo clippy -p remus-math --all-targets -D warnings`, `cargo fmt`,\n`check-boundaries.sh` and `check-det-hash.sh`: clean.\n- Used `cargo test`, because nextest is not installed in this\nenvironment.\n- Still running locally when this PR was opened: the remus-operations\nand remus-io suites. CI covers the workspace.\n\n## Compatibility and risks\n\nNone. No change to public APIs, tolerances, budgets or formats. The\nbehaviour change is limited to SSI traces that previously came back\nempty in one direction.\n\n## WASM module tier\n\nNone: no new capability.\n\nWASM-Size: +83.9 KiB raw against the committed package, almost all of it\nkernel growth already merged on main since the last package refresh (the\nsame +83.9 KiB the pending refresh #1203 carries). This PR only adds a\nfirst-step retry inside the existing surface-surface intersection\nmarcher, Tier: core (existing SSI path, no new capability).\n\n---\n_Generated by [Claude\nCode](https://claude.ai/code/session_01JLjZp4XKqzD2WNeC8DRh2J)_\n\nSigned-off-by: petertoday\n<171875562+petertoday@users.noreply.github.com>\n\nSigned-off-by: petertoday <171875562+petertoday@users.noreply.github.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-10-20T09:51:46Z",
+          "tree_id": "c77375fa1c93f5dcb9c00f640d54304a958305dd",
+          "url": "https://github.com/esaueng/remus/commit/dfea5d623cac1e25a8d81258cc2615559e272506"
+        },
+        "date": 1792493279488,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 674099,
+            "range": "± 6460",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 734038,
+            "range": "± 4893",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 15377,
+            "range": "± 122",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 4765273,
+            "range": "± 104329",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 4713434,
+            "range": "± 42102",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 4549172,
+            "range": "± 42717",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 15589,
+            "range": "± 415",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 2190633,
+            "range": "± 41919",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 17960077,
+            "range": "± 565489",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 18,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 60,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 33,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 138,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 100,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 479,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 108,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 205,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 133,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 315,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 437,
+            "range": "± 49",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2166,
+            "range": "± 45",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 21,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 49,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 49,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 2268,
+            "range": "± 25",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 8963,
+            "range": "± 364",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 34279,
+            "range": "± 829",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 3106,
+            "range": "± 47",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 349010,
+            "range": "± 9644",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 1586869,
+            "range": "± 7409",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 99826,
+            "range": "± 693",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 196098,
+            "range": "± 2165",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 217970,
+            "range": "± 2569",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 39519,
+            "range": "± 202",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 21077,
+            "range": "± 2708",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 12468,
+            "range": "± 344",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 71357,
+            "range": "± 468",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 83642,
+            "range": "± 1554",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 411633,
+            "range": "± 34994",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 5281576,
+            "range": "± 174278",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 320186,
+            "range": "± 1588",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 668757,
+            "range": "± 5539",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 56024,
+            "range": "± 687",
             "unit": "ns/iter"
           }
         ]
