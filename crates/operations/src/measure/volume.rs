@@ -2058,7 +2058,8 @@ pub(super) fn volume_tessellation_deflection(
     if !diag.is_finite() || diag <= 0.0 {
         return requested;
     }
-    requested.min(quantize_down((diag * 5e-5).max(1e-9)))
+    // The floor goes on after the grid, so it is never rounded below.
+    requested.min(quantize_down(diag * 5e-5).max(1e-9))
 }
 
 /// Mantissa bits [`quantize_down`] keeps: the grid is `{1, 1.5} x 2^e`.
@@ -5910,6 +5911,16 @@ mod clamp_grid_tests {
         let solid = make_box(&mut topo, 60.0, 40.0, 50.0).unwrap();
         let diag = (60.0_f64.powi(2) + 40.0_f64.powi(2) + 50.0_f64.powi(2)).sqrt();
         assert!(volume_tessellation_deflection(&topo, solid, f64::INFINITY) <= diag * 5e-5);
+    }
+
+    #[test]
+    fn the_floor_is_not_rounded_below() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 1e-5, 1e-5, 1e-5).unwrap();
+        assert_eq!(
+            volume_tessellation_deflection(&topo, solid, f64::INFINITY).to_bits(),
+            1e-9_f64.to_bits()
+        );
     }
 }
 
