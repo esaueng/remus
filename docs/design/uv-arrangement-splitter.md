@@ -423,6 +423,37 @@ this slice (sectors/bands retained; differential agreement evidenced with
 opt-in budgets, closed-form `2πrΔz` bands and `rθh` sectors, permutation/
 reversed/shuffled/rigid/scale/thin qualifications, atomic budget/cancellation).
 
+### Certified seam adjacency (2026-10-20)
+
+The quotient now identifies a shared non-seam edge through its DCEL twin's
+region owner. A budgeted scan indexes each undirected edge once; the seam
+pairing then looks up region pairs. Endpoint proximity is not an adjacency
+certificate: two distinct rulings can have endpoints closer than linear
+tolerance without sharing any edge. The previous nested endpoint scan kept
+such seam-adjacent cells apart, yielding three sectors where two physical
+sectors were supplied.
+
+`arrangement/oracle_tests.rs::close_distinct_rulings_preserve_topology_area_and_source_spans`
+qualifies close rulings, rulings next to opposite seam copies, band
+subdivisions, three linear tolerances, reversed uses and shuffled source order.
+The oracles check sector counts, genus-zero Euler and winding, closed-form
+metric areas, both original ruling sources and native spans. Grid quotient
+work is bounded by its edge/cell count, and every smaller budget prefix plus
+cancellation refuses. The production adapter regression
+`arrangement_cyl::tests::close_distinct_rulings_emit_two_sectors_without_an_extra_seam`
+uses radius 0.001 and a 5e-6-radian ruling separation: it remains inside the
+adapter's existing angular domain while the endpoint separation falls below
+the default linear tolerance. It checks two exact cylindrical sector wires,
+closed-form areas, both original line endpoints and pave-block provenance.
+
+The stale single-ruling annulus oracle is replaced with an active two-sector
+contract: preserving the real supplied section requires retaining its two
+boundary uses. Both sectors retain the artificial seam and have one boundary
+and Euler characteristic one. This matches the existing production emitter;
+the plain strip without a ruling remains an annulus. Tier: core (the splitter
+supplies boundaries for live-session boolean topology). Default-budget
+fallbacks and the declared rectilinear-cylinder domain remain unchanged.
+
 Out of scope (remain explicitly outside unless independently qualified):
 oblique traces, unsupported contacts/overlaps, cone poles, sphere poles,
 double-periodic torus charts. Terminal equal-radius perpendicular-cylinder
