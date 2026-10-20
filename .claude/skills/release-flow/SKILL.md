@@ -102,11 +102,11 @@ Notes that matter:
   directories always does, see `docs/owner-pr-ci.md`, "Tiers") and goes
   through the merge queue like any other PR. It does not merge on its own.
 - The script tries to carry the `WASM-Size:` lines of the source PRs merged
-  since the previous refresh into its description. Collection is fragile: a
-  commit subject in the span ending in a `(#N)` the pulls API cannot resolve
-  (#1182 failed on `pulls/69`, #1208 on `pulls/1252`) makes the lookup fail,
-  and the description then holds only a "Could not collect" notice. #1208
-  needed its declaration added by hand. Read the refresh PR's size section
+  since the previous refresh into its description. A commit subject ending in
+  a `(#N)` the pulls API cannot resolve no longer aborts collection
+  (esaueng/remus#1210; it broke #1182 and #1208). A failed compare or
+  association lookup still leaves only a "Could not collect" notice, and the
+  declaration then has to be added by hand. Read the refresh PR's size section
   before enqueuing it.
 - The branch is pinned to its source commit. A rerun for the same source reuses
   the branch when the output is identical and refuses to overwrite it when it
