@@ -1,6 +1,6 @@
 # Trusted owner CI fleet
 
-Required Linux CI jobs and their completion gate live in `fleet-ci-v3.yml`, called
+Required Linux CI jobs and their completion gate live in `fleet-ci-v4.yml`, called
 at an immutable commit from `ci.yml`. Benchmarks, corpus gauntlets, fuzzing,
 mutation checks, OSV scans, WASM candidates and size reports each have their
 own immutable `fleet-*.yml` callee. Their shared pre-checkout guard is a pinned
@@ -73,8 +73,8 @@ workflow jobs install browser binaries without sudo.
 
 ## Activation and rollback
 
-Approve the exact immutable `fleet-ci-v3.yml` runner-group entry without removing
-existing restrictions. Configure the external controller's selected repository
+Approve the exact immutable `fleet-ci-v4.yml@9e5b65b9e00f004d83eb583ab3934c863ad7956d`
+runner-group entry (the pin in `ci.yml`) without removing existing restrictions. Configure the external controller's selected repository
 identities and dedicated GitHub credential, then validate both hosts. The
 required completion check is `checks / CI Pass`, the existing gate inside the
 reusable suite. It validates every selected job and runs on
