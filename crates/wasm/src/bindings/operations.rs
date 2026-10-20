@@ -25,7 +25,7 @@ use remus_geometry::extrema::point_to_nurbs_surface;
 
 use crate::helpers::{
     TOL, classify_to_string, create_apex_face, fillet_failure_js_error, panic_message,
-    parse_points, try_chamfer_with_origins, try_fillet_with_origins,
+    parse_points, silhouettes_json, try_chamfer_with_origins, try_fillet_with_origins,
 };
 use crate::kernel::BrepKernel;
 use crate::types::FaceEvolutionPayloadV1;
@@ -1951,6 +1951,66 @@ impl BrepKernel {
             "hidden": flatten(&result.hidden),
         });
         Ok(JsValue::from_str(&json.to_string()))
+    }
+
+    /// Project the silhouettes of a solid's curved faces onto a view plane
+    /// with hidden-line removal: the outline a drawing shows at the side of a
+    /// cylinder, cone or sphere, which no edge carries.
+    ///
+    /// The view arguments and `hidden_lines` match `projectEdges`, and the two
+    /// results together make the outline drawing. Returns a JSON string
+    /// `{"visible": [[x,y,…]], "hidden": [[…]], "unsupported": [{"face": id,
+    /// "surface": "torus" | "nurbs"}]}`: cylinder, cone and sphere outlines
+    /// are exact curves clipped to the face, and faces whose outline is not
+    /// computed are named rather than approximated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid handle, a non-finite argument, a
+    /// non-positive `deflection`, a degenerate `dir`/`x_axis`, or sampling
+    /// over the projection work limit.
+    #[wasm_bindgen(js_name = "projectSilhouettes")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn project_silhouettes(
+        &self,
+        solid: u32,
+        origin_x: f64,
+        origin_y: f64,
+        origin_z: f64,
+        dir_x: f64,
+        dir_y: f64,
+        dir_z: f64,
+        x_axis_x: f64,
+        x_axis_y: f64,
+        x_axis_z: f64,
+        hidden_lines: bool,
+        deflection: f64,
+    ) -> Result<JsValue, JsError> {
+        for (name, value) in [
+            ("origin_x", origin_x),
+            ("origin_y", origin_y),
+            ("origin_z", origin_z),
+            ("dir_x", dir_x),
+            ("dir_y", dir_y),
+            ("dir_z", dir_z),
+            ("x_axis_x", x_axis_x),
+            ("x_axis_y", x_axis_y),
+            ("x_axis_z", x_axis_z),
+        ] {
+            validate_finite(value, name)?;
+        }
+        validate_positive(deflection, "deflection")?;
+        let solid_id = self.resolve_solid(solid)?;
+        let result = remus_operations::projection::project_silhouettes(
+            &self.topo,
+            solid_id,
+            Point3::new(origin_x, origin_y, origin_z),
+            Vec3::new(dir_x, dir_y, dir_z),
+            Vec3::new(x_axis_x, x_axis_y, x_axis_z),
+            hidden_lines,
+            deflection,
+        )?;
+        Ok(JsValue::from_str(&silhouettes_json(&result).to_string()))
     }
 
     // ── Point Classification ──────────────────────────────────────
@@ -4624,6 +4684,66 @@ mod tests {
         };
         assert!(nonempty("visible"), "visible polylines expected, got {out}");
         assert!(nonempty("hidden"), "hidden polylines expected, got {out}");
+    }
+
+    /// A cylinder from the side: two visible outline rulings at x = ±5 from
+    /// rim to rim, nothing hidden or unsupported; a torus is named instead.
+    #[test]
+    fn project_silhouettes_batch_dispatch_cylinder_and_torus() {
+        let mut k = BrepKernel::new();
+        let cylinder =
+            remus_operations::primitives::make_cylinder(k.topo_mut(), 5.0, 10.0).unwrap();
+        let view = |solid| {
+            serde_json::json!({
+                "solid": solid_id_to_u32(solid),
+                "originX": 0.0, "originY": 0.0, "originZ": 0.0,
+                "dirX": 1.0, "dirY": 1.0, "dirZ": 0.0,
+                "xAxisX": -1.0, "xAxisY": 1.0, "xAxisZ": 0.0,
+                "deflection": 0.1,
+            })
+        };
+        let out = dispatch(&mut k, "projectSilhouettes", view(cylinder));
+        let ok = out
+            .get("ok")
+            .expect("projectSilhouettes batch should return ok");
+        let visible = ok["visible"].as_array().unwrap();
+        assert_eq!(visible.len(), 2, "{out}");
+        let mut xs: Vec<f64> = visible
+            .iter()
+            .map(|line| {
+                let flat = line.as_array().unwrap();
+                let ys: Vec<f64> = flat
+                    .iter()
+                    .skip(1)
+                    .step_by(2)
+                    .map(|v| v.as_f64().unwrap())
+                    .collect();
+                let (lo, hi) = ys
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &y| {
+                        (lo.min(y), hi.max(y))
+                    });
+                assert!((hi - lo - 10.0).abs() < 1e-6, "{out}");
+                flat[0].as_f64().unwrap()
+            })
+            .collect();
+        xs.sort_by(f64::total_cmp);
+        assert!(
+            (xs[0] + 5.0).abs() < 1e-9 && (xs[1] - 5.0).abs() < 1e-9,
+            "{xs:?}"
+        );
+        assert!(ok["hidden"].as_array().unwrap().is_empty(), "{out}");
+        assert!(ok["unsupported"].as_array().unwrap().is_empty(), "{out}");
+
+        let torus = remus_operations::primitives::make_torus(k.topo_mut(), 6.0, 1.5, 8).unwrap();
+        let out = dispatch(&mut k, "projectSilhouettes", view(torus));
+        let unsupported = out["ok"]["unsupported"].as_array().unwrap();
+        assert!(!unsupported.is_empty(), "{out}");
+        assert!(
+            unsupported
+                .iter()
+                .all(|u| u["surface"] == "torus" && u["face"].is_u64())
+        );
     }
 
     #[test]

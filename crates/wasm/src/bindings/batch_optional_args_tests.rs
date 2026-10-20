@@ -84,6 +84,16 @@ fn cases(
             &["hiddenLines"],
         ),
         (
+            "projectSilhouettes",
+            serde_json::json!({
+                "solid": solid,
+                "originX": 0.0, "originY": 0.0, "originZ": 10.0,
+                "dirX": 0.0, "dirY": 0.0, "dirZ": -1.0,
+                "xAxisX": 1.0, "xAxisY": 0.0, "xAxisZ": 0.0
+            }),
+            &["hiddenLines"],
+        ),
+        (
             "mirror",
             serde_json::json!({"solid": solid}),
             &["px", "py", "pz", "nx", "ny", "nz"],
@@ -192,8 +202,8 @@ fn malformed_optional_arguments_are_refused_not_defaulted() {
             }
         }
     }
-    // 54 numeric defaults plus the five boolean ones.
-    assert_eq!(checked, 2 * 59);
+    // 54 numeric defaults plus the six boolean ones.
+    assert_eq!(checked, 2 * 60);
 }
 
 /// Naming and journaled dispatch have the same strict optional-argument

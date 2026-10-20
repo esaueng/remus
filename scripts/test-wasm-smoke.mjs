@@ -455,6 +455,24 @@ console.log('ok - oversized WASM work counts fail closed in direct and batch API
         hiddenLines: true,
       },
     },
+    {
+      name: 'projectSilhouettes',
+      direct: (deflection) =>
+        kernel.projectSilhouettes(boxId, 0, 0, 0, 0, 0, 1, 1, 0, 0, true, deflection),
+      args: {
+        solid: boxId,
+        originX: 0,
+        originY: 0,
+        originZ: 0,
+        dirX: 0,
+        dirY: 0,
+        dirZ: 1,
+        xAxisX: 1,
+        xAxisY: 0,
+        xAxisZ: 0,
+        hiddenLines: true,
+      },
+    },
   ];
 
   for (const deflection of [NaN, Infinity, 0, -0.1]) {
