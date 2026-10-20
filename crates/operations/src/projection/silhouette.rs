@@ -28,6 +28,10 @@ const MIN_CURVE_SAMPLES: usize = 16;
 /// the sample spacing, far below any drawing tolerance.
 const TRIM_BISECTIONS: usize = 40;
 
+/// Bound on the trim queries spent refining crossings, which the sample
+/// preflight cannot count: 2 500 crossings, each [`TRIM_BISECTIONS`] queries.
+const MAX_TRIM_REFINEMENT_QUERIES: usize = 100_000;
+
 /// Below this, the view is taken to run along a cylinder's or cone's axis,
 /// where its outline is its rims and no ruling is a silhouette.
 const AXIAL_VIEW_TOLERANCE: f64 = 1e-12;
@@ -125,8 +129,9 @@ impl Curve {
 ///
 /// Returns [`crate::OperationsError::InvalidInput`] if `direction` or `x_axis`
 /// is degenerate, `deflection` is invalid, or the silhouettes need more
-/// trim-test samples than the projection work limit. Propagates topology,
-/// trim-classification and point-classification errors.
+/// trim-test samples, or cross their faces' trims more often, than the
+/// projection work limits. Propagates topology, trim-classification and
+/// point-classification errors.
 pub fn project_silhouettes(
     topo: &Topology,
     solid: SolidId,
@@ -135,6 +140,31 @@ pub fn project_silhouettes(
     x_axis: Vec3,
     hidden_lines: bool,
     deflection: f64,
+) -> Result<ProjectedSilhouettes, crate::OperationsError> {
+    silhouettes_within(
+        topo,
+        solid,
+        origin,
+        direction,
+        x_axis,
+        hidden_lines,
+        deflection,
+        MAX_TRIM_REFINEMENT_QUERIES,
+    )
+}
+
+/// [`project_silhouettes`] with `refinement_queries` trim queries to spend
+/// placing crossings.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn silhouettes_within(
+    topo: &Topology,
+    solid: SolidId,
+    origin: Point3,
+    direction: Vec3,
+    x_axis: Vec3,
+    hidden_lines: bool,
+    deflection: f64,
+    mut refinement_queries: usize,
 ) -> Result<ProjectedSilhouettes, crate::OperationsError> {
     if !deflection.is_finite() || deflection <= 0.0 {
         return Err(crate::OperationsError::InvalidInput {
@@ -181,7 +211,7 @@ pub fn project_silhouettes(
     // surface here, would not leave it.
     let eps = occlusion_step(topo, solid)?;
     for (face, curve, count) in &curves {
-        for run in trimmed_runs(topo, *face, curve, *count)? {
+        for run in trimmed_runs(topo, *face, curve, *count, &mut refinement_queries)? {
             let points: Vec<Point3> = run.iter().map(|&t| curve.at(t)).collect();
             let seg_hidden = run
                 .windows(2)
@@ -263,7 +293,9 @@ fn face_silhouettes(
             }
             let (sin_a, cos_a) = cone.half_angle().sin_cos();
             let c = cone.axis().dot(view) * cos_a / (sin_a * reach);
-            if c.abs() > 1.0 {
+            // At |c| = 1 the two rulings meet in the one generator that runs
+            // along the view: it projects to a point, so there is no outline.
+            if c.abs() >= 1.0 - AXIAL_VIEW_TOLERANCE {
                 return Ok(Ok(Vec::new()));
             }
             let phi = dy.atan2(dx);
@@ -340,11 +372,13 @@ fn axial_range(
 
 /// Parameter runs of `curve` inside the face, each a sorted list of `t`
 /// values starting and ending on a trim crossing (or the curve's ends).
+/// Each crossing spends [`TRIM_BISECTIONS`] of `refinement_queries`.
 fn trimmed_runs(
     topo: &Topology,
     face: FaceId,
     curve: &Curve,
     count: usize,
+    refinement_queries: &mut usize,
 ) -> Result<Vec<Vec<f64>>, crate::OperationsError> {
     let inside = |t: f64| -> Result<bool, crate::OperationsError> {
         Ok(remus_check::classify::surface_point_in_face(
@@ -359,18 +393,27 @@ fn trimmed_runs(
         .map(|&t| inside(t))
         .collect::<Result<Vec<bool>, _>>()?;
     // The point between an inside and an outside sample where the trim lies.
-    let crossing =
-        |mut a: f64, mut b: f64, a_inside: bool| -> Result<f64, crate::OperationsError> {
-            for _ in 0..TRIM_BISECTIONS {
-                let mid = 0.5 * (a + b);
-                if inside(mid)? == a_inside {
-                    a = mid;
-                } else {
-                    b = mid;
-                }
+    let mut crossing = |mut a: f64,
+                        mut b: f64,
+                        a_inside: bool|
+     -> Result<f64, crate::OperationsError> {
+        *refinement_queries = refinement_queries
+            .checked_sub(TRIM_BISECTIONS)
+            .ok_or_else(|| crate::OperationsError::InvalidInput {
+                reason:
+                    "silhouettes cross their faces' trims more often than the projection work limit"
+                        .into(),
+            })?;
+        for _ in 0..TRIM_BISECTIONS {
+            let mid = 0.5 * (a + b);
+            if inside(mid)? == a_inside {
+                a = mid;
+            } else {
+                b = mid;
             }
-            Ok(0.5 * (a + b))
-        };
+        }
+        Ok(0.5 * (a + b))
+    };
 
     let mut runs: Vec<Vec<f64>> = Vec::new();
     let mut current: Option<Vec<f64>> = None;

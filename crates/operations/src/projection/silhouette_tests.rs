@@ -10,6 +10,7 @@ use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::solid::SolidId;
 
+use super::silhouette::silhouettes_within;
 use super::{ProjectedSilhouettes, project_silhouettes};
 use crate::boolean::{BooleanOp, boolean};
 use crate::primitives::{make_box, make_cone, make_cylinder, make_sphere, make_torus};
@@ -410,4 +411,61 @@ fn hidden_lines_off_drops_hidden_silhouettes() {
     )
     .unwrap();
     assert!(out.visible.is_empty() && out.hidden.is_empty());
+}
+
+/// A view along a cone generator: the one tangent ruling runs along the view
+/// and projects to a point, so there is no outline, not the same ruling twice.
+/// A 45° cone seen at 45° to its axis is exactly this case.
+#[test]
+fn view_along_a_cone_generator_has_no_ruling() {
+    let mut topo = Topology::new();
+    // Base radius = height: half-angle 45° from the radial plane.
+    let cone = make_cone(&mut topo, 5.0, 0.0, 5.0).unwrap();
+    // Every one of these azimuths, from above and from below, rounds |c| to
+    // just inside 1, where an exact `|c| > 1` test let the doubled ruling
+    // through.
+    for (step, dz) in [38, 39, 41, 45, 47, 59, 60]
+        .into_iter()
+        .flat_map(|step| [(step, -1.0), (step, 1.0)])
+    {
+        let azimuth = f64::from(step) * std::f64::consts::TAU / 72.0;
+        let direction = Vec3::new(azimuth.cos(), azimuth.sin(), dz);
+        let x_axis = Vec3::new(0.0, 0.0, 1.0).cross(direction);
+        let out = project(&topo, cone, direction, x_axis);
+        assert!(
+            out.visible.is_empty() && out.hidden.is_empty(),
+            "{direction:?}: {:?} {:?}",
+            out.visible,
+            out.hidden
+        );
+    }
+}
+
+/// Placing each trim crossing costs bisection queries the sample preflight
+/// cannot count, so they draw on their own budget: the notched cylinder's
+/// six crossings (two rims on each ruling, the notch's floor and ceiling)
+/// need 240 and are refused one short.
+#[test]
+fn trim_refinement_has_its_own_budget() {
+    let mut topo = Topology::new();
+    let cylinder = make_cylinder(&mut topo, 5.0, 10.0).unwrap();
+    let notch = make_box(&mut topo, 4.0, 20.0, 2.0).unwrap();
+    transform_solid(&mut topo, notch, &Mat4::translation(3.0, -10.0, 4.0)).unwrap();
+    let solid = boolean(&mut topo, BooleanOp::Cut, cylinder, notch).unwrap();
+    let within = |queries| {
+        silhouettes_within(
+            &topo,
+            solid,
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            true,
+            DEFLECTION,
+            queries,
+        )
+    };
+    let out = within(6 * 40).unwrap();
+    assert_eq!(out.visible.len() + out.hidden.len(), 3);
+    let err = within(6 * 40 - 1).unwrap_err();
+    assert!(err.to_string().contains("work limit"), "{err}");
 }
