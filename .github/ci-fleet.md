@@ -11,7 +11,8 @@ legacy `ci-small` target.
 
 `REMUS_TRUSTED_VPS_ENABLED` remains the pilot's activation switch; it does not
 force a VPS target. `REMUS_OWNER_PR_VPS_ENABLED` was read only by `owner-pr.yml`
-and is now unused. `CI_FLEET_ENABLED` separately enables fleet routing. Owner authorization
+and was removed from the repository variables on 2026-10-20. `CI_FLEET_ENABLED`
+separately enables fleet routing. Owner authorization
 still checks repository/actor IDs, current PR metadata and immutable merge
 parents before checkout. The runner group independently permits exact workflow
 revisions; labels alone grant no access.
