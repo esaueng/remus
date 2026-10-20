@@ -99,9 +99,13 @@ Notes that matter:
 - The refresh PR runs the full suite (a diff confined to the two `pkg`
   directories always does, see `docs/owner-pr-ci.md`, "Tiers") and goes
   through the merge queue like any other PR. It does not merge on its own.
-- Its description carries the `WASM-Size:` lines of the source PRs merged
-  since the previous refresh, so the size gate passes when those PRs declared
-  their growth.
+- The script tries to carry the `WASM-Size:` lines of the source PRs merged
+  since the previous refresh into its description. Collection is fragile: a
+  commit subject in the span ending in a `(#N)` the pulls API cannot resolve
+  (#1182 failed on `pulls/69`, #1208 on `pulls/1252`) makes the lookup fail,
+  and the description then holds only a "Could not collect" notice. #1208
+  needed its declaration added by hand. Read the refresh PR's size section
+  before enqueuing it.
 - The branch is pinned to its source commit. A rerun for the same source reuses
   the branch when the output is identical and refuses to overwrite it when it
   differs.
