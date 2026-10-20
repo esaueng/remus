@@ -2050,6 +2050,35 @@ export class BrepKernel {
         return ret[0];
     }
     /**
+     * Exact content digests of faces, one 32-character hex string per face
+     * handle, in input order.
+     *
+     * Equal digests mean the faces have the same content: reversal, support
+     * surface, and complete boundary (curves, trims, tolerances, vertex
+     * positions, pcurves, and the relative arena order of the face's edges,
+     * which the face mesher reads). Handles do not enter, so a consumer can
+     * recognise faces an edit left untouched and keep what it derived from
+     * them. Reals are compared by their bits; there is no tolerance. The
+     * digest is a 128-bit hash, not a cryptographic one.
+     *
+     * # Errors
+     *
+     * Returns an error if a face handle is invalid.
+     * @param {Uint32Array} faces
+     * @returns {string[]}
+     */
+    faceContentDigests(faces) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_faceContentDigests(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v2;
+    }
+    /**
      * Build an exact standalone blend sheet between two disjoint planar faces.
      * @param {number} first_face
      * @param {number} second_face
@@ -5114,6 +5143,32 @@ export class BrepKernel {
         return v1;
     }
     /**
+     * Exact measurement reuse counters and independent area storage bounds,
+     * as camelCase JSON. Existing volume memo bounds are included separately.
+     *
+     * # Errors
+     * Returns an error when the diagnostic cannot be serialized.
+     * @returns {string}
+     */
+    measurementReuseStats() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_measurementReuseStats(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Merge coincident vertices in a solid.
      *
      * Returns the number of vertices merged.
@@ -5219,6 +5274,33 @@ export class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Bounded, module-local mesh reuse counters and storage estimate as
+     * JSON, or `null` when disabled. Contains no geometry or arena handles.
+     * The estimate is separate from checkpoint bytes and is not RSS.
+     *
+     * # Errors
+     * Returns an error if the diagnostic cannot be serialized.
+     * @returns {string}
+     */
+    meshReuseStats() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_meshReuseStats(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
     }
     /**
      * Convex Minkowski sum of two solids (`A ⊕ B`).
@@ -6044,6 +6126,44 @@ export class BrepKernel {
         return v1;
     }
     /**
+     * Project the silhouettes of a solid's curved faces onto a view plane
+     * with hidden-line removal: the outline a drawing shows at the side of a
+     * cylinder, cone or sphere, which no edge carries.
+     *
+     * The view arguments and `hidden_lines` match `projectEdges`, and the two
+     * results together make the outline drawing. Returns a JSON string
+     * `{"visible": [[x,y,…]], "hidden": [[…]], "unsupported": [{"face": id,
+     * "surface": "torus" | "nurbs"}]}`: cylinder, cone and sphere outlines
+     * are exact curves clipped to the face, and faces whose outline is not
+     * computed are named rather than approximated.
+     *
+     * # Errors
+     *
+     * Returns an error for an invalid handle, a non-finite argument, a
+     * non-positive `deflection`, a degenerate `dir`/`x_axis`, or sampling
+     * over the projection work limit.
+     * @param {number} solid
+     * @param {number} origin_x
+     * @param {number} origin_y
+     * @param {number} origin_z
+     * @param {number} dir_x
+     * @param {number} dir_y
+     * @param {number} dir_z
+     * @param {number} x_axis_x
+     * @param {number} x_axis_y
+     * @param {number} x_axis_z
+     * @param {boolean} hidden_lines
+     * @param {number} deflection
+     * @returns {any}
+     */
+    projectSilhouettes(solid, origin_x, origin_y, origin_z, dir_x, dir_y, dir_z, x_axis_x, x_axis_y, x_axis_z, hidden_lines, deflection) {
+        const ret = wasm.brepkernel_projectSilhouettes(this.__wbg_ptr, solid, origin_x, origin_y, origin_z, dir_x, dir_y, dir_z, x_axis_x, x_axis_y, x_axis_z, hidden_lines, deflection);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Propagates face attributes across one journaled operation.
      *
      * Returns JSON `{"carried", "unresolvedOutputs", "mergeConflicts",
@@ -6829,6 +6949,22 @@ export class BrepKernel {
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
+    }
+    /**
+     * Enable or disable exact reusable scalar measurements for this module.
+     * Explicit preferences are preserved when another kernel is constructed.
+     * @param {boolean} enabled
+     */
+    setMeasurementReuseEnabled(enabled) {
+        wasm.brepkernel_setMeasurementReuseEnabled(this.__wbg_ptr, enabled);
+    }
+    /**
+     * Enable or disable this module's exact mesh-stage reuse. Disabling
+     * releases its retained entries. New kernels enable the default cache.
+     * @param {boolean} enabled
+     */
+    setMeshReuseEnabled(enabled) {
+        wasm.brepkernel_setMeshReuseEnabled(this.__wbg_ptr, enabled);
     }
     /**
      * Enable bounded module-local timings; disabled by default. This does
