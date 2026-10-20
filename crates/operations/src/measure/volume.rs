@@ -257,11 +257,22 @@ fn torus_wire_wraps_tube(
         let (sp, ep) = (sv.point(), ev.point());
         // Sample ALONG each edge (not just endpoints): a wrapping seam arc bows
         // far in v between its endpoints, so endpoint-only sampling can miss the
-        // wrap and misclassify a notch band as a constant-v circle.
+        // wrap and misclassify a notch band as a constant-v circle. A line is
+        // parameterized over [0, 1]; every other curve over its own trim span.
+        let (t0, t1) = if matches!(e.curve(), EdgeCurve::Line) {
+            (0.0, 1.0)
+        } else {
+            match tessellate::edge_param_span(topo, e) {
+                Ok(span) => span,
+                Err(_) => return false,
+            }
+        };
         for k in 0..=8 {
             let f = f64::from(k) / 8.0;
-            let t = if oe.is_forward() { f } else { 1.0 - f };
-            let p = e.curve().evaluate_with_endpoints(t, sp, ep);
+            let f = if oe.is_forward() { f } else { 1.0 - f };
+            let p = e
+                .curve()
+                .evaluate_with_endpoints((t1 - t0).mul_add(f, t0), sp, ep);
             vs.push(torus.project_point(p).1);
         }
     }
@@ -412,8 +423,8 @@ fn mesh_is_closed(mesh: &tessellate::TriangleMesh) -> bool {
 /// The whole-solid mesh at the clamp, when `deflection` is finer than the
 /// clamp and the mesh there is CLOSED; `None` otherwise.
 ///
-/// Every coarser request is measured at the clamp, `bbox_diag * 5e-5` (see
-/// [`volume_tessellation_deflection`]), so a closed clamp mesh gives the
+/// Every coarser request is measured at the clamp, `bbox_diag * 5e-5`
+/// rounded down onto a fixed grid (see [`volume_tessellation_deflection`]), so a closed clamp mesh gives the
 /// reading any coarser request returns: the coarsest reading [`solid_volume`]
 /// may give, never coarser. A mesh that cracks only at a request finer than
 /// the clamp then measures to the clamp's chord accuracy instead of leaving
@@ -2020,7 +2031,9 @@ fn find_cap_circle(topo: &Topology, face_id: FaceId) -> Option<(Point3, f64)> {
 ///
 /// A coarse preview deflection inscribes too few facets in a curved face and
 /// under-counts its volume; volume is a precise query, so cap the deflection at
-/// a small fraction of the solid's curvature-aware bounding-box diagonal.
+/// a small fraction of the solid's curvature-aware bounding-box diagonal,
+/// rounded down onto a fixed grid (see [`quantize_down`]) so that a small edit
+/// keeps the cap and the face meshes it leaves untouched.
 /// Using only topology vertices is not sufficient: a closed circular edge can
 /// have one coincident start/end vertex even when its radius is enormous. Such
 /// an under-estimate would force an unnecessarily tiny deflection and allow a
@@ -2045,7 +2058,29 @@ pub(super) fn volume_tessellation_deflection(
     if !diag.is_finite() || diag <= 0.0 {
         return requested;
     }
-    requested.min((diag * 5e-5).max(1e-9))
+    // The floor goes on after the grid, so it is never rounded below.
+    requested.min(quantize_down(diag * 5e-5).max(1e-9))
+}
+
+/// Mantissa bits [`quantize_down`] keeps: the grid is `{1, 1.5} x 2^e`.
+const CLAMP_MANTISSA_BITS: u32 = 1;
+
+/// The largest value at or below `x` on the grid of floats with at most
+/// [`CLAMP_MANTISSA_BITS`] mantissa bits, for a positive normal `x`; any
+/// other `x` is returned unchanged.
+///
+/// The clamp follows the bounding box, so before this an edit that moved the
+/// box at all changed every face's measurement deflection and re-meshed every
+/// face. On the grid, an edit that moves the diagonal by a few percent keeps
+/// the clamp and the content-keyed face meshes of the faces it left
+/// untouched. Rounding down never coarsens the clamp, and clearing mantissa
+/// bits is exact, so every platform lands on the same value.
+fn quantize_down(x: f64) -> f64 {
+    if !x.is_normal() || x < 0.0 {
+        return x;
+    }
+    let drop = f64::MANTISSA_DIGITS - 1 - CLAMP_MANTISSA_BITS;
+    f64::from_bits(x.to_bits() >> drop << drop)
 }
 
 /// The signed volume a shell's faces enclose, `(1/3) integral P.n dA` summed
@@ -2209,7 +2244,8 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
 /// not with a route-sized jump.
 ///
 /// Before refusing, a mesh that was open at a request FINER than the clamp is
-/// retried once at the clamp (`bbox_diag * 5e-5`), the deflection every
+/// retried once at the clamp (`bbox_diag * 5e-5` rounded down onto a fixed
+/// grid), the deflection every
 /// coarser request is measured at, and a closed clamp mesh is the answer.
 /// The exact integral stays first because it is the more accurate reading
 /// where it applies. On the pre-B39 torus–cone fuse at a 2e-4 request (open
@@ -5831,6 +5867,64 @@ mod regression_tests {
 }
 
 #[cfg(test)]
+mod clamp_grid_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::primitives::make_box;
+
+    #[test]
+    fn quantize_down_lands_on_the_grid_below() {
+        for (x, q) in [
+            (1.0, 1.0),
+            (1.4, 1.0),
+            (1.5, 1.5),
+            (1.99, 1.5),
+            (0.99, 0.75),
+            (5.396_526_660_732_809e-3, 3.906_25e-3),
+        ] {
+            assert_eq!(quantize_down(x).to_bits(), f64::to_bits(q), "{x}");
+        }
+        for step in 0..400 {
+            let x = 1e-9 * 1.07_f64.powi(step);
+            let q = quantize_down(x);
+            assert!(q <= x && q > x / 1.5, "{x} -> {q}");
+            assert_eq!(quantize_down(q).to_bits(), q.to_bits());
+        }
+        for x in [0.0, -1.0, f64::INFINITY, f64::NAN, f64::MIN_POSITIVE / 2.0] {
+            assert_eq!(quantize_down(x).to_bits(), x.to_bits());
+        }
+    }
+
+    #[test]
+    fn a_small_extent_change_keeps_the_clamp() {
+        let clamp = |depth: f64| {
+            let mut topo = Topology::new();
+            let solid = make_box(&mut topo, 60.0, 40.0, depth).unwrap();
+            volume_tessellation_deflection(&topo, solid, f64::INFINITY)
+        };
+        // The diagonal moves by about 4 %; the clamp before the grid moved
+        // with it and re-meshed every face.
+        assert_eq!(clamp(50.0).to_bits(), clamp(47.0).to_bits());
+        // Never coarser than the extent's own fraction.
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 60.0, 40.0, 50.0).unwrap();
+        let diag = (60.0_f64.powi(2) + 40.0_f64.powi(2) + 50.0_f64.powi(2)).sqrt();
+        assert!(volume_tessellation_deflection(&topo, solid, f64::INFINITY) <= diag * 5e-5);
+    }
+
+    #[test]
+    fn the_floor_is_not_rounded_below() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 1e-5, 1e-5, 1e-5).unwrap();
+        assert_eq!(
+            volume_tessellation_deflection(&topo, solid, f64::INFINITY).to_bits(),
+            1e-9_f64.to_bits()
+        );
+    }
+}
+
+#[cfg(test)]
 mod notch_patch_qualification_tests {
     #![allow(clippy::unwrap_used)]
 
@@ -5841,6 +5935,40 @@ mod notch_patch_qualification_tests {
     use remus_topology::face::Face;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
+
+    /// A full tube circle of a torus about Z (R = 2, r = 1) at `u = 0`, as a
+    /// one-edge wire whose stored trim is the whole turn.
+    fn tube_circle_wire(topo: &mut Topology, trim: (f64, f64)) -> remus_topology::wire::WireId {
+        let circle =
+            Circle3D::new(Point3::new(2.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 1.0).unwrap();
+        let start = circle.evaluate(trim.0);
+        let vertex = topo.add_vertex(Vertex::new(start, 1e-7));
+        let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+        edge.set_trim(Some(trim));
+        let edge = topo.add_edge(edge);
+        topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap())
+    }
+
+    #[test]
+    fn tube_wrap_samples_each_edge_over_its_own_span() {
+        let torus = ToroidalSurface::with_axis(
+            Point3::new(0.0, 0.0, 0.0),
+            2.0,
+            1.0,
+            Vec3::new(0.0, 0.0, 1.0),
+        )
+        .unwrap();
+        // The whole turn wraps the tube once. Sampling the circle's raw
+        // parameter over [0, 1] instead walked one radian of it and read no
+        // wrap.
+        let mut topo = Topology::new();
+        let wire = tube_circle_wire(&mut topo, (0.0, std::f64::consts::TAU));
+        assert!(torus_wire_wraps_tube(&topo, wire, &torus));
+        // A trim that starts away from the parameter origin wraps all the same.
+        let mut topo = Topology::new();
+        let wire = tube_circle_wire(&mut topo, (2.0, 2.0 + std::f64::consts::TAU));
+        assert!(torus_wire_wraps_tube(&topo, wire, &torus));
+    }
 
     #[test]
     fn notch_patch_rejects_a_full_turn_hidden_in_a_quarter_seam_trim() {
