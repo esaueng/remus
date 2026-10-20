@@ -132,8 +132,9 @@ Runs on pushes to `main` that match its path filter, and on `workflow_dispatch`
 — where the job additionally requires `sync_package` and
 `github.ref == 'refs/heads/main'`, so a dispatch from another ref no-ops. The
 filter excludes `crates/wasm/pkg/**` and `crates/wasm-io/pkg/**`, which is what
-stops a merged refresh PR from triggering another refresh. Push runs also still
-skip a `[skip ci]` head commit message.
+stops a merged refresh PR from triggering another refresh. GitHub also skips
+push runs whose head commit message carries a skip marker such as `[skip ci]`
+or a `skip-checks: true` trailer, and the job guard checks `[skip ci]` itself.
 
 - `install-wasm-package-archive.py` is a deliberate airlock: it accepts only
   regular files and directories beneath the package roots it is given
