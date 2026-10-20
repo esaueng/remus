@@ -2,13 +2,13 @@
 //!
 //! A silhouette is where a face's normal is perpendicular to the view
 //! direction: the line a drawing shows at the side of a cylinder, a cone or a
-//! sphere, which no topology edge carries. For the analytic surfaces with a
-//! closed form the curve is exact — two rulings of a cylinder or cone, a
-//! great circle of a sphere — and is clipped to the face's trims, then
-//! sampled and split into visible and hidden runs with the same occlusion
-//! probe as [`super::project_edges`]. Tori and NURBS faces have no closed
-//! form here; they are reported in [`ProjectedSilhouettes::unsupported`]
-//! rather than approximated.
+//! sphere or a torus, which no topology edge carries. For the analytic
+//! surfaces the curve has a closed form — two rulings of a cylinder or cone,
+//! a great circle of a sphere, the two branches `v(u)` of a torus — and is
+//! clipped to the face's trims, then sampled and split into visible and
+//! hidden runs with the same occlusion probe as [`super::project_edges`].
+//! NURBS faces have no closed form here; they are reported in
+//! [`ProjectedSilhouettes::unsupported`] rather than approximated.
 
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
@@ -35,8 +35,14 @@ const TRIM_BISECTIONS: usize = 40;
 const MAX_TRIM_REFINEMENT_QUERIES: usize = 100_000;
 
 /// Below this, the view is taken to run along a cylinder's or cone's axis,
-/// where its outline is its rims and no ruling is a silhouette.
+/// where its outline is its rims and no ruling is a silhouette, or to lie
+/// in a torus's equatorial plane, where its outline is four circles.
 const AXIAL_VIEW_TOLERANCE: f64 = 1e-12;
+
+/// Halvings of one sample interval while refining a torus silhouette: enough
+/// to follow a near-side view's turn through a meridian, which is about
+/// `2·|axis·view|/|view in plane|` wide in `u`, down to that tolerance.
+const MAX_TORUS_REFINEMENT_DEPTH: u32 = 48;
 
 /// Silhouette curves projected onto the view plane, split like
 /// [`super::ProjectedEdges`] into visible and hidden 2D polylines.
@@ -57,12 +63,12 @@ pub struct ProjectedSilhouettes {
 pub struct UnsupportedSilhouette {
     /// The face.
     pub face: FaceId,
-    /// Its surface type tag (`"torus"`, `"nurbs"`).
+    /// Its surface type tag (`"nurbs"`).
     pub surface: &'static str,
 }
 
 /// A silhouette curve on one face, parameterized by `t ∈ [0, 1]`.
-enum Curve {
+pub(super) enum Curve {
     /// `start + dir·t`.
     Segment { start: Point3, dir: Vec3 },
     /// `center + radius·(cos 2πt·u + sin 2πt·v)`, closed.
@@ -72,10 +78,26 @@ enum Curve {
         u: Vec3,
         v: Vec3,
     },
+    /// The torus points where `cos v·(radial(u)·d) + sin v·(axis·d) = 0`:
+    /// with `u = phi + 2πt` and `h·cos(2πt) = radial(u)·d`, the branch
+    /// `v = atan2(−h·cos 2πt, az) + offset`, `offset` 0 or π. Closed, and
+    /// continuous for `az ≠ 0`.
+    Torus {
+        center: Point3,
+        x: Vec3,
+        y: Vec3,
+        z: Vec3,
+        major: f64,
+        minor: f64,
+        phi: f64,
+        h: f64,
+        az: f64,
+        offset: f64,
+    },
 }
 
 impl Curve {
-    fn at(&self, t: f64) -> Point3 {
+    pub(super) fn at(&self, t: f64) -> Point3 {
         match *self {
             Self::Segment { start, dir } => start + dir * t,
             Self::Circle {
@@ -87,25 +109,113 @@ impl Curve {
                 let (sin, cos) = (std::f64::consts::TAU * t).sin_cos();
                 center + (u * cos + v * sin) * radius
             }
+            Self::Torus {
+                center,
+                x,
+                y,
+                z,
+                major,
+                minor,
+                phi,
+                h,
+                az,
+                offset,
+            } => {
+                let w = std::f64::consts::TAU * t;
+                let (sin_u, cos_u) = (phi + w).sin_cos();
+                let (sin_v, cos_v) = ((-h * w.cos()).atan2(az) + offset).sin_cos();
+                center + (x * cos_u + y * sin_u) * (minor * cos_v + major) + z * (minor * sin_v)
+            }
         }
     }
 
     const fn is_closed(&self) -> bool {
-        matches!(self, Self::Circle { .. })
+        matches!(self, Self::Circle { .. } | Self::Torus { .. })
     }
 
-    /// Samples for the trim test and the occlusion split: one per
+    /// The parameters to sample, sorted from 0 to 1, or `None` when there
+    /// would be more than `limit` intervals. Segments and circles are
+    /// sampled uniformly at [`Self::sample_count`]; a torus branch starts
+    /// from its outer equator's spacing and halves every interval whose
+    /// chord strays more than `deflection` from the curve at its middle, or
+    /// is longer than a chord of the tube at that deflection.
+    pub(super) fn sample_ts(&self, deflection: f64, limit: usize) -> Option<Vec<f64>> {
+        let count = self.sample_count(deflection);
+        if count > limit {
+            return None;
+        }
+        let uniform = |i: usize| i as f64 / count as f64;
+        let Self::Torus { minor, .. } = *self else {
+            return Some((0..=count).map(uniform).collect());
+        };
+        // The tube chord at sagitta `d` grows to the diameter at `d = r`; past
+        // that it would shrink again, and from `d = 2r` the whole tube is
+        // within the deflection, so the bound is dropped.
+        let max_chord = if deflection >= 2.0 * minor {
+            f64::INFINITY
+        } else {
+            let sagitta = deflection.min(minor);
+            2.0 * (sagitta * (2.0 * minor - sagitta)).sqrt()
+        };
+        let mut ts = vec![0.0];
+        let mut start = self.at(0.0);
+        for i in 1..=count {
+            let (a, b) = (uniform(i - 1), uniform(i));
+            let end = self.at(b);
+            self.refine(a, start, b, end, deflection, max_chord, 0, &mut ts, limit)?;
+            start = end;
+        }
+        Some(ts)
+    }
+
+    /// Push the samples after `a` up to and including `b`, halving
+    /// `[a, b]` while its chord is too far from the curve or too long.
+    #[allow(clippy::too_many_arguments)]
+    fn refine(
+        &self,
+        a: f64,
+        pa: Point3,
+        b: f64,
+        pb: Point3,
+        deflection: f64,
+        max_chord: f64,
+        depth: u32,
+        ts: &mut Vec<f64>,
+        limit: usize,
+    ) -> Option<()> {
+        let mid = 0.5 * (a + b);
+        let pm = self.at(mid);
+        let chord_mid = Point3::new(
+            0.5 * (pa.x() + pb.x()),
+            0.5 * (pa.y() + pb.y()),
+            0.5 * (pa.z() + pb.z()),
+        );
+        let coarse = (pm - chord_mid).length() > deflection || (pb - pa).length() > max_chord;
+        if coarse && depth < MAX_TORUS_REFINEMENT_DEPTH {
+            self.refine(a, pa, mid, pm, deflection, max_chord, depth + 1, ts, limit)?;
+            self.refine(mid, pm, b, pb, deflection, max_chord, depth + 1, ts, limit)?;
+        } else {
+            if ts.len() > limit {
+                return None;
+            }
+            ts.push(b);
+        }
+        Some(())
+    }
+
+    /// Uniform samples for the trim test and the occlusion split: one per
     /// `deflection` of length on a segment, chord-deflection spacing on a
-    /// circle. Unbounded above: the solid's sample budget refuses a count
-    /// too large.
+    /// circle, and on a torus branch the spacing of its outer equator.
+    /// Unbounded above: the solid's sample budget refuses a count too large.
     fn sample_count(&self, deflection: f64) -> usize {
+        let circle = |radius: f64| {
+            let ratio = (1.0 - deflection / radius).clamp(-1.0, 1.0);
+            std::f64::consts::TAU / (2.0 * ratio.acos())
+        };
         let raw = match *self {
             Self::Segment { dir, .. } => dir.length() / deflection,
-            Self::Circle { radius, .. } => {
-                let ratio = (1.0 - deflection / radius).clamp(-1.0, 1.0);
-                let step = 2.0 * ratio.acos();
-                std::f64::consts::TAU / step
-            }
+            Self::Circle { radius, .. } => circle(radius),
+            Self::Torus { major, minor, .. } => circle(major + minor),
         };
         // A float-to-int cast saturates: an infinite count is usize::MAX.
         (raw.ceil() as usize).max(MIN_CURVE_SAMPLES)
@@ -122,7 +232,10 @@ impl Curve {
 /// edges and silhouettes together make the outline drawing. Cylinder, cone
 /// and sphere silhouettes are exact curves clipped to the face's trims, with
 /// clip points refined by bisection so a silhouette meets the rim edge it
-/// ends on. Planes have none. Torus and NURBS faces are listed in
+/// ends on, as exactly as the trim test places that edge: it samples
+/// curved trims, so a clip point on one carries that sampling's error
+/// (1.04e-4 on the notched-torus oracle). Torus silhouettes are their exact
+/// branches sampled adaptively to `deflection`. Planes have none. NURBS faces are listed in
 /// [`ProjectedSilhouettes::unsupported`]. `deflection` sets the sampling of
 /// each curve, which also bounds how small a trim feature crossing a
 /// silhouette is resolved.
@@ -185,9 +298,11 @@ pub(super) fn silhouettes_within(
         let surface = topo.face(face)?.surface();
         let unsupported = match surface {
             FaceSurface::Plane { .. } => continue,
-            FaceSurface::Torus(_) => "torus",
             FaceSurface::Nurbs(_) => "nurbs",
-            FaceSurface::Sphere(_) | FaceSurface::Cylinder(_) | FaceSurface::Cone(_) => {
+            FaceSurface::Sphere(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Torus(_) => {
                 match carriers
                     .iter_mut()
                     .find(|(known, _)| same_carrier(known, surface))
@@ -206,20 +321,20 @@ pub(super) fn silhouettes_within(
 
     // Every curve is built and counted before any trim query runs, so an
     // over-budget request is refused before the expensive work.
-    let mut curves: Vec<(&[FaceId], Curve, usize)> = Vec::new();
+    let mut curves: Vec<(&[FaceId], Curve, Vec<f64>)> = Vec::new();
     let mut samples = 0usize;
     for (surface, faces) in &carriers {
         for curve in carrier_silhouettes(topo, surface, faces, view.dir)? {
-            let count = curve.sample_count(deflection);
-            samples = samples.saturating_add(count.saturating_mul(faces.len()));
-            if samples > MAX_SILHOUETTE_SAMPLES {
-                return Err(crate::OperationsError::InvalidInput {
+            let limit = (MAX_SILHOUETTE_SAMPLES - samples) / faces.len().max(1);
+            let ts = curve.sample_ts(deflection, limit).ok_or_else(|| {
+                crate::OperationsError::InvalidInput {
                     reason: format!(
                         "silhouette sampling exceeds the {MAX_SILHOUETTE_SAMPLES}-point limit; increase deflection"
                     ),
-                });
-            }
-            curves.push((faces, curve, count));
+                }
+            })?;
+            samples += (ts.len() - 1) * faces.len();
+            curves.push((faces, curve, ts));
         }
     }
     if curves.is_empty() {
@@ -231,8 +346,8 @@ pub(super) fn silhouettes_within(
     // inside a sphere, and the step toward the camera, tangent to the
     // surface here, would not leave it.
     let eps = occlusion_step(topo, solid)?;
-    for (faces, curve, count) in &curves {
-        for run in trimmed_runs(topo, faces, curve, *count, &mut refinement_queries)? {
+    for (faces, curve, ts) in &curves {
+        for run in trimmed_runs(topo, faces, curve, ts, &mut refinement_queries)? {
             let points: Vec<Point3> = run.iter().map(|&t| curve.at(t)).collect();
             let seg_hidden = run
                 .windows(2)
@@ -267,9 +382,10 @@ const SAME_CARRIER_LINEAR: f64 = 1e-7;
 /// of the angle between axes) are one carrier.
 const SAME_CARRIER_ANGULAR: f64 = 1e-9;
 
-/// Whether two support surfaces are the same sphere, cylinder or cone, so
-/// have the same silhouette in every view. A cylinder's frame and origin
-/// along its axis, and a cylinder axis's sense, do not change it.
+/// Whether two support surfaces are the same sphere, cylinder, cone or
+/// torus, so have the same silhouette in every view. A cylinder's frame and
+/// origin along its axis, and a cylinder's or torus's axis sense, do not
+/// change it.
 fn same_carrier(a: &FaceSurface, b: &FaceSurface) -> bool {
     let parallel = |p: Vec3, q: Vec3| p.cross(q).length() <= SAME_CARRIER_ANGULAR;
     if let (FaceSurface::Sphere(a), FaceSurface::Sphere(b)) = (a, b) {
@@ -289,20 +405,81 @@ fn same_carrier(a: &FaceSurface, b: &FaceSurface) -> bool {
             && parallel(a.axis(), b.axis())
             && (a.half_angle() - b.half_angle()).abs() <= SAME_CARRIER_ANGULAR;
     }
+    if let (FaceSurface::Torus(a), FaceSurface::Torus(b)) = (a, b) {
+        return (a.center() - b.center()).length() <= SAME_CARRIER_LINEAR
+            && parallel(a.z_axis(), b.z_axis())
+            && (a.major_radius() - b.major_radius()).abs() <= SAME_CARRIER_LINEAR
+            && (a.minor_radius() - b.minor_radius()).abs() <= SAME_CARRIER_LINEAR;
+    }
     false
 }
 
 /// The silhouette curves of a support surface, untrimmed and long enough to
-/// cover all of `faces`: zero, one or two curves. Planes, tori and NURBS
-/// surfaces have none here.
-fn carrier_silhouettes(
+/// cover all of `faces`: up to four curves. Planes and NURBS surfaces have
+/// none here.
+pub(super) fn carrier_silhouettes(
     topo: &Topology,
     surface: &FaceSurface,
     faces: &[FaceId],
     view: Vec3,
 ) -> Result<Vec<Curve>, crate::OperationsError> {
     Ok(match surface {
-        FaceSurface::Plane { .. } | FaceSurface::Torus(_) | FaceSurface::Nurbs(_) => Vec::new(),
+        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => Vec::new(),
+        FaceSurface::Torus(torus) => {
+            // Normal at (u, v) is radial(u)·cos v + axis·sin v, so the
+            // silhouette is cos v·(radial(u)·d) + sin v·(axis·d) = 0.
+            let (x, y, z) = (torus.x_axis(), torus.y_axis(), torus.z_axis());
+            let (dx, dy, az) = (x.dot(view), y.dot(view), z.dot(view));
+            let (center, major, minor) =
+                (torus.center(), torus.major_radius(), torus.minor_radius());
+            let phi = dy.atan2(dx);
+            if az.abs() <= AXIAL_VIEW_TOLERANCE {
+                // A view in the equatorial plane: the condition holds all
+                // round the top and bottom circles (v = ±π/2), and all round
+                // the two meridians whose plane holds the view
+                // (radial(u)·d = 0).
+                let mut curves: Vec<Curve> = [minor, -minor]
+                    .into_iter()
+                    .map(|height| Curve::Circle {
+                        center: center + z * height,
+                        radius: major,
+                        u: x,
+                        v: y,
+                    })
+                    .collect();
+                for u in [
+                    phi + std::f64::consts::FRAC_PI_2,
+                    phi - std::f64::consts::FRAC_PI_2,
+                ] {
+                    let (sin, cos) = u.sin_cos();
+                    let radial = x * cos + y * sin;
+                    curves.push(Curve::Circle {
+                        center: center + radial * major,
+                        radius: minor,
+                        u: radial,
+                        v: z,
+                    });
+                }
+                curves
+            } else {
+                let h = dx.hypot(dy);
+                [0.0, std::f64::consts::PI]
+                    .into_iter()
+                    .map(|offset| Curve::Torus {
+                        center,
+                        x,
+                        y,
+                        z,
+                        major,
+                        minor,
+                        phi,
+                        h,
+                        az,
+                        offset,
+                    })
+                    .collect()
+            }
+        }
         FaceSurface::Sphere(sphere) => {
             // The great circle in the plane through the centre normal to the view.
             let (u, v) = plane_basis(view)?;
@@ -433,7 +610,7 @@ fn trimmed_runs(
     topo: &Topology,
     faces: &[FaceId],
     curve: &Curve,
-    count: usize,
+    ts: &[f64],
     refinement_queries: &mut usize,
 ) -> Result<Vec<Vec<f64>>, crate::OperationsError> {
     let inside = |t: f64| -> Result<bool, crate::OperationsError> {
@@ -445,7 +622,6 @@ fn trimmed_runs(
         }
         Ok(false)
     };
-    let ts: Vec<f64> = (0..=count).map(|i| i as f64 / count as f64).collect();
     let flags = ts
         .iter()
         .map(|&t| inside(t))

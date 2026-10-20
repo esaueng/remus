@@ -106,6 +106,33 @@ def strip_refresh_deltas(text):
 def carries_reviewed_updates(filename):
     return re.search(r"-v[2-9]\.yml$", filename) is not None
 
+# The staged ci v4 callee (not yet active) moves Fuzz Targets Compile and
+# Software Rendering from the second tier into the first, so a merge group that
+# runs the first tier only still compiles the fuzz targets and renders. These
+# are the only reviewed edits to the landed v3 callee.
+CI_V4 = ROOT / ".github/workflows/fleet-ci-v4.yml"
+CI_V4_TIER_MOVE = (
+    ("          # The second tier (coverage, MSRV, fuzz compile, render,\n"
+     "          # deny, audit, package build) runs for every main push, merge\n"
+     "          # group and dispatch, and for PRs only with the `ci:full` label.\n",
+     "          # The second tier (coverage, MSRV, deny, audit, package build)\n"
+     "          # runs for every main push and dispatch, for merge groups whose\n"
+     "          # diff touches its inputs, and for PRs only with the `ci:full`\n"
+     "          # label. Fuzz compile and render run with the first tier: they\n"
+     "          # build against most kernel crates and take about a minute each.\n"),
+    ("    name: Fuzz Targets Compile\n    needs: [changes, repo-policy, secrets-scan]\n"
+     "    if: needs.changes.outputs.full == 'true'\n",
+     "    name: Fuzz Targets Compile\n    needs: [changes, repo-policy, secrets-scan]\n"
+     "    if: needs.changes.outputs.heavy == 'true'\n"),
+    ("    name: Software Rendering\n    needs: [changes, repo-policy, secrets-scan]\n"
+     "    if: needs.changes.outputs.full == 'true'\n",
+     "    name: Software Rendering\n    needs: [changes, repo-policy, secrets-scan]\n"
+     "    if: needs.changes.outputs.heavy == 'true'\n"),
+    ('                elif (["coverage", "msrv", "fuzz-check", "render", "deny", "audit"] | index($job)) != null then $full == "false"\n',
+     '                elif (["coverage", "msrv", "deny", "audit"] | index($job)) != null then $full == "false"\n'),
+)
+
+
 def main_workflow_manifest():
     path = ".github/fleet-workflows.json"
     exists = subprocess.run(["git", "cat-file", "-e", f"origin/main:{path}"], cwd=ROOT, capture_output=True)
@@ -237,6 +264,16 @@ class FleetWorkflowTests(unittest.TestCase):
                 assert_reviewed_workflow_delta(strip_refresh_deltas(strip_v3_deltas(staged)),
                                                strip_refresh_deltas(strip_v3_deltas(main_active)),
                                                carries_reviewed_updates(main_file))
+    def test_staged_ci_v4_only_moves_fuzz_and_render_into_tier_one(self):
+        expected = subprocess.check_output(
+            ["git", "show", f"{V3_LANDED}:.github/workflows/fleet-ci-v3.yml"], cwd=ROOT, text=True,
+        )
+        for old, new in CI_V4_TIER_MOVE:
+            self.assertEqual(expected.count(old), 1, old)
+            expected = expected.replace(old, new)
+        self.assertEqual(CI_V4.read_text(), expected,
+                         "Staged ci v4 may change only the reviewed tier move")
+
 
 if __name__ == "__main__":
     unittest.main()

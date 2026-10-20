@@ -112,9 +112,9 @@ Notes that matter:
   the branch when the output is identical and refuses to overwrite it when it
   differs.
 - A newer push to `main` cancels a refresh run still in progress
-  (`concurrency` with `cancel-in-progress`). Older refresh PRs stay open
-  today; esaueng/remus#1204 (open as of 2026-10-20) makes the script
-  close the open refresh PRs built from an ancestor of the new source commit.
+  (`concurrency` with `cancel-in-progress`). After opening its PR, the
+  script closes the open refresh PRs built from an ancestor of the new source
+  commit (esaueng/remus#1204).
 
 ### Why it refreshes on every push
 

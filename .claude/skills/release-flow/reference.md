@@ -157,11 +157,10 @@ skip a `[skip ci]` head commit message.
   `main` and never merges. If that branch already exists with a different tree
   it refuses to overwrite it. The PR merges through the merge queue, so it
   lands on `main` as `chore(wasm): refresh committed packages to vX.Y.Z (#N)`.
-- Older refresh PRs are not closed by the current script. esaueng/remus#1204
-  (open as of 2026-10-20) adds that: after opening its PR, the publisher closes
-  same-repository `codex/wasm-refresh-<sha>` PRs whose source commit the
-  compare API reports as an ancestor of the new build, and deletes their
-  branches.
+- After opening its PR, the publisher closes same-repository
+  `codex/wasm-refresh-<sha>` PRs whose source commit the compare API reports
+  as an ancestor of the new build, and deletes their branches
+  (esaueng/remus#1204).
 
 ## Handing over a candidate without touching main
 

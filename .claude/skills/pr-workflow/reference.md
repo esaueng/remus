@@ -112,11 +112,10 @@ are inert). What actually runs, verified against `publish.yml` and
   (`github:esaueng/remus#main&path:/crates/wasm/pkg`), so whatever is
   committed there on `main` is what they get. There is no tag, no GitHub
   release, and no npm or crates.io publish.
-- Older refresh PRs stay open under the current script; when one refresh
-  merges, a still-open older one fails the version guard. esaueng/remus#1204
-  (open as of 2026-10-20) makes the script close the same-repository refresh
-  PRs built from an ancestor of the new source commit, and delete their
-  branches.
+- After opening (or finding) its PR, the script closes the same-repository
+  refresh PRs built from an ancestor of the new source commit and deletes
+  their branches (esaueng/remus#1204). Left open, an older refresh would fail
+  the version guard once a newer one merged.
 - Manual refresh: `workflow_dispatch` with the `sync_package` boolean input,
   from `main` only.
 - Credentials fail closed: `scripts/require-publish-credentials.sh` fails the
@@ -184,7 +183,7 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 | Compliance grep hits in a file you touched | You introduced a banned reference-kernel name, or you touched a grandfathered file | Remove new occurrences; leave grandfathered ones as-is |
 | Expecting a release-please PR after merging | There is no release-please in this fork; the leftover config files are inert | The release is the package refresh PR, which still has to merge through the queue (see "Committed-package refresh") |
 | No refresh PR opened after a kernel merge | The push missed the path filter, its head commit message contains `[skip ci]`, a newer push cancelled the run, the rebuilt package matched `main` (the run logs a notice), or `REMUS_BOT_*` is missing (the run fails at "Require publish credentials") | Read the latest "Refresh Apache Staging Package" run |
-| A refresh PR fails the version guard in the queue | An older refresh PR is still open after a newer one merged, and reuses its version | Close the older refresh PR; esaueng/remus#1204 automates this |
+| A refresh PR fails the version guard in the queue | An older refresh PR is still open after a newer one merged, and reuses its version | The publisher closes superseded refresh PRs itself (esaueng/remus#1204); one still open predates that, or its source is not an ancestor of the newer build. Close it by hand |
 | `deny` or `audit` fails on a PR that never touched deps | A newly published advisory against a version pinned in the committed `Cargo.lock` (both jobs fetch the advisory DB live) | Follow the triage order in "CI failures you did not cause"; never blanket-ignore |
 | MSRV job fails with syntax or feature errors inside a dependency | The committed `Cargo.lock` now pins a dep version requiring Rust newer than 1.88 — usually after a dependabot lock bump | Constrain that dep in `Cargo.toml` (or downgrade it in the lock); do not bump `rust-version` |
 | `cargo xtask wasm-build` bails with a wasm-bindgen-cli version mismatch | Local CLI differs from the pin; the crate pin and `xtask/src/wasm.rs` constant must match | Install the pinned CLI version; bump the pin only as its own PR |
