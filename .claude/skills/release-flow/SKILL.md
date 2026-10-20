@@ -45,8 +45,10 @@ from their presence; verify with
 | 3 | The refresh workflow rebuilds both snapshots and opens a refresh PR | The refresh PR `chore(wasm): refresh committed packages to vX.Y.Z` passes CI and merges through the queue |
 | 4 | Consumer reinstalls from the git path | Consumer's own tests pass against the new snapshot |
 
-Hop 3 opens its PR automatically on every package-affecting push to `main`, but
-the PR still has to be enqueued and merged like any other; until it lands, `main`
+Hop 3 opens its PR automatically after a package-affecting push to `main` whose
+rebuilt packages differ from the committed ones (byte-identical output, for
+example from a test-only crate edit, opens nothing), but the PR still has to be
+enqueued and merged like any other; until it lands, `main`
 serves the previous snapshot. Hop 4 is the consumer's move, whenever one exists.
 
 ## Hop 2: build and validate
@@ -158,7 +160,7 @@ tarball without touching `main`.
 |---|---|---|
 | "Where is the npm package?" | There isn't one; this fork publishes nothing | Build from source, or use the committed snapshot by git path |
 | A release-please PR is expected but never appears | The config exists; no workflow runs it | Do not wait for it; there is no release automation |
-| Refresh workflow does nothing | The push touched no package-affecting path, a newer push cancelled the run, or the rebuilt packages already match `main` (the run logs a notice); a dispatch additionally requires `sync_package` and `github.ref == refs/heads/main` | Check the path filter and the run's notice; dispatch against `main` with the input enabled |
+| Refresh workflow does nothing | The push touched no package-affecting path, its head commit message contains `[skip ci]` (the job guard skips it), a newer push cancelled the run, or the rebuilt packages already match `main` (the run logs a notice); a dispatch additionally requires `sync_package` and `github.ref == refs/heads/main` | Check the path filter and the run's notice; dispatch against `main` with the input enabled |
 | Kernel PR merged but `main` still serves the old package | The refresh PR it triggered has not merged yet | Find the open `codex/wasm-refresh-<sha>` PR and get it through the queue |
 | Refresh PR merged but a consumer sees nothing | Its pin names a deleted branch, or its lockfile pins an older commit | Check the pin; git-path installs resolve the ref at install time |
 | Refresh run fails at "Require publish credentials" | `REMUS_BOT_APP_ID` (repository variable) or `REMUS_BOT_PRIVATE_KEY` (`remus-bot` environment secret) is unset; `scripts/require-publish-credentials.sh` fails closed | Set the missing value in the store the error names |
