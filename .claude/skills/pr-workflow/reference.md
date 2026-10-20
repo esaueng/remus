@@ -2,9 +2,9 @@
 
 Deep catalog behind SKILL.md. Everything here was verified against the repo; when it disagrees with prose elsewhere (including CLAUDE.md's "Git Conventions"), the workflow files (`.husky/*`, `.github/workflows/*.yml`) are authoritative.
 
-## CI jobs (`.github/workflows/ci.yml` → `fleet-ci-v3.yml`)
+## CI jobs (`.github/workflows/ci.yml` → `fleet-ci-v4.yml`)
 
-`ci.yml` runs on `pull_request`, `merge_group`, pushes to `main` and `workflow_dispatch`. Its `checks` job calls the reusable `.github/workflows/fleet-ci-v3.yml` at a pinned commit (the active callee is named in `.github/fleet-workflows.json`). There, `ci-pass` (display name `CI Pass`) is an aggregate job whose `needs` list is, verbatim:
+`ci.yml` runs on `pull_request`, `merge_group`, pushes to `main` and `workflow_dispatch`. Its `checks` job calls the reusable `.github/workflows/fleet-ci-v4.yml` at a pinned commit (the active callee is named in `.github/fleet-workflows.json`). There, `ci-pass` (display name `CI Pass`) is an aggregate job whose `needs` list is, verbatim:
 
 ```
 [changes, repo-policy, test, approx-census, coverage, msrv, wasm, wasm-size-gate,
@@ -27,8 +27,8 @@ Outside the fan-in: the `wasm-size` comment job and `public-commit-metadata` in 
 | `wasm-no-io` | WASM without optional I/O | yes | clippy and tests for `remus-wasm --no-default-features` |
 | `wasm` | WASM Build & Validate | yes (package build) | `cargo xtask wasm-build`, package contents, W9 preflight |
 | `wasm-size-gate` | WASM Size Gate | yes (skips without a package build or outside PRs) | base commit's `scripts/wasm-size-gate.mjs`: kernel hard limits, and a `WASM-Size:` line for kernel growth above 64 KiB raw |
-| `fuzz-check` | Fuzz Targets Compile | yes (tier 2) | `cargo check --manifest-path fuzz/Cargo.toml --bins` |
-| `render` | Software Rendering | yes (tier 2) | `cargo test -p remus-render` on Mesa lavapipe |
+| `fuzz-check` | Fuzz Targets Compile | yes | `cargo check --manifest-path fuzz/Cargo.toml --bins` |
+| `render` | Software Rendering | yes | `cargo test -p remus-render` on Mesa lavapipe |
 | `deny` | Cargo Deny | yes (tier 2) | `cargo deny ... --all-features check` |
 | `audit` | Security Audit | yes (tier 2) | `rustsec/audit-check` |
 | `docs` | Documentation | yes | `cargo doc --no-deps --all-features`, `mdbook build book` |
