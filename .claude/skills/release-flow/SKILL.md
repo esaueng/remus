@@ -102,11 +102,11 @@ Notes that matter:
   directories always does, see `docs/owner-pr-ci.md`, "Tiers") and goes
   through the merge queue like any other PR. It does not merge on its own.
 - The script tries to carry the `WASM-Size:` lines of the source PRs merged
-  since the previous refresh into its description. Collection is fragile: a
-  commit subject in the span ending in a `(#N)` the pulls API cannot resolve
-  (#1182 failed on `pulls/69`, #1208 on `pulls/1252`) makes the lookup fail,
-  and the description then holds only a "Could not collect" notice. #1208
-  needed its declaration added by hand. Read the refresh PR's size section
+  since the previous refresh into its description. A commit subject ending in
+  a `(#N)` the pulls API cannot resolve no longer aborts collection
+  (esaueng/remus#1210; it broke #1182 and #1208). A failed compare or
+  association lookup still leaves only a "Could not collect" notice, and the
+  declaration then has to be added by hand. Read the refresh PR's size section
   before enqueuing it.
 - The branch is pinned to its source commit. A rerun for the same source reuses
   the branch when the output is identical and refuses to overwrite it when it
@@ -160,7 +160,7 @@ tarball without touching `main`.
 |---|---|---|
 | "Where is the npm package?" | There isn't one; this fork publishes nothing | Build from source, or use the committed snapshot by git path |
 | A release-please PR is expected but never appears | The config exists; no workflow runs it | Do not wait for it; there is no release automation |
-| Refresh workflow does nothing | The push touched no package-affecting path, its head commit message contains `[skip ci]` (the job guard skips it), a newer push cancelled the run, or the rebuilt packages already match `main` (the run logs a notice); a dispatch additionally requires `sync_package` and `github.ref == refs/heads/main` | Check the path filter and the run's notice; dispatch against `main` with the input enabled |
+| Refresh workflow does nothing | The push touched no package-affecting path, its head commit message carries a GitHub skip marker such as `[skip ci]` or a `skip-checks: true` trailer (GitHub skips the workflow; the job guard also checks `[skip ci]`), a newer push cancelled the run, or the rebuilt packages already match `main` (the run logs a notice); a dispatch additionally requires `sync_package` and `github.ref == refs/heads/main` | Check the path filter and the run's notice; dispatch against `main` with the input enabled |
 | Kernel PR merged but `main` still serves the old package | The refresh PR it triggered has not merged yet | Find the open `codex/wasm-refresh-<sha>` PR and get it through the queue |
 | Refresh PR merged but a consumer sees nothing | Its pin names a deleted branch, or its lockfile pins an older commit | Check the pin; git-path installs resolve the ref at install time |
 | Refresh run fails at "Require publish credentials" | `REMUS_BOT_APP_ID` (repository variable) or `REMUS_BOT_PRIVATE_KEY` (`remus-bot` environment secret) is unset; `scripts/require-publish-credentials.sh` fails closed | Set the missing value in the store the error names |

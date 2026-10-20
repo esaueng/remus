@@ -2,9 +2,9 @@
 
 Deep catalog behind SKILL.md. Everything here was verified against the repo; when it disagrees with prose elsewhere (including CLAUDE.md's "Git Conventions"), the workflow files (`.husky/*`, `.github/workflows/*.yml`) are authoritative.
 
-## CI jobs (`.github/workflows/ci.yml` → `fleet-ci-v3.yml`)
+## CI jobs (`.github/workflows/ci.yml` → `fleet-ci-v4.yml`)
 
-`ci.yml` runs on `pull_request`, `merge_group`, pushes to `main` and `workflow_dispatch`. Its `checks` job calls the reusable `.github/workflows/fleet-ci-v3.yml` at a pinned commit (the active callee is named in `.github/fleet-workflows.json`). There, `ci-pass` (display name `CI Pass`) is an aggregate job whose `needs` list is, verbatim:
+`ci.yml` runs on `pull_request`, `merge_group`, pushes to `main` and `workflow_dispatch`. Its `checks` job calls the reusable `.github/workflows/fleet-ci-v4.yml` at a pinned commit (the active callee is named in `.github/fleet-workflows.json`). There, `ci-pass` (display name `CI Pass`) is an aggregate job whose `needs` list is, verbatim:
 
 ```
 [changes, repo-policy, test, approx-census, coverage, msrv, wasm, wasm-size-gate,
@@ -27,8 +27,8 @@ Outside the fan-in: the `wasm-size` comment job and `public-commit-metadata` in 
 | `wasm-no-io` | WASM without optional I/O | yes | clippy and tests for `remus-wasm --no-default-features` |
 | `wasm` | WASM Build & Validate | yes (package build) | `cargo xtask wasm-build`, package contents, W9 preflight |
 | `wasm-size-gate` | WASM Size Gate | yes (skips without a package build or outside PRs) | base commit's `scripts/wasm-size-gate.mjs`: kernel hard limits, and a `WASM-Size:` line for kernel growth above 64 KiB raw |
-| `fuzz-check` | Fuzz Targets Compile | yes (tier 2) | `cargo check --manifest-path fuzz/Cargo.toml --bins` |
-| `render` | Software Rendering | yes (tier 2) | `cargo test -p remus-render` on Mesa lavapipe |
+| `fuzz-check` | Fuzz Targets Compile | yes | `cargo check --manifest-path fuzz/Cargo.toml --bins` |
+| `render` | Software Rendering | yes | `cargo test -p remus-render` on Mesa lavapipe |
 | `deny` | Cargo Deny | yes (tier 2) | `cargo deny ... --all-features check` |
 | `audit` | Security Audit | yes (tier 2) | `rustsec/audit-check` |
 | `docs` | Documentation | yes | `cargo doc --no-deps --all-features`, `mdbook build book` |
@@ -176,13 +176,13 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 | `gh pr update-branch` prints usage text | The installed `gh` predates that subcommand | `gh api -X PUT repos/esaueng/remus/pulls/<N>/update-branch -f expected_head_sha=<head>` |
 | A stacked PR went CLOSED on its own | Its base branch was deleted when the parent merged (`delete_branch_on_merge` is on); GitHub auto-closes in that case | Not reversible — base cannot be retargeted while closed, and it cannot reopen with a missing base. Rebase onto `main` and open a new PR. Avoid by retargeting the child to `main` BEFORE deleting the parent branch |
 | `CI Pass` missing from the rollup while jobs still run | It only appears once every job in its `needs` list finishes | Not a failure; keep polling. Coverage is the usual straggler |
-| No `CI` run at all on the PR head; only `pull_request_target` workflows (privacy checks) report | The head commit message contains a skip marker (`[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`, `[actions skip]`), so GitHub skips its `push` and `pull_request` workflows; quoting the marker in prose counts | Push a real follow-up commit whose message has no marker (never an empty commit); keep the marker out of the PR description too, because the squash commit on `main` uses it |
+| No `CI` run at all on the PR head; only `pull_request_target` workflows (privacy checks) report | The head commit message contains a skip marker (`[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`, `[actions skip]`) or ends with a `skip-checks: true` / `skip-checks:true` trailer, so GitHub skips its `push` and `pull_request` workflows; quoting the marker in prose counts | Push a real follow-up commit whose message has no marker (never an empty commit); keep the marker out of the PR description too, because the squash commit on `main` uses it |
 | `WASM Size Report` shows a delta on a test-only diff | Either a base package that predates a merged kernel change (the baseline is the package committed on your base, not a build of it) or a real change. Both sides build from committed `Cargo.lock`s, so unless your diff touches the lockfile, resolution is identical | Check whether the base has kernel commits after its last package refresh; if not, confirm your diff cannot reach the binary or the lockfile, then report the delta as unexplained rather than calling it expected drift |
 | CI `boundaries` job fails | A crate dependency violates the layer rules | Run `./scripts/check-boundaries.sh` locally; see the layer-boundaries skill |
 | CI `taplo` or `machete` fails but pre-commit passed | Tool not installed locally; the hook skips it silently | `cargo install taplo-cli cargo-machete`, fix, re-commit |
 | Compliance grep hits in a file you touched | You introduced a banned reference-kernel name, or you touched a grandfathered file | Remove new occurrences; leave grandfathered ones as-is |
 | Expecting a release-please PR after merging | There is no release-please in this fork; the leftover config files are inert | The release is the package refresh PR, which still has to merge through the queue (see "Committed-package refresh") |
-| No refresh PR opened after a kernel merge | The push missed the path filter, its head commit message contains `[skip ci]`, a newer push cancelled the run, the rebuilt package matched `main` (the run logs a notice), or `REMUS_BOT_*` is missing (the run fails at "Require publish credentials") | Read the latest "Refresh Apache Staging Package" run |
+| No refresh PR opened after a kernel merge | The push missed the path filter, its head commit message carries a skip marker or `skip-checks` trailer (see the row above), a newer push cancelled the run, the rebuilt package matched `main` (the run logs a notice), or `REMUS_BOT_*` is missing (the run fails at "Require publish credentials") | Read the latest "Refresh Apache Staging Package" run |
 | A refresh PR fails the version guard in the queue | An older refresh PR is still open after a newer one merged, and reuses its version | The publisher closes superseded refresh PRs itself (esaueng/remus#1204); one still open predates that, or its source is not an ancestor of the newer build. Close it by hand |
 | `deny` or `audit` fails on a PR that never touched deps | A newly published advisory against a version pinned in the committed `Cargo.lock` (both jobs fetch the advisory DB live) | Follow the triage order in "CI failures you did not cause"; never blanket-ignore |
 | MSRV job fails with syntax or feature errors inside a dependency | The committed `Cargo.lock` now pins a dep version requiring Rust newer than 1.88 — usually after a dependabot lock bump | Constrain that dep in `Cargo.toml` (or downgrade it in the lock); do not bump `rust-version` |
