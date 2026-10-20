@@ -2,54 +2,52 @@
 
 Deep catalog behind SKILL.md. Everything here was verified against the repo; when it disagrees with prose elsewhere (including CLAUDE.md's "Git Conventions"), the workflow files (`.husky/*`, `.github/workflows/*.yml`) are authoritative.
 
-## CI jobs (`.github/workflows/ci.yml`)
+## CI jobs (`.github/workflows/ci.yml` → `fleet-ci-v3.yml`)
 
-`ci-pass` (display name `CI Pass`) is an aggregate job whose `needs` list is, verbatim from `ci.yml`:
+`ci.yml` runs on `pull_request`, `merge_group`, pushes to `main` and `workflow_dispatch`. Its `checks` job calls the reusable `.github/workflows/fleet-ci-v3.yml` at a pinned commit (the active callee is named in `.github/fleet-workflows.json`). There, `ci-pass` (display name `CI Pass`) is an aggregate job whose `needs` list is, verbatim:
 
 ```
-[fmt, clippy, test, platform-test, coverage, msrv, wasm, fuzz-check,
- render, boundaries, deny, audit, docs, machete, secrets-scan, taplo]
+[changes, repo-policy, test, approx-census, coverage, msrv, wasm, wasm-size-gate,
+ wasm-no-io, fuzz-check, render, deny, audit, docs, secrets-scan]
 ```
 
-It asserts every one of those resolved to `success` or `skipped`. Branch protection on `main` requires it under the context name `checks / CI Pass`, with up-to-date branches (see "Repo merge settings"). It is the only required check.
+It requires `changes`, `repo-policy` and `secrets-scan` to succeed, and accepts a skipped job only when the classifier deselected its tier (`docs/owner-pr-ci.md`, "Tiers"). Branch protection on `main` requires it under the context name `checks / CI Pass` (see "Repo merge settings"). It is the only required status check.
 
-Three PR checks sit OUTSIDE the fan-in and are easy to miss: `apache-lineage`, `doc-paths`, and the `wasm-size` comment job. Read them yourself. The size policy is enforced inside the fan-in by `wasm-size-gate`.
+Outside the fan-in: the `wasm-size` comment job and `public-commit-metadata` in `ci.yml`, and other workflows' checks such as the `WASM version guard` jobs (`wasm-version.yml`). Read them yourself. The size policy is enforced inside the fan-in by `wasm-size-gate`.
 
 | Job | Display name | In `CI Pass`? | What it runs |
 |-----|--------------|---------------|--------------|
-| `apache-lineage` | Apache Lineage | no | provenance/lineage guard |
-| `fmt` | Format | yes | `cargo fmt --all -- --check` |
-| `clippy` | Clippy | yes | `cargo clippy --all-targets --all-features -- -D warnings` |
-| `test` | Test | yes | `cargo nextest run --workspace`, doc tests, complexity guards |
-| `platform-test` | Test (macos-latest), Test (windows-latest) | yes | matrix build/test on non-Linux hosts |
-| `coverage` | Coverage | yes | llvm-cov coverage report; usually the slowest job (~40 min) |
-| `msrv` | MSRV (1.88) | yes | build on the minimum supported Rust |
-| `wasm` | WASM Build & Validate | yes | `cargo xtask wasm-build` |
-| `fuzz-check` | Fuzz Targets Compile | yes | fuzz targets still compile |
-| `render` | Software Rendering | yes | headless render smoke test |
-| `boundaries` | Layer Boundaries | yes | `./scripts/check-boundaries.sh` |
-| `deny` | Cargo Deny | yes | license/advisory/ban checks |
-| `audit` | Security Audit | yes | `cargo audit` |
-| `docs` | Documentation | yes | doc build with warnings denied |
-| `machete` | Unused Dependencies | yes | `cargo machete` |
-| `secrets-scan` | Secrets Scan | yes | committed-secret scan |
-| `taplo` | TOML Format | yes | `taplo fmt --check` |
-| `doc-paths` | Doc Paths | **no** | `./scripts/check-doc-paths.sh` |
+| `changes` | Classify Changes | yes (must succeed) | `scripts/classify-ci-changes.py`: selects the tiers |
+| `repo-policy` | Repository Policy | yes (must succeed) | one job of cheap checks: Apache lineage, `cargo fmt --all -- --check`, layer boundaries, det-hash and wildcard-arm ratchets, documentation paths and module map, product naming, publish/gauntlet workflow contracts, fleet and CI policy tests, `cargo machete`, `taplo fmt --check` |
+| `secrets-scan` | Secrets Scan | yes (must succeed) | `gitleaks` over the full history |
+| `test` | Test | yes | `cargo clippy --all-targets --all-features -- -D warnings`, `cargo nextest run --workspace`, doc tests, complexity guards |
+| `approx-census` | Approximation Census | yes | `scripts/check-approx-census.py` |
+| `coverage` | Coverage | yes (tier 2) | llvm-cov with a 60% line floor; usually the slowest job (~40 min) |
+| `msrv` | MSRV (1.88) | yes (tier 2) | `cargo +1.88.0 check --workspace --all-features` |
+| `wasm-no-io` | WASM without optional I/O | yes | clippy and tests for `remus-wasm --no-default-features` |
+| `wasm` | WASM Build & Validate | yes (package build) | `cargo xtask wasm-build`, package contents, W9 preflight |
 | `wasm-size-gate` | WASM Size Gate | yes (skips without a package build or outside PRs) | base commit's `scripts/wasm-size-gate.mjs`: kernel hard limits, and a `WASM-Size:` line for kernel growth above 64 KiB raw |
-| `wasm-size` | WASM Size Report | **no** | PR-only comment with the same report; fails with the gate |
+| `fuzz-check` | Fuzz Targets Compile | yes (tier 2) | `cargo check --manifest-path fuzz/Cargo.toml --bins` |
+| `render` | Software Rendering | yes (tier 2) | `cargo test -p remus-render` on Mesa lavapipe |
+| `deny` | Cargo Deny | yes (tier 2) | `cargo deny ... --all-features check` |
+| `audit` | Security Audit | yes (tier 2) | `rustsec/audit-check` |
+| `docs` | Documentation | yes | `cargo doc --no-deps --all-features`, `mdbook build book` |
+| `wasm-size` (`ci.yml`) | WASM Size Report | **no** | PR-only comment with the same report; fails with the gate |
 
-`benchmark.yml` contributes `Boolean perf` and `Publish benchmark` on PRs; neither is in `CI Pass`. `blacksmith-sh` posts a `[code]smith` entry that reports SKIPPED — it is the CI runner provider, not a reviewer or a quality check.
+There are no separate Format, Clippy, Layer Boundaries, Unused Dependencies, TOML Format, Apache Lineage or Doc Paths jobs: those checks run inside Test or Repository Policy, so a failure in one shows up as that job failing. macOS CI tests are disabled (`docs/owner-pr-ci.md`).
 
-The size jobs check out `ref: ${{ github.event.pull_request.base.sha }}` (your PR's real base) and compare the PR build with the package COMMITTED there, not with a build of the base source. If a kernel change merged into the base and its package refresh has not landed yet, its growth shows up in your delta (and can trip the 64 KiB `WASM-Size:` rule); wait for the refresh or declare it. The refresh PR itself carries the `WASM-Size:` lines of the source PRs merged since the previous refresh (`scripts/publish-wasm-package-pr.py`), so it passes when they declared their growth; a refresh that still fails the gate packages growth no source PR declared, so review those PRs and declare it in the refresh PR. Otherwise a nonzero delta on a change that cannot reach the binary (a `#[cfg(test)]`-only or docs-only diff) deserves a second look. `Cargo.lock` is committed, so both builds resolve from their checked-in locks; if your diff does not touch the lockfile, resolution is identical on both sides and a delta on a test-only diff is genuinely unexplained — investigate rather than blaming dependency drift.
+`benchmark.yml` contributes `Kernel perf` and `Publish benchmark` (PR runs only with the `ci:benchmark` label); neither is in `CI Pass`. `blacksmith-sh` posts a `[code]smith` entry that reports SKIPPED — it is the CI runner provider, not a reviewer or a quality check.
+
+The size jobs check out `ref: ${{ github.event.pull_request.base.sha }}` (your PR's real base) and compare the PR build with the package COMMITTED there, not with a build of the base source. If a kernel change merged into the base and its package refresh has not landed yet, its growth shows up in your delta (and can trip the 64 KiB `WASM-Size:` rule); wait for the refresh or declare it. The refresh PR itself carries the `WASM-Size:` lines of the source PRs merged since the previous refresh (`scripts/publish-wasm-package-pr.py`) when it can collect them; when collection fails the description says so and the declaration has to be added by hand (as on #1208); a refresh that still fails the gate packages growth no source PR declared, so review those PRs and declare it in the refresh PR. Otherwise a nonzero delta on a change that cannot reach the binary (a `#[cfg(test)]`-only or docs-only diff) deserves a second look. `Cargo.lock` is committed, so both builds resolve from their checked-in locks; if your diff does not touch the lockfile, resolution is identical on both sides and a delta on a test-only diff is genuinely unexplained — investigate rather than blaming dependency drift.
 
 Local pre-commit covers only fmt, clippy, taplo, machete, and the last two only when the binaries are installed (the hook skips them silently otherwise). Everything else (tests, boundaries, deny, docs) first runs in CI unless you run it yourself. Before pushing, run at minimum the tests for touched crates and, on any `Cargo.toml` change, `./scripts/check-boundaries.sh`.
 
 ## Repo merge settings (verified via `gh api repos/esaueng/remus`)
 
-- `allow_squash_merge: true`, but `allow_merge_commit: true` and `allow_rebase_merge: true` as well — squash is NOT the only option, so always pass `--squash` explicitly.
-- `allow_auto_merge: **true**` — `gh pr merge <N> --squash --auto` merges once `checks / CI Pass` passes. It does not wait for the three checks outside the fan-in.
+- Merges go through the live merge queue (`docs/owner-pr-ci.md`, "Convergence and merge queues"). `gh pr merge <N>` enqueues the PR; the queue's merge method is `SQUASH`, and the repository allows squash merging only.
+- `allow_auto_merge: **true**` — `gh pr merge <N> --auto` arms the PR to enter the queue once its required checks pass.
 - `delete_branch_on_merge: **true**` — GitHub deletes the head branch on merge, which auto-closes any PR stacked on it. Retarget stacked PRs to `main` before merging the parent.
-- Branch protection on `main` (verified 2026-10-01): required status check `checks / CI Pass` with `strict: true`, so a PR behind `main` must be updated (`gh api -X PUT repos/esaueng/remus/pulls/<N>/update-branch -f expected_head_sha=<head>`) before it can merge; `required_conversation_resolution: true`, so every review thread must be resolved; required approvals none; `enforce_admins` false, so admins bypass the check; force pushes allowed. A merge queue has since gone live on `main` (verified 2026-10-20), so a PR no longer needs updating before it merges; see SKILL.md, "The merge gate". Not pushing to `main` is still a rule you follow: the server stops a non-admin push only through the required check.
+- Branch protection on `main` (verified 2026-10-01): required status check `checks / CI Pass`; `required_conversation_resolution: true`, so every review thread must be resolved; required approvals none; `enforce_admins` false, so admins bypass the check. The queue activation in `docs/owner-pr-ci.md` turns `strict` off, because the queue builds each entry against current `main`; a PR no longer needs updating before it merges. The queue's template is `.github/merge-queue-ruleset.json`, which still reads `"enforcement": "disabled"`: per `docs/owner-pr-ci.md`, the live rule is created from it and activated in the repository settings, and merge-group runs on `gh-readonly-queue/main/pr-<N>-*` show it is active. Not pushing to `main` is still a rule you follow.
 - Squash commit titles on `main` look like `type(scope): subject (#N)`.
 
 ## Code review
@@ -88,41 +86,43 @@ git ls-remote --heads origin <branch>
 
 ## Committed-package refresh (`.github/workflows/publish.yml`)
 
-This section previously described the upstream release-please pipeline; that
-does not exist in this fork (no workflow references release-please — verify
-with `rg -l 'release-please' .github/workflows/`, and note the leftover
-`release-please-config.json` / `.release-please-manifest.json` are inert).
-What actually runs, verified against the workflow file and a live merge
-(2026-08-21, merge `932748e` → auto-commit `b107040` two minutes later):
+There is no release-please pipeline in this fork (no workflow references
+release-please — verify with `rg -l 'release-please' .github/workflows/`, and
+note the leftover `release-please-config.json` / `.release-please-manifest.json`
+are inert). What actually runs, verified against `publish.yml` and
+`scripts/publish-wasm-package-pr.py` (2026-10-20):
 
-- Since 2026-10 the workflow opens a refresh PR instead of committing to
-  `main` (verified 2026-10-20 against `publish.yml` and
-  `scripts/publish-wasm-package-pr.py`): the package bot App pushes
-  `codex/wasm-refresh-<source sha>`, opens `chore(wasm): refresh committed
-  packages to vX.Y.Z`, and closes the older open refresh PRs built from an
-  ancestor. The bullets below describe the earlier direct-commit flow.
-- Workflow name "Refresh Apache Staging Package"; runs on every push to
-  `main`, skipping its own `[skip ci]` commits so it cannot loop.
+- Workflow name "Refresh Apache Staging Package"; runs on pushes to `main`
+  that touch a package-affecting path. The path filter excludes
+  `crates/wasm/pkg/**` and `crates/wasm-io/pkg/**`, so merging a refresh PR
+  does not start another refresh.
 - Rebuilds `crates/wasm/pkg` and `crates/wasm-io/pkg` with `cargo xtask wasm-build`,
   stamps stable provenance fields (never the commit SHA — that would dirty
-  every run), and when the rebuilt package differs, commits it back as
-  `chore(wasm): refresh committed package to vX.Y.Z from <sha> [skip ci]`.
-  The version comes from `crates/wasm/Cargo.toml`, not from PR titles.
-- That auto-commit IS the release: consumers install by git path
+  every run), and when the rebuilt package differs from `main`, runs
+  `scripts/publish-wasm-package-pr.py` with a token from the package bot App
+  (`remus-package-bot`). The script pushes branch
+  `codex/wasm-refresh-<source sha>` and opens a ready PR titled
+  `chore(wasm): refresh committed packages to vX.Y.Z`. It never pushes to
+  `main` and never merges. The version is assigned by `cargo xtask wasm-build`
+  (changed bytes advance the patch from the committed packages) and checked by
+  `scripts/check-wasm-version.py`, not taken from PR titles.
+- The refresh PR runs the full suite and goes through the merge queue like any
+  other PR, landing as `chore(wasm): refresh committed packages to vX.Y.Z (#N)`.
+  Merging it IS the release: consumers install by git path
   (`github:esaueng/remus#main&path:/crates/wasm/pkg`), so whatever is
   committed there on `main` is what they get. There is no tag, no GitHub
   release, and no npm or crates.io publish.
-- Manual refresh: `workflow_dispatch` with the `sync_package` boolean input
-  (needed because pushes that only edit `.github/workflows` do not trigger
-  workflow runs, so a change to this workflow takes effect only on the next
-  ordinary commit unless dispatched).
-- Credentials caveat: the write-back step's token handling is the subject of
-  open PR #48 ("fail closed on missing publish credentials") — if a refresh
-  run succeeds but no `chore(wasm): refresh...` commit lands on `main` when
-  the package should have changed, suspect missing `REMUS_BOT_*` secrets
-  before suspecting the build.
+- After opening (or finding) its PR, the script closes the same-repository
+  refresh PRs built from an ancestor of the new source commit and deletes
+  their branches (esaueng/remus#1204). Left open, an older refresh would fail
+  the version guard once a newer one merged.
+- Manual refresh: `workflow_dispatch` with the `sync_package` boolean input,
+  from `main` only.
+- Credentials fail closed: `scripts/require-publish-credentials.sh` fails the
+  run when `REMUS_BOT_APP_ID` (repository variable) or `REMUS_BOT_PRIVATE_KEY`
+  (`remus-bot` environment secret) is empty.
 - Cross-repo consumption and the package validation harness: see the
-  release-flow skill (its account of this channel was already correct).
+  release-flow skill.
 
 ## CI failures you did not cause
 
@@ -169,19 +169,21 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 | commitlint prints `✖ found N problems` yet the commit succeeded | The commit-msg hook swallows commitlint failures and exits 0 by design of its fallback | Treat as a rejection: `git commit --amend` to `type(scope): subject` form |
 | pre-commit fails on clippy warnings you did not write | Pre-existing breakage on the branch base | Stop and report; never `--no-verify` |
 | `⚠️ commitlint not available` warning on commit | `node_modules` missing, but only if no `✖` lines print above it; the same warning also follows a real lint failure (see the `✖` row) because the hook's fallback fires on any nonzero commitlint exit | If `✖` lines precede it, fix the message; otherwise `npm install` at repo root. Either way the commit went through unchecked, re-verify the message manually |
-| PR shows mergeable with nothing green yet | `mergeable` only means conflict-free; `mergeStateStatus` carries the check and freshness state | Read `mergeStateStatus`: `BLOCKED` waits on `CI Pass`, `BEHIND` needs a branch update |
+| PR shows mergeable with nothing green yet | `mergeable` only means conflict-free; `mergeStateStatus` carries the check state | Read `mergeStateStatus`: `BLOCKED` waits on `CI Pass` or an open review thread |
 | A review check never appears, however long you poll | No reviewer app is installed on this repo; the check does not exist | Stop waiting. Self-review the diff and report that no reviewer ran |
-| Auto-merge enabled but the PR never merges | `mergeStateStatus: BEHIND`; protection is `strict`, so the branch must be current with `main` | Update the branch via the `update-branch` API; CI reruns, then auto-merge fires |
-| `BLOCKED` with every check green and the branch current | An unresolved review thread; protection requires conversation resolution | Address the thread, then ask its author to resolve it (GraphQL `resolveReviewThread`); auto-merge fires on resolution |
+| Enqueued PR left the queue without merging | Its merge-group run (`gh-readonly-queue/main/pr-<N>-*`) failed or timed out, tested against current `main` | Read that `merge_group` run, fix on the branch, enqueue again |
+| `BLOCKED` with every check green | An unresolved review thread; protection requires conversation resolution | Address the thread, then ask its author to resolve it (GraphQL `resolveReviewThread`); auto-merge fires on resolution |
 | `gh pr update-branch` prints usage text | The installed `gh` predates that subcommand | `gh api -X PUT repos/esaueng/remus/pulls/<N>/update-branch -f expected_head_sha=<head>` |
 | A stacked PR went CLOSED on its own | Its base branch was deleted when the parent merged (`delete_branch_on_merge` is on); GitHub auto-closes in that case | Not reversible — base cannot be retargeted while closed, and it cannot reopen with a missing base. Rebase onto `main` and open a new PR. Avoid by retargeting the child to `main` BEFORE deleting the parent branch |
 | `CI Pass` missing from the rollup while jobs still run | It only appears once every job in its `needs` list finishes | Not a failure; keep polling. Coverage is the usual straggler |
+| No `CI` run at all on the PR head; only `pull_request_target` workflows (privacy checks) report | The head commit message contains a skip marker (`[skip ci]`, `[ci skip]`, `[no ci]`, `[skip actions]`, `[actions skip]`), so GitHub skips its `push` and `pull_request` workflows; quoting the marker in prose counts | Push a real follow-up commit whose message has no marker (never an empty commit); keep the marker out of the PR description too, because the squash commit on `main` uses it |
 | `WASM Size Report` shows a delta on a test-only diff | Either a base package that predates a merged kernel change (the baseline is the package committed on your base, not a build of it) or a real change. Both sides build from committed `Cargo.lock`s, so unless your diff touches the lockfile, resolution is identical | Check whether the base has kernel commits after its last package refresh; if not, confirm your diff cannot reach the binary or the lockfile, then report the delta as unexplained rather than calling it expected drift |
 | CI `boundaries` job fails | A crate dependency violates the layer rules | Run `./scripts/check-boundaries.sh` locally; see the layer-boundaries skill |
 | CI `taplo` or `machete` fails but pre-commit passed | Tool not installed locally; the hook skips it silently | `cargo install taplo-cli cargo-machete`, fix, re-commit |
 | Compliance grep hits in a file you touched | You introduced a banned reference-kernel name, or you touched a grandfathered file | Remove new occurrences; leave grandfathered ones as-is |
-| Expecting a release PR after merging | There is no release-please in this fork; the leftover config files are inert | Nothing to wait for — the package-refresh auto-commit on `main` is the release (see "Committed-package refresh") |
-| No `chore(wasm): refresh...` commit landed on `main` after a kernel merge | Either the rebuilt package was byte-identical (docs/test-only diffs), or the write-back credentials are missing (open PR #48) | Diff `crates/wasm/pkg` expectations first; if the kernel changed and no commit came, check the refresh run's write step and `REMUS_BOT_*` secrets |
+| Expecting a release-please PR after merging | There is no release-please in this fork; the leftover config files are inert | The release is the package refresh PR, which still has to merge through the queue (see "Committed-package refresh") |
+| No refresh PR opened after a kernel merge | The push missed the path filter, its head commit message contains `[skip ci]`, a newer push cancelled the run, the rebuilt package matched `main` (the run logs a notice), or `REMUS_BOT_*` is missing (the run fails at "Require publish credentials") | Read the latest "Refresh Apache Staging Package" run |
+| A refresh PR fails the version guard in the queue | An older refresh PR is still open after a newer one merged, and reuses its version | The publisher closes superseded refresh PRs itself (esaueng/remus#1204); one still open predates that, or its source is not an ancestor of the newer build. Close it by hand |
 | `deny` or `audit` fails on a PR that never touched deps | A newly published advisory against a version pinned in the committed `Cargo.lock` (both jobs fetch the advisory DB live) | Follow the triage order in "CI failures you did not cause"; never blanket-ignore |
 | MSRV job fails with syntax or feature errors inside a dependency | The committed `Cargo.lock` now pins a dep version requiring Rust newer than 1.88 — usually after a dependabot lock bump | Constrain that dep in `Cargo.toml` (or downgrade it in the lock); do not bump `rust-version` |
 | `cargo xtask wasm-build` bails with a wasm-bindgen-cli version mismatch | Local CLI differs from the pin; the crate pin and `xtask/src/wasm.rs` constant must match | Install the pinned CLI version; bump the pin only as its own PR |

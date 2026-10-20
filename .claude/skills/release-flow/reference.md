@@ -60,8 +60,8 @@ rg -a --count-matches 'wasm_bg\.js' crates/wasm/pkg/*.wasm
 
 Every hit is an import the binary expects to resolve by that exact name. A
 rename therefore means rebuilding the package, not moving files — and because
-the refresh workflow rebuilds from source on every push to `main`, that happens
-on its own once the crate name changes. `scripts/check-remus-rename.sh` no
+the refresh workflow rebuilds from source on every package-affecting push to
+`main`, its next refresh PR carries the rebuild once the crate name changes. `scripts/check-remus-rename.sh` no
 longer exempts this directory, so a stale name here fails the naming job.
 
 ## Build anatomy
@@ -128,23 +128,39 @@ not just the workspace.
 ## Snapshot refresh mechanics
 
 Workflow: `.github/workflows/publish.yml`, "Refresh Apache Staging Package".
-Runs on every push to `main`, and on `workflow_dispatch` — where the job
-additionally requires `sync_package` and `github.ref == 'refs/heads/main'`, so a
-dispatch from another ref no-ops. Push runs skip a `[skip ci]` message, which is
-what stops the bot's own refresh commit from triggering another refresh.
+Runs on pushes to `main` that match its path filter, and on `workflow_dispatch`
+— where the job additionally requires `sync_package` and
+`github.ref == 'refs/heads/main'`, so a dispatch from another ref no-ops. The
+filter excludes `crates/wasm/pkg/**` and `crates/wasm-io/pkg/**`, which is what
+stops a merged refresh PR from triggering another refresh. Push runs also still
+skip a `[skip ci]` head commit message.
 
 - `install-wasm-package-archive.py` is a deliberate airlock: it accepts only
   regular files and directories beneath the package roots it is given
   (`crates/wasm/pkg` and `crates/wasm-io/pkg`), so a build-produced archive
   can never write elsewhere in the checkout.
-- The commit job disables git hooks (`core.hooksPath=/dev/null`) while a write
+- When the staged packages differ, the sync job runs
+  `scripts/check-wasm-version.py --base <source sha>` before publishing: a
+  changed package must not reuse or lower the committed version.
+- The publish job disables git hooks (`core.hooksPath=/dev/null`) while a write
   token is present, and the build job never sees that token.
-- `HAS_APP_CREDENTIALS` is computed from `REMUS_BOT_APP_ID` and
-  `REMUS_BOT_PRIVATE_KEY`. If either is unset the app-token step is skipped and
-  the job falls back to `github.token` — **without failing**. A missing secret
-  is therefore silent; check the step's status, not just the job's.
-- The push is `HEAD:main` with no rebase, by design. Losing a race is the
-  correct outcome: the newer source commit refreshes from the right tree.
+- Credentials fail closed. `scripts/require-publish-credentials.sh` stops the
+  run when `REMUS_BOT_APP_ID` (a repository variable) or
+  `REMUS_BOT_PRIVATE_KEY` (a secret in the `remus-bot` environment) is empty,
+  before the App token is minted. The token is scoped to `contents: write` and
+  `pull-requests: write` on `esaueng/remus`.
+- `scripts/publish-wasm-package-pr.py` refuses a checkout that is not the exact
+  source commit and staged paths outside the two `pkg` roots. It pushes
+  `codex/wasm-refresh-<source sha>` (commit
+  `chore(wasm): refresh packages to vX.Y.Z from <sha12>`) and opens a PR titled
+  `chore(wasm): refresh committed packages to vX.Y.Z`; it never pushes to
+  `main` and never merges. If that branch already exists with a different tree
+  it refuses to overwrite it. The PR merges through the merge queue, so it
+  lands on `main` as `chore(wasm): refresh committed packages to vX.Y.Z (#N)`.
+- After opening its PR, the publisher closes same-repository
+  `codex/wasm-refresh-<sha>` PRs whose source commit the compare API reports
+  as an ancestor of the new build, and deletes their branches
+  (esaueng/remus#1204).
 
 ## Handing over a candidate without touching main
 
