@@ -473,3 +473,29 @@ fn trim_refinement_has_its_own_budget() {
     let err = within(6 * 40 - 1).unwrap_err();
     assert!(err.to_string().contains("work limit"), "{err}");
 }
+
+/// Every trim sample is tested against each face of its surface, and the
+/// budget counts each test: a sphere's equator, tested against both
+/// hemispheres, is refused at a sampling one hemisphere alone would pass.
+#[test]
+fn sample_budget_counts_each_face_tested() {
+    let mut topo = Topology::new();
+    let sphere = make_sphere(&mut topo, 4.0, 8).unwrap();
+    // About 70 000 samples on the r = 4 circle at this chord deflection:
+    // under the 100 000 budget once, over it for two faces.
+    let deflection = 4.0e-9;
+    let step = 2.0 * (1.0 - deflection / 4.0_f64).acos();
+    let samples = (std::f64::consts::TAU / step).ceil();
+    assert!((50_000.0..100_000.0).contains(&samples), "{samples}");
+    let err = project_silhouettes(
+        &topo,
+        sphere,
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        true,
+        deflection,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("increase deflection"), "{err}");
+}

@@ -17,8 +17,9 @@ use remus_topology::solid::SolidId;
 
 use super::{View, occlusion_step, push_classified_runs};
 
-/// Bound on trim-test samples over all silhouette curves of one solid: each
-/// sample is a face-containment query.
+/// Bound on trim-test samples over all silhouette curves of one solid, each
+/// counted once per face it is tested against: every one is a
+/// face-containment query.
 const MAX_SILHOUETTE_SAMPLES: usize = 100_000;
 
 /// Fewest samples along one silhouette curve, before trim refinement.
@@ -29,7 +30,8 @@ const MIN_CURVE_SAMPLES: usize = 16;
 const TRIM_BISECTIONS: usize = 40;
 
 /// Bound on the trim queries spent refining crossings, which the sample
-/// preflight cannot count: 2 500 crossings, each [`TRIM_BISECTIONS`] queries.
+/// preflight cannot count: 2 500 crossings on single faces, each
+/// [`TRIM_BISECTIONS`] queries per face of the curve's surface.
 const MAX_TRIM_REFINEMENT_QUERIES: usize = 100_000;
 
 /// Below this, the view is taken to run along a cylinder's or cone's axis,
@@ -209,7 +211,7 @@ pub(super) fn silhouettes_within(
     for (surface, faces) in &carriers {
         for curve in carrier_silhouettes(topo, surface, faces, view.dir)? {
             let count = curve.sample_count(deflection);
-            samples = samples.saturating_add(count);
+            samples = samples.saturating_add(count.saturating_mul(faces.len()));
             if samples > MAX_SILHOUETTE_SAMPLES {
                 return Err(crate::OperationsError::InvalidInput {
                     reason: format!(
@@ -425,7 +427,8 @@ fn axial_range(
 
 /// Parameter runs of `curve` inside any of `faces`, each a sorted list of `t`
 /// values starting and ending on a trim crossing (or the curve's ends).
-/// Each crossing spends [`TRIM_BISECTIONS`] of `refinement_queries`.
+/// Each crossing spends [`TRIM_BISECTIONS`] queries per face of
+/// `refinement_queries`.
 fn trimmed_runs(
     topo: &Topology,
     faces: &[FaceId],
@@ -453,7 +456,7 @@ fn trimmed_runs(
                         a_inside: bool|
      -> Result<f64, crate::OperationsError> {
         *refinement_queries = refinement_queries
-            .checked_sub(TRIM_BISECTIONS)
+            .checked_sub(TRIM_BISECTIONS.saturating_mul(faces.len()))
             .ok_or_else(|| crate::OperationsError::InvalidInput {
                 reason:
                     "silhouettes cross their faces' trims more often than the projection work limit"
