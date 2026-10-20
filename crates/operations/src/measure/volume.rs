@@ -633,14 +633,53 @@ const FACE_INTEGRAL_CLOSURE: f64 = 3e-5;
 
 /// How far, relative to the body's extent, an edge may stand off a face it
 /// bounds for the face integrals to measure the body. Imported STEP data
-/// rounds: the hammer holder has an edge 1.6e-4 off its face, 2.1e-6 of its
-/// 74 mm extent. The defects the check is for are a hundred times larger: an
-/// imported parabolic band bounded by its chords stands 1.06 off (2.2e-2 of
-/// its extent), a variable fillet's NURBS wall 0.29 off.
-const BOUNDARY_GAP: f64 = 1e-5;
+/// carries real gaps: the hammer holder has NURBS edges up to 6.1e-4 off their
+/// faces (8.2e-6 of its 74 mm extent), far past their own stated tolerances,
+/// which moves its volume by about 1e-6. The defects the check is for are a
+/// hundred times larger: an imported parabolic band bounded by its chords
+/// stands 1.06 off (2.2e-2 of its extent), a variable fillet's NURBS wall
+/// 0.29 off (about 3e-2 of its).
+const BOUNDARY_GAP: f64 = 1e-4;
 
-/// Edge samples [`boundary_lies_on_faces`] takes per edge use.
-const BOUNDARY_SAMPLES: u32 = 8;
+/// The Gauss order whose face integrals the volume's are checked against.
+const CONVERGENCE_ORDER: usize = 3;
+
+/// Largest `Σ_f |V₅(f) − V₃(f)|`, relative to the volume, of a body whose
+/// fixed-order face integrals measure it. A face's order-5 reading is taken
+/// only where the independent order-3 one agrees with it; face by face, so
+/// errors of opposite sign cannot cancel. The hammer holder disagrees by
+/// 1.1e-7 (order 4 by 2.9e-10, order 8 by 5e-13).
+const ORDER_AGREEMENT: f64 = 1e-6;
+
+/// Intervals [`boundary_lies_on_faces`] samples a straight edge in.
+const LINE_SAMPLES: u32 = 8;
+
+/// Fewest intervals it samples a curved edge in.
+const CURVE_SAMPLES: u32 = 32;
+
+/// Most intervals it samples an edge in: the integrator's own trim density,
+/// so the check reads the boundary at least as finely as the integral does.
+const MAX_EDGE_SAMPLES: u32 = 128;
+
+/// Intervals to sample `curve` in: [`LINE_SAMPLES`] for a line,
+/// [`CURVE_SAMPLES`] for a conic, and four per knot span of a NURBS curve
+/// within those bounds, so an excursion inside one span is still sampled.
+fn edge_samples(curve: &EdgeCurve) -> u32 {
+    match curve {
+        EdgeCurve::Line => LINE_SAMPLES,
+        EdgeCurve::NurbsCurve(nurbs) => {
+            let knots = nurbs.knots();
+            let spans = knots.windows(2).filter(|pair| pair[1] > pair[0]).count();
+            u32::try_from(spans.saturating_mul(4))
+                .unwrap_or(MAX_EDGE_SAMPLES)
+                .clamp(CURVE_SAMPLES, MAX_EDGE_SAMPLES)
+        }
+        EdgeCurve::Circle(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => CURVE_SAMPLES,
+    }
+}
 
 /// The volume of `solid` from its boundary-trimmed face integrals, when they
 /// are certified to measure it; `None` sends the caller to the closed
@@ -652,7 +691,7 @@ const BOUNDARY_SAMPLES: u32 = 8;
 /// fresh integration, as the validator's probe does.
 ///
 /// The integrator is not right for every face (its special paths each cover
-/// a family), so the reading is taken only when three certificates hold:
+/// a family), so the reading is taken only when four certificates hold:
 ///
 /// * no face is in a class it is known to mis-measure
 ///   ([`gauss_unqualified_face`]);
@@ -665,6 +704,10 @@ const BOUNDARY_SAMPLES: u32 = 8;
 ///   area depends on the boundary alone, but the integral then measures
 ///   another body than the mesh: an imported parabolic band bounded by its
 ///   chords (1.06 off) read 9500 against the file's 9540.
+/// * every face's order-5 term agrees with an independent order-3 one, summed
+///   face by face to [`ORDER_AGREEMENT`] of the volume, so a face the fixed
+///   rule has not resolved is caught even where closure, which tests only the
+///   vector-area integrand, holds.
 ///
 /// Its residual is the trim outlines' chord error, 128 samples per curved
 /// edge; the hammer holder reads 50245.53 against a 50245.22 limit of ever
@@ -690,31 +733,46 @@ fn certified_face_integral_volume(
     }
     let order = remus_check::properties::PropertiesOptions::default().gauss_order;
     let data = topo.solid(solid)?;
-    let mut total = 0.0;
+    let (mut total, mut disagreement) = (0.0, 0.0);
     for shell in std::iter::once(data.outer_shell()).chain(data.inner_shells().iter().copied()) {
-        let Some(signed) = certified_shell_volume(topo, shell, order)? else {
+        let Some((signed, shell_disagreement)) = certified_shell_volume(topo, shell, order)? else {
             return Ok(None);
         };
         total += signed;
+        disagreement += shell_disagreement;
     }
     let volume = total.abs();
-    Ok((volume.is_finite() && volume > floor).then_some(volume))
+    if !(volume.is_finite() && volume > floor) {
+        return Ok(None);
+    }
+    if disagreement.is_nan() || disagreement > ORDER_AGREEMENT * volume {
+        vol_trace(|| {
+            format!(
+                "face integrals declined: orders {CONVERGENCE_ORDER} and {order} differ by {:.3e} of the volume",
+                disagreement / volume
+            )
+        });
+        return Ok(None);
+    }
+    Ok(Some(volume))
 }
 
 /// The signed volume a shell's face integrals enclose about the shell's own
-/// reference (the point [`shell_signed_volume`] takes), when the shell closes
-/// within [`FACE_INTEGRAL_CLOSURE`]; `None` when it does not, or a face did
-/// not integrate or report its vector area.
+/// reference (the point [`shell_signed_volume`] takes), with
+/// the sum over its faces of how far their `order` and [`CONVERGENCE_ORDER`]
+/// volume terms differ, when the shell
+/// closes within [`FACE_INTEGRAL_CLOSURE`]; `None` when it does not, or a face
+/// did not integrate or report its vector area.
 fn certified_shell_volume(
     topo: &Topology,
     shell: remus_topology::shell::ShellId,
     order: usize,
-) -> Result<Option<f64>, crate::OperationsError> {
+) -> Result<Option<(f64, f64)>, crate::OperationsError> {
     let faces = topo.shell(shell)?.faces().to_vec();
     let Some(reference) = shell_reference(topo, &faces)? else {
         return Ok(None);
     };
-    let (mut volume, mut area) = (0.0, 0.0);
+    let (mut volume, mut area, mut disagreement) = (0.0, 0.0, 0.0);
     let mut vector_area = Vec3::new(0.0, 0.0, 0.0);
     for fid in faces {
         // The strict validator's own request: after an edit it already holds
@@ -739,9 +797,20 @@ fn certified_shell_volume(
             });
             return Ok(None);
         };
+        // Gauss orders are not nested, so a lower one is an independent
+        // reading: the two agree only where both have converged on the face.
+        let Ok(coarse) = remus_check::properties::face_cache::integrate_face_volume_about_memoized(
+            topo,
+            fid,
+            CONVERGENCE_ORDER,
+            reference,
+        ) else {
+            return Ok(None);
+        };
         volume += term.volume;
         area += term.area;
         vector_area += n;
+        disagreement += (term.volume - coarse.volume).abs();
     }
     let closure = vector_area.length();
     if closure.is_nan() || closure > FACE_INTEGRAL_CLOSURE * area {
@@ -754,7 +823,7 @@ fn certified_shell_volume(
         });
         return Ok(None);
     }
-    Ok(Some(volume))
+    Ok(Some((volume, disagreement)))
 }
 
 /// The vertex-box centre of `faces`, the reference [`shell_signed_volume`]
@@ -790,10 +859,11 @@ fn shell_reference(
     }))
 }
 
-/// Whether every edge of every face lies on that face's surface: each of
-/// [`BOUNDARY_SAMPLES`] plus one points along the edge's own span within the
-/// larger of the edge's tolerance (its vertices' when it has none) and
-/// `floor` of the surface.
+/// Whether every edge of every face lies on that face's surface: every point
+/// of [`edge_samples`] intervals along the edge's own span within the larger
+/// of the edge's tolerance (its vertices' when it has none) and `floor` of the
+/// surface. A sampled check, at the integrator's own boundary density at most:
+/// an excursion between samples is one the integral does not read either.
 fn boundary_lies_on_faces(
     topo: &Topology,
     faces: &[FaceId],
@@ -826,8 +896,9 @@ fn boundary_lies_on_faces(
                 } else {
                     tessellate::edge_param_span(topo, edge)?
                 };
-                for k in 0..=BOUNDARY_SAMPLES {
-                    let f = f64::from(k) / f64::from(BOUNDARY_SAMPLES);
+                let samples = edge_samples(edge.curve());
+                for k in 0..=samples {
+                    let f = f64::from(k) / f64::from(samples);
                     let p = edge.curve().evaluate_with_endpoints(
                         (t1 - t0).mul_add(f, t0),
                         start.point(),
@@ -2497,9 +2568,10 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
 /// clipped by the part's walls), a sphere patch off its latitudes, a
 /// scalloped sphere collar, an unqualified torus notch band, a NURBS face on
 /// the direct path, a torus bore beside a NURBS-rimmed plane — is measured off
-/// its fixed-order face integrals when three certificates qualify them (no
+/// its fixed-order face integrals when four certificates qualify them (no
 /// face in a class the integrator mis-measures, every shell's vector areas
-/// cancelling, every edge on the faces it bounds), and otherwise on its closed
+/// cancelling, every edge on the faces it bounds, successive Gauss orders
+/// agreeing face by face), and otherwise on its closed
 /// whole-solid mesh, to that mesh's chord accuracy at the clamped deflection.
 /// When that mesh comes out OPEN, the result is the exact
 /// boundary-trimmed Gauss integral over every face (the [`mass_properties`]
@@ -6150,15 +6222,38 @@ mod face_integral_certificate_tests {
         let solid = make_box(&mut topo, 4.0, 3.0, 2.0).unwrap();
         let shell = topo.solid(solid).unwrap().outer_shell();
         let order = remus_check::properties::PropertiesOptions::default().gauss_order;
-        let volume = certified_shell_volume(&topo, shell, order)
+        let (volume, disagreement) = certified_shell_volume(&topo, shell, order)
             .unwrap()
             .unwrap();
         assert!((volume - 24.0).abs() <= 24.0 * 1e-12, "{volume}");
+        // Planar faces integrate in closed form at every order.
+        assert!(disagreement <= 24.0 * 1e-12, "{disagreement}");
         // Without its last face the shell's vector areas no longer cancel.
         let mut faces = topo.shell(shell).unwrap().faces().to_vec();
         faces.pop();
         let open = topo.add_shell(Shell::new(faces).unwrap());
         assert_eq!(certified_shell_volume(&topo, open, order).unwrap(), None);
+    }
+
+    #[test]
+    fn edges_are_sampled_per_knot_span_up_to_the_trim_density() {
+        let nurbs = |spans: usize| {
+            let mut knots = vec![0.0, 0.0];
+            knots.extend((0..=spans).map(|i| i as f64));
+            knots.push(spans as f64);
+            knots.push(spans as f64);
+            let points = (0..spans + 2)
+                .map(|i| Point3::new(i as f64, 0.0, 0.0))
+                .collect::<Vec<_>>();
+            let weights = vec![1.0; points.len()];
+            EdgeCurve::NurbsCurve(
+                remus_math::nurbs::curve::NurbsCurve::new(2, knots, points, weights).unwrap(),
+            )
+        };
+        assert_eq!(edge_samples(&EdgeCurve::Line), LINE_SAMPLES);
+        assert_eq!(edge_samples(&nurbs(1)), CURVE_SAMPLES);
+        assert_eq!(edge_samples(&nurbs(12)), 48);
+        assert_eq!(edge_samples(&nurbs(400)), MAX_EDGE_SAMPLES);
     }
 
     #[test]

@@ -116,13 +116,12 @@ fn hammer_move_reads_its_unchanged_faces_and_measures_its_volume_once() {
     let read = solid_volume(&after, moved, 0.08).unwrap();
     let end = (thread_face_cache_stats(), thread_volume_memo_stats());
     assert!(valid);
-    assert_eq!(
-        end.0.misses, start.0.misses,
-        "the probe and the volume only hit"
-    );
     // The volume sums the probe's own fixed-order face integrals, so it reads
-    // every face once more and lands on the probe's signed volume exactly.
-    assert_eq!(end.0.hits - start.0.hits, 2 * faces);
+    // every face once more and lands on the probe's signed volume exactly. Its
+    // order-3 convergence terms are new only for the faces the move
+    // re-limited, the ones it integrated afresh.
+    assert_eq!(end.0.misses - start.0.misses, integrated);
+    assert_eq!(end.0.hits - start.0.hits, 3 * faces - integrated);
     assert_eq!(read.to_bits(), signed.abs().to_bits());
     assert_eq!(
         (end.1.misses - start.1.misses, end.1.hits - start.1.hits),
