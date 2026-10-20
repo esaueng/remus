@@ -316,6 +316,22 @@ class ConvergenceTests(unittest.TestCase):
         queue = config["rules"][0]["parameters"]
         self.assertEqual(queue["grouping_strategy"], "ALLGREEN")
         self.assertEqual(queue["max_entries_to_build"], 2)
+        self.assertEqual(queue["max_entries_to_merge"], 2)
+        self.assertEqual(queue["min_entries_to_merge"], 1)
+        self.assertEqual(queue["min_entries_to_merge_wait_minutes"], 0)
+        self.assertEqual(queue["merge_method"], "SQUASH")
+
+    def test_queue_timeout_leaves_headroom_for_required_jobs(self):
+        config = json.loads((ROOT / ".github/merge-queue-ruleset.json").read_text())
+        queue_timeout = config["rules"][0]["parameters"]["check_response_timeout_minutes"]
+        required_jobs = HEAVY | ALWAYS | {"docs", SIZE_GATE, "ci-pass"}
+        job_timeouts = [
+            int(re.search(r"^    timeout-minutes: ([0-9]+)$", JOBS[name], re.M)[1])
+            for name in required_jobs
+        ]
+        # Leave an hour beyond the slowest job for runner waiting, early
+        # policy checks, and the final verdict. Keep every job's own limit.
+        self.assertGreaterEqual(queue_timeout, max(job_timeouts) + 60)
 
 
 if __name__ == "__main__":

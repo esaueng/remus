@@ -182,6 +182,12 @@ requires both to succeed, requires the classifier outputs to be valid, and
 rejects unexpectedly skipped selected checks. Documentation-only selection
 still skips the heavy suite.
 
+Repository Policy runs `scripts/test-owner-pr-routing.py`, whose explicit
+`load_tests` hook includes the entire `scripts/test_fleet_workflows.py` suite.
+Pin validation therefore gates `checks / CI Pass`: every active workflow must
+exist at its immutable main-ancestor pin and match the checked-in bytes. A
+discovery regression test keeps this suite in the required entrypoint.
+
 ### Tiers
 
 The classifier (`scripts/classify-ci-changes.py`) selects jobs in tiers so a
@@ -236,6 +242,13 @@ existing branch protection nor changes review requirements. Do not enable it
 until the caller, pinned callee and passing exact-head CI are on main. Creating
 or enabling the rule does not itself enqueue PRs; enqueuing a PR authorizes its
 automatic merge and still requires the maintainer's merge approval.
+
+The queue waits up to 240 minutes for required checks. This leaves 60 minutes
+beyond the longest required job's 180-minute limit for runner waiting, early
+policy checks, and the final verdict. The convergence tests require that
+headroom as job limits evolve. Keep the live ruleset's timeout aligned with
+the template by updating the existing rule; preserve its active enforcement,
+all other queue parameters, and every required check and review setting.
 
 The repository allows squash merging only. Squash commit titles use the PR
 title, and their bodies use the PR description, so each focused PR lands as

@@ -7,10 +7,11 @@ import json
 import os
 import re
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from fleet_workflows import workflow_path
-from test_fleet_workflows import FleetWorkflowTests
+import test_fleet_workflows
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -74,6 +75,31 @@ class OwnerRoutingTests(unittest.TestCase):
     def test_policy_regressions_run_in_repository_policy(self):
         self.assertIn("python3 scripts/test-owner-pr-policy.py", job("repo-policy"))
         self.assertIn("python3 scripts/test-owner-pr-routing.py", job("repo-policy"))
+
+    def test_required_entrypoint_discovers_every_workflow_pin_regression(self):
+        loader = unittest.TestLoader()
+        expected = {
+            case.id() for case in loader.loadTestsFromTestCase(test_fleet_workflows.FleetWorkflowTests)
+        }
+
+        def case_ids(suite):
+            for case in suite:
+                if isinstance(case, unittest.TestSuite):
+                    yield from case_ids(case)
+                else:
+                    yield case.id()
+
+        discovered = set(case_ids(loader.loadTestsFromModule(sys.modules[__name__])))
+        self.assertTrue(expected)
+        self.assertLessEqual(expected, discovered)
+
+
+def load_tests(loader, tests, pattern):
+    # Repository Policy invokes this entrypoint from the immutable CI callee.
+    # Explicitly include pin validation instead of relying on discovery of an
+    # imported TestCase class; its failures must continue to fail CI Pass.
+    tests.addTests(loader.loadTestsFromModule(test_fleet_workflows, pattern=pattern))
+    return tests
 
 
 if __name__ == "__main__":
