@@ -116,8 +116,14 @@ fn hammer_move_reads_its_unchanged_faces_and_measures_its_volume_once() {
     let read = solid_volume(&after, moved, 0.08).unwrap();
     let end = (thread_face_cache_stats(), thread_volume_memo_stats());
     assert!(valid);
-    assert_eq!(end.0.misses, start.0.misses, "the result's probe only hits");
-    assert_eq!(end.0.hits - start.0.hits, faces);
+    assert_eq!(
+        end.0.misses, start.0.misses,
+        "the probe and the volume only hit"
+    );
+    // The volume sums the probe's own fixed-order face integrals, so it reads
+    // every face once more and lands on the probe's signed volume exactly.
+    assert_eq!(end.0.hits - start.0.hits, 2 * faces);
+    assert_eq!(read.to_bits(), signed.abs().to_bits());
     assert_eq!(
         (end.1.misses - start.1.misses, end.1.hits - start.1.hits),
         (1, 0),
@@ -137,11 +143,12 @@ fn hammer_move_reads_its_unchanged_faces_and_measures_its_volume_once() {
         (signed - fresh_signed).abs() <= fresh_signed.abs() * 1e-12,
         "probe {signed} vs fresh {fresh_signed}"
     );
+    // Translated and re-referenced faces read within rounding of a fresh
+    // integration, so the warm volume does too.
     let fresh = solid_volume(&after, moved, 0.08).unwrap();
-    assert_eq!(
-        read.to_bits(),
-        fresh.to_bits(),
-        "a warm memo must read exactly what a cold kernel reads: {read} vs {fresh}"
+    assert!(
+        (read - fresh).abs() <= fresh * 1e-12,
+        "a warm memo must read what a cold kernel reads: {read} vs {fresh}"
     );
     // The swept prism of a 1045.93 mm² face pushed in by 6 mm (its blends
     // and carriers included).

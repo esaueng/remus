@@ -532,6 +532,12 @@ fn required_closed_mesh_volume(
     deflection: f64,
     why: &'static str,
 ) -> Result<Option<f64>, crate::OperationsError> {
+    if let Some(volume) = crate::performance::timed("volume.face-integrals", || {
+        certified_face_integral_volume(topo, solid)
+    })? {
+        vol_trace(|| format!("{why}: certified face integrals -> {volume}"));
+        return Ok(Some(volume));
+    }
     required_closed_mesh_volume_with(topo, solid, deflection, why, |d| {
         tessellate::tessellate_solid_for_measurement(topo, solid, d)
     })
@@ -609,6 +615,264 @@ fn closed_mesh_or_exact_volume(
     let exact = open_mesh_exact_volume(topo, solid, why);
     vol_trace(|| format!("{why}: open whole-solid mesh -> exact fallback {exact:?}"));
     exact.map(Some)
+}
+
+/// Largest `|Σ N| / Σ A` of a shell whose face integrals measure its volume,
+/// `N` and `A` being each face's vector area `∫ n dA` and area.
+///
+/// The vector areas of a closed surface sum to zero, and that sum is what
+/// makes the divergence-theorem volume independent of the reference point.
+/// A face integrated over the wrong region breaks it: half of a periodic wall
+/// (8.5e-2 to 2.8e-1), an inflated sphere cap (6.1e-2), a zeroed NURBS
+/// band (1.3e-2), a NURBS-holed plane (5.0e-4). The trim outlines' chord
+/// error leaves 3.1e-6 on the hammer holder, 1.04e-5 on the left partition of
+/// its opening edit and 7.2e-8 on the mixed-rim fillet bodies. A shell that
+/// closes to `ε` reads within about `2ε` of its volume, the clamp mesh's own
+/// order (7e-5 on the holder), so the bound sits between the two families.
+const FACE_INTEGRAL_CLOSURE: f64 = 3e-5;
+
+/// How far, relative to the body's extent, an edge may stand off a face it
+/// bounds for the face integrals to measure the body. Imported STEP data
+/// rounds: the hammer holder has an edge 1.6e-4 off its face, 2.1e-6 of its
+/// 74 mm extent. The defects the check is for are a hundred times larger: an
+/// imported parabolic band bounded by its chords stands 1.06 off (2.2e-2 of
+/// its extent), a variable fillet's NURBS wall 0.29 off.
+const BOUNDARY_GAP: f64 = 1e-5;
+
+/// Edge samples [`boundary_lies_on_faces`] takes per edge use.
+const BOUNDARY_SAMPLES: u32 = 8;
+
+/// The volume of `solid` from its boundary-trimmed face integrals, when they
+/// are certified to measure it; `None` sends the caller to the closed
+/// whole-solid mesh. This is S1: the strict validator's own fixed-order
+/// integrals, about the same shell references, through the thread's
+/// face-integral cache. After an edit the validation has already integrated
+/// every face, so the reading only sums; a face the cache re-expresses (about
+/// a moved reference, or translated by the edit) reads within rounding of a
+/// fresh integration, as the validator's probe does.
+///
+/// The integrator is not right for every face (its special paths each cover
+/// a family), so the reading is taken only when three certificates hold:
+///
+/// * no face is in a class it is known to mis-measure
+///   ([`gauss_unqualified_face`]);
+/// * every shell closes: `|Σ N|` is at most [`FACE_INTEGRAL_CLOSURE`] times `Σ A`, which a
+///   face integrated over the wrong region breaks;
+/// * every edge lies on each face it bounds, within the larger of its own
+///   tolerance and [`BOUNDARY_GAP`] of the body's extent
+///   ([`boundary_lies_on_faces`]).
+///   Faces whose edges stand off their surface still close, because a vector
+///   area depends on the boundary alone, but the integral then measures
+///   another body than the mesh: an imported parabolic band bounded by its
+///   chords (1.06 off) read 9500 against the file's 9540.
+///
+/// Its residual is the trim outlines' chord error, 128 samples per curved
+/// edge; the hammer holder reads 50245.53 against a 50245.22 limit of ever
+/// finer meshes, where the clamp mesh reads 50241.71.
+fn certified_face_integral_volume(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<Option<f64>, crate::OperationsError> {
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    for &fid in &faces {
+        if let Some(class) = gauss_unqualified_face(topo, fid)? {
+            vol_trace(|| format!("face integrals declined: face {} is a {class}", fid.index()));
+            return Ok(None);
+        }
+    }
+    let Some(floor) = negligible_volume(topo, solid) else {
+        return Ok(None);
+    };
+    // `negligible_volume` is the diagonal cubed times 1e-9.
+    let extent = (floor / 1e-9).cbrt();
+    if !boundary_lies_on_faces(topo, &faces, BOUNDARY_GAP * extent)? {
+        return Ok(None);
+    }
+    let order = remus_check::properties::PropertiesOptions::default().gauss_order;
+    let data = topo.solid(solid)?;
+    let mut total = 0.0;
+    for shell in std::iter::once(data.outer_shell()).chain(data.inner_shells().iter().copied()) {
+        let Some(signed) = certified_shell_volume(topo, shell, order)? else {
+            return Ok(None);
+        };
+        total += signed;
+    }
+    let volume = total.abs();
+    Ok((volume.is_finite() && volume > floor).then_some(volume))
+}
+
+/// The signed volume a shell's face integrals enclose about the shell's own
+/// reference (the point [`shell_signed_volume`] takes), when the shell closes
+/// within [`FACE_INTEGRAL_CLOSURE`]; `None` when it does not, or a face did
+/// not integrate or report its vector area.
+fn certified_shell_volume(
+    topo: &Topology,
+    shell: remus_topology::shell::ShellId,
+    order: usize,
+) -> Result<Option<f64>, crate::OperationsError> {
+    let faces = topo.shell(shell)?.faces().to_vec();
+    let Some(reference) = shell_reference(topo, &faces)? else {
+        return Ok(None);
+    };
+    let (mut volume, mut area) = (0.0, 0.0);
+    let mut vector_area = Vec3::new(0.0, 0.0, 0.0);
+    for fid in faces {
+        // The strict validator's own request: after an edit it already holds
+        // every face, about this very reference.
+        let Ok(term) = remus_check::properties::face_cache::integrate_face_volume_about_memoized(
+            topo, fid, order, reference,
+        ) else {
+            vol_trace(|| {
+                format!(
+                    "face integrals declined: face {} did not integrate",
+                    fid.index()
+                )
+            });
+            return Ok(None);
+        };
+        let Some(n) = term.vector_area else {
+            vol_trace(|| {
+                format!(
+                    "face integrals declined: face {} has no vector area",
+                    fid.index()
+                )
+            });
+            return Ok(None);
+        };
+        volume += term.volume;
+        area += term.area;
+        vector_area += n;
+    }
+    let closure = vector_area.length();
+    if closure.is_nan() || closure > FACE_INTEGRAL_CLOSURE * area {
+        vol_trace(|| {
+            format!(
+                "face integrals declined: shell {} closes to {:.3e} of its area",
+                shell.index(),
+                closure / area
+            )
+        });
+        return Ok(None);
+    }
+    Ok(Some(volume))
+}
+
+/// The vertex-box centre of `faces`, the reference [`shell_signed_volume`]
+/// integrates a shell about; `None` for a shell with no vertex.
+fn shell_reference(
+    topo: &Topology,
+    faces: &[FaceId],
+) -> Result<Option<Point3>, crate::OperationsError> {
+    let mut bounds: Option<(Point3, Point3)> = None;
+    for &fid in faces {
+        let face = topo.face(fid)?;
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid)?.edges() {
+                let edge = topo.edge(oe.edge())?;
+                for vid in [edge.start(), edge.end()] {
+                    let p = topo.vertex(vid)?.point();
+                    bounds = Some(bounds.map_or((p, p), |(lo, hi)| {
+                        (
+                            Point3::new(lo.x().min(p.x()), lo.y().min(p.y()), lo.z().min(p.z())),
+                            Point3::new(hi.x().max(p.x()), hi.y().max(p.y()), hi.z().max(p.z())),
+                        )
+                    }));
+                }
+            }
+        }
+    }
+    Ok(bounds.map(|(lo, hi)| {
+        Point3::new(
+            f64::midpoint(lo.x(), hi.x()),
+            f64::midpoint(lo.y(), hi.y()),
+            f64::midpoint(lo.z(), hi.z()),
+        )
+    }))
+}
+
+/// Whether every edge of every face lies on that face's surface: each of
+/// [`BOUNDARY_SAMPLES`] plus one points along the edge's own span within the
+/// larger of the edge's tolerance (its vertices' when it has none) and
+/// `floor` of the surface.
+fn boundary_lies_on_faces(
+    topo: &Topology,
+    faces: &[FaceId],
+    floor: f64,
+) -> Result<bool, crate::OperationsError> {
+    for &fid in faces {
+        let face = topo.face(fid)?;
+        let surface = face.surface();
+        // One seed grid serves every projection onto a NURBS face.
+        let grid = match surface {
+            FaceSurface::Nurbs(nurbs) => Some(
+                remus_math::nurbs::projection::SurfaceSeedGrid::for_surface(nurbs),
+            ),
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => None,
+        };
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid)?.edges() {
+                let edge = topo.edge(oe.edge())?;
+                let (start, end) = (topo.vertex(edge.start())?, topo.vertex(edge.end())?);
+                let tolerance = edge
+                    .tolerance()
+                    .unwrap_or_else(|| start.tolerance().max(end.tolerance()))
+                    .max(floor);
+                let (t0, t1) = if matches!(edge.curve(), EdgeCurve::Line) {
+                    (0.0, 1.0)
+                } else {
+                    tessellate::edge_param_span(topo, edge)?
+                };
+                for k in 0..=BOUNDARY_SAMPLES {
+                    let f = f64::from(k) / f64::from(BOUNDARY_SAMPLES);
+                    let p = edge.curve().evaluate_with_endpoints(
+                        (t1 - t0).mul_add(f, t0),
+                        start.point(),
+                        end.point(),
+                    );
+                    let gap = surface_gap(surface, grid.as_ref(), p);
+                    if gap.is_nan() || gap > tolerance {
+                        vol_trace(|| {
+                            format!(
+                                "face integrals declined: an edge of face {} stands {gap:.3e} off it",
+                                fid.index()
+                            )
+                        });
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Distance from `p` to `surface` (infinite when it cannot be measured);
+/// `grid` is a NURBS surface's projection seed grid.
+fn surface_gap(
+    surface: &FaceSurface,
+    grid: Option<&remus_math::nurbs::projection::SurfaceSeedGrid>,
+    p: Point3,
+) -> f64 {
+    match surface {
+        FaceSurface::Plane { normal, d } => {
+            (normal.dot(Vec3::new(p.x(), p.y(), p.z())) - d).abs() / normal.length()
+        }
+        FaceSurface::Nurbs(nurbs) => grid.map_or(f64::INFINITY, |grid| {
+            remus_math::nurbs::projection::project_point_to_surface_with_grid(nurbs, p, 1e-9, grid)
+                .map_or(f64::INFINITY, |projection| projection.distance)
+        }),
+        FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => surface
+            .project_point(p)
+            .and_then(|(u, v)| surface.evaluate(u, v))
+            .map_or(f64::INFINITY, |q| (p - q).length()),
+    }
 }
 
 /// The exact fallback for a body whose required whole-solid mesh is open:
@@ -2232,9 +2496,12 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
 /// quadric wall trimmed by a NURBS intersection curve (a countersink cone
 /// clipped by the part's walls), a sphere patch off its latitudes, a
 /// scalloped sphere collar, an unqualified torus notch band, a NURBS face on
-/// the direct path, a torus bore beside a NURBS-rimmed plane — is measured on
-/// its closed whole-solid mesh, to that mesh's chord accuracy at the clamped
-/// deflection. When that mesh comes out OPEN, the result is the exact
+/// the direct path, a torus bore beside a NURBS-rimmed plane — is measured off
+/// its fixed-order face integrals when three certificates qualify them (no
+/// face in a class the integrator mis-measures, every shell's vector areas
+/// cancelling, every edge on the faces it bounds), and otherwise on its closed
+/// whole-solid mesh, to that mesh's chord accuracy at the clamped deflection.
+/// When that mesh comes out OPEN, the result is the exact
 /// boundary-trimmed Gauss integral over every face (the [`mass_properties`]
 /// route, to its stated bound), or, when a face is outside what that
 /// integrator measures, a typed [`crate::OperationsError::Unsupported`]. It
@@ -2281,7 +2548,10 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
 /// With this thread's volume memo enabled (see
 /// [`super::enable_thread_volume_memo`]; off by default), a repeated reading
 /// of the same solid at the same deflection on an unchanged topology returns
-/// the previous result, bit for bit.
+/// the previous result, bit for bit. With the face-integral cache enabled, a
+/// reading off certified face integrals that re-expresses cached faces (about
+/// a moved reference, or translated by an edit) is within rounding of an
+/// uncached one, not bit-identical to it.
 pub fn solid_volume(
     topo: &Topology,
     solid: SolidId,
@@ -5863,6 +6133,61 @@ mod regression_tests {
                 "scale {scale:e}: clamp mesh read {retried:?}, expected {expected:e}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod face_integral_certificate_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::primitives::make_box;
+    use remus_topology::shell::Shell;
+
+    #[test]
+    fn a_closed_shell_measures_and_an_open_one_declines() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 4.0, 3.0, 2.0).unwrap();
+        let shell = topo.solid(solid).unwrap().outer_shell();
+        let order = remus_check::properties::PropertiesOptions::default().gauss_order;
+        let volume = certified_shell_volume(&topo, shell, order)
+            .unwrap()
+            .unwrap();
+        assert!((volume - 24.0).abs() <= 24.0 * 1e-12, "{volume}");
+        // Without its last face the shell's vector areas no longer cancel.
+        let mut faces = topo.shell(shell).unwrap().faces().to_vec();
+        faces.pop();
+        let open = topo.add_shell(Shell::new(faces).unwrap());
+        assert_eq!(certified_shell_volume(&topo, open, order).unwrap(), None);
+    }
+
+    #[test]
+    fn an_edge_off_its_face_declines() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 4.0, 3.0, 2.0).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        assert!(boundary_lies_on_faces(&topo, &faces, 1e-9).unwrap());
+        assert!(
+            certified_face_integral_volume(&topo, solid)
+                .unwrap()
+                .is_some()
+        );
+        // Lift one corner: the edges meeting there leave a plane they bound.
+        let vertex = topo
+            .edge(
+                topo.wire(topo.face(faces[0]).unwrap().outer_wire())
+                    .unwrap()
+                    .edges()[0]
+                    .edge(),
+            )
+            .unwrap()
+            .start();
+        let p = topo.vertex(vertex).unwrap().point();
+        topo.vertex_mut(vertex)
+            .unwrap()
+            .set_point(Point3::new(p.x(), p.y(), p.z() + 0.05));
+        assert!(!boundary_lies_on_faces(&topo, &faces, 1e-9).unwrap());
+        assert_eq!(certified_face_integral_volume(&topo, solid).unwrap(), None);
     }
 }
 
