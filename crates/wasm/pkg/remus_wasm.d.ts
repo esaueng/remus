@@ -3109,6 +3109,14 @@ export class BrepKernel {
      */
     measureCurvatureAtSurface(face: number, u: number, v: number): Float64Array;
     /**
+     * Exact measurement reuse counters and independent area storage bounds,
+     * as camelCase JSON. Existing volume memo bounds are included separately.
+     *
+     * # Errors
+     * Returns an error when the diagnostic cannot be serialized.
+     */
+    measurementReuseStats(): string;
+    /**
      * Merge coincident vertices in a solid.
      *
      * Returns the number of vertices merged.
@@ -3153,6 +3161,15 @@ export class BrepKernel {
      * Returns an error if the solid handle is invalid or tessellation fails.
      */
     meshQuality(solid: number, deflection: number, angular_tolerance?: number | null): any;
+    /**
+     * Bounded, module-local mesh reuse counters and storage estimate as
+     * JSON, or `null` when disabled. Contains no geometry or arena handles.
+     * The estimate is separate from checkpoint bytes and is not RSS.
+     *
+     * # Errors
+     * Returns an error if the diagnostic cannot be serialized.
+     */
+    meshReuseStats(): string;
     /**
      * Convex Minkowski sum of two solids (`A ⊕ B`).
      *
@@ -3521,6 +3538,25 @@ export class BrepKernel {
      */
     projectPointOnSurface(face: number, px: number, py: number, pz: number): Float64Array;
     /**
+     * Project the silhouettes of a solid's curved faces onto a view plane
+     * with hidden-line removal: the outline a drawing shows at the side of a
+     * cylinder, cone or sphere, which no edge carries.
+     *
+     * The view arguments and `hidden_lines` match `projectEdges`, and the two
+     * results together make the outline drawing. Returns a JSON string
+     * `{"visible": [[x,y,…]], "hidden": [[…]], "unsupported": [{"face": id,
+     * "surface": "torus" | "nurbs"}]}`: cylinder, cone and sphere outlines
+     * are exact curves clipped to the face, and faces whose outline is not
+     * computed are named rather than approximated.
+     *
+     * # Errors
+     *
+     * Returns an error for an invalid handle, a non-finite argument, a
+     * non-positive `deflection`, a degenerate `dir`/`x_axis`, or sampling
+     * over the projection work limit.
+     */
+    projectSilhouettes(solid: number, origin_x: number, origin_y: number, origin_z: number, dir_x: number, dir_y: number, dir_z: number, x_axis_x: number, x_axis_y: number, x_axis_z: number, hidden_lines: boolean, deflection: number): any;
+    /**
      * Propagates face attributes across one journaled operation.
      *
      * Returns JSON `{"carried", "unresolvedOutputs", "mergeConflicts",
@@ -3855,6 +3891,16 @@ export class BrepKernel {
      * name, preserving its other attributes.
      */
     setFaceName(face: number, name?: string | null): void;
+    /**
+     * Enable or disable exact reusable scalar measurements for this module.
+     * Explicit preferences are preserved when another kernel is constructed.
+     */
+    setMeasurementReuseEnabled(enabled: boolean): void;
+    /**
+     * Enable or disable this module's exact mesh-stage reuse. Disabling
+     * releases its retained entries. New kernels enable the default cache.
+     */
+    setMeshReuseEnabled(enabled: boolean): void;
     /**
      * Enable bounded module-local timings; disabled by default. This does
      * not change tolerances, cache admission or numerical policy.
