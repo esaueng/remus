@@ -533,9 +533,9 @@ fn required_closed_mesh_volume(
     why: &'static str,
 ) -> Result<Option<f64>, crate::OperationsError> {
     if let Some(volume) = crate::performance::timed("volume.face-integrals", || {
-        certified_face_integral_volume(topo, solid)
+        qualified_face_integral_volume(topo, solid)
     })? {
-        vol_trace(|| format!("{why}: certified face integrals -> {volume}"));
+        vol_trace(|| format!("{why}: qualified face integrals -> {volume}"));
         return Ok(Some(volume));
     }
     required_closed_mesh_volume_with(topo, solid, deflection, why, |d| {
@@ -712,7 +712,7 @@ fn edge_samples(curve: &EdgeCurve) -> u32 {
 /// Its residual is the trim outlines' chord error, 128 samples per curved
 /// edge; the hammer holder reads 50245.53 against a 50245.22 limit of ever
 /// finer meshes, where the clamp mesh reads 50241.71.
-fn certified_face_integral_volume(
+fn qualified_face_integral_volume(
     topo: &Topology,
     solid: SolidId,
 ) -> Result<Option<f64>, crate::OperationsError> {
@@ -735,7 +735,7 @@ fn certified_face_integral_volume(
     let data = topo.solid(solid)?;
     let (mut total, mut disagreement) = (0.0, 0.0);
     for shell in std::iter::once(data.outer_shell()).chain(data.inner_shells().iter().copied()) {
-        let Some((signed, shell_disagreement)) = certified_shell_volume(topo, shell, order)? else {
+        let Some((signed, shell_disagreement)) = qualified_shell_volume(topo, shell, order)? else {
             return Ok(None);
         };
         total += signed;
@@ -763,7 +763,7 @@ fn certified_face_integral_volume(
 /// volume terms differ, when the shell
 /// closes within [`FACE_INTEGRAL_CLOSURE`]; `None` when it does not, or a face
 /// did not integrate or report its vector area.
-fn certified_shell_volume(
+fn qualified_shell_volume(
     topo: &Topology,
     shell: remus_topology::shell::ShellId,
     order: usize,
@@ -6222,7 +6222,7 @@ mod face_integral_certificate_tests {
         let solid = make_box(&mut topo, 4.0, 3.0, 2.0).unwrap();
         let shell = topo.solid(solid).unwrap().outer_shell();
         let order = remus_check::properties::PropertiesOptions::default().gauss_order;
-        let (volume, disagreement) = certified_shell_volume(&topo, shell, order)
+        let (volume, disagreement) = qualified_shell_volume(&topo, shell, order)
             .unwrap()
             .unwrap();
         assert!((volume - 24.0).abs() <= 24.0 * 1e-12, "{volume}");
@@ -6232,7 +6232,7 @@ mod face_integral_certificate_tests {
         let mut faces = topo.shell(shell).unwrap().faces().to_vec();
         faces.pop();
         let open = topo.add_shell(Shell::new(faces).unwrap());
-        assert_eq!(certified_shell_volume(&topo, open, order).unwrap(), None);
+        assert_eq!(qualified_shell_volume(&topo, open, order).unwrap(), None);
     }
 
     #[test]
@@ -6263,7 +6263,7 @@ mod face_integral_certificate_tests {
         let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
         assert!(boundary_lies_on_faces(&topo, &faces, 1e-9).unwrap());
         assert!(
-            certified_face_integral_volume(&topo, solid)
+            qualified_face_integral_volume(&topo, solid)
                 .unwrap()
                 .is_some()
         );
@@ -6282,7 +6282,7 @@ mod face_integral_certificate_tests {
             .unwrap()
             .set_point(Point3::new(p.x(), p.y(), p.z() + 0.05));
         assert!(!boundary_lies_on_faces(&topo, &faces, 1e-9).unwrap());
-        assert_eq!(certified_face_integral_volume(&topo, solid).unwrap(), None);
+        assert_eq!(qualified_face_integral_volume(&topo, solid).unwrap(), None);
     }
 }
 
