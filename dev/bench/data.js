@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792493283171,
+  "lastUpdate": 1792496931981,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -116071,6 +116071,294 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 56024,
             "range": "± 687",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "62626997c6584a531b3c8f3c9103fe5b73c7e137",
+          "message": "perf(operations): grid the volume deflection clamp; fix the torus tube-wrap sampling (#1200)\n\n## Change\n\nPart of edit-aware measurement\n([PERF-V02](docs/kernel-maturity/roadmap.md#perf-v02)). This makes the\ncommit-time volume after a direct edit reuse the face meshes the edit\nleft untouched. It also fixes a sampling bug found along the way.\n\n### Round the volume deflection clamp down onto a fixed grid (34bd650)\n\n- **Problem:** `volume_tessellation_deflection` clamps to `diag × 5e-5`\nof the solid's bounding box. Any edit that moves the box changes that\nvalue. Every face of the edited body then re-meshes at a new deflection,\nand none of them hit the content-keyed face-mesh cache.\n- **Fix:** the clamp is rounded down onto the grid `{1, 1.5} × 2^e` by\nclearing mantissa bits (`quantize_down`).\n  - It is never coarser than before.\n  - It is exact on every platform.\n- An edit that moves the diagonal by a few percent keeps the same clamp,\nso untouched faces reuse their meshes.\n\n### Sample the torus tube-wrap test along each edge's trim (0454c8d)\n\n- **Bug:** `torus_wire_wraps_tube` passed its sample fraction `f ∈ [0,\n1]` straight to the edge curve. For a circle that fraction is the angle\nitself, so it walked the first radian of each circle instead of the\nedge.\n- **Effect:**\n  - A full tube circle read as no wrap.\n- A quarter-tube fillet patch on the hammer holder read as a full wrap,\nso `gauss_unqualified_face` wrongly excluded it from the exact\nintegrator.\n- **Fix:** each non-line edge is now sampled over its own trimmed\nparameter span.\n\n### Move the WASM smoke pin to the new reading (d361d0d)\n\n`scripts/test-wasm-smoke.mjs` pinned the hammer-holder volume at the old\n50241.718, which failed `WASM Build & Validate`. It now uses the same\n50242.576 as `HAMMER_HOLDER_VOLUME`.\n\n## Verification\n\nHammer holder, wall offsets of −6, +1 and +2 mm:\n\n| Measure | Before | After |\n|---|---|---|\n| Commit `volume` in WASM (OpenZCAD offset-face harness, local overlay,\none core) | 578–666 ms | 266–352 ms |\n| Commit wall time | 1,267–1,351 ms | 1,000–1,106 ms |\n| Post-edit `solid_volume`, native `profiling` build, WASM caches on |\n351–368 ms | 156–175 ms |\n\nOf the post-edit native time, about 100 ms is still meshing; the rest is\nthe closed-mesh census and summation.\n\nTests:\n\n- `cargo test --profile ci-test -p remus-operations -p remus-io -p\nremus-wasm -p remus-check --no-default-features`, run on the previous\nbase. Everything passed except two pinned mesh volumes, which this PR\nupdates:\n  - `HAMMER_HOLDER_VOLUME` in `io/tests/resize_blend_step.rs`;\n- line 37 of\n`tests/golden/data/face_trim_setup/nurbs_bounded_faces.golden`,\nregenerated with `UPDATE_GOLDEN=1`.\n- Rerun on this branch's base (current main):\n- `clamp_grid_tests`, `tube_wrap_samples_each_edge_over_its_own_span`\nand `volume_deflection_uses_curved_extent`;\n  - `resize_blend_step`;\n  - `perf_face_trim_setup_golden`.\n- Linting and repo checks: `cargo fmt --check`, `cargo clippy -p\nremus-operations -p remus-io --all-targets -D warnings` and\n`check-doc-paths.sh` are clean.\n\nNew coverage:\n\n- `clamp_grid_tests::quantize_down_lands_on_the_grid_below`: exact grid\nvalues, never above the input, within a factor of 1.5 of it, idempotent,\nand non-normal inputs passed through.\n- `clamp_grid_tests::a_small_extent_change_keeps_the_clamp`: a 4%\ndiagonal change keeps the clamp.\n- `tube_wrap_samples_each_edge_over_its_own_span`: a full tube circle,\nwith its trim starting at 0 and at 2, wraps the tube once. The old\nsampling read no wrap.\n\nI did not run the full workspace suite on this exact base; CI runs it.\n\n## Compatibility and risks\n\n- **Volume readings change.** Wherever the clamp lands lower on the\ngrid, mesh-measured volumes change by the finer chord error, by a factor\nof up to 1.5. The holder reads 50242.576 at 3.906e-3 where it read\n50241.718 at 5.397e-3. That is 0.86 closer to the exact integral and the\nconverged fine-mesh value (about 50245.2).\n- **First measurement costs more.** The cold first reading of a body\ncosts up to about 15% more natively at the finer clamp, and the WASM\ncold import volume measured 573–742 → 764–786 ms.\n- **Routing may change.** The tube-wrap fix changes\n`solid_has_torus_notch_band` routing and `gauss_unqualified_face`\nclassification for torus faces the old sampling misread. No test result\nchanged from it.\n- **No interface changes.** There are no API, format, unit, tolerance or\ndependency changes.\n\n## WASM module tier\n\nNone: no new capability, and the kernel change is a few hundred bytes.\n\nWASM-Size: about +84 KiB raw against the committed package, almost all\nof it kernel growth already merged on main since the last package\nrefresh (the pending refresh #1203 carries +83.9 KiB). This PR's own\nshare is a few hundred bytes in the existing volume measurement, Tier:\ncore (existing measurement path, no new capability).\n\n---\n_Generated by [Claude\nCode](https://claude.ai/code/session_01Sz39coKpoLB2EasNhTmk9s)_\n\nSigned-off-by: petertoday\n<171875562+petertoday@users.noreply.github.com>\n\n---------\n\nSigned-off-by: petertoday <171875562+petertoday@users.noreply.github.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-10-20T09:54:10Z",
+          "tree_id": "c026fe6d6760ef02d20855c2b29cf6973403e8e7",
+          "url": "https://github.com/esaueng/remus/commit/62626997c6584a531b3c8f3c9103fe5b73c7e137"
+        },
+        "date": 1792496928910,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 963839,
+            "range": "± 13625",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1008931,
+            "range": "± 1854",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 22425,
+            "range": "± 80",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 6004897,
+            "range": "± 16667",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 6012075,
+            "range": "± 18743",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 5879917,
+            "range": "± 10032",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 22322,
+            "range": "± 103",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 2906533,
+            "range": "± 5461",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 24292904,
+            "range": "± 551797",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 92,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 51,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 181,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 128,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 674,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 145,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 297,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 171,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 433,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 547,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2780,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 26,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 73,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 74,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 3155,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 11640,
+            "range": "± 282",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 41071,
+            "range": "± 2186",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 4182,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 398577,
+            "range": "± 922",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2064823,
+            "range": "± 5855",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 114118,
+            "range": "± 79",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 244717,
+            "range": "± 848",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 286511,
+            "range": "± 2673",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 49090,
+            "range": "± 464",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 27610,
+            "range": "± 74",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 16234,
+            "range": "± 33",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 89197,
+            "range": "± 60",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 112229,
+            "range": "± 112",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 518022,
+            "range": "± 36538",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 6664541,
+            "range": "± 118677",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 461396,
+            "range": "± 4046",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 940393,
+            "range": "± 2993",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 80901,
+            "range": "± 2611",
             "unit": "ns/iter"
           }
         ]
