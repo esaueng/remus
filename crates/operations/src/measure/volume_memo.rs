@@ -36,7 +36,7 @@
 //!
 //! The deflection is matched as `solid_volume` uses it: the request is
 //! clamped to `volume_tessellation_deflection` (the solid's bounding-box
-//! diagonal × 5e-5) before any mesh is taken, and every route before the
+//! diagonal × 5e-5, rounded down onto a fixed grid) before any mesh is taken, and every route before the
 //! clamp is deflection-independent, so two requests that clamp to the same
 //! value are the same reading. An entry records the request it was read at
 //! and the clamped value; a lookup tries the request first and computes the
