@@ -455,6 +455,24 @@ console.log('ok - oversized WASM work counts fail closed in direct and batch API
         hiddenLines: true,
       },
     },
+    {
+      name: 'projectSilhouettes',
+      direct: (deflection) =>
+        kernel.projectSilhouettes(boxId, 0, 0, 0, 0, 0, 1, 1, 0, 0, true, deflection),
+      args: {
+        solid: boxId,
+        originX: 0,
+        originY: 0,
+        originZ: 0,
+        dirX: 0,
+        dirY: 0,
+        dirZ: 1,
+        xAxisX: 1,
+        xAxisY: 0,
+        xAxisZ: 0,
+        hiddenLines: true,
+      },
+    },
   ];
 
   for (const deflection of [NaN, Infinity, 0, -0.1]) {
@@ -1535,7 +1553,7 @@ for (const operation of ['fillet', 'chamfer']) {
   // crates/io/tests/resize_blend_step.rs. The resolved cylinder-wall grid
   // and curved NURBS trim-band paths remove inward chords and move this closer
   // to the finer mesh and independent integrator; retain the 0.01 tolerance.
-  assert.ok(Math.abs(hammerKernel.volume(solid, 0.01) - 50_241.718_498_692_12) <= 0.01);
+  assert.ok(Math.abs(hammerKernel.volume(solid, 0.01) - 50_242.575_649_036_3) <= 0.01);
   const strict = JSON.parse(hammerKernel.validateSolidDetailed(solid));
   assert.equal(strict.errorCount, 0, 'refused edit must preserve strict topology');
   assert.equal(strict.warningCount, 0, 'refused edit must preserve warning-free topology');

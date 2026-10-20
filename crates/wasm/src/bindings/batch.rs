@@ -29,7 +29,7 @@ use crate::handles::{
 };
 use crate::helpers::{
     TOL, classify_to_string, get_bool, get_f64, get_f64_array, get_optional_bool, get_optional_f64,
-    get_u32, get_u32_array, get_u32_array_optional, panic_message, try_chamfer,
+    get_u32, get_u32_array, get_u32_array_optional, panic_message, silhouettes_json, try_chamfer,
 };
 use crate::kernel::{BrepKernel, Refusal};
 use crate::types::SolidOperationDetailedResult;
@@ -203,6 +203,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "polygonBoolean2d"
         | "polygonUnion2d"
         | "projectEdges"
+        | "projectSilhouettes"
         | "solidEdges"
         | "solidToSolidDistance"
         | "sheetArea"
@@ -1952,6 +1953,39 @@ impl BrepKernel {
                     "visible": flatten(&result.visible),
                     "hidden": flatten(&result.hidden),
                 }))
+            }
+            "projectSilhouettes" => {
+                let solid = self
+                    .resolve_solid(get_u32(args, "solid")?)
+                    .map_err(StructuredWasmError::from)?;
+                let origin = Point3::new(
+                    get_f64(args, "originX")?,
+                    get_f64(args, "originY")?,
+                    get_f64(args, "originZ")?,
+                );
+                let dir = Vec3::new(
+                    get_f64(args, "dirX")?,
+                    get_f64(args, "dirY")?,
+                    get_f64(args, "dirZ")?,
+                );
+                let x_axis = Vec3::new(
+                    get_f64(args, "xAxisX")?,
+                    get_f64(args, "xAxisY")?,
+                    get_f64(args, "xAxisZ")?,
+                );
+                let hidden_lines = get_optional_bool(args, "hiddenLines")?.unwrap_or(true);
+                let deflection = get_deflection(args)?;
+                let result = remus_operations::projection::project_silhouettes(
+                    &self.topo,
+                    solid,
+                    origin,
+                    dir,
+                    x_axis,
+                    hidden_lines,
+                    deflection,
+                )
+                .map_err(StructuredWasmError::from)?;
+                Ok(silhouettes_json(&result))
             }
             "chamfer" => {
                 let s = get_u32(args, "solid")?;
@@ -4095,6 +4129,10 @@ mod batch_contract_tests {
     fn classifies_operations_before_topology_snapshotting() {
         assert_eq!(batch_op_kind("volume"), Some(BatchOpKind::ReadOnly));
         assert_eq!(batch_op_kind("projectEdges"), Some(BatchOpKind::ReadOnly));
+        assert_eq!(
+            batch_op_kind("projectSilhouettes"),
+            Some(BatchOpKind::ReadOnly)
+        );
         assert_eq!(
             batch_op_kind("getOpposingPlanarFacePairs"),
             Some(BatchOpKind::ReadOnly)

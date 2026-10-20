@@ -33,8 +33,10 @@ const DEFLECTION: f64 = 0.01;
 /// value sits 1.08 closer to it than the pre-B37 grid's 50 240.64. Walls
 /// whose boundary merely grazes its `v` extremes keep two rows, which is what
 /// preserves the blend refusal's volume oracle on bore walls (a 4-graze wall
-/// lost 0.6 of volume under 216 uniform rows, enough to blind it).
-const HAMMER_HOLDER_VOLUME: f64 = 50_241.718_498_692_12;
+/// lost 0.6 of volume under 216 uniform rows, enough to blind it). The
+/// measurement clamp now rounds down onto a fixed grid, to 3.906e-3 here where
+/// it was 5.397e-3, which reads 0.86 closer to the integrator again.
+const HAMMER_HOLDER_VOLUME: f64 = 50_242.575_649_036_3;
 
 fn assert_valid(topo: &Topology, solid: SolidId) {
     let report = validate_solid(topo, solid, &ValidateOptions::default()).expect("validate solid");

@@ -12,6 +12,10 @@ use remus_topology::solid::SolidId;
 
 use crate::classify::{PointClassification, classify_point};
 
+mod silhouette;
+
+pub use silhouette::{ProjectedSilhouettes, UnsupportedSilhouette, project_silhouettes};
+
 /// Hidden-line removal performs a point-in-solid query for every sampled
 /// segment, so bound both its allocation and classification work.
 const MAX_PROJECT_EDGE_SAMPLE_POINTS: usize = 100_000;
@@ -79,42 +83,9 @@ pub fn project_edges(
         }
     }
 
-    let view = direction
-        .normalize()
-        .map_err(|_| crate::OperationsError::InvalidInput {
-            reason: "projection direction must be non-zero".into(),
-        })?;
-    // In-plane orthonormal basis: x re-orthonormalized against the view, y = x × view.
-    let x = (x_axis - view * view.dot(x_axis))
-        .normalize()
-        .map_err(|_| crate::OperationsError::InvalidInput {
-            reason: "projection x_axis is parallel to the direction".into(),
-        })?;
-    let y = x.cross(view);
-
-    let project = |p: Point3| -> Point2 {
-        let v = p - origin;
-        Point2::new(x.dot(v), y.dot(v))
-    };
-
-    // Step length for the occlusion probe — far enough to clear the boundary
-    // tolerance, small relative to the model. Keyed to the model extent and
-    // capped so a large-coordinate model can't push the probe through thin
-    // features.
-    let bbox = crate::measure::solid_bounding_box(topo, solid)?;
-    let diag = (bbox.max - bbox.min).length();
-    let eps = (diag * 1e-4).clamp(1e-6, 1e-2);
-
-    // A boundary point is hidden when stepping toward the camera (−view) lands
-    // inside the solid, i.e. a face is between it and the camera. A
-    // classification error is propagated rather than silently read as
-    // "visible", so a degenerate solid surfaces instead of yielding wrong HLR.
-    let is_hidden = |p: Point3| -> Result<bool, crate::OperationsError> {
-        Ok(
-            classify_point(topo, solid, p - view * eps, deflection, 1e-7)?
-                == PointClassification::Inside,
-        )
-    };
+    let view = View::new(origin, direction, x_axis)?;
+    let eps = occlusion_step(topo, solid)?;
+    let is_hidden = |p: Point3| view.is_hidden(topo, solid, eps, deflection, p);
 
     let lines = crate::tessellate::sample_solid_edges(topo, solid, deflection)?;
     let n_edges = lines.offsets.len();
@@ -132,42 +103,139 @@ pub fn project_edges(
             continue;
         }
 
-        // Classify each segment by its midpoint, then merge consecutive
-        // same-visibility segments into polylines (adjacent runs share the
-        // boundary vertex, so the drawing stays connected).
-        let seg_hidden: Vec<bool> = (0..pts.len() - 1)
-            .map(|j| {
-                let mid = Point3::new(
-                    0.5 * (pts[j].x() + pts[j + 1].x()),
-                    0.5 * (pts[j].y() + pts[j + 1].y()),
-                    0.5 * (pts[j].z() + pts[j + 1].z()),
-                );
-                is_hidden(mid)
-            })
-            .collect::<Result<Vec<bool>, _>>()?;
-
-        let mut j = 0;
-        while j < seg_hidden.len() {
-            let hidden = seg_hidden[j];
-            let run_start = j;
-            while j < seg_hidden.len() && seg_hidden[j] == hidden {
-                j += 1;
-            }
-            // Run covers segments [run_start, j), i.e. points [run_start, j].
-            if hidden && !hidden_lines {
-                continue;
-            }
-            let poly: Vec<Point2> = (run_start..=j).map(|k| project(pts[k])).collect();
-            if hidden {
-                result.hidden.push(poly);
-            } else {
-                result.visible.push(poly);
-            }
-        }
+        push_runs(
+            pts,
+            &view,
+            hidden_lines,
+            is_hidden,
+            &mut result.visible,
+            &mut result.hidden,
+        )?;
     }
 
     Ok(result)
 }
+
+/// An orthographic view: the plane through `origin` with in-plane basis
+/// `(x, y)`, looked at along `dir` (camera into scene).
+struct View {
+    origin: Point3,
+    dir: Vec3,
+    x: Vec3,
+    y: Vec3,
+}
+
+impl View {
+    fn new(origin: Point3, direction: Vec3, x_axis: Vec3) -> Result<Self, crate::OperationsError> {
+        let dir = direction
+            .normalize()
+            .map_err(|_| crate::OperationsError::InvalidInput {
+                reason: "projection direction must be non-zero".into(),
+            })?;
+        // In-plane orthonormal basis: x re-orthonormalized against the view, y = x × view.
+        let x = (x_axis - dir * dir.dot(x_axis)).normalize().map_err(|_| {
+            crate::OperationsError::InvalidInput {
+                reason: "projection x_axis is parallel to the direction".into(),
+            }
+        })?;
+        let y = x.cross(dir);
+        Ok(Self { origin, dir, x, y })
+    }
+
+    fn project(&self, p: Point3) -> Point2 {
+        let v = p - self.origin;
+        Point2::new(self.x.dot(v), self.y.dot(v))
+    }
+
+    /// A boundary point is hidden when stepping toward the camera (−dir)
+    /// lands inside the solid, i.e. a face is between it and the camera. A
+    /// classification error is propagated rather than silently read as
+    /// "visible", so a degenerate solid surfaces instead of yielding wrong HLR.
+    fn is_hidden(
+        &self,
+        topo: &Topology,
+        solid: SolidId,
+        eps: f64,
+        deflection: f64,
+        p: Point3,
+    ) -> Result<bool, crate::OperationsError> {
+        Ok(
+            classify_point(topo, solid, p - self.dir * eps, deflection, 1e-7)?
+                == PointClassification::Inside,
+        )
+    }
+}
+
+/// Step length for the occlusion probe — far enough to clear the boundary
+/// tolerance, small relative to the model. Keyed to the model extent and
+/// capped so a large-coordinate model can't push the probe through thin
+/// features.
+fn occlusion_step(topo: &Topology, solid: SolidId) -> Result<f64, crate::OperationsError> {
+    let bbox = crate::measure::solid_bounding_box(topo, solid)?;
+    let diag = (bbox.max - bbox.min).length();
+    Ok((diag * 1e-4).clamp(1e-6, 1e-2))
+}
+
+/// Classify each segment of `pts` by its midpoint, then merge consecutive
+/// same-visibility segments into projected polylines (adjacent runs share
+/// the boundary vertex, so the drawing stays connected).
+fn push_runs(
+    pts: &[Point3],
+    view: &View,
+    hidden_lines: bool,
+    mut is_hidden: impl FnMut(Point3) -> Result<bool, crate::OperationsError>,
+    visible: &mut Vec<Vec<Point2>>,
+    hidden: &mut Vec<Vec<Point2>>,
+) -> Result<(), crate::OperationsError> {
+    if pts.len() < 2 {
+        return Ok(());
+    }
+    let seg_hidden: Vec<bool> = (0..pts.len() - 1)
+        .map(|j| {
+            let mid = Point3::new(
+                0.5 * (pts[j].x() + pts[j + 1].x()),
+                0.5 * (pts[j].y() + pts[j + 1].y()),
+                0.5 * (pts[j].z() + pts[j + 1].z()),
+            );
+            is_hidden(mid)
+        })
+        .collect::<Result<Vec<bool>, _>>()?;
+    push_classified_runs(pts, &seg_hidden, view, hidden_lines, visible, hidden);
+    Ok(())
+}
+
+/// Merge consecutive same-visibility segments of `pts`, segment `j` hidden
+/// when `seg_hidden[j]`, into projected polylines.
+fn push_classified_runs(
+    pts: &[Point3],
+    seg_hidden: &[bool],
+    view: &View,
+    hidden_lines: bool,
+    visible: &mut Vec<Vec<Point2>>,
+    hidden: &mut Vec<Vec<Point2>>,
+) {
+    let mut j = 0;
+    while j < seg_hidden.len() {
+        let is_run_hidden = seg_hidden[j];
+        let run_start = j;
+        while j < seg_hidden.len() && seg_hidden[j] == is_run_hidden {
+            j += 1;
+        }
+        // Run covers segments [run_start, j), i.e. points [run_start, j].
+        if is_run_hidden && !hidden_lines {
+            continue;
+        }
+        let poly: Vec<Point2> = (run_start..=j).map(|k| view.project(pts[k])).collect();
+        if is_run_hidden {
+            hidden.push(poly);
+        } else {
+            visible.push(poly);
+        }
+    }
+}
+
+#[cfg(test)]
+mod silhouette_tests;
 
 #[cfg(test)]
 mod tests {
