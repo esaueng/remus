@@ -24,13 +24,14 @@ class GauntletWorkflowTests(unittest.TestCase):
     def test_declares_daily_smoke_and_weekly_abc_schedules(self) -> None:
         self.assertIn('- cron: "17 3 * * *"', self.text)
         self.assertIn('- cron: "47 3 * * 0"', self.text)
-        self.assertIn('if [ "$SCHEDULE" = "47 3 * * 0" ]', self.run_job)
         # The caller maps its own weekly cron to the tier, so editing the
-        # schedule line and the tier selection happens in one file.
+        # schedule line and the tier selection happens in one file; the callee
+        # only reads its input.
         self.assertIn("tier: ${{ github.event.schedule == '47 3 * * 0' && 'abc-1k' || inputs.tier || 'smoke' }}",
                       self.caller)
-        self.assertIn("tier=abc-1k", self.run_job)
-        self.assertIn("tier=smoke", self.run_job)
+        self.assertIn("tier=${REQUESTED_TIER:-smoke}", self.run_job)
+        self.assertNotIn("github.event.schedule", self.run_job)
+        self.assertNotIn("47 3 * * 0", self.run_job)
 
     def test_runner_is_read_only_and_publisher_is_main_only(self) -> None:
         self.assertIn("permissions: {}", self.text)

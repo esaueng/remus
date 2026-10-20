@@ -87,7 +87,7 @@ jobs:
   wasm-size:
     needs: checks
     if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.checks.outputs.wasm == 'true' }}
-    uses: esaueng/remus/.github/workflows/fleet-wasm-size-v3.yml@59d02a10f498a2b3c24512e8b2d9ba8150bbdb1e
+    uses: esaueng/remus/.github/workflows/fleet-wasm-size-v4.yml@a05f0d2fbf413d168aacd3653b12870e650b87d3
     permissions:
       contents: read
       pull-requests: write

@@ -18,21 +18,21 @@ permissions:
 # capped at one wave of 8 shards. A larger week is sampled: each shard runs a
 # shuffled order until its budget expires. scripts/mutants-verdict.py reports
 # missed mutants for triage and fails a shard only on a broken run (baseline
-# not green, nothing examined, timed-out mutants, unreadable output). The
-# callee's own comment still describes the earlier fail-closed verdict; the
+# not green, nothing examined, timed-out mutants, mutants left without an
+# outcome by a run that ended before the budget, unreadable output). The
 # per-mutant settings live in `.cargo/mutants.toml`, and both scripts and the
 # config are read from the checkout, so tuning them needs no pin change.
 #
 # Pin rule (scripts/test-ubuntu-ci-routing.py): the pin must be a commit on
 # main whose copy of the callee is byte-identical to the checked-in file. A PR
-# that edits fleet-mutants-sharded-v2.yml therefore cannot re-pin to its own
+# that edits fleet-mutants-sharded-v3.yml therefore cannot re-pin to its own
 # branch commit (it dangles after squash-merge, PR #499); land the callee
 # change first, then re-pin to that squash commit in a follow-up, checking
 # `git merge-base --is-ancestor <sha> origin/main` and the file content.
 # Keep the callee commit when merging so this pin remains on main.
 jobs:
   checks:
-    uses: esaueng/remus/.github/workflows/fleet-mutants-sharded-v2.yml@e07ae8e345e10085a717988e10fc08776c85d84a
+    uses: esaueng/remus/.github/workflows/fleet-mutants-sharded-v3.yml@a05f0d2fbf413d168aacd3653b12870e650b87d3
     permissions:
       contents: read
       pull-requests: read
