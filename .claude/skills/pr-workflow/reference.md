@@ -49,7 +49,7 @@ Local pre-commit covers only fmt, clippy, taplo, machete, and the last two only 
 - `allow_squash_merge: true`, but `allow_merge_commit: true` and `allow_rebase_merge: true` as well — squash is NOT the only option, so always pass `--squash` explicitly.
 - `allow_auto_merge: **true**` — `gh pr merge <N> --squash --auto` merges once `checks / CI Pass` passes. It does not wait for the three checks outside the fan-in.
 - `delete_branch_on_merge: **true**` — GitHub deletes the head branch on merge, which auto-closes any PR stacked on it. Retarget stacked PRs to `main` before merging the parent.
-- Branch protection on `main` (verified 2026-10-01): required status check `checks / CI Pass` with `strict: true`, so a PR behind `main` must be updated (`gh api -X PUT repos/esaueng/remus/pulls/<N>/update-branch -f expected_head_sha=<head>`) before it can merge; `required_conversation_resolution: true`, so every review thread must be resolved; required approvals none; `enforce_admins` false, so admins bypass the check; force pushes allowed. A disabled ruleset "Bounded merge queue" exists. Not pushing to `main` is still a rule you follow: the server stops a non-admin push only through the required check.
+- Branch protection on `main` (verified 2026-10-01): required status check `checks / CI Pass` with `strict: true`, so a PR behind `main` must be updated (`gh api -X PUT repos/esaueng/remus/pulls/<N>/update-branch -f expected_head_sha=<head>`) before it can merge; `required_conversation_resolution: true`, so every review thread must be resolved; required approvals none; `enforce_admins` false, so admins bypass the check; force pushes allowed. A merge queue has since gone live on `main` (verified 2026-10-20), so a PR no longer needs updating before it merges; see SKILL.md, "The merge gate". Not pushing to `main` is still a rule you follow: the server stops a non-admin push only through the required check.
 - Squash commit titles on `main` look like `type(scope): subject (#N)`.
 
 ## Code review
@@ -95,6 +95,12 @@ with `rg -l 'release-please' .github/workflows/`, and note the leftover
 What actually runs, verified against the workflow file and a live merge
 (2026-08-21, merge `932748e` → auto-commit `b107040` two minutes later):
 
+- Since 2026-10 the workflow opens a refresh PR instead of committing to
+  `main` (verified 2026-10-20 against `publish.yml` and
+  `scripts/publish-wasm-package-pr.py`): the package bot App pushes
+  `codex/wasm-refresh-<source sha>`, opens `chore(wasm): refresh committed
+  packages to vX.Y.Z`, and closes the older open refresh PRs built from an
+  ancestor. The bullets below describe the earlier direct-commit flow.
 - Workflow name "Refresh Apache Staging Package"; runs on every push to
   `main`, skipping its own `[skip ci]` commits so it cannot loop.
 - Rebuilds `crates/wasm/pkg` and `crates/wasm-io/pkg` with `cargo xtask wasm-build`,
