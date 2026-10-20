@@ -1960,9 +1960,11 @@ impl BrepKernel {
     /// The view arguments and `hidden_lines` match `projectEdges`, and the two
     /// results together make the outline drawing. Returns a JSON string
     /// `{"visible": [[x,y,…]], "hidden": [[…]], "unsupported": [{"face": id,
-    /// "surface": "nurbs"}]}`: cylinder, cone, sphere and torus outlines are
-    /// exact curves clipped to the face, and faces whose outline is not
-    /// computed are named rather than approximated.
+    /// "surface": tag}], "approximate": [id]}`: cylinder, cone, sphere and
+    /// torus outlines are exact curves clipped to the face; NURBS outlines
+    /// are traced on a grid of the face's parameters with every vertex on
+    /// the silhouette, and those faces are listed in `approximate`.
+    /// `unsupported` is empty today: every surface type is handled.
     ///
     /// # Errors
     ///
@@ -4687,8 +4689,8 @@ mod tests {
     }
 
     /// A cylinder from the side: two visible outline rulings at x = ±5 from
-    /// rim to rim, nothing hidden or unsupported. A torus has an outline too;
-    /// a NURBS face is named instead.
+    /// rim to rim, nothing hidden or unsupported. A torus has an outline too,
+    /// and a NURBS face a traced one, listed as approximate.
     #[test]
     fn project_silhouettes_batch_dispatch_cylinder_torus_and_nurbs() {
         let mut k = BrepKernel::new();
@@ -4750,13 +4752,17 @@ mod tests {
         let nurbs = remus_operations::primitives::make_cylinder(k.topo_mut(), 5.0, 10.0).unwrap();
         remus_operations::heal::convert_to_bspline(k.topo_mut(), nurbs).unwrap();
         let out = dispatch(&mut k, "projectSilhouettes", view(nurbs));
-        let unsupported = out["ok"]["unsupported"].as_array().unwrap();
-        assert!(!unsupported.is_empty(), "{out}");
         assert!(
-            unsupported
-                .iter()
-                .all(|u| u["surface"] == "nurbs" && u["face"].is_u64())
+            !out["ok"]["visible"].as_array().unwrap().is_empty(),
+            "{out}"
         );
+        assert!(
+            out["ok"]["unsupported"].as_array().unwrap().is_empty(),
+            "{out}"
+        );
+        let approximate = out["ok"]["approximate"].as_array().unwrap();
+        assert!(!approximate.is_empty(), "{out}");
+        assert!(approximate.iter().all(serde_json::Value::is_u64), "{out}");
     }
 
     #[test]
