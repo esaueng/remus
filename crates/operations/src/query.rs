@@ -17,6 +17,13 @@ use crate::boolean::{face_polygon, wire_polygon};
 use crate::classify::{PointClassification, RobustClassifier};
 use crate::measure::face_area;
 
+mod crossing_memo;
+pub use crossing_memo::{
+    CrossingMemoStats, DEFAULT_CROSSING_MEMO_CAPACITY, DEFAULT_CROSSING_MEMO_FACE_BYTE_BUDGET,
+    DEFAULT_CROSSING_MEMO_FACE_CAPACITY, disable_thread_crossing_memo, enable_thread_crossing_memo,
+    set_thread_crossing_memo_limits, thread_crossing_memo_stats,
+};
+
 /// An opposing pair of parallel planar faces with a non-zero projected overlap.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OpposingPlanarFacePair {
@@ -820,12 +827,17 @@ impl<'a> EdgeRelationContext<'a> {
     ///
     /// Returns an error if the solid handle or its faces are invalid.
     pub(crate) fn prepare(topo: &'a Topology, solid: SolidId) -> Result<Self, OperationsError> {
-        Ok(Self {
-            topo,
-            prepared: crate::performance::timed("relations.preparation", || {
-                remus_check::classify::PreparedSolid::prepare(topo, solid)
-            })?,
-        })
+        let prepared = crate::performance::timed("relations.preparation", || {
+            remus_check::classify::PreparedSolid::prepare(topo, solid)
+        })?;
+        let memo = crate::performance::timed("relations.crossing_keys", || {
+            crossing_memo::SolidCrossingMemo::for_solid(topo, solid)
+        });
+        let prepared = match memo {
+            Some(memo) => prepared.with_crossing_memo(std::sync::Arc::new(memo)),
+            None => prepared,
+        };
+        Ok(Self { topo, prepared })
     }
 
     /// Concavity plus the `[0, pi]` normal angle of one manifold edge.

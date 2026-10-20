@@ -68,8 +68,9 @@ impl BrepKernel {
     pub fn new() -> Self {
         crate::panics::install_hook();
         // Content-keyed face integrals, NURBS areas, face boxes, planar arc
-        // pcurves, revolved wire areas and the ray classifier's torus trims,
-        // plus identity-keyed volume readings (off in the library by
+        // pcurves, revolved wire areas, the ray classifier's torus trims and
+        // the edge-concavity probes' per-face ray crossings, plus
+        // identity-keyed volume readings (off in the library by
         // default). Module-wide on purpose: a body validated in one kernel is
         // a content-keyed hit when a short-lived probe kernel validates its
         // deserialized copy, and an unchanged hole rim, wall or blend is a
@@ -84,6 +85,7 @@ impl BrepKernel {
         remus_algo::pcurve_memo::enable_thread_pcurve_memo();
         remus_algo::wire_area_memo::enable_thread_wire_area_memo();
         remus_algo::ray_geom_memo::enable_thread_ray_geom_memo();
+        remus_operations::query::enable_thread_crossing_memo();
         Self {
             topo: Rc::new(Topology::new()),
             assemblies: HandleStore::default(),

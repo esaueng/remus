@@ -468,3 +468,5 @@ fn journaled_moves_match_and_a_changed_source_is_refused() {
     topo.restore_preserving_handle_slots(&checkpoint);
     assert!(prepared.is_current(&topo));
 }
+
+mod scaling;

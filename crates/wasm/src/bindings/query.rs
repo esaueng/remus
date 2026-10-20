@@ -480,6 +480,25 @@ impl BrepKernel {
         )
     }
 
+    /// Exact content digests of faces, one 32-character hex string per face
+    /// handle, in input order.
+    ///
+    /// Equal digests mean the faces have the same content: reversal, support
+    /// surface, and complete boundary (curves, trims, tolerances, vertex
+    /// positions, pcurves, and the relative arena order of the face's edges,
+    /// which the face mesher reads). Handles do not enter, so a consumer can
+    /// recognise faces an edit left untouched and keep what it derived from
+    /// them. Reals are compared by their bits; there is no tolerance. The
+    /// digest is a 128-bit hash, not a cryptographic one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a face handle is invalid.
+    #[wasm_bindgen(js_name = "faceContentDigests")]
+    pub fn face_content_digests(&self, faces: &[u32]) -> Result<Vec<String>, JsError> {
+        Ok(self.face_content_digests_impl(faces)?)
+    }
+
     /// Get entity counts of a solid: `[faces, edges, vertices]`.
     ///
     /// # Errors
@@ -1931,6 +1950,21 @@ impl BrepKernel {
 // so the real work lives here behind a `WasmError` and stays reachable from
 // native tests and from `executeBatch` dispatch.
 impl BrepKernel {
+    /// Implementation behind `faceContentDigests`.
+    ///
+    /// # Errors
+    ///
+    /// See [`face_content_digests`](Self::face_content_digests).
+    pub fn face_content_digests_impl(&self, faces: &[u32]) -> Result<Vec<String>, WasmError> {
+        faces
+            .iter()
+            .map(|&face| {
+                let face_id = self.resolve_face(face)?;
+                Ok(remus_operations::measure::face_content_digest(&self.topo, face_id)?.to_hex())
+            })
+            .collect()
+    }
+
     /// Implementation behind `addHolesToFace`.
     ///
     /// # Errors

@@ -42,13 +42,13 @@ use std::collections::VecDeque;
 use std::hash::Hasher;
 
 use remus_math::curves2d::Curve2D;
-use remus_math::det_hash::{DetHashMap, DetHasher};
+use remus_math::det_hash::{DetHashMap, DetHashSet, DetHasher};
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::vec::{Point3, Vec3};
-use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
-use remus_topology::face::FaceId;
+use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::pcurve::PCurve;
+use remus_topology::{BodyClass, Topology};
 
 /// Default retained NURBS-area readings per thread once enabled.
 pub const DEFAULT_NURBS_AREA_MEMO_CAPACITY: usize = 512;
@@ -58,6 +58,8 @@ pub const DEFAULT_NURBS_AREA_MEMO_BYTE_BUDGET: usize = 8 * 1024 * 1024;
 
 /// Bump when the key's content or request encoding changes.
 const KEY_VERSION: u64 = 0x5245_4d55_534e_4134;
+/// Leads a face digest's key, so it never equals an area-memo key.
+const FACE_DIGEST_KEY_VERSION: u64 = 0x5245_4d55_5346_4433;
 
 /// Deterministic counters and current bounds of the thread's NURBS-area memo.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -275,6 +277,56 @@ impl KeyWriter {
         }
     }
 
+    /// Every field of a support surface of any type, for the face digest.
+    fn face_surface(&mut self, surface: &FaceSurface) {
+        match surface {
+            FaceSurface::Plane { normal, d } => {
+                self.word(1);
+                self.vec(*normal);
+                self.real(*d);
+            }
+            FaceSurface::Nurbs(s) => {
+                self.word(2);
+                self.count(s.degree_u());
+                self.count(s.degree_v());
+                self.surface(s);
+            }
+            FaceSurface::Cylinder(s) => {
+                self.word(3);
+                self.point(s.origin());
+                self.vec(s.axis());
+                self.real(s.radius());
+                self.vec(s.x_axis());
+                self.vec(s.y_axis());
+            }
+            FaceSurface::Cone(s) => {
+                self.word(4);
+                self.point(s.apex());
+                self.vec(s.axis());
+                self.real(s.half_angle());
+                self.vec(s.x_axis());
+                self.vec(s.y_axis());
+            }
+            FaceSurface::Sphere(s) => {
+                self.word(5);
+                self.point(s.center());
+                self.real(s.radius());
+                self.vec(s.x_axis());
+                self.vec(s.y_axis());
+                self.vec(s.z_axis());
+            }
+            FaceSurface::Torus(s) => {
+                self.word(6);
+                self.point(s.center());
+                self.real(s.major_radius());
+                self.real(s.minor_radius());
+                self.vec(s.x_axis());
+                self.vec(s.y_axis());
+                self.vec(s.z_axis());
+            }
+        }
+    }
+
     fn curve(&mut self, curve: &EdgeCurve) {
         match curve {
             EdgeCurve::Line => self.word(1),
@@ -446,6 +498,77 @@ impl KeyWriter {
         self.surface(surface);
         self.boundary(topo, face_id)
     }
+}
+
+/// Key words of a face's complete content: its reversal, every field of its
+/// support surface, the boundary this memo's key records (wires, oriented
+/// edges, curves, trims, tolerances, vertex positions and pcurves), the
+/// authoritative loops and coedges with their periodic windings, and the
+/// wires' body classes and vertices' tolerances: every field of the face and
+/// the entities under it. Handles enter as first-occurrence ordinals. `None`
+/// when an entity is missing.
+pub fn face_content_words(topo: &Topology, face_id: FaceId) -> Option<Vec<u64>> {
+    let face = topo.face(face_id).ok()?;
+    let mut writer = KeyWriter {
+        words: 0,
+        key: Some(Vec::new()),
+    };
+    writer.word(FACE_DIGEST_KEY_VERSION);
+    writer.word(u64::from(face.is_reversed()));
+    writer.face_surface(face.surface());
+    writer.boundary(topo, face_id)?;
+    // The wires' first-occurrence edge ordinals, so a loop names its edges
+    // the way the boundary words above do.
+    let mut edge_ordinals: DetHashMap<usize, u64> = DetHashMap::default();
+    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        for oriented in topo.wire(wire_id).ok()?.edges() {
+            let next = edge_ordinals.len() as u64;
+            edge_ordinals.entry(oriented.edge().index()).or_insert(next);
+        }
+    }
+    writer.count(face.boundary_loops().len());
+    for &loop_id in face.boundary_loops() {
+        let boundary = topo.face_loop(loop_id).ok()?;
+        writer.word(u64::from(boundary.is_closed()));
+        writer.count(boundary.coedges().len());
+        for &coedge_id in boundary.coedges() {
+            let coedge = topo.coedge(coedge_id).ok()?;
+            // An edge the wires do not use is a different boundary.
+            writer.word(
+                edge_ordinals
+                    .get(&coedge.edge().index())
+                    .copied()
+                    .unwrap_or(u64::MAX),
+            );
+            writer.word(u64::from(coedge.is_forward()));
+            writer.pcurve(coedge.pcurve());
+            let winding = coedge.periodic_winding();
+            writer.word(u64::from(winding.u().cast_unsigned()));
+            writer.word(u64::from(winding.v().cast_unsigned()));
+        }
+    }
+    // Fields the mesher does not read, so the boundary words above omit
+    // them: each wire's body class and each vertex's tolerance, the vertices
+    // in the boundary's first-occurrence order.
+    let mut vertices_seen: DetHashSet<usize> = DetHashSet::default();
+    for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        let wire = topo.wire(wire_id).ok()?;
+        writer.word(match wire.body_class() {
+            BodyClass::Solid => 1,
+            BodyClass::Sheet => 2,
+            BodyClass::Wire => 3,
+            BodyClass::General => 4,
+        });
+        for oriented in wire.edges() {
+            let edge = topo.edge(oriented.edge()).ok()?;
+            for vertex_id in [edge.start(), edge.end()] {
+                if vertices_seen.insert(vertex_id.index()) {
+                    writer.real(topo.vertex(vertex_id).ok()?.tolerance());
+                }
+            }
+        }
+    }
+    writer.key
 }
 
 /// Count the complete key, then allocate and write it only when it fits.
