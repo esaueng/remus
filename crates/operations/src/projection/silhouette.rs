@@ -148,11 +148,14 @@ impl Curve {
         let Self::Torus { minor, .. } = *self else {
             return Some((0..=count).map(uniform).collect());
         };
-        let max_chord = 2.0 * (deflection * (2.0 * minor - deflection).max(0.0)).sqrt();
-        let max_chord = if max_chord > 0.0 {
-            max_chord
+        // The tube chord at sagitta `d` grows to the diameter at `d = r`; past
+        // that it would shrink again, and from `d = 2r` the whole tube is
+        // within the deflection, so the bound is dropped.
+        let max_chord = if deflection >= 2.0 * minor {
+            f64::INFINITY
         } else {
-            2.0 * minor
+            let sagitta = deflection.min(minor);
+            2.0 * (sagitta * (2.0 * minor - sagitta)).sqrt()
         };
         let mut ts = vec![0.0];
         let mut start = self.at(0.0);

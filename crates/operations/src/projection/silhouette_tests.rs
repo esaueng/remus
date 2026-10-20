@@ -438,6 +438,45 @@ fn torus_axial_view_is_its_equators() {
     }
 }
 
+/// A deflection past the tube diameter puts no tube-chord bound on a thin
+/// ring: its equators are sampled at their own chord spacing, about 140
+/// intervals each, instead of 2-long chords that overrun the sample limit.
+#[test]
+fn thin_torus_coarse_deflection_is_sampled() {
+    let mut topo = Topology::new();
+    let torus = make_torus(&mut topo, 20_000.0, 1.0, 8).unwrap();
+    let out = project_silhouettes(
+        &topo,
+        torus,
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, -1.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        true,
+        5.0,
+    )
+    .unwrap();
+    assert!(out.unsupported.is_empty());
+    let points: usize = out.visible.iter().map(Vec::len).sum();
+    assert!(points < 1_000, "{points} points");
+    let mut turned = [0.0_f64; 2];
+    for line in &out.visible {
+        for w in line.windows(2) {
+            let radius = w[0].x().hypot(w[0].y());
+            let which = usize::from((radius - 19_999.0).abs() < 1e-6);
+            assert!(
+                which == 1 || (radius - 20_001.0).abs() < 1e-6,
+                "radius {radius}"
+            );
+            turned[which] += (w[0].x() * w[1].y() - w[0].y() * w[1].x())
+                .atan2(w[0].x() * w[1].x() + w[0].y() * w[1].y())
+                .abs();
+        }
+    }
+    for angle in turned {
+        assert!((angle - std::f64::consts::TAU).abs() < 1e-9, "{turned:?}");
+    }
+}
+
 /// Seen in its equatorial plane, a torus's outline is four circles: the top
 /// and bottom circles, edge-on as lines at height ±r, and the two meridians
 /// at the sides. A meridian's outer half is in front of nothing; its inner
