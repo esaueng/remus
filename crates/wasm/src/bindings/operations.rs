@@ -1955,13 +1955,13 @@ impl BrepKernel {
 
     /// Project the silhouettes of a solid's curved faces onto a view plane
     /// with hidden-line removal: the outline a drawing shows at the side of a
-    /// cylinder, cone or sphere, which no edge carries.
+    /// cylinder, cone, sphere or torus, which no edge carries.
     ///
     /// The view arguments and `hidden_lines` match `projectEdges`, and the two
     /// results together make the outline drawing. Returns a JSON string
     /// `{"visible": [[x,y,…]], "hidden": [[…]], "unsupported": [{"face": id,
-    /// "surface": "torus" | "nurbs"}]}`: cylinder, cone and sphere outlines
-    /// are exact curves clipped to the face, and faces whose outline is not
+    /// "surface": "nurbs"}]}`: cylinder, cone, sphere and torus outlines are
+    /// exact curves clipped to the face, and faces whose outline is not
     /// computed are named rather than approximated.
     ///
     /// # Errors
@@ -4687,9 +4687,10 @@ mod tests {
     }
 
     /// A cylinder from the side: two visible outline rulings at x = ±5 from
-    /// rim to rim, nothing hidden or unsupported; a torus is named instead.
+    /// rim to rim, nothing hidden or unsupported. A torus has an outline too;
+    /// a NURBS face is named instead.
     #[test]
-    fn project_silhouettes_batch_dispatch_cylinder_and_torus() {
+    fn project_silhouettes_batch_dispatch_cylinder_torus_and_nurbs() {
         let mut k = BrepKernel::new();
         let cylinder =
             remus_operations::primitives::make_cylinder(k.topo_mut(), 5.0, 10.0).unwrap();
@@ -4737,12 +4738,24 @@ mod tests {
 
         let torus = remus_operations::primitives::make_torus(k.topo_mut(), 6.0, 1.5, 8).unwrap();
         let out = dispatch(&mut k, "projectSilhouettes", view(torus));
+        assert!(
+            !out["ok"]["visible"].as_array().unwrap().is_empty(),
+            "{out}"
+        );
+        assert!(
+            out["ok"]["unsupported"].as_array().unwrap().is_empty(),
+            "{out}"
+        );
+
+        let nurbs = remus_operations::primitives::make_cylinder(k.topo_mut(), 5.0, 10.0).unwrap();
+        remus_operations::heal::convert_to_bspline(k.topo_mut(), nurbs).unwrap();
+        let out = dispatch(&mut k, "projectSilhouettes", view(nurbs));
         let unsupported = out["ok"]["unsupported"].as_array().unwrap();
         assert!(!unsupported.is_empty(), "{out}");
         assert!(
             unsupported
                 .iter()
-                .all(|u| u["surface"] == "torus" && u["face"].is_u64())
+                .all(|u| u["surface"] == "nurbs" && u["face"].is_u64())
         );
     }
 

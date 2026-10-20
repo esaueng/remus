@@ -339,20 +339,267 @@ fn notch_splits_a_ruling_at_its_trims() {
     }
 }
 
-/// A torus has no closed-form outline here: it is named, not approximated.
+/// Distance of `p` from the tube centre circle of the torus `(c, z, R)`
+/// and the unit vector from that circle to `p`: the tube's outward normal.
+fn torus_tube(p: Point3, center: Point3, z: Vec3, major: f64) -> (f64, Vec3) {
+    let rel = p - center;
+    let in_plane = rel - z * rel.dot(z);
+    let ring = center + in_plane.normalize().unwrap() * major;
+    let off = p - ring;
+    (off.length(), off.normalize().unwrap())
+}
+
+/// Every sampled point of both torus branches, in views from straight down
+/// the axis to just off the equatorial plane, lies on the torus with its
+/// normal perpendicular to the view, and neighbouring samples stay within
+/// the deflection of the curve and a tube chord of each other.
 #[test]
-fn torus_is_reported_unsupported() {
+fn torus_branches_satisfy_the_silhouette_condition() {
+    let surface = remus_math::surfaces::ToroidalSurface::with_axis(
+        Point3::new(1.0, -2.0, 3.0),
+        6.0,
+        1.5,
+        Vec3::new(0.2, -0.3, 1.0),
+    )
+    .unwrap();
+    let z = surface.z_axis();
+    let face = remus_topology::face::FaceSurface::Torus(surface.clone());
+    let topo = Topology::new();
+    for direction in [
+        -z,
+        Vec3::new(1.0, 2.0, -3.0),
+        Vec3::new(0.3, -1.0, 0.7),
+        // 1e-6 off the equatorial plane: each branch turns through a
+        // meridian in a u-interval about 3e-6 wide.
+        (surface.x_axis() + z * 1e-6).normalize().unwrap(),
+    ] {
+        let d = direction.normalize().unwrap();
+        let curves = super::silhouette::carrier_silhouettes(&topo, &face, &[], d).unwrap();
+        assert_eq!(curves.len(), 2, "{d:?}");
+        let max_chord = 2.0 * (DEFLECTION * (3.0 - DEFLECTION)).sqrt();
+        for curve in &curves {
+            let ts = curve.sample_ts(DEFLECTION, 100_000).unwrap();
+            for pair in ts.windows(2) {
+                let (a, b) = (curve.at(pair[0]), curve.at(pair[1]));
+                assert!(
+                    (b - a).length() <= max_chord + 1e-12,
+                    "{d:?}: gap at {pair:?}"
+                );
+            }
+            for &t in &ts {
+                let p = curve.at(t);
+                let (distance, normal) = torus_tube(p, surface.center(), z, 6.0);
+                assert!(
+                    (distance - 1.5).abs() < 1e-9,
+                    "{d:?} t={t}: off the torus by {}",
+                    distance - 1.5
+                );
+                assert!(
+                    normal.dot(d).abs() < 1e-9,
+                    "{d:?} t={t}: n·d = {}",
+                    normal.dot(d)
+                );
+            }
+        }
+    }
+}
+
+/// Seen down its axis, a torus's outline is its outer and inner equators,
+/// circles of radius R + r and R − r, all visible.
+#[test]
+fn torus_axial_view_is_its_equators() {
     let mut topo = Topology::new();
     let torus = make_torus(&mut topo, 6.0, 1.5, 8).unwrap();
+    let out = project(
+        &topo,
+        torus,
+        Vec3::new(0.0, 0.0, -1.0),
+        Vec3::new(1.0, 0.0, 0.0),
+    );
+    assert!(out.unsupported.is_empty());
+    assert!(out.hidden.is_empty(), "{:?}", out.hidden);
+    let mut turned = [0.0_f64; 2];
+    for line in &out.visible {
+        for w in line.windows(2) {
+            let radius = w[0].x().hypot(w[0].y());
+            let which = if (radius - 7.5).abs() < 1e-9 {
+                0
+            } else {
+                assert!((radius - 4.5).abs() < 1e-9, "radius {radius}");
+                1
+            };
+            turned[which] += (w[0].x() * w[1].y() - w[0].y() * w[1].x())
+                .atan2(w[0].x() * w[1].x() + w[0].y() * w[1].y())
+                .abs();
+        }
+    }
+    for angle in turned {
+        assert!((angle - std::f64::consts::TAU).abs() < 1e-9, "{turned:?}");
+    }
+}
+
+/// A deflection past the tube diameter puts no tube-chord bound on a thin
+/// ring: its equators are sampled at their own chord spacing, about 140
+/// intervals each, instead of 2-long chords that overrun the sample limit.
+#[test]
+fn thin_torus_coarse_deflection_is_sampled() {
+    let mut topo = Topology::new();
+    let torus = make_torus(&mut topo, 20_000.0, 1.0, 8).unwrap();
+    let out = project_silhouettes(
+        &topo,
+        torus,
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, -1.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        true,
+        5.0,
+    )
+    .unwrap();
+    assert!(out.unsupported.is_empty());
+    let points: usize = out.visible.iter().map(Vec::len).sum();
+    assert!(points < 1_000, "{points} points");
+    let mut turned = [0.0_f64; 2];
+    for line in &out.visible {
+        for w in line.windows(2) {
+            let radius = w[0].x().hypot(w[0].y());
+            let which = usize::from((radius - 19_999.0).abs() < 1e-6);
+            assert!(
+                which == 1 || (radius - 20_001.0).abs() < 1e-6,
+                "radius {radius}"
+            );
+            turned[which] += (w[0].x() * w[1].y() - w[0].y() * w[1].x())
+                .atan2(w[0].x() * w[1].x() + w[0].y() * w[1].y())
+                .abs();
+        }
+    }
+    for angle in turned {
+        assert!((angle - std::f64::consts::TAU).abs() < 1e-9, "{turned:?}");
+    }
+}
+
+/// Seen in its equatorial plane, a torus's outline is four circles: the top
+/// and bottom circles, edge-on as lines at height ±r, and the two meridians
+/// at the sides. A meridian's outer half is in front of nothing; its inner
+/// half lies behind the near side of the ring.
+#[test]
+fn torus_side_view_is_lines_and_meridians() {
+    let mut topo = Topology::new();
+    let torus = make_torus(&mut topo, 6.0, 1.5, 8).unwrap();
+    // Along +y: in-plane x is +x and y is +z.
     let out = project(
         &topo,
         torus,
         Vec3::new(0.0, 1.0, 0.0),
         Vec3::new(1.0, 0.0, 0.0),
     );
+    let mut meridian_points = 0;
+    for (lines, hidden) in [(&out.visible, false), (&out.hidden, true)] {
+        for line in lines {
+            for p in line {
+                let on_line = (p.y().abs() - 1.5).abs() < 1e-9 && p.x().abs() <= 6.0 + 1e-9;
+                let on_meridian = ((p.x().abs() - 6.0).hypot(p.y()) - 1.5).abs() < 1e-9;
+                assert!(on_line || on_meridian, "{p:?}");
+                // Only meridian points strictly off the top and bottom
+                // lines carry a visibility the oracle decides.
+                if on_meridian && !on_line && (p.x().abs() - 6.0).abs() > 0.1 {
+                    meridian_points += 1;
+                    assert_eq!(hidden, p.x().abs() < 6.0, "{p:?} hidden = {hidden}");
+                }
+            }
+        }
+    }
+    assert!(meridian_points > 20, "{meridian_points}");
+}
+
+/// A box notch through the +x side of a torus (R = 10, r = 3; the box
+/// [6, 14] × [−4, 4] × [−4, 4]) seen from above cuts both equators: the
+/// outer one (radius 13) where it leaves the box at y = ±4, the inner one
+/// (radius 7) where it meets the box face x = 6, at y = ±√13.
+#[test]
+fn notched_torus_equators_end_on_the_notch() {
+    let mut topo = Topology::new();
+    let torus = make_torus(&mut topo, 10.0, 3.0, 32).unwrap();
+    let notch = make_box(&mut topo, 8.0, 8.0, 8.0).unwrap();
+    transform_solid(&mut topo, notch, &Mat4::translation(6.0, -4.0, -4.0)).unwrap();
+    let solid = boolean(&mut topo, BooleanOp::Cut, torus, notch).unwrap();
+    // Down −z with in-plane x = +x: in-plane y is +y.
+    let out = project(
+        &topo,
+        solid,
+        Vec3::new(0.0, 0.0, -1.0),
+        Vec3::new(1.0, 0.0, 0.0),
+    );
+    assert!(out.unsupported.is_empty());
+    let lines: Vec<_> = out.visible.iter().chain(&out.hidden).collect();
+    let inner_gap = 13.0_f64.sqrt();
+    let mut turned = [0.0_f64; 2];
+    for line in &lines {
+        for p in *line {
+            let radius = p.x().hypot(p.y());
+            let outer = (radius - 13.0).abs() < 1e-9;
+            assert!(outer || (radius - 7.0).abs() < 1e-9, "{p:?}");
+            let gap = if outer { 4.0 } else { inner_gap };
+            assert!(
+                p.x() < 0.0 || p.y().abs() > gap - ENDPOINT_TOL,
+                "{p:?} is in the notch"
+            );
+        }
+        for w in line.windows(2) {
+            let which = usize::from(w[0].x().hypot(w[0].y()) < 10.0);
+            turned[which] += (w[0].x() * w[1].y() - w[0].y() * w[1].x())
+                .atan2(w[0].x() * w[1].x() + w[0].y() * w[1].y())
+                .abs();
+        }
+    }
+    // The run ends sit on the notch edges, plane ∩ torus curves the trim
+    // test samples into a polygon: they are as exact as that sampling.
+    let ends: Vec<Point2> = lines
+        .iter()
+        .flat_map(|line| [line[0], line[line.len() - 1]])
+        .collect();
+    let outer_x = (13.0_f64 * 13.0 - 16.0).sqrt();
+    let expected = [
+        (outer_x, 4.0),
+        (outer_x, -4.0),
+        (6.0, inner_gap),
+        (6.0, -inner_gap),
+    ];
+    let mut worst = 0.0_f64;
+    for (x, y) in expected {
+        let error = ends
+            .iter()
+            .map(|p| (p.x() - x).hypot(p.y() - y))
+            .fold(f64::INFINITY, f64::min);
+        worst = worst.max(error);
+    }
+    // 1.04e-4 at this fixture's trim sampling, far inside the deflection.
+    assert!(worst < 0.1 * DEFLECTION, "worst endpoint error {worst}");
+    // Each equator is drawn once, whole but for its notch.
+    let tau = std::f64::consts::TAU;
+    let expected = [
+        tau - 2.0 * 4.0_f64.atan2(outer_x),
+        tau - 2.0 * inner_gap.atan2(6.0),
+    ];
+    for (angle, expected) in turned.iter().zip(expected) {
+        assert!((angle - expected).abs() < 1e-4, "{turned:?} vs {expected}");
+    }
+}
+
+/// NURBS faces have no silhouette here: each is named, not approximated.
+#[test]
+fn nurbs_faces_are_reported_unsupported() {
+    let mut topo = Topology::new();
+    let cylinder = make_cylinder(&mut topo, 5.0, 10.0).unwrap();
+    crate::heal::convert_to_bspline(&mut topo, cylinder).unwrap();
+    let out = project(
+        &topo,
+        cylinder,
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.0),
+    );
     assert!(out.visible.is_empty() && out.hidden.is_empty());
     assert!(!out.unsupported.is_empty());
-    assert!(out.unsupported.iter().all(|u| u.surface == "torus"));
+    assert!(out.unsupported.iter().all(|u| u.surface == "nurbs"));
 }
 
 /// A box has no curved faces and so no silhouettes; a rotated box too.
