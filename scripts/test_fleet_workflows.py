@@ -50,6 +50,7 @@ def assert_reviewed_workflow_delta(staged, active, active_updated):
 # for v3 copies (#1183) that add only job timeouts and the cargo-fuzz pin.
 V2_LANDED = "e07ae8e345e10085a717988e10fc08776c85d84a"
 V3_FAMILIES = frozenset({"ci", "fuzz", "osv", "wasm-candidate", "wasm-size"})
+V3_LANDED = "59d02a10f498a2b3c24512e8b2d9ba8150bbdb1e"
 V3_TIMEOUT = re.compile(r"(?m)^    timeout-minutes: [0-9]+\n")
 
 
@@ -62,6 +63,44 @@ def landed_v2(family):
 def strip_v3_deltas(text):
     return V3_TIMEOUT.sub("", text).replace(
         "install cargo-fuzz --version 0.13.2 --locked", "install cargo-fuzz --locked")
+
+
+# These callees were refreshed (#1195) with comment-only edits, plus the
+# gauntlet's tier step now that its caller owns the weekly cron. Each maps to
+# the file it replaced and the commit that file landed in.
+REFRESHED = {
+    "wasm-size": ("fleet-wasm-size-v3.yml", V3_LANDED),
+    "osv": ("fleet-osv-v3.yml", V3_LANDED),
+    "mutants-sharded": ("fleet-mutants-sharded-v2.yml", V2_LANDED),
+    "gauntlet": ("fleet-gauntlet-v2.yml", V2_LANDED),
+}
+CALLER_OWNED_TIER = (
+    "          SCHEDULE: ${{ github.event.schedule }}\n"
+    "        run: |\n"
+    "          if [ \"$SCHEDULE\" = \"47 3 * * 0\" ]; then\n"
+    "            tier=abc-1k\n"
+    "          elif [ -n \"$REQUESTED_TIER\" ]; then\n"
+    "            tier=$REQUESTED_TIER\n"
+    "          else\n"
+    "            tier=smoke\n"
+    "          fi\n",
+    "        run: |\n"
+    "          tier=${REQUESTED_TIER:-smoke}\n",
+)
+
+
+def replaced_callee(family):
+    filename, sha = REFRESHED[family]
+    return subprocess.check_output(
+        ["git", "show", f"{sha}:.github/workflows/{filename}"], cwd=ROOT, text=True,
+    )
+
+
+def strip_refresh_deltas(text):
+    """Drop comments and the replaced gauntlet tier step; nothing else may differ."""
+    text = re.sub(r"(?m)^\s*#.*\n", "", text)
+    text = re.sub(r"(?m)^(\s*(?:- )?uses: \S+)[ \t]+#[^\n]*$", r"\1", text)
+    return text.replace(*CALLER_OWNED_TIER)
 
 
 def carries_reviewed_updates(filename):
@@ -137,59 +176,35 @@ class FleetWorkflowTests(unittest.TestCase):
     def test_v3_only_adds_job_timeouts_and_the_cargo_fuzz_pin(self):
         # V3 bounds every job and pins cargo-fuzz; every other byte must match
         # the landed v2 callee it replaced.
-        v3 = sorted(path for path in (ROOT / ".github/workflows").glob("fleet-*-v3.yml")
-                    if path.name[len("fleet-"):-len("-v3.yml")] in V3_FAMILIES)
-        self.assertEqual([path.name for path in v3], [
-            f"fleet-{family}-v3.yml" for family in sorted(V3_FAMILIES)
-        ])
-        for path in v3:
-            family = path.name[len("fleet-"):-len("-v3.yml")]
+        # Refreshed families no longer carry their v3 file; read it from the
+        # commit it landed in.
+        for family in sorted(V3_FAMILIES):
             with self.subTest(family=family):
-                text = path.read_text()
+                text = subprocess.check_output(
+                    ["git", "show", f"{V3_LANDED}:.github/workflows/fleet-{family}-v3.yml"], cwd=ROOT, text=True,
+                )
+                path = ROOT / f".github/workflows/fleet-{family}-v3.yml"
+                if family not in REFRESHED:
+                    self.assertEqual(path.read_text(), text)
                 jobs = re.split(r"(?m)^(?=  [\w-]+:\n)", text.split("\njobs:\n", 1)[1])
                 for job in filter(None, jobs):
                     self.assertRegex(job, r"(?m)^    runs-on: .*\n    timeout-minutes: [0-9]+$")
                 self.assertEqual(strip_v3_deltas(text), strip_v3_deltas(landed_v2(family)),
                                  "V3 must retain every command, guard, permission and runner contract")
 
-    def test_staged_versions_only_refresh_comments_and_the_gauntlet_tier(self):
-        # Each staged callee may differ from the active one only by the
-        # reviewed comments (and a version comment on a pin), except that the
-        # gauntlet drops the cron match its caller now owns.
-        removed_tier = (
-            "          SCHEDULE: ${{ github.event.schedule }}\n",
-            "          if [ \"$SCHEDULE\" = \"47 3 * * 0\" ]; then\n"
-            "            tier=abc-1k\n"
-            "          elif [ -n \"$REQUESTED_TIER\" ]; then\n"
-            "            tier=$REQUESTED_TIER\n"
-            "          else\n"
-            "            tier=smoke\n"
-            "          fi\n",
-        )
-        staged = {
-            "wasm-size": ("fleet-wasm-size-v4.yml", ()),
-            "osv": ("fleet-osv-v4.yml", ()),
-            "mutants-sharded": ("fleet-mutants-sharded-v3.yml", ()),
-            "gauntlet": ("fleet-gauntlet-v3.yml", removed_tier),
-        }
-
-        def without_comments(text):
-            text = re.sub(r"(?m)^\s*#.*\n", "", text)
-            return re.sub(r"(?m)^(\s*(?:- )?uses: \S+)[ \t]+#[^\n]*$", r"\1", text)
-
-        for family, (filename, removed) in staged.items():
+    def test_refreshed_callees_only_change_comments_and_the_gauntlet_tier(self):
+        for family, (filename, _sha) in REFRESHED.items():
             with self.subTest(family=family):
-                active = workflow_path(family).read_text()
-                for block in removed:
-                    self.assertEqual(active.count(block), 1, block)
-                    active = active.replace(block, "")
-                if family == "gauntlet":
-                    active = active.replace(
-                        '        run: |\n', '        run: |\n          tier=${REQUESTED_TIER:-smoke}\n', 1)
-                text = (ROOT / ".github/workflows" / filename).read_text()
-                self.assertNotEqual(text, workflow_path(family).read_text())
-                self.assertEqual(without_comments(text), without_comments(active),
-                                 "Staging may change only comments and the reviewed gauntlet tier step")
+                active = workflow_path(family)
+                self.assertNotEqual(active.name, filename)
+                self.assertFalse((ROOT / ".github/workflows" / filename).exists(), filename)
+                text, previous = active.read_text(), replaced_callee(family)
+                self.assertNotEqual(text, previous)
+                self.assertEqual(strip_refresh_deltas(text), strip_refresh_deltas(previous),
+                                 "A refresh may change only comments and the reviewed gauntlet tier step")
+        gauntlet = strip_refresh_deltas(replaced_callee("gauntlet"))
+        self.assertNotIn("SCHEDULE", gauntlet)
+        self.assertIn("tier=${REQUESTED_TIER:-smoke}", gauntlet)
 
     def test_staged_v2_only_changes_reviewed_action_dependencies(self):
         self.assertEqual(subprocess.run(
@@ -208,17 +223,19 @@ class FleetWorkflowTests(unittest.TestCase):
                     "Staging must retain every command, guard, permission and runner contract",
                 )
                 retained = ROOT / f".github/workflows/fleet-{family}-v2.yml"
-                if family not in V3_FAMILIES:
+                if family not in V3_FAMILIES | REFRESHED.keys():
                     self.assertEqual(retained.read_text(), staged)
                 active = workflow_path(family)
-                assert_reviewed_workflow_delta(strip_v3_deltas(staged), strip_v3_deltas(active.read_text()),
+                assert_reviewed_workflow_delta(strip_refresh_deltas(strip_v3_deltas(staged)),
+                                               strip_refresh_deltas(strip_v3_deltas(active.read_text())),
                                                carries_reviewed_updates(active.name))
                 main_file = main_manifest[family]
-                self.assertIn(main_file, (f"fleet-{family}.yml", f"fleet-{family}-v2.yml", f"fleet-{family}-v3.yml"))
+                self.assertIn(main_file, tuple(f"fleet-{family}{suffix}.yml" for suffix in ("", "-v2", "-v3", "-v4")))
                 main_active = subprocess.check_output(
                     ["git", "show", f"origin/main:.github/workflows/{main_file}"], cwd=ROOT, text=True,
                 )
-                assert_reviewed_workflow_delta(strip_v3_deltas(staged), strip_v3_deltas(main_active),
+                assert_reviewed_workflow_delta(strip_refresh_deltas(strip_v3_deltas(staged)),
+                                               strip_refresh_deltas(strip_v3_deltas(main_active)),
                                                carries_reviewed_updates(main_file))
 
 if __name__ == "__main__":
