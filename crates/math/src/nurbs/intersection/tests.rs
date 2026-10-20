@@ -3566,3 +3566,209 @@ fn curved_seed_projection_accepts_the_last_budgeted_newton_update() {
         );
     }
 }
+
+// -- Corner-pocket section shorter than one march step (Fuzz Smoke 38131028280) --
+//
+// crash-e85af68c3ed281c0993ff925c49a584467dd25db decodes to a 3x3
+// biquadratic rational height field over [0, s]^2 cut by the plane
+// z = -s/2. Heavy weights (up to 4.0) on high control points leave two
+// small pockets below the plane: one at the (0, 0) corner and one at the
+// (1, 0) corner, whose section runs from (u, v) ~ (0.978, 0) to
+// (1, 0.026). Depth-6 subdivision seeds only the (1, 0) branch, at
+// (0.990, 0.015). Both ends of that branch lie closer to the seed than the
+// default 0.02 march step, so the first predictor in each direction left
+// the domain, the box-clamped corrector failed from the clamped state, and
+// `march_direction` ended with no points. The lone seed was then dropped
+// by chaining and the SSI returned no curves although a seed existed.
+//
+// The fix halves the first step of a direction on corrector failure
+// instead of ending the trace. Traces that already advanced are unchanged.
+//
+// Depth-6 seeding still misses the (0, 0) pocket: subdivision seeding is
+// not a completeness certificate. This regression covers the march defect
+// only.
+mod corner_pocket_section_38131028280 {
+    use super::*;
+    use crate::context::{OperationContext, WorkBudgets};
+
+    /// `Bytes::signed` / `Bytes::unit` of the fuzz target, for the crash
+    /// bytes.
+    fn signed(b: u8) -> f64 {
+        (f64::from(b) / 255.0).mul_add(2.0, -1.0)
+    }
+
+    fn weight(b: u8) -> f64 {
+        (f64::from(b) / 255.0).mul_add(3.75, 0.25)
+    }
+
+    fn height_field(scale: f64) -> NurbsSurface {
+        const Z: [[u8; 3]; 3] = [[5, 114, 249], [255, 0, 255], [54, 221, 255]];
+        const W: [[u8; 3]; 3] = [[82, 97, 255], [250, 0, 255], [221, 255, 2]];
+        let mut cps: Vec<Vec<Point3>> = (0..3)
+            .map(|r| {
+                (0..3)
+                    .map(|c| {
+                        Point3::new(
+                            f64::from(r) * 0.5 * scale,
+                            f64::from(c) * 0.5 * scale,
+                            signed(Z[r as usize][c as usize]) * scale,
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+        // The generator pins the opposite corners below and above the plane.
+        cps[0][0] = Point3::new(0.0, 0.0, -scale);
+        cps[2][2] = Point3::new(scale, scale, scale);
+        let wts = W
+            .iter()
+            .map(|row| row.iter().map(|&b| weight(b)).collect())
+            .collect();
+        let knots = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        NurbsSurface::new(2, 2, knots.clone(), knots, cps, wts).unwrap()
+    }
+
+    fn plane(scale: f64, height: f64) -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![
+                    Point3::new(0.0, 0.0, height),
+                    Point3::new(0.0, scale, height),
+                ],
+                vec![
+                    Point3::new(scale, 0.0, height),
+                    Point3::new(scale, scale, height),
+                ],
+            ],
+            vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+        )
+        .unwrap()
+    }
+
+    fn fuzz_budgets() -> WorkBudgets {
+        WorkBudgets::new()
+            .with_march_steps(48)
+            .with_queue_size(16)
+            .with_segments(8)
+            .with_branches_per_direction(4)
+            .with_newton_iterations(12)
+            .with_subdivision_depth(6)
+    }
+
+    /// Independent existence check by dense sampling: the signed height
+    /// `z - h` takes both signs over the parameter box.
+    fn sampled_sign_change(
+        surf: &NurbsSurface,
+        h: f64,
+        (u0, u1): (f64, f64),
+        (v0, v1): (f64, f64),
+    ) -> bool {
+        let n = 64;
+        let (mut below, mut above) = (false, false);
+        for i in 0..=n {
+            for j in 0..=n {
+                let u = u0 + (u1 - u0) * f64::from(i) / f64::from(n);
+                let v = v0 + (v1 - v0) * f64::from(j) / f64::from(n);
+                let d = surf.evaluate(u, v).z() - h;
+                below |= d < 0.0;
+                above |= d > 0.0;
+            }
+        }
+        below && above
+    }
+
+    /// Dual-surface and plane-equation oracle. `flip` puts the plane first.
+    fn assert_section(
+        surf: &NurbsSurface,
+        pl: &NurbsSurface,
+        h: f64,
+        scale: f64,
+        flip: bool,
+        curves: &[IntersectionCurve],
+    ) {
+        assert!(
+            !curves.is_empty(),
+            "bounded NURBS SSI missed a section guaranteed by opposite surface corners"
+        );
+        let tol = scale.mul_add(1.0e-3, 1.0e-6);
+        let slack = f64::EPSILON * 32.0;
+        let in_domain =
+            |v: f64, d: (f64, f64)| v.is_finite() && v >= d.0 - slack && v <= d.1 + slack;
+        for ic in curves {
+            assert!(ic.points.len() >= 2, "a section curve needs two samples");
+            for s in &ic.points {
+                let (ps, pp) = if flip {
+                    (s.param2, s.param1)
+                } else {
+                    (s.param1, s.param2)
+                };
+                assert!(in_domain(ps.0, surf.domain_u()) && in_domain(ps.1, surf.domain_v()));
+                assert!(in_domain(pp.0, pl.domain_u()) && in_domain(pp.1, pl.domain_v()));
+                assert!((surf.evaluate(ps.0, ps.1) - s.point).length() <= tol);
+                assert!((pl.evaluate(pp.0, pp.1) - s.point).length() <= tol);
+                assert!((s.point.z() - h).abs() <= tol, "off the plane z = {h}");
+            }
+            let (t0, t1) = ic.curve.domain();
+            for k in 0..=4 {
+                let t = t0 + (t1 - t0) * f64::from(k) / 4.0;
+                let p = ic.curve.evaluate(t);
+                assert!(
+                    (p.z() - h).abs() <= tol * 20.0,
+                    "fitted curve off the plane"
+                );
+            }
+        }
+    }
+
+    /// The fuzz case itself: zero curves before the fix.
+    #[test]
+    fn corner_pocket_section_is_found() {
+        let (scale, h) = (1.0, -0.5);
+        let surf = height_field(scale);
+        // Opposite corners straddle the plane (interpolated clamped corners).
+        assert!(surf.evaluate(0.0, 0.0).z() < h && surf.evaluate(1.0, 1.0).z() > h);
+        // The (1, 0) pocket the seeder finds exists independently of SSI.
+        assert!(surf.evaluate(1.0, 0.0).z() < h);
+        assert!(sampled_sign_change(&surf, h, (0.95, 1.0), (0.0, 0.05)));
+        let pl = plane(scale, h);
+        let ctx = OperationContext::new().with_budgets(fuzz_budgets());
+        let curves = intersect_nurbs_nurbs_with_context(&surf, &pl, 5, 0.0, &ctx).unwrap();
+        assert_section(&surf, &pl, h, scale, false, &curves);
+    }
+
+    /// The march itself: from the seed subdivision finds, each direction
+    /// must advance although its first full step leaves the domain.
+    #[test]
+    fn march_from_seed_near_both_branch_ends_advances() {
+        let (scale, h) = (1.0, -0.5);
+        let surf = height_field(scale);
+        let pl = plane(scale, h);
+        let seed = refine_ssi_point(&surf, &pl, 0.99, 0.015, 0.99, 0.016, 1e-6)
+            .expect("seed on the (1, 0) pocket section");
+        let traced = march_intersection(&surf, &pl, &seed, 0.02, 1e-6);
+        assert!(traced.len() >= 3, "traced {} points", traced.len());
+        for p in &traced {
+            assert!((p.point.z() - h).abs() < 1e-5);
+            assert!((surf.evaluate(p.param1.0, p.param1.1) - p.point).length() < 1e-5);
+        }
+    }
+
+    /// Fuzz scales and both operand orders.
+    #[test]
+    fn corner_pocket_section_family() {
+        for scale in [0.1, 1.0, 10.0] {
+            let h = -0.5 * scale;
+            let surf = height_field(scale);
+            let pl = plane(scale, h);
+            let ctx = OperationContext::new().with_budgets(fuzz_budgets());
+            let curves = intersect_nurbs_nurbs_with_context(&surf, &pl, 5, 0.0, &ctx).unwrap();
+            assert_section(&surf, &pl, h, scale, false, &curves);
+            let curves = intersect_nurbs_nurbs_with_context(&pl, &surf, 5, 0.0, &ctx).unwrap();
+            assert_section(&surf, &pl, h, scale, true, &curves);
+        }
+    }
+}

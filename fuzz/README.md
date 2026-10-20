@@ -14,7 +14,11 @@ section that previously made a cubic refit leave the known plane, and a
 steep-weight section (Fuzz Smoke 36309258004) whose 14x top-row weights
 concentrated the top span's motion so full Gauss-Newton steps overshot and
 both seeders missed the corner-guaranteed section; the refiner now
-backtracks until the residual decreases.
+backtracks until the residual decreases. A corner-pocket seed (Fuzz Smoke
+38131028280) carries a short section whose two ends both lie within one
+march step of its only seed: the first predictor left the domain in each
+direction, the clamped corrector failed, and the lone seed was dropped. The
+marcher now halves a direction's first step on corrector failure.
 
 `topology_mutation` builds a bounded box (census and `dx * dy * dz` known by
 construction) and drives byte-selected topology mutations over it:
