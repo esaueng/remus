@@ -113,9 +113,11 @@ macOS CI tests are temporarily disabled while macOS app development is paused.
 Release workflows are unchanged.
 
 Policy verification: `python3 scripts/test-direct-fleet.py`,
-`python3 scripts/test-owner-pr-routing.py`, the existing owner policy tests,
-and `actionlint`. The historical `owner-pr.yml` remains unchanged for old
-immutable callers; new callers use `fleet-ci-v3.yml`.
+`python3 scripts/test-owner-pr-routing.py`, `python3 scripts/test-owner-pr-policy.py`
+(the owner identity policy in the fleet guard) and `actionlint`. The unused
+`owner-pr.yml` and its availability selector `select-runner.yml` were retired on
+2026-10-19; callers use the active `fleet-ci` callee named in
+`.github/fleet-workflows.json`.
 
 ## Updating immutable workflow dependencies
 
