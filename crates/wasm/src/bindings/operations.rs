@@ -1963,7 +1963,8 @@ impl BrepKernel {
     /// "surface": tag}], "approximate": [id]}`: cylinder, cone, sphere and
     /// torus outlines are exact curves clipped to the face; NURBS outlines
     /// are traced on a grid of the face's parameters with every vertex on
-    /// the silhouette, and those faces are listed in `approximate`.
+    /// the silhouette, and every NURBS face but a certified flat one is
+    /// listed in `approximate`, even where no contour was found.
     /// `unsupported` is empty today: every surface type is handled.
     ///
     /// # Errors

@@ -66,7 +66,9 @@ pub struct ProjectedSilhouettes {
     pub unsupported: Vec<UnsupportedSilhouette>,
     /// NURBS faces whose silhouette was traced rather than solved in closed
     /// form: its vertices lie on the silhouette, but a contour smaller than
-    /// the tracing grid can be missed.
+    /// the tracing grid can be missed. Listed whether or not the tracing
+    /// found a contour; only a NURBS face certified to be flat is left out,
+    /// since it has no silhouette.
     pub approximate: Vec<FaceId>,
 }
 
@@ -286,7 +288,8 @@ impl Curve<'_> {
 /// branches sampled adaptively to `deflection`. Planes have none. NURBS
 /// silhouettes are traced on a grid of the face's parameter domain, refined
 /// to `deflection`, and their faces listed in
-/// [`ProjectedSilhouettes::approximate`]. `deflection` sets the sampling of
+/// [`ProjectedSilhouettes::approximate`] (all but certified flat ones, even
+/// where no contour is found). `deflection` sets the sampling of
 /// each curve, which also bounds how small a trim feature crossing a
 /// silhouette is resolved.
 ///
@@ -379,7 +382,9 @@ pub(super) fn silhouettes_within(
             &mut grid_budget,
             MAX_SILHOUETTE_SAMPLES - samples,
         )?;
-        if matches!(surface, FaceSurface::Nurbs(_)) && !built.is_empty() {
+        // A traced face is approximate even when tracing found nothing: the
+        // grid can miss a contour. Only a certified plane provably has none.
+        if matches!(surface, FaceSurface::Nurbs(n) if !nurbs::is_certified_plane(n)) {
             result.approximate.extend_from_slice(faces);
         }
         for curve in built {

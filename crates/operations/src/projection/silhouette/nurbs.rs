@@ -2,7 +2,8 @@
 //! `g(u, v) = n(u, v)·d` over the surface's parameter domain.
 //!
 //! NURBS surfaces have no closed form, so the contour is traced: `g` is
-//! sampled on a grid aligned with the domain, marching squares pairs the
+//! sampled on a grid with the same number of intervals in every knot span,
+//! marching squares pairs the
 //! sign changes on cell edges into segments (a saddle cell resolved by its
 //! centre value), each crossing is bisected along its cell edge onto
 //! `g = 0`, and every segment whose middle strays more than the deflection
@@ -55,24 +56,47 @@ fn g(surface: &NurbsSurface, view: Vec3, (u, v): (f64, f64)) -> f64 {
     surface.normal(u, v).map_or(0.0, |n| n.dot(view))
 }
 
-/// Grid parameters along one direction: `intervals + 1` values spanning
-/// `[lo, hi]` inset by [`EDGE_INSET`] of an interval at each end, with
-/// interval count from the knot spans.
+/// Knots closer than this fraction of the domain to the previous breakpoint
+/// add no span of their own.
+const KNOT_GAP: f64 = 1e-12;
+
+/// Grid parameters along one direction: [`INTERVALS_PER_SPAN`] intervals in
+/// every nonzero knot span of `[lo, hi]` (fewer when there are more than
+/// [`MAX_GRID_INTERVALS`] / [`INTERVALS_PER_SPAN`] spans, but never fewer than
+/// one, and more when there are too few spans for [`MIN_GRID_INTERVALS`]), so
+/// a narrow span is sampled as finely as a wide one. The two end values are
+/// inset by [`EDGE_INSET`] of their interval.
 fn grid_axis(knots: &[f64], (lo, hi): (f64, f64)) -> Vec<f64> {
-    let mut spans = 0usize;
-    for pair in knots.windows(2) {
-        if pair[1] > pair[0] && pair[0] >= lo && pair[1] <= hi {
-            spans += 1;
+    let gap = (hi - lo) * KNOT_GAP;
+    let mut breaks = vec![lo];
+    for &knot in knots {
+        if knot < hi - gap && breaks.last().is_some_and(|&last| knot > last + gap) {
+            breaks.push(knot);
         }
     }
-    let intervals = spans
-        .saturating_mul(INTERVALS_PER_SPAN)
-        .clamp(MIN_GRID_INTERVALS, MAX_GRID_INTERVALS);
-    let inset = (hi - lo) / intervals as f64 * EDGE_INSET;
-    let (lo, hi) = (lo + inset, hi - inset);
-    (0..=intervals)
-        .map(|i| lo + (hi - lo) * i as f64 / intervals as f64)
-        .collect()
+    breaks.push(hi);
+    let spans = breaks.len() - 1;
+    let per_span = (MAX_GRID_INTERVALS / spans)
+        .clamp(1, INTERVALS_PER_SPAN)
+        .max(MIN_GRID_INTERVALS.div_ceil(spans));
+    let mut axis = Vec::with_capacity(spans * per_span + 1);
+    for span in breaks.windows(2) {
+        let (a, b) = (span[0], span[1]);
+        axis.extend((0..per_span).map(|i| a + (b - a) * i as f64 / per_span as f64));
+    }
+    axis.push(hi);
+    let last = axis.len() - 1;
+    axis[0] += (axis[1] - axis[0]) * EDGE_INSET;
+    axis[last] -= (axis[last] - axis[last - 1]) * EDGE_INSET;
+    axis
+}
+
+/// Whether `surface` is certified to be a flat patch, whose normal is
+/// constant, so that it has no silhouette in any view (seen edge-on, its
+/// outline is its boundary edges). Any other NURBS surface's silhouette comes
+/// from the tracing grid, which can miss a contour, even when it finds none.
+pub(in crate::projection) fn is_certified_plane(surface: &NurbsSurface) -> bool {
+    remus_geometry::convert::certified_plane::certify_affine_nurbs_plane(surface, 0.0).is_some()
 }
 
 /// The point between `a` (where `g` has sign `a_positive`) and `b` where
@@ -99,7 +123,8 @@ fn bisect(
 ///
 /// Returns `None` when the grid would take more than `grid_budget` normal
 /// evaluations (which it is charged) or the contours more than
-/// `max_vertices` vertices.
+/// `max_vertices` vertices; refinement stops as soon as the vertices run
+/// out, so the vertex limit also bounds the work.
 pub(in crate::projection) fn contours(
     surface: &NurbsSurface,
     view: Vec3,
@@ -107,6 +132,9 @@ pub(in crate::projection) fn contours(
     grid_budget: &mut usize,
     max_vertices: usize,
 ) -> Option<Vec<Contour>> {
+    if is_certified_plane(surface) {
+        return Some(Vec::new());
+    }
     let us = grid_axis(surface.knots_u(), surface.domain_u());
     let vs = grid_axis(surface.knots_v(), surface.domain_v());
     let (nu, nv) = (us.len(), vs.len());
@@ -218,23 +246,30 @@ pub(in crate::projection) fn contours(
     // Refine each chain to the deflection, inside the grid's inset domain.
     let (u_lo, u_hi, v_lo, v_hi) = (us[0], us[nu - 1], vs[0], vs[nv - 1]);
     let clamp = |(u, v): (f64, f64)| (u.clamp(u_lo, u_hi), v.clamp(v_lo, v_hi));
-    let mut vertices = 0usize;
+    let mut vertices_left = max_vertices;
     let mut refined: Vec<Contour> = Vec::with_capacity(chains.len());
     for chain in chains {
         let n = chain.uv.len();
+        vertices_left = vertices_left.checked_sub(n)?;
         let segments = if chain.closed { n } else { n - 1 };
         let mut uv = Vec::with_capacity(n);
         for k in 0..segments {
             let (a, b) = (chain.uv[k], chain.uv[(k + 1) % n]);
             uv.push(a);
-            refine(surface, view, deflection, clamp, a, b, 0, &mut uv);
+            refine(
+                surface,
+                view,
+                deflection,
+                clamp,
+                a,
+                b,
+                0,
+                &mut uv,
+                &mut vertices_left,
+            )?;
         }
         if !chain.closed {
             uv.push(chain.uv[n - 1]);
-        }
-        vertices = vertices.saturating_add(uv.len());
-        if vertices > max_vertices {
-            return None;
         }
         refined.push(Contour {
             uv,
@@ -248,7 +283,8 @@ pub(in crate::projection) fn contours(
 /// within `deflection` of the silhouette: the middle of `a`–`b` is moved
 /// across the segment onto `g = 0` by bisection, and kept, recursively,
 /// while it lies more than `deflection` from the chord in space. A middle
-/// whose cross-section shows no sign change is left on the chord.
+/// whose cross-section shows no sign change is left on the chord. Each
+/// point kept is taken from `vertices_left`; `None` once that is used up.
 #[allow(clippy::too_many_arguments)]
 fn refine(
     surface: &NurbsSurface,
@@ -259,9 +295,10 @@ fn refine(
     b: (f64, f64),
     depth: u32,
     out: &mut Vec<(f64, f64)>,
-) {
+    vertices_left: &mut usize,
+) -> Option<()> {
     if depth >= MAX_REFINEMENT_DEPTH {
-        return;
+        return Some(());
     }
     let mid = (0.5 * (a.0 + b.0), 0.5 * (a.1 + b.1));
     // Perpendicular to the segment in parameter space, as long as it.
@@ -270,7 +307,7 @@ fn refine(
     let hi = clamp((mid.0 + across.0, mid.1 + across.1));
     let lo_positive = g(surface, view, lo) > 0.0;
     if lo_positive == (g(surface, view, hi) > 0.0) {
-        return;
+        return Some(());
     }
     let on = bisect(surface, view, lo, hi, lo_positive);
     let (pa, pb) = (surface.evaluate(a.0, a.1), surface.evaluate(b.0, b.1));
@@ -280,9 +317,78 @@ fn refine(
         0.5 * (pa.z() + pb.z()),
     );
     if (surface.evaluate(on.0, on.1) - chord_mid).length() <= deflection {
-        return;
+        return Some(());
     }
-    refine(surface, view, deflection, clamp, a, on, depth + 1, out);
+    *vertices_left = vertices_left.checked_sub(1)?;
+    refine(
+        surface,
+        view,
+        deflection,
+        clamp,
+        a,
+        on,
+        depth + 1,
+        out,
+        vertices_left,
+    )?;
     out.push(on);
-    refine(surface, view, deflection, clamp, on, b, depth + 1, out);
+    refine(
+        surface,
+        view,
+        deflection,
+        clamp,
+        on,
+        b,
+        depth + 1,
+        out,
+        vertices_left,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use remus_math::vec::{Point3, Vec3};
+
+    use super::{INTERVALS_PER_SPAN, grid_axis, refine};
+
+    /// A knot span a thousandth of the domain wide is sampled as finely as
+    /// the wide one beside it, and the knot itself is a grid value.
+    #[test]
+    fn grid_samples_every_knot_span() {
+        let knots = [0.0, 0.0, 0.0, 0.001, 1.0, 1.0, 1.0];
+        let axis = grid_axis(&knots, (0.0, 1.0));
+        let narrow = axis.iter().filter(|&&u| u <= 0.001).count();
+        assert!(narrow > INTERVALS_PER_SPAN, "{narrow} values in (0, 0.001]");
+        assert!(axis.iter().any(|&u| (u - 0.001).abs() < 1e-15));
+        assert!(axis.windows(2).all(|pair| pair[1] > pair[0]));
+        assert!(axis[0] > 0.0 && axis[axis.len() - 1] < 1.0);
+    }
+
+    /// Refinement stops at the vertex budget instead of running to its
+    /// depth limit: at a deflection no chord meets, one segment would
+    /// otherwise add 2¹⁶ points.
+    #[test]
+    fn refinement_stops_at_the_vertex_budget() {
+        let nurbs =
+            remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 4.0).unwrap();
+        let nurbs = remus_heal::construct::convert_surface::sphere_to_nurbs(&nurbs).unwrap();
+        let view = Vec3::new(0.0, 1.0, 0.0);
+        let (du, dv) = (nurbs.domain_u(), nurbs.domain_v());
+        let clamp = |(u, v): (f64, f64)| (u.clamp(du.0, du.1), v.clamp(dv.0, dv.1));
+        let full = super::contours(&nurbs, view, 0.05, &mut { usize::MAX }, usize::MAX)
+            .expect("traced at a coarse deflection");
+        let contour = full.iter().max_by_key(|c| c.uv.len()).expect("a contour");
+        // Two contour points a quarter of the contour apart, away from its
+        // ends, whose chord's middle is well off the silhouette.
+        let k = contour.uv.len() / 4;
+        let (a, b) = (contour.uv[k], contour.uv[2 * k]);
+        let mut out = Vec::new();
+        let mut left = 10;
+        let result = refine(&nurbs, view, 1e-300, clamp, a, b, 0, &mut out, &mut left);
+        assert!(result.is_none(), "{} points, {left} left", out.len());
+        assert_eq!(left, 0);
+        assert!(out.len() <= 10, "{} points", out.len());
+    }
 }

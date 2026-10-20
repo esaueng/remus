@@ -734,6 +734,41 @@ fn nurbs_planar_faces_have_no_silhouette() {
     }
 }
 
+/// A traced face is disclosed even when tracing finds no contour: a
+/// NURBS cylinder seen down its axis is edge-on, so it draws nothing, but
+/// only a certified flat face is exempt, and the caps are the only ones.
+#[test]
+fn nurbs_faces_with_no_contour_are_still_approximate() {
+    let mut topo = Topology::new();
+    let cylinder = make_cylinder(&mut topo, 5.0, 10.0).unwrap();
+    crate::heal::convert_to_bspline(&mut topo, cylinder).unwrap();
+    let out = project(
+        &topo,
+        cylinder,
+        Vec3::new(0.0, 0.0, -1.0),
+        Vec3::new(1.0, 0.0, 0.0),
+    );
+    assert!(out.visible.is_empty() && out.hidden.is_empty());
+    let faces = remus_topology::explorer::solid_faces(&topo, cylinder).unwrap();
+    let curved: Vec<_> = faces
+        .into_iter()
+        .filter(|&face| {
+            if let remus_topology::face::FaceSurface::Nurbs(n) = topo.face(face).unwrap().surface()
+            {
+                !super::silhouette::nurbs::is_certified_plane(n)
+            } else {
+                false
+            }
+        })
+        .collect();
+    assert!(!curved.is_empty());
+    let mut approximate = out.approximate;
+    approximate.sort_unstable_by_key(|face| face.index());
+    let mut expected = curved;
+    expected.sort_unstable_by_key(|face| face.index());
+    assert_eq!(approximate, expected);
+}
+
 /// The bored block converted to NURBS still hides its bore's outline, at
 /// the bore's walls.
 #[test]
