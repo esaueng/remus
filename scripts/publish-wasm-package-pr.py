@@ -28,6 +28,7 @@ PR_SUBJECT = re.compile(r'\(#([0-9]+)\)$|^Merge pull request #([0-9]+) ')
 CARRIED = re.compile(r'\(carried from #[0-9]+')
 DECLARATION_PREFIX = 'WASM-Size:'
 PAGE = 100
+REFRESH_BRANCH = 'codex/wasm-refresh-'
 
 
 def api(path):
@@ -109,6 +110,31 @@ def size_section(repo, source):
             'refresh packages:\n\n' + '\n'.join(carried) + '\n')
 
 
+def close_superseded(repo, source, branch, replacement):
+    """Close open refresh PRs built from an ancestor of `source`.
+
+    This build packages everything they do. Left open, each one reruns the full
+    suite, and the first to merge makes the others fail the version guard,
+    which refuses changed packages that reuse a version.
+    """
+    for pr in json.loads(run('gh', 'pr', 'list', '--repo', repo, '--base', 'main',
+                             '--state', 'open', '--limit', '100',
+                             '--json', 'number,headRefName,isCrossRepository')):
+        head = pr['headRefName']
+        other = head[len(REFRESH_BRANCH):]
+        if (pr['isCrossRepository'] or head == branch or not head.startswith(REFRESH_BRANCH)
+                or not re.fullmatch(r'[0-9a-f]{40}', other)):
+            continue
+        try:
+            status = api(f'repos/{repo}/compare/{other}...{source}')['status']
+        except (subprocess.CalledProcessError, KeyError, TypeError, ValueError):
+            continue
+        if status != 'ahead':
+            continue
+        run('gh', 'pr', 'close', str(pr['number']), '--repo', repo, '--delete-branch',
+            '--comment', f'Superseded by {replacement}, built from a newer `main` (`{source[:12]}`).')
+
+
 def publish():
     source = os.environ['GITHUB_SHA']
     if not re.fullmatch(r'[0-9a-f]{40}', source) or run('git', 'rev-parse', 'HEAD') != source:
@@ -121,7 +147,7 @@ def publish():
         raise RuntimeError('Only generated package files may be published')
     run('python3', str(Path(__file__).with_name('check-wasm-version.py')), '--base', source)
     version = json.loads(run('git', 'show', ':crates/wasm/pkg/package.json'))['version']
-    branch = 'codex/wasm-refresh-' + source
+    branch = REFRESH_BRANCH + source
     tree = run('git', 'write-tree')
     auth = ['git', '-c', 'credential.helper=!gh auth git-credential']
     existing = run(*auth, 'ls-remote', '--heads', 'origin', 'refs/heads/' + branch)
@@ -134,10 +160,12 @@ def publish():
             '-c', 'user.email=41898282+github-actions[bot]@users.noreply.github.com',
             'commit', '-m', f'chore(wasm): refresh packages to v{version} from {source[:12]}')
         run(*auth, 'push', 'origin', 'HEAD:refs/heads/' + branch)
-    prs = json.loads(run('gh', 'pr', 'list', '--repo', os.environ['GITHUB_REPOSITORY'],
+    repo = os.environ['GITHUB_REPOSITORY']
+    prs = json.loads(run('gh', 'pr', 'list', '--repo', repo,
                          '--head', branch, '--base', 'main', '--state', 'open', '--json', 'url'))
     if prs:
         print(prs[0]['url'])
+        close_superseded(repo, source, branch, prs[0]['url'])
         return
     body = (f'Refresh both committed WASM packages built and validated from `{source}`.\n\n'
             'The build runner completed optimized builds, smoke tests, and installed-package '
@@ -145,14 +173,16 @@ def publish():
             'Review flags: generated distribution files only. This PR requires normal checks '
             'and review; it does not merge automatically or bypass branch protection. '
             'If source changes before integration, rebuild instead of reusing stale output.\n\n'
-            + size_section(os.environ['GITHUB_REPOSITORY'], source))
+            + size_section(repo, source))
     with tempfile.TemporaryDirectory() as directory:
         body_file = Path(directory) / 'body.md'
         body_file.write_text(body)
-        print(run('gh', 'pr', 'create', '--repo', os.environ['GITHUB_REPOSITORY'],
+        url = run('gh', 'pr', 'create', '--repo', repo,
                   '--base', 'main', '--head', branch,
                   '--title', f'chore(wasm): refresh committed packages to v{version}',
-                  '--body-file', str(body_file)))
+                  '--body-file', str(body_file))
+    print(url)
+    close_superseded(repo, source, branch, url)
 
 
 if __name__ == '__main__':

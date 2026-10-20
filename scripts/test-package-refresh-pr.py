@@ -65,7 +65,8 @@ class PackageRefreshTests(unittest.TestCase):
         fakebin.mkdir()
         gh = fakebin / 'gh'
         # A fake gh: `api` answers from the GH_FIXTURE map (unknown paths fail),
-        # `pr create` records its description, `pr list` finds no open PR.
+        # `pr create` records its description, `pr list --head` finds no open PR,
+        # and a plain `pr list` answers GH_OPEN_PRS.
         gh.write_text('#!/usr/bin/env python3\nimport os,sys,json\nfrom pathlib import Path\n'
                       'args=sys.argv[1:]\n'
                       'if "--body-file" in args: args.append(Path(args[args.index("--body-file")+1]).read_text())\n'
@@ -74,7 +75,8 @@ class PackageRefreshTests(unittest.TestCase):
                       '    fixture=json.loads(Path(os.environ["GH_FIXTURE"]).read_text())\n'
                       '    if args[1] not in fixture: sys.exit("gh: Not Found (HTTP 404)")\n'
                       '    print(json.dumps(fixture[args[1]])); sys.exit()\n'
-                      'print("[]" if args[:2]==["pr","list"] else "https://example.invalid/pull/1")\n')
+                      'if args[:2]==["pr","list"]: print("[]" if "--head" in args else os.environ.get("GH_OPEN_PRS","[]")); sys.exit()\n'
+                      'print("https://example.invalid/pull/1")\n')
         gh.chmod(0o755)
         self.log = self.root / 'gh.log'
         self.env['GH_LOG'] = str(self.log)
@@ -220,8 +222,11 @@ class PackageRefreshTests(unittest.TestCase):
         branch = 'codex/wasm-refresh-' + self.source
         self.assertIn(branch, self.git('ls-remote', '--heads', 'origin'))
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
-        self.assertEqual(calls[-1][:2], ['pr', 'create'])
-        self.assertNotIn('--draft', calls[-1])
+        create = [call for call in calls if call[:2] == ['pr', 'create']]
+        self.assertEqual(len(create), 1)
+        self.assertNotIn('--draft', create[0])
+        # After the PR exists, only the superseded-refresh lookup follows it.
+        self.assertEqual([call[:2] for call in calls[calls.index(create[0]) + 1:]], [['pr', 'list']])
         self.assertFalse(any('merge' in call for call in calls))
 
     def test_refuses_mismatched_source_before_pushing(self):
@@ -249,6 +254,37 @@ class PackageRefreshTests(unittest.TestCase):
         self.assertIn('refusing to overwrite', result.stderr)
         self.assertEqual(self.git('ls-remote', 'origin', 'refs/heads/codex/wasm-refresh-' + self.source).split()[0], published)
 
+
+    def test_closes_only_refresh_prs_this_build_supersedes(self):
+        older, diverged, unknown = 'a' * 40, 'b' * 40, 'c' * 40
+        branch = 'codex/wasm-refresh-'
+        self.env['GH_OPEN_PRS'] = json.dumps([
+            {'number': 1, 'headRefName': branch + older, 'isCrossRepository': False},
+            {'number': 2, 'headRefName': branch + diverged, 'isCrossRepository': False},
+            # The compare API has no answer for it: never close on a guess.
+            {'number': 3, 'headRefName': branch + unknown, 'isCrossRepository': False},
+            # A fork can name its branch like a refresh.
+            {'number': 4, 'headRefName': branch + older, 'isCrossRepository': True},
+            {'number': 5, 'headRefName': 'feat/source-change', 'isCrossRepository': False},
+            {'number': 6, 'headRefName': branch + 'not-a-sha', 'isCrossRepository': False},
+            {'number': 7, 'headRefName': branch + self.source, 'isCrossRepository': False},
+        ])
+        self.fixture.write_text(json.dumps({
+            f'repos/{REPO}/compare/{older}...{self.source}': {'status': 'ahead'},
+            f'repos/{REPO}/compare/{diverged}...{self.source}': {'status': 'diverged'},
+        }))
+        result = self.publish()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        closes = [call for call in calls if call[:2] == ['pr', 'close']]
+        self.assertEqual(len(closes), 1)
+        self.assertEqual(closes[0][2], '1')
+        self.assertIn('--delete-branch', closes[0])
+        comment = closes[0][closes[0].index('--comment') + 1]
+        self.assertIn('Superseded by https://example.invalid/pull/1', comment)
+        # The replacement exists before anything is closed.
+        self.assertLess(calls.index(next(c for c in calls if c[:2] == ['pr', 'create'])),
+                        calls.index(closes[0]))
 
 if __name__ == '__main__':
     unittest.main()
