@@ -210,6 +210,10 @@ kernel PR waits only for the checks that can fail on its diff:
   spends in the queue; a coverage or source-level MSRV regression now turns
   `main` red instead of blocking the entry. The pinned callee still passes
   `--full` for merge groups; the classifier reads `GITHUB_EVENT_NAME` itself.
+  The staged `fleet-ci-v4.yml` moves Fuzz Targets Compile and Software
+  Rendering into tier 1, because both build against most kernel crates and a
+  queue entry would otherwise skip them; it applies once an activation PR
+  selects it.
 - **Package build** (`wasm`): WASM Build & Validate and the advisory size
   report. Selected with tier 2, and on any PR whose diff touches any crate
   under `crates/`, `xtask`, `tools/vs-bench`, the WASM scripts,
