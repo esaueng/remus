@@ -66,7 +66,13 @@ def merged_prs(repo, base, head):
     def accept(number, pull=None):
         if number in pulls:
             return True
-        pull = pull or api(f'repos/{repo}/pulls/{number}')
+        if pull is None:
+            # A subject may name a number with no PR here (an upstream-era PR,
+            # for example); the commit's associated PRs still settle it.
+            try:
+                pull = api(f'repos/{repo}/pulls/{number}')
+            except subprocess.CalledProcessError:
+                return False
         if pull.get('merged_at') and pull['base']['ref'] == 'main' and pull.get('merge_commit_sha') in shas:
             pulls[number] = pull
             return True
