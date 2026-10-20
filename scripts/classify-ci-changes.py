@@ -116,7 +116,10 @@ def affects_wasm(path: str) -> bool:
 def needs_second_tier(path: str) -> bool:
     normalized = PurePosixPath(path).as_posix()
     return (
-        normalized.startswith(SECOND_TIER_DIRECTORIES)
+        # A queue batch can pair a package refresh with source PRs, so its diff
+        # is not package-only; the refresh still needs the full suite.
+        is_committed_package(normalized)
+        or normalized.startswith(SECOND_TIER_DIRECTORIES)
         or normalized in SECOND_TIER_FILENAMES
         or PurePosixPath(normalized).name == "Cargo.toml"
     )

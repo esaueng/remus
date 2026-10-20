@@ -202,7 +202,8 @@ kernel PR waits only for the checks that can fail on its diff:
   (label it, then re-run or push). A merge group selects it only when its
   diff touches a tier-2 input: a `Cargo.toml`, `Cargo.lock`,
   `rust-toolchain.toml`, `deny.toml`, `clippy.toml`, `.cargo/`, `.config/`,
-  `fuzz/`, `crates/render/` or `.github/workflows/`. Any other merge group
+  `fuzz/`, `crates/render/`, `.github/workflows/` or a committed package
+  (a queue batch can pair a refresh with source PRs). Any other merge group
   runs tier 1 and the package build (mode `queue`), and the main push of the
   same squashed tree runs tier 2 after the merge. Coverage took about 40 of a
   queue entry's 60-70 minutes (2026-10), so this roughly halves the time a PR

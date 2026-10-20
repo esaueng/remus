@@ -308,6 +308,14 @@ class ClassifyCiChangesTests(unittest.TestCase):
                 result = MODULE.classify_paths(paths, force_full=True, merge_group=True)
                 self.assertTrue(result.full)
                 self.assertEqual(result.mode, "full")
+        # A queue batch that pairs a package refresh with a source PR.
+        result = MODULE.classify_paths(
+            ["crates/wasm/pkg/remus_wasm_bg.wasm", "crates/wasm-io/pkg/package.json",
+             "crates/math/src/lib.rs", "docs/kernel-maturity/roadmap.md"],
+            force_full=True, merge_group=True,
+        )
+        self.assertTrue(result.full)
+        self.assertEqual(result.mode, "full")
         # A merge group never selects more than the event's own tier.
         result = MODULE.classify_paths(["Cargo.lock"], merge_group=True)
         self.assertFalse(result.full)
