@@ -127,9 +127,13 @@ fn axial_view_has_no_cylinder_silhouette() {
 fn sphere_outline_is_a_full_visible_circle() {
     let mut topo = Topology::new();
     let sphere = make_sphere(&mut topo, 4.0, 8).unwrap();
+    // Along the pole axis the outline is the equator both hemisphere faces
+    // own: it is drawn once, not once per face.
     for (direction, x_axis) in [
         (Vec3::new(0.0, 1.0, 0.0), Vec3::new(1.0, 0.0, 0.0)),
         (Vec3::new(1.0, 2.0, -0.5), Vec3::new(0.0, 0.0, 1.0)),
+        (Vec3::new(0.0, 0.0, -1.0), Vec3::new(1.0, 0.0, 0.0)),
+        (Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 1.0, 0.0)),
     ] {
         let out = project(&topo, sphere, direction, x_axis);
         assert!(out.hidden.is_empty(), "{direction:?}: {:?}", out.hidden);

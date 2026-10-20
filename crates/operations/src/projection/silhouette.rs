@@ -173,22 +173,41 @@ pub(super) fn silhouettes_within(
     }
     let view = View::new(origin, direction, x_axis)?;
 
-    // Every curve is built and counted before any trim query runs, so an
-    // over-budget request is refused before the expensive work.
-    let mut curves: Vec<(FaceId, Curve, usize)> = Vec::new();
+    // Faces on one support surface share its silhouette: two hemispheres
+    // share the equator, two half-cylinders a ruling along their split
+    // edge. Each surface's curves are trimmed once, against all its faces,
+    // so a curve on a boundary between them is drawn once.
     let mut result = ProjectedSilhouettes::default();
-    let mut samples = 0usize;
+    let mut carriers: Vec<(&FaceSurface, Vec<FaceId>)> = Vec::new();
     for face in remus_topology::explorer::solid_faces(topo, solid)? {
-        let built = match face_silhouettes(topo, face, view.dir)? {
-            Ok(built) => built,
-            Err(surface) => {
-                result
-                    .unsupported
-                    .push(UnsupportedSilhouette { face, surface });
+        let surface = topo.face(face)?.surface();
+        let unsupported = match surface {
+            FaceSurface::Plane { .. } => continue,
+            FaceSurface::Torus(_) => "torus",
+            FaceSurface::Nurbs(_) => "nurbs",
+            FaceSurface::Sphere(_) | FaceSurface::Cylinder(_) | FaceSurface::Cone(_) => {
+                match carriers
+                    .iter_mut()
+                    .find(|(known, _)| same_carrier(known, surface))
+                {
+                    Some((_, faces)) => faces.push(face),
+                    None => carriers.push((surface, vec![face])),
+                }
                 continue;
             }
         };
-        for curve in built {
+        result.unsupported.push(UnsupportedSilhouette {
+            face,
+            surface: unsupported,
+        });
+    }
+
+    // Every curve is built and counted before any trim query runs, so an
+    // over-budget request is refused before the expensive work.
+    let mut curves: Vec<(&[FaceId], Curve, usize)> = Vec::new();
+    let mut samples = 0usize;
+    for (surface, faces) in &carriers {
+        for curve in carrier_silhouettes(topo, surface, faces, view.dir)? {
             let count = curve.sample_count(deflection);
             samples = samples.saturating_add(count);
             if samples > MAX_SILHOUETTE_SAMPLES {
@@ -198,7 +217,7 @@ pub(super) fn silhouettes_within(
                     ),
                 });
             }
-            curves.push((face, curve, count));
+            curves.push((faces, curve, count));
         }
     }
     if curves.is_empty() {
@@ -210,8 +229,8 @@ pub(super) fn silhouettes_within(
     // inside a sphere, and the step toward the camera, tangent to the
     // surface here, would not leave it.
     let eps = occlusion_step(topo, solid)?;
-    for (face, curve, count) in &curves {
-        for run in trimmed_runs(topo, *face, curve, *count, &mut refinement_queries)? {
+    for (faces, curve, count) in &curves {
+        for run in trimmed_runs(topo, faces, curve, *count, &mut refinement_queries)? {
             let points: Vec<Point3> = run.iter().map(|&t| curve.at(t)).collect();
             let seg_hidden = run
                 .windows(2)
@@ -238,39 +257,71 @@ pub(super) fn silhouettes_within(
     Ok(result)
 }
 
-/// The silhouette curves of one face's support surface, untrimmed: `Ok` with
-/// zero, one or two curves, or `Err` with the type tag of a surface this
-/// module does not handle.
-fn face_silhouettes(
+/// Positions and radii closer than this are one carrier: the kernel's
+/// default linear tolerance.
+const SAME_CARRIER_LINEAR: f64 = 1e-7;
+
+/// Axis directions and half-angles closer than this (radians, or the sine
+/// of the angle between axes) are one carrier.
+const SAME_CARRIER_ANGULAR: f64 = 1e-9;
+
+/// Whether two support surfaces are the same sphere, cylinder or cone, so
+/// have the same silhouette in every view. A cylinder's frame and origin
+/// along its axis, and a cylinder axis's sense, do not change it.
+fn same_carrier(a: &FaceSurface, b: &FaceSurface) -> bool {
+    let parallel = |p: Vec3, q: Vec3| p.cross(q).length() <= SAME_CARRIER_ANGULAR;
+    if let (FaceSurface::Sphere(a), FaceSurface::Sphere(b)) = (a, b) {
+        return (a.center() - b.center()).length() <= SAME_CARRIER_LINEAR
+            && (a.radius() - b.radius()).abs() <= SAME_CARRIER_LINEAR;
+    }
+    if let (FaceSurface::Cylinder(a), FaceSurface::Cylinder(b)) = (a, b) {
+        let offset = b.origin() - a.origin();
+        let off_axis = offset - a.axis() * offset.dot(a.axis());
+        return parallel(a.axis(), b.axis())
+            && off_axis.length() <= SAME_CARRIER_LINEAR
+            && (a.radius() - b.radius()).abs() <= SAME_CARRIER_LINEAR;
+    }
+    if let (FaceSurface::Cone(a), FaceSurface::Cone(b)) = (a, b) {
+        return (a.apex() - b.apex()).length() <= SAME_CARRIER_LINEAR
+            && a.axis().dot(b.axis()) > 0.0
+            && parallel(a.axis(), b.axis())
+            && (a.half_angle() - b.half_angle()).abs() <= SAME_CARRIER_ANGULAR;
+    }
+    false
+}
+
+/// The silhouette curves of a support surface, untrimmed and long enough to
+/// cover all of `faces`: zero, one or two curves. Planes, tori and NURBS
+/// surfaces have none here.
+fn carrier_silhouettes(
     topo: &Topology,
-    face: FaceId,
+    surface: &FaceSurface,
+    faces: &[FaceId],
     view: Vec3,
-) -> Result<Result<Vec<Curve>, &'static str>, crate::OperationsError> {
-    Ok(match topo.face(face)?.surface() {
-        FaceSurface::Plane { .. } => Ok(Vec::new()),
-        FaceSurface::Torus(_) => Err("torus"),
-        FaceSurface::Nurbs(_) => Err("nurbs"),
+) -> Result<Vec<Curve>, crate::OperationsError> {
+    Ok(match surface {
+        FaceSurface::Plane { .. } | FaceSurface::Torus(_) | FaceSurface::Nurbs(_) => Vec::new(),
         FaceSurface::Sphere(sphere) => {
             // The great circle in the plane through the centre normal to the view.
             let (u, v) = plane_basis(view)?;
-            Ok(vec![Curve::Circle {
+            vec![Curve::Circle {
                 center: sphere.center(),
                 radius: sphere.radius(),
                 u,
                 v,
-            }])
+            }]
         }
         FaceSurface::Cylinder(cylinder) => {
             // Normal at u is x·cos u + y·sin u: perpendicular to the view at
             // u₀ = atan2(−x·d, y·d) and u₀ + π.
             let (dx, dy) = (cylinder.x_axis().dot(view), cylinder.y_axis().dot(view));
             if dx.hypot(dy) <= AXIAL_VIEW_TOLERANCE {
-                return Ok(Ok(Vec::new()));
+                return Ok(Vec::new());
             }
             let u0 = (-dx).atan2(dy);
             let axis = cylinder.axis();
-            let (v_min, v_max) = axial_range(topo, face, cylinder.origin(), axis, 1.0)?;
-            Ok([u0, u0 + std::f64::consts::PI]
+            let (v_min, v_max) = axial_range(topo, faces, cylinder.origin(), axis, 1.0)?;
+            [u0, u0 + std::f64::consts::PI]
                 .into_iter()
                 .map(|u| {
                     let (sin, cos) = u.sin_cos();
@@ -281,7 +332,7 @@ fn face_silhouettes(
                         dir: axis * (v_max - v_min),
                     }
                 })
-                .collect())
+                .collect()
         }
         FaceSurface::Cone(cone) => {
             // Normal at u is radial(u)·sin a − axis·cos a: perpendicular to
@@ -289,21 +340,21 @@ fn face_silhouettes(
             let (dx, dy) = (cone.x_axis().dot(view), cone.y_axis().dot(view));
             let reach = dx.hypot(dy);
             if reach <= AXIAL_VIEW_TOLERANCE {
-                return Ok(Ok(Vec::new()));
+                return Ok(Vec::new());
             }
             let (sin_a, cos_a) = cone.half_angle().sin_cos();
             let c = cone.axis().dot(view) * cos_a / (sin_a * reach);
             // At |c| = 1 the two rulings meet in the one generator that runs
             // along the view: it projects to a point, so there is no outline.
             if c.abs() >= 1.0 - AXIAL_VIEW_TOLERANCE {
-                return Ok(Ok(Vec::new()));
+                return Ok(Vec::new());
             }
             let phi = dy.atan2(dx);
             let spread = c.acos();
             let axis = cone.axis();
             // Generator distance v is axial height / sin a.
-            let (v_min, v_max) = axial_range(topo, face, cone.apex(), axis, sin_a)?;
-            Ok([phi - spread, phi + spread]
+            let (v_min, v_max) = axial_range(topo, faces, cone.apex(), axis, sin_a)?;
+            [phi - spread, phi + spread]
                 .into_iter()
                 .map(|u| {
                     let (sin, cos) = u.sin_cos();
@@ -314,7 +365,7 @@ fn face_silhouettes(
                         dir: generator * (v_max - v_min),
                     }
                 })
-                .collect())
+                .collect()
         }
     })
 }
@@ -330,62 +381,66 @@ fn plane_basis(normal: Vec3) -> Result<(Vec3, Vec3), crate::OperationsError> {
     Ok((u, normal.cross(u)))
 }
 
-/// A parameter range along `axis` from `base` that contains the face: the
-/// axial heights of its bounding box's corners, divided by `scale` (1 for a
+/// A parameter range along `axis` from `base` that contains the faces: the
+/// axial heights of their bounding boxes' corners, divided by `scale` (1 for a
 /// cylinder, sin a for a cone's generator distance), padded slightly so a
 /// rim lying exactly on a corner height is inside. Trimming then cuts it to
-/// the face exactly.
+/// the faces exactly.
 fn axial_range(
     topo: &Topology,
-    face: FaceId,
+    faces: &[FaceId],
     base: Point3,
     axis: Vec3,
     scale: f64,
 ) -> Result<(f64, f64), crate::OperationsError> {
-    let aabb = remus_check::util::face_aabb(topo, face)?;
     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-    for corner in 0..8u8 {
-        let p = Point3::new(
-            if corner & 1 == 0 {
-                aabb.min.x()
-            } else {
-                aabb.max.x()
-            },
-            if corner & 2 == 0 {
-                aabb.min.y()
-            } else {
-                aabb.max.y()
-            },
-            if corner & 4 == 0 {
-                aabb.min.z()
-            } else {
-                aabb.max.z()
-            },
-        );
-        let v = (p - base).dot(axis) / scale;
-        lo = lo.min(v);
-        hi = hi.max(v);
+    for &face in faces {
+        let aabb = remus_check::util::face_aabb(topo, face)?;
+        for corner in 0..8u8 {
+            let p = Point3::new(
+                if corner & 1 == 0 {
+                    aabb.min.x()
+                } else {
+                    aabb.max.x()
+                },
+                if corner & 2 == 0 {
+                    aabb.min.y()
+                } else {
+                    aabb.max.y()
+                },
+                if corner & 4 == 0 {
+                    aabb.min.z()
+                } else {
+                    aabb.max.z()
+                },
+            );
+            let v = (p - base).dot(axis) / scale;
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
     }
     let pad = (hi - lo).abs().max(1.0) * 1e-9;
     Ok((lo - pad, hi + pad))
 }
 
-/// Parameter runs of `curve` inside the face, each a sorted list of `t`
+/// Parameter runs of `curve` inside any of `faces`, each a sorted list of `t`
 /// values starting and ending on a trim crossing (or the curve's ends).
 /// Each crossing spends [`TRIM_BISECTIONS`] of `refinement_queries`.
 fn trimmed_runs(
     topo: &Topology,
-    face: FaceId,
+    faces: &[FaceId],
     curve: &Curve,
     count: usize,
     refinement_queries: &mut usize,
 ) -> Result<Vec<Vec<f64>>, crate::OperationsError> {
     let inside = |t: f64| -> Result<bool, crate::OperationsError> {
-        Ok(remus_check::classify::surface_point_in_face(
-            topo,
-            face,
-            curve.at(t),
-        )?)
+        let p = curve.at(t);
+        for &face in faces {
+            if remus_check::classify::surface_point_in_face(topo, face, p)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     };
     let ts: Vec<f64> = (0..=count).map(|i| i as f64 / count as f64).collect();
     let flags = ts
