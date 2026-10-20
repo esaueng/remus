@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792490915684,
+  "lastUpdate": 1792492587743,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -115495,6 +115495,294 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 87092,
             "range": "± 676",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "0bcc9a40b472693f8fcc1a98f7ce4ab23ffb8503",
+          "message": "perf: face-drag benchmark, scaling guards, face digests and reused concavity crossings (#1201)\n\nThis signed-off PR replaces #1188, preserving its original branch. Its\ncomplete tree is identical to\n`4550e1a10791ff3cc1119b20171586f4ed12f572`. The maintainer has confirmed\ncontribution rights and authorized the DCO sign-off. Review discussions\nand verification on #1188 apply to the identical source tree; this new\nhead must pass fresh required checks and the protected merge queue.\n\n## Change\n\nThis PR is the kernel side of the edit-latency review\n([PERF-M08](docs/kernel-maturity/roadmap.md#perf-m08),\n[PERF-O06](docs/kernel-maturity/roadmap.md#perf-o06)). It contains:\n\n- Phase 0's measurement and guards;\n- one new read-only query that serves the first consumer fix;\n- a memo that cuts the cost of commit-time edge relations and\nrecognition.\n\n### Face-drag session benchmark\n\n- **`scripts/perf/face-drag-session/`** replays a face drag the way the\nOpenZCAD preview drives the kernel.\n- It uses one kernel and one source checkpoint. Each tick runs\n`restore`, the move (prepared or unprepared), `validateSolidRelaxed`,\nand `tessellateSolidGroupedBinary` at 0.02/0.35.\n  - It runs against the committed packages on the hammer holder.\n- `--background N` adds N unrelated boxes. Arena slot growth and\nlinear-memory growth are read with `checkpointMemoryStats`, outside the\ntimers.\n- **Baseline:** `docs/performance/face-drag-session-2026-10-19.md`, on\npackage 2026.1.68.\n- **Tick cost:** the kernel tick p50 is about 41 ms. Display meshing is\nabout 70% of it, and the move takes 11–13 ms.\n- **Prepared moves:** they save about 1 ms at the median and 14 ms at\np95.\n- **Document size:** restore grows from 0.37 ms to 3.15 ms with 1,000\nunrelated boxes. Move and mesh medians do not grow.\n- **Memory:** each tick retires about 1,900 slots, by design. Over 200\nticks that adds 76–89 MB and causes no slowdown (PERF-T06).\n\n### Scaling guards\n\nThese live in `operations/src/prepared_move/tests/scaling.rs` and assert\nexact counts, not timings.\n\n- `scaling_face_moves_write_only_the_edited_body`: a face move writes\nthe same undo records and allocates the same slots with or without 64\nunrelated boxes.\n- `scaling_prepared_drag_ticks_allocate_a_constant_number_of_slots`:\nevery prepared drag tick allocates a constant number of slots, and the\nrestore allocates none.\n\n### `faceContentDigests(faces)`\n\nBacked by `measure::face_content_digest` in `measure/face_digest.rs`.\n\n- **Output:** one 128-bit exact content digest per face.\n- **What it covers:**\n  - the face's reversal;\n  - every surface field;\n  - the boundary the NURBS-area memo keys;\n  - loops and coedges, including periodic winding;\n  - wire body classes;\n  - vertex tolerances.\n\nHandles enter only as first-occurrence ordinals.\n`digest_reads_every_entity_field` pins the entity struct sizes.\n- **What it is for:** OpenZCAD uses it to keep what it derived from\nfaces a drag tick left untouched.\n- **Tests:**\n  - repeated edits repeat the digests;\n  - a move changes only the moved face and its re-limited sides;\n  - every surface type is digested;\n- winding and vertex-tolerance changes alter the digest (Codex findings,\nfixed in 1413a4c and 3f68698);\n  - a binding contract test covers drag ticks and invalid handles.\n- **Known limit:** a copy can change a digest when it reorders a face's\nedges, which the mesher reads.\n\n### Reused ray crossings for edge relations and recognition (new,\n4550e1a)\n\nThis is PERF-O06-CM. The code is in\n`operations/src/query/crossing_memo.rs`, with a hook in\n`check/src/classify/prepared.rs`.\n\n- **Why:** after a face move, the commit re-runs `solidEdgeRelations`\nand `recognizeFeatures` on the whole body. Both classify four quadrant\nprobes per non-tangent edge with whole-solid rays. About 75–80% of their\ntime is ray-crossing counts on NURBS and torus faces.\n- **What changed:** `PreparedSolid::with_crossing_memo` takes an\noptional `FaceCrossingMemo`. The crossing loop adds a remembered count\nin place of counting.\n- **Keying:** each non-planar face's count is stored under:\n- its complete content (the interned `face_content_words`, compared\nexactly);\n  - the ray's origin and direction bits.\n\nA hit returns what recounting would. Planar faces and errors are never\nstored.\n- **Where it is on:** `EdgeRelationContext` attaches the per-thread\nmemo. It is off in the library. The WASM kernel enables it with 65,536\ncounts, 4,096 face contents and 8 MiB of content words.\n- **Result:** in the OpenZCAD harness (local overlay, one core), on the\nholder's −6 mm wall offset commit:\n\n  | Measure | Before | After |\n  |---|---|---|\n  | `solidEdgeRelations` | 275–338 ms | 55–63 ms |\n  | `recognizeFeatures` | 321–325 ms | 64–74 ms |\n  | Commit wall | 1,291–1,396 ms | 801–886 ms |\n\nNatively, the moved body's relations go from 110 to 52 ms and\nrecognition from 134 to 77 ms.\n- **Cold import:** interning face contents costs about 5 ms per call.\nThe cold analysis stays within run-to-run noise.\n- **Tests:**\n- `io/tests/hammer_crossing_memo_oracle.rs`: relations and recognition\nare byte-identical with the memo off, and with it carried across two\nface moves and a cut. Each edit gets hits. It takes 4.2 s under\n`ci-test`.\n- Unit tests cover a drilled block across an edit, and tiny or\nover-budget limits.\n- **Not changed: commit volume.** The move changes the bounding box, so\nthe measurement clamp re-meshes every face. That is owner decision D1\nand is not touched here.\n\n### Roadmap\n\n- PERF-M08, D07 and O07 move to Partial.\n- PERF-O06 records the crossing reuse.\n- D01 records #1174, and T02 records #1161.\n\nThe consumer counterpart is esaueng/OpenZCAD#761.\n\n## Verification\n\n- Tests:\n- `cargo test --profile ci-test -p remus-check -p remus-operations -p\nremus-wasm --no-default-features`: all pass. The operations lib has\n1,573 passed and 7 ignored.\n- `cargo test -p remus-io --profile ci-test --test\nhammer_crossing_memo_oracle`: passes.\n- Linting:\n- `cargo clippy -p remus-check -p remus-operations -p remus-io -p\nremus-wasm --all-targets -- -D warnings` is clean.\n  - `cargo fmt` is clean.\n- `RUSTDOCFLAGS=-D warnings cargo doc` is clean for check and\noperations.\n- Repo scripts: `check-boundaries.sh`, `check-det-hash.sh`,\n`check-doc-paths.sh` and the roadmap inventory pass.\n- A local wasm32 release build was run through OpenZCAD's offset-face\nharness against the base overlay.\n- The banned-name scan of the added lines is clean.\n- I did not run the full workspace suite locally; CI runs it.\n\n## Compatibility and risks\n\nThe kernel API only gains surface:\n\n- `measure::{FaceDigest, face_content_digest}`;\n- the `faceContentDigests` binding;\n- `classify::FaceCrossingMemo` and `PreparedSolid::with_crossing_memo`;\n-\n`query::{enable,disable,set_thread_crossing_memo_limits,thread_crossing_memo_stats}`.\n\nNo existing output, format, tolerance or memo key changes. The WASM\nkernel holds up to about 17 MB more for the crossing memo once it is\nfull. The committed packages are not refreshed here.\n\n## WASM module tier\n\n- `faceContentDigests` is `Tier: core`: it reads live session face\nhandles.\n- The crossing memo is `Tier: core`: it is per-session kernel state over\nlive faces, and it adds about 14 KiB raw.\n\nWASM-Size: about +104 KiB raw against the committed package; +61.7 KiB\nof it is main-to-package drift measured on e60a528 with no kernel\nchange, so this PR adds about +43 KiB raw: read-only face content\ndigests (PERF-M08) and the edge-concavity crossing memo (PERF-O06), both\nTier: core (live session face handles)\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01Sz39coKpoLB2EasNhTmk9s\n\nSigned-off-by: petertoday\n<171875562+petertoday@users.noreply.github.com>\n\nSigned-off-by: petertoday <171875562+petertoday@users.noreply.github.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-10-20T09:28:43Z",
+          "tree_id": "9cc0cae253fdd0dd37ec869fe3aabfb79b70b833",
+          "url": "https://github.com/esaueng/remus/commit/0bcc9a40b472693f8fcc1a98f7ce4ab23ffb8503"
+        },
+        "date": 1792492584505,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 686291,
+            "range": "± 10759",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 704416,
+            "range": "± 53693",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 15676,
+            "range": "± 305",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 4682733,
+            "range": "± 46586",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 4482268,
+            "range": "± 62699",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 4379140,
+            "range": "± 102952",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 15343,
+            "range": "± 159",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 2268387,
+            "range": "± 148034",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 18448717,
+            "range": "± 936574",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 18,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 59,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 33,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 139,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 99,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 476,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 106,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 204,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 133,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 322,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 434,
+            "range": "± 45",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2189,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 21,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 48,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 47,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 2257,
+            "range": "± 53",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 8965,
+            "range": "± 84",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 34993,
+            "range": "± 258",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 3128,
+            "range": "± 213",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 354877,
+            "range": "± 1112",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 1596679,
+            "range": "± 29844",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 100836,
+            "range": "± 658",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 195303,
+            "range": "± 813",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 219499,
+            "range": "± 1229",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 40272,
+            "range": "± 5602",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 20749,
+            "range": "± 318",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 12622,
+            "range": "± 82",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 74439,
+            "range": "± 5050",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 89254,
+            "range": "± 1859",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 453169,
+            "range": "± 42084",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 5329914,
+            "range": "± 776319",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 314412,
+            "range": "± 3725",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 666670,
+            "range": "± 87473",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 54841,
+            "range": "± 1066",
             "unit": "ns/iter"
           }
         ]
