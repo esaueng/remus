@@ -734,6 +734,27 @@ fn nurbs_planar_faces_have_no_silhouette() {
     }
 }
 
+/// A closed traced contour is periodic like the circles: a run joined
+/// across its seam carries parameters past 1, which must land on the
+/// contour's start again rather than stick at its last point.
+#[test]
+fn closed_contour_parameters_wrap() {
+    let sphere =
+        remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 4.0).unwrap();
+    let nurbs = remus_heal::construct::convert_surface::sphere_to_nurbs(&sphere).unwrap();
+    let ((u0, u1), (v0, v1)) = (nurbs.domain_u(), nurbs.domain_v());
+    let at = |fu: f64, fv: f64| (u0 + (u1 - u0) * fu, v0 + (v1 - v0) * fv);
+    let curve = super::silhouette::Curve::Contour {
+        surface: &nurbs,
+        uv: vec![at(0.3, 0.3), at(0.6, 0.3), at(0.6, 0.6), at(0.3, 0.6)],
+        closed: true,
+    };
+    for t in [0.0, 0.1, 0.3, 0.55, 0.9] {
+        let (p, q) = (curve.at(t), curve.at(t + 1.0));
+        assert!((p - q).length() < 1e-9, "t = {t}: {p:?} vs {q:?}");
+    }
+}
+
 /// A traced face is disclosed even when tracing finds no contour: a
 /// NURBS cylinder seen down its axis is edge-on, so it draws nothing, but
 /// only a certified flat face is exempt, and the caps are the only ones.

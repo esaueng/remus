@@ -156,6 +156,9 @@ impl Curve<'_> {
             } => {
                 let n = uv.len();
                 let segments = if closed { n } else { n - 1 };
+                // A closed contour is periodic like the circles: a run joined
+                // across its seam continues past t = 1.
+                let t = if closed { t.rem_euclid(1.0) } else { t };
                 let x = (t * segments as f64).clamp(0.0, segments as f64);
                 // A float-to-int cast truncates toward zero, and x ≥ 0.
                 let k = (x as usize).min(segments - 1);

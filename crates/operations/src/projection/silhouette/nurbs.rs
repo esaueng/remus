@@ -284,7 +284,9 @@ pub(in crate::projection) fn contours(
 /// across the segment onto `g = 0` by bisection, and kept, recursively,
 /// while it lies more than `deflection` from the chord in space. A middle
 /// whose cross-section shows no sign change is left on the chord. Each
-/// point kept is taken from `vertices_left`; `None` once that is used up.
+/// point kept is taken from `vertices_left`; `None` once that is used up,
+/// or when a segment is still too far from the chord after
+/// [`MAX_REFINEMENT_DEPTH`] halvings.
 #[allow(clippy::too_many_arguments)]
 fn refine(
     surface: &NurbsSurface,
@@ -297,9 +299,6 @@ fn refine(
     out: &mut Vec<(f64, f64)>,
     vertices_left: &mut usize,
 ) -> Option<()> {
-    if depth >= MAX_REFINEMENT_DEPTH {
-        return Some(());
-    }
     let mid = (0.5 * (a.0 + b.0), 0.5 * (a.1 + b.1));
     // Perpendicular to the segment in parameter space, as long as it.
     let across = (a.1 - b.1, b.0 - a.0);
@@ -318,6 +317,9 @@ fn refine(
     );
     if (surface.evaluate(on.0, on.1) - chord_mid).length() <= deflection {
         return Some(());
+    }
+    if depth >= MAX_REFINEMENT_DEPTH {
+        return None;
     }
     *vertices_left = vertices_left.checked_sub(1)?;
     refine(
@@ -351,7 +353,7 @@ mod tests {
 
     use remus_math::vec::{Point3, Vec3};
 
-    use super::{INTERVALS_PER_SPAN, grid_axis, refine};
+    use super::{INTERVALS_PER_SPAN, MAX_REFINEMENT_DEPTH, grid_axis, refine};
 
     /// A knot span a thousandth of the domain wide is sampled as finely as
     /// the wide one beside it, and the knot itself is a grid value.
@@ -390,5 +392,17 @@ mod tests {
         assert!(result.is_none(), "{} points, {left} left", out.len());
         assert_eq!(left, 0);
         assert!(out.len() <= 10, "{} points", out.len());
+
+        // With the budget to spare, a segment no depth of halving brings
+        // within the deflection is refused, not accepted as it stands.
+        let mut out = Vec::new();
+        let mut left = usize::MAX;
+        let result = refine(&nurbs, view, 1e-300, clamp, a, b, 0, &mut out, &mut left);
+        assert!(result.is_none(), "{} points kept", out.len());
+        assert!(
+            out.len() <= MAX_REFINEMENT_DEPTH as usize,
+            "{} points",
+            out.len()
+        );
     }
 }
