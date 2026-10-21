@@ -28,6 +28,17 @@ test('invalid sampling, provenance and timing policies fail before loading WASM'
   assert.equal(diagnostic['timing-status'], 'contended-smoke-excluded');
 });
 
+test('tick and warmup counts leave a post-cold warmed sample', () => {
+  for (const [ticks, warmup] of [[1, 0], [1, 1], [2, 2], [2, 3]]) {
+    assert.throws(() => options([...required, '--ticks', String(ticks), '--warmup', String(warmup)]),
+      /retained sample/);
+  }
+  for (const [ticks, warmup] of [[2, 0], [2, 1], [3, 2]]) {
+    const result = options([...required, '--ticks', String(ticks), '--warmup', String(warmup)]);
+    assert.equal(result.ticks, ticks); assert.equal(result.warmup, warmup);
+  }
+});
+
 test('existing evidence is refused before package loading and remains byte-identical', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'remus-drag-output-'));
   const output = path.join(directory, 'existing.json');
