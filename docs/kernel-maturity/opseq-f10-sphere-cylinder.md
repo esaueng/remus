@@ -85,6 +85,25 @@ and `executeBatchV2`. Their independent edge oracle sorts exact integer encoding
 of raw vertex IDs; it performs no position welding. This qualifies the retained
 fine-grid cell and separation mechanism, not arbitrary fine meshes or all X9.
 
+Qualification at source `8775ec2b58a33143f51c9a488802e8f6bb849ee4` passed
+all 8,871 native workspace tests (37 skipped), 9 doctests (2 ignored),
+warning-free documentation and all 22 repository policy checks. The 52-row
+approximation census matches both its committed snapshot and executed parent
+`ca25dececf0dc2845c27b8939cac043fdc4d5d2a`. Existing mesh-pass differential
+oracles and all three F10 integration groups also pass.
+
+Canonical `cargo xtask wasm-build` passed both fresh-package and installed-tarball
+smoke tests, including all six fine-grid API cells at both deflections. The
+generated kernel is 10,491,846 bytes (gzip 3,860,856), SHA-256
+`dcd1eb68ec0ab4cda5ed414036d85dbcb4a97a693687faa0aac572ae157c1512`;
+the translator is 3,088,530 bytes (gzip 1,167,888), SHA-256
+`17b2ca73fb3d268b2495dfa8cb6a2f74c9ba5a44ac2cfc8f1860559c06b40a67`.
+These are local source-qualified artifacts, not a published package. Generated
+files were preserved separately and the original 20 tracked package files
+restored byte for byte. An initial compiler internal error in unchanged
+`volume_memo.rs` is retained as a failed attempt; rerunning the same canonical
+command without source or tool-flag changes passed.
+
 The broad X9 sphere–cylinder campaign exclusion remains. F13 and the translated
 frustum-pair F17 are also open; F17 lacks a cone–cone wall section in raw GFA and
 is not attributed to the hemisphere sampler.
