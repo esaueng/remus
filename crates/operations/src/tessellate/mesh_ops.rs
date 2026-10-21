@@ -1,7 +1,8 @@
 //! Mesh validation and boundary operations.
 
 use remus_math::det_hash::{DetHashMap, DetHashSet};
-use remus_math::vec::{Point3, Vec3};
+use remus_math::filtered::filtered_orient2d;
+use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::face::FaceSurface;
 use remus_topology::solid::SolidId;
@@ -181,6 +182,9 @@ pub fn welded_mesh_quality(mesh: &TriangleMesh) -> WeldedMeshQuality {
 /// (sort-permutation parity equal) deduplicate to one triangle; pairs with
 /// opposite winding cancel (both removed) — that's the signature of two faces
 /// tessellated from opposite sides of the same plane.
+/// A two-triangle candidate is retained when strict separation in their common
+/// dominant projection proves that the filled facets do not coincide. The grid
+/// alone cannot distinguish very thin, disjoint polar facets at fine deflections.
 /// `tri_faces` is a parallel tri -> face attribution array (one entry per
 /// triangle); entries for removed triangles are filtered alongside so group
 /// offsets recomputed from it stay aligned.
@@ -307,6 +311,9 @@ pub(super) fn dedupe_coincident_triangles_cached(
                     group.push((tj, parity[tj]));
                 }
             }
+            if group.len() == 2 && strictly_separated_facets(mesh, group[0].0, group[1].0) {
+                continue;
+            }
             if group.len() >= 2 {
                 resolve_coincident_group(&group, &mut keep);
             }
@@ -360,6 +367,69 @@ pub(super) fn dedupe_coincident_triangles_cached(
     mesh.positions = new_positions;
     mesh.normals = new_normals;
     true
+}
+
+/// Prove noncoincidence only for a resolved two-facet candidate. A separating
+/// edge in a common 2D projection separates the filled 3D triangles as well.
+/// Requiring their shared dominant axis keeps overlapping projected copies on
+/// the established near-coincidence policy. Displacement between supporting
+/// planes alone is never a separation proof.
+/// Touching, degenerate, non-finite and unresolved pairs keep the old policy.
+fn strictly_separated_facets(mesh: &TriangleMesh, first: usize, second: usize) -> bool {
+    let vertices =
+        |t: usize| [0, 1, 2].map(|corner| mesh.positions[mesh.indices[3 * t + corner] as usize]);
+    let a = vertices(first);
+    let b = vertices(second);
+    if a.iter()
+        .chain(&b)
+        .any(|p| !p.x().is_finite() || !p.y().is_finite() || !p.z().is_finite())
+    {
+        return false;
+    }
+    let dominant_axis = |p: [Point3; 3]| {
+        let n = (p[1] - p[0]).cross(p[2] - p[0]);
+        let components = [n.x().abs(), n.y().abs(), n.z().abs()];
+        if components.iter().any(|v| !v.is_finite()) {
+            return None;
+        }
+        let mut axis = 0;
+        for i in 1..3 {
+            if components[i] > components[axis] {
+                axis = i;
+            }
+        }
+        (components[axis] > 0.0).then_some(axis)
+    };
+    let Some(axis) = dominant_axis(a) else {
+        return false;
+    };
+    if dominant_axis(b) != Some(axis) {
+        return false;
+    }
+    let project = |p: Point3| match axis {
+        0 => Point2::new(p.y(), p.z()),
+        1 => Point2::new(p.z(), p.x()),
+        _ => Point2::new(p.x(), p.y()),
+    };
+    let a = a.map(project);
+    let b = b.map(project);
+    let areas = [a, b].map(|p| filtered_orient2d(p[0], p[1], p[2]));
+    if areas
+        .iter()
+        .any(|area| !area.is_finite() || area.abs() <= 0.0)
+    {
+        return false;
+    }
+    let separated = |a: [Point2; 3], b: [Point2; 3], interior: f64| {
+        (0..3).any(|i| {
+            b.iter().all(|&p| {
+                let side = filtered_orient2d(a[i], a[(i + 1) % 3], p);
+                side.is_finite()
+                    && ((interior > 0.0 && side < 0.0) || (interior < 0.0 && side > 0.0))
+            })
+        })
+    };
+    separated(a, b, areas[0]) || separated(b, a, areas[1])
 }
 
 /// Removal rule for one group of position-coincident triangles (in index

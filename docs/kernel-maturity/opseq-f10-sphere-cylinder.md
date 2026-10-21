@@ -45,23 +45,45 @@ Cancellation and work-budget refusals preserve operands and topology counts.
 the direct API, `executeBatch` and `executeBatchV2`, in fresh and installed
 packages. The original campaign replay and native/batch cross-check are active.
 
-## Open fine-grid counterexample
+## Fine-grid polar facets
 
-The tiny placed case at relative mesh deflection `1e-5` remains open. Run:
+The retained tiny placed case now closes at relative mesh deflections `2e-5`
+and `1e-5`, through both plain and grouped tessellation. Run:
 
 ```sh
-cargo test -p remus-operations --test regress_opseq_sphere_cylinder_fuse \
-  hemisphere_union_tiny_placed_fine_mesh_polar_dedup_open -- --ignored --exact
+cargo test --profile ci-test -p remus-operations \
+  --test regress_opseq_sphere_cylinder_fuse \
+  hemisphere_union_tiny_placed_fine_mesh_polar_dedup -- --exact
 ```
 
-Its original zero-boundary assertion currently fails with 16 boundary edges.
-The mesh is closed before triangle deduplication. Four groups each contain two
-thin polar triangles with the same position-quantized key and six distinct
-actual vertex identities; cancellation opens the mesh. A shared-edge-only
-noncoincidence proof cannot resolve these groups. Changing the general
-near-coincidence cancellation policy needs separate qualification and is not
-part of this repair. The ignored reproduction retains the failing assertion;
-the successful packaged matrix does not claim this finer raw mesh closes.
+The parent reproduction fails its unchanged zero-boundary assertion with 16
+boundary edges at `1e-5`. The mesh was closed before duplicate removal: four
+candidate groups each contained two thin polar facets with six distinct vertex
+IDs but the same position-quantized corner triple. Cancelling those distinct
+facets opened the mesh.
+
+The 1 µm grid remains a candidate filter. For groups of exactly two triangles,
+matching dominant projections and filtered exact orientation predicates can now
+prove strict separation of the filled facets. Such pairs remain unchanged;
+this proof does not rely on shared vertex IDs or optional face attribution.
+Touching, overlapping, degenerate, non-finite, unresolved and larger groups keep
+the previous cancellation policy. A displacement between supporting planes
+alone is insufficient. Existing exact and normal-offset duplicate controls and
+the damaged/coarse-mesh reference comparisons retain their assertions.
+
+The new unit witness includes the literal six positions, all three coordinate
+permutations, both winding classes, plain/grouped attribution and changed
+positions within the same grid cells. The cleanup cache admits only unique
+nondegenerate candidate keys, so a preserved collision cannot become a stale
+no-removal certificate. Its position-change regression verifies that a later
+truly coincident pair still cancels.
+
+The active full-shape witness retains material, exact carrier, strict validity,
+quantity, raw mesh incidence and outward-normal assertions. Fresh and installed
+package smoke tests add the fine cell for direct construction, `executeBatch`
+and `executeBatchV2`. Their independent edge oracle sorts exact integer encodings
+of raw vertex IDs; it performs no position welding. This qualifies the retained
+fine-grid cell and separation mechanism, not arbitrary fine meshes or all X9.
 
 The broad X9 sphere–cylinder campaign exclusion remains. F13 and the translated
 frustum-pair F17 are also open; F17 lacks a cone–cone wall section in raw GFA and
