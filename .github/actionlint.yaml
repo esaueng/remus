@@ -1,3 +1,4 @@
 self-hosted-runner:
   labels:
     - ci-small
+    - ci-server-jane

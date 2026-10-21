@@ -1,5 +1,25 @@
 # Trusted main VPS pilot
 
+## Jane validation repair — 21 October 2026
+
+The current main-only probe had been blocked because `ci-trusted-main` no
+longer included its workflow. Restored only
+`esaueng/remus/.github/workflows/trusted-vps.yml@refs/heads/main`, preserving
+selected repository access, all existing workflow revisions and the workflow
+restriction. Main remains protected; no workflow code, required check,
+credential or deployment setting changed for this repair.
+
+The previously queued [validation run](https://github.com/esaueng/remus/actions/runs/39584872762)
+then passed both probes on `ci-server-jane-1` and `ci-server-jane-2`, from
+16:10:13 to 16:10:22 UTC. Its existing preflight checked non-root identity,
+NoNewPrivileges, fresh storage, rootless Docker, per-slot resources and mount
+options before the boundary/classifier checks. Both slots returned online and
+idle. This verifies the validation repair, not activation of the separately
+staged merge-queue workflow. The sections below retain the original pilot's
+historical inspection and rollout record.
+
+## Original pilot record
+
 Status: prepared, **not activated or validated on the VPS**. This is an
 additive pilot of layer-boundary lint and the CI-classifier unit tests from
 `Repository Policy`. The hosted copies remain authoritative, including on
