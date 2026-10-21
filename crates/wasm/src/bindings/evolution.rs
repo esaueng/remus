@@ -432,6 +432,68 @@ impl BrepKernel {
         }))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn grid_pattern_journaled_json(
+        &mut self,
+        solid: u32,
+        direction_x: [f64; 3],
+        direction_y: [f64; 3],
+        spacing_x: f64,
+        spacing_y: f64,
+        count_x: f64,
+        count_y: f64,
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        // Keep JS counts as numbers until validated. A u32 binding would
+        // truncate fractional counts and wrap values above 2^32 first.
+        let count = |value, name| {
+            let count = crate::error::validate_iteration_budget(value, name)
+                .map_err(StructuredWasmError::from)?;
+            if count == 0 {
+                return Err(StructuredWasmError::invalid_argument(
+                    format!("{name} must be at least 1"),
+                    Some(name),
+                ));
+            }
+            u32::try_from(count).map_err(|_| {
+                StructuredWasmError::invalid_argument("count exceeds u32 range", Some(name))
+            })
+        };
+        let count_x = count(count_x, "countX")?;
+        let count_y = count(count_y, "countY")?;
+        crate::error::validate_work_product(count_x, count_y, "grid copies")
+            .map_err(StructuredWasmError::from)?;
+        for (name, value) in [
+            ("dirX[0]", direction_x[0]),
+            ("dirX[1]", direction_x[1]),
+            ("dirX[2]", direction_x[2]),
+            ("dirY[0]", direction_y[0]),
+            ("dirY[1]", direction_y[1]),
+            ("dirY[2]", direction_y[2]),
+            ("spacingX", spacing_x),
+            ("spacingY", spacing_y),
+        ] {
+            validate_finite(value, name).map_err(StructuredWasmError::from)?;
+        }
+        let solid_id = self
+            .resolve_solid(solid)
+            .map_err(StructuredWasmError::from)?;
+        let journaled = journal_ops::grid_pattern_journaled(
+            self.topo_mut(),
+            solid_id,
+            remus_math::vec::Vec3::new(direction_x[0], direction_x[1], direction_x[2]),
+            remus_math::vec::Vec3::new(direction_y[0], direction_y[1], direction_y[2]),
+            spacing_x,
+            spacing_y,
+            count_x as usize,
+            count_y as usize,
+        )
+        .map_err(StructuredWasmError::from)?;
+        Ok(serde_json::json!({
+            "compound": crate::handles::compound_id_to_u32(journaled.compound),
+            "op": u32::try_from(journaled.op.value()).unwrap_or(u32::MAX),
+        }))
+    }
+
     fn imprint_json(
         &mut self,
         target: u32,
@@ -826,6 +888,20 @@ impl BrepKernel {
                 let count = get_u32(args, "count")?;
                 self.circular_pattern_journaled_json(solid, [*ax, *ay, *az], count)
             })(),
+            "gridPatternJournaled" => (|| {
+                let solid = get_u32(args, "solid")?;
+                let x = replacement_vector(args, "dirX")?;
+                let y = replacement_vector(args, "dirY")?;
+                self.grid_pattern_journaled_json(
+                    solid,
+                    [x.x(), x.y(), x.z()],
+                    [y.x(), y.y(), y.z()],
+                    get_f64(args, "spacingX")?,
+                    get_f64(args, "spacingY")?,
+                    get_f64(args, "countX")?,
+                    get_f64(args, "countY")?,
+                )
+            })(),
             "imprint" => get_u32(args, "target").and_then(|target| {
                 get_u32(args, "tool").and_then(|tool| self.imprint_json(target, tool))
             }),
@@ -1021,6 +1097,40 @@ impl BrepKernel {
         self.circular_pattern_journaled_json(solid, [ax, ay, az], count)
             .map(|v| v.to_string())
             .map_err(structured_to_js)
+    }
+
+    /// Grid pattern journaled as one construction-derived F/E/V evolution
+    /// entry (kind `grid_pattern`). Returns JSON `{"compound", "op"}`.
+    /// Directions are independently normalized and must be nonparallel.
+    /// Members are row-major (X changes first), including the original first.
+    /// Counts must be positive integers, each and their product at most 10000.
+    #[wasm_bindgen(js_name = "gridPatternJournaled")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn grid_pattern_journaled_js(
+        &mut self,
+        solid: u32,
+        dxx: f64,
+        dxy: f64,
+        dxz: f64,
+        dyx: f64,
+        dyy: f64,
+        dyz: f64,
+        spacing_x: f64,
+        spacing_y: f64,
+        count_x: f64,
+        count_y: f64,
+    ) -> Result<String, JsError> {
+        self.grid_pattern_journaled_json(
+            solid,
+            [dxx, dxy, dxz],
+            [dyx, dyy, dyz],
+            spacing_x,
+            spacing_y,
+            count_x,
+            count_y,
+        )
+        .map(|value| value.to_string())
+        .map_err(structured_to_js)
     }
 
     /// Imprints one solid's intersection edges onto another without removing
@@ -1243,6 +1353,494 @@ impl BrepKernel {
 
 fn structured_to_js(error: StructuredWasmError) -> JsError {
     JsError::new(error.message())
+}
+
+#[cfg(test)]
+mod grid_pattern_contract_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use crate::kernel::BrepKernel;
+    use remus_topology::journal::{EntityEvent, EntityKey, EntityKind, EntryPayload};
+    use serde_json::{Value, json};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    const KINDS: [EntityKind; 3] = [EntityKind::Face, EntityKind::Edge, EntityKind::Vertex];
+
+    fn handle(value: &Value) -> u32 {
+        u32::try_from(value.as_u64().unwrap()).unwrap()
+    }
+
+    fn entities(kernel: &BrepKernel, solid: u32, kind: EntityKind) -> BTreeSet<EntityKey> {
+        let handles = match kind {
+            EntityKind::Face => kernel.get_solid_faces(solid).unwrap(),
+            EntityKind::Edge => kernel.get_solid_edges(solid).unwrap(),
+            EntityKind::Vertex => kernel.get_solid_vertices(solid).unwrap(),
+        };
+        handles
+            .into_iter()
+            .map(|index| EntityKey {
+                kind,
+                index: index as usize,
+            })
+            .collect()
+    }
+
+    fn points(kernel: &BrepKernel, key: EntityKey) -> Vec<Vec<f64>> {
+        let index = u32::try_from(key.index).unwrap();
+        let vertices = match key.kind {
+            EntityKind::Face => kernel.get_face_vertices(index).unwrap(),
+            EntityKind::Edge => kernel.get_edge_vertex_handles(index).unwrap(),
+            EntityKind::Vertex => vec![index],
+        };
+        vertices
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|vertex| kernel.get_vertex_position(vertex).unwrap())
+            .collect()
+    }
+
+    fn assert_shift(
+        kernel: &BrepKernel,
+        source: EntityKey,
+        subject: EntityKey,
+        offset: [f64; 3],
+        scale: f64,
+    ) {
+        let wanted = points(kernel, source);
+        let actual = points(kernel, subject);
+        assert_eq!(wanted.len(), actual.len());
+        for point in wanted {
+            assert!(
+                actual
+                    .iter()
+                    .any(|candidate| (0..3).all(|axis| (candidate[axis]
+                        - point[axis]
+                        - offset[axis])
+                        .abs()
+                        <= 1e-7 * scale)),
+                "{source:?} -> {subject:?} must have the independently expected translation {offset:?}"
+            );
+        }
+    }
+
+    fn batch(kernel: &mut BrepKernel, route: u8, ops: Value) -> Value {
+        serde_json::from_str(&if route == 2 {
+            kernel.execute_batch_v2(&ops.to_string())
+        } else {
+            kernel.execute_batch(&ops.to_string())
+        })
+        .unwrap()
+    }
+
+    fn grid(kernel: &mut BrepKernel, route: u8, solid: u32, settings: &Value) -> Value {
+        if route == 0 {
+            let x = &settings["dirX"];
+            let y = &settings["dirY"];
+            serde_json::from_str(
+                &kernel
+                    .grid_pattern_journaled_js(
+                        solid,
+                        x[0].as_f64().unwrap(),
+                        x[1].as_f64().unwrap(),
+                        x[2].as_f64().unwrap(),
+                        y[0].as_f64().unwrap(),
+                        y[1].as_f64().unwrap(),
+                        y[2].as_f64().unwrap(),
+                        settings["spacingX"].as_f64().unwrap(),
+                        settings["spacingY"].as_f64().unwrap(),
+                        settings["countX"].as_f64().unwrap(),
+                        settings["countY"].as_f64().unwrap(),
+                    )
+                    .unwrap(),
+            )
+            .unwrap()
+        } else {
+            let mut args = settings.clone();
+            args["solid"] = json!(solid);
+            let response = batch(
+                kernel,
+                route,
+                json!([{"op":"gridPatternJournaled", "args":args}]),
+            );
+            assert!(response[0].get("error").is_none(), "{response}");
+            response[0]["ok"].clone()
+        }
+    }
+
+    fn bound(kernel: &BrepKernel, reference: &str, expected: EntityKey) {
+        let resolution: Value =
+            serde_json::from_str(&kernel.resolve_ref(reference).unwrap()).unwrap();
+        assert_eq!(resolution["status"], "bound", "{reference}: {resolution}");
+        assert_eq!(resolution["provenance"], "construction");
+        assert_eq!(
+            resolution["entities"],
+            json!([{"kind":expected.kind.as_str(), "handle":expected.index}])
+        );
+    }
+
+    fn references(
+        kernel: &BrepKernel,
+        op: u32,
+        expected: &BTreeSet<EntityKey>,
+    ) -> Vec<(String, EntityKey)> {
+        let mut references = Vec::new();
+        for kind in KINDS {
+            let mut seen = BTreeSet::new();
+            let count = expected.iter().filter(|key| key.kind == kind).count();
+            for index in 0..count {
+                let index = u32::try_from(index).unwrap();
+                let resolution: Value = serde_json::from_str(
+                    &kernel
+                        .resolve_operation_output(op, kind.as_str(), index)
+                        .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(resolution["status"], "bound");
+                assert_eq!(resolution["provenance"], "construction");
+                assert_eq!(resolution["entities"].as_array().unwrap().len(), 1);
+                assert_eq!(resolution["entities"][0]["kind"], kind.as_str());
+                let key = EntityKey {
+                    kind,
+                    index: handle(&resolution["entities"][0]["handle"]) as usize,
+                };
+                assert!(expected.contains(&key));
+                assert!(seen.insert(key), "duplicate output subject");
+                references.push((
+                    kernel
+                        .make_operation_output_ref(op, kind.as_str(), index)
+                        .unwrap(),
+                    key,
+                ));
+            }
+            assert_eq!(
+                seen,
+                expected
+                    .iter()
+                    .filter(|key| key.kind == kind)
+                    .copied()
+                    .collect()
+            );
+            let past_end: Value = serde_json::from_str(
+                &kernel
+                    .resolve_operation_output(op, kind.as_str(), u32::try_from(count).unwrap())
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(past_end["status"], "noMatch");
+        }
+        references
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn grid_pattern_journaled_batch_surface_exists_and_censuses_all_kinds() {
+        for route in 0..3 {
+            for (count_x, count_y, scale, skew) in [
+                (1, 1, 1.0, false),
+                (1, 3, 0.001, false),
+                (3, 1, 1000.0, false),
+                (2, 3, 1.0, false),
+                (2, 2, 1.0, true),
+            ] {
+                let mut kernel = BrepKernel::new();
+                let source = kernel
+                    .make_box_solid(10.0 * scale, 10.0 * scale, 10.0 * scale)
+                    .unwrap();
+                let anchor = kernel
+                    .linear_pattern_journaled_json(source, [1.0, 0.0, 0.0], 25.0 * scale, 1)
+                    .unwrap();
+                let source_keys: BTreeSet<_> = KINDS
+                    .into_iter()
+                    .flat_map(|kind| entities(&kernel, source, kind))
+                    .collect();
+                let original_refs = references(&kernel, handle(&anchor["op"]), &source_keys);
+                let checkpoint = kernel.checkpoint_impl().unwrap();
+                let before = kernel.serialize_solids(&[source]).unwrap();
+                let settings = json!({"dirX":[2.0,0.0,0.0], "dirY":if skew { [3.0,3.0,0.0] } else { [0.0,3.0,0.0] },
+                "spacingX":25.0*scale,"spacingY":25.0*scale,"countX":count_x,"countY":count_y});
+                let result = grid(&mut kernel, route, source, &settings);
+                let op = handle(&result["op"]);
+                let compound = handle(&result["compound"]);
+                let members = kernel.get_compound_solids(compound).unwrap();
+                assert_eq!(members.len(), count_x * count_y);
+                assert_eq!(members[0], source);
+                let mut live = BTreeSet::new();
+                let mut offsets = BTreeMap::new();
+                for (index, &member) in members.iter().enumerate() {
+                    let ix = (index % count_x) as f64;
+                    let iy = (index / count_x) as f64;
+                    let dy = if skew { 1.0 / 2.0_f64.sqrt() } else { 0.0 };
+                    let offset = [
+                        (ix + iy * dy) * 25.0 * scale,
+                        iy * 25.0 * scale * if skew { dy } else { 1.0 },
+                        0.0,
+                    ];
+                    let keys: BTreeSet<_> = KINDS
+                        .into_iter()
+                        .flat_map(|kind| entities(&kernel, member, kind))
+                        .collect();
+                    assert_eq!(keys.len(), source_keys.len());
+                    for key in keys {
+                        assert!(live.insert(key));
+                        offsets.insert(key, offset);
+                    }
+                    assert!(
+                        (kernel.volume(member, 0.01 * scale).unwrap() - 1000.0 * scale.powi(3))
+                            .abs()
+                            <= 1e-6 * scale.powi(3)
+                    );
+                }
+                let result_refs = references(&kernel, op, &live);
+                let entry = kernel
+                    .topo()
+                    .journal()
+                    .entries()
+                    .iter()
+                    .find(|entry| entry.op().value() == u64::from(op))
+                    .unwrap();
+                assert_eq!(entry.kind(), "grid_pattern");
+                let EntryPayload::Evolution { events, origin, .. } = entry.payload() else {
+                    panic!("grid must publish evolution")
+                };
+                assert_eq!(
+                    *origin,
+                    remus_topology::journal::RecordedOrigin::Construction
+                );
+                assert_eq!(events.len(), live.len());
+                let mut subjects = BTreeSet::new();
+                let mut generated = BTreeMap::<EntityKey, usize>::new();
+                for (ordinal, event) in events {
+                    let subject = kernel.topo().journal().key_of(*ordinal).unwrap();
+                    assert!(subjects.insert(subject));
+                    let from = match event {
+                        EntityEvent::Modified { from } => {
+                            let from = kernel.topo().journal().key_of(*from).unwrap();
+                            assert_eq!(from, subject);
+                            assert!(source_keys.contains(&subject));
+                            from
+                        }
+                        EntityEvent::Generated { sources } => {
+                            assert_eq!(sources.len(), 1);
+                            let from = kernel.topo().journal().key_of(sources[0]).unwrap();
+                            assert!(source_keys.contains(&from));
+                            assert!(!source_keys.contains(&subject));
+                            assert_eq!(from.kind, subject.kind);
+                            *generated.entry(from).or_default() += 1;
+                            from
+                        }
+                        other => panic!("unexpected grid disposition: {other:?}"),
+                    };
+                    assert_shift(&kernel, from, subject, offsets[&subject], scale);
+                }
+                assert_eq!(subjects, live);
+                for source_key in &source_keys {
+                    assert_eq!(
+                        generated.get(source_key).copied().unwrap_or(0),
+                        members.len() - 1
+                    );
+                }
+                for (reference, key) in &original_refs {
+                    bound(&kernel, reference, *key);
+                }
+
+                // A real edit to the last copy must preserve every untouched
+                // original and copied-member reference, including E/V.
+                if count_x == 2 && count_y == 3 {
+                    let bytes = kernel.serialize_solids(&members).unwrap();
+                    let mut imported = BrepKernel::new();
+                    imported.make_box_solid(1.0, 1.0, 1.0).unwrap();
+                    let roots = imported.deserialize_solids(&bytes).unwrap();
+                    let imported_keys: BTreeSet<_> = roots
+                        .iter()
+                        .flat_map(|&root| {
+                            KINDS
+                                .into_iter()
+                                .flat_map(|kind| entities(&imported, root, kind))
+                                .collect::<Vec<_>>()
+                        })
+                        .collect();
+                    let imported_refs = references(&imported, op, &imported_keys);
+                    assert_eq!(imported_refs.len(), result_refs.len());
+                    for ((reference, _), (_, expected)) in result_refs.iter().zip(&imported_refs) {
+                        bound(&imported, reference, *expected);
+                    }
+                    let edited = *members.last().unwrap();
+                    let untouched: BTreeSet<_> = members[..members.len() - 1]
+                        .iter()
+                        .flat_map(|&root| {
+                            KINDS
+                                .into_iter()
+                                .flat_map(|kind| entities(&kernel, root, kind))
+                                .collect::<Vec<_>>()
+                        })
+                        .collect();
+                    let face = kernel.get_solid_faces(edited).unwrap()[0];
+                    kernel
+                        .move_faces_journaled_json(edited, &[face], scale)
+                        .unwrap();
+                    for (reference, key) in original_refs.iter().chain(
+                        result_refs
+                            .iter()
+                            .filter(|(_, key)| untouched.contains(key)),
+                    ) {
+                        bound(&kernel, reference, *key);
+                    }
+                }
+                kernel.restore_checkpoint_impl(checkpoint).unwrap();
+                let mut restored: Value =
+                    serde_json::from_slice(&kernel.serialize_solids(&[source]).unwrap()).unwrap();
+                let mut saved: Value = serde_json::from_slice(&before).unwrap();
+                // Restore deliberately preserves only the identifier high-water
+                // counters; exact geometry and retained history must match.
+                for counter in ["next_op", "next_ordinal"] {
+                    assert!(
+                        restored["journal"][counter].as_u64().unwrap()
+                            >= saved["journal"][counter].as_u64().unwrap()
+                    );
+                    restored["journal"].as_object_mut().unwrap().remove(counter);
+                    saved["journal"].as_object_mut().unwrap().remove(counter);
+                }
+                assert_eq!(restored, saved);
+                assert!(kernel.resolve_compound(compound).is_err());
+                for (reference, key) in &original_refs {
+                    bound(&kernel, reference, *key);
+                }
+                for (reference, _) in &result_refs {
+                    let resolution: Value =
+                        serde_json::from_str(&kernel.resolve_ref(reference).unwrap()).unwrap();
+                    assert_eq!(resolution["status"], "unknownOperation");
+                }
+                for &member in &members[1..] {
+                    assert!(kernel.resolve_solid(member).is_err());
+                }
+                let next = grid(&mut kernel, route, source, &settings);
+                assert!(handle(&next["op"]) > op);
+                for &member in &members[1..] {
+                    assert!(kernel.resolve_solid(member).is_err());
+                }
+                for (reference, _) in &result_refs {
+                    let resolution: Value =
+                        serde_json::from_str(&kernel.resolve_ref(reference).unwrap()).unwrap();
+                    assert_eq!(resolution["status"], "unknownOperation");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn grid_pattern_journaled_rejects_malformed_counts_and_rolls_back_both_batches() {
+        for route in 1..3 {
+            let mut kernel = BrepKernel::new();
+            let source = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+            let retired = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
+            let retired_id = kernel.resolve_solid(retired).unwrap();
+            kernel.topo_mut().delete_solid(retired_id).unwrap();
+            let anchor = kernel
+                .linear_pattern_journaled_json(source, [1.0, 0.0, 0.0], 25.0, 1)
+                .unwrap();
+            let source_keys: BTreeSet<_> = KINDS
+                .into_iter()
+                .flat_map(|kind| entities(&kernel, source, kind))
+                .collect();
+            let refs = references(&kernel, handle(&anchor["op"]), &source_keys);
+            let normal = json!({"solid":source,"dirX":[1,0,0],"dirY":[0,1,0],"spacingX":25,"spacingY":25,"countX":2,"countY":2});
+            let mut invalids = vec![
+                json!({"solid":retired}),
+                json!({"dirX":[]}),
+                json!({"dirX":[1,0]}),
+                json!({"dirY":[0,1,0,2]}),
+                json!({"dirX":[1,"x",0]}),
+                json!({"dirY":null}),
+                json!({"countX":"2"}),
+                json!({"countY":null}),
+                json!({"countX":101,"countY":100}),
+                json!({"spacingX":0}),
+                json!({"spacingY":-1}),
+                json!({"spacingX":1e-12}),
+                json!({"dirX":[0,0,0]}),
+                json!({"dirY":[1,0,0]}),
+                json!({"dirY":[-1,0,0]}),
+            ];
+            for value in [0.0, -1.0, 1.5, 4_294_967_297.0, 10_001.0] {
+                invalids.push(json!({"countX":value}));
+                invalids.push(json!({"countY":value}));
+            }
+            invalids.push(json!({"spacingX":5,"countY":1}));
+            for overrides in invalids {
+                let mut args = normal.clone();
+                for (key, value) in overrides.as_object().unwrap() {
+                    args[key] = value.clone();
+                }
+                let overlap = args["spacingX"] == 5;
+                let before = kernel.serialize_solids(&[source]).unwrap();
+                let journal = kernel.journal_summary();
+                let before_memory = kernel
+                    .topo()
+                    .memory_estimate(&mut std::collections::HashSet::new());
+                let response = batch(
+                    &mut kernel,
+                    route,
+                    json!([{"op":"gridPatternJournaled","args":args},{"op":"volume","args":{"solid":source,"deflection":0.01}}]),
+                );
+                assert!(response[0].get("error").is_some(), "{args}: {response}");
+                if route == 2 {
+                    let error = &response[0]["error"];
+                    if overlap {
+                        assert_eq!(error["code"], "operation_failed");
+                        assert_eq!(error["category"], "unsupported");
+                        assert_eq!(error["details"]["kernelCode"], "pattern_instances_overlap");
+                    } else if args["solid"] == retired {
+                        assert_eq!(error["code"], "invalid_handle");
+                    } else {
+                        assert_eq!(error["code"], "invalid_argument", "{args}: {error}");
+                    }
+                }
+                assert!((response[1]["ok"].as_f64().unwrap() - 1000.0).abs() < 1e-6);
+                assert_eq!(kernel.serialize_solids(&[source]).unwrap(), before);
+                assert_eq!(kernel.journal_summary(), journal);
+                let after_memory = kernel
+                    .topo()
+                    .memory_estimate(&mut std::collections::HashSet::new());
+                assert_eq!(
+                    after_memory.allocated_slots - after_memory.retired_slots,
+                    before_memory.allocated_slots - before_memory.retired_slots,
+                    "refusal must preserve every live entity arena"
+                );
+                if overlap {
+                    assert!(after_memory.allocated_slots > before_memory.allocated_slots);
+                    assert!(after_memory.retired_slots > before_memory.retired_slots);
+                } else {
+                    assert_eq!(after_memory.allocated_slots, before_memory.allocated_slots);
+                    assert_eq!(after_memory.retired_slots, before_memory.retired_slots);
+                }
+                for (reference, key) in &refs {
+                    bound(&kernel, reference, *key);
+                }
+            }
+            // Non-finite JS numbers cannot appear in JSON. Test the shared
+            // direct validator without constructing a native-only JsError.
+            for (x, y, spacing) in [
+                (f64::NAN, 2.0, 25.0),
+                (2.0, f64::INFINITY, 25.0),
+                (2.0, 2.0, f64::NAN),
+            ] {
+                assert!(
+                    kernel
+                        .grid_pattern_journaled_json(
+                            source,
+                            [1.0, 0.0, 0.0],
+                            [0.0, 1.0, 0.0],
+                            spacing,
+                            25.0,
+                            x,
+                            y
+                        )
+                        .is_err()
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
