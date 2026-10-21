@@ -9,7 +9,7 @@ on:
         description: Trusted runner to validate
         type: choice
         default: auto
-        options: [auto, ci-server-jane, ci-server-jane-1, ci-server-jane-2, ci-server-john]
+        options: [auto, ci-server-jane, ci-server-jane-1, ci-server-jane-2, ci-server-jane-3, ci-server-john]
 
 permissions:
   contents: read
@@ -29,17 +29,17 @@ jobs:
       github.ref_protected &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       vars.REMUS_TRUSTED_VPS_ENABLED == 'true' &&
-      ((vars.CI_FLEET_ENABLED == 'true' && contains(fromJSON('["ci-server-jane","ci-server-john"]'), vars.CI_FLEET_TARGET)) || contains(fromJSON('["ci-server-jane","ci-server-jane-1","ci-server-jane-2","ci-server-john"]'), inputs.runner))
+      ((vars.CI_FLEET_ENABLED == 'true' && contains(fromJSON('["ci-server-jane","ci-server-john"]'), vars.CI_FLEET_TARGET)) || contains(fromJSON('["ci-server-jane","ci-server-jane-1","ci-server-jane-2","ci-server-jane-3","ci-server-john"]'), inputs.runner))
     runs-on:
       group: ci-trusted-main
-      labels: ${{ contains(fromJSON('["ci-server-jane","ci-server-jane-1","ci-server-jane-2","ci-server-john"]'), inputs.runner) && inputs.runner || vars.CI_FLEET_TARGET }}
+      labels: ${{ contains(fromJSON('["ci-server-jane","ci-server-jane-1","ci-server-jane-2","ci-server-jane-3","ci-server-john"]'), inputs.runner) && inputs.runner || vars.CI_FLEET_TARGET }}
     timeout-minutes: 5
     strategy:
       fail-fast: false
-      # The shared Jane label exercises both independent slots concurrently.
-      max-parallel: 2
+      # The shared Jane label exercises all three independent slots concurrently.
+      max-parallel: 3
       matrix:
-        probe: [1, 2]
+        probe: [1, 2, 3]
     defaults:
       run:
         shell: bash
@@ -53,10 +53,10 @@ jobs:
               CI_USER=ci-runner CI_STORAGE=/srv/ci CI_SLICE=ci.slice
               CI_DOCKER=ci-docker CI_MEMORY=3221225472 CI_CPUS=1
               CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 ;;
-            ci-server-jane-1|ci-server-jane-2)
+            ci-server-jane-1|ci-server-jane-2|ci-server-jane-3)
               slot=${RUNNER_NAME##*-}
               CI_USER=ci-slot$slot CI_STORAGE=/srv/ci-slot$slot CI_SLICE=cislot$slot.slice
-              CI_DOCKER=ci-slot$slot-docker CI_MEMORY=6442450944 CI_CPUS=6
+              CI_DOCKER=ci-slot$slot-docker CI_MEMORY=5000000000 CI_CPUS=6
               CARGO_BUILD_JOBS=3 RUST_TEST_THREADS=6 ;;
             *) echo 'Unknown trusted runner' >&2; exit 1 ;;
           esac

@@ -15,7 +15,7 @@ class FleetSelectorTests(unittest.TestCase):
     def test_pilot_has_no_legacy_vps_default_or_direct_target(self):
         pilot = (SOURCE.parent / 'trusted-vps.yml').read_text()
         self.assertIn('default: auto', pilot)
-        self.assertIn('options: [auto, ci-server-jane, ci-server-jane-1, ci-server-jane-2, ci-server-john]', pilot)
+        self.assertIn('options: [auto, ci-server-jane, ci-server-jane-1, ci-server-jane-2, ci-server-jane-3, ci-server-john]', pilot)
         self.assertNotIn('ci-small', pilot)
         self.assertNotIn('labels: ci-vm-1441561', pilot)
 

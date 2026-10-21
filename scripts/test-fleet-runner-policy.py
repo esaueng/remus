@@ -7,7 +7,8 @@ import subprocess
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCES = ('.github/actions/fleet-guard/action.yml', '.github/workflows/trusted-vps.yml')
+SOURCES = ('.github/actions/fleet-guard/action.yml', '.github/workflows/trusted-vps.yml',
+           '.github/workflows/fleet-ci-v6.yml')
 
 
 class FleetRunnerPolicy(unittest.TestCase):
@@ -16,8 +17,8 @@ class FleetRunnerPolicy(unittest.TestCase):
             text = (ROOT / workflow).read_text()
             guard = re.search(r'case "\$RUNNER_NAME" in\n.*?\besac', text, re.S).group()
             for name, allowed in [('ci-vm-1441561', True), ('ci-server-jane', True), ('ci-server-john', True),
-                                  ('ci-server-jane-1', True), ('ci-server-jane-2', True),
-                                  ('ci-server-jane-0', False), ('ci-server-jane-3', False),
+                                  ('ci-server-jane-1', True), ('ci-server-jane-2', True), ('ci-server-jane-3', True),
+                                  ('ci-server-jane-0', False), ('ci-server-jane-4', False),
                                   ('', False), ('ci-server-jane-extra', False), ('unknown', False)]:
                 with self.subTest(workflow=workflow, runner=name):
                     result = subprocess.run(['bash', '-c', guard], env=dict(os.environ, RUNNER_NAME=name),
@@ -30,8 +31,9 @@ class FleetRunnerPolicy(unittest.TestCase):
             guard = re.search(r'case "\$RUNNER_NAME" in\n.*?\besac', text, re.S).group()
             for name, expected in (
                 ('ci-vm-1441561', 'ci-runner /srv/ci ci.slice ci-docker 3221225472 1 1 1'),
-                ('ci-server-jane-1', 'ci-slot1 /srv/ci-slot1 cislot1.slice ci-slot1-docker 6442450944 6 3 6'),
-                ('ci-server-jane-2', 'ci-slot2 /srv/ci-slot2 cislot2.slice ci-slot2-docker 6442450944 6 3 6'),
+                ('ci-server-jane-1', 'ci-slot1 /srv/ci-slot1 cislot1.slice ci-slot1-docker 5000000000 6 3 6'),
+                ('ci-server-jane-2', 'ci-slot2 /srv/ci-slot2 cislot2.slice ci-slot2-docker 5000000000 6 3 6'),
+                ('ci-server-jane-3', 'ci-slot3 /srv/ci-slot3 cislot3.slice ci-slot3-docker 5000000000 6 3 6'),
             ):
                 with self.subTest(workflow=workflow, runner=name):
                     result = subprocess.check_output(
