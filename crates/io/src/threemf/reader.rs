@@ -191,14 +191,17 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
     let mut objects = Vec::new();
     let mut items = Vec::new();
     let mut current: Option<ParsedObject> = None;
-    let mut in_vertices = false;
-    let mut in_triangles = false;
-    // Element nesting depth, and the depths of the open `<object>`, its core
-    // `<components>` and the core `<build>`: only a `<component>` or `<item>`
-    // directly inside its list is a placement, not one nested in an extension
-    // element (the core schema allows foreign children in both).
+    // Only direct children of their core parent may change geometry state.
+    // Unsupported extension subtrees are opaque, including any unprefixed
+    // children that inherit the core namespace from the document root.
     let mut depth = 0usize;
+    let mut ignored_depth: Option<usize> = None;
+    let mut model_depth: Option<usize> = None;
+    let mut resources_depth: Option<usize> = None;
     let mut object_depth: Option<usize> = None;
+    let mut mesh_depth: Option<usize> = None;
+    let mut vertices_depth: Option<usize> = None;
+    let mut triangles_depth: Option<usize> = None;
     let mut components_depth: Option<usize> = None;
     let mut build_depth: Option<usize> = None;
     let mut total_vertices = 0usize;
@@ -211,12 +214,25 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
         match reader.read_event() {
             Ok(quick_xml::events::Event::Start(ref e)) => {
                 depth += 1;
+                if ignored_depth.is_some() {
+                    continue;
+                }
+                if !is_core_element(reader.resolver(), e.name()) {
+                    ignored_depth = Some(depth);
+                    continue;
+                }
                 let local = e.local_name();
                 let name = local.as_ref();
 
                 match name {
-                    "model" => unit_scale = model_unit_scale(e)?,
-                    "object" => {
+                    "model" if depth == 1 => {
+                        unit_scale = model_unit_scale(e)?;
+                        model_depth = Some(depth);
+                    }
+                    "resources" if model_depth == Some(depth - 1) => {
+                        resources_depth = Some(depth);
+                    }
+                    "object" if resources_depth == Some(depth - 1) => {
                         total_objects = total_objects.saturating_add(1);
                         ensure_limit("3MF objects", total_objects, limits.max_model_entities)?;
                         current = Some(ParsedObject {
@@ -225,18 +241,13 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                         });
                         object_depth = Some(depth);
                     }
-                    "vertices" => in_vertices = true,
-                    "triangles" => in_triangles = true,
-                    "components"
-                        if object_depth == Some(depth - 1)
-                            && is_core_element(reader.resolver(), e.name()) =>
-                    {
+                    "mesh" if object_depth == Some(depth - 1) => mesh_depth = Some(depth),
+                    "vertices" if mesh_depth == Some(depth - 1) => vertices_depth = Some(depth),
+                    "triangles" if mesh_depth == Some(depth - 1) => triangles_depth = Some(depth),
+                    "components" if object_depth == Some(depth - 1) => {
                         components_depth = Some(depth);
                     }
-                    "component"
-                        if components_depth == Some(depth - 1)
-                            && is_core_element(reader.resolver(), e.name()) =>
-                    {
+                    "component" if components_depth == Some(depth - 1) => {
                         total_components = total_components.saturating_add(1);
                         ensure_limit(
                             "3MF components",
@@ -246,24 +257,24 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                         push_component(e, reader.resolver(), unit_scale, current.as_mut())?;
                     }
                     // A direct child of the root `<model>`.
-                    "build" if depth == 2 && is_core_element(reader.resolver(), e.name()) => {
+                    "build" if model_depth == Some(depth - 1) => {
                         build_depth = Some(depth);
                     }
-                    "item"
-                        if build_depth == Some(depth - 1)
-                            && is_core_element(reader.resolver(), e.name()) =>
-                    {
+                    "item" if build_depth == Some(depth - 1) => {
                         push_item(e, reader.resolver(), unit_scale, &mut items, limits)?;
                     }
                     _ => {}
                 }
             }
             Ok(quick_xml::events::Event::Empty(ref e)) => {
+                if ignored_depth.is_some() || !is_core_element(reader.resolver(), e.name()) {
+                    continue;
+                }
                 let local = e.local_name();
                 let name = local.as_ref();
 
                 match name {
-                    "vertex" if in_vertices => {
+                    "vertex" if vertices_depth == Some(depth) => {
                         let point = parse_vertex_attributes(e)?;
                         let pt = Point3::new(
                             point.x() * unit_scale,
@@ -281,7 +292,7 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                             object.vertices.push(pt);
                         }
                     }
-                    "triangle" if in_triangles => {
+                    "triangle" if triangles_depth == Some(depth) => {
                         let (v1, v2, v3) = parse_triangle_attributes(e)?;
                         total_triangles = total_triangles.saturating_add(1);
                         ensure_limit("3MF triangles", total_triangles, limits.max_model_entities)?;
@@ -289,10 +300,7 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                             object.indices.extend([v1, v2, v3]);
                         }
                     }
-                    "component"
-                        if components_depth == Some(depth)
-                            && is_core_element(reader.resolver(), e.name()) =>
-                    {
+                    "component" if components_depth == Some(depth) => {
                         total_components = total_components.saturating_add(1);
                         ensure_limit(
                             "3MF components",
@@ -301,10 +309,7 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                         )?;
                         push_component(e, reader.resolver(), unit_scale, current.as_mut())?;
                     }
-                    "item"
-                        if build_depth == Some(depth)
-                            && is_core_element(reader.resolver(), e.name()) =>
-                    {
+                    "item" if build_depth == Some(depth) => {
                         push_item(e, reader.resolver(), unit_scale, &mut items, limits)?;
                     }
                     _ => {}
@@ -315,17 +320,29 @@ fn parse_model_xml(xml: &str, limits: ImportLimits) -> Result<Vec<TriangleMesh>,
                 let name = local.as_ref();
                 let closing = depth;
                 depth = depth.saturating_sub(1);
+                if ignored_depth.is_some() {
+                    if ignored_depth == Some(closing) {
+                        ignored_depth = None;
+                    }
+                    continue;
+                }
+                if !is_core_element(reader.resolver(), e.name()) {
+                    continue;
+                }
 
                 match name {
-                    "object" => {
+                    "object" if object_depth == Some(closing) => {
                         object_depth = None;
                         if let Some(object) = current.take() {
                             check_indices(&object.vertices, &object.indices)?;
                             objects.push(object);
                         }
                     }
-                    "vertices" => in_vertices = false,
-                    "triangles" => in_triangles = false,
+                    "model" if model_depth == Some(closing) => model_depth = None,
+                    "resources" if resources_depth == Some(closing) => resources_depth = None,
+                    "mesh" if mesh_depth == Some(closing) => mesh_depth = None,
+                    "vertices" if vertices_depth == Some(closing) => vertices_depth = None,
+                    "triangles" if triangles_depth == Some(closing) => triangles_depth = None,
                     "components" if components_depth == Some(closing) => components_depth = None,
                     "build" if build_depth == Some(closing) => build_depth = None,
                     _ => {}
@@ -1213,6 +1230,101 @@ mod tests {
                 parse_model_xml(&unit_model(Some(unit), coordinate), ImportLimits::default()),
                 Err(IoError::ParseError { .. })
             ));
+        }
+    }
+
+    #[test]
+    fn unsupported_namespace_subtrees_cannot_change_core_geometry() {
+        let xml = unit_model(Some("millimeter"), "1").replacen(
+            "<model",
+            "<model xmlns:v=\"urn:remus-test:optional-extension\"",
+            1,
+        );
+        let expected = parse_model_xml(&xml, ImportLimits::default()).unwrap();
+        let variants = [
+            xml.replace("<resources>", "<resources><v:model unit=\"inch\"></v:model>"),
+            xml.replace(
+                "<mesh>",
+                "<v:object id=\"99\"><vertices><vertex x=\"9\" y=\"9\" z=\"9\"/></vertices></v:object><mesh>",
+            ),
+            xml.replace(
+                "<vertices>",
+                "<vertices><v:vertices><vertex x=\"9\" y=\"9\" z=\"9\"/></v:vertices><v:vertex x=\"8\" y=\"8\" z=\"8\"/>",
+            ),
+            xml.replace(
+                "<triangles>",
+                "<triangles><v:triangles><triangle v1=\"999\" v2=\"999\" v3=\"999\"/></v:triangles><v:triangle v1=\"999\" v2=\"999\" v3=\"999\"/>",
+            ),
+            xml.replace(
+                "<resources>",
+                "<resources><v:extension><model unit=\"inch\"><object id=\"1\"/></model></v:extension>",
+            ),
+        ];
+        for variant in variants {
+            let actual = parse_model_xml(&variant, ImportLimits::default()).unwrap();
+            assert_eq!(actual.len(), expected.len(), "{variant}");
+            assert_eq!(actual[0].positions, expected[0].positions, "{variant}");
+            assert_eq!(actual[0].indices, expected[0].indices, "{variant}");
+            assert_eq!(actual[0].normals, expected[0].normals, "{variant}");
+        }
+    }
+
+    #[test]
+    fn core_geometry_state_requires_the_expected_parent_depth() {
+        let xml = unit_model(Some("millimeter"), "1");
+        let expected = parse_model_xml(&xml, ImportLimits::default()).unwrap();
+        for variant in [
+            xml.replace(
+                "<resources>",
+                "<metadata><model unit=\"inch\"></model></metadata><resources>",
+            ),
+            xml.replace(
+                "<vertices>",
+                "<vertices><metadata><vertex x=\"9\" y=\"9\" z=\"9\"/></metadata>",
+            ),
+            xml.replace(
+                "<triangles>",
+                "<triangles><metadata><triangle v1=\"999\" v2=\"999\" v3=\"999\"/></metadata>",
+            ),
+        ] {
+            let actual = parse_model_xml(&variant, ImportLimits::default()).unwrap();
+            assert_eq!(actual.len(), expected.len(), "{variant}");
+            assert_eq!(actual[0].positions, expected[0].positions, "{variant}");
+            assert_eq!(actual[0].indices, expected[0].indices, "{variant}");
+        }
+    }
+
+    #[test]
+    fn bound_core_namespaces_preserve_the_unbound_geometry() {
+        let xml = unit_model(Some("millimeter"), "1");
+        let expected = parse_model_xml(&xml, ImportLimits::default()).unwrap();
+        let default_namespace = xml.replacen("<model", &format!("<model xmlns=\"{CORE_NS}\""), 1);
+        let mut prefixed = xml;
+        for tag in [
+            "model",
+            "resources",
+            "object",
+            "mesh",
+            "vertices",
+            "vertex",
+            "triangles",
+            "triangle",
+            "build",
+            "item",
+        ] {
+            prefixed = prefixed.replace(&format!("<{tag}"), &format!("<core:{tag}"));
+            prefixed = prefixed.replace(&format!("</{tag}"), &format!("</core:{tag}"));
+        }
+        prefixed = prefixed.replacen(
+            "<core:model",
+            &format!("<core:model xmlns:core=\"{CORE_NS}\""),
+            1,
+        );
+        for variant in [default_namespace, prefixed] {
+            let actual = parse_model_xml(&variant, ImportLimits::default()).unwrap();
+            assert_eq!(actual.len(), expected.len());
+            assert_eq!(actual[0].positions, expected[0].positions);
+            assert_eq!(actual[0].indices, expected[0].indices);
         }
     }
 }
