@@ -1,6 +1,6 @@
 {
   "meta": {
-    "scope": "mutating BrepKernel JS exports and their O4.7 typed-result twins",
+    "scope": "mutating BrepKernel JS exports and session transfer exports, with their O4.7 typed-result classification",
     "source": "crates/wasm/src via js_name discovery; generated-package provenance tracked separately",
     "covered_schema": "solid_envelope",
     "detail": "queries (&self) carry no rows; every mutating export carries exactly one row"
@@ -2351,6 +2351,16 @@
       "coverage": "special",
       "owner": "PERF-D04",
       "reason": "consume-once mesh-result buffer extraction; does not mutate kernel geometry or session handles, so no solid twin applies"
+    },
+    {
+      "js": "takeKernel",
+      "rust": "take_kernel",
+      "file": "bindings/arena.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "P-Class 8.6 / PERF-T06",
+      "reason": "single-use ownership transfer from KernelDocumentCopy; no geometry mutation or same-session solid result, direct-only kernel-object return"
     },
     {
       "js": "takePositions",

@@ -27,6 +27,7 @@ import { runPointedConeCutPackaged } from './pointed-cone-cut-packaged.mjs';
 import { runTruckNurbsReusePackaged } from './truck-nurbs-reuse-packaged.mjs';
 import { runWasmRayNurbsPackaged } from './wasm-ray-nurbs-packaged.mjs';
 import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
+import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
@@ -75,6 +76,7 @@ runTruckNurbsReusePackaged({ BrepKernel });
 runWasmRayNurbsPackaged({ BrepKernel });
 runWasmParserReferencesPackaged({ BrepKernel });
 runOpseqF3Packaged({ BrepKernel });
+runDocumentCopyPackaged({ BrepKernel, RemusIo });
 
 const DEFLECTION = 0.1;
 
