@@ -466,6 +466,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn square_root_interval_encloses_both_sides_of_rounded_root() {
+        // This binary64 value lies strictly between sqrt(2) and
+        // sqrt(next_up(2)). Compare its square with both endpoints using
+        // exact integer arithmetic, independently of the interval helpers.
+        let significand = 6_369_051_672_525_773_u128;
+        let square = significand * significand;
+        assert!(square > (1_u128 << 105));
+        assert!(square < (1_u128 << 105) + (1_u128 << 53));
+        let rounded_root = f64::from_bits(0x3ff6_a09e_667f_3bcd);
+        let bounds = I {
+            lo: 2.0,
+            hi: 2.0_f64.next_up(),
+        }
+        .sqrt_nonnegative();
+        assert!(bounds.lo < rounded_root, "{bounds:?}");
+        assert!(bounds.hi > rounded_root, "{bounds:?}");
+    }
+
+    #[test]
+    fn square_root_interval_preserves_exact_roots_and_declines_unknowns() {
+        for (square, root) in [(0.0, 0.0), (0.25, 0.5), (4.0, 2.0), (256.0, 16.0)] {
+            let bounds = I::point(square).sqrt_nonnegative();
+            assert_eq!((bounds.lo, bounds.hi), (root, root));
+        }
+        let crossing_zero = I { lo: -4.0, hi: 9.0 }.sqrt_nonnegative();
+        assert_eq!(crossing_zero.lo, 0.0);
+        assert!(crossing_zero.hi >= 3.0);
+        for interval in [
+            I::unknown(),
+            I { lo: 4.0, hi: 1.0 },
+            I { lo: -9.0, hi: -1.0 },
+            I::point(f64::NAN),
+        ] {
+            let bounds = interval.sqrt_nonnegative();
+            assert_eq!(bounds.lo, f64::NEG_INFINITY);
+            assert_eq!(bounds.hi, f64::INFINITY);
+        }
+    }
+
+    #[test]
     fn exact_axis_tangencies_retain_native_endpoint_authority() {
         for radius in [0.001, 1.0, 1000.0] {
             let sphere = SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), radius).unwrap();
