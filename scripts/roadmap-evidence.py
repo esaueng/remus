@@ -143,7 +143,11 @@ def evidence_column(header):
 
 
 def row_index(lines):
-    """Map every name a table body row answers to (anchor id, displayed ID, first word) to its indices."""
+    """Map every name a table body row answers to (anchor id, displayed ID, first word) to its indices.
+
+    Displayed IDs of anchored rows are kept apart (`@` prefix) because summary
+    tables repeat an owner row's ID in their first column; the owner row wins.
+    """
     index = {}
     for number, line in enumerate(lines):
         if not is_table_row(line) or DELIMITER.match(line) or not header_for(lines, number):
@@ -152,10 +156,11 @@ def row_index(lines):
         first = cells[0] if cells else ""
         anchor = ANCHOR.search(first)
         shown = ANCHOR.sub("", first).strip()
-        keys = {shown, *shown.split()[:1]}
+        prefix = "@" if anchor else ""
+        keys = {f"{prefix}{key}" for key in {shown, *shown.split()[:1]} if key}
         if anchor:
             keys.add(f"#{anchor[1]}")
-        for key in keys - {""}:
+        for key in keys:
             index.setdefault(key, []).append(number)
     return index
 
@@ -163,7 +168,8 @@ def row_index(lines):
 def find_rows(index, row):
     """Indices of the table rows a fragment's `row` names, by anchor id or displayed ID."""
     wanted = row.strip()
-    return sorted(set(index.get(f"#{wanted.lower()}", []) + index.get(wanted, [])))
+    hits = set(index.get(f"#{wanted.lower()}", []) + index.get(f"@{wanted}", []))
+    return sorted(hits) if hits else sorted(index.get(wanted, []))
 
 
 def escape_cell(text):
@@ -183,6 +189,15 @@ def fold_evidence(markdown, fragments):
             continue
         index = hits[0]
         header = header_for(lines, index)
+        width = len(split_row(lines[index]))
+        if width != len(header):
+            # An unescaped `|` in the row's text (e.g. `|x|`) shifts every
+            # later cell, so the fold would write into the wrong column.
+            errors.append(
+                f'{name}: row "{row}" has {width} cells but its table has {len(header)}; '
+                "escape the raw | in that row as \\| first"
+            )
+            continue
         target, state = evidence_column(header), state_column(header)
         if target < 0:
             errors.append(f'{name}: row "{row}" has no evidence column')
@@ -220,10 +235,12 @@ def read_fragments(root=ROOT):
     if not directory.is_dir():
         return []
     errors, fragments = [], []
-    for path in sorted(directory.glob("*.md")):
+    # Every entry is checked, so a misnamed `.MD` or extensionless fragment is
+    # refused instead of silently skipped.
+    for path in sorted(directory.iterdir()):
         if path.name == "README.md":
             continue
-        if not FRAGMENT_NAME.match(path.name):
+        if not path.is_file() or not FRAGMENT_NAME.match(path.name):
             errors.append(f"{path.name}: name must be <row>--<slug>.md, lowercase")
             continue
         try:

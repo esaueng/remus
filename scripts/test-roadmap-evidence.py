@@ -24,6 +24,15 @@ ROADMAP = "\n".join([
     "| --- | --- | --- | --- |",
     '| <a id="perf-n04"></a>PERF-N04 | P1 / 3 / M | Prune seeds. | Pending |',
     "",
+    "| ID | Item | State |",
+    "| --- | --- | --- |",
+    '| <a id="b65"></a>B65 | Clamp |x| below one | Open |',
+    "",
+    "| Owner row | Summary and evidence |",
+    "| --- | --- |",
+    "| 8.1 | repeated in a summary table |",
+    "| 9.8 | only in a summary table |",
+    "",
     "Prose mentioning | 8.1 | outside a table.",
 ])
 
@@ -98,6 +107,17 @@ class FoldTests(unittest.TestCase):
                 fragment("8.1", "y", state="Blocked", name="8.1--b.md"),
             ])
 
+    def test_refuses_a_row_whose_raw_pipes_shift_its_cells(self):
+        with self.assertRaisesRegex(evidence.FragmentError, "has 5 cells but its table has 3"):
+            evidence.fold_evidence(ROADMAP, [fragment("B65", "x")])
+
+    def test_prefers_the_anchored_owner_row_over_a_summary_mention(self):
+        out = evidence.fold_evidence(ROADMAP, [fragment("8.1", "Owner.")])
+        self.assertTrue(row_of(out, "p-8-1").endswith("harness. Owner. |"))
+        self.assertIn("| 8.1 | repeated in a summary table |", out)
+        out = evidence.fold_evidence(ROADMAP, [fragment("9.8", "Unanchored.")])
+        self.assertIn("| 9.8 | only in a summary table Unanchored. |", out)
+
 
 class RepositoryTests(unittest.TestCase):
     def make_repo(self, directory, fragments):
@@ -125,14 +145,29 @@ class RepositoryTests(unittest.TestCase):
             with self.assertRaisesRegex(evidence.FragmentError, "<row>--<slug>"):
                 evidence.check_repo(root)
 
-    def test_every_real_anchored_row_can_receive_evidence(self):
+    def test_refuses_fragments_without_a_lowercase_md_extension(self):
+        for name in ("8.1--stage-3.MD", "8.1--stage-3"):
+            with tempfile.TemporaryDirectory(prefix="roadmap-evidence-") as directory:
+                root = self.make_repo(directory, {name: "---\nrow: 8.1\n---\nx\n"})
+                with self.assertRaisesRegex(evidence.FragmentError, "<row>--<slug>"):
+                    evidence.check_repo(root)
+
+    def test_every_real_anchored_row_receives_evidence_or_is_refused(self):
         markdown = (evidence.ROOT / evidence.ROADMAP_PATH).read_text(encoding="utf-8")
-        anchors = evidence.ANCHOR.findall(
-            "\n".join(line for line in markdown.split("\n") if evidence.is_table_row(line))
-        )
-        self.assertGreater(len(anchors), 300)
-        out = evidence.fold_evidence(markdown, [fragment(anchor, "probe") for anchor in anchors])
-        self.assertEqual(out.count("probe"), markdown.count("probe") + len(anchors))
+        lines = markdown.split("\n")
+        foldable, misaligned = [], []
+        for number, line in enumerate(lines):
+            anchor = evidence.ANCHOR.search(line)
+            header = evidence.is_table_row(line) and evidence.header_for(lines, number)
+            if anchor and header:
+                aligned = len(evidence.split_row(line)) == len(header)
+                (foldable if aligned else misaligned).append(anchor[1])
+        self.assertGreater(len(foldable), 300)
+        out = evidence.fold_evidence(markdown, [fragment(anchor, "probe") for anchor in foldable])
+        self.assertEqual(out.count("probe"), markdown.count("probe") + len(foldable))
+        for anchor in misaligned:
+            with self.assertRaisesRegex(evidence.FragmentError, "escape the raw"):
+                evidence.fold_evidence(markdown, [fragment(anchor, "probe")])
 
     def test_accepts_every_pending_fragment_in_this_repository(self):
         evidence.check_repo()
