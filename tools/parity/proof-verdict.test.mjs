@@ -111,6 +111,29 @@ function goodReport(kind) {
   };
 }
 
+function hostBoundReports() {
+  const host = {
+    schema_version: 1,
+    sourceRevision: 'ab'.repeat(20), sourceDirty: false, checkoutSha: 'ab'.repeat(20),
+    expected: { runner: 'ubuntu-24.04', platform: 'linux', arch: 'x64', rustHost: 'x86_64-unknown-linux-gnu' },
+    runner: { os: 'Linux', arch: 'X64' },
+    node: { platform: 'linux', arch: 'x64', version: 'v24', v8: '13.6' },
+    rustc: { host: 'x86_64-unknown-linux-gnu', verbose: 'rustc 1.96\nhost: x86_64-unknown-linux-gnu' },
+    unameMachine: 'x86_64', buildTarget: null,
+    native: Object.fromEntries([['kernel', 'remus-parity-native'], ['splitIo', 'remus-split-io-native']].map(([key, binary]) => [key, {
+      path: `/tmp/${binary}`, sha256: '12'.repeat(32),
+      runtime: { schemaVersion: 1, binary, os: 'linux', arch: 'x86_64', pointerWidth: 64 },
+    }])),
+  };
+  const contract = goodReport('contract');
+  const split = goodReport('split-io');
+  for (const [report, runner] of [[contract, host.native.kernel], [split, host.native.splitIo]]) {
+    report.provenance.native.installedEntry = runner.path;
+    report.provenance.native.binarySha256 = runner.sha256;
+  }
+  return [contract, split, host];
+}
+
 test('complete proof is rescored with the existing owners and preserves minimal split native metadata', () => {
   const summary = validateProofReports(goodReport('contract'), goodReport('split-io'));
   assert.equal(summary.passed, true);
@@ -211,6 +234,24 @@ test('source identity, package evidence mode and mixed kernel report artifacts a
   const mixed = goodReport('split-io');
   mixed.provenance.freshKernel.wasmSha256 = '12'.repeat(32);
   assert.throws(() => validateProofReports(goodReport('contract'), mixed), /kernel wasmSha256/);
+});
+
+test('host qualification binds actual native executable hashes, source, compiler and Node to both matrices', () => {
+  const reports = hostBoundReports();
+  assert.equal(validateProofReports(...reports).host.arch, 'x64');
+  for (const mutate of [
+    ([, , host]) => { host.native.kernel.sha256 = '34'.repeat(32); },
+    ([, split]) => { delete split.provenance.native.installedEntry; },
+    ([, , host]) => { host.sourceRevision = '34'.repeat(20); host.checkoutSha = host.sourceRevision; },
+    ([, , host]) => { host.sourceDirty = true; },
+    ([, , host]) => { host.node.version = 'v26'; },
+    ([, , host]) => { host.rustc.verbose = host.rustc.verbose.replace('rustc 1.96', 'rustc 1.97'); },
+    ([, , host]) => { delete host.native.splitIo; },
+  ]) {
+    const changed = hostBoundReports();
+    mutate(changed);
+    assert.throws(() => validateProofReports(...changed), /host proof|splitIo/);
+  }
 });
 
 test('CLI rejects missing and malformed report files and emits a valid summary only for complete reports', () => {

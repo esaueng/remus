@@ -20,6 +20,8 @@ printf 'contract\tnot_run\nsplit-io\tnot_run\n' > "$proof_dir/status.tsv"
   printf 'CARGO_ENCODED_RUSTFLAGS=%q\n' "${CARGO_ENCODED_RUSTFLAGS-}"
   printf 'CARGO_BUILD_TARGET=%q\n' "${CARGO_BUILD_TARGET-}"
   printf 'CARGO_TARGET_DIR=%q\n' "${CARGO_TARGET_DIR-}"
+  printf 'CARGO_BUILD_JOBS=%q\n' "${CARGO_BUILD_JOBS-}"
+  printf 'RUST_MIN_STACK=%q\n' "${RUST_MIN_STACK-}"
 } > "$proof_dir/build-config.txt"
 build() {
   printf '%q ' "$@" >> "$proof_dir/build-config.txt"
@@ -27,10 +29,13 @@ build() {
   "$@"
 }
 
-node --test tools/parity/provenance.test.mjs tools/parity/contract-matrix.test.mjs tools/parity/split-io-matrix.test.mjs tools/parity/proof-verdict.test.mjs
+node --test tools/parity/provenance.test.mjs tools/parity/contract-matrix.test.mjs tools/parity/split-io-matrix.test.mjs tools/parity/host-proof.test.mjs tools/parity/proof-verdict.test.mjs
 build cargo test --locked --profile ci-test -p remus-parity
 build cargo build --locked --release -p remus-parity
 target_dir=$(cargo metadata --locked --no-deps --format-version 1 | node -e 'let s=""; process.stdin.on("data", d => s += d); process.stdin.on("end", () => console.log(JSON.parse(s).target_directory));')
+node tools/parity/host-proof.mjs \
+  "$target_dir/release/remus-parity-native" "$target_dir/release/remus-split-io-native" \
+  > "$proof_dir/host.json"
 
 fresh_root=$(mktemp -d "${TMPDIR:-/tmp}/remus-o15-proof.XXXXXX")
 trap 'rm -rf "$fresh_root"' EXIT
@@ -52,7 +57,7 @@ printf 'contract\t%s\nsplit-io\t%s\n' "$contract_status" "$split_status" > "$pro
 cat "$proof_dir/status.tsv"
 
 verdict_status=0
-node tools/parity/proof-verdict.mjs "$proof_dir/o15-contract.json" "$proof_dir/o15-split-io.json" > "$proof_dir/verdict.json" || verdict_status=$?
+node tools/parity/proof-verdict.mjs "$proof_dir/o15-contract.json" "$proof_dir/o15-split-io.json" "$proof_dir/host.json" > "$proof_dir/verdict.json" || verdict_status=$?
 if [ "$contract_status" -ne 0 ] || [ "$split_status" -ne 0 ] || [ "$verdict_status" -ne 0 ]; then
   exit 1
 fi

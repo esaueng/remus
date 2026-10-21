@@ -13,8 +13,17 @@ bash scripts/test-o15-proof.sh
 ```
 
 The `Native WASM Parity` workflow registers this proof nightly and on manual
-dispatch on Linux x86-64; changes to its harness also run it on pull requests.
-It builds the release native runners and both Node-target WASM packages once,
+dispatch on four native hosts; changes to its harness also run it on pull requests.
+The explicit labels follow the [GitHub runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners):
+
+| Runner | Native OS / architecture | Compiler host |
+| --- | --- | --- |
+| `ubuntu-24.04` | Linux / x86-64 | `x86_64-unknown-linux-gnu` |
+| `ubuntu-24.04-arm` | Linux / arm64 | `aarch64-unknown-linux-gnu` |
+| `macos-15-intel` | macOS / x86-64 | `x86_64-apple-darwin` |
+| `macos-15` | macOS / arm64 | `aarch64-apple-darwin` |
+
+Each host builds the release native runners and both Node-target WASM packages once,
 then executes the 12-cell contract and 6-cell split import/export slices against
 native, freshly packed/installed packages and separately identified committed
 packages. These use the existing `--no-opt` parity build configuration, not the
@@ -29,11 +38,20 @@ fails the proof. Build failures leave both slices explicitly `not_run`.
 `proof-verdict.mjs` checks complete matrix and surface coverage and rescores
 raw observations with the existing oracles; an empty or falsely green report
 cannot pass merely because its process exited successfully.
+`host.json` records Node's actual platform, architecture, version and V8 version,
+the verbose Rust compiler host, OS machine identity, and both native executables'
+runtime OS/architecture, pointer width and SHA-256. Matrix expectations must match
+those observations; a cross-target override, wrong checkout or mixed runtime
+refuses. The verdict binds this host evidence to both matrices' source, compiler,
+Node and actual native executable paths/hashes. A runner label alone grants no
+architecture qualification. Local runs without matrix expectations record the
+observed host and leave GitHub labels absent.
 Source-status collection failures and malformed source/toolchain/build metadata
 refuse provenance instead of claiming a clean, identified build. Committed
 package source attribution remains unverified. Registration does not establish
-a hosted pass; macOS, Windows, arm64 and wider nightly geometric coverage remain
-open under O1.5.
+a hosted pass on the new hosts; actual hosted evidence must qualify each cell.
+Windows and wider nightly geometric coverage remain open under O1.5. WASM hash
+differences across hosts remain evidence rather than a new byte-identity gate.
 
 The script builds the native facade runner and a release Node-target WASM
 package, packs `remus-wasm`, installs that tarball into a disposable npm
@@ -122,9 +140,9 @@ finding: seed plus new §B row. Serialized arena SHA-256 is compared as a
 visible non-gating gap, as in the first slice. Timings are recorded as
 evidence only; they are not a competitive benchmark.
 
-This extends but does not complete O1.5. Byte identity and the full
-Linux/macOS/Windows x86-64/arm64 nightly matrix remain open; the recurring
-Linux contract/split proof above covers a bounded subset. The contract slice
+This extends but does not complete O1.5. Byte identity, Windows and the full
+geometric nightly matrix remain open; the recurring Linux/macOS contract/split
+proof above covers a bounded subset. The contract slice
 below carries the failure/evolution fixtures.
 
 ## Contract slice

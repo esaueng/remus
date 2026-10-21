@@ -12,6 +12,7 @@ import {
   collectFreshProvenance,
   collectSourceProvenance,
   describeStaleness,
+  hashFile,
   requireObservations,
   validateInstalledEntry,
   validateProvenance,
@@ -1207,6 +1208,7 @@ async function main() {
       packageVersion: null,
       wasmSha256: null,
       installedEntry: resolve(nativeRunner),
+      binarySha256: hashFile(resolve(nativeRunner)),
     };
     const staleness = describeStaleness(freshProvenance, committedProvenance);
     const observations = [];

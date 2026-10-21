@@ -14,6 +14,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github/workflows/parity.yml"
+HOSTS = [
+    ("ubuntu-24.04", "linux", "x64", "x86_64-unknown-linux-gnu"),
+    ("ubuntu-24.04-arm", "linux", "arm64", "aarch64-unknown-linux-gnu"),
+    ("macos-15-intel", "darwin", "x64", "x86_64-apple-darwin"),
+    ("macos-15", "darwin", "arm64", "aarch64-apple-darwin"),
+]
 
 
 def block(text: str, key: str, indent: int = 0) -> str:
@@ -65,7 +71,21 @@ def validate_policy(text: str) -> None:
     job = block(block(text, "jobs"), "proof", 2)
     strategy = block(job, "strategy", 4)
     require("fail-fast: false" in strategy, "a failed host must not cancel peer proofs")
-    require("os: [ubuntu-24.04]" in strategy, "the qualified Linux host must remain explicit")
+    matrix = block(strategy, "matrix", 6)
+    includes = block(matrix, "include", 8)
+    hosts = re.findall(
+        r"(?m)^          - os: ([\w.-]+)\n"
+        r"            platform: (\w+)\n"
+        r"            arch: (\w+)\n"
+        r"            rust_host: ([\w-]+)$",
+        includes,
+    )
+    require(hosts == HOSTS and len(re.findall(r"(?m)^          - ", includes)) == len(HOSTS),
+            "the four native Linux/macOS architecture tuples must remain explicit")
+    expected = block(job, "env", 4)
+    for field, axis in (("RUNNER", "os"), ("PLATFORM", "platform"), ("ARCH", "arch"), ("RUST_HOST", "rust_host")):
+        require(f"O15_EXPECT_{field}: ${{{{ matrix.{axis} }}}}" in expected,
+                f"actual host validation requires the matrix {field} expectation")
     require("runs-on: ${{ matrix.os }}" in job, "runner selection must use the declared host")
     require("shell: bash" in job, "the proof runner requires bash")
     job_budget = re.findall(r"(?m)^    timeout-minutes: (\d+)$", job)
@@ -134,6 +154,20 @@ class ParityWorkflowTests(unittest.TestCase):
 
     def test_platform_fail_fast_is_rejected(self) -> None:
         self.reject_edit("fail-fast: false", "fail-fast: true", "peer proofs")
+
+    def test_missing_platform_tuple_is_rejected(self) -> None:
+        self.reject_edit(
+            "          - os: macos-15\n            platform: darwin\n"
+            "            arch: arm64\n            rust_host: aarch64-apple-darwin\n",
+            "", "four native",
+        )
+
+    def test_wrong_platform_architecture_is_rejected(self) -> None:
+        self.reject_edit("            rust_host: aarch64-apple-darwin",
+                         "            rust_host: x86_64-apple-darwin", "four native")
+
+    def test_missing_runtime_architecture_expectation_is_rejected(self) -> None:
+        self.reject_edit("      O15_EXPECT_ARCH: ${{ matrix.arch }}\n", "", "matrix ARCH")
 
     def test_missing_compiler_stack_configuration_is_rejected(self) -> None:
         self.reject_edit('  RUST_MIN_STACK: "33554432"\n', "", "compiler stack size")

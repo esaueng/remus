@@ -47,7 +47,11 @@ elif command == 'node' and args[0].endswith('-matrix.mjs'):
     print(json.dumps({{'passed': not failed}}))
     sys.exit(1 if failed else 0)
 elif command == 'node' and args[0] == 'tools/parity/proof-verdict.mjs':
+    assert len(args) == 4 and pathlib.Path(args[3]).is_file(), 'host proof must reach the verdict'
     sys.exit(4 if os.environ.get('PROOF_TEST_FAIL') == 'verdict' else 0)
+elif command == 'node' and args[0] == 'tools/parity/host-proof.mjs':
+    print(json.dumps({{'host': 'observed'}}))
+    sys.exit(5 if os.environ.get('PROOF_TEST_FAIL') == 'host' else 0)
 elif command == 'wasm-pack':
     pathlib.Path(args[args.index('--out-dir') + 1]).mkdir(parents=True)
     sys.exit(3 if os.environ.get('PROOF_TEST_FAIL') == 'build' else 0)
@@ -85,6 +89,12 @@ elif command == 'wasm-pack':
         self.assertIn("--locked", config)
         split = next(call for call in calls if call[1] == "tools/parity/split-io-matrix.mjs")
         self.assertEqual(split[-2:], ["crates/wasm/pkg", "crates/wasm-io/pkg"])
+        host = next(call for call in calls if call[1] == "tools/parity/host-proof.mjs")
+        self.assertEqual(host[-2:], [
+            str(self.root / "build/release/remus-parity-native"),
+            str(self.root / "build/release/remus-split-io-native"),
+        ])
+        self.assertTrue((reports / "host.json").is_file())
         self.assertFalse(list(self.root.glob("remus-o15-proof.*")), "temporary builds must be cleaned")
 
     def test_contract_failure_retains_both_reports_and_fails(self):
@@ -105,12 +115,21 @@ elif command == 'wasm-pack':
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertEqual((self.report_dirs()[0] / "status.tsv").read_text(), "contract\t0\nsplit-io\t0\n")
 
+    def test_wrong_actual_host_refuses_before_package_builds_and_geometry(self):
+        result = self.run_proof("host")
+        self.assertEqual(result.returncode, 5, result.stderr)
+        reports = self.report_dirs()[0]
+        self.assertEqual((reports / "status.tsv").read_text(), "contract\tnot_run\nsplit-io\tnot_run\n")
+        self.assertFalse((reports / "o15-contract.json").exists())
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.assertFalse(any(call[0] == "wasm-pack" for call in calls))
+
     def test_build_failure_marks_unexecuted_slices_and_cleans(self):
         result = self.run_proof("build")
         self.assertEqual(result.returncode, 3, result.stderr)
         reports = self.report_dirs()[0]
         self.assertEqual((reports / "status.tsv").read_text(), "contract\tnot_run\nsplit-io\tnot_run\n")
-        self.assertFalse(list(reports.glob("*.json")))
+        self.assertEqual([path.name for path in reports.glob("*.json")], ["host.json"])
         self.assertFalse(list(self.root.glob("remus-o15-proof.*")))
 
     def test_repeated_invocations_cannot_reuse_green_artifacts(self):

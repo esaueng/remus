@@ -31,8 +31,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Initial platform registration; other native hosts remain unqualified.
-        os: [ubuntu-24.04]
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+            arch: x64
+            rust_host: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+            rust_host: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            platform: darwin
+            arch: x64
+            rust_host: x86_64-apple-darwin
+          - os: macos-15
+            platform: darwin
+            arch: arm64
+            rust_host: aarch64-apple-darwin
+    env:
+      O15_EXPECT_RUNNER: ${{ matrix.os }}
+      O15_EXPECT_PLATFORM: ${{ matrix.platform }}
+      O15_EXPECT_ARCH: ${{ matrix.arch }}
+      O15_EXPECT_RUST_HOST: ${{ matrix.rust_host }}
     defaults:
       run:
         shell: bash

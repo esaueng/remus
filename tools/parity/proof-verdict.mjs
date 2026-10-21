@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { expandContractMatrix, scoreContractCase } from './contract-matrix.mjs';
 import { expandSplitMatrix, scoreSplitCase } from './split-io-matrix.mjs';
 import { validateProvenance } from './provenance.mjs';
+import { validateHostProof } from './host-proof.mjs';
 
 function object(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -105,7 +106,7 @@ export function validateProofReport(kind, report) {
 }
 
 /** Validate both independent slices and their shared kernel artifact identity. */
-export function validateProofReports(contract, split) {
+export function validateProofReports(contract, split, hostProof) {
   const summary = {
     contract: validateProofReport('contract', contract),
     splitIo: validateProofReport('split-io', split),
@@ -118,12 +119,25 @@ export function validateProofReports(contract, split) {
       assert.equal(left[field], right[field], `proof slices disagree on kernel ${field}`);
     }
   }
+  if (hostProof !== undefined) {
+    summary.host = validateHostProof(hostProof);
+    for (const report of [contract, split]) {
+      assert.equal(report.provenance.native.sourceRevision, hostProof.sourceRevision, 'host proof source differs from matrix source');
+      const fresh = report === contract ? report.provenance.fresh : report.provenance.freshKernel;
+      assert.equal(fresh.sourceDirty, hostProof.sourceDirty, 'host proof dirty flag differs from matrix source');
+      assert.equal(fresh.toolchain.node, hostProof.node.version, 'host proof Node version differs from matrix runtime');
+      assert.equal(fresh.toolchain.rustc, hostProof.rustc.verbose.split('\n')[0], 'host proof compiler differs from matrix compiler');
+      const runner = report === contract ? hostProof.native.kernel : hostProof.native.splitIo;
+      assert.equal(report.provenance.native.installedEntry, runner.path, 'host proof executable path differs from matrix runner');
+      assert.equal(report.provenance.native.binarySha256, runner.sha256, 'host proof executable hash differs from matrix runner');
+    }
+  }
   return { passed: true, ...summary };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  if (process.argv.length !== 4) {
-    console.error('usage: proof-verdict.mjs CONTRACT_REPORT SPLIT_IO_REPORT');
+  if (![4, 5].includes(process.argv.length)) {
+    console.error('usage: proof-verdict.mjs CONTRACT_REPORT SPLIT_IO_REPORT [HOST_REPORT]');
     process.exitCode = 2;
   } else {
     try {
