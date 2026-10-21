@@ -709,9 +709,10 @@ fn edge_samples(curve: &EdgeCurve) -> u32 {
 ///   rule has not resolved is caught even where closure, which tests only the
 ///   vector-area integrand, holds.
 ///
-/// Its residual is the trim outlines' chord error, 128 samples per curved
-/// edge; the hammer holder reads 50245.53 against a 50245.22 limit of ever
-/// finer meshes, where the clamp mesh reads 50241.71.
+/// Its residual is the curved faces' trim outlines' chord error, 128 samples
+/// per curved edge; planar faces integrate qualified polynomial boundaries exactly. The hammer holder reads 50245.22, the limit of ever
+/// finer meshes, where the clamp mesh reads 50241.71 (and the 32-chord outline
+/// its planar faces took before, 50245.53).
 fn qualified_face_integral_volume(
     topo: &Topology,
     solid: SolidId,
@@ -6283,6 +6284,78 @@ mod face_integral_certificate_tests {
             .set_point(Point3::new(p.x(), p.y(), p.z() + 0.05));
         assert!(!boundary_lies_on_faces(&topo, &faces, 1e-9).unwrap());
         assert_eq!(qualified_face_integral_volume(&topo, solid).unwrap(), None);
+    }
+
+    /// A closed spline profile, extruded: two free-form cubic halves that no
+    /// curve recognition takes. Its caps used to drop to the 32-chord fan,
+    /// whose sliver the closure certificate cannot see (the two caps miss it
+    /// alike and their vector areas still cancel), so the face integrals read
+    /// 6207.07 against 6210, 4.7e-4 short. Integrated span by span, the caps
+    /// are exact and so is the volume.
+    #[test]
+    fn a_free_form_spline_extrude_measures_its_exact_volume() {
+        use remus_math::nurbs::NurbsCurve;
+        use remus_topology::edge::Edge;
+        use remus_topology::face::Face;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        const HEIGHT: f64 = 10.0;
+        // Exact polynomial Green integral: expanding the two cubic halves
+        // and integrating (x*y' - y*x')/2 gives area 621 exactly.
+        const AREA: f64 = 621.0;
+        let halves = [
+            [(0.0, 0.0), (30.0, -6.0), (38.0, 18.0), (12.0, 26.0)],
+            [(12.0, 26.0), (-4.0, 14.0), (-10.0, 4.0), (0.0, 0.0)],
+        ]
+        .map(|points| {
+            NurbsCurve::new(
+                3,
+                vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                points.map(|(x, y)| Point3::new(x, y, 0.0)).to_vec(),
+                vec![1.0; 4],
+            )
+            .unwrap()
+        });
+        let mut topo = Topology::new();
+        let ends = [Point3::new(0.0, 0.0, 0.0), Point3::new(12.0, 26.0, 0.0)]
+            .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+        let [first, second] = halves;
+        let edges = [
+            topo.add_edge(Edge::new(ends[0], ends[1], EdgeCurve::NurbsCurve(first))),
+            topo.add_edge(Edge::new(ends[1], ends[0], EdgeCurve::NurbsCurve(second))),
+        ];
+        let wire = topo.add_wire(
+            Wire::new(
+                edges.iter().map(|&e| OrientedEdge::new(e, true)).collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let solid =
+            crate::extrude::extrude(&mut topo, face, Vec3::new(0.0, 0.0, 1.0), HEIGHT).unwrap();
+
+        let exact = AREA * HEIGHT;
+        let integrals = qualified_face_integral_volume(&topo, solid)
+            .unwrap()
+            .unwrap();
+        assert!(
+            ((integrals - exact) / exact).abs() < 1e-9,
+            "{integrals} against {exact}"
+        );
+        let volume = solid_volume(&topo, solid, 0.01).unwrap();
+        assert!(
+            ((volume - exact) / exact).abs() < 1e-9,
+            "{volume} against {exact}"
+        );
     }
 }
 

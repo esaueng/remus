@@ -1,0 +1,75 @@
+{
+  "consumerRevision": "913bb9ddd015bf2e6284c60a231eaa5afe7f2106",
+  "compilerPath": "packages/command-system/src/growing-holder.ts",
+  "compilerSha256": "59e0b426c6de8a538f8a4abd43fbb92fc13f12b79da9b96f7b4e7fbc8fcdb1ee",
+  "execution": "Unchanged pure growingHolderPlan function and local helpers extracted from verified pinned compiler source; TypeScript erased. Not the document command compiler or consumer build graph.",
+  "expressionEvaluation": "Original generated expressions evaluated with width and held height 58; adapted arithmetic may differ in final binary rounding.",
+  "numericPlanDiagnosticBound": 1e-12,
+  "rows": [
+    {
+      "width": 46,
+      "profilesAndUnionOrderExact": true,
+      "maximumNumericPlanDifference": 3.552713678800501e-15
+    },
+    {
+      "width": 47,
+      "profilesAndUnionOrderExact": true,
+      "maximumNumericPlanDifference": 3.552713678800501e-15
+    },
+    {
+      "width": 47.02,
+      "profilesAndUnionOrderExact": true,
+      "maximumNumericPlanDifference": 7.105427357601002e-15
+    },
+    {
+      "width": 47.04,
+      "profilesAndUnionOrderExact": true,
+      "maximumNumericPlanDifference": 7.105427357601002e-15
+    },
+    {
+      "width": 47.06,
+      "profilesAndUnionOrderExact": true,
+      "maximumNumericPlanDifference": 3.552713678800501e-15
+    },
+    {
+      "width": 47.08,
+      "profilesAndUnionOrderExact": true,
+      "maximumNumericPlanDifference": 3.552713678800501e-15
+    },
+    {
+      "width": 47.1,
+      "profilesAndUnionOrderExact": true,
+      "maximumNumericPlanDifference": 7.105427357601002e-15
+    },
+    {
+      "width": 47.12,
+      "profilesAndUnionOrderExact": true,
+      "maximumNumericPlanDifference": 7.105427357601002e-15
+    },
+    {
+      "width": 47.14,
+      "profilesAndUnionOrderExact": true,
+      "maximumNumericPlanDifference": 3.552713678800501e-15
+    },
+    {
+      "width": 47.16,
+      "profilesAndUnionOrderExact": true,
+      "maximumNumericPlanDifference": 3.552713678800501e-15
+    },
+    {
+      "width": 47.18,
+      "profilesAndUnionOrderExact": true,
+      "maximumNumericPlanDifference": 7.105427357601002e-15
+    },
+    {
+      "width": 48,
+      "profilesAndUnionOrderExact": true,
+      "maximumNumericPlanDifference": 3.552713678800501e-15
+    },
+    {
+      "width": 49,
+      "profilesAndUnionOrderExact": true,
+      "maximumNumericPlanDifference": 3.552713678800501e-15
+    }
+  ]
+}

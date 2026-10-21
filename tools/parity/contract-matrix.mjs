@@ -12,6 +12,7 @@ import {
   collectFreshProvenance,
   collectSourceProvenance,
   describeStaleness,
+  hashFile,
   requireObservations,
   validateInstalledEntry,
   validateProvenance,
@@ -1207,6 +1208,7 @@ async function main() {
       packageVersion: null,
       wasmSha256: null,
       installedEntry: resolve(nativeRunner),
+      binarySha256: hashFile(resolve(nativeRunner)),
     };
     const staleness = describeStaleness(freshProvenance, committedProvenance);
     const observations = [];
@@ -1354,7 +1356,7 @@ function normalizeNativeForContract(c, native) {
   return native;
 }
 
-function directConsistent(c, batch, direct) {
+export function directConsistent(c, batch, direct) {
   if (!batch || !direct || batch.outcome === undefined || direct.outcome === undefined) return false;
   if (batch.outcome !== direct.outcome) return false;
   if (c.expect.outcome === 'success' && c.expect.quality) {
