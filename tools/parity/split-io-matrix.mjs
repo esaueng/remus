@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runNpm } from './npm-cli.mjs';
 import { performance } from 'node:perf_hooks';
 import {
   collectCommittedProvenance,
@@ -601,8 +602,7 @@ function wasmSplitObservation(c, kernelEntry, ioEntry, fixtures) {
 // ── Packaging: two tarballs from one pinned source into one consumer ──
 
 function packOne(packageDir, temporaryRoot, npmEnvironment) {
-  const packed = JSON.parse(execFileSync(
-    'npm',
+  const packed = JSON.parse(runNpm(
     ['pack', resolve(packageDir), '--json', '--pack-destination', temporaryRoot],
     { encoding: 'utf8', env: npmEnvironment },
   ));
@@ -613,10 +613,12 @@ function packOne(packageDir, temporaryRoot, npmEnvironment) {
 export function installSplitPair(kernelDir, ioDir, temporaryRoot, consumerName = 'consumer') {
   const consumerDir = resolve(temporaryRoot, consumerName);
   mkdirSync(consumerDir, { recursive: true });
+  const archiveDir = resolve(consumerDir, 'archives');
+  mkdirSync(archiveDir);
   const npmEnvironment = { ...process.env, npm_config_cache: resolve(temporaryRoot, 'npm-cache') };
-  const kernelTarball = packOne(kernelDir, temporaryRoot, npmEnvironment);
-  const ioTarball = packOne(ioDir, temporaryRoot, npmEnvironment);
-  execFileSync('npm', [
+  const kernelTarball = packOne(kernelDir, archiveDir, npmEnvironment);
+  const ioTarball = packOne(ioDir, archiveDir, npmEnvironment);
+  runNpm([
     'install', '--prefix', consumerDir, '--no-save', '--package-lock=false',
     '--ignore-scripts', '--no-audit', '--no-fund', kernelTarball, ioTarball,
   ], { env: npmEnvironment, stdio: 'ignore' });
