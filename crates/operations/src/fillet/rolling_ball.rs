@@ -674,6 +674,45 @@ struct StraightRunout {
     supports: [FaceId; 2],
 }
 
+/// Whether every edge of `wire` is a short great-circle arc of `sphere`: the
+/// only boundary `FaceSpec::SphereCapFace` reproduces.
+fn great_circle_loop(
+    topo: &Topology,
+    wire: &remus_topology::wire::Wire,
+    sphere: &remus_math::surfaces::SphericalSurface,
+    tol: Tolerance,
+) -> Result<bool, crate::OperationsError> {
+    let eps = tol.linear * 100.0;
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge())?;
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            return Ok(false);
+        };
+        if edge.start() == edge.end()
+            || (circle.center() - sphere.center()).length() > eps
+            || (circle.radius() - sphere.radius()).abs() > eps
+        {
+            return Ok(false);
+        }
+        let (start, end) = (
+            topo.vertex(edge.start())?.point(),
+            topo.vertex(edge.end())?.point(),
+        );
+        // The minted arc is the short one; a stored span past a half turn is
+        // a different curve.
+        let span = edge.trim().map_or(0.0, |(t0, t1)| (t1 - t0).abs());
+        if span >= std::f64::consts::PI - tol.angular
+            || (start - sphere.center())
+                .cross(end - sphere.center())
+                .length()
+                <= tol.linear * sphere.radius()
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Whether `p` lies on the segment `a`–`b`, away from `a`.
 fn on_segment_past_start(p: Point3, a: Point3, b: Point3, tol: Tolerance) -> bool {
     let ab = b - a;
@@ -2711,6 +2750,25 @@ pub fn fillet_rolling_ball_with_origins(
                             FaceSpec::CylindricalFace {
                                 vertices: verts,
                                 cylinder: cyl.clone(),
+                                reversed: pass_reversed,
+                                inner_wires: np_inner,
+                            },
+                            FaceSpecOrigin::Modified(face_id),
+                        );
+                    } else if let FaceSurface::Sphere(sphere) = &surface
+                        && np_inner.is_empty()
+                        && great_circle_loop(topo, wire, sphere, tol)?
+                    {
+                        // A corner ball patch from an earlier fillet, bounded
+                        // by great-circle arcs: the same rule. As a Surface its
+                        // arcs, and the planar spandrel sharing one, would
+                        // come back as chords.
+                        push_face_spec(
+                            &mut all_specs,
+                            &mut all_spec_origins,
+                            FaceSpec::SphereCapFace {
+                                vertices: verts,
+                                sphere: sphere.clone(),
                                 reversed: pass_reversed,
                                 inner_wires: np_inner,
                             },

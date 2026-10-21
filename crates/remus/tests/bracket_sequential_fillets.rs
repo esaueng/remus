@@ -138,6 +138,12 @@ fn f4_edges(model: &Model, solid: SolidId) -> Vec<EdgeId> {
     })
 }
 
+fn f5_edges(model: &Model, solid: SolidId) -> Vec<EdgeId> {
+    edges_where(model, solid, |a, b, _| {
+        near(a.z(), 40.0) && near(b.z(), 40.0)
+    })
+}
+
 /// Signed volume of a fine tessellation: an oracle independent of the exact
 /// and Gauss volume paths.
 fn mesh_volume(mesh: &TriangleMesh) -> f64 {
@@ -352,6 +358,57 @@ fn concave_tab_base_after_corner_and_slot_fillets() {
         2.0 * spandrel(3.0) * 18.0,
     );
     assert_cylinder_walls_g1(&model, s4, "F4");
+}
+
+#[test]
+fn later_fillet_keeps_earlier_corner_ball_arcs() {
+    // F5 alone leaves sphere corner patches with a planar spandrel under each
+    // (the tab corners whose vertical edge stays sharp). A later rolling-ball
+    // pass used to carry those through as chords: area 2 instead of 4 − π,
+    // and a solid whose exact and mesh volumes disagreed.
+    let mut model = Model::new();
+    let s0 = bracket(&mut model);
+    let edges = f5_edges(&model, s0);
+    let s5 = model.fillet(s0, &edges, 2.0).unwrap().solid;
+    let v5 = model.volume(s5, 0.01).unwrap();
+    assert_sound(&model, s5, "F5");
+
+    let edges = f1_edges(&model, s5);
+    let s1 = pass(
+        &mut model,
+        s5,
+        "F1 after F5",
+        &edges,
+        6.0,
+        -2.0 * spandrel(6.0) * 4.0,
+    );
+    assert!((model.volume(s1, 0.01).unwrap() - (v5 - 2.0 * spandrel(6.0) * 4.0)).abs() < 1e-6);
+
+    let topo = model.topology();
+    let mut spandrels = 0;
+    let mut spheres = 0;
+    for face in remus_topology::explorer::solid_faces(topo, s1).unwrap() {
+        let data = topo.face(face).unwrap();
+        let edges = topo.wire(data.outer_wire()).unwrap().edges().len();
+        match data.surface() {
+            FaceSurface::Plane { normal, .. } if edges == 3 && normal.z().abs() > 0.5 => {
+                let area = face_area(topo, face, 0.001).unwrap();
+                assert!((area - spandrel(2.0)).abs() < 1e-3, "spandrel area {area}");
+                spandrels += 1;
+            }
+            FaceSurface::Sphere(_) => {
+                for oe in topo.wire(data.outer_wire()).unwrap().edges() {
+                    assert!(
+                        matches!(topo.edge(oe.edge()).unwrap().curve(), EdgeCurve::Circle(_)),
+                        "corner ball lost an arc"
+                    );
+                }
+                spheres += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!((spandrels, spheres), (8, 8));
 }
 
 #[test]
