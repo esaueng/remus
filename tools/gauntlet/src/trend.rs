@@ -294,6 +294,21 @@ fn validate_history_row(row: &TrendRow, line: usize) -> Result<(), GauntletError
             )));
         }
     }
+    if let Some(details) = &row.failure_details {
+        // Stages cascade, so a model failing any stage fails the final one.
+        let failed = |name: &str| {
+            row.stages
+                .get(name)
+                .map_or(0, |stage| stage.total - stage.passed)
+        };
+        details
+            .validate(failed("round_trip"), failed("read"))
+            .map_err(|_| {
+                GauntletError::message(format!(
+                    "gauntlet_trend_history_invalid: line {line}: inconsistent_failure_details"
+                ))
+            })?;
+    }
     Ok(())
 }
 
@@ -490,6 +505,47 @@ mod tests {
         let baseline = load_ratchet_baseline(&path, "abc-1k", 50).unwrap();
         fs::remove_file(path).unwrap();
         assert_eq!(baseline, None);
+    }
+
+    #[test]
+    fn history_failure_details_are_validated_on_load() {
+        let mut source = scoreboard(49, 50);
+        let mut details = FailureDetails::default();
+        details.record(
+            "read",
+            &crate::DiagnosticRecord::error(
+                remus_math::diagnostic::FailureCategory::InvalidInput,
+                "step_parse_error",
+                "parse error: no DATA section found",
+            ),
+        );
+        source.failure_details = Some(details);
+        let valid = build_trend_row(
+            &source,
+            "smoke",
+            "2026-10-20",
+            "0123456789abcdef0123456789abcdef01234567",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .unwrap();
+        let path = history_file("valid-details", std::slice::from_ref(&valid));
+        let latest = load_latest_trend(&path, "smoke").unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(latest, Some(valid.clone()));
+
+        // A truncated or hand-edited row whose details no longer match its
+        // failed/read denominators must fail closed, like any other field.
+        let mut corrupt = valid;
+        corrupt.failure_details = Some(FailureDetails::default());
+        let path = history_file("corrupt-details", &[corrupt]);
+        let error = load_latest_trend(&path, "smoke").unwrap_err();
+        let baseline = load_ratchet_baseline(&path, "smoke", 50).unwrap_err();
+        fs::remove_file(path).unwrap();
+        for error in [error, baseline] {
+            let text = error.to_string();
+            assert!(text.contains("gauntlet_trend_history_invalid"), "{text}");
+            assert!(text.contains("inconsistent_failure_details"), "{text}");
+        }
     }
 
     #[test]
