@@ -2662,9 +2662,10 @@ fn accumulate_hyperbola_green_segments(
 /// degree 31.
 const NURBS_GREEN_ORDER: usize = 16;
 
-/// Largest difference, per moment and in units of the edge's in-plane extent
-/// raised to the moment's dimension, between one rule over an interval and
-/// the two rules over its halves for the halves to be taken.
+/// Largest difference, per moment and in units of the knot span's extent (its
+/// control points' furthest distance from the frame origin) raised to the
+/// moment's dimension, between one rule over an interval and the two rules
+/// over its halves for the halves to be taken.
 const NURBS_GREEN_TOLERANCE: f64 = 1e-12;
 
 /// Most times `accumulate_nurbs_green_spans` halves a knot span (up to 1024
@@ -2723,13 +2724,6 @@ fn accumulate_nurbs_green_spans(
     } else {
         -1.0
     };
-    // The control hull bounds the curve, so it bounds every moment's scale.
-    let extent = nc
-        .control_points()
-        .iter()
-        .map(|&p| (p - origin).length())
-        .fold(0.0, f64::max)
-        .max(1e-12);
     let rule = |range: (f64, f64)| {
         let mut m = [0.0; 10];
         accumulate_green_segment(
@@ -2751,8 +2745,22 @@ fn accumulate_nurbs_green_spans(
     breaks.extend(nc.knots().iter().copied().filter(|&k| k > lo && k < hi));
     breaks.push(hi);
     breaks.dedup();
+    let (knots, points, degree) = (nc.knots(), nc.control_points(), nc.degree());
     let mut total = [0.0; 10];
     for pair in breaks.windows(2) {
+        // The span's own control points bound it (the hull property), so they
+        // bound every moment's scale there; a point only an unused span of a
+        // shared carrier depends on must not loosen the tolerance.
+        let mid = f64::midpoint(pair[0], pair[1]);
+        let span = knots
+            .partition_point(|&k| k <= mid)
+            .saturating_sub(1)
+            .clamp(degree, points.len() - 1);
+        let extent = points[span - degree..=span]
+            .iter()
+            .map(|&p| (p - origin).length())
+            .fold(0.0, f64::max)
+            .max(1e-12);
         // Depth-first over (interval, its single-rule reading, depth).
         let mut stack = vec![((pair[0], pair[1]), rule((pair[0], pair[1])), 0)];
         while let Some(((a, b), whole, depth)) = stack.pop() {

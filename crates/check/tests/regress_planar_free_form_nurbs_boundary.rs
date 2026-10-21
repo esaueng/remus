@@ -127,3 +127,58 @@ fn a_trimmed_edge_is_read_over_its_own_span() {
     let measured = integrate_face(&topo, id, 5).unwrap().area;
     assert!((measured - 0.5).abs() < 1e-12, "{measured}");
 }
+
+/// The rational span of the first test, as the first span of a carrier whose
+/// second span reaches a control point 10⁶ away. Only the unused span depends
+/// on that point, so it must not loosen the first span's convergence test:
+/// scaled by the whole hull, the tolerance on the area moment grew to about
+/// 1, and the single rule's 4e-3 error passed.
+#[test]
+fn a_far_control_point_of_an_unused_span_does_not_loosen_the_trimmed_one() {
+    let curve = NurbsCurve::new(
+        3,
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0, 2.0],
+        vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0 / 3.0, -0.8, 0.0),
+            Point3::new(4.0 / 3.0, 0.6, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(1.0e6, 0.0, 0.0),
+        ],
+        vec![1.0, 50.0, 0.02, 1.0, 1.0],
+    )
+    .unwrap();
+    let (a, b) = (curve.evaluate(0.0), curve.evaluate(1.0));
+    let top = 2.0;
+    let n = 1_000_000;
+    let mut loop_points: Vec<Point3> = (0..=n)
+        .map(|i| curve.evaluate(f64::from(i) / f64::from(n)))
+        .collect();
+    loop_points.push(Point3::new(b.x(), top, 0.0));
+    loop_points.push(Point3::new(a.x(), top, 0.0));
+    let area = loop_points
+        .iter()
+        .zip(loop_points.iter().cycle().skip(1))
+        .map(|(p, q)| p.x().mul_add(q.y(), -(q.x() * p.y())))
+        .sum::<f64>()
+        / 2.0;
+
+    let mut topo = Topology::new();
+    let face = face(
+        &mut topo,
+        curve,
+        (0.0, 1.0),
+        &[
+            a,
+            b,
+            Point3::new(b.x(), top, 0.0),
+            Point3::new(a.x(), top, 0.0),
+        ],
+    );
+    let id = topo.add_face(face);
+    let measured = integrate_face(&topo, id, 5).unwrap().area;
+    assert!(
+        ((measured - area) / area).abs() < 1e-10,
+        "{measured} against {area}"
+    );
+}
