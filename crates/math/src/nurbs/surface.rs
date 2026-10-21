@@ -616,75 +616,14 @@ impl NurbsSurface {
         control_points: Vec<Vec<Point3>>,
         weights: Vec<Vec<f64>>,
     ) -> Result<Self, MathError> {
-        let n_rows = control_points.len();
-
-        // Validate that all rows have the same length.
-        let n_cols = control_points.first().map_or(0, Vec::len);
-        for row in &control_points {
-            if row.len() != n_cols {
-                return Err(MathError::InvalidControlPointGrid {
-                    expected_rows: n_rows,
-                    expected_cols: n_cols,
-                });
-            }
-        }
-
-        // Same degree contract as `NurbsCurve::new`, applied per direction.
-        // Degree 0 yields discontinuous basis functions whose derivatives —
-        // and therefore surface normals — are identically zero, so it cannot
-        // produce usable face geometry.
-        if degree_u == 0 || degree_u >= n_rows {
-            return Err(MathError::InvalidDegree {
-                degree: degree_u,
-                control_points: n_rows,
-            });
-        }
-        if degree_v == 0 || degree_v >= n_cols {
-            return Err(MathError::InvalidDegree {
-                degree: degree_v,
-                control_points: n_cols,
-            });
-        }
-
-        // Validate knot vectors.
-        let expected_knots_u = n_rows + degree_u + 1;
-        if knots_u.len() != expected_knots_u {
-            return Err(MathError::InvalidKnotVector {
-                expected: expected_knots_u,
-                got: knots_u.len(),
-            });
-        }
-        super::validate_knot_values(&knots_u)?;
-        super::validate_knot_domain(&knots_u, degree_u, n_rows)?;
-
-        let expected_knots_v = n_cols + degree_v + 1;
-        if knots_v.len() != expected_knots_v {
-            return Err(MathError::InvalidKnotVector {
-                expected: expected_knots_v,
-                got: knots_v.len(),
-            });
-        }
-        super::validate_knot_values(&knots_v)?;
-        super::validate_knot_domain(&knots_v, degree_v, n_cols)?;
-
-        // Validate weights grid dimensions.
-        if weights.len() != n_rows {
-            return Err(MathError::InvalidWeights {
-                expected: n_rows,
-                got: weights.len(),
-            });
-        }
-        for row in &weights {
-            if row.len() != n_cols {
-                return Err(MathError::InvalidWeights {
-                    expected: n_cols,
-                    got: row.len(),
-                });
-            }
-        }
-        validate_weight_values(&weights)?;
-        super::validate_control_point_values(control_points.iter().flatten().copied())?;
-
+        validate_data(
+            degree_u,
+            degree_v,
+            &knots_u,
+            &knots_v,
+            &control_points,
+            &weights,
+        )?;
         let surface = Self {
             degree_u,
             degree_v,
@@ -863,15 +802,14 @@ impl NurbsSurface {
     ///
     /// Returns the same validation errors as [`Self::new`].
     pub fn validate(&self) -> Result<(), MathError> {
-        Self::new(
+        validate_data(
             self.degree_u,
             self.degree_v,
-            self.knots_u.as_ref().clone(),
-            self.knots_v.as_ref().clone(),
-            self.control_points.as_ref().clone(),
-            self.weights.as_ref().clone(),
-        )?;
-        Ok(())
+            &self.knots_u,
+            &self.knots_v,
+            &self.control_points,
+            &self.weights,
+        )
     }
 
     /// Evaluate the surface at parameters `(u, v)`.
@@ -1739,6 +1677,87 @@ struct StackBases {
     span_v: usize,
     ders_u: [f64; STACK_BASES_LEN],
     ders_v: [f64; STACK_BASES_LEN],
+}
+
+// Borrow the complete input so construction and later validation share
+// the same invariant and error ordering without copying geometry storage.
+fn validate_data(
+    degree_u: usize,
+    degree_v: usize,
+    knots_u: &[f64],
+    knots_v: &[f64],
+    control_points: &[Vec<Point3>],
+    weights: &[Vec<f64>],
+) -> Result<(), MathError> {
+    let n_rows = control_points.len();
+
+    // Validate that all rows have the same length.
+    let n_cols = control_points.first().map_or(0, Vec::len);
+    for row in control_points {
+        if row.len() != n_cols {
+            return Err(MathError::InvalidControlPointGrid {
+                expected_rows: n_rows,
+                expected_cols: n_cols,
+            });
+        }
+    }
+
+    // Same degree contract as `NurbsCurve::new`, applied per direction.
+    // Degree 0 yields discontinuous basis functions whose derivatives —
+    // and therefore surface normals — are identically zero, so it cannot
+    // produce usable face geometry.
+    if degree_u == 0 || degree_u >= n_rows {
+        return Err(MathError::InvalidDegree {
+            degree: degree_u,
+            control_points: n_rows,
+        });
+    }
+    if degree_v == 0 || degree_v >= n_cols {
+        return Err(MathError::InvalidDegree {
+            degree: degree_v,
+            control_points: n_cols,
+        });
+    }
+
+    // Validate knot vectors.
+    let expected_knots_u = n_rows + degree_u + 1;
+    if knots_u.len() != expected_knots_u {
+        return Err(MathError::InvalidKnotVector {
+            expected: expected_knots_u,
+            got: knots_u.len(),
+        });
+    }
+    super::validate_knot_values(knots_u)?;
+    super::validate_knot_domain(knots_u, degree_u, n_rows)?;
+
+    let expected_knots_v = n_cols + degree_v + 1;
+    if knots_v.len() != expected_knots_v {
+        return Err(MathError::InvalidKnotVector {
+            expected: expected_knots_v,
+            got: knots_v.len(),
+        });
+    }
+    super::validate_knot_values(knots_v)?;
+    super::validate_knot_domain(knots_v, degree_v, n_cols)?;
+
+    // Validate weights grid dimensions.
+    if weights.len() != n_rows {
+        return Err(MathError::InvalidWeights {
+            expected: n_rows,
+            got: weights.len(),
+        });
+    }
+    for row in weights {
+        if row.len() != n_cols {
+            return Err(MathError::InvalidWeights {
+                expected: n_cols,
+                got: row.len(),
+            });
+        }
+    }
+    validate_weight_values(weights)?;
+    super::validate_control_point_values(control_points.iter().flatten().copied())?;
+    Ok(())
 }
 
 fn validate_weight_values(weights: &[Vec<f64>]) -> Result<(), MathError> {
@@ -3956,3 +3975,227 @@ mod eval_stack_oracle_tests;
 
 #[cfg(test)]
 mod contraction_oracle_tests;
+
+#[cfg(test)]
+mod borrowed_validation_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use std::sync::{Arc, OnceLock};
+
+    fn raw() -> NurbsSurface {
+        NurbsSurface {
+            degree_u: 1,
+            degree_v: 1,
+            knots_u: Arc::new(vec![0., 0., 1., 1.]),
+            knots_v: Arc::new(vec![0., 0., 1., 1.]),
+            control_points: Arc::new(vec![vec![Point3::new(0., 0., 0.); 2]; 2]),
+            weights: Arc::new(vec![vec![1.; 2]; 2]),
+            max_weight: OnceLock::new(),
+            uniform_weights: OnceLock::new(),
+            seed_grid: SeedGridCache::default(),
+        }
+    }
+
+    fn assert_error(surface: &NurbsSurface, expected: impl Fn(&MathError) -> bool) {
+        let borrowed = surface.validate().expect_err("malformed borrowed surface");
+        let owned = NurbsSurface::new(
+            surface.degree_u,
+            surface.degree_v,
+            surface.knots_u.as_ref().clone(),
+            surface.knots_v.as_ref().clone(),
+            surface.control_points.as_ref().clone(),
+            surface.weights.as_ref().clone(),
+        )
+        .expect_err("malformed constructor input");
+        assert!(expected(&borrowed), "{borrowed:?}");
+        assert!(expected(&owned), "{owned:?}");
+    }
+
+    #[test]
+    fn malformed_surface_errors_keep_constructor_precedence_and_payloads() {
+        let mut surface = raw();
+        Arc::make_mut(&mut surface.control_points)[1].truncate(1);
+        surface.degree_u = 2;
+        surface.degree_v = 0;
+        surface.knots_u = Arc::new(vec![]);
+        surface.knots_v = Arc::new(vec![]);
+        surface.weights = Arc::new(vec![]);
+        assert_error(&surface, |e| {
+            matches!(
+                e,
+                MathError::InvalidControlPointGrid {
+                    expected_rows: 2,
+                    expected_cols: 2
+                }
+            )
+        });
+        Arc::make_mut(&mut surface.control_points)[1].push(Point3::new(f64::NAN, 0., 0.));
+        assert_error(&surface, |e| {
+            matches!(
+                e,
+                MathError::InvalidDegree {
+                    degree: 2,
+                    control_points: 2
+                }
+            )
+        });
+        surface.degree_u = 1;
+        assert_error(&surface, |e| {
+            matches!(
+                e,
+                MathError::InvalidDegree {
+                    degree: 0,
+                    control_points: 2
+                }
+            )
+        });
+        surface.degree_v = 1;
+        assert_error(&surface, |e| {
+            matches!(
+                e,
+                MathError::InvalidKnotVector {
+                    expected: 4,
+                    got: 0
+                }
+            )
+        });
+        surface.knots_u = Arc::new(vec![0., 0., f64::NAN, 1.]);
+        assert_error(
+            &surface,
+            |e| matches!(e, MathError::InvalidKnotValue { index: 2, value } if value.is_nan()),
+        );
+        surface.knots_u = Arc::new(vec![0.; 4]);
+        assert_error(
+            &surface,
+            |e| matches!(e, MathError::InvalidKnotValue { index: 2, value } if value.to_bits() == 0.0_f64.to_bits()),
+        );
+        surface.knots_u = Arc::new(vec![0., 0., 1., 1.]);
+        assert_error(&surface, |e| {
+            matches!(
+                e,
+                MathError::InvalidKnotVector {
+                    expected: 4,
+                    got: 0
+                }
+            )
+        });
+        surface.knots_v = Arc::new(vec![0., 0., f64::INFINITY, 1.]);
+        assert_error(
+            &surface,
+            |e| matches!(e, MathError::InvalidKnotValue { index: 2, value } if value.to_bits() == f64::INFINITY.to_bits()),
+        );
+        surface.knots_v = Arc::new(vec![0., 0., 1., 0.5]);
+        assert_error(
+            &surface,
+            |e| matches!(e, MathError::InvalidKnotValue { index: 3, value } if value.to_bits() == 0.5_f64.to_bits()),
+        );
+        surface.knots_v = Arc::new(vec![0., 0., 1., 1.]);
+        assert_error(&surface, |e| {
+            matches!(
+                e,
+                MathError::InvalidWeights {
+                    expected: 2,
+                    got: 0
+                }
+            )
+        });
+        surface.weights = Arc::new(vec![vec![1.; 2], vec![1.]]);
+        assert_error(&surface, |e| {
+            matches!(
+                e,
+                MathError::InvalidWeights {
+                    expected: 2,
+                    got: 1
+                }
+            )
+        });
+        for value in [
+            0.,
+            -0.,
+            -1.,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::from_bits(0x7ff8_0000_0000_0042),
+        ] {
+            surface.weights = Arc::new(vec![vec![1.; 2], vec![1., value]]);
+            assert_error(
+                &surface,
+                |e| matches!(e, MathError::InvalidWeightValue { index: 3, value: bad } if bad.to_bits() == value.to_bits()),
+            );
+        }
+        surface.weights = Arc::new(vec![vec![1.; 2]; 2]);
+        assert_error(
+            &surface,
+            |e| matches!(e, MathError::InvalidControlPointValue { index: 3, x, .. } if x.is_nan()),
+        );
+        surface.control_points = Arc::new(vec![]);
+        assert_error(&surface, |e| {
+            matches!(
+                e,
+                MathError::InvalidDegree {
+                    degree: 1,
+                    control_points: 0
+                }
+            )
+        });
+    }
+
+    #[test]
+    fn borrowed_surface_validation_keeps_storage_caches_and_extreme_values() {
+        let mut surface = raw();
+        Arc::make_mut(&mut surface.control_points)[1][1] = Point3::new(f64::MAX, -f64::MAX, -0.);
+        surface.weights = Arc::new(vec![vec![f64::from_bits(1); 2]; 2]);
+        let points = Arc::clone(&surface.control_points);
+        let weights = Arc::clone(&surface.weights);
+        let ku = Arc::clone(&surface.knots_u);
+        let kv = Arc::clone(&surface.knots_v);
+        surface
+            .validate()
+            .expect("finite extreme input remains valid");
+        assert!(Arc::ptr_eq(&points, &surface.control_points));
+        assert!(Arc::ptr_eq(&weights, &surface.weights));
+        assert!(Arc::ptr_eq(&ku, &surface.knots_u));
+        assert!(Arc::ptr_eq(&kv, &surface.knots_v));
+        assert!(surface.max_weight.get().is_none());
+        assert!(surface.uniform_weights.get().is_none());
+        assert!(surface.seed_grid.0.get().is_none());
+        assert_eq!(
+            surface.control_points[1][1].z().to_bits(),
+            (-0.0_f64).to_bits()
+        );
+        let owned = NurbsSurface::new(
+            surface.degree_u,
+            surface.degree_v,
+            ku.as_ref().clone(),
+            kv.as_ref().clone(),
+            points.as_ref().clone(),
+            weights.as_ref().clone(),
+        )
+        .unwrap();
+        assert_eq!(owned.max_weight.get().copied(), Some(f64::from_bits(1)));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn deserialized_surface_validation_keeps_roundtrip_and_cache_behavior() {
+        let encoded = serde_json::to_string(&raw()).unwrap();
+        let surface: NurbsSurface = serde_json::from_str(&encoded).unwrap();
+        surface.validate().unwrap();
+        assert!(surface.max_weight.get().is_none());
+        assert!(surface.uniform_weights.get().is_none());
+        assert!(surface.seed_grid.0.get().is_none());
+        assert_eq!(serde_json::to_string(&surface).unwrap(), encoded);
+        let mut malformed: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        malformed["degree_v"] = 0.into();
+        let surface: NurbsSurface = serde_json::from_value(malformed).unwrap();
+        assert_error(&surface, |e| {
+            matches!(
+                e,
+                MathError::InvalidDegree {
+                    degree: 0,
+                    control_points: 2
+                }
+            )
+        });
+    }
+}
