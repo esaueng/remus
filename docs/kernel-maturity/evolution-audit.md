@@ -87,10 +87,35 @@ fixture: its restore snapshot was taken after the grid, and its subsequent-edit
 loop permitted every anchor to be unresolved. Those old checks alone do not
 establish the stronger browser contract.
 
-Package qualification and exact source/artifact evidence are recorded with this
-slice's delivery. Downstream application adoption still needs a qualified
-committed-package pin. Broader shell, split, blend and swept-family attribution
-remain separate B18 work.
+Local qualification passed at clean runtime source
+`afb738c2de203cfb4a5d41d560b30427212cf1de`:
+
+- Native WASM: 786 unit and four integration tests passed, one existing ignored;
+  the native grid producer fixture passed all five tests.
+- `cargo xtask wasm-build` passed with the shipped release/SIMD configuration,
+  default optimizer, full source smoke and the full npm-packed/installed paired
+  consumer suite. The grid witness covers nine fixtures through all three
+  browser routes (27 success cells), plus malformed/budget/stale-handle input
+  and typed rollback. A retained installed consumer independently passed it.
+- The retained build manifest pins 1,260 runtime inputs, both complete package
+  directories (20 files), both tarballs, installed module hashes and raw logs.
+  These are local build attestations; package JSON does not embed a source SHA.
+
+| Local optimized module | Raw bytes | Change from committed base `ed34a9abe` | SHA-256 |
+| --- | ---: | ---: | --- |
+| Kernel | 10,489,943 | +5,728 | `7122007a656af257e418b12109474b127065d722c9c668441ac9dc63a18cbc8f` |
+| Translator | 3,083,034 | 0 | `87a51dff1183ce265166a1909576ba6353edc2535c91ce42ecdfefccaa26a8e4` |
+
+The local paired artifacts are version 2026.1.71; generated package directories
+were restored after preservation and verification. Kernel gzip is 3,884,305
+bytes and Brotli quality 11 is 2,764,456 bytes; size gates passed. The retained
+manifest SHA-256 is
+`6f9a772ff8328e2ee7c666e031b12e2be9c7e2b558920e04ce33c86cd9f9db01`.
+Hosted CI and downstream application adoption still need their normal checks
+and qualified committed-package refresh/pin. Consumers publishing another
+instance order must obtain instance claims in producer order, then permute
+members and claims together. Broader shell, split, blend and swept-family
+attribution remain separate B18 work.
 
 ## Confirmed rollback correction
 
