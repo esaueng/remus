@@ -842,7 +842,10 @@ mod tests {
         let trim = match &curve {
             EdgeCurve::Circle(circle) => Some(circle.project(seam)),
             EdgeCurve::Ellipse(ellipse) => Some(ellipse.project(seam)),
-            _ => None,
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => None,
         };
         let mut edge = Edge::new(v, v, curve);
         if let Some(start) = trim {

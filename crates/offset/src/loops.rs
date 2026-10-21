@@ -272,7 +272,13 @@ fn try_closed_conic_seam_wire(
                 let (u, v) = cone.project_point(point);
                 Some(cone.normal(u, v))
             }
-            _ => None,
+            Some(
+                FaceSurface::Plane { .. }
+                | FaceSurface::Nurbs(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_),
+            )
+            | None => None,
         };
         let (first_forward, second_forward) = match (wall_normal(pa), wall_normal(pb)) {
             (Some(na), Some(nb)) => (
@@ -320,7 +326,10 @@ fn full_turn_rim_directions(
     let (normal, tangent) = match edge.curve() {
         EdgeCurve::Circle(circle) => (circle.normal(), circle.tangent(range.0)),
         EdgeCurve::Ellipse(ellipse) => (ellipse.normal(), ellipse.tangent(range.0)),
-        _ => {
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => {
             return Err(OffsetError::AssemblyFailed {
                 reason: "closed rim is not a native conic".into(),
             });
