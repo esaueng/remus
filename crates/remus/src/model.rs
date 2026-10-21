@@ -321,19 +321,30 @@ impl Model {
     /// engine that produced the result is disclosed in
     /// [`BlendResult::engine`]. This is the same policy the WASM `fillet`
     /// binding runs, so both surfaces return the same geometry for the same
-    /// request.
+    /// request. Like that binding, it first drops edges with no dihedral to
+    /// round — tangent edges and the flat seams a fuse leaves between coplanar
+    /// faces — so "every edge of the body" is a valid selection.
     ///
     /// # Errors
     ///
-    /// Returns [`OperationsError`] for invalid or unsupported blends; a
-    /// refusal leaves the topology unchanged.
+    /// Returns [`OperationsError`] for invalid or unsupported blends, or when
+    /// no selected edge is filletable; a refusal leaves the topology
+    /// unchanged.
     pub fn fillet(
         &mut self,
         solid: SolidId,
         edges: &[EdgeId],
         radius: f64,
     ) -> Result<BlendResult, OperationsError> {
-        remus_operations::blend_ops::fillet_cascade(&mut self.topology, solid, edges, radius)
+        let edges = remus_operations::query::filter_filletable_edges(&self.topology, solid, edges)?;
+        if edges.is_empty() {
+            return Err(OperationsError::InvalidInput {
+                reason: "no filletable edges in the selection (tangent and degenerate edges are \
+                         skipped)"
+                    .into(),
+            });
+        }
+        remus_operations::blend_ops::fillet_cascade(&mut self.topology, solid, &edges, radius)
     }
 
     /// Chamfers selected edges with the v2 validated blend engine.
