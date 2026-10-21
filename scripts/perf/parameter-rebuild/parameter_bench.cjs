@@ -29,7 +29,8 @@ function options(argv) {
     assert(Number.isSafeInteger(result[key]) && result[key] >= (key === 'ticks' ? 1 : 0) &&
       result[key] <= 1000, `Invalid --${key}`);
   }
-  assert(result.warmup < result.ticks, 'Warmup must leave a retained sample');
+  assert(result.ticks > Math.max(result.warmup, 1),
+    'Ticks must leave a retained sample after cold and warmup exclusions');
   assert(['preview', 'completion'].includes(result.mode), 'Invalid --mode');
   assert(['full', 'suffix'].includes(result.rebuild), 'Invalid --rebuild');
   assert(['unique', 'repeated'].includes(result.pattern), 'Invalid --pattern');
