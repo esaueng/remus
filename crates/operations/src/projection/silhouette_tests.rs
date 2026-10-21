@@ -734,6 +734,45 @@ fn nurbs_planar_faces_have_no_silhouette() {
     }
 }
 
+/// Faces split from one NURBS face carry clones of its surface: they are
+/// one carrier, traced once and trimmed together, as split analytic faces
+/// are. A different NURBS surface is not the same carrier.
+#[test]
+fn split_nurbs_faces_share_one_carrier() {
+    use remus_topology::face::FaceSurface;
+    let sphere = |r: f64| {
+        let s = remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), r).unwrap();
+        remus_heal::construct::convert_surface::sphere_to_nurbs(&s).unwrap()
+    };
+    let surface = sphere(4.0);
+    let (a, b) = (
+        FaceSurface::Nurbs(surface.clone()),
+        FaceSurface::Nurbs(surface),
+    );
+    assert!(super::silhouette::same_carrier(&a, &b));
+    assert!(!super::silhouette::same_carrier(
+        &a,
+        &FaceSurface::Nurbs(sphere(5.0))
+    ));
+}
+
+/// A trace whose grid holds more sign changes than the vertex budget is
+/// refused when they are counted, before any of them is bisected.
+#[test]
+fn nurbs_tracing_refuses_more_crossings_than_vertices() {
+    let sphere =
+        remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 4.0).unwrap();
+    let nurbs = remus_heal::construct::convert_surface::sphere_to_nurbs(&sphere).unwrap();
+    let view = Vec3::new(0.0, 1.0, 0.0);
+    let traced =
+        super::silhouette::nurbs::contours(&nurbs, view, 0.05, &mut { usize::MAX }, usize::MAX)
+            .unwrap();
+    assert!(traced.iter().map(|c| c.uv.len()).sum::<usize>() > 4);
+    assert!(
+        super::silhouette::nurbs::contours(&nurbs, view, 0.05, &mut { usize::MAX }, 4).is_none()
+    );
+}
+
 /// A closed traced contour is periodic like the circles: a run joined
 /// across its seam carries parameters past 1, which must land on the
 /// contour's start again rather than stick at its last point.

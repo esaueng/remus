@@ -151,6 +151,19 @@ pub(in crate::projection) fn contours(
     let node = |i: usize, j: usize| (us[i], vs[j]);
     let positive = |i: usize, j: usize| values[j * nu + i] > 0.0;
 
+    // Every sign change becomes a contour vertex after 48 evaluations of
+    // bisection: count them first, so an over-budget trace is refused
+    // before that work rather than after it.
+    let across = (0..nv)
+        .flat_map(|j| (0..nu - 1).map(move |i| (i, j, i + 1, j)))
+        .chain((0..nv - 1).flat_map(|j| (0..nu).map(move |i| (i, j, i, j + 1))));
+    let changes = across
+        .filter(|&(i0, j0, i1, j1)| positive(i0, j0) != positive(i1, j1))
+        .count();
+    if changes > max_vertices {
+        return None;
+    }
+
     // Crossings on horizontal edges (i, j)–(i + 1, j) and vertical edges
     // (i, j)–(i, j + 1), each bisected onto g = 0 once.
     let mut points: Vec<(f64, f64)> = Vec::new();

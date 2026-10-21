@@ -449,10 +449,10 @@ const SAME_CARRIER_LINEAR: f64 = 1e-7;
 const SAME_CARRIER_ANGULAR: f64 = 1e-9;
 
 /// Whether two support surfaces are the same sphere, cylinder, cone or
-/// torus, so have the same silhouette in every view. A cylinder's frame and
+/// torus, or one NURBS definition, so have the same silhouette in every view. A cylinder's frame and
 /// origin along its axis, and a cylinder's or torus's axis sense, do not
 /// change it.
-fn same_carrier(a: &FaceSurface, b: &FaceSurface) -> bool {
+pub(super) fn same_carrier(a: &FaceSurface, b: &FaceSurface) -> bool {
     let parallel = |p: Vec3, q: Vec3| p.cross(q).length() <= SAME_CARRIER_ANGULAR;
     if let (FaceSurface::Sphere(a), FaceSurface::Sphere(b)) = (a, b) {
         return (a.center() - b.center()).length() <= SAME_CARRIER_LINEAR
@@ -476,6 +476,12 @@ fn same_carrier(a: &FaceSurface, b: &FaceSurface) -> bool {
             && parallel(a.z_axis(), b.z_axis())
             && (a.major_radius() - b.major_radius()).abs() <= SAME_CARRIER_LINEAR
             && (a.minor_radius() - b.minor_radius()).abs() <= SAME_CARRIER_LINEAR;
+    }
+    // A split NURBS face keeps a clone of its carrier: the faces share one
+    // definition exactly (degrees, knots, control points and weights), not
+    // just approximately, so they share one trace.
+    if let (FaceSurface::Nurbs(a), FaceSurface::Nurbs(b)) = (a, b) {
+        return a == b;
     }
     false
 }
