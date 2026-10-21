@@ -533,11 +533,26 @@ fn mixed_convexity_chain(_name: &str) -> Observed {
     );
     let before = snapshot(&topo, input);
     match fillet_v2(&mut topo, input, &edges, 0.4) {
-        Ok(result) => Observed::Built {
-            topo,
-            input,
-            output: result.solid,
-        },
+        Ok(result) => {
+            // The corner is the notch torus quarter closed by a ledge: the
+            // concave stripe counts to the vertex, the convex one from its
+            // station, and the quarter removes pi r^3 (11 - 3 pi) / 12
+            // (`regress_mixed_two_stripe_corner.rs`).
+            let r: f64 = 0.4;
+            let chip = r * r * (1.0 - TAU / 8.0);
+            let quarter = TAU / 2.0 * r.powi(3) * (11.0 - 1.5 * TAU) / 12.0;
+            let expected = before.volume + chip * 5.0 - chip * (5.0 - r) - quarter;
+            let actual = solid_volume(&topo, result.solid, MEASURE_DEFLECTION).unwrap();
+            assert!(
+                (actual - expected).abs() < 1e-5,
+                "mixed-convexity-chain volume {actual}, expected {expected}"
+            );
+            Observed::Built {
+                topo,
+                input,
+                output: result.solid,
+            }
+        }
         Err(error) => Observed::TypedRefusal {
             topo,
             input,
@@ -840,7 +855,7 @@ const CASES: &[TortureCase] = &[
     },
     TortureCase {
         name: "mixed-convexity-chain",
-        expected: Expected::TypedRefusal("unsupported-vertex-blend"),
+        expected: Expected::Built,
         run: mixed_convexity_chain,
     },
     TortureCase {
