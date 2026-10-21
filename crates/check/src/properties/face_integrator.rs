@@ -140,9 +140,10 @@ pub struct FaceContribution {
 /// * **Planar faces** are exact: `integrate_planar_face_exact` integrates
 ///   the boundary by Green's theorem, holes included — lines, conics and
 ///   NURBS recognized as one in closed form, any other NURBS by Gauss
-///   quadrature within each knot span. Only a boundary whose plane it cannot
-///   determine drops the face to the chord-polygon fan path, which
-///   under-counts a circular cap by its sagitta area.
+///   quadrature halved within each knot span until it converges. A boundary
+///   whose plane it cannot determine, or whose quadrature does not converge,
+///   drops the face to the chord-polygon fan path, which under-counts a
+///   circular cap by its sagitta area.
 /// * **Quadric faces** that span a full revolution, or whose boundary does not
 ///   trim the analytic domain, are integrated over that domain by composite
 ///   Gauss quadrature, converged to machine precision at the default order.
@@ -2421,15 +2422,17 @@ fn poly2_integrate(p: &Poly2, moments: &[f64; 10]) -> f64 {
 /// Region monomial moments `∫∫ sⁱtʲ ds dt` of one wire's enclosed planar
 /// region via Green's theorem: `M_ij = ∮ s^{i+1}/(i+1) · tʲ dt`.
 ///
-/// Every edge type integrates. The result is winding-aligned so that the
-/// area moment `M₀₀` is positive.
+/// Returns `None` when a free-form NURBS edge's span quadrature does not
+/// converge (`accumulate_nurbs_green_spans`); the caller falls back to
+/// chord-polygon integration. The result is winding-aligned so that the area
+/// moment `M₀₀` is positive.
 fn planar_wire_monomial_moments(
     topo: &Topology,
     wire_id: remus_topology::wire::WireId,
     origin: Point3,
     e1: Vec3,
     e2: Vec3,
-) -> Result<[f64; 10], CheckError> {
+) -> Result<Option<[f64; 10]>, CheckError> {
     let wire = topo.wire(wire_id)?;
     let mut moments = [0.0; 10];
     let mut prev_end: Option<remus_topology::vertex::VertexId> = None;
@@ -2576,7 +2579,7 @@ fn planar_wire_monomial_moments(
                     e2,
                 )? {
                     let traversal_start = topo.vertex(if forward { start_vid } else { end_vid })?;
-                    accumulate_nurbs_green_spans(
+                    if !accumulate_nurbs_green_spans(
                         &mut moments,
                         nc,
                         edge,
@@ -2584,7 +2587,9 @@ fn planar_wire_monomial_moments(
                         origin,
                         e1,
                         e2,
-                    )?;
+                    )? {
+                        return Ok(None);
+                    }
                 }
             }
         }
@@ -2596,7 +2601,7 @@ fn planar_wire_monomial_moments(
             *m = -*m;
         }
     }
-    Ok(moments)
+    Ok(Some(moments))
 }
 
 /// Maximum `t`-span of one hyperbola quadrature chunk.
@@ -2653,25 +2658,51 @@ fn accumulate_hyperbola_green_segments(
     }
 }
 
-/// Gauss order of one NURBS knot span in `accumulate_nurbs_green_spans`:
-/// exact through degree 31, so for a polynomial span of degree `p` through
-/// the degree `5p − 1` moment integrands (`s^{i+1} tʲ t'`, `i + j ≤ 3`) up to
-/// degree 6. A rational span is smooth within the span, and the rule
-/// converges on it to rounding for the near-unit weights of fitted and
-/// imported curves.
+/// Gauss order of each rule in `accumulate_nurbs_green_spans`: exact through
+/// degree 31.
 const NURBS_GREEN_ORDER: usize = 16;
 
+/// Largest difference, per moment and in units of the edge's in-plane extent
+/// raised to the moment's dimension, between one rule over an interval and
+/// the two rules over its halves for the halves to be taken.
+const NURBS_GREEN_TOLERANCE: f64 = 1e-12;
+
+/// Most times `accumulate_nurbs_green_spans` halves a knot span (up to 1024
+/// pieces) before it refuses the edge.
+const NURBS_GREEN_MAX_DEPTH: u32 = 10;
+
+/// Length dimension of each region moment `∫∫ sⁱtʲ`, `i + j + 2`, in the
+/// `accumulate_green_segment` order.
+const GREEN_MOMENT_DIMENSION: [i32; 10] = [2, 3, 3, 4, 4, 4, 5, 5, 5, 5];
+
+/// The parameter span a NURBS boundary edge runs over: its own trim, or the
+/// curve's domain when the edge is closed.
+fn nurbs_edge_span(
+    nc: &remus_math::nurbs::curve::NurbsCurve,
+    edge: &remus_topology::edge::Edge,
+) -> Result<(f64, f64), CheckError> {
+    if edge.start() == edge.end() {
+        Ok(nc.domain())
+    } else {
+        edge.strict_domain()
+            .map_err(crate::error::edge_domain_validation)
+    }
+}
+
 /// Integrate one NURBS edge's Green's-theorem contribution span by span, for
-/// a curve no analytic form recognizes.
+/// a curve no analytic form recognizes. Returns `Ok(false)`, leaving `moments`
+/// untouched, when a span's quadrature does not converge.
 ///
-/// The edge runs over its own parameter span (the curve's domain when it is
-/// closed) and is oriented positionally against `traversal_start`, the vertex
-/// the wire reaches it from, exactly as the chord-polygon outline orients it
-/// (`crate::util::wire_polygon`): a stored curve direction can oppose the
-/// edge's vertex order. Each Gauss rule stays inside one knot span, where the
-/// curve is a single rational polynomial piece. This replaces that outline's
-/// 32 chords per edge, whose sliver read a two-span spline extrude 4.7e-4 of
-/// its volume short.
+/// The edge runs over [`nurbs_edge_span`] and is oriented positionally
+/// against `traversal_start`, the vertex the wire reaches it from, exactly as
+/// the chord-polygon outline orients it (`crate::util::wire_polygon`): a
+/// stored curve direction can oppose the edge's vertex order. Each knot span
+/// is one rational polynomial piece. A fixed rule is exact on a polynomial
+/// span only up to a degree and on a rational one not at all, so each span is
+/// halved until one rule over an interval and the two over its halves agree
+/// to [`NURBS_GREEN_TOLERANCE`]; a polynomial span of degree up to 6 agrees at
+/// once. This replaces that outline's 32 chords per edge, whose sliver read a
+/// two-span spline extrude 4.7e-4 of its volume short.
 #[allow(clippy::too_many_arguments)]
 fn accumulate_nurbs_green_spans(
     moments: &mut [f64; 10],
@@ -2681,13 +2712,8 @@ fn accumulate_nurbs_green_spans(
     origin: Point3,
     e1: Vec3,
     e2: Vec3,
-) -> Result<(), CheckError> {
-    let (t0, t1) = if edge.start() == edge.end() {
-        nc.domain()
-    } else {
-        edge.strict_domain()
-            .map_err(crate::error::edge_domain_validation)?
-    };
+) -> Result<bool, CheckError> {
+    let (t0, t1) = nurbs_edge_span(nc, edge)?;
     let (lo, hi) = (t0.min(t1), t0.max(t1));
     // Walk the span from whichever end the wire arrives at.
     let dir_sign = if (nc.evaluate(lo) - traversal_start).length_squared()
@@ -2697,14 +2723,18 @@ fn accumulate_nurbs_green_spans(
     } else {
         -1.0
     };
-    let mut breaks = vec![lo];
-    breaks.extend(nc.knots().iter().copied().filter(|&k| k > lo && k < hi));
-    breaks.push(hi);
-    breaks.dedup();
-    for pair in breaks.windows(2) {
+    // The control hull bounds the curve, so it bounds every moment's scale.
+    let extent = nc
+        .control_points()
+        .iter()
+        .map(|&p| (p - origin).length())
+        .fold(0.0, f64::max)
+        .max(1e-12);
+    let rule = |range: (f64, f64)| {
+        let mut m = [0.0; 10];
         accumulate_green_segment(
-            moments,
-            (pair[0], pair[1]),
+            &mut m,
+            range,
             NURBS_GREEN_ORDER,
             dir_sign,
             |u| {
@@ -2715,8 +2745,39 @@ fn accumulate_nurbs_green_spans(
             e1,
             e2,
         );
+        m
+    };
+    let mut breaks = vec![lo];
+    breaks.extend(nc.knots().iter().copied().filter(|&k| k > lo && k < hi));
+    breaks.push(hi);
+    breaks.dedup();
+    let mut total = [0.0; 10];
+    for pair in breaks.windows(2) {
+        // Depth-first over (interval, its single-rule reading, depth).
+        let mut stack = vec![((pair[0], pair[1]), rule((pair[0], pair[1])), 0)];
+        while let Some(((a, b), whole, depth)) = stack.pop() {
+            let mid = f64::midpoint(a, b);
+            let (left, right) = (rule((a, mid)), rule((mid, b)));
+            let converged = (0..10).all(|k| {
+                (whole[k] - (left[k] + right[k])).abs()
+                    <= NURBS_GREEN_TOLERANCE * extent.powi(GREEN_MOMENT_DIMENSION[k])
+            });
+            if converged {
+                for k in 0..10 {
+                    total[k] += left[k] + right[k];
+                }
+            } else if depth >= NURBS_GREEN_MAX_DEPTH {
+                return Ok(false);
+            } else {
+                stack.push(((a, mid), left, depth + 1));
+                stack.push(((mid, b), right, depth + 1));
+            }
+        }
     }
-    Ok(())
+    for k in 0..10 {
+        moments[k] += total[k];
+    }
+    Ok(true)
 }
 
 /// Integrate one NURBS edge's Green's-theorem contribution through its
@@ -3290,10 +3351,11 @@ fn wire_newell_normal(
                     pts.push(h.evaluate((to - from).fma(f, from)));
                 }
             }
-            // Recognized or not, the NURBS lies in the face's plane, so its
-            // own samples determine it.
+            // Recognized or not, the NURBS lies in the face's plane over the
+            // span the edge runs, so its own samples there determine it;
+            // the carrier may leave the plane outside a trimmed sub-span.
             EdgeCurve::NurbsCurve(nc) => {
-                let (t0, t1) = nc.domain();
+                let (t0, t1) = nurbs_edge_span(nc, edge)?;
                 let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
                 for k in 0..ARC_SAMPLES {
                     let f = k as f64 / ARC_SAMPLES as f64;
@@ -3356,9 +3418,13 @@ fn integrate_planar_face_exact(
     };
     let (e1, e2) = (frame.x, frame.y);
 
-    let mut moments = planar_wire_monomial_moments(topo, outer_wire, origin, e1, e2)?;
+    let Some(mut moments) = planar_wire_monomial_moments(topo, outer_wire, origin, e1, e2)? else {
+        return Ok(None);
+    };
     for wid in inner {
-        let hole = planar_wire_monomial_moments(topo, wid, origin, e1, e2)?;
+        let Some(hole) = planar_wire_monomial_moments(topo, wid, origin, e1, e2)? else {
+            return Ok(None);
+        };
         for k in 0..10 {
             moments[k] -= hole[k];
         }
