@@ -57,6 +57,10 @@ def validate_policy(text: str) -> None:
     require("persist-credentials: false" in text, "checkout credentials must not persist")
     require("cancel-in-progress: false" in block(text, "concurrency"),
             "new events must not cancel in-flight proof evidence")
+    require('RUST_MIN_STACK: "33554432"' in block(text, "env"),
+            "parity builds require the qualified Rust compiler stack size")
+    require('rust_min_stack=%s\\n' in text and '"$RUST_MIN_STACK"' in text,
+            "workflow artifacts must record the Rust compiler stack size")
 
     job = block(block(text, "jobs"), "proof", 2)
     strategy = block(job, "strategy", 4)
@@ -130,6 +134,9 @@ class ParityWorkflowTests(unittest.TestCase):
 
     def test_platform_fail_fast_is_rejected(self) -> None:
         self.reject_edit("fail-fast: false", "fail-fast: true", "peer proofs")
+
+    def test_missing_compiler_stack_configuration_is_rejected(self) -> None:
+        self.reject_edit('  RUST_MIN_STACK: "33554432"\n', "", "compiler stack size")
 
     def test_softened_proof_failures_are_rejected(self) -> None:
         self.reject_edit('tee "$O15_PROOF_OUT/run.log"', 'tee "$O15_PROOF_OUT/run.log" || true',
