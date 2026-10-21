@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { resolve, win32 } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { directConsistent, expandContractMatrix, scoreContractCase } from './contract-matrix.mjs';
 import { expandSplitMatrix, scoreSplitCase } from './split-io-matrix.mjs';
+import { WINDOWS_ARM_INSTALLATION, WINDOWS_ARM_TOOLCHAIN } from './host-proof.mjs';
 import { validateProofReport, validateProofReports } from './proof-verdict.mjs';
 
 function provenance(mode) {
@@ -133,18 +134,20 @@ function goodReport(kind) {
   };
 }
 
-function hostBoundReports() {
+function hostBoundReports(windows = false) {
+  const rustHost = windows ? 'x86_64-pc-windows-msvc' : 'x86_64-unknown-linux-gnu';
   const host = {
     schema_version: 1,
     sourceRevision: 'ab'.repeat(20), sourceDirty: false, checkoutSha: 'ab'.repeat(20),
-    expected: { runner: 'ubuntu-24.04', platform: 'linux', arch: 'x64', rustHost: 'x86_64-unknown-linux-gnu' },
-    runner: { os: 'Linux', arch: 'X64' },
-    node: { platform: 'linux', arch: 'x64', version: 'v24', v8: '13.6' },
-    rustc: { host: 'x86_64-unknown-linux-gnu', verbose: 'rustc 1.96\nhost: x86_64-unknown-linux-gnu' },
-    unameMachine: 'x86_64', buildTarget: null,
+    expected: { runner: windows ? 'windows-2025' : 'ubuntu-24.04', platform: windows ? 'win32' : 'linux', arch: 'x64', rustHost },
+    runner: { os: windows ? 'Windows' : 'Linux', arch: 'X64' },
+    node: { platform: windows ? 'win32' : 'linux', arch: 'x64', version: 'v24', v8: '13.6' },
+    rustc: { host: rustHost, verbose: `rustc 1.96\nhost: ${rustHost}` },
+    unameMachine: windows ? null : 'x86_64', buildTarget: null,
+    ...(windows ? { osMachine: 'x86_64', osMachineSource: 'node:os.machine' } : {}),
     native: Object.fromEntries([['kernel', 'remus-parity-native'], ['splitIo', 'remus-split-io-native']].map(([key, binary]) => [key, {
-      path: `/tmp/${binary}`, sha256: '12'.repeat(32),
-      runtime: { schemaVersion: 1, binary, os: 'linux', arch: 'x86_64', pointerWidth: 64 },
+      path: windows ? `C:\\native with spaces\\${binary}.exe` : `/tmp/${binary}`, sha256: '12'.repeat(32),
+      runtime: { schemaVersion: 1, binary, os: windows ? 'windows' : 'linux', arch: 'x86_64', pointerWidth: 64 },
     }])),
   };
   const contract = goodReport('contract');
@@ -161,6 +164,8 @@ test('complete proof is rescored with the existing owners and preserves minimal 
   assert.equal(summary.passed, true);
   assert.equal(summary.contract.cases, 12);
   assert.equal(summary.splitIo.cases, 6);
+  assert.equal(summary.contract.requiredStages, 217);
+  assert.equal(summary.splitIo.requiredStages, 222);
 });
 
 test('empty, malformed and wrong-schema evidence cannot be green', () => {
@@ -367,6 +372,24 @@ test('host qualification binds actual native executable hashes, source, compiler
   }
 });
 
+test('Windows qualification binds both actual .exe identities and OS probe to the unchanged 439 gates', () => {
+  const reports = hostBoundReports(true);
+  const summary = validateProofReports(...reports);
+  assert.equal(summary.host.rustHost, 'x86_64-pc-windows-msvc');
+  assert.equal(summary.contract.requiredStages + summary.splitIo.requiredStages, 439);
+  for (const mutate of [
+    ([, , host]) => { host.native.kernel.path = 'C:\\other.exe'; },
+    ([, split]) => { split.provenance.native.binarySha256 = '34'.repeat(32); },
+    ([, , host]) => { host.osMachine = 'arm64'; },
+  ]) {
+    const changed = hostBoundReports(true);
+    mutate(changed);
+    assert.throws(() => validateProofReports(...changed));
+  }
+  reports[2].rustc.verbose = reports[2].rustc.verbose.replaceAll('\n', '\r\n');
+  assert.equal(validateProofReports(...reports).passed, true);
+});
+
 test('CLI rejects missing and malformed report files and emits a valid summary only for complete reports', () => {
   const dir = mkdtempSync(resolve(tmpdir(), 'remus-o15-verdict-'));
   const cli = fileURLToPath(new URL('./proof-verdict.mjs', import.meta.url));
@@ -392,5 +415,65 @@ test('CLI rejects missing and malformed report files and emits a valid summary o
     assert.equal(JSON.parse(readFileSync(contract)).observations.length, 12);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function armBuildFixture() {
+  const pe = (machine = 'arm64') => ({ format: 'PE32+', machine, machineCode: machine === 'arm64' ? 0xaa64 : 0x8664 });
+  const exe = (path) => ({ path, bytes: 512, sha256: '12'.repeat(32), pe: pe() });
+  const temporary = 'C:\\Temp\\proof ü';
+  const node = { ...exe('C:\\native node\\node.exe'), platform: 'win32', arch: 'arm64', version: 'v24.22.0', v8: '13.9' };
+  const rustc = { ...exe('C:\\native toolchain\\rustc.exe'), host: 'aarch64-pc-windows-msvc', verbose: 'rustc 1.96.0 (fixture)\nhost: aarch64-pc-windows-msvc' };
+  const cargo = { ...exe('C:\\native toolchain\\cargo.exe'), version: 'cargo 1.96.0 (fixture)' };
+  const rustup = { ...exe('C:\\tools\\rustup.exe'), version: 'rustup 1.29.1 (fixture)', emulated: false };
+  const helpers = {
+    wasmPack: { ...exe('C:\\helpers ü\\wasm-pack.exe'), pe: pe('x64'), emulated: true, version: 'wasm-pack 0.15.0', bytes: 5649408, sha256: 'cf62764a253de34c32d5f8c5655e0503f2f7773ee3674189343e339281a9a023' },
+    wasmBindgen: { ...exe('C:\\helpers ü\\wasm-bindgen.exe'), pe: pe('x64'), emulated: true, version: 'wasm-bindgen 0.2.126', bytes: WINDOWS_ARM_INSTALLATION.executableBytes, sha256: WINDOWS_ARM_INSTALLATION.executableSha256 },
+  };
+  const environment = { RUSTFLAGS: '', CARGO_ENCODED_RUSTFLAGS: '', CARGO_BUILD_TARGET: '', RUSTC_WRAPPER: '', RUSTC_WORKSPACE_WRAPPER: '', RUSTUP_TOOLCHAIN: WINDOWS_ARM_TOOLCHAIN, RUSTC: rustc.path, CARGO_HOME: win32.join(temporary, 'cargo-home'), WASM_PACK_CACHE: win32.join(temporary, 'wasm-pack-cache'), CARGO_BUILD_JOBS: '1', RUST_MIN_STACK: '33554432', toolchainPathPrefix: win32.dirname(cargo.path), helperPathPrefix: win32.dirname(helpers.wasmBindgen.path) };
+  environment.PATH = environment.toolchainPathPrefix + ';' + environment.helperPathPrefix + ';C:\\Windows';
+  const lookup = { rustc: rustc.path, cargo: cargo.path, wasmPack: helpers.wasmPack.path, wasmBindgen: helpers.wasmBindgen.path };
+  const proof = { schemaVersion: 1, passed: true, state: 'completed', sourceRevision: 'ab'.repeat(20), checkoutSha: 'ab'.repeat(20), sourceDirty: false, osMachine: 'arm64', temporary, node, rustc, cargo, rustup, helpers, installation: { ...WINDOWS_ARM_INSTALLATION }, wasmBindgenDependency: '0.2.126', environment, lookupBefore: { ...lookup }, lookupAfter: { ...lookup }, after: structuredClone({ node, rustc, cargo, helpers }), sourceRevisionAfter: 'ab'.repeat(20), sourceDirtyAfter: false, cacheBindgenCandidates: [], commands: [], buildCommands: [] };
+  const stamp = (second) => `2026-10-21T00:00:${String(second).padStart(2, '0')}.000Z`;
+  for (const [name, record, argv, stdout] of [
+    ['source-before', { path: 'git' }, ['rev-parse', 'HEAD'], proof.sourceRevision],
+    ['dirty-before', { path: 'git' }, ['status', '--porcelain', '--untracked-files=normal'], ''],
+    ['rustup-version', rustup, ['--version'], rustup.version],
+    ['rustup-rustc', rustup, ['which', '--toolchain', WINDOWS_ARM_TOOLCHAIN, 'rustc'], rustc.path],
+    ['rustup-cargo', rustup, ['which', '--toolchain', WINDOWS_ARM_TOOLCHAIN, 'cargo'], cargo.path],
+    ['rustc-version', rustc, ['-vV'], rustc.verbose], ['cargo-version', cargo, ['-V'], cargo.version],
+    ['wasm-pack-version', helpers.wasmPack, ['--version'], helpers.wasmPack.version],
+    ['wasm-bindgen-version', helpers.wasmBindgen, ['--version'], helpers.wasmBindgen.version],
+    ['rustc-after', rustc, ['-vV'], rustc.verbose], ['cargo-after', cargo, ['-V'], cargo.version],
+    ['wasm-pack-after', helpers.wasmPack, ['--version'], helpers.wasmPack.version],
+    ['wasm-bindgen-after', helpers.wasmBindgen, ['--version'], helpers.wasmBindgen.version],
+    ['source-after', { path: 'git' }, ['rev-parse', 'HEAD'], proof.sourceRevisionAfter],
+    ['dirty-after', { path: 'git' }, ['status', '--porcelain', '--untracked-files=normal'], ''],
+  ]) proof.commands.push({ name, executable: record.path, argv, stdout, status: 0, startedAt: stamp(name.endsWith('-after') ? 8 : 0), completedAt: stamp(name.endsWith('-after') ? 9 : 1) });
+  const pack = helpers.wasmPack.path;
+  const builds = [
+    [cargo.path, 'test', '--locked', '--profile', 'ci-test', '-p', 'remus-parity'],
+    [cargo.path, 'build', '--locked', '--release', '-p', 'remus-parity'],
+    [pack, 'build', 'crates/wasm', '--target', 'nodejs', '--release', '--no-opt', '--out-dir', win32.join(temporary, 'kernel'), '--', '--locked', '--no-default-features'],
+    [pack, 'build', 'crates/wasm-io', '--target', 'nodejs', '--release', '--no-opt', '--out-dir', win32.join(temporary, 'io'), '--', '--locked'],
+  ];
+  proof.buildCommands = builds.map((argv, index) => ({ argv, status: 0, environment: structuredClone(environment), startedAt: stamp(index + 2), completedAt: stamp(index + 3) }));
+  return proof;
+}
+
+test('all 439 green gates still require completed Windows ARM build/helper evidence', () => {
+  const [contract, split, host] = hostBoundReports(true), build = armBuildFixture();
+  Object.assign(host, { expected: { runner: 'windows-11-arm', platform: 'win32', arch: 'arm64', rustHost: 'aarch64-pc-windows-msvc' }, runner: { os: 'Windows', arch: 'ARM64' }, node: structuredClone(build.node), rustc: structuredClone(build.rustc), osMachine: 'arm64', windowsArmBuild: build });
+  for (const runner of Object.values(host.native)) { runner.runtime.arch = 'aarch64'; runner.bytes = 512; runner.pe = structuredClone(build.node.pe); }
+  const tools = { node: build.node.version, rustc: build.rustc.verbose.split('\n')[0], cargo: build.cargo.version, wasmPack: build.helpers.wasmPack.version };
+  for (const report of [contract, split]) for (const value of Object.values(report.provenance)) if (value.toolchain) value.toolchain = { ...tools };
+  assert.equal(validateProofReports(contract, split, host).contract.requiredStages, 217);
+  assert.equal(validateProofReports(contract, split, host).splitIo.requiredStages, 222);
+  const pending = structuredClone(host); pending.windowsArmBuild.state = 'prepared'; pending.windowsArmBuild.commands = pending.windowsArmBuild.commands.filter((row) => !row.name.endsWith('-after'));
+  assert.throws(() => validateProofReports(contract, split, pending), /incomplete/);
+  for (const tool of ['cargo', 'wasmPack']) {
+    const c = structuredClone(contract), s = structuredClone(split);
+    for (const report of [c, s]) for (const value of Object.values(report.provenance)) if (value.toolchain) value.toolchain[tool] = 'unrelated tool version';
+    assert.throws(() => validateProofReports(c, s, host));
   }
 });

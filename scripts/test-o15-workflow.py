@@ -19,6 +19,8 @@ HOSTS = [
     ("ubuntu-24.04-arm", "linux", "arm64", "aarch64-unknown-linux-gnu"),
     ("macos-15-intel", "darwin", "x64", "x86_64-apple-darwin"),
     ("macos-15", "darwin", "arm64", "aarch64-apple-darwin"),
+    ("windows-2025", "win32", "x64", "x86_64-pc-windows-msvc"),
+    ("windows-11-arm", "win32", "arm64", "aarch64-pc-windows-msvc"),
 ]
 
 
@@ -53,6 +55,7 @@ def validate_policy(text: str) -> None:
     pr = block(events, "pull_request", 2)
     for path in (".github/workflows/parity.yml", "tools/parity/**", "scripts/test-o15*"):
         require(f"'{path}'" in pr, f"PR validation must cover {path}")
+    require("merge_group" not in events, "geometry parity must not expand merge-group CI")
     require("pull_request_target" not in events and "secrets." not in text,
             "proof execution cannot receive privileged event credentials")
     require(block(text, "permissions").strip() == "contents: read",
@@ -61,6 +64,10 @@ def validate_policy(text: str) -> None:
     require(len(permission_lines) == 1 and not re.search(r"(?m)^\s*[^#\n]+:\s*write\s*$", text),
             "job/step write permissions cannot widen the read-only token")
     require("persist-credentials: false" in text, "checkout credentials must not persist")
+    require("O15_PROOF_OUT: target/o15-proof" in text, "artifact paths must work in native Windows and Git Bash")
+    require("git config --global core.autocrlf false" in text
+            and text.index("git config --global core.autocrlf false") < text.index("uses: actions/checkout@"),
+            "Windows checkout must preserve canonical package bytes before checkout")
     require("cancel-in-progress: false" in block(text, "concurrency"),
             "new events must not cancel in-flight proof evidence")
     require('RUST_MIN_STACK: "33554432"' in block(text, "env"),
@@ -81,29 +88,45 @@ def validate_policy(text: str) -> None:
         includes,
     )
     require(hosts == HOSTS and len(re.findall(r"(?m)^          - ", includes)) == len(HOSTS),
-            "the four native Linux/macOS architecture tuples must remain explicit")
+            "the six native Linux/macOS/Windows architecture tuples must remain explicit")
     expected = block(job, "env", 4)
     for field, axis in (("RUNNER", "os"), ("PLATFORM", "platform"), ("ARCH", "arch"), ("RUST_HOST", "rust_host")):
         require(f"O15_EXPECT_{field}: ${{{{ matrix.{axis} }}}}" in expected,
                 f"actual host validation requires the matrix {field} expectation")
     require("runs-on: ${{ matrix.os }}" in job, "runner selection must use the declared host")
+    require("O15_PYTHON: ${{ matrix.platform == 'win32' && 'python' || 'python3' }}" in expected,
+            "policy tests require the native Python executable on each host")
+    require("runner." not in expected, "runner context is unavailable in job environment expressions")
+    require("architecture: ${{ matrix.arch }}" in text, "native Node architecture must be explicit")
+    require("toolchain: ${{ matrix.os == 'windows-11-arm' && '1.96.0-aarch64-pc-windows-msvc' || '1.96.0' }}" in text,
+            "Windows ARM requires the explicit native compiler host")
+    require("CARGO_BUILD_JOBS: ${{ matrix.os == 'windows-11-arm' && '1' || '2' }}" in expected,
+            "Windows ARM must use one Cargo job while retaining other host limits")
+    require("if: matrix.os == 'windows-11-arm'\n        run: echo 'RUSTUP_TOOLCHAIN=1.96.0-aarch64-pc-windows-msvc' >> \"$GITHUB_ENV\"" in text,
+            "Windows ARM must bind the selected native rustup host")
+    require("if: matrix.os == 'windows-11-arm'\n        with:\n          tool: wasm-pack@0.15.0,wasm-bindgen@0.2.126\n          checksum: true\n          fallback: none" in text,
+            "Windows ARM requires the qualified pinned checksum-verified x64 helper recipe")
+    require("if: matrix.os != 'windows-11-arm'\n        with:\n          tool: wasm-pack\n" in text,
+            "the five existing helper recipes must remain unchanged")
     require("shell: bash" in job, "the proof runner requires bash")
     job_budget = re.findall(r"(?m)^    timeout-minutes: (\d+)$", job)
     require(len(job_budget) == 1 and 1 <= int(job_budget[0]) <= 120,
             "proof job must have a bounded timeout")
+    require(job_budget[0] == "90", "the qualified job budget must remain 90 minutes")
     steps = re.split(r"(?m)^      - ", block(job, "steps", 4))[1:]
-    proofs = [step for step in steps if "bash scripts/test-o15-proof.sh" in step]
+    proofs = [step for step in steps if "node scripts/test-o15-proof.mjs" in step]
     require(len(proofs) == 1, "execute the shared proof runner exactly once")
     proof = proofs[0]
     require("continue-on-error" not in proof and "||" not in proof and "if:" not in proof,
             "proof failures must fail the job")
     require("set -o pipefail" in proof,
             "log pipelines must propagate proof failures")
-    require('bash scripts/test-o15-proof.sh 2>&1 | tee "$O15_PROOF_OUT/run.log"' in proof,
+    require('node scripts/test-o15-proof.mjs 2>&1 | tee "$O15_PROOF_OUT/run.log"' in proof,
             "proof stdout and stderr must be retained in the uploaded log")
     proof_budget = re.findall(r"(?m)^        timeout-minutes: (\d+)$", proof)
     require(len(proof_budget) == 1 and 1 <= int(proof_budget[0]) < int(job_budget[0]),
             "proof timeout must leave job time for failure uploads")
+    require(proof_budget[0] == "75", "the qualified proof budget must remain 75 minutes")
     uploads = [step for step in steps if "uses: actions/upload-artifact@" in step]
     require(len(uploads) == 1, "one proof artifact upload is required")
     upload = uploads[0]
@@ -128,8 +151,8 @@ class ParityWorkflowTests(unittest.TestCase):
         validate_policy(self.text)
 
     def test_proof_driver_semantics_run_before_the_real_build(self) -> None:
-        proof = self.text.index("bash scripts/test-o15-proof.sh")
-        for command in ("python3 scripts/test-o15-workflow.py", "python3 scripts/test-o15-proof.py"):
+        proof = self.text.index("node scripts/test-o15-proof.mjs")
+        for command in ('"$O15_PYTHON" scripts/test-o15-workflow.py', '"$O15_PYTHON" scripts/test-o15-proof.py'):
             self.assertLess(self.text.index(command), proof)
 
     def reject_edit(self, before: str, after: str, reason: str) -> None:
@@ -159,12 +182,40 @@ class ParityWorkflowTests(unittest.TestCase):
         self.reject_edit(
             "          - os: macos-15\n            platform: darwin\n"
             "            arch: arm64\n            rust_host: aarch64-apple-darwin\n",
-            "", "four native",
+            "", "six native",
         )
 
     def test_wrong_platform_architecture_is_rejected(self) -> None:
         self.reject_edit("            rust_host: aarch64-apple-darwin",
-                         "            rust_host: x86_64-apple-darwin", "four native")
+                         "            rust_host: x86_64-apple-darwin", "six native")
+
+    def test_windows_arm_tuple_requires_a_native_compiler(self) -> None:
+        self.reject_edit("          - os: windows-11-arm\n            platform: win32\n"
+                         "            arch: arm64\n            rust_host: aarch64-pc-windows-msvc\n",
+                         "", "six native")
+
+    def test_node_architecture_must_be_explicit(self) -> None:
+        self.reject_edit("architecture: ${{ matrix.arch }}", "architecture: x64", "Node architecture")
+
+    def test_windows_arm_compiler_must_not_default_to_x64(self) -> None:
+        self.reject_edit("&& '1.96.0-aarch64-pc-windows-msvc'", "&& '1.96.0'", "native compiler host")
+
+    def test_windows_arm_job_limit_cannot_increase(self) -> None:
+        self.reject_edit("&& '1' || '2'", "&& '2' || '2'", "one Cargo job")
+
+    def test_windows_arm_helpers_are_pinned_and_checksum_verified(self) -> None:
+        self.reject_edit("wasm-bindgen@0.2.126", "wasm-bindgen@0.2.127", "x64 helper recipe")
+        self.reject_edit("checksum: true", "checksum: false", "x64 helper recipe")
+        self.reject_edit("fallback: none", "fallback: cargo-install", "x64 helper recipe")
+
+    def test_existing_five_helper_recipes_do_not_change(self) -> None:
+        self.reject_edit("tool: wasm-pack\n", "tool: wasm-pack@0.15.0\n", "five existing helper recipes")
+
+    def test_geometry_proof_does_not_run_in_each_merge_group(self) -> None:
+        self.reject_edit("  workflow_dispatch:\n", "  workflow_dispatch:\n  merge_group:\n", "merge-group")
+
+    def test_qualified_job_budget_cannot_increase(self) -> None:
+        self.reject_edit("timeout-minutes: 90", "timeout-minutes: 120", "remain 90")
 
     def test_missing_runtime_architecture_expectation_is_rejected(self) -> None:
         self.reject_edit("      O15_EXPECT_ARCH: ${{ matrix.arch }}\n", "", "matrix ARCH")
@@ -180,7 +231,18 @@ class ParityWorkflowTests(unittest.TestCase):
         self.reject_edit("          set -o pipefail\n", "", "propagate proof failures")
 
     def test_missing_stderr_capture_is_rejected(self) -> None:
-        self.reject_edit("test-o15-proof.sh 2>&1 | tee", "test-o15-proof.sh | tee", "stdout and stderr")
+        self.reject_edit("test-o15-proof.mjs 2>&1 | tee", "test-o15-proof.mjs | tee", "stdout and stderr")
+
+    def test_normalized_windows_checkout_bytes_cannot_replace_canonical_bytes(self) -> None:
+        self.reject_edit("git config --global core.autocrlf false", "git config --global core.autocrlf true", "canonical package bytes")
+
+    def test_windows_tuple_cannot_disappear(self) -> None:
+        self.reject_edit("          - os: windows-2025\n            platform: win32\n"
+                         "            arch: x64\n            rust_host: x86_64-pc-windows-msvc\n",
+                         "", "six native")
+
+    def test_job_environment_cannot_use_unavailable_runner_context(self) -> None:
+        self.reject_edit("matrix.platform == 'win32'", "runner.os == 'Windows'", "native Python executable")
 
     def test_missing_proof_log_is_rejected(self) -> None:
         self.reject_edit(' | tee "$O15_PROOF_OUT/run.log"', "", "uploaded log")
