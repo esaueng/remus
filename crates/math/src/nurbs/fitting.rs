@@ -945,12 +945,54 @@ fn point_from_basis(
     control_points: &[Point3],
     weights: &[f64],
 ) -> Point3 {
-    let scale = bf
+    // Scale homogeneous terms before summation. NURBS weights are
+    // projective, so this preserves the point while preventing a common
+    // factor such as 1e-300 from making the perspective divide unstable.
+    let (scale, needs_scaling, tiny_terms) = bf
         .iter()
         .enumerate()
         .take(p + 1)
-        .map(|(j, &basis_val)| (basis_val * weights[span - p + j]).abs())
-        .fold(0.0_f64, f64::max);
+        .map(|(j, &basis_val)| {
+            let term = (basis_val * weights[span - p + j]).abs();
+            (
+                term,
+                basis_val != 0.0 && weights[span - p + j].is_subnormal(),
+                basis_val != 0.0 && term < f64::MIN_POSITIVE,
+            )
+        })
+        .fold(
+            (0.0_f64, false, false),
+            |(scale, lost, tiny), (term, subnormal, small)| {
+                (scale.max(term), lost || subnormal, tiny || small)
+            },
+        );
+    let compensated = tiny_terms
+        && super::evaluator::has_compensated_coordinate(p + 1, |j| {
+            let index = span - p + j;
+            (
+                bf[j] * weights[index],
+                [bf[j], 1.0, weights[index]],
+                control_points[index],
+            )
+        });
+    let stable_position = || {
+        if !bf.iter().all(|value| value.is_finite())
+            || !control_points[span - p..=span]
+                .iter()
+                .all(|point| point.0.iter().all(|value| value.is_finite()))
+        {
+            return None;
+        }
+        Some(super::evaluator::scaled_rational_position(p + 1, |j| {
+            let index = span - p + j;
+            ([bf[j], 1.0, weights[index]], control_points[index])
+        }))
+    };
+    if (needs_scaling || scale < f64::MIN_POSITIVE)
+        && let Some(point) = stable_position()
+    {
+        return point.0;
+    }
     let mut wx = 0.0;
     let mut wy = 0.0;
     let mut wz = 0.0;
@@ -966,9 +1008,23 @@ fn point_from_basis(
         ww += bw;
     }
 
+    if [wx, wy, wz, ww]
+        .iter()
+        .any(|value| !value.is_finite() || value.abs() > f64::MAX / 4.0)
+        && let Some(point) = stable_position()
+    {
+        return point.0;
+    }
     debug_assert!(scale.is_finite() && scale > 0.0);
     debug_assert!(ww.is_finite() && ww > 0.0);
-    Point3::new(wx / ww, wy / ww, wz / ww)
+    let point = Point3::new(wx / ww, wy / ww, wz / ww);
+    if compensated
+        && let Some(candidate) = stable_position()
+        && super::evaluator::exceeds_position_roundoff(point, candidate, p + 1)
+    {
+        return candidate.0;
+    }
+    point
 }
 
 /// Fold one data-point residual into the running maximum. `f64::max`

@@ -935,10 +935,51 @@ impl NurbsSurface {
         let cols = span_v - pv..=span_v;
 
         let mut scale = 0.0_f64;
+        let mut needs_scaling = false;
+        let mut tiny_terms = false;
         for (&nu_i, weight_row) in nu.iter().zip(weight_rows) {
             for (&nv_j, &w) in nv.iter().zip(&weight_row[cols.clone()]) {
-                scale = scale.max((nu_i * nv_j * w).abs());
+                let term = (nu_i * nv_j * w).abs();
+                scale = scale.max(term);
+                needs_scaling |= nu_i != 0.0 && nv_j != 0.0 && w.is_subnormal();
+                tiny_terms |= nu_i != 0.0 && nv_j != 0.0 && term < f64::MIN_POSITIVE;
             }
+        }
+        let compensated = tiny_terms
+            && super::evaluator::has_compensated_coordinate((pu + 1) * (pv + 1), |index| {
+                let (i, j) = (index / (pv + 1), index % (pv + 1));
+                let w = weight_rows[i][cols.start() + j];
+                (
+                    nu[i] * nv[j] * w,
+                    [nu[i], nv[j], w],
+                    rows[i][cols.start() + j],
+                )
+            });
+        let stable_position = || {
+            if !nu.iter().chain(nv).all(|value| value.is_finite())
+                || !rows.iter().all(|row| {
+                    row[cols.clone()]
+                        .iter()
+                        .all(|point| point.0.iter().all(|value| value.is_finite()))
+                })
+            {
+                return None;
+            }
+            Some(super::evaluator::scaled_rational_position(
+                (pu + 1) * (pv + 1),
+                |index| {
+                    let (i, j) = (index / (pv + 1), index % (pv + 1));
+                    (
+                        [nu[i], nv[j], weight_rows[i][cols.start() + j]],
+                        rows[i][cols.start() + j],
+                    )
+                },
+            ))
+        };
+        if (needs_scaling || scale < f64::MIN_POSITIVE)
+            && let Some(point) = stable_position()
+        {
+            return point.0;
         }
 
         let mut acc = [0.0f64; 4];
@@ -962,9 +1003,23 @@ impl NurbsSurface {
         }
 
         let [wx, wy, wz, ww] = acc;
+        if acc
+            .iter()
+            .any(|value| !value.is_finite() || value.abs() > f64::MAX / 4.0)
+            && let Some(point) = stable_position()
+        {
+            return point.0;
+        }
         debug_assert!(scale.is_finite() && scale > 0.0);
         debug_assert!(ww.is_finite() && ww > 0.0);
-        Point3::new(wx / ww, wy / ww, wz / ww)
+        let point = Point3::new(wx / ww, wy / ww, wz / ww);
+        if compensated
+            && let Some(candidate) = stable_position()
+            && super::evaluator::exceeds_position_roundoff(point, candidate, (pu + 1) * (pv + 1))
+        {
+            return candidate.0;
+        }
+        point
     }
 
     /// Compute surface derivatives up to order `d` at parameters `(u, v)`.

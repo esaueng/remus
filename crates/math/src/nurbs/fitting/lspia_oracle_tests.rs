@@ -373,20 +373,32 @@ fn matches_reference_on_validation_errors() {
 }
 
 #[test]
-fn matches_reference_when_iteration_overflows() {
-    // The data and the initial polygon are finite, but x = 1.5e308 times a
-    // basis sum 1/scale > 1.2 overflows the homogeneous sum, so iteration 0
-    // writes non-finite control points.
+fn finite_constant_coordinate_survives_the_extreme_lspia_evaluation() {
+    // This previously expected InvalidControlPointValue because the finite
+    // x=1.5e308 homogeneous sum overflowed. The corrected exceptional position
+    // contraction must preserve that constant coordinate in both cached and
+    // uncached fits, with a finite measured residual and no weakened guards.
     let pts: Vec<Point3> = (0..120)
         .map(|i| Point3::new(1.5e308, i as f64 * 0.01, (i as f64 * 0.1).sin()))
         .collect();
-    assert_same(&pts, 3, 40, 1e-6, 0).unwrap();
-    // Caught by the final construction ...
-    let err = assert_same(&pts, 3, 40, 1e-6, 1).unwrap_err();
-    assert!(matches!(err, MathError::InvalidControlPointValue { .. }));
-    // ... and by the per-iteration control-point check at iteration 1.
-    let err = assert_same(&pts, 3, 40, 1e-6, 100).unwrap_err();
-    assert!(matches!(err, MathError::InvalidControlPointValue { .. }));
+    for iterations in [0, 1, 100] {
+        let fit = assert_same(&pts, 3, 40, 1e-6, iterations).unwrap();
+        assert!(
+            fit.max_error.is_finite(),
+            "iterations={iterations}: {fit:?}"
+        );
+        assert!(
+            fit.curve
+                .control_points()
+                .iter()
+                .all(|point| point.0.iter().all(|value| value.is_finite()))
+        );
+        for u in [0.0, 0.125, 0.5, 0.875, 1.0] {
+            let point = fit.curve.evaluate(u);
+            assert_eq!(point.x().to_bits(), 1.5e308_f64.to_bits());
+            assert!(point.0.iter().all(|value| value.is_finite()));
+        }
+    }
 }
 
 #[test]
