@@ -235,7 +235,9 @@ fn whole_body_grouping_scans_few_pairs() {
         SCANNED_PAIRS.with(|n| n.set(0));
         independent_blend_groups(&topo, body, &edges, size).unwrap();
         let scanned = SCANNED_PAIRS.with(std::cell::Cell::get);
-        println!("size {size}: scanned {scanned} of {pairs} pairs");
-        assert!(4 * scanned < pairs, "size {size}: scanned {scanned} of {pairs} pairs");
+        assert!(
+            4 * scanned < pairs,
+            "size {size}: scanned {scanned} of {pairs} pairs"
+        );
     }
 }
