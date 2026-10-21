@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792599441446,
+  "lastUpdate": 1792601066300,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -120967,6 +120967,294 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 63491,
             "range": "± 1097",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "0d710b37a3f403af7216c0b356dba846fbcb7d44",
+          "message": "fix(algo): prove the composite box classifier matches the solid (#1237)\n\n## Change\n\nA 74×60×4 plate fused with two flush 18×10×40 tabs, then cut by a slot\nbox between the tabs, fell back to a mesh (or refused under `ExactOnly`)\nfor every slot depth from 2 to 20 mm. Cutting the slot first and fusing\nthe tabs after stayed exact, so the failure depended on operation order.\nThis is the first defect found replaying a filleted bracket (base plate,\ntwo uprights, slot, holes) step by step.\n\nRoot cause: `try_build_composite_classifier`\n(`crates/algo/src/classifier/analytic.rs`) models any non-convex\nall-planar solid as `outer \\ inner`, splitting its planes by the vertex\ncentroid. For the plate-plus-tabs body that gives an inner box of x ∈\n[18, 56], y ≥ 10, z ≥ 4, which is not the body's void. Points over the\nplate between the tabs (y < 10) came out `Inside`. The raw GFA kept the\nslot tool's pieces above the plate, giving 4 non-manifold edges and 6\nfree edges, and the gate rejected the result.\n\nFix: the composite is accepted only when it provably is the solid. The\nproof is local to each model face:\n- Every boundary vertex and edge midpoint lies on the model's boundary.\n- Every solid face lies on a model face (same axis, outward sense and\noffset).\n- Every model face is covered: the areas of the solid faces on it agree\nwith its area within `10 · tol.linear ·` its own perimeter.\n- That allowance stays below `gap² / 2`, where `gap` is the smallest\nspacing between distinct model plane offsets.\n- Solid faces and edges lie on model planes, so any mismatch is a union\nof grid cells, each at least `gap²` in area.\n- Bodies with features near the tolerance band therefore leave the proof\nundecided.\n\nOtherwise the classifier defers to the ray classifier. An open cup\n(outer box minus an open-topped cavity) still builds the composite\nmodel.\n\n## Verification\n\n- New `crates/operations/tests/regress_two_tab_slot_cut.rs`, 5 tests:\n- Analytic classifier on the fused body: no point in the void classifies\nInside, and no solid point classifies Outside. Fails before the fix.\n  - Exact slot cut at depths 2, 8 and 20 mm, each checked for:\n    - closed-form volume\n    - zero validation errors\n    - a closed, manifold mesh\n- ray-cast probes: the slot is carved, the tool is gone above the plate,\nand the plate and tabs are kept\n\n    Fails before the fix.\n- Wide plate with hairline tabs, and features at 10× the classification\ntolerance (the two Codex review cases): the shortcut declines. Both are\nalso rejected by the midpoint check alone.\n  - Open cup keeps its composite classifier and classifies correctly.\n- `cargo test --profile ci-test -p remus-algo -p remus-operations -p\nremus-io` on 7659c0c5: 4938 passed, 0 failed.\n- On a16722d5, `remus-wasm`, `remus-check` and `remus` ran 2070 tests, 0\nfailed. The two later commits only tighten the proof inside the same\nfunction and were not re-run for those crates.\n- `scripts/check-approx-census.py`: matches 52 committed rows.\n- `cargo clippy -p remus-algo -p remus-operations --all-targets -- -D\nwarnings`, `cargo fmt`, `check-boundaries.sh`, `check-det-hash.sh`:\nclean.\n\n## Compatibility and risks\n\nNone to public APIs, formats, units or tolerances. Planar solids whose\ncomposite model fails the proof now classify by ray casting, which is\nthe general path and slower than the O(1) shortcut. Solids that pass are\nclassified exactly as before.\n\n## WASM module tier\n\nNone\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01QqRcotAtW4GtAXgJftfhaf\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-10-21T15:50:57Z",
+          "tree_id": "b8b72031e6a469102dacb618dd0c1c4f17a87932",
+          "url": "https://github.com/esaueng/remus/commit/0d710b37a3f403af7216c0b356dba846fbcb7d44"
+        },
+        "date": 1792601062033,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 689021,
+            "range": "± 10907",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 749460,
+            "range": "± 9430",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 15872,
+            "range": "± 163",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 4834989,
+            "range": "± 39545",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 4871348,
+            "range": "± 68981",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 4709288,
+            "range": "± 21750",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 16629,
+            "range": "± 101",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 2331254,
+            "range": "± 8250",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 18610769,
+            "range": "± 406561",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 18,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 60,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 33,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 141,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 102,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 493,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 107,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 214,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 135,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 319,
+            "range": "± 18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 449,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2205,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 10,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 21,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 49,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 50,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 2320,
+            "range": "± 86",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 9115,
+            "range": "± 25",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 35378,
+            "range": "± 87",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 3196,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 355225,
+            "range": "± 2073",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 1597004,
+            "range": "± 10498",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 104749,
+            "range": "± 23146",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 197173,
+            "range": "± 1552",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 219599,
+            "range": "± 1502",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 40049,
+            "range": "± 250",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 21265,
+            "range": "± 1259",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 12912,
+            "range": "± 49",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 76934,
+            "range": "± 681",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 88395,
+            "range": "± 3540",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 449459,
+            "range": "± 67298",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 5628753,
+            "range": "± 471605",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 310908,
+            "range": "± 7899",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 662928,
+            "range": "± 6101",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 53808,
+            "range": "± 645",
             "unit": "ns/iter"
           }
         ]
