@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792581918247,
+  "lastUpdate": 1792582905410,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -119815,6 +119815,294 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 88641,
             "range": "± 797",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b66d65356e6c725b3b93a43c5820bde227917ea0",
+          "message": "feat(wasm): expose construction history for grid patterns (#1238)\n\n## Change\n\nBrowser consumers can now request construction history for rectangular\ngrids with additive `gridPatternJournaled`, through the direct API,\n`executeBatch` and `executeBatchV2`. It wraps the existing native\nproducer and returns the established `{compound, op}` journal payload,\nwith row-major members including the original.\n\nAll routes share checked finite-vector/spacing and positive-integer\ncount/product validation before topology mutation. The direct counts\nstay floating point until validation so fractional or wrapping\nJavaScript numbers cannot silently change the requested grid. Legacy\n`gridPattern` is unchanged.\n\n[B18](docs/kernel-maturity/roadmap.md#b18) remains partial. This slice\nqualifies every result face, edge and vertex, same-kind source\ncorrespondence, original-only references, persistence, pre-operation\nrestore and untouched references after a later edit. Refusals preserve\nlive entities/history while keeping the existing retired-ID high-water\npolicy.\n\n## Verification\n\n- Before implementation: native batch witness failed with\n`unknown_operation`; installed package witness failed the missing-export\nassertion.\n- Native WASM suite: 786 unit + 4 integration tests passed; 1 existing\nignored. Native grid-history fixture: all 5 tests passed.\n- Independent review and tests cover exact result censuses, per-source\nCartesian translations, all three browser paths,\nmalformed/budget/stale-handle input, typed overlap refusals and\nunchanged live-slot counts.\n- O4.7 inventory and 49 inventory fixtures, documentation/module map,\nroadmap inventory and boundaries passed.\n- Clean runtime source `afb738c2de203cfb4a5d41d560b30427212cf1de`:\nshipped release/SIMD `cargo xtask wasm-build` passed full source smoke\nand the full actual npm-packed/installed paired suite. A retained\ninstalled grid consumer also passed all 27 success cells plus refusal\ncontrols.\n- Independent verification checked all 1,260 runtime inputs, 20 package\nfiles, two tarballs and installed module hashes. Local artifacts\nv2026.1.71: kernel 10,489,943 raw bytes (+5,728), translator unchanged\nat 3,083,034 bytes; size gates passed. Source attribution is in the\nretained build manifest, not embedded in package JSON.\n- Normal full all-target/all-feature Clippy, formatting, TOML formatting\nand dependency hooks passed.\n- Hosted CI is separate.\n\n## Compatibility and risks\n\nAdditive API only. No legacy signature, geometry, tolerance, dependency\nor file-format change. Generated package bytes are qualification\nartifacts; downstream application adoption still requires the normal\ncommitted-package refresh and dependency pin.\n\n## WASM module tier\n\nTier: core — edits the live session topology handles and construction\njournal used by persistent references.\n\n---------\n\nSigned-off-by: petertoday <171875562+petertoday@users.noreply.github.com>",
+          "timestamp": "2026-10-21T11:06:16Z",
+          "tree_id": "76bc6641e74824822e202ea0e0f0ff968c2b78a2",
+          "url": "https://github.com/esaueng/remus/commit/b66d65356e6c725b3b93a43c5820bde227917ea0"
+        },
+        "date": 1792582901637,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1182817,
+            "range": "± 3777",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1268801,
+            "range": "± 3851",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27580,
+            "range": "± 136",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7264301,
+            "range": "± 8392",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7232647,
+            "range": "± 11980",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7093073,
+            "range": "± 10454",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 28456,
+            "range": "± 38",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3391788,
+            "range": "± 5249",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 29855126,
+            "range": "± 667008",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 40,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 116,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 66,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 241,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 157,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 876,
+            "range": "± 20",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 169,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 393,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 213,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 595,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 627,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3517,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 4011,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 14877,
+            "range": "± 22",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 53400,
+            "range": "± 133",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5268,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 503961,
+            "range": "± 1310",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2469740,
+            "range": "± 5692",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 142974,
+            "range": "± 167",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 295130,
+            "range": "± 464",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 363002,
+            "range": "± 679",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 64524,
+            "range": "± 182",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 34648,
+            "range": "± 56",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 20705,
+            "range": "± 40",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 118703,
+            "range": "± 323",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 142407,
+            "range": "± 510",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 650871,
+            "range": "± 35350",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 7878492,
+            "range": "± 163658",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 547137,
+            "range": "± 2568",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1179203,
+            "range": "± 1637",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 85742,
+            "range": "± 716",
             "unit": "ns/iter"
           }
         ]
