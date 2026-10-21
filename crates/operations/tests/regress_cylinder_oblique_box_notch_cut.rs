@@ -126,10 +126,11 @@ fn build_cut(scale: f64) -> (Topology, SolidId) {
         &OperationContext::new().with_fallback(FallbackPolicy::ExactOnly),
     )
     .unwrap();
+    // The quality value is not formatted into the message: it carries edge
+    // certificates, which code scanning flags as logged secrets.
     assert!(
         matches!(outcome.quality, BooleanQuality::Exact),
-        "ExactOnly disclosed {:?}",
-        outcome.quality
+        "ExactOnly returned a non-exact quality"
     );
     (topo, outcome.solid)
 }
