@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792613032737,
+  "lastUpdate": 1792617822201,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -121831,6 +121831,294 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 102423,
             "range": "± 390",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "29d9f96c710afbde0a5d9a7f0cd0145337a2d949",
+          "message": "perf: multi-pass fillet bench; re-measure O3.3 simd and keep it disabled (#1244)\n\n## Change\n\nThere are three commits, covering two separate changes.\n\n**1. `perf(operations)`: new `fillet_multipass` criterion bench**\n(`crates/operations/benches/fillet_multipass.rs`, registered in\n`Cargo.toml` and the profiling skill's bench table). Every fillet pass\ngoes through the same path as the `fillet` binding:\n`filter_filletable_edges` then `fillet_cascade`.\n- **Bracket:** profile\n(0,0),(22,0),(22,8),(52,8),(52,0),(74,0),(74,60),(0,60) extruded by 4,\nfused with tabs x∈[0,18] and [56,74], y∈[0,10], z∈[0,40]. Then the front\nvertical corners at (0,0) and (74,0) (r6), the slot corners at\nx∈{22,52}, y=8 (r2), then a Ø6 through hole and a 90° countersink cone\ncut through the filleted plate.\n- **Plate:** 40×30×4 box. The 4 vertical corners (r5), then the 8-edge\ntangent top loop (r1).\n- Each pass is timed on its own, starting from a clone of the previous\npass's result. Each body is also timed end to end (`full_sequence`). The\nroutines use `iter_batched_ref`, so neither the clone nor its teardown\nis timed.\n- Any failed pass panics and each final body must pass `validate_solid`,\nso a later regression fails loudly instead of being timed.\n- **Left out:** the bracket's tab top loops (10 edges at z=40, r2). Main\nrefuses this pass with `UnsupportedVertexBlend { stripes: 2 }`, and I\nchecked that the 10-edge selection is correct. A comment in the bench\nfile says where to add the pass back once it succeeds.\n\n**2. `docs(kernel-maturity)`: O3.3 `simd` re-measured, kept disabled.**\nThe 5% native and 11–12% WASM speedups recorded in the evidence note no\nlonger hold. Since the note was written, the default build gained\nbit-identical first-order fast paths: the u-basis memo,\n`point_and_partials_with_spans`, the stack normal paths and the\n`first_order_at` tables. The `simd` feature compiles all of them out and\nkeeps only the general solve with its 4-lane loop. Enabling it now is a\nlarge regression in both native and WASM. I recorded this in\n`o33-simd-evidence.md` and the O3.3 roadmap row. The feature stays\ndefault-off and the WASM crate does not enable it, so no code changed.\n\nRoadmap: [O3.3](docs/kernel-maturity/roadmap.md#o-o3-3), PERF-N10.\n\n## Verification\n\nAll numbers come from a 4-core Linux cloud container (Rust 1.96.0,\ncriterion defaults) on `ed34a9a`. The machine is noisy, but the `simd`\ndeltas are far larger than that noise.\n\n**Fillet baseline** (`cargo bench -p remus-operations --bench\nfillet_multipass`, with teardown excluded):\n\n| Bench | Time |\n|---|---|\n| `fillet_multipass/bracket/front_corners_r6` | 12.31 ms [10.95, 13.87]\n|\n| `fillet_multipass/bracket/slot_corners_r2` | 16.19 ms [15.47, 16.79] |\n| `fillet_multipass/bracket/hole_countersink_cut` | 4.44 ms [3.95, 4.87]\n|\n| `fillet_multipass/bracket/full_sequence` | 31.33 ms [30.08, 33.64] |\n| `fillet_multipass/plate/corners_r5` | 791 µs [772, 821] |\n| `fillet_multipass/plate/top_loop_r1` | 230.8 ms [218.4, 244.9] |\n| `fillet_multipass/plate/full_sequence` | 210.1 ms [202.6, 219.1] |\n\n**O3.3 `simd`, default vs `--features remus-math/simd`:**\n\n| Measurement | Default | `simd` | Delta |\n|---|---|---:|---:|\n| Native `nurbs_properties/validate_solid strict (hammer holder)` |\n877.7 ms | 1.967 s | **+124%** |\n| Native `nurbs_properties/mass_properties (hammer holder)` | 1.854 s |\n5.003 s | **+170%** |\n| Native `nurbs/surface_derivatives/degree3` / `degree9` | 1.239 / 5.191\nµs | 1.683 / 4.011 µs | +37% / −21% |\n| WASM `massProperties`, hammer holder (Node 22, median of 5, 2 runs) |\n4.09 / 4.17 s | 8.93 / 9.19 s | **+118…120%** |\n| WASM kernel raw / gzip -9 (`cargo xtask wasm-build`) | 10,484,203 /\n3,867,452 B | 10,468,753 / 3,860,474 B | −15,450 / −6,978 B |\n\nThe WASM numbers come from packages I built with `cargo xtask\nwasm-build`, once as on main and once with `remus-math/simd` enabled in\n`crates/wasm/Cargo.toml`. That change was temporary and is not\ncommitted. Both builds passed all package runtime tests.\n\n**Bit-identity and simd128:**\n- `cargo test -p remus-math --release` passes with and without `simd`:\n1087 and 1086 tests. The difference is the feature-gated oracle tests.\n- The WASM `massProperties` JSON for the hammer holder is\ncharacter-identical between the two packages.\n- The shipped package does use WASM SIMD: xtask passes `+simd128` and\nwasm-opt runs with `--enable-simd`, and `wasm-dis` counts about 107k\n`v128` instructions in the default kernel.\n\n**Checks:**\n- `cargo clippy -p remus-operations --benches -- -D warnings` and `cargo\nfmt --check` are clean.\n- `./scripts/check-doc-paths.sh` passes.\n- The pre-commit hooks passed.\n- I did not run the full workspace test suite. The only code added is a\nbench target, and CI runs the full suite.\n\n**Not done:** CI trend tracking for the new bench. The bench list lives\nin `fleet-benchmark-v2.yml`, which `benchmark.yml` calls at an immutable\nSHA under the reusable-workflow staging policy (#1179). Adding the bench\nthere needs a staged `fleet-benchmark-v3.yml` callee and a later pin\nbump, so I left it for a separate CI PR.\n\n## Compatibility and risks\n\nNone. The PR adds a new bench target and docs only. It changes no public\nAPI, format, default or dependency, and the WASM packages are unchanged.\n\n## WASM module tier\n\nNone. There is no new capability and no kernel change.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01Be9VqKeHUgrwLKo9FSCenF\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-10-21T15:51:34Z",
+          "tree_id": "307a9a2da7010e072a0486ed6df56043474b003e",
+          "url": "https://github.com/esaueng/remus/commit/29d9f96c710afbde0a5d9a7f0cd0145337a2d949"
+        },
+        "date": 1792617819499,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 939128,
+            "range": "± 5048",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1009829,
+            "range": "± 2012",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 22220,
+            "range": "± 60",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 6004375,
+            "range": "± 7894",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 5987368,
+            "range": "± 24219",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 5869553,
+            "range": "± 40539",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 22377,
+            "range": "± 48",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 2853348,
+            "range": "± 4775",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 22893809,
+            "range": "± 254893",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 89,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 51,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 183,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 128,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 674,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 145,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 296,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 170,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 460,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 543,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2723,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 26,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 73,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 74,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 3123,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 12454,
+            "range": "± 287",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 47924,
+            "range": "± 2109",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 4178,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 396519,
+            "range": "± 860",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2061628,
+            "range": "± 2976",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 115038,
+            "range": "± 426",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 245363,
+            "range": "± 205",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 286832,
+            "range": "± 1945",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 48637,
+            "range": "± 620",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 26652,
+            "range": "± 21",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 16662,
+            "range": "± 76",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 88874,
+            "range": "± 111",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 112047,
+            "range": "± 102",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 533411,
+            "range": "± 33848",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 6749100,
+            "range": "± 117655",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 448570,
+            "range": "± 1333",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 947775,
+            "range": "± 2510",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 82182,
+            "range": "± 533",
             "unit": "ns/iter"
           }
         ]
