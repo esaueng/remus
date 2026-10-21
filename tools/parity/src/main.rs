@@ -1775,6 +1775,19 @@ fn step_to_arena(path: &str) -> Result<(), Box<dyn Error>> {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--runtime-identity") {
+        serde_json::to_writer(
+            io::stdout(),
+            &serde_json::json!({
+                "schemaVersion": 1,
+                "binary": "remus-parity-native",
+                "os": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+                "pointerWidth": usize::BITS,
+            }),
+        )?;
+        return Ok(());
+    }
     if args.get(1).map(String::as_str) == Some("--step-to-arena") {
         let path = args
             .get(2)

@@ -1,0 +1,474 @@
+{
+  "schemaVersion": 1,
+  "identity": "hammer-holder-opening-width-31-feature-v1",
+  "consumer": {
+    "repository": "https://github.com/esaueng/OpenZCAD",
+    "revision": "913bb9ddd015bf2e6284c60a231eaa5afe7f2106",
+    "recipeCompiler": "packages/command-system/src/growing-holder.ts",
+    "recognizer": "packages/kernel-adapter/src/opening-recognition.ts",
+    "license": "Apache-2.0"
+  },
+  "source": {
+    "path": "crates/io/tests/data/shapr3d_hammer_holder.step",
+    "sha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8",
+    "faces": 160,
+    "nurbsFaces": 42
+  },
+  "recipe": {
+    "axis": "x",
+    "envelope": {
+      "min": {
+        "x": -26,
+        "y": 6.5,
+        "z": 4.5
+      },
+      "max": {
+        "x": 48,
+        "y": 59.5,
+        "z": 62.5
+      }
+    },
+    "cuts": [
+      -4,
+      26
+    ],
+    "center": 11,
+    "sourceOpening": 46,
+    "minimumOpening": 16.1,
+    "section": [
+      {
+        "objectKind": "arc",
+        "centerX": 42.5,
+        "centerY": 9.5,
+        "radius": 3,
+        "startAngleDeg": 90,
+        "endAngleDeg": 180
+      },
+      {
+        "objectKind": "line",
+        "x1": 56.5,
+        "y1": 12.5,
+        "x2": 42.5,
+        "y2": 12.5
+      },
+      {
+        "objectKind": "arc",
+        "centerX": 56.5,
+        "centerY": 9.5,
+        "radius": 3,
+        "startAngleDeg": 0,
+        "endAngleDeg": 90
+      },
+      {
+        "objectKind": "line",
+        "x1": 59.5,
+        "y1": 9.5,
+        "x2": 59.5,
+        "y2": 4.5
+      },
+      {
+        "objectKind": "line",
+        "x1": 59.5,
+        "y1": 4.5,
+        "x2": 39.5,
+        "y2": 4.5
+      },
+      {
+        "objectKind": "line",
+        "x1": 39.5,
+        "y1": 9.5,
+        "x2": 39.5,
+        "y2": 4.5
+      }
+    ],
+    "height": {
+      "axis": "z",
+      "cuts": [
+        24.79884,
+        25.988336
+      ],
+      "sourceHeight": 58,
+      "minimumHeight": 56.910504,
+      "sections": {
+        "negative": [
+          {
+            "objectKind": "arc",
+            "centerX": -15,
+            "centerY": 26.5,
+            "radius": 3,
+            "startAngleDeg": 0,
+            "endAngleDeg": 90
+          },
+          {
+            "objectKind": "line",
+            "x1": -12,
+            "y1": 9.5,
+            "x2": -12,
+            "y2": 26.5
+          },
+          {
+            "objectKind": "arc",
+            "centerX": -15,
+            "centerY": 9.5,
+            "radius": 3,
+            "startAngleDeg": 270,
+            "endAngleDeg": 0
+          },
+          {
+            "objectKind": "line",
+            "x1": -15,
+            "y1": 6.5,
+            "x2": -23,
+            "y2": 6.5
+          },
+          {
+            "objectKind": "arc",
+            "centerX": -23,
+            "centerY": 9.5,
+            "radius": 3,
+            "startAngleDeg": 180,
+            "endAngleDeg": 270
+          },
+          {
+            "objectKind": "line",
+            "x1": -26,
+            "y1": 9.5,
+            "x2": -26,
+            "y2": 26.5
+          },
+          {
+            "objectKind": "arc",
+            "centerX": -23,
+            "centerY": 26.5,
+            "radius": 3,
+            "startAngleDeg": 90,
+            "endAngleDeg": 179.999999
+          },
+          {
+            "objectKind": "line",
+            "x1": -15,
+            "y1": 29.5,
+            "x2": -23,
+            "y2": 29.5
+          }
+        ],
+        "positive": [
+          {
+            "objectKind": "arc",
+            "centerX": 37,
+            "centerY": 9.5,
+            "radius": 3,
+            "startAngleDeg": 180,
+            "endAngleDeg": 270
+          },
+          {
+            "objectKind": "line",
+            "x1": 34,
+            "y1": 9.5,
+            "x2": 34,
+            "y2": 26.5
+          },
+          {
+            "objectKind": "arc",
+            "centerX": 37,
+            "centerY": 26.5,
+            "radius": 3,
+            "startAngleDeg": 90,
+            "endAngleDeg": 179.999999
+          },
+          {
+            "objectKind": "line",
+            "x1": 37,
+            "y1": 29.5,
+            "x2": 45,
+            "y2": 29.5
+          },
+          {
+            "objectKind": "arc",
+            "centerX": 45,
+            "centerY": 26.5,
+            "radius": 3,
+            "startAngleDeg": 0,
+            "endAngleDeg": 90
+          },
+          {
+            "objectKind": "line",
+            "x1": 48,
+            "y1": 26.5,
+            "x2": 48,
+            "y2": 9.5
+          },
+          {
+            "objectKind": "arc",
+            "centerX": 45,
+            "centerY": 9.5,
+            "radius": 3,
+            "startAngleDeg": 270,
+            "endAngleDeg": 0
+          },
+          {
+            "objectKind": "line",
+            "x1": 45,
+            "y1": 6.5,
+            "x2": 37,
+            "y2": 6.5
+          }
+        ]
+      },
+      "parameter": "holder_height"
+    },
+    "lettering": {
+      "selection": {
+        "supportFaceHash": 3447287621,
+        "capFaceHashes": [
+          323443701,
+          800861688,
+          2367622609,
+          2442686777,
+          2825631980,
+          3098897631,
+          4165821874
+        ],
+        "normal": {
+          "x": 1,
+          "y": 0,
+          "z": 0
+        },
+        "depth": 0.4,
+        "bounds": {
+          "min": {
+            "x": -12,
+            "y": 15.849953,
+            "z": 11.623077
+          },
+          "max": {
+            "x": -11.6,
+            "y": 21.149909,
+            "z": 47.378827
+          }
+        }
+      },
+      "side": "negative"
+    },
+    "version": 1,
+    "name": "Hammer opening",
+    "parameter": "opening_width"
+  },
+  "recognitionEvidence": {
+    "candidate": {
+      "axis": "x",
+      "faceA": 57,
+      "faceB": 23,
+      "opening": 46,
+      "innerFaces": [
+        -12,
+        34
+      ],
+      "overlapArea": 1375
+    },
+    "symmetry": {
+      "planeOffset": 11,
+      "analyticCoverage": 0.576271186440678
+    },
+    "straightRun": [
+      -4.5,
+      26.5
+    ],
+    "sectionEdges": 6
+  },
+  "documents": {
+    "base": {
+      "file": "base.arena.json",
+      "bytes": 497925,
+      "sha256": "7a8a3fac03a2ce63eb0e84ed61fd9fc09c6454973cc6225d5122cc1e3bf05026"
+    },
+    "text": {
+      "file": "text.arena.json",
+      "bytes": 125722,
+      "sha256": "dd59dd4c7de07fb7c63c2c8b69aac17fd4ba97244bab7ba3fcfb3638b4b0a96f"
+    }
+  },
+  "generation": {
+    "kernelPackage": "2026.1.69",
+    "kernelWasmSha256": "77d5614985666de49858561f8fe159c6afdcb49345ecb7d857a6731a259b5f07",
+    "ioWasmSha256": "ad6422e824a841515146dad4b6f8d583d1490a753441ab11e012613e29e8c25a",
+    "method": "unchanged pinned recognition/separation helpers, public STEP input; exact arena v3 derivatives, no consumer mutation"
+  },
+  "featureCount": 31,
+  "expected": {
+    "baseFaces": 92,
+    "textSolids": 7,
+    "textFaces": [
+      6,
+      6,
+      6,
+      12,
+      19,
+      13,
+      10
+    ],
+    "openingSectionArea": 156.13716694115408
+  },
+  "featurePlan": [
+    {
+      "key": "source",
+      "kind": "imported-step",
+      "fixed": true
+    },
+    {
+      "key": "text",
+      "kind": "imported-step",
+      "fixed": true
+    },
+    {
+      "key": "negativeLowerMask",
+      "kind": "primitive",
+      "fixed": true
+    },
+    {
+      "key": "negativeLowerMaskPlacement",
+      "kind": "transform",
+      "fixed": true
+    },
+    {
+      "key": "negativeLower",
+      "kind": "boolean-intersect",
+      "fixed": true
+    },
+    {
+      "key": "negativeUpperSource",
+      "kind": "imported-step",
+      "fixed": true
+    },
+    {
+      "key": "negativeUpperMask",
+      "kind": "primitive",
+      "fixed": true
+    },
+    {
+      "key": "negativeUpperMaskPlacement",
+      "kind": "transform",
+      "fixed": true
+    },
+    {
+      "key": "negativeUpper",
+      "kind": "boolean-intersect",
+      "fixed": true
+    },
+    {
+      "key": "positiveLowerSource",
+      "kind": "imported-step",
+      "fixed": true
+    },
+    {
+      "key": "positiveLowerMask",
+      "kind": "primitive",
+      "fixed": true
+    },
+    {
+      "key": "positiveLowerMaskPlacement",
+      "kind": "transform",
+      "fixed": true
+    },
+    {
+      "key": "positiveLower",
+      "kind": "boolean-intersect",
+      "fixed": true
+    },
+    {
+      "key": "positiveUpperSource",
+      "kind": "imported-step",
+      "fixed": true
+    },
+    {
+      "key": "positiveUpperMask",
+      "kind": "primitive",
+      "fixed": true
+    },
+    {
+      "key": "positiveUpperMaskPlacement",
+      "kind": "transform",
+      "fixed": true
+    },
+    {
+      "key": "positiveUpper",
+      "kind": "boolean-intersect",
+      "fixed": true
+    },
+    {
+      "key": "bridgeSection",
+      "kind": "sketch",
+      "fixed": false
+    },
+    {
+      "key": "bridge",
+      "kind": "extrude",
+      "fixed": false
+    },
+    {
+      "key": "negativeArmSection",
+      "kind": "sketch",
+      "fixed": false
+    },
+    {
+      "key": "negativeArm",
+      "kind": "extrude",
+      "fixed": false
+    },
+    {
+      "key": "positiveArmSection",
+      "kind": "sketch",
+      "fixed": false
+    },
+    {
+      "key": "positiveArm",
+      "kind": "extrude",
+      "fixed": false
+    },
+    {
+      "key": "negativeLowerPlacement",
+      "kind": "transform",
+      "fixed": false
+    },
+    {
+      "key": "negativeUpperPlacement",
+      "kind": "transform",
+      "fixed": false
+    },
+    {
+      "key": "positiveLowerPlacement",
+      "kind": "transform",
+      "fixed": false
+    },
+    {
+      "key": "positiveUpperPlacement",
+      "kind": "transform",
+      "fixed": false
+    },
+    {
+      "key": "negativeArmPlacement",
+      "kind": "transform",
+      "fixed": false
+    },
+    {
+      "key": "positiveArmPlacement",
+      "kind": "transform",
+      "fixed": false
+    },
+    {
+      "key": "holder",
+      "kind": "boolean-union",
+      "fixed": false
+    },
+    {
+      "key": "textPlacement",
+      "kind": "transform",
+      "fixed": false
+    }
+  ],
+  "consumerSourceHashes": {
+    "LICENSE": "b865195699e34416a83fe66e79ce307dba8e531d0bb9921d00ddeea71577c864",
+    "NOTICE": "df03f58a66df01dbb06fa407e2fe531ab8130e354fa8a5b16451283c1341baf7",
+    "packages/command-system/src/growing-holder.ts": "59e0b426c6de8a538f8a4abd43fbb92fc13f12b79da9b96f7b4e7fbc8fcdb1ee"
+  }
+}

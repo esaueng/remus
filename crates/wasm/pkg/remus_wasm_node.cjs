@@ -3783,6 +3783,43 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Grid pattern journaled as one construction-derived F/E/V evolution
+     * entry (kind `grid_pattern`). Returns JSON `{"compound", "op"}`.
+     * Directions are independently normalized and must be nonparallel.
+     * Members are row-major (X changes first), including the original first.
+     * Counts must be positive integers, each and their product at most 10000.
+     * @param {number} solid
+     * @param {number} dxx
+     * @param {number} dxy
+     * @param {number} dxz
+     * @param {number} dyx
+     * @param {number} dyy
+     * @param {number} dyz
+     * @param {number} spacing_x
+     * @param {number} spacing_y
+     * @param {number} count_x
+     * @param {number} count_y
+     * @returns {string}
+     */
+    gridPatternJournaled(solid, dxx, dxy, dxz, dyx, dyy, dyz, spacing_x, spacing_y, count_x, count_y) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_gridPatternJournaled(this.__wbg_ptr, solid, dxx, dxy, dxz, dyx, dyy, dyz, spacing_x, spacing_y, count_x, count_y);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Guided (two-rail) sweep: sweep `face` along a spine, orienting the
      * profile so its up-vector tracks an auxiliary spine.
      *
