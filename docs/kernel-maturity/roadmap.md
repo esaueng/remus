@@ -659,8 +659,8 @@ Wave labels are interpreted by the scheduling constraints above.
 
 | Issue | Wave | State and remaining scope | Evidence |
 | --- | --- | --- | --- |
-| <a id="o-o5-1a"></a>O5.1a STEP assembly reader | A | Pending | — |
-| <a id="o-o5-1b"></a>O5.1b STEP assembly writer | A | Pending | — |
+| <a id="o-o5-1a"></a>O5.1a STEP assembly reader | A | Partial — opt-in native reader over shared solid definitions, named occurrences/BOM, coherent units and nested rigid placements, recovered from the STEP-only slice of PR #632. Placement ownership must be unambiguous; graph/depth/expanded-name/entity refusals roll back while retiring failed handles. Shared representation and product payloads are parsed once. Tier: native; pure grouping nodes, per-context units, external CAD interoperability and browser assembly transport remain unqualified. | [Design](../design/step-assemblies.md); `crates/io/tests/step_assembly.rs`; placement regressions in `crates/io/src/step/reader.rs` |
+| <a id="o-o5-1b"></a>O5.1b STEP assembly writer | A | Partial with O5.1a — deterministic native occurrence export preserves shared solid definitions, names and proper rigid local placements using the existing exact body writer. Open, empty or sheet-class component shells and non-affine/non-finite transforms refuse; tiny valid placements survive. Tier: native; external CAD interoperability and broader assembly metadata remain unqualified. | [Design](../design/step-assemblies.md); `crates/io/tests/step_assembly.rs` |
 | <a id="o-o5-1c"></a>O5.1c Assembly WASM + batch | A | Pending | — |
 | <a id="o-o5-2"></a>O5.2 Colors/names/attribute scope (e3b) | B | Pending | — |
 | <a id="o-o5-3a"></a>O5.3a AP242 writer schema | B | Pending | — |
