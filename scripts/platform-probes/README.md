@@ -22,9 +22,18 @@ The actual host must establish all of these facts:
 - The rustup shim is recorded separately. The pinned wasm-pack 0.15.0 helper
   has an x64 Windows asset and runs under emulation. Its PE/hash/version and
   emulation status are recorded without claiming a wholly native helper stack.
-  Available wasm-bindgen helpers are version-probed and exactly one 0.2.126
-  candidate must match. That helper's PE/hash/version are an explicit post-build
-  observation, not a child-process execution trace.
+  The same pinned install action also installs the official x64 wasm-bindgen
+  0.2.126 helper, with `checksum:true` and `fallback:none`. Its manifest uses the
+  normal x64 Windows asset on this ARM runner; both build helpers are explicitly
+  emulated. The receipt records the configured immutable installer/asset recipe,
+  the pre-build helper version, and actual PE, byte count and SHA256 matching the
+  independently checksum-verified official asset. The helper archive is not
+  retained in the probe artifact; the pinned action and its logs provide the
+  installation evidence. The actual native compiler/Cargo directory remains
+  first on PATH, followed by the preinstalled helper directory for wasm-pack's
+  standard exact-version lookup. The helper path/hash/PE must remain identical
+  after the build; wrong assets/checksums, ISA/version, changed lookup or cache
+  fallback refuse. These are version/file observations, not a child-process trace.
 - A standalone, locked fixture with wasm-bindgen 0.2.126 builds a tiny `nodejs`
   WASM package. The probe records exact argv and its isolated build environment:
   verified `RUSTC`, empty compiler wrappers, a private Cargo home/cache/target
@@ -73,3 +82,9 @@ identifies the hosted checkout; it does not promote a PR test merge to final mai
 The current probe is tooling preparation. Adding the Windows ARM geometry tuple
 requires a later change and actual complete reports with the existing assertions
 and advisory gaps preserved. Cross-host bitwise identity remains unqualified.
+
+The original ARM attempt reached native program result 42 and compiled the tiny
+WASM fixture, then failed wasm-pack's executable validation of an existing
+cargo-installed helper. The exact Windows API cause remains unproven. Using the
+normal preinstalled x64 release helper and standard PATH lookup preserves the
+executable guards without changing cache layouts or qualifying the failed run.

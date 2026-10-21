@@ -45,11 +45,13 @@ jobs:
         with:
           toolchain: '1.96.0-aarch64-pc-windows-msvc'
           targets: wasm32-unknown-unknown
-      # This pinned helper has only an x64 Windows asset. Emulation is disclosed
+      # These pinned helpers use x64 Windows assets. Emulation is disclosed
       # separately from the actual native Node/compiler/program PE identities.
       - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
-          tool: wasm-pack@0.15.0
+          tool: wasm-pack@0.15.0,wasm-bindgen@0.2.126
+          checksum: true
+          fallback: none
       - name: Check PE and proof controls
         run: node --test scripts/platform-probes/windows-arm.test.mjs
       - name: Execute native and installed WASM tooling probe

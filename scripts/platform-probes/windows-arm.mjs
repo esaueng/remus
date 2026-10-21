@@ -9,6 +9,20 @@ import { gunzipSync } from 'node:zlib';
 
 export const TOOLCHAIN = '1.96.0-aarch64-pc-windows-msvc';
 export const PACKAGE = 'remus-windows-arm-tooling-probe';
+// Expected installer inputs, not an observation that its archive is retained.
+// The executable digest was independently read from the checksum-verified asset.
+export const BINDGEN_INSTALLATION = Object.freeze({
+  action: 'taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe',
+  manifest: 'manifests/wasm-bindgen.json',
+  tool: 'wasm-pack@0.15.0,wasm-bindgen@0.2.126', checksum: true, fallback: 'none',
+  assetUrl: 'https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.126/wasm-bindgen-0.2.126-x86_64-pc-windows-msvc.tar.gz',
+  assetId: 456882691, archiveBytes: 7583858,
+  archiveSha256: '5a3773c7e69cfb2d865e235e9210de184c8c3af1787720646ec1a8bbe09c6179',
+  member: 'wasm-bindgen-0.2.126-x86_64-pc-windows-msvc/wasm-bindgen.exe',
+  executableBytes: 5889536,
+  executableSha256: '2d5de73be088f1b53764fb298fe24f9fd44f438fa02e5d208159780b20e858ed',
+  archiveRetainedInProbe: false,
+});
 const WASM = 'remus_windows_arm_tooling_probe_bg.wasm';
 const ENTRY = 'remus_windows_arm_tooling_probe.js';
 const INPUTS = ['windows-arm.mjs', 'fixtures/native.rs', 'fixtures/load-installed.cjs', 'fixtures/wasm/Cargo.toml', 'fixtures/wasm/Cargo.lock', 'fixtures/wasm/src/lib.rs'];
@@ -68,8 +82,8 @@ export function npmCli(nodePath, environment = process.env) {
   throw new Error('cannot find the actual npm/bin/npm-cli.js for the selected Node');
 }
 
-function findExe(name) {
-  for (const folder of (process.env.PATH ?? '').split(delimiter)) {
+export function findExe(name, environment = process.env) {
+  for (const folder of (environment.PATH ?? '').split(delimiter)) {
     const candidate = join(folder.replace(/^"|"$/g, ''), name + '.exe');
     if (existsSync(candidate)) return realpathSync(candidate);
   }
@@ -130,10 +144,22 @@ export function validateProof(proof) {
   assert.equal(proof.helpers.wasmPack.pe.machine, 'x64');
   assert.equal(proof.helpers.wasmPack.version.trim(), 'wasm-pack 0.15.0');
   assert.match(proof.helpers.wasmBindgen.version, /^wasm-bindgen 0\.2\.126(?:\s|$)/);
-  assert.equal(proof.helpers.wasmBindgen.observation, 'explicit post-build version probe; not a child-process trace');
+  assert.deepEqual(proof.bindgenInstallation, BINDGEN_INSTALLATION);
+  assert.equal(proof.helpers.wasmBindgen.pe.machine, 'x64');
+  assert.equal(proof.helpers.wasmBindgen.bytes, BINDGEN_INSTALLATION.executableBytes);
+  assert.equal(proof.helpers.wasmBindgen.sha256, BINDGEN_INSTALLATION.executableSha256);
+  assert.equal(proof.helpers.wasmBindgen.observation, 'preinstalled x64 helper and pre-build version probe; not a child-process trace');
+  assert.equal(proof.buildEnvironment.toolchainPathPrefix, win32.dirname(proof.cargo.path));
+  assert.equal(win32.dirname(proof.rustc.path), proof.buildEnvironment.toolchainPathPrefix);
+  assert.equal(proof.buildEnvironment.helperPathPrefix, win32.dirname(proof.helpers.wasmBindgen.path));
+  assert.deepEqual(proof.buildEnvironment.PATH.split(';').slice(0, 2), [proof.buildEnvironment.toolchainPathPrefix, proof.buildEnvironment.helperPathPrefix]);
+  assert.equal(proof.bindgenPathBeforeBuild, proof.helpers.wasmBindgen.path);
+  assert.equal(proof.bindgenPathAfterBuild, proof.helpers.wasmBindgen.path);
   const selected = selectBindgen(proof.helpers.wasmBindgenCandidates);
   assert.equal(selected.path, proof.helpers.wasmBindgen.path);
   assert.equal(selected.sha256, proof.helpers.wasmBindgen.sha256);
+  assert.equal(selected.bytes, proof.helpers.wasmBindgen.bytes);
+  assert.deepEqual(selected.pe, proof.helpers.wasmBindgen.pe);
   assert.equal(proof.installed.packageName, PACKAGE);
   assert.equal(proof.installed.packageVersion, '0.0.0');
   assert.equal(proof.installed.platform, 'win32');
@@ -177,13 +203,16 @@ export function validateProof(proof) {
   assert.equal(proof.inputs.nativePath, win32.join(proof.inputs.directory, 'fixtures', 'native.rs'));
   assert.equal(proof.inputs.loaderPath, win32.join(proof.inputs.directory, 'fixtures', 'load-installed.cjs'));
   assert.equal(proof.native.path, win32.join(proof.temporary, 'native-probe.exe'));
-  for (const name of ['rustup-version', 'rustup-rustc', 'rustup-cargo', 'rustc-version', 'cargo-version', 'wasm-pack-version', 'native-build', 'native-run', 'wasm-build', 'wasm-bindgen-version', 'npm-version', 'npm-pack', 'npm-install', 'installed-load']) {
+  for (const name of ['rustup-version', 'rustup-rustc', 'rustup-cargo', 'rustc-version', 'cargo-version', 'wasm-pack-version', 'native-build', 'native-run', 'wasm-bindgen-version', 'wasm-build', 'npm-version', 'npm-pack', 'npm-install', 'installed-load']) {
     const records = proof.commands.filter((command) => command.name === name);
     assert.equal(records.length, 1, `missing or duplicated command: ${name}`);
     assert.equal(records[0].status, 0, `failed command: ${name}`);
     assert.ok(Array.isArray(records[0].argv) && records[0].argv.every((arg) => typeof arg === 'string'));
   }
   const call = (name) => proof.commands.find((item) => item.name === name);
+  assert.equal(call('wasm-bindgen-version').executable, proof.helpers.wasmBindgen.path);
+  assert.deepEqual(call('wasm-bindgen-version').argv, ['--version']);
+  assert.ok(proof.commands.indexOf(call('wasm-bindgen-version')) < proof.commands.indexOf(call('wasm-build')), 'preinstalled helper version must precede wasm-pack');
   assert.equal(call('native-build').executable, proof.rustc.path);
   assert.deepEqual(call('native-build').argv, [proof.inputs.nativePath, '--edition=2021', '-O', '-o', proof.native.path]);
   assert.equal(call('native-run').executable, proof.native.path);
@@ -284,7 +313,7 @@ export function validateWorkflowPolicy(text) {
   assert.match(text, /node-version: 24\n          architecture: arm64/);
   assert.match(text, /toolchain: '1\.96\.0-aarch64-pc-windows-msvc'\n          targets: wasm32-unknown-unknown/);
   assert.match(text, /RUSTUP_TOOLCHAIN: '1\.96\.0-aarch64-pc-windows-msvc'/);
-  assert.match(text, /tool: wasm-pack@0\.15\.0/);
+  assert.match(text, /uses: taiki-e\/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe[^\n]*\n        with:\n          tool: wasm-pack@0\.15\.0,wasm-bindgen@0\.2\.126\n          checksum: true\n          fallback: none\n/);
   assert.match(text, /if: always\(\)/);
   assert.match(text, /persist-credentials: false/);
   assert.equal([...text.matchAll(/uses: [^@\n]+@[a-f0-9]{40}(?: |\n)/g)].length, 5);
@@ -352,6 +381,22 @@ export function run(outputPath) {
     assert.equal(proof.native.pe.machine, 'arm64');
     proof.native.result = JSON.parse(command('native-run', proof.native.path, []));
     copyFileSync(native, join(out, 'native-probe.exe'));
+    // Use wasm-pack's standard exact-version PATH lookup. Both helpers are
+    // official x64 assets, explicitly emulated; no cache files are rearranged.
+    proof.bindgenInstallation = { ...BINDGEN_INSTALLATION };
+    proof.helpers.wasmBindgen = executable(findExe('wasm-bindgen'));
+    assert.equal(proof.helpers.wasmBindgen.pe.machine, 'x64');
+    assert.equal(proof.helpers.wasmBindgen.bytes, BINDGEN_INSTALLATION.executableBytes);
+    assert.equal(proof.helpers.wasmBindgen.sha256, BINDGEN_INSTALLATION.executableSha256);
+    proof.helpers.wasmBindgen.emulated = true;
+    proof.helpers.wasmBindgen.observation = 'preinstalled x64 helper and pre-build version probe; not a child-process trace';
+    proof.helpers.wasmBindgen.version = command('wasm-bindgen-version', proof.helpers.wasmBindgen.path, ['--version']);
+    assert.match(proof.helpers.wasmBindgen.version, /^wasm-bindgen 0\.2\.126(?:\s|$)/);
+    proof.buildEnvironment.helperPathPrefix = dirname(proof.helpers.wasmBindgen.path);
+    environment.PATH = proof.buildEnvironment.toolchainPathPrefix + delimiter + proof.buildEnvironment.helperPathPrefix + delimiter + process.env.PATH;
+    proof.buildEnvironment.PATH = environment.PATH;
+    proof.bindgenPathBeforeBuild = findExe('wasm-bindgen', environment);
+    assert.equal(proof.bindgenPathBeforeBuild, proof.helpers.wasmBindgen.path);
     const crate = join(temporary, 'crate'); mkdirSync(join(crate, 'src'), { recursive: true });
     for (const path of ['Cargo.toml', 'Cargo.lock', 'src/lib.rs']) copyFileSync(join(here, 'fixtures', 'wasm', path), join(crate, path));
     const pkg = join(temporary, 'pkg');
@@ -359,13 +404,14 @@ export function run(outputPath) {
     const candidates = [];
     function scan(path) { if (!existsSync(path)) return; for (const item of readdirSync(path, { withFileTypes: true })) { const file = join(path, item.name); if (item.isDirectory()) scan(file); else if (item.name === 'wasm-bindgen.exe') candidates.push(file); } }
     scan(environment.WASM_PACK_CACHE);
-    // A global matching CLI may be preferred by wasm-pack; record that possibility explicitly.
-    try { candidates.push(findExe('wasm-bindgen')); } catch { /* downloaded cache is the expected path */ }
+    proof.bindgenPathAfterBuild = findExe('wasm-bindgen', environment);
+    assert.equal(proof.bindgenPathAfterBuild, proof.helpers.wasmBindgen.path);
+    candidates.push(proof.bindgenPathAfterBuild);
     proof.helpers.wasmBindgenCandidates = [...new Set(candidates.map((path) => realpathSync(path)))].map((path, index) => ({ ...executable(path), version: command(`wasm-bindgen-candidate-${index}`, path, ['--version']) }));
-    proof.helpers.wasmBindgen = { ...selectBindgen(proof.helpers.wasmBindgenCandidates) };
-    proof.helpers.wasmBindgen.emulated = proof.helpers.wasmBindgen.pe.machine === 'x64';
-    proof.helpers.wasmBindgen.observation = 'explicit post-build version probe; not a child-process trace';
-    proof.helpers.wasmBindgen.version = command('wasm-bindgen-version', proof.helpers.wasmBindgen.path, ['--version']);
+    const selected = selectBindgen(proof.helpers.wasmBindgenCandidates);
+    assert.equal(selected.path, proof.helpers.wasmBindgen.path);
+    assert.equal(selected.sha256, proof.helpers.wasmBindgen.sha256);
+    assert.deepEqual(selected.pe, proof.helpers.wasmBindgen.pe);
     const npm = npmCli(proof.node.path);
     proof.npm = { path: npm, ...fileRecord(npm), version: command('npm-version', proof.node.path, [npm, '--version']) };
     const archives = join(out, 'archives'); mkdirSync(archives);

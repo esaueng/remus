@@ -8,7 +8,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 
-import { PACKAGE, TOOLCHAIN, contained, npmCli, packageArchiveMembers, peIdentity, requireWindowsExe, selectBindgen, validateProof, validateWorkflowPolicy, verifyArtifact } from './windows-arm.mjs';
+import { BINDGEN_INSTALLATION, PACKAGE, TOOLCHAIN, contained, findExe, npmCli, packageArchiveMembers, peIdentity, requireWindowsExe, selectBindgen, validateProof, validateWorkflowPolicy, verifyArtifact } from './windows-arm.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const arm = { format: 'PE32+', machine: 'arm64', machineCode: 0xaa64 };
@@ -68,19 +68,24 @@ function goodProof() {
     environment: { CARGO_BUILD_TARGET: '', RUSTFLAGS: '', CARGO_ENCODED_RUSTFLAGS: '', RUSTC_WRAPPER: '', RUSTC_WORKSPACE_WRAPPER: '', RUSTUP_TOOLCHAIN: TOOLCHAIN, CARGO_BUILD_JOBS: '1', RUST_MIN_STACK: '33554432' },
     rustc: { ...exe('rustc'), host: 'aarch64-pc-windows-msvc', version: 'rustc 1.96.0 (fixture)' }, cargo: exe('cargo'), cargoVersion: 'cargo 1.96.0 (fixture)',
     native: { ...exe('native-probe'), result: { schemaVersion: 1, os: 'windows', arch: 'aarch64', pointerWidth: 64, result: 42 } },
-    helpers: { rustup: helper('rustup'), wasmPack: { ...helper('wasm-pack'), version: 'wasm-pack 0.15.0' }, wasmBindgen: { ...helper('wasm-bindgen'), version: 'wasm-bindgen 0.2.126', observation: 'explicit post-build version probe; not a child-process trace' } },
+    helpers: { rustup: helper('rustup'), wasmPack: { ...helper('wasm-pack'), version: 'wasm-pack 0.15.0' }, wasmBindgen: { ...helper('wasm-bindgen'), version: 'wasm-bindgen 0.2.126', observation: 'preinstalled x64 helper and pre-build version probe; not a child-process trace' } },
     installed: { packageName: PACKAGE, packageVersion: '0.0.0', platform: 'win32', arch: 'arm64', nodeVersion: node.version, nodePath: node.path, result: 42, wasmSha256: '34'.repeat(32) },
     package: { archive: { sha256: '56'.repeat(32), bytes: 42, filename: PACKAGE + '-0.0.0.tgz', integrity: 'sha512-' + 'A'.repeat(86) + '==' }, files: ['package.json', 'remus_windows_arm_tooling_probe.js', 'remus_windows_arm_tooling_probe_bg.wasm'].map((path) => ({ path, bytes: 8, sha256: '34'.repeat(32), installedSha256: '34'.repeat(32) })), wasmSha256: '34'.repeat(32) },
     inputs: { directory: 'C:\\source', nativePath: 'C:\\source\\fixtures\\native.rs', loaderPath: 'C:\\source\\fixtures\\load-installed.cjs', files: Object.fromEntries(['windows-arm.mjs', 'fixtures/native.rs', 'fixtures/load-installed.cjs', 'fixtures/wasm/Cargo.toml', 'fixtures/wasm/Cargo.lock', 'fixtures/wasm/src/lib.rs'].map((path) => [path, { bytes: 1, sha256: '12'.repeat(32) }])) }, temporary: 'C:\\Temp\\remus-arm.aBc 123 ü', output: 'C:\\source\\target\\proof', npm: { path: 'C:\\npm\\bin\\npm-cli.js', version: '11.0.0', sha256: '78'.repeat(32) }, commands: [],
   };
   p.native.path = win32.join(p.temporary, 'native-probe.exe');
+  p.bindgenInstallation = { ...BINDGEN_INSTALLATION };
+  Object.assign(p.helpers.wasmBindgen, { path: 'C:\\helpers ü\\wasm-bindgen.exe', bytes: BINDGEN_INSTALLATION.executableBytes, sha256: BINDGEN_INSTALLATION.executableSha256 });
+  p.bindgenPathBeforeBuild = p.bindgenPathAfterBuild = p.helpers.wasmBindgen.path;
   p.installed.packageRoot = win32.join(p.temporary, 'consumer', 'node_modules', PACKAGE);
   p.installed.entry = win32.join(p.installed.packageRoot, 'remus_windows_arm_tooling_probe.js');
   p.installed.wasmPath = win32.join(p.installed.packageRoot, 'remus_windows_arm_tooling_probe_bg.wasm');
   p.helpers.wasmBindgenCandidates = [p.helpers.wasmBindgen];
-  p.buildEnvironment = { RUSTC: p.rustc.path, RUSTC_WRAPPER: '', RUSTC_WORKSPACE_WRAPPER: '', CARGO_HOME: win32.join(p.temporary, 'cargo-home') };
-  p.commands = ['rustup-version', 'rustup-rustc', 'rustup-cargo', 'rustc-version', 'cargo-version', 'wasm-pack-version', 'native-build', 'native-run', 'wasm-build', 'wasm-bindgen-version', 'npm-version', 'npm-pack', 'npm-install', 'installed-load'].map((name) => ({ name, executable: node.path, argv: [], status: 0 }));
+  p.buildEnvironment = { RUSTC: p.rustc.path, RUSTC_WRAPPER: '', RUSTC_WORKSPACE_WRAPPER: '', CARGO_HOME: win32.join(p.temporary, 'cargo-home'), toolchainPathPrefix: win32.dirname(p.cargo.path), helperPathPrefix: win32.dirname(p.helpers.wasmBindgen.path) };
+  p.buildEnvironment.PATH = p.buildEnvironment.toolchainPathPrefix + ';' + p.buildEnvironment.helperPathPrefix + ';C:\\Windows';
+  p.commands = ['rustup-version', 'rustup-rustc', 'rustup-cargo', 'rustc-version', 'cargo-version', 'wasm-pack-version', 'native-build', 'native-run', 'wasm-bindgen-version', 'wasm-build', 'npm-version', 'npm-pack', 'npm-install', 'installed-load'].map((name) => ({ name, executable: node.path, argv: [], status: 0 }));
   const call = (name) => p.commands.find((item) => item.name === name);
+  Object.assign(call('wasm-bindgen-version'), { executable: p.helpers.wasmBindgen.path, argv: ['--version'] });
   Object.assign(call('native-build'), { executable: p.rustc.path, argv: [p.inputs.nativePath, '--edition=2021', '-O', '-o', p.native.path] });
   call('native-run').executable = p.native.path;
   Object.assign(call('wasm-build'), { executable: p.helpers.wasmPack.path, argv: ['build', win32.join(p.temporary, 'crate'), '--target', 'nodejs', '--release', '--no-opt', '--out-dir', win32.join(p.temporary, 'pkg'), '--', '--locked'] });
@@ -125,6 +130,42 @@ test('an unrelated old global wasm-bindgen does not mask the exact downloaded he
   assert.equal(selectBindgen([old, matching]), matching);
   assert.throws(() => selectBindgen([old]));
   assert.throws(() => selectBindgen([matching, { ...matching, path: 'C:\\other\\wasm-bindgen.exe' }]));
+});
+
+test('wasm-bindgen binds the pinned official x64 asset, standard PATH lookup and native toolchain priority', (t) => {
+  const p = goodProof();
+  validateProof(p);
+  const root = fixture(t), toolchain = join(root, 'native-toolchain'), helper = join(root, 'x64-helper'), fallback = join(root, 'fallback-cache');
+  for (const dir of [toolchain, helper, fallback]) mkdirSync(dir);
+  writeFileSync(join(toolchain, 'cargo.exe'), pe());
+  writeFileSync(join(helper, 'wasm-bindgen.exe'), pe(0x8664)); writeFileSync(join(fallback, 'wasm-bindgen.exe'), pe());
+  const environment = { PATH: [toolchain, helper, fallback].join(delimiter) };
+  assert.equal(findExe('cargo', environment), realpathSync(join(toolchain, 'cargo.exe')));
+  assert.equal(findExe('wasm-bindgen', environment), realpathSync(join(helper, 'wasm-bindgen.exe')));
+  for (const mutate of [
+    (x) => { x.bindgenInstallation.assetUrl = 'https://example.com/wasm-bindgen.tar.gz'; },
+    (x) => { x.bindgenInstallation.assetId++; },
+    (x) => { x.bindgenInstallation.archiveBytes++; },
+    (x) => { x.bindgenInstallation.archiveSha256 = '00'.repeat(32); },
+    (x) => { x.bindgenInstallation.checksum = false; },
+    (x) => { x.bindgenInstallation.fallback = 'cargo-install'; },
+    (x) => { x.bindgenInstallation.action = 'taiki-e/install-action@v2'; },
+    (x) => { x.bindgenInstallation.archiveRetainedInProbe = true; },
+    (x) => { x.helpers.wasmBindgen.sha256 = '00'.repeat(32); },
+    (x) => { x.helpers.wasmBindgen.bytes++; },
+    (x) => { x.helpers.wasmBindgen.pe = arm; x.helpers.wasmBindgen.emulated = false; },
+    (x) => { x.helpers.wasmBindgen.emulated = false; },
+    (x) => { x.buildEnvironment.helperPathPrefix = win32.join(x.temporary, 'unrelated-bin'); },
+    (x) => { x.buildEnvironment.toolchainPathPrefix = x.buildEnvironment.helperPathPrefix; },
+    (x) => { x.buildEnvironment.PATH = x.buildEnvironment.helperPathPrefix + ';' + x.buildEnvironment.PATH; },
+    (x) => { x.helpers.wasmBindgen.version = 'wasm-bindgen 0.2.100'; },
+    (x) => { x.bindgenPathBeforeBuild = win32.join(x.temporary, 'unexpected', 'wasm-bindgen.exe'); },
+    (x) => { x.bindgenPathAfterBuild = win32.join(x.temporary, 'unexpected', 'wasm-bindgen.exe'); },
+    (x) => { x.helpers.wasmBindgenCandidates = [{ ...x.helpers.wasmBindgen, sha256: '00'.repeat(32) }]; },
+    (x) => { x.helpers.wasmBindgenCandidates = [{ ...x.helpers.wasmBindgen, bytes: 1 }]; },
+    (x) => { x.helpers.wasmBindgenCandidates = [{ ...x.helpers.wasmBindgen, pe: arm }]; },
+    (x) => { const version = x.commands.splice(x.commands.findIndex((c) => c.name === 'wasm-bindgen-version'), 1)[0]; x.commands.push(version); },
+  ]) { const changed = structuredClone(p); mutate(changed); assert.throws(() => validateProof(changed)); }
 });
 
 test('retained native/archive/package bytes must match the successful receipt', (t) => {
@@ -210,5 +251,8 @@ test('workflow stays isolated, native ARM, pinned, bounded and read-only', () =>
     (s) => s.replace('timeout-minutes: 25', 'timeout-minutes: 90'), (s) => s.replace('if: always()', 'if: success()'),
     (s) => s.replace('pull_request:', 'pull_request_target:'), (s) => s.replace("'scripts/platform-probes/**'", "'**'"),
     (s) => s.replace('persist-credentials: false', 'persist-credentials: true'),
+    (s) => s.replace(',wasm-bindgen@0.2.126', ''), (s) => s.replace('wasm-bindgen@0.2.126', 'wasm-bindgen@0.2.100'),
+    (s) => s.replace('checksum: true', 'checksum: false'), (s) => s.replace('fallback: none', 'fallback: cargo-install'),
+    (s) => s.replace('ab6895351a88b908e96a4697860d4ffea5e57dbe', '0'.repeat(40)),
   ]) assert.throws(() => validateWorkflowPolicy(mutate(text)));
 });
