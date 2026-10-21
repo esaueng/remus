@@ -378,21 +378,26 @@ pub fn estimate_added_material(
     tube: &ReachTube,
 ) -> Result<AddedEstimate, OperationsError> {
     let before = classify_points(pristine, input, &tube.points, 0.01, MATERIAL_RAY_TOLERANCE)?;
-    let after = classify_points(live, result, &tube.points, 0.01, MATERIAL_RAY_TOLERANCE)?;
+    // Only a sample `Outside` the input can count, so only those are cast
+    // against the result: on a NURBS band each result ray costs curve-surface
+    // intersections, and most of the tube lies inside the input. Prepared
+    // classification is per point, so each verdict is the one the whole-tube
+    // call reads, and the flips are summed in the same order.
+    let outside: Vec<usize> = before
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| matches!(a, PointClassification::Outside))
+        .map(|(index, _)| index)
+        .collect();
+    let probes: Vec<Point3> = outside.iter().map(|&index| tube.points[index]).collect();
+    let after = classify_points(live, result, &probes, 0.01, MATERIAL_RAY_TOLERANCE)?;
     let mut added_counts = 0u64;
-    for (a, b) in before.iter().zip(after.iter()) {
-        if matches!(a, PointClassification::Outside) && matches!(b, PointClassification::Inside) {
-            added_counts += 1;
-        }
-    }
     let mut sum = 0.0;
     let mut sum_sq = 0.0;
-    for ((a, b), &weight) in before
-        .iter()
-        .zip(after.iter())
-        .zip(&tube.inverse_multiplicities)
-    {
-        if matches!(a, PointClassification::Outside) && matches!(b, PointClassification::Inside) {
+    for (&index, b) in outside.iter().zip(&after) {
+        if matches!(b, PointClassification::Inside) {
+            let weight = tube.inverse_multiplicities[index];
+            added_counts += 1;
             sum += weight;
             sum_sq += weight * weight;
         }
@@ -571,6 +576,128 @@ mod tests {
             refusal.to_string().contains("convex edges added"),
             "{refusal}"
         );
+    }
+
+    /// The estimator before it cast only input-`Outside` samples against the
+    /// result, kept verbatim: `(added, se, added_counts)`.
+    fn legacy_estimate(
+        pristine: &Topology,
+        input: SolidId,
+        live: &Topology,
+        result: SolidId,
+        tube: &ReachTube,
+    ) -> (f64, f64, u64) {
+        let before =
+            classify_points(pristine, input, &tube.points, 0.01, MATERIAL_RAY_TOLERANCE).unwrap();
+        let after =
+            classify_points(live, result, &tube.points, 0.01, MATERIAL_RAY_TOLERANCE).unwrap();
+        let mut added_counts = 0u64;
+        for (a, b) in before.iter().zip(after.iter()) {
+            if matches!(a, PointClassification::Outside) && matches!(b, PointClassification::Inside)
+            {
+                added_counts += 1;
+            }
+        }
+        let mut sum = 0.0;
+        let mut sum_sq = 0.0;
+        for ((a, b), &weight) in before
+            .iter()
+            .zip(after.iter())
+            .zip(&tube.inverse_multiplicities)
+        {
+            if matches!(a, PointClassification::Outside) && matches!(b, PointClassification::Inside)
+            {
+                sum += weight;
+                sum_sq += weight * weight;
+            }
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let n = tube.points.len() as f64;
+        let variance = ((sum_sq - sum * sum / n) / (n * (n - 1.0))).max(0.0);
+        (
+            tube.proposal_volume * sum / n,
+            tube.proposal_volume * variance.sqrt(),
+            added_counts,
+        )
+    }
+
+    fn assert_matches_legacy(
+        pristine: &Topology,
+        input: SolidId,
+        live: &Topology,
+        result: SolidId,
+        tube: &ReachTube,
+    ) -> AddedEstimate {
+        let estimate = estimate_added_material(pristine, input, live, result, tube).unwrap();
+        let (added, se, added_counts) = legacy_estimate(pristine, input, live, result, tube);
+        assert_eq!(estimate.added.to_bits(), added.to_bits(), "{estimate:?}");
+        assert_eq!(estimate.se.to_bits(), se.to_bits(), "{estimate:?}");
+        assert_eq!(estimate.added_counts, added_counts, "{estimate:?}");
+        estimate
+    }
+
+    /// Bit-identity with the whole-tube estimator on a cut (nothing added),
+    /// a fused tab (added, with overlap weights), and the NURBS band a
+    /// rolling-ball fillet leaves on a rounded plate's top loop — the case the
+    /// guard actually runs on.
+    #[test]
+    fn outside_only_estimate_matches_the_whole_tube_estimate() {
+        let mut topo = Topology::new();
+        let body = make_box(&mut topo, 4.0, 4.0, 4.0).unwrap();
+        let tool = make_cylinder(&mut topo, 1.0, 6.0).unwrap();
+        transform_solid(
+            &mut topo,
+            tool,
+            &remus_math::mat::Mat4::translation(2.0, 2.0, -1.0),
+        )
+        .unwrap();
+        let cut = boolean(&mut topo, BooleanOp::Cut, body, tool).unwrap();
+        let edges = remus_topology::explorer::solid_edges(&topo, body).unwrap();
+        let tube = sample_reach_tube(&topo, &[edges], 0.6).unwrap().unwrap();
+        assert_matches_legacy(&topo, body, &topo, cut, &tube);
+
+        let extra = make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        transform_solid(
+            &mut topo,
+            extra,
+            &remus_math::mat::Mat4::translation(0.0, 0.0, 4.0),
+        )
+        .unwrap();
+        let fused = boolean(&mut topo, BooleanOp::Fuse, body, extra).unwrap();
+        let added = assert_matches_legacy(&topo, body, &topo, fused, &tube);
+        assert!(added.added_counts > 0, "{added:?}");
+
+        let mut topo = Topology::new();
+        let plate = make_box(&mut topo, 40.0, 30.0, 4.0).unwrap();
+        let on = |topo: &Topology, solid: SolidId, keep: &dyn Fn(Point3, Point3) -> bool| {
+            remus_topology::explorer::solid_edges(topo, solid)
+                .unwrap()
+                .into_iter()
+                .filter(|&e| {
+                    let edge = topo.edge(e).unwrap();
+                    keep(
+                        topo.vertex(edge.start()).unwrap().point(),
+                        topo.vertex(edge.end()).unwrap().point(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let verticals = on(&topo, plate, &|a, b| {
+            (a.x() - b.x()).abs() < 1e-9 && (a.y() - b.y()).abs() < 1e-9
+        });
+        let rounded = crate::blend_ops::fillet_cascade(&mut topo, plate, &verticals, 5.0)
+            .unwrap()
+            .solid;
+        let top = on(&topo, rounded, &|a, b| {
+            (a.z() - 4.0).abs() < 1e-9 && (b.z() - 4.0).abs() < 1e-9
+        });
+        let pristine = topo.clone();
+        let filleted = crate::blend_ops::fillet_cascade(&mut topo, rounded, &top, 1.0)
+            .unwrap()
+            .solid;
+        assert!(result_has_nurbs_band(&pristine, rounded, &topo, filleted).unwrap());
+        let tube = sample_reach_tube(&pristine, &[top], 1.0).unwrap().unwrap();
+        assert_matches_legacy(&pristine, rounded, &topo, filleted, &tube);
     }
 
     /// Degenerate reach refuses to sample rather than guessing.
