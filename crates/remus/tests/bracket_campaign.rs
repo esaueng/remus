@@ -463,7 +463,6 @@ fn f6_front_top_edge_alone() {
 }
 
 #[test]
-#[ignore = "open: F4 concave tab/base fillet alone fails postcondition: 16 free edges, 1 inconsistent orientation"]
 fn f4_concave_tab_base_edges_alone() {
     let mut m = Model::new();
     let body = tabbed(&mut m);
@@ -500,7 +499,6 @@ fn feature_cuts_after_f1_f2_f5_stay_exact() {
 }
 
 #[test]
-#[ignore = "open: F3 after F1+F2 fails postcondition: 11 free edges, 1 inconsistent orientation (passes alone)"]
 fn sequence_f3_after_f1_f2() {
     let mut m = Model::new();
     let body = f1_f2(&mut m);
@@ -509,25 +507,27 @@ fn sequence_f3_after_f1_f2() {
 }
 
 #[test]
-#[ignore = "open: F4 after F1+F2 refuses with blend TrimmingFailure"]
 fn sequence_f4_after_f1_f2() {
     let mut m = Model::new();
     let body = f1_f2(&mut m);
     fillet(&mut m, body, Pass::F4, 2, -2.0 * 18.0 * spandrel(3.0), 1e-3);
 }
 
-/// F6 after F1 runs the 62 mm straight front edge plus the two F1 quarter
-/// arcs at z = 4. Pappus over each arc: the spandrel's centroid sits
-/// (10 − 3π)/(3(4 − π))·r from the corner, inside the R 6 arc.
+/// F6 after F1 selects the 62 mm straight front edge plus the two F1 quarter
+/// arcs at z = 4; G1 propagation carries the chain on along both 44 mm side
+/// edges until they run into the tabs at y = 10. Pappus over each arc: the
+/// spandrel's centroid sits (10 − 3π)/(3(4 − π))·r from the corner, inside
+/// the R 6 arc.
 fn f6_after_f1_removed() -> f64 {
     let r = Pass::F6.radius();
     let big_r = Pass::F1.radius();
     let centroid = (10.0 - 3.0 * PI) / (3.0 * (4.0 - PI)) * r;
-    spandrel(r) * (74.0 - 2.0 * big_r + 2.0 * FRAC_PI_2 * (big_r - centroid))
+    let sides = 2.0 * (60.0 - 10.0 - big_r);
+    spandrel(r) * (74.0 - 2.0 * big_r + sides + 2.0 * FRAC_PI_2 * (big_r - centroid))
 }
 
 #[test]
-#[ignore = "open: F6 across the F1 tangent seams refuses with blend UnsupportedSeamCrossing"]
+#[ignore = "open: F6 across the F1 tangent seams builds, but its bands around the F1 arcs are lofted NURBS, not exact tori"]
 fn sequence_f6_after_f1_f2_f5() {
     let mut m = Model::new();
     let body = f1_f2_f5(&mut m);
@@ -678,15 +678,9 @@ fn postcondition_reason(err: &OperationsError) -> &str {
 fn current_refusals_are_typed_and_atomic() {
     let mut m = Model::new();
     let tabs = tabbed(&mut m);
-    let seq = f1_f2(&mut m);
-    let seq_f5 = fillet(&mut m, seq, Pass::F5, 8, f5_removed(), CURVED_VOLUME_TOL);
     let grooved = cut_features(&mut m, tabs, &["groove"]);
 
-    let cases: [(&str, SolidId, Pass, usize); 6] = [
-        ("F4 alone", tabs, Pass::F4, 2),
-        ("F3 after F1+F2", seq, Pass::F3, 4),
-        ("F4 after F1+F2", seq, Pass::F4, 2),
-        ("F6 after F1+F2+F5", seq_f5, Pass::F6, 3),
+    let cases: [(&str, SolidId, Pass, usize); 2] = [
         ("F5 after groove", grooved, Pass::F5, 8),
         ("F7 after groove", grooved, Pass::F7, 4),
     ];
@@ -694,31 +688,6 @@ fn current_refusals_are_typed_and_atomic() {
         let before = volume(&m, body);
         let err = try_fillet(&mut m, body, pass, n).err().expect(label);
         match label {
-            "F4 alone" | "F3 after F1+F2" => {
-                let reason = postcondition_reason(&err);
-                assert!(
-                    reason.contains("free (boundary) edges"),
-                    "{label}: {reason}"
-                );
-                assert!(
-                    reason.contains("inconsistent face orientations"),
-                    "{label}: {reason}"
-                );
-            }
-            "F4 after F1+F2" => assert!(
-                matches!(
-                    err,
-                    OperationsError::Blend(BlendError::TrimmingFailure { .. })
-                ),
-                "{label}: {err:?}"
-            ),
-            "F6 after F1+F2+F5" => assert!(
-                matches!(
-                    err,
-                    OperationsError::Blend(BlendError::UnsupportedSeamCrossing { .. })
-                ),
-                "{label}: {err:?}"
-            ),
             "F5 after groove" => assert!(
                 matches!(
                     err,
