@@ -24,6 +24,10 @@ PACKAGE_MANIFEST = 'crates/wasm/pkg/package.json'
 # Subjects of refresh commits on main, old and new style.
 REFRESH_SUBJECT = re.compile(
     r'^chore\(wasm\): refresh (?:committed )?packages to v\S+ from ([0-9a-f]{7,40})\b')
+# A squash-merged refresh PR lands under its own title, which names no source
+# commit; its head branch (`REFRESH_BRANCH` + source) does.
+REFRESH_PR_SUBJECT = re.compile(
+    r'^chore\(wasm\): refresh (?:committed )?packages to v\S+ \(#([0-9]+)\)$')
 PR_SUBJECT = re.compile(r'\(#([0-9]+)\)$|^Merge pull request #([0-9]+) ')
 CARRIED = re.compile(r'\(carried from #[0-9]+')
 DECLARATION_PREFIX = 'WASM-Size:'
@@ -45,9 +49,18 @@ def size_declarations(body):
 def previous_source(repo, source):
     """Source commit of the newest package refresh in the history of `source`."""
     for commit in api(f'repos/{repo}/commits?sha={source}&path={PACKAGE_MANIFEST}&per_page=30'):
-        match = REFRESH_SUBJECT.match(commit['commit']['message'].split('\n', 1)[0])
+        subject = commit['commit']['message'].split('\n', 1)[0]
+        match = REFRESH_SUBJECT.match(subject)
         if match:
             return match.group(1)
+        match = REFRESH_PR_SUBJECT.match(subject)
+        if match:
+            # Skipping this one would date the span from an older refresh and
+            # walk every PR since, enough API calls to time the job out.
+            head = api(f'repos/{repo}/pulls/{match.group(1)}')['head']['ref']
+            built = head[len(REFRESH_BRANCH):]
+            if head.startswith(REFRESH_BRANCH) and re.fullmatch(r'[0-9a-f]{40}', built):
+                return built
     raise RuntimeError(f'no package refresh found in the history of {source[:12]}')
 
 
@@ -81,7 +94,7 @@ def merged_prs(repo, base, head):
 
     for commit in commits:
         subject = commit['commit']['message'].split('\n', 1)[0]
-        if REFRESH_SUBJECT.match(subject):
+        if REFRESH_SUBJECT.match(subject) or REFRESH_PR_SUBJECT.match(subject):
             continue
         match = PR_SUBJECT.search(subject)
         if match:
@@ -108,7 +121,7 @@ def size_section(repo, source):
     except (subprocess.CalledProcessError, RuntimeError, KeyError, TypeError, ValueError) as error:
         return (heading + f'Could not collect the source PRs\' `{DECLARATION_PREFIX}` lines ({error}). '
                 'If the size gate reports undeclared growth, copy the source PRs\' declarations here.\n')
-    span = f'`{base}`..`{source[:12]}`'
+    span = f'`{base[:12]}`..`{source[:12]}`'
     if not carried:
         return (heading + f'No source PR merged in {span} declared a `{DECLARATION_PREFIX}` line. '
                 'If the size gate reports undeclared growth, review those PRs and declare it here.\n')

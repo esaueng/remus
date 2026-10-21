@@ -138,10 +138,13 @@ that does not exist yet; without it, stop.
   reverse a valid curved cap. Pin opposing coedges independently: both volume
   routes can agree while the cap remains topologically misoriented.
 - **A spherical trim needs its retained region, not the first meridian's chart
-- **Offset conic rim uses must follow their signed stored spans, and pointed walls need the apex seam;** cap and lateral consumers must agree on native traversal (`offset/src/loops.rs`, `check/src/util.rs`, `regress_opseq_offset_wall.rs`, OpSeq F9/F14/F15).
   (F6).** Qualify whole native arcs before hemisphere meshing; use oriented
   great-circle containment for qualified concave trims and boundary queries.
   Agreeing volume routes do not prove material or raw mesh closure.
+- **Offset conic rim uses must follow their signed stored spans, and pointed
+  walls need the apex seam (F9/F14/F15).** Cap and lateral consumers must agree
+  on native traversal (`offset/src/loops.rs`, `check/src/util.rs`,
+  `regress_opseq_offset_wall.rs`).
 
 ## Open items with a repro
 
