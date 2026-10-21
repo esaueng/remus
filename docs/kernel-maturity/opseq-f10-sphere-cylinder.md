@@ -28,6 +28,13 @@ volume, volume and exterior area at relative deflections `1e-4` and `5e-5`
 orientation at relative deflections `0.1` and `0.01`. Controls cover scales
 `0.001`, `1`, `1000`, both operand orders, sphere partitions 4/8/16/32, cylinder
 heights 1 and 1.25, and translation composed with `Rx(0.37) * Rz(0.23)`.
+The two `1000×` placed operand orders retain the exact
+`ExactOnlyUnattainable` refusal and unchanged state: immutable base `0551bb432`
+also discards incomplete section loops and rejects a two-face result for these
+cells. The 32-partition result passes the geometry, material, preview-mesh and
+mesh-quantity assertions; its independent Gauss route retains the exact
+`IntegrationFailed("face trim exceeds the 4096-point integration budget")`
+refusal. These cells do not count as successful Gauss/boolean qualification.
 Cancellation and work-budget refusals preserve operands and topology counts.
 `scripts/opseq-f10-packaged.mjs` applies the same successful geometry matrix to
 the direct API, `executeBatch` and `executeBatchV2`, in fresh and installed

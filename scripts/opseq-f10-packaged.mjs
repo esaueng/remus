@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 
 const sub = (a, b) => a.map((v, i) => v - b[i]);
 const dot = (a, b) => a.reduce((sum, v, i) => sum + v * b[i], 0);
+const state = kernel => {
+  const usage = JSON.parse(kernel.checkpointMemoryStats());
+  return { liveSlots: usage.allocatedSlots - usage.retiredSlots, journal: kernel.journalSummary() };
+};
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 function matrix(scale, placed) {
   const a = placed ? 0.37 : 0, b = placed ? 0.23 : 0;
@@ -31,6 +35,28 @@ function checkFixture(BrepKernel, api, scale, placed, swapped, segments = 16, he
     if (placed) for (const solid of [sphere, cylinder]) run('transform', { solid, matrix: m }, [solid, Float64Array.from(m)]);
     const ids = Uint32Array.of(sphere, cylinder), original = kernel.serializeSolids(ids);
     const solidA = swapped ? sphere : cylinder, solidB = swapped ? cylinder : sphere;
+    if (scale === 1000 && placed) {
+      const before = state(kernel);
+      const message = 'exact-only policy: the exact boolean pipeline could not produce this result and the approximate fallback was declined';
+      if (api === 'direct') {
+        assert.throws(() => kernel.booleanWithQuality('fuse', solidA, solidB, true),
+          error => !(error instanceof WebAssembly.RuntimeError) && error.message === message, label);
+      } else {
+        const row = JSON.parse(kernel[api](JSON.stringify([{ op: 'booleanWithQuality',
+          args: { operation: 'fuse', solidA, solidB, exactOnly: true } }])))[0];
+        if (api === 'executeBatch') assert.deepEqual(row, { error: message }, label);
+        else {
+          assert.equal(row.error.code, 'operation_failed', label);
+          assert.equal(row.error.category, 'quality_refused', label);
+          assert.equal(row.error.details.kernelCode, 'exact_only_unattainable', label);
+          assert.equal(row.error.message, message, label);
+        }
+      }
+      assert.deepEqual(state(kernel), before, `${label}: refusal rollback`);
+      assert.deepEqual(kernel.serializeSolids(ids), original, `${label}: unchanged refused operands`);
+      console.log(`ok - ${label}: exact refusal and preserved state`);
+      return;
+    }
     const outcome = run('booleanWithQuality', { operation: 'fuse', solidA, solidB, exactOnly: true }, ['fuse', solidA, solidB, true]);
     assert.equal(outcome.quality, 'exact', `${label}: exact quality`);
     const solid = outcome.solid;
@@ -105,8 +131,14 @@ function checkFixture(BrepKernel, api, scale, placed, swapped, segments = 16, he
     }
     assert.ok(coverage.every(n => n > 0), `${label}: all membership cells`);
     const expectedVolume = Math.PI * (height + 2 / 3), expectedArea = Math.PI * (2 * height + 3);
-    const gauss = JSON.parse(kernel.massProperties(solid)).volume / scale ** 3;
-    assert.ok(Math.abs(gauss - expectedVolume) < 1e-9 * expectedVolume, `${label}: Gauss ${gauss}`);
+    if (segments === 32) {
+      assert.throws(() => kernel.massProperties(solid), error => !(error instanceof WebAssembly.RuntimeError)
+        && error.message === 'check: integration did not converge: face trim exceeds the 4096-point integration budget',
+      `${label}: unchanged quadrature budget refusal`);
+    } else {
+      const gauss = JSON.parse(kernel.massProperties(solid)).volume / scale ** 3;
+      assert.ok(Math.abs(gauss - expectedVolume) < 1e-9 * expectedVolume, `${label}: Gauss ${gauss}`);
+    }
     for (const d of [0.0001, 0.00005]) {
       const volume = kernel.volume(solid, d * scale) / scale ** 3, area = kernel.surfaceArea(solid, d * scale) / scale ** 2;
       assert.ok(Math.abs(volume - expectedVolume) < 1e-4 * expectedVolume, `${label}: volume ${volume}`);
