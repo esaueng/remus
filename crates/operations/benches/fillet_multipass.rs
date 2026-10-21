@@ -174,6 +174,7 @@ fn plate_top_loop(topo: &mut Topology, body: SolidId) -> SolidId {
 type Pass = fn(&mut Topology, SolidId) -> SolidId;
 
 /// Times `pass` alone, each iteration on a fresh clone of `(topo, input)`.
+/// `iter_batched_ref` keeps the clone and its teardown outside the timing.
 fn bench_pass(
     group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     name: &str,
@@ -182,9 +183,9 @@ fn bench_pass(
     pass: Pass,
 ) {
     group.bench_function(name, |b| {
-        b.iter_batched(
+        b.iter_batched_ref(
             || topo.clone(),
-            |mut t| black_box(pass(&mut t, input)),
+            |t| black_box(pass(t, input)),
             BatchSize::LargeInput,
         );
     });
@@ -211,12 +212,12 @@ fn bench_bracket(c: &mut Criterion) {
     }
     assert!(validate_solid(&topo, body).unwrap().is_valid());
     group.bench_function("full_sequence", |b| {
-        b.iter_batched(
+        b.iter_batched_ref(
             || start.0.clone(),
-            |mut t| {
+            |t| {
                 let mut s = start.1;
                 for (_, pass) in passes {
-                    s = pass(&mut t, s);
+                    s = pass(t, s);
                 }
                 black_box(s)
             },
@@ -246,12 +247,12 @@ fn bench_plate(c: &mut Criterion) {
     }
     assert!(validate_solid(&topo, body).unwrap().is_valid());
     group.bench_function("full_sequence", |b| {
-        b.iter_batched(
+        b.iter_batched_ref(
             || start.0.clone(),
-            |mut t| {
+            |t| {
                 let mut s = start.1;
                 for (_, pass) in passes {
-                    s = pass(&mut t, s);
+                    s = pass(t, s);
                 }
                 black_box(s)
             },
