@@ -741,10 +741,22 @@ fn trim_support_corner(
 
             if unique_contacts.len() >= 2 {
                 let dir_prev = (prev_pos - pos).normalize()?;
+                let (c0, c1) = (unique_contacts[0], unique_contacts[1]);
+                // Each contact lies on the line this face shares with the
+                // contact's own support face — on the boundary edge, or past
+                // the corner on its extension where the strip runs out beyond
+                // a narrower face (a tab on a plate). Pair by that line first;
+                // proximity to the edge offsets only breaks a tie.
+                let by_line = (next_pos - pos).normalize().ok().and_then(|dir_next| {
+                    let off_line = |c: Point3, dir: Vec3| (c - pos).cross(dir).length();
+                    let keep = off_line(c0, dir_prev) + off_line(c1, dir_next);
+                    let swap = off_line(c1, dir_prev) + off_line(c0, dir_next);
+                    ((keep - swap).abs() > tol.linear).then_some(keep < swap)
+                });
                 let approx_prev = pos + dir_prev * radius;
-                let d0 = (unique_contacts[0] - approx_prev).length();
-                let d1 = (unique_contacts[1] - approx_prev).length();
-                if d0 <= d1 {
+                let first_is_prev = by_line
+                    .unwrap_or_else(|| (c0 - approx_prev).length() <= (c1 - approx_prev).length());
+                if first_is_prev {
                     out.push(unique_contacts[0]);
                     out.push(unique_contacts[1]);
                 } else {
@@ -938,8 +950,21 @@ pub fn fillet_rolling_ball_with_origins(
 
         for &face_id in &shell_face_ids {
             let face = topo.face(face_id)?;
-            face_surfaces.insert(face_id.index(), face.surface().clone());
-            face_reversed.insert(face_id.index(), face.is_reversed());
+            // A reversed plane (a cut's tool face) is recorded as its outward
+            // plane, unreversed: every phase below reads a plane's `normal` as
+            // the outward normal. Its wire still winds about the stored
+            // surface normal, so `FacePolygon::reversed` re-emits it reversed.
+            let plane_reversed =
+                face.is_reversed() && matches!(face.surface(), FaceSurface::Plane { .. });
+            let surface = match face.surface() {
+                FaceSurface::Plane { normal, d } if plane_reversed => FaceSurface::Plane {
+                    normal: -*normal,
+                    d: -*d,
+                },
+                other => other.clone(),
+            };
+            face_surfaces.insert(face_id.index(), surface);
+            face_reversed.insert(face_id.index(), face.is_reversed() && !plane_reversed);
 
             let wire = topo.wire(face.outer_wire())?;
             let mut vertex_ids = Vec::with_capacity(wire.edges().len());
@@ -984,8 +1009,8 @@ pub fn fillet_rolling_ball_with_origins(
             // Build polygon data for planar faces (used for Phase 3 trimming).
             // Non-planar faces are stored in face_surfaces and passed through
             // untrimmed — their fillet geometry is still computed in Phase 4.
-            let (normal, d) = match face.surface() {
-                FaceSurface::Plane { normal, d } => (*normal, *d),
+            let (normal, d) = match face_surfaces.get(&face_id.index()) {
+                Some(FaceSurface::Plane { normal, d }) => (*normal, *d),
                 _ => continue,
             };
 
@@ -997,6 +1022,7 @@ pub fn fillet_rolling_ball_with_origins(
                     wire_edge_ids,
                     normal,
                     d,
+                    reversed: plane_reversed,
                     inner_wires: face_inner_wires,
                 },
             );
@@ -2808,12 +2834,7 @@ pub fn fillet_rolling_ball_with_origins(
                     push_face_spec(
                         &mut all_specs,
                         &mut all_spec_origins,
-                        FaceSpec::Planar {
-                            vertices: poly.positions.clone(),
-                            normal: poly.normal,
-                            d: poly.d,
-                            inner_wires: poly.inner_wires.clone(),
-                        },
+                        poly.spec(poly.positions.clone(), poly.d),
                         FaceSpecOrigin::Modified(face_id),
                     );
                 }
@@ -2977,12 +2998,7 @@ pub fn fillet_rolling_ball_with_origins(
                 push_face_spec(
                     &mut all_specs,
                     &mut all_spec_origins,
-                    FaceSpec::Planar {
-                        vertices: new_verts,
-                        normal: poly.normal,
-                        d: new_d,
-                        inner_wires: poly.inner_wires.clone(),
-                    },
+                    poly.spec(new_verts, new_d),
                     FaceSpecOrigin::Modified(face_id),
                 );
             }

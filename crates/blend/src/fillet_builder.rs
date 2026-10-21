@@ -631,12 +631,14 @@ fn wire_in_arc_plane(
 
 /// Find how `edge` is traversed (forward flag) in `face`'s outer wire.
 fn wire_traversal_of(topo: &Topology, face: FaceId, edge: EdgeId) -> Option<bool> {
-    let wire_id = topo.face(face).ok()?.outer_wire();
-    let wire = topo.wire(wire_id).ok()?;
+    let face = topo.face(face).ok()?;
+    let wire = topo.wire(face.outer_wire()).ok()?;
+    // Effective sense: a reversed face (a cut's tool face) uses each edge
+    // against its wire flag.
     wire.edges()
         .iter()
         .find(|oe| oe.edge() == edge)
-        .map(OrientedEdge::is_forward)
+        .map(|oe| oe.is_forward() != face.is_reversed())
 }
 
 /// Create the circular end-arc edge of a straight-spine fillet, ordered so
@@ -699,8 +701,8 @@ fn make_end_arc(
 ///   neighbor faces continuing past the spine end, e.g. a wall seated on the
 ///   plate). A new planar patch face `arc → sub → v → sub` is created,
 ///   reusing the existing sub-edges so the shell stays manifold. Its outward
-///   normal is `cap_normal` (pointing back along the spine, into the removed
-///   corner column).
+///   normal is `cap_normal` up to sign: into the removed corner column for a
+///   convex fillet, out of the added sliver for a concave one.
 ///
 /// Returns a newly created patch face, if any. Logs and returns `Ok(None)`
 /// without mutation when neither pattern matches.
@@ -891,10 +893,20 @@ fn stitch_end(
         true,
     )?;
     let wire_id = topo.add_wire(wire);
-    let d = {
-        let p = topo.vertex(v_id)?.point();
-        cap_normal.dot(Vec3::new(p.x(), p.y(), p.z()))
+    // The wire's winding is fixed by its neighbours; the plane normal must
+    // agree with it. The patch spans the corner triangle `cap_from → cap_to →
+    // v`, so its winding decides the sign: a convex end faces into the
+    // removed column, a concave end (the added sliver) faces away from it.
+    let p_v = topo.vertex(v_id)?.point();
+    let p_from = topo.vertex(cap_from)?.point();
+    let p_to = topo.vertex(cap_to)?.point();
+    let winding = (p_to - p_from).cross(p_v - p_to);
+    let cap_normal = if winding.dot(cap_normal) < 0.0 {
+        -cap_normal
+    } else {
+        cap_normal
     };
+    let d = cap_normal.dot(Vec3::new(p_v.x(), p_v.y(), p_v.z()));
     let face = Face::new(
         wire_id,
         Vec::new(),

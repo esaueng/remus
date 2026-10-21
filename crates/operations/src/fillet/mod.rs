@@ -221,6 +221,7 @@ fn fillet_transacted(
                 wire_edge_ids,
                 normal,
                 d,
+                reversed: false,
                 inner_wires: face_inner_wires,
             },
         );
@@ -871,6 +872,7 @@ fn fillet_variable_transacted(
                 wire_edge_ids,
                 normal,
                 d: 0.0,
+                reversed: false,
                 inner_wires: face_inner_wires,
             },
         );
