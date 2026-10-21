@@ -336,22 +336,24 @@ impl Model {
         edges: &[EdgeId],
         radius: f64,
     ) -> Result<BlendResult, OperationsError> {
-        // Only edges this solid joins smoothly are dropped. Anything else the
-        // filter would skip (a foreign or non-manifold edge) stays, so the
-        // cascade refuses rather than blending a subset of the request.
+        // Only edges this solid joins smoothly, and its periodic seams, are
+        // dropped. Anything else the filter would skip (a foreign or
+        // non-manifold edge) stays, so the cascade refuses rather than
+        // blending a subset of the request.
         let filletable =
             remus_operations::query::filter_filletable_edges(&self.topology, solid, edges)?;
         let faces = remus_topology::explorer::edge_to_face_map(&self.topology, solid)?;
         let mut kept = Vec::with_capacity(edges.len());
         for &edge in edges {
-            let tangent = !filletable.contains(&edge)
+            let no_dihedral = !filletable.contains(&edge)
                 && match faces.get(&edge.index()).map(|f| f.as_slice()) {
+                    Some(&[a, b]) if a == b => true,
                     Some(&[a, b]) => {
                         remus_operations::query::edge_is_g1(&self.topology, edge, a, b)?
                     }
                     _ => false,
                 };
-            if !tangent {
+            if !no_dihedral {
                 kept.push(edge);
             }
         }
@@ -988,6 +990,16 @@ mod tests {
         );
         let volume = model.volume(result.solid, 0.05).unwrap();
         assert!(volume < 1000.0 && volume > 990.0, "{volume}");
+    }
+
+    #[test]
+    fn fillet_skips_a_cylinder_seam_in_a_whole_body_selection() {
+        let mut model = Model::new();
+        let solid = model.make_cylinder(5.0, 10.0).unwrap();
+        let edges = remus_topology::explorer::solid_edges(model.topology(), solid).unwrap();
+        let result = model.fillet(solid, &edges, 1.0).unwrap();
+        assert!(!result.succeeded.is_empty());
+        assert!(result.succeeded.len() < edges.len(), "the seam is dropped");
     }
 
     #[test]
