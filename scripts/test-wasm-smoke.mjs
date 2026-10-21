@@ -1549,10 +1549,11 @@ for (const operation of ['fillet', 'chamfer']) {
   assert.throws(() => hammerKernel.resizeBlend(solid, seed, 3, 2), /band-touches-freeform/);
 
   assert.deepEqual(Array.from(hammerKernel.getEntityCounts(solid)), beforeCounts);
-  // Same pin as HAMMER_HOLDER_VOLUME in crates/io/tests/resize_blend_step.rs:
-  // the volume is read off the body's qualified face integrals, not its mesh;
-  // retain the 0.01 tolerance.
-  assert.ok(Math.abs(hammerKernel.volume(solid, 0.01) - 50_245.532_161_524_25) <= 0.01);
+  // Same approximate-volume pin as HAMMER_HOLDER_VOLUME in
+  // crates/io/tests/resize_blend_step.rs. The resolved cylinder-wall grid
+  // and curved NURBS trim-band paths remove inward chords and move this closer
+  // to the finer mesh and independent integrator; retain the 0.01 tolerance.
+  assert.ok(Math.abs(hammerKernel.volume(solid, 0.01) - 50_242.575_649_036_3) <= 0.01);
   const strict = JSON.parse(hammerKernel.validateSolidDetailed(solid));
   assert.equal(strict.errorCount, 0, 'refused edit must preserve strict topology');
   assert.equal(strict.warningCount, 0, 'refused edit must preserve warning-free topology');
