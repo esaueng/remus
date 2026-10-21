@@ -249,3 +249,141 @@ fn unsupported_rational_and_high_degree_boundaries_keep_the_approximate_fallback
         );
     }
 }
+
+// Four wire edges share positions but deliberately retain separate vertex
+// handles, as assembly refinement can. The cubic is stored opposite the
+// wire's traversal while every orientation flag is forward.
+fn position_chained_cubic(reverse_storage: bool, shear: bool) -> (Topology, FaceId) {
+    let point = |x, y| Point3::new(x, if shear { x + y } else { y }, 5.0);
+    let curve = NurbsCurve::new(
+        3,
+        [vec![0.0; 4], vec![1.0; 4]].concat(),
+        vec![
+            point(2.0, 0.0),
+            point(2.0, 1.0 / 3.0),
+            point(2.0, 2.0 / 3.0),
+            point(3.0, 1.0),
+        ],
+        vec![1.0; 4],
+    )
+    .unwrap();
+    let a = point(1.0, 0.0);
+    let b = point(2.0, 0.0);
+    let c = point(3.0, 1.0);
+    let d = point(1.0, 1.0);
+    let (curve_start, curve_end) = if reverse_storage { (c, b) } else { (b, c) };
+    let mut topo = Topology::new();
+    let edges = [
+        (a, b, EdgeCurve::Line),
+        (curve_start, curve_end, EdgeCurve::NurbsCurve(curve)),
+        (c, d, EdgeCurve::Line),
+        (d, a, EdgeCurve::Line),
+    ]
+    .into_iter()
+    .map(|(start, end, curve)| {
+        let start = topo.add_vertex(Vertex::new(start, 1e-9));
+        let end = topo.add_vertex(Vertex::new(end, 1e-9));
+        let mut edge = Edge::new(start, end, curve);
+        edge.set_trim(Some((0.0, 1.0)));
+        OrientedEdge::new(topo.add_edge(edge), true)
+    })
+    .collect();
+    let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+    let face = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 5.0,
+        },
+    ));
+    (topo, face)
+}
+
+#[test]
+fn polynomial_newell_normal_chains_position_equal_distinct_vertices() {
+    for shear in [false, true] {
+        let normals = [false, true].map(|reverse_storage| {
+            let (topo, face) = position_chained_cubic(reverse_storage, shear);
+            wire_newell_normal(&topo, topo.face(face).unwrap().outer_wire())
+                .unwrap()
+                .expect("the cubic boundary spans a plane")
+        });
+        // Reversing endpoint storage must preserve the same sampled contour,
+        // rather than merely produce some nonzero normal in the same plane.
+        assert!(
+            (normals[0] - normals[1]).length() < 1e-12,
+            "shear={shear}: {:?} vs {:?}",
+            normals[0],
+            normals[1]
+        );
+    }
+}
+
+#[test]
+fn polynomial_moments_chain_position_equal_distinct_vertices() {
+    // The region is 0 <= y <= 1, 1 <= x <= 2 + y^3. Each oracle is the
+    // elementary integral of x^i y^j over that region, without curve sampling
+    // or quadrature: integral_0^1 y^j ((2+y^3)^(i+1)-1)/(i+1) dy.
+    let expected = [
+        5.0 / 4.0,
+        29.0 / 14.0,
+        7.0 / 10.0,
+        767.0 / 210.0,
+        97.0 / 80.0,
+        1.0 / 2.0,
+        3106.0 / 455.0,
+        1483.0 / 660.0,
+        8.0 / 9.0,
+        11.0 / 28.0,
+    ];
+    for reverse_storage in [false, true] {
+        let (topo, face) = position_chained_cubic(reverse_storage, false);
+        let moments = planar_wire_monomial_moments(
+            &topo,
+            topo.face(face).unwrap().outer_wire(),
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        )
+        .unwrap()
+        .expect("the unit-weight cubic has an exact Green rule");
+        for (actual, expected) in moments.into_iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 1e-12,
+                "reverse_storage={reverse_storage}: {actual} vs {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn planar_polynomial_contributions_chain_position_equal_distinct_vertices() {
+    for reverse_storage in [false, true] {
+        // The area-preserving shear (x,y) -> (x,x+y) prevents the other
+        // boundary edges from making the wrong curve direction cancel out.
+        let (topo, face) = position_chained_cubic(reverse_storage, true);
+        let got = integrate_planar_face_exact(
+            &topo,
+            face,
+            Vec3::new(0.0, 0.0, 1.0),
+            Point3::new(0.0, 0.0, 0.0),
+        )
+        .unwrap()
+        .expect("the sheared cubic boundary remains planar");
+        for (actual, expected) in [
+            (got.area, 5.0 / 4.0),
+            (got.centroid_x, 29.0 / 14.0),
+            (got.centroid_y, 97.0 / 35.0),
+            (got.centroid_z, 25.0 / 4.0),
+            (got.volume, 25.0 / 12.0),
+            (got.volume_moment_z, 125.0 / 8.0),
+            (got.volume_second_z, 625.0 / 12.0),
+        ] {
+            assert!(
+                (actual - expected).abs() < 1e-11,
+                "reverse_storage={reverse_storage}: {actual} vs {expected}"
+            );
+        }
+    }
+}

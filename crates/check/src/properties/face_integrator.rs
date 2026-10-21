@@ -2444,7 +2444,19 @@ fn planar_wire_monomial_moments(
         let forward = match prev_end {
             Some(pe) if start_vid == pe && end_vid != pe => true,
             Some(pe) if end_vid == pe && start_vid != pe => false,
-            _ => oe.is_forward(),
+            // A closed edge has no positional direction; retain its flag.
+            _ if start_vid == end_vid => oe.is_forward(),
+            // Assembly refinement can leave coincident endpoints with
+            // distinct IDs. Match the polygon path's positional fallback.
+            _ => match prev_end {
+                Some(previous_end) => {
+                    let last = topo.vertex(previous_end)?.point();
+                    let start = topo.vertex(start_vid)?.point();
+                    let end = topo.vertex(end_vid)?.point();
+                    (start - last).length_squared() <= (end - last).length_squared()
+                }
+                None => oe.is_forward(),
+            },
         };
         prev_end = Some(if forward { end_vid } else { start_vid });
 
@@ -3285,7 +3297,19 @@ fn wire_newell_normal(
         let forward = match prev_end {
             Some(pe) if start_vid == pe && end_vid != pe => true,
             Some(pe) if end_vid == pe && start_vid != pe => false,
-            _ => oe.is_forward(),
+            // A closed edge has no positional direction; retain its flag.
+            _ if start_vid == end_vid => oe.is_forward(),
+            // Assembly refinement can leave coincident endpoints with
+            // distinct IDs. Match the polygon path's positional fallback.
+            _ => match prev_end {
+                Some(previous_end) => {
+                    let last = topo.vertex(previous_end)?.point();
+                    let start = topo.vertex(start_vid)?.point();
+                    let end = topo.vertex(end_vid)?.point();
+                    (start - last).length_squared() <= (end - last).length_squared()
+                }
+                None => oe.is_forward(),
+            },
         };
         prev_end = Some(if forward { end_vid } else { start_vid });
 
