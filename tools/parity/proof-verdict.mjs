@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { expandContractMatrix, scoreContractCase } from './contract-matrix.mjs';
+import { directConsistent, expandContractMatrix, scoreContractCase } from './contract-matrix.mjs';
 import { expandSplitMatrix, scoreSplitCase } from './split-io-matrix.mjs';
 import { validateProvenance } from './provenance.mjs';
 import { validateHostProof } from './host-proof.mjs';
@@ -14,6 +14,10 @@ function object(value) {
 
 function stageKey(stage) {
   return JSON.stringify([stage.case, stage.surface, stage.invariant]);
+}
+
+function stageCensus(stages) {
+  return [...stages].sort((left, right) => stageKey(left).localeCompare(stageKey(right)));
 }
 
 function validateIdentity(kind, provenance) {
@@ -79,9 +83,32 @@ export function validateProofReport(kind, report) {
         `${c.id}: missing native check-crate validation`,
       );
     }
-    return score(c, {
+    const stages = score(c, {
       native: observations.native, fresh: observations.fresh, committed: observations.committed,
     });
+    if (kind === 'contract' && !c.directOnly) {
+      for (const surface of ['fresh', 'committed']) {
+        const batch = observations[`${surface}Batch`];
+        const direct = observations[`${surface}DirectRaw`];
+        for (const [name, observation] of [['batch', batch], ['direct', direct]]) {
+          assert.ok(object(observation), `${c.id}: missing ${surface} ${name} advisory observation`);
+          assert.equal(typeof observation.outcome, 'string', `${c.id}: missing ${surface} ${name} advisory outcome`);
+          assert.ok(
+            Array.isArray(observation.diagnosticCodes)
+              && observation.diagnosticCodes.every((code) => typeof code === 'string'),
+            `${c.id}: missing ${surface} ${name} advisory diagnostics`,
+          );
+        }
+        stages.push({
+          case: c.id,
+          surface: `${surface}-direct-vs-batch`,
+          invariant: 'direct_batch_consistency',
+          passed: directConsistent(c, batch, direct),
+          required: false,
+        });
+      }
+    }
+    return stages;
   });
   const required = recomputed.filter((stage) => stage.required);
   const failures = required.filter((stage) => stage.passed !== true);
@@ -96,12 +123,15 @@ export function validateProofReport(kind, report) {
     assert.equal(typeof stage.required, 'boolean', `${kind}: stage required flag is not boolean`);
     assert.equal(typeof stage.passed, 'boolean', `${kind}: stage passed flag is not boolean`);
   }
-  const recorded = report.stages.filter((stage) => stage.required);
   assert.deepEqual(
-    recorded.map(stageKey).sort(), required.map(stageKey).sort(),
-    `${kind}: required stage records disagree with recomputed gates`,
+    stageCensus(report.stages), stageCensus(recomputed),
+    `${kind}: required/advisory stage records disagree with recomputed gates`,
   );
-  assert.ok(recorded.every((stage) => stage.passed), `${kind}: required stage is red`);
+  assert.deepEqual(
+    stageCensus(report.known_gaps),
+    stageCensus(recomputed.filter((stage) => !stage.required && !stage.passed)),
+    `${kind}: known-gap summary disagrees with recomputed advisory failures`,
+  );
   return { cases: ids.length, requiredStages: required.length };
 }
 
@@ -119,6 +149,13 @@ export function validateProofReports(contract, split, hostProof) {
       assert.equal(left[field], right[field], `proof slices disagree on kernel ${field}`);
     }
   }
+  const fresh = contract.provenance.fresh;
+  const splitFresh = split.provenance.freshKernel;
+  for (const field of ['tarballSha256', 'target']) {
+    assert.equal(fresh[field], splitFresh[field], `proof slices disagree on kernel ${field}`);
+  }
+  assert.deepEqual(fresh.toolchain, splitFresh.toolchain, 'proof slices disagree on kernel toolchain');
+  assert.equal(fresh.buildOptions.profile, splitFresh.buildOptions.profile, 'proof slices disagree on kernel build profile');
   if (hostProof !== undefined) {
     summary.host = validateHostProof(hostProof);
     for (const report of [contract, split]) {

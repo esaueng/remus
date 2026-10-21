@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { expandContractMatrix, scoreContractCase } from './contract-matrix.mjs';
+import { directConsistent, expandContractMatrix, scoreContractCase } from './contract-matrix.mjs';
 import { expandSplitMatrix, scoreSplitCase } from './split-io-matrix.mjs';
 import { validateProofReport, validateProofReports } from './proof-verdict.mjs';
 
@@ -83,17 +83,39 @@ function splitObservation(c) {
   };
 }
 
+function scoreStages(kind, observations) {
+  const contract = kind === 'contract';
+  const cases = contract ? expandContractMatrix() : expandSplitMatrix();
+  const score = contract ? scoreContractCase : scoreSplitCase;
+  return cases.flatMap((c, index) => [
+    ...score(c, observations[index]),
+    ...(contract && !c.directOnly ? ['fresh', 'committed'].map((surface) => ({
+      case: c.id,
+      surface: `${surface}-direct-vs-batch`,
+      invariant: 'direct_batch_consistency',
+      passed: directConsistent(c, observations[index][`${surface}Batch`], observations[index][`${surface}DirectRaw`]),
+      required: false,
+    })) : []),
+  ]);
+}
+
 function goodReport(kind) {
   const contract = kind === 'contract';
   const cases = contract ? expandContractMatrix() : expandSplitMatrix();
-  const observations = cases.map((c) => ({
-    case: c.id,
-    ...Object.fromEntries(['native', 'fresh', 'committed'].map((surface) => [
-      surface, contract ? contractObservation(c, surface) : splitObservation(c),
-    ])),
-  }));
-  const score = contract ? scoreContractCase : scoreSplitCase;
-  const stages = cases.flatMap((c, index) => score(c, observations[index]));
+  const observations = cases.map((c) => {
+    const observations = {
+      case: c.id,
+      ...Object.fromEntries(['native', 'fresh', 'committed'].map((surface) => [
+        surface, contract ? contractObservation(c, surface) : splitObservation(c),
+      ])),
+    };
+    if (contract) for (const surface of ['fresh', 'committed']) {
+      observations[`${surface}Batch`] = structuredClone(observations[surface]);
+      observations[`${surface}DirectRaw`] = structuredClone(observations[surface]);
+    }
+    return observations;
+  });
+  const stages = scoreStages(kind, observations);
   return {
     schema_version: 1, passed: true,
     matrix: contract
@@ -218,10 +240,101 @@ test('known non-gating evolution differences remain visible without failing proo
   const index = report.observations.findIndex(({ case: id }) => id === 'contract/evolution-fuse');
   const changed = report.observations[index].fresh.evolution;
   changed.modified = Object.fromEntries(Object.entries(changed.modified).map(([key, value]) => [`fresh-${key}`, value]));
-  report.stages = expandContractMatrix().flatMap((c, i) => scoreContractCase(c, report.observations[i]));
+  report.stages = scoreStages('contract', report.observations);
   report.known_gaps = report.stages.filter(({ required, passed }) => !required && !passed);
   assert.equal(report.known_gaps.length, 1);
   assert.ok(validateProofReport('contract', report));
+});
+
+test('omitted advisory failures cannot disappear from known gaps or stage records', () => {
+  const report = goodReport('contract');
+  const index = report.observations.findIndex(({ case: id }) => id === 'contract/evolution-fuse');
+  const changed = report.observations[index].fresh.evolution;
+  changed.modified = Object.fromEntries(Object.entries(changed.modified).map(([key, value]) => [`fresh-${key}`, value]));
+  report.stages = scoreStages('contract', report.observations);
+  report.known_gaps = report.stages.filter(({ required, passed }) => !required && !passed);
+  assert.equal(report.known_gaps.length, 1);
+  const missingSummary = structuredClone(report);
+  missingSummary.known_gaps = [];
+  assert.throws(() => validateProofReport('contract', missingSummary), /known.gap|advisory/);
+  const hiddenStages = structuredClone(report);
+  hiddenStages.stages = hiddenStages.stages.filter(({ required }) => required);
+  hiddenStages.known_gaps = [];
+  assert.throws(() => validateProofReport('contract', hiddenStages), /stage|known.gap|advisory/);
+});
+
+test('every advisory stage is retained exactly, including passing diagnostics', () => {
+  for (const kind of ['contract', 'split-io']) {
+    for (const mutate of [
+      (report, index) => report.stages.splice(index, 1),
+      (report, index) => report.stages.push(structuredClone(report.stages[index])),
+      (report, index) => { report.stages[index].required = true; },
+      (report, index) => { report.stages[index].passed = !report.stages[index].passed; },
+      (report, index) => { report.stages[index].invariant = 'fabricated_advisory'; },
+      (report, index) => { report.stages[index].operation = 'another operation'; },
+    ]) {
+      const report = goodReport(kind);
+      const index = report.stages.findIndex(({ required }) => !required);
+      assert.ok(index >= 0, `${kind} has real advisory stages`);
+      mutate(report, index);
+      assert.throws(() => validateProofReport(kind, report), /stage records/);
+    }
+  }
+});
+
+test('direct-versus-batch advisory gaps are rescored from retained raw observations', () => {
+  const report = goodReport('contract');
+  report.observations[0].freshDirectRaw.diagnosticCodes = ['different_direct_diagnostic'];
+  report.stages = scoreStages('contract', report.observations);
+  report.known_gaps = report.stages.filter(({ required, passed }) => !required && !passed);
+  assert.equal(report.known_gaps.length, 1);
+  assert.equal(report.known_gaps[0].invariant, 'direct_batch_consistency');
+  assert.ok(validateProofReport('contract', report));
+  for (const mutate of [
+    (changed) => { changed.known_gaps = []; },
+    (changed) => changed.known_gaps.push(structuredClone(changed.known_gaps[0])),
+    (changed) => { changed.known_gaps[0].passed = true; },
+    (changed) => { changed.known_gaps[0].invariant = 'fabricated_gap'; },
+    (changed) => {
+      changed.stages = changed.stages.filter(({ invariant }) => invariant !== 'direct_batch_consistency');
+      changed.known_gaps = [];
+    },
+  ]) {
+    const changed = structuredClone(report);
+    mutate(changed);
+    assert.throws(() => validateProofReport('contract', changed), /known.gap|stage records/);
+  }
+  for (const field of ['freshBatch', 'freshDirectRaw', 'committedBatch', 'committedDirectRaw']) {
+    const changed = goodReport('contract');
+    delete changed.observations[0][field];
+    assert.throws(() => validateProofReport('contract', changed), /missing .*advisory observation/);
+  }
+});
+
+test('matching WASM bytes cannot hide different installed fresh tarballs', () => {
+  const contract = goodReport('contract');
+  const split = goodReport('split-io');
+  split.provenance.freshKernel.tarballSha256 = '12'.repeat(32);
+  assert.throws(() => validateProofReports(contract, split), /kernel tarballSha256/);
+});
+
+test('shared fresh packages retain the same target, build profile and toolchain', () => {
+  for (const [field, mutate] of [
+    ['target', (split) => {
+      split.provenance.freshKernel.target = 'web';
+      split.provenance.freshKernel.buildOptions.target = 'web';
+    }],
+    ['build profile', (split) => { split.provenance.freshKernel.buildOptions.profile = 'dev'; }],
+    ['toolchain', (split) => {
+      for (const entry of Object.values(split.provenance)) {
+        if (entry.toolchain) entry.toolchain.rustc = 'rustc 1.97';
+      }
+    }],
+  ]) {
+    const split = goodReport('split-io');
+    mutate(split);
+    assert.throws(() => validateProofReports(goodReport('contract'), split), new RegExp(`kernel ${field}`));
+  }
 });
 
 test('source identity, package evidence mode and mixed kernel report artifacts are rejected', () => {
