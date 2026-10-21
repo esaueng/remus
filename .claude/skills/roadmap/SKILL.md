@@ -142,7 +142,7 @@ that does not exist yet; without it, stop.
   great-circle containment for qualified concave trims and boundary queries.
   Agreeing volume routes do not prove material or raw mesh closure.
 
-- **An equatorial boundary does not locate a hemisphere interior (F10).** Qualify the complete signed native circle partition before sampling its represented side; shared cylinder-rim synchronization must scale with each native arc span, preserving the edge sampler and grid budget (`regress_opseq_sphere_cylinder_fuse.rs`).
+- **An equatorial boundary does not locate a hemisphere interior (F10).** Qualify the complete signed native circle partition before sampling its represented side; shared cylinder-rim synchronization may scale with each native arc span only on qualified complete circular two-rim bands, preserving the edge sampler and grid budget; stepped/CDT boundaries keep their established density (`regress_opseq_sphere_cylinder_fuse.rs`).
 
 ## Open items with a repro
 

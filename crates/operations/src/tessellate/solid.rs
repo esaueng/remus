@@ -77,6 +77,108 @@ fn coaxial_rim_grid_sample_count(
     Some(segments.max(1) + 1)
 }
 
+/// Fractional synchronization is safe only for the structured complete-band
+/// path. CDT and stepped boundaries retain their established denser samples.
+/// This predicate declines unresolved domains without changing error timing.
+fn has_complete_circular_cylinder_rims(topo: &Topology, face: &remus_topology::face::Face) -> bool {
+    let FaceSurface::Cylinder(cylinder) = face.surface() else {
+        return false;
+    };
+    if !face.inner_wires().is_empty() {
+        return false;
+    }
+    let Ok(wire) = topo.wire(face.outer_wire()) else {
+        return false;
+    };
+    if !wire.is_closed() {
+        return false;
+    }
+    let tolerance = remus_math::tolerance::Tolerance::new();
+    let mut curved = Vec::new();
+    let mut levels = Vec::<f64>::new();
+    let mut seen = remus_math::det_hash::DetHashSet::default();
+    let mut seam = None;
+    let mut seam_directions = Vec::new();
+    for oriented in wire.edges() {
+        let Ok(edge) = topo.edge(oriented.edge()) else {
+            return false;
+        };
+        match edge.curve() {
+            EdgeCurve::Circle(circle) => {
+                let Some(native) = edge.trim() else {
+                    return false;
+                };
+                if coaxial_rim_grid_sample_count(
+                    face.surface(),
+                    circle,
+                    std::f64::consts::TAU,
+                    1,
+                    native,
+                )
+                .is_none()
+                    || (edge.start() == edge.end()
+                        && ((native.1 - native.0).abs() - std::f64::consts::TAU).abs()
+                            > tolerance.angular)
+                {
+                    return false;
+                }
+                let level = (circle.center() - cylinder.origin()).dot(cylinder.axis());
+                if !level.is_finite() {
+                    return false;
+                }
+                if !levels
+                    .iter()
+                    .any(|&existing| (existing - level).abs() <= tolerance.linear)
+                {
+                    levels.push(level);
+                    if levels.len() > 2 {
+                        return false;
+                    }
+                }
+                if seen.insert(oriented.edge().index()) {
+                    curved.push((oriented.edge().index(), edge.start(), edge.end()));
+                }
+            }
+            EdgeCurve::Line => {
+                if seam.is_some_and(|existing| existing != oriented.edge()) {
+                    return false;
+                }
+                seam = Some(oriented.edge());
+                seam_directions.push(oriented.is_forward());
+                if seam_directions.len() > 2 {
+                    return false;
+                }
+                let (Ok(start), Ok(end)) = (topo.vertex(edge.start()), topo.vertex(edge.end()))
+                else {
+                    return false;
+                };
+                let deviation = (end.point() - start.point())
+                    .cross(cylinder.axis())
+                    .length();
+                if !deviation.is_finite() || deviation > tolerance.linear {
+                    return false;
+                }
+            }
+            EdgeCurve::Ellipse(_)
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return false,
+        }
+    }
+    if levels.len() != 2 || seam_directions.len() != 2 || seam_directions[0] == seam_directions[1] {
+        return false;
+    }
+    matches!(
+        super::rim_chain::collect_full_turn_rim_cycles(
+            topo,
+            &curved,
+            &|point| cylinder.project_point(point).0,
+            2
+        ),
+        Ok(Some(_))
+    )
+}
+
 fn add_planar_contact_work(
     total: &mut usize,
     line_count: usize,
@@ -153,6 +255,32 @@ mod rim_density_tests {
                     assert!((circle.evaluate(step * 0.5) - chord_middle).length() <= deflection);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn complete_band_admission_declines_unresolved_native_domains() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_cylinder(&mut topo, 2.0, 3.0).unwrap();
+        let face_id = remus_topology::explorer::solid_faces(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&fid| matches!(topo.face(fid).unwrap().surface(), FaceSurface::Cylinder(_)))
+            .unwrap();
+        let face = topo.face(face_id).unwrap().clone();
+        assert!(has_complete_circular_cylinder_rims(&topo, &face));
+        let edge_id = topo
+            .wire(face.outer_wire())
+            .unwrap()
+            .edges()
+            .iter()
+            .map(remus_topology::wire::OrientedEdge::edge)
+            .find(|&edge| matches!(topo.edge(edge).unwrap().curve(), EdgeCurve::Circle(_)))
+            .unwrap();
+        for trim in [None, Some((0.0, f64::NAN)), Some((0.0, 1.0))] {
+            let mut changed = topo.clone();
+            changed.edge_mut(edge_id).unwrap().set_trim(trim);
+            assert!(!has_complete_circular_cylinder_rims(&changed, &face));
         }
     }
 
@@ -783,6 +911,7 @@ fn build_boundary_plan(
                 }
                 _ => continue,
             };
+            let mut fractional_rims = None;
             let mut wire_ids = vec![face_data.outer_wire()];
             wire_ids.extend_from_slice(face_data.inner_wires());
             for &wire_id in &wire_ids {
@@ -807,14 +936,21 @@ fn build_boundary_plan(
                         // this domain. The qualified arc count can only lower
                         // the old full-face synchronization target.
                         let (t_start, t_end) = circle_param_range(edge_data)?;
-                        let expected_count = coaxial_rim_grid_sample_count(
-                            face_data.surface(),
-                            circle,
-                            face_span,
-                            face_nu,
-                            (t_start, t_end),
-                        )
-                        .unwrap_or(face_nu + 1);
+                        let complete_band = *fractional_rims.get_or_insert_with(|| {
+                            has_complete_circular_cylinder_rims(topo, face_data)
+                        });
+                        let expected_count = if complete_band {
+                            coaxial_rim_grid_sample_count(
+                                face_data.surface(),
+                                circle,
+                                face_span,
+                                face_nu,
+                                (t_start, t_end),
+                            )
+                            .unwrap_or(face_nu + 1)
+                        } else {
+                            face_nu + 1
+                        };
                         if pts.len() >= expected_count {
                             continue;
                         }

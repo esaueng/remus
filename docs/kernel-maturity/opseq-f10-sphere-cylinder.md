@@ -17,8 +17,13 @@ not a general spherical arrangement algorithm.
 A second demonstrated defect affected quantity refinement: cylinder shared-rim
 synchronization applied the full face angular sample count to every partial rim
 arc. The oversized shared boundary exhausted the sphere filler's unchanged grid
-budget. Qualified coaxial cylinder arcs now receive their native fraction of the
-face angular count. The original edge sampler remains a lower bound; full rims,
+budget. Qualified complete two-rim circular cylinder bands now receive each arc’s
+native fraction of the face angular count. Admission requires a closed wire,
+two connected full-turn circular rims at distinct axial levels, one doubled
+axial seam with opposite uses and no holes. Missing or unresolved native data
+declines to the old density; stepped, partial and noncircular trims retain their
+established synchronization. Existing stepped-wall normal and cross-drilled
+replay-count assertions remain unchanged. The original edge sampler remains a lower bound; full rims,
 other carriers, tolerances and resource budgets retain their previous behavior.
 
 `regress_opseq_sphere_cylinder_fuse.rs` checks exact analytic carriers, opposing
