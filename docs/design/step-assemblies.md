@@ -17,7 +17,9 @@ existing `Assembly` model. A shared B-Rep entity imports once and all occurrence
 refer to its `SolidId`. Repeated product definitions may expand their children
 under multiple occurrences; parent-relative transforms compose in the same order
 as `Assembly::world_transform`. Names are taken from the root `PRODUCT` and
-each occurrence's name. The writer emits deterministic component order and one
+each occurrence's name, with Part 21 string directives (`\X2\`, `\X4\`,
+`\X\`, `\S\`, `\\`) decoded. The header declares edition 2, so the writer
+encodes every non-ASCII character and backslash with those directives. The writer emits deterministic component order and one
 B-Rep definition per unique solid handle, reusing existing geometry and boundary
 authority encoding. Each outer and cavity shell must be nonempty, closed and
 classified as a solid shell; sheet-tagged shells, open shells and empty-result

@@ -11028,15 +11028,111 @@ fn step_text_equals(raw: &str, expected: &str) -> bool {
     i == raw_bytes.len() && j == exp_bytes.len()
 }
 
-/// Owned decoded value of a raw STEP string inner (`''` collapsed to `'`).
+/// Owned decoded value of a raw STEP string inner (`''` collapsed to `'`,
+/// Part 21 control directives decoded by [`decode_step_directives`]).
 fn attr_text_value(raw: &str) -> String {
     // `str::replace` is UTF-8 safe; the fast path avoids allocation when
     // there is no escape to collapse.
-    if raw.contains("''") {
+    let collapsed = if raw.contains("''") {
         raw.replace("''", "'")
     } else {
         raw.to_string()
+    };
+    decode_step_directives(collapsed)
+}
+
+/// Decode the ISO 10303-21 string control directives of an already
+/// `''`-collapsed string: `\\`, `\X\hh`, `\X2\`…`\X0\`, `\X4\`…`\X0\`, and
+/// `\S\c` under the default ISO 8859-1 code page (`\PA\`). A directive that
+/// is malformed, or whose `\S\` needs another code page, stays verbatim, so
+/// a non-conforming lone backslash survives. The output is never longer
+/// than the input.
+fn decode_step_directives(text: String) -> String {
+    if !text.contains('\\') {
+        return text;
     }
+    let mut out = String::with_capacity(text.len());
+    let mut latin1 = true;
+    let mut rest = text.as_str();
+    while let Some(start) = rest.find('\\') {
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+        let used = decode_step_directive(rest, &mut latin1, &mut out);
+        rest = &rest[used..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Decode the one directive at the start of `text` (which starts with a
+/// backslash) into `out`; returns the bytes consumed, at least one.
+fn decode_step_directive(text: &str, latin1: &mut bool, out: &mut String) -> usize {
+    fn hex_units(hex: &str, width: usize) -> Option<Vec<u32>> {
+        if !hex.len().is_multiple_of(width) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
+        (0..hex.len())
+            .step_by(width)
+            .map(|at| u32::from_str_radix(hex.get(at..at + width)?, 16).ok())
+            .collect()
+    }
+    if text.starts_with("\\\\") {
+        out.push('\\');
+        return 2;
+    }
+    if let Some(hex) = text.strip_prefix("\\X\\").and_then(|rest| rest.get(..2))
+        && let Some([code]) = hex_units(hex, 2).as_deref()
+        && let Some(ch) = char::from_u32(*code)
+    {
+        out.push(ch);
+        return 5;
+    }
+    for (open, width) in [("\\X2\\", 4), ("\\X4\\", 8)] {
+        let Some(rest) = text.strip_prefix(open) else {
+            continue;
+        };
+        let Some(end) = rest.find("\\X0\\") else {
+            break;
+        };
+        let decoded = hex_units(&rest[..end], width).and_then(|units| {
+            if width == 4 {
+                let units: Vec<u16> = units
+                    .into_iter()
+                    .map(u16::try_from)
+                    .collect::<Result<_, _>>()
+                    .ok()?;
+                String::from_utf16(&units).ok()
+            } else {
+                units.into_iter().map(char::from_u32).collect()
+            }
+        });
+        if let Some(decoded) = decoded {
+            out.push_str(&decoded);
+            return open.len() + end + "\\X0\\".len();
+        }
+        break;
+    }
+    if *latin1
+        && let Some(rest) = text.strip_prefix("\\S\\")
+        && let Some(ch @ ' '..='~') = rest.chars().next()
+        && let Some(high) = char::from_u32(u32::from(ch) + 0x80)
+    {
+        out.push(high);
+        return 4;
+    }
+    if let [b'\\', b'P', page, b'\\', ..] = text.as_bytes()
+        && page.is_ascii_uppercase()
+    {
+        // `\PA\` restates the default page; another page stays verbatim
+        // and leaves its `\S\` characters undecoded.
+        *latin1 = *page == b'A';
+        if !*latin1 {
+            out.push_str(&text[..4]);
+        }
+        return 4;
+    }
+    out.push('\\');
+    1
 }
 
 /// Borrowed inner of a STEP string literal: outer quotes removed, `''`
@@ -11515,7 +11611,7 @@ fn unescape_step_string(literal: &str) -> String {
     let inner = literal
         .strip_prefix('\'')
         .map_or(literal, |rest| rest.strip_suffix('\'').unwrap_or(rest));
-    inner.replace("''", "'")
+    decode_step_directives(inner.replace("''", "'"))
 }
 
 fn parse_trimmed_curve(curve_ref: u64, attrs: &str) -> Result<ParsedTrimmedCurve, IoError> {
@@ -12304,6 +12400,34 @@ mod tests {
 
     use super::*;
     use crate::step::writer;
+
+    #[test]
+    fn part21_string_directives_decode_and_malformed_ones_stay_verbatim() {
+        let decode = attr_text_value;
+        assert_eq!(decode(r"caf\X2\00E9\X0\"), "café");
+        assert_eq!(decode(r"\X2\D83DDE00\X0\ \X4\0001F600\X0\"), "😀 😀");
+        assert_eq!(decode(r"caf\X\E9 \S\i"), "café é");
+        assert_eq!(decode(r"\PA\\S\i"), "é");
+        assert_eq!(decode(r"a\\b'' c"), r"a\b' c");
+        // Lone, unterminated, odd-length, non-hex or unpaired directives,
+        // and `\S\` under a code page this decoder does not map, are kept.
+        for raw in [
+            r"C:\temp",
+            r"\X2\00E9",
+            r"\X2\00E\X0\",
+            r"\X2\00G9\X0\",
+            r"\X2\D83D\X0\",
+            r"\X\G1",
+            r"\PB\\S\i",
+            "trailing\\",
+        ] {
+            assert_eq!(decode(raw), raw, "{raw}");
+        }
+        assert_eq!(
+            unescape_step_string(r"'it''s caf\X2\00E9\X0\'"),
+            "it's café"
+        );
+    }
 
     /// A quarter-band LINE pcurve whose origin sits half a turn from the
     /// use's end: lifting each end independently ties at that half turn and

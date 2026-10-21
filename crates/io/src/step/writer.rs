@@ -1972,8 +1972,55 @@ impl StepWriteContext {
 }
 
 /// Quote a string for a STEP Part 21 string literal.
+///
+/// The header declares edition 2 (`'2;1'`), whose strings hold only printable
+/// ASCII. An apostrophe doubles and a backslash becomes `\\`; any other
+/// character goes in a `\X2\`…`\X0\` run of UTF-16 code units, or a
+/// `\X4\`…`\X0\` run of code points outside the Basic Multilingual Plane.
 fn step_string_literal(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Run {
+        Ascii,
+        X2,
+        X4,
+    }
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('\'');
+    let mut run = Run::Ascii;
+    for ch in value.chars() {
+        let wanted = match ch {
+            ' '..='~' => Run::Ascii,
+            '\u{0}'..='\u{ffff}' => Run::X2,
+            _ => Run::X4,
+        };
+        if wanted != run {
+            if run != Run::Ascii {
+                out.push_str("\\X0\\");
+            }
+            match wanted {
+                Run::Ascii => {}
+                Run::X2 => out.push_str("\\X2\\"),
+                Run::X4 => out.push_str("\\X4\\"),
+            }
+            run = wanted;
+        }
+        match (run, ch) {
+            (Run::Ascii, '\'') => out.push_str("''"),
+            (Run::Ascii, '\\') => out.push_str("\\\\"),
+            (Run::Ascii, _) => out.push(ch),
+            (Run::X2, _) => {
+                let _ = write!(out, "{:04X}", u32::from(ch));
+            }
+            (Run::X4, _) => {
+                let _ = write!(out, "{:08X}", u32::from(ch));
+            }
+        }
+    }
+    if run != Run::Ascii {
+        out.push_str("\\X0\\");
+    }
+    out.push('\'');
+    out
 }
 
 /// Format a finite float for exact STEP round-trip.

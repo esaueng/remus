@@ -96,6 +96,33 @@ fn step_assembly_roundtrip_preserves_nested_shared_definitions_and_rigid_placeme
 }
 
 #[test]
+fn step_assembly_names_are_part21_encoded_and_decoded() {
+    let mut topo = Topology::new();
+    let solid = make_box(&mut topo, 1., 2., 3.).unwrap();
+    let mut assembly = Assembly::new("Baugruppe für café");
+    let root = assembly.add_root_component("Gehäuse \\ 'A'", solid, Mat4::identity());
+    assembly
+        .add_child_component(root, "部品 😀 é", solid, Mat4::translation(5., 0., 0.))
+        .unwrap();
+    let text = step::write_step_assembly(&topo, &assembly).unwrap();
+    // The header declares edition 2: every string must be printable ASCII.
+    assert!(text.is_ascii(), "edition-2 STEP must not carry raw UTF-8");
+    assert!(text.contains(r"'Baugruppe f\X2\00FC\X0\r caf\X2\00E9\X0\'"));
+    assert!(text.contains(r"'Geh\X2\00E4\X0\use \\ ''A'''"));
+    assert!(text.contains(r"'\X2\90E854C1\X0\ \X4\0001F600\X0\ \X2\00E9\X0\'"));
+
+    let result = step::read_step_assembly(&text, &mut Topology::new()).unwrap();
+    assert_eq!(result.assembly.name(), "Baugruppe für café");
+    let parent = result
+        .assembly
+        .component(result.assembly.roots()[0])
+        .unwrap();
+    assert_eq!(parent.name, "Gehäuse \\ 'A'");
+    let child = result.assembly.component(parent.children[0]).unwrap();
+    assert_eq!(child.name, "部品 😀 é");
+}
+
+#[test]
 fn step_assembly_declared_metres_scale_geometry_and_placements_once() {
     let (topo, assembly) = witness();
     let text = step::write_step_assembly(&topo, &assembly)
