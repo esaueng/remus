@@ -1145,10 +1145,115 @@ fn try_build_composite_classifier(
         }
     }
 
-    Some(AnalyticClassifier::Composite {
+    let composite = AnalyticClassifier::Composite {
         outer: std::boxed::Box::new(outer),
         inner: std::boxed::Box::new(inner),
-    })
+    };
+    if composite_matches_solid(topo, shell.faces(), &composite, tol) {
+        Some(composite)
+    } else {
+        None
+    }
+}
+
+/// Whether the `outer \ inner` box model is the planar solid itself.
+///
+/// The centroid plane split proposes the model; it does not prove it. A plate
+/// with two flush tabs is non-convex with only two offsets per axis, so it
+/// builds a model whose void (the region over the plate between and in front
+/// of the tabs) is not one box, and votes Inside above the plate. Require every
+/// boundary vertex and edge midpoint to lie on the model's boundary, and the
+/// enclosed volumes to agree within the linear tolerance swept over the
+/// boundary area. Anything else defers to the ray classifier.
+fn composite_matches_solid(
+    topo: &Topology,
+    faces: &[remus_topology::face::FaceId],
+    composite: &AnalyticClassifier,
+    tol: Tolerance,
+) -> bool {
+    let AnalyticClassifier::Composite { outer, inner } = composite else {
+        return false;
+    };
+    let (
+        AnalyticClassifier::Box {
+            min: omin,
+            max: omax,
+        },
+        AnalyticClassifier::Box {
+            min: imin,
+            max: imax,
+        },
+    ) = (outer.as_ref(), inner.as_ref())
+    else {
+        return false;
+    };
+    let extent = |lo: Point3, hi: Point3| (hi.x() - lo.x(), hi.y() - lo.y(), hi.z() - lo.z());
+    let (ox, oy, oz) = extent(*omin, *omax);
+    let overlap = |a0: f64, a1: f64, b0: f64, b1: f64| (a1.min(b1) - a0.max(b0)).max(0.0);
+    let outer_volume = ox * oy * oz;
+    let model_volume = outer_volume
+        - overlap(omin.x(), omax.x(), imin.x(), imax.x())
+            * overlap(omin.y(), omax.y(), imin.y(), imax.y())
+            * overlap(omin.z(), omax.z(), imin.z(), imax.z());
+
+    // Divergence theorem over planar faces: V = (1/3) * sum(d_out * area).
+    let mut solid_volume = 0.0;
+    let mut boundary_area = 0.0;
+    for &fid in faces {
+        let Ok(face) = topo.face(fid) else {
+            return false;
+        };
+        let FaceSurface::Plane { d, .. } = face.surface() else {
+            return false;
+        };
+        let d_out = if face.is_reversed() { -*d } else { *d };
+        let mut face_area = 0.0;
+        for (k, wid) in std::iter::once(face.outer_wire())
+            .chain(face.inner_wires().iter().copied())
+            .enumerate()
+        {
+            let Ok(wire) = topo.wire(wid) else {
+                return false;
+            };
+            let mut loop_points = Vec::with_capacity(wire.edges().len());
+            for oe in wire.edges() {
+                let Ok(edge) = topo.edge(oe.edge()) else {
+                    return false;
+                };
+                let (Ok(a), Ok(b)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+                    return false;
+                };
+                let (a, b) = (a.point(), b.point());
+                let mid = Point3::new(
+                    0.5 * (a.x() + b.x()),
+                    0.5 * (a.y() + b.y()),
+                    0.5 * (a.z() + b.z()),
+                );
+                for p in [a, mid] {
+                    if composite.classify(p, tol).is_some() {
+                        return false;
+                    }
+                }
+                loop_points.push(if oe.is_forward() { a } else { b });
+            }
+            // Newell's vector area; its length is the loop's area whatever
+            // the winding convention.
+            let Some(&origin) = loop_points.first() else {
+                return false;
+            };
+            let mut area = Vec3::new(0.0, 0.0, 0.0);
+            for (i, &p) in loop_points.iter().enumerate() {
+                let q = loop_points[(i + 1) % loop_points.len()];
+                area += (p - origin).cross(q - origin);
+            }
+            let loop_area = 0.5 * area.length();
+            face_area += if k == 0 { loop_area } else { -loop_area };
+        }
+        solid_volume += d_out * face_area / 3.0;
+        boundary_area += face_area;
+    }
+    let volume_tol = 10.0 * tol.linear * boundary_area + 1e-12 * outer_volume.abs();
+    (solid_volume - model_volume).abs() <= volume_tol
 }
 
 // ---------------------------------------------------------------------------
