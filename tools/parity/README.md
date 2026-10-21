@@ -6,6 +6,35 @@ Run the O1.5 slices from the repository root:
 bash scripts/test-o15-parity.sh
 ```
 
+For the bounded recurring proof, run:
+
+```bash
+bash scripts/test-o15-proof.sh
+```
+
+The `Native WASM Parity` workflow registers this proof nightly and on manual
+dispatch on Linux x86-64; changes to its harness also run it on pull requests.
+It builds the release native runners and both Node-target WASM packages once,
+then executes the 12-cell contract and 6-cell split import/export slices against
+native, freshly packed/installed packages and separately identified committed
+packages. These use the existing `--no-opt` parity build configuration, not the
+optimized browser distribution build. The 54-cell and 366-cell geometric
+matrices remain separate local commands; their known differences stay open.
+
+Reports, subprocess exit statuses and exact build commands/compiler flags are kept under a new
+`target/o15-proof/run.*` directory per invocation (`O15_PROOF_OUT` overrides the
+parent). The workflow uploads this directory and its build log even on failure.
+A failed contract slice still allows the split slice to run, and either failure
+fails the proof. Build failures leave both slices explicitly `not_run`.
+`proof-verdict.mjs` checks complete matrix and surface coverage and rescores
+raw observations with the existing oracles; an empty or falsely green report
+cannot pass merely because its process exited successfully.
+Source-status collection failures and malformed source/toolchain/build metadata
+refuse provenance instead of claiming a clean, identified build. Committed
+package source attribution remains unverified. Registration does not establish
+a hosted pass; macOS, Windows, arm64 and wider nightly geometric coverage remain
+open under O1.5.
+
 The script builds the native facade runner and a release Node-target WASM
 package, packs `remus-wasm`, installs that tarball into a disposable npm
 consumer, and then executes the same generated `executeBatchV2` bundle on
@@ -93,9 +122,10 @@ finding: seed plus new §B row. Serialized arena SHA-256 is compared as a
 visible non-gating gap, as in the first slice. Timings are recorded as
 evidence only; they are not a competitive benchmark.
 
-This extends but does not complete O1.5. Byte identity and the
-Linux/macOS/Windows x86-64/arm64 nightly matrix remain open; the contract
-slice below carries the failure/evolution fixtures.
+This extends but does not complete O1.5. Byte identity and the full
+Linux/macOS/Windows x86-64/arm64 nightly matrix remain open; the recurring
+Linux contract/split proof above covers a bounded subset. The contract slice
+below carries the failure/evolution fixtures.
 
 ## Contract slice
 
