@@ -741,9 +741,26 @@ fn trim_support_corner(
 
             if unique_contacts.len() >= 2 {
                 let dir_prev = (prev_pos - pos).normalize()?;
+                // The contact that belongs on the "before" edge lies on that
+                // edge's line — possibly on its extension past the corner,
+                // where a concave stripe running out across this face puts
+                // it. Distance to `pos + dir·r` alone picks the other contact
+                // there, so the line decides whenever it singles one out.
+                let off_line = |q: Point3| {
+                    let v = q - pos;
+                    (v - dir_prev * v.dot(dir_prev)).length()
+                };
+                let on_line = tol.linear * 100.0;
+                let (l0, l1) = (off_line(unique_contacts[0]), off_line(unique_contacts[1]));
                 let approx_prev = pos + dir_prev * radius;
-                let d0 = (unique_contacts[0] - approx_prev).length();
-                let d1 = (unique_contacts[1] - approx_prev).length();
+                let (d0, d1) = if (l0 <= on_line) == (l1 <= on_line) {
+                    (
+                        (unique_contacts[0] - approx_prev).length(),
+                        (unique_contacts[1] - approx_prev).length(),
+                    )
+                } else {
+                    (l0, l1)
+                };
                 if d0 <= d1 {
                     out.push(unique_contacts[0]);
                     out.push(unique_contacts[1]);
