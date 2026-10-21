@@ -59,6 +59,8 @@ class FleetRunnerPolicy(unittest.TestCase):
         expected = previous.replace('ci-server-jane-1|ci-server-jane-2)',
                                     'ci-server-jane-1|ci-server-jane-2|ci-server-jane-3)')
         expected = expected.replace('CI_MEMORY=6442450944', 'CI_MEMORY=5000000000')
+        expected = expected.replace('          CI_CGROUP=',
+                                    '          CI_MEMORY=$((CI_MEMORY / $(getconf PAGESIZE) * $(getconf PAGESIZE)))\n          CI_CGROUP=')
         self.assertEqual((ROOT / '.github/workflows/fleet-ci-v6.yml').read_text(), expected)
 
     def test_activated_profile_cannot_restore_the_retired_budget(self):
@@ -69,6 +71,17 @@ class FleetRunnerPolicy(unittest.TestCase):
         self.assertIn('ci-server-jane-1|ci-server-jane-2|ci-server-jane-3)', guard)
         self.assertIn('CI_MEMORY=5000000000', guard)
         self.assertNotIn('CI_MEMORY=6442450944', guard)
+
+    def test_guard_uses_the_exact_kernel_page_aligned_limit(self):
+        for workflow in SOURCES:
+            text = (ROOT / workflow).read_text()
+            guard = re.search(r'case "\$RUNNER_NAME" in\n.*?\besac', text, re.S).group()
+            align = re.search(r'^\s*CI_MEMORY=\$\(\(.+$', text, re.M).group()
+            result = subprocess.check_output(
+                ['bash', '-eu', '-c', "getconf() { printf '4096\\n'; }; " + guard
+                 + '\n' + align + '; printf "%s" "$CI_MEMORY"'],
+                env=dict(os.environ, RUNNER_NAME='ci-server-jane-3'), text=True)
+            self.assertEqual(result, '4999999488')
 
 
 if __name__ == '__main__':
