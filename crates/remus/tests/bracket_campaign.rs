@@ -463,7 +463,6 @@ fn f6_front_top_edge_alone() {
 }
 
 #[test]
-#[ignore = "open: F4 concave tab/base fillet alone fails postcondition: 16 free edges, 1 inconsistent orientation"]
 fn f4_concave_tab_base_edges_alone() {
     let mut m = Model::new();
     let body = tabbed(&mut m);
@@ -500,7 +499,6 @@ fn feature_cuts_after_f1_f2_f5_stay_exact() {
 }
 
 #[test]
-#[ignore = "open: F3 after F1+F2 fails postcondition: 11 free edges, 1 inconsistent orientation (passes alone)"]
 fn sequence_f3_after_f1_f2() {
     let mut m = Model::new();
     let body = f1_f2(&mut m);
@@ -509,7 +507,6 @@ fn sequence_f3_after_f1_f2() {
 }
 
 #[test]
-#[ignore = "open: F4 after F1+F2 refuses with blend TrimmingFailure"]
 fn sequence_f4_after_f1_f2() {
     let mut m = Model::new();
     let body = f1_f2(&mut m);
@@ -645,19 +642,17 @@ fn fillet_every_edge(radius: f64) {
 }
 
 #[test]
-#[ignore = "open: filleting every edge at r0.5 refuses: unsupported vertex blend, 2 stripes meet"]
 fn every_edge_r0_5() {
     fillet_every_edge(0.5);
 }
 
 #[test]
-#[ignore = "open: filleting every edge at r1 refuses: unsupported vertex blend, 2 stripes meet"]
 fn every_edge_r1() {
     fillet_every_edge(1.0);
 }
 
 #[test]
-#[ignore = "open: filleting every edge at r2 refuses: unsupported vertex blend, 2 stripes meet"]
+#[ignore = "open: every edge at r2 refuses: the 4 mm plate's top and bottom stripes meet edge to edge (the cascade reports the walking engine's 2-stripe refusal)"]
 fn every_edge_r2() {
     fillet_every_edge(2.0);
 }
@@ -682,10 +677,7 @@ fn current_refusals_are_typed_and_atomic() {
     let seq_f5 = fillet(&mut m, seq, Pass::F5, 8, f5_removed(), CURVED_VOLUME_TOL);
     let grooved = cut_features(&mut m, tabs, &["groove"]);
 
-    let cases: [(&str, SolidId, Pass, usize); 6] = [
-        ("F4 alone", tabs, Pass::F4, 2),
-        ("F3 after F1+F2", seq, Pass::F3, 4),
-        ("F4 after F1+F2", seq, Pass::F4, 2),
+    let cases: [(&str, SolidId, Pass, usize); 3] = [
         ("F6 after F1+F2+F5", seq_f5, Pass::F6, 3),
         ("F5 after groove", grooved, Pass::F5, 8),
         ("F7 after groove", grooved, Pass::F7, 4),
@@ -694,24 +686,6 @@ fn current_refusals_are_typed_and_atomic() {
         let before = volume(&m, body);
         let err = try_fillet(&mut m, body, pass, n).err().expect(label);
         match label {
-            "F4 alone" | "F3 after F1+F2" => {
-                let reason = postcondition_reason(&err);
-                assert!(
-                    reason.contains("free (boundary) edges"),
-                    "{label}: {reason}"
-                );
-                assert!(
-                    reason.contains("inconsistent face orientations"),
-                    "{label}: {reason}"
-                );
-            }
-            "F4 after F1+F2" => assert!(
-                matches!(
-                    err,
-                    OperationsError::Blend(BlendError::TrimmingFailure { .. })
-                ),
-                "{label}: {err:?}"
-            ),
             "F6 after F1+F2+F5" => assert!(
                 matches!(
                     err,
@@ -742,7 +716,8 @@ fn current_refusals_are_typed_and_atomic() {
         assert_volume(volume(&m, body), before, 1e-9, label);
     }
 
-    for radius in [0.5, 1.0, 2.0] {
+    {
+        let radius = 2.0;
         let edges = m.solid_edges(tabs).unwrap();
         let err = m.fillet(tabs, &edges, radius).err().expect("every edge");
         assert!(
