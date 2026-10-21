@@ -204,9 +204,8 @@ fn fillet_transacted(
 
         // Only build polygon data for planar faces. Non-planar faces
         // will be passed through unchanged if they don't contain target edges.
-        let normal = match face.surface() {
-            FaceSurface::Plane { normal, .. } => *normal,
-            _ => continue,
+        let Some(normal) = face.effective_plane_normal() else {
+            continue;
         };
         if positions.is_empty() {
             continue;
@@ -221,7 +220,7 @@ fn fillet_transacted(
                 wire_edge_ids,
                 normal,
                 d,
-                reversed: false,
+                reversed: face.is_reversed(),
                 inner_wires: face_inner_wires,
             },
         );
@@ -373,12 +372,7 @@ fn fillet_transacted(
         }
 
         let new_d = dot_normal_point(poly.normal, new_verts[0]);
-        result_specs.push(FaceSpec::Planar {
-            vertices: new_verts,
-            normal: poly.normal,
-            d: new_d,
-            inner_wires: poly.inner_wires.clone(),
-        });
+        result_specs.push(poly.spec(new_verts, new_d));
     }
 
     for &edge_id in &filtered_edges {
@@ -820,7 +814,16 @@ fn fillet_variable_transacted(
 
     for &face_id in &shell_face_ids {
         let face = topo.face(face_id)?;
-        face_surfaces.insert(face_id.index(), face.surface().clone());
+        // Normal evaluation throughout this path expects outward planes.
+        // Keep the source wire order and restore its reversal on rebuild.
+        let surface = match face.surface() {
+            FaceSurface::Plane { normal, d } if face.is_reversed() => FaceSurface::Plane {
+                normal: -*normal,
+                d: -*d,
+            },
+            other => other.clone(),
+        };
+        face_surfaces.insert(face_id.index(), surface);
 
         let wire = topo.wire(face.outer_wire())?;
         let mut vertex_ids = Vec::new();
@@ -859,8 +862,8 @@ fn fillet_variable_transacted(
         }
 
         // Build polygon data for planar faces (used for trimming).
-        let normal = match face.surface() {
-            FaceSurface::Plane { normal, .. } => *normal,
+        let (normal, d) = match face_surfaces.get(&face_id.index()) {
+            Some(FaceSurface::Plane { normal, d }) => (*normal, *d),
             _ => continue,
         };
 
@@ -871,8 +874,8 @@ fn fillet_variable_transacted(
                 positions,
                 wire_edge_ids,
                 normal,
-                d: 0.0,
-                reversed: false,
+                d,
+                reversed: face.is_reversed(),
                 inner_wires: face_inner_wires,
             },
         );
@@ -1207,12 +1210,7 @@ fn fillet_variable_transacted(
 
         // Skip polygon trimming for degenerate faces (e.g., disc caps).
         if n < 3 {
-            all_specs.push(FaceSpec::Planar {
-                vertices: poly.positions.clone(),
-                normal: poly.normal,
-                d: poly.d,
-                inner_wires: poly.inner_wires.clone(),
-            });
+            all_specs.push(poly.spec(poly.positions.clone(), poly.d));
             continue;
         }
 
@@ -1302,12 +1300,7 @@ fn fillet_variable_transacted(
         }
 
         let new_d = dot_normal_point(poly.normal, new_verts[0]);
-        all_specs.push(FaceSpec::Planar {
-            vertices: new_verts,
-            normal: poly.normal,
-            d: new_d,
-            inner_wires: poly.inner_wires.clone(),
-        });
+        all_specs.push(poly.spec(new_verts, new_d));
     }
 
     let n_samples = 5; // Number of cross-sections along each edge

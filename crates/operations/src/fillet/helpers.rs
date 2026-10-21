@@ -36,9 +36,7 @@ pub(super) struct FacePolygon {
     pub(super) vertex_ids: Vec<VertexId>,
     pub(super) positions: Vec<Point3>,
     pub(super) wire_edge_ids: Vec<EdgeId>,
-    /// Plane normal. The rolling-ball engine stores the outward one whatever
-    /// the source face's reversal; the v1 bevel and variable paths store the
-    /// surface normal and leave `reversed` false.
+    /// Outward plane normal, accounting for the source face's reversal.
     pub(super) normal: Vec3,
     #[allow(dead_code)]
     pub(super) d: f64,
