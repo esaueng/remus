@@ -1098,9 +1098,10 @@ fn planar_fillet_result(
     solid: SolidId,
     edges: &[EdgeId],
     radius: f64,
+    close_runouts: bool,
 ) -> Result<BlendResult, OperationsError> {
     let (result_solid, face_origins) =
-        crate::fillet::fillet_rolling_ball_with_origins(topo, solid, edges, radius)?;
+        crate::fillet::fillet_rolling_ball_with_origins(topo, solid, edges, radius, close_runouts)?;
     // The fast path gets the same postconditions as the walking path — and
     // needs the volume guard more since it learned to rebuild holed caps: a
     // setback that crosses an inner loop folds the cap through itself and
@@ -1458,7 +1459,7 @@ fn fillet_group(
         // handles those shapes. Each attempt is transactional, so the
         // fall-through starts from a clean arena.
         match attempt_with_lazy_material_guard(topo, solid, edges, radius, |t| {
-            planar_fillet_result(t, solid, edges, radius)
+            planar_fillet_result(t, solid, edges, radius, false)
         }) {
             Ok(result) => return Ok(result),
             Err(
@@ -1841,8 +1842,11 @@ pub fn fillet_cascade(
         // The same lazy B71 material guard `fillet_v2` gives its own
         // rolling-ball attempt, so the fallback cannot ship a wrong-side band
         // the walking engine's route would have refused.
+        // Only here may a straight stripe that runs into a step close with a
+        // section facet: the walking engine has already refused the
+        // selection, so no result it would have produced is replaced.
         let result = attempt_with_lazy_material_guard(t, solid, edges, radius, |t| {
-            planar_fillet_result(t, solid, edges, radius)
+            planar_fillet_result(t, solid, edges, radius, true)
         })?;
         reject_open_shell(t, result.solid)?;
         Ok(result)
