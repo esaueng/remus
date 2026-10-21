@@ -2518,6 +2518,14 @@ export class BrepKernel {
      */
     gridPattern(solid: number, dir_x_x: number, dir_x_y: number, dir_x_z: number, dir_y_x: number, dir_y_y: number, dir_y_z: number, spacing_x: number, spacing_y: number, count_x: number, count_y: number): number;
     /**
+     * Grid pattern journaled as one construction-derived F/E/V evolution
+     * entry (kind `grid_pattern`). Returns JSON `{"compound", "op"}`.
+     * Directions are independently normalized and must be nonparallel.
+     * Members are row-major (X changes first), including the original first.
+     * Counts must be positive integers, each and their product at most 10000.
+     */
+    gridPatternJournaled(solid: number, dxx: number, dxy: number, dxz: number, dyx: number, dyy: number, dyz: number, spacing_x: number, spacing_y: number, count_x: number, count_y: number): string;
+    /**
      * Guided (two-rail) sweep: sweep `face` along a spine, orienting the
      * profile so its up-vector tracks an auxiliary spine.
      *

@@ -345,7 +345,7 @@ class ConvergenceTests(unittest.TestCase):
         self.assertEqual(config["bypass_actors"], [])
         queue = config["rules"][0]["parameters"]
         self.assertEqual(queue["grouping_strategy"], "ALLGREEN")
-        self.assertEqual(queue["max_entries_to_build"], 2)
+        self.assertEqual(queue["max_entries_to_build"], 4)
         self.assertEqual(queue["max_entries_to_merge"], 2)
         self.assertEqual(queue["min_entries_to_merge"], 1)
         self.assertEqual(queue["min_entries_to_merge_wait_minutes"], 0)
