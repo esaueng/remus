@@ -191,6 +191,10 @@ pub struct FaceVolumeTerm {
     pub area: f64,
     /// Signed volume term about the requested reference.
     pub volume: f64,
+    /// The face's vector area `∫ n dA`, from the same samples, when the path
+    /// that measured the face reports it. Neither a reference nor a
+    /// translation changes it.
+    pub vector_area: Option<Vec3>,
 }
 
 /// What an entry remembers about one integration.
@@ -314,6 +318,7 @@ impl Request {
             Self::Volume { .. } => Answer::Volume(FaceVolumeTerm {
                 area: value.contribution.area,
                 volume: value.contribution.volume,
+                vector_area: value.flux,
             }),
             Self::Area { .. } | Self::AnalyticArea { .. } => Answer::Area(value.contribution.area),
         }
@@ -346,6 +351,7 @@ impl Request {
                         Answer::Volume(FaceVolumeTerm {
                             area,
                             volume: value.contribution.volume,
+                            vector_area: value.flux,
                         }),
                     ));
                 }
@@ -361,7 +367,14 @@ impl Request {
                 } else {
                     Rank::Translated
                 };
-                Some((rank, Answer::Volume(FaceVolumeTerm { area, volume })))
+                Some((
+                    rank,
+                    Answer::Volume(FaceVolumeTerm {
+                        area,
+                        volume,
+                        vector_area: Some(flux),
+                    }),
+                ))
             }
         }
     }

@@ -7,7 +7,7 @@ description: Use when committing, pushing, opening, reviewing, or merging a pull
 
 End-to-end change flow for this repo: branch, commit, push, PR, merge gate, squash-merge, release. Every change lands as a squash-merged PR.
 
-**CI and open threads block a merge here, never a reviewer's approval.** `main` requires the `checks / CI Pass` status, an up-to-date branch, and every review conversation resolved, and nothing else: zero required approvals, admins not enforced, force pushes allowed. The Codex connector app posts on every PR but has produced no review (every recent PR carries only its usage-limit notice), and no PR in this repo's history has received a review from any account. Everything in the gate below beyond a green `CI Pass` and resolved threads is self-imposed.
+**CI and open threads block a merge here, never a reviewer's approval.** `main` requires the `checks / CI Pass` status and every review conversation resolved, and merges go through the live merge queue, which re-runs CI on the PR combined with current `main` (`docs/owner-pr-ci.md`, "Convergence and merge queues", is the authoritative description of the tiers and the queue). Zero required approvals, admins not enforced. The Codex connector app posts on every PR but has produced no review (every recent PR carries only its usage-limit notice), and no PR in this repo's history has received a review from any account. Everything in the gate below beyond a green `CI Pass` and resolved threads is self-imposed.
 
 ## Quick reference
 
@@ -20,8 +20,8 @@ End-to-end change flow for this repo: branch, commit, push, PR, merge gate, squa
 | Verify remote head | `gh pr view <N> --json headRefOid --jq .headRefOid` vs `git rev-parse HEAD` |
 | Gate poll | `gh pr view <N> --json statusCheckRollup` until every check completes and `CI Pass` is SUCCESS |
 | Check for findings | `gh api repos/esaueng/remus/pulls/<N>/comments` and `gh pr view <N> --comments` (expect none; see gate section) |
-| Merge | `gh pr merge <N>` (only when the merge itself is authorized): `main` requires the merge queue, so this enqueues the PR (or arms auto-merge until its checks pass) and the queue squash-merges it after `checks / CI Pass` passes on the merged result |
-| Behind `main` | Not needed to merge: the queue tests each PR against current `main`. To refresh a stale PR run anyway: `gh api -X PUT repos/esaueng/remus/pulls/<N>/update-branch -f expected_head_sha=<head>` (older `gh` lacks `pr update-branch`); restarts CI |
+| Merge | `gh pr merge <N>` (only when the merge itself is authorized): adds the PR to the merge queue, which squash-merges it once `checks / CI Pass` passes on the merge group |
+| Behind `main` | Not a merge blocker: the queue tests each entry against current `main`. To refresh a stale PR's own CI anyway: `gh api -X PUT repos/esaueng/remus/pulls/<N>/update-branch -f expected_head_sha=<head>` (older `gh` lacks `pr update-branch`); restarts CI |
 | Post-merge | `git fetch origin main`; GitHub deletes the head branch (`delete_branch_on_merge` is on), so retarget stacked PRs first |
 | Worktree | `git worktree add .worktrees/<branch-name> <branch>` |
 
@@ -35,7 +35,7 @@ Hooks live in `.husky/`. Read the hook files themselves when in doubt; the "Git 
 
 Hard rules:
 - Never `--no-verify`, never `HUSKY=0`, never edit a hook to get past it. If a hook fails on pre-existing breakage you did not cause, stop and report; do not bypass.
-- CI is the real signal: fmt, clippy, test (nextest workspace + doc tests), platform tests, coverage, MSRV, wasm, fuzz-check, render, boundaries, deny, audit, docs, machete, secrets-scan, taplo, all fanned into one aggregate check named `CI Pass`. It is an aggregate, not a *required* check — nothing enforces it (see the gate section). `Apache Lineage`, `Doc Paths`, and the `WASM Size Report` comment run on PRs but are NOT in the `CI Pass` fan-in, so read them separately; the size policy itself is enforced inside `CI Pass` by `WASM Size Gate` (a kernel growth above 64 KiB raw needs a `WASM-Size:` line in the PR description). Job catalog: see [reference.md](reference.md), "CI jobs".
+- CI is the real signal: `ci.yml` calls the pinned `.github/workflows/fleet-ci-v4.yml`, whose jobs (Classify Changes, Repository Policy, Secrets Scan, Test, Approximation Census, Coverage, MSRV, WASM without optional I/O, WASM Build & Validate, WASM Size Gate, Fuzz Targets Compile, Software Rendering, Cargo Deny, Security Audit, Documentation) all fan into one aggregate job, `CI Pass`. Branch protection requires it as `checks / CI Pass`, and it is the only required status check. Repository Policy runs the cheap repository checks in one job, including Apache lineage, `cargo fmt --check`, layer boundaries, documentation paths, `cargo machete` and `taplo fmt --check`. The size policy is enforced inside `CI Pass` by `WASM Size Gate` (a kernel growth above 64 KiB raw needs a `WASM-Size:` line in the PR description); the `WASM Size Report` comment runs outside it. Job catalog: see [reference.md](reference.md), "CI jobs".
 
 ## Procedure: land a change
 
@@ -57,13 +57,14 @@ Hard rules:
 
 ## The merge gate
 
-There is no working automated reviewer on this repo, and branch protection enforces CI, freshness and conversation resolution only. Verified state (2026-10-01), not assumption:
+There is no working automated reviewer on this repo, and branch protection enforces CI and conversation resolution only. Verified state, not assumption:
 
-- `gh api repos/esaueng/remus/branches/main/protection`: required status check `checks / CI Pass`, `strict: true` (the branch must be up to date with `main`), `required_conversation_resolution: true` (every review thread resolved), required approvals none, `enforce_admins` false, force pushes allowed. Since then a merge queue went live on `main` (verified 2026-10-20: queued PRs run `merge_group` CI on `gh-readonly-queue/main/pr-<N>-<base>` branches, and #1193 and #1195–#1198 landed through it). Its template is `.github/merge-queue-ruleset.json` (squash, `ALLGREEN`, two entries built at a time). A queue entry runs tier 1 and the package build; tier 2 (coverage, MSRV, deny, audit, render, fuzz compile) runs there only when the diff touches its inputs, and otherwise on the main push after the merge (`docs/owner-pr-ci.md`, "Tiers").
+- `gh api repos/esaueng/remus/branches/main/protection` (2026-10-01): required status check `checks / CI Pass`, `required_conversation_resolution: true` (every review thread resolved), required approvals none, `enforce_admins` false. At that date `strict` was `true`; the queue activation in `docs/owner-pr-ci.md` sets it to `false`, because the queue validates against current `main` instead.
+- The merge queue is live on `main` (2026-10-20: queued PRs run `merge_group` CI on `gh-readonly-queue/main/pr-<N>-<base sha>` branches, and #1202, #1200 and the refresh PR #1208 landed on `main` from merge-group runs). Its template is `.github/merge-queue-ruleset.json`: squash, `ALLGREEN`, at most four entries built at a time, a 240-minute check timeout. Merge groups always run on hosted runners. Which jobs a queue entry runs is set by the classifier tiers in `docs/owner-pr-ci.md`, "Tiers".
 - The only check-run apps that post here are `github-actions` and `blacksmith-sh` (the CI runner provider — its `[code]smith` entry reports SKIPPED and is not a reviewer). The `chatgpt-codex-connector` app posts an issue comment on each PR; on every recent PR it is a usage-limit notice, not a review.
 - Recent PRs have zero reviews and zero inline comments.
 
-So a red `CI Pass` or an unresolved review thread blocks the merge, but an unread diff, a red check outside its fan-in, or a stale head does not. Admins can bypass even the CI requirement. The gate is what you do, in this order:
+So a red `CI Pass` or an unresolved review thread blocks the merge, but an unread diff or a red check outside its fan-in does not. Admins can bypass even the CI requirement. The gate is what you do, in this order:
 
 1. **Wait for every check to complete.** List the rollup unfiltered; do not filter by a name you have not confirmed exists:
    ```bash
@@ -71,19 +72,19 @@ So a red `CI Pass` or an unresolved review thread blocks the merge, but an unrea
      --jq '.statusCheckRollup[] | "\(.name // .context)\t\(.status)\t\(.conclusion // "-")"'
    ```
    `CI Pass` does not appear at all until every job in its fan-in finishes, so its absence early on is not a failure. Coverage is the usual straggler (~40 min); budget for it.
-2. **Confirm `CI Pass` is SUCCESS**, and separately read the three checks outside its fan-in: `Apache Lineage`, `Doc Paths`, `WASM Size Report`.
+2. **Confirm `CI Pass` is SUCCESS**, and separately read the checks outside its fan-in, for example `WASM Size Report`, `public-commit-metadata` (`ci.yml`) and the `WASM version guard` jobs (`wasm-version.yml`).
 3. **Check both comment surfaces anyway** — `gh api repos/esaueng/remus/pulls/<N>/comments` (inline) and `gh pr view <N> --comments` (issue-level). Expect zero from reviewers; the WASM size bot posts here. Cheap insurance in case an app is installed later.
 4. **Confirm the head you tested is the head being merged**: `gh pr view <N> --json headRefOid` vs `git rev-parse HEAD`.
-5. **Merge:** `gh pr merge <N>` adds the PR to the merge queue, which squash-merges it (the queue's method; no `--squash` flag needed) once its merge-group run passes. A PR that leaves the queue without merging failed that run or lost a required check: read the `merge_group` run for `gh-readonly-queue/main/pr-<N>-*`, fix, and enqueue again. Do not pass `--admin`: it bypasses the queue and CI, which needs explicit authorization for that PR. If it is `BLOCKED` with every check green, look for an unresolved review thread (`gh api graphql` on `pullRequest.reviewThreads { isResolved }`); resolving it is the reviewer's sign-off, so ask before resolving someone else's thread.
+5. **Merge:** `gh pr merge <N>` adds the PR to the merge queue. The queue squash-merges it (the repository allows squash merging only, and the queue's method is `SQUASH`) once its merge-group run passes, so `main` keeps one conventional-titled commit per PR. A PR that leaves the queue without merging failed that run or lost a required check: read the `merge_group` run for `gh-readonly-queue/main/pr-<N>-*`, fix, and enqueue again. Do not pass `--admin`: it bypasses the queue and CI, which needs explicit authorization for that PR. If the PR is `BLOCKED` with every check green, look for an unresolved review thread (`gh api graphql` on `pullRequest.reviewThreads { isResolved }`); resolving it is the reviewer's sign-off, so ask before resolving someone else's thread.
 
 Because no second pair of eyes exists, the diff you push is the diff that lands. On high-risk changes (GFA boolean engine, public WASM API), self-review the full diff before merging and say plainly in the PR body what you verified and what you did not.
 
 Anti-patterns:
 - Do NOT poll for `cubic · AI code reviewer`, Greptile, or Copilot. None are installed. A poll keyed to a check name that does not exist stays silent forever and reads exactly like "no findings" — this is the single most dangerous failure mode in this workflow, because the false pass is indistinguishable from a real one.
 - Do NOT report "review came back clean" when the truth is "no reviewer ran". Say which gate actually passed.
-- Do NOT enqueue (`gh pr merge`, with or without `--auto`) unless the merge itself was authorized. The queue lands the PR without another look once `CI Pass` is green.
+- Do NOT enqueue (`gh pr merge`, with or without `--auto`) unless the merge itself was authorized. The queue lands the PR without another look once `CI Pass` is green on the merge group.
 - Do NOT conclude "no findings" from an empty `gh pr view --comments`; inline comments live on the pulls comments API. Check both.
-- Do NOT treat `mergeStateStatus: CLEAN` as a quality signal. With no reviewer, it means only that the branch is current, conflict-free and has a green `CI Pass`.
+- Do NOT treat `mergeStateStatus: CLEAN` as a quality signal. With no reviewer, it means only that the branch is conflict-free and has a green `CI Pass`.
 
 ## Banned-name compliance
 
@@ -112,7 +113,7 @@ Ignore the older `../feat-branch` sibling-directory form in CLAUDE.md; in-repo `
 
 **There is no release-please and no release PR in this fork** (verified 2026-08-21: `rg -l 'release-please' .github/workflows/` is empty; the leftover `release-please-config.json` / `.release-please-manifest.json` in the tree are inert upstream residue — the release-flow skill says the same). Do not wait for, look for, or promise a `chore(main): release X.Y.Z` PR.
 
-The actual release channel is the committed package: `.github/workflows/publish.yml` ("Refresh Apache Staging Package") runs on every push to `main`, rebuilds `crates/wasm/pkg` and `crates/wasm-io/pkg` with `cargo xtask wasm-build`, and — when the output differs — opens a refresh PR `chore(wasm): refresh committed packages to vX.Y.Z` from branch `codex/wasm-refresh-<source sha>` through the package bot App, closing the older open refresh PRs it supersedes. That PR runs the full suite and goes through the queue like any other. Consumers install by git path (`github:esaueng/remus#main&path:/crates/wasm/pkg`), so merging the refresh PR IS the release: a kernel PR ships only once the next refresh PR lands. Nothing publishes to npm or crates.io. Cross-repo consumption and the validation harness: see the release-flow skill. Details and the manual refresh dispatch: [reference.md](reference.md), "Committed-package refresh".
+The actual release channel is the committed package: `.github/workflows/publish.yml` ("Refresh Apache Staging Package") runs on every package-affecting push to `main`, rebuilds `crates/wasm/pkg` and `crates/wasm-io/pkg` with `cargo xtask wasm-build`, and — when the output differs — runs `scripts/publish-wasm-package-pr.py`, which opens a refresh PR `chore(wasm): refresh committed packages to vX.Y.Z` from branch `codex/wasm-refresh-<source sha>` through the package bot App (`remus-package-bot`). That PR runs the full suite and goes through the merge queue like any other; it never merges on its own. Consumers install by git path (`github:esaueng/remus#main&path:/crates/wasm/pkg`), so merging the refresh PR IS the release: a kernel PR reaches consumers only once the next refresh PR lands. After opening its PR, the script closes the older open refresh PRs that this refresh supersedes (esaueng/remus#1204). Nothing publishes to npm or crates.io. Cross-repo consumption and the validation harness: see the release-flow skill. Details and the manual refresh dispatch: [reference.md](reference.md), "Committed-package refresh".
 
 ## CI failures you did not cause
 

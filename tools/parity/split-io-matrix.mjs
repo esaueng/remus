@@ -11,6 +11,7 @@ import {
   collectCommittedProvenance,
   collectFreshProvenance,
   describeStaleness,
+  hashFile,
   requireObservations,
   validateInstalledEntry,
   validateProvenance,
@@ -771,7 +772,10 @@ async function main() {
       schema_version: 1,
       scope: 'O1.5 split slice: native facade vs freshly packed/installed kernel+translator, with committed-package mode',
       provenance: {
-        native: { mode: 'native', sourceRevision: freshKernelProvenance.sourceRevision },
+        native: {
+          mode: 'native', sourceRevision: freshKernelProvenance.sourceRevision,
+          installedEntry: resolve(nativeRunner), binarySha256: hashFile(resolve(nativeRunner)),
+        },
         freshKernel: freshKernelProvenance,
         freshIo: freshIoProvenance,
         committedKernel: committedKernelProvenance,

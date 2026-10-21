@@ -26,11 +26,12 @@ def jobs(text):
 
 
 JOBS = jobs(FLEET)
-# Tier 1 runs for every heavy change; tier 2 only for main pushes, merge
-# groups, dispatches, and PRs labelled `ci:full`; the package build when the
-# diff touches WASM-affecting paths or tier 2 is selected.
-TIER1 = {"test", "approx-census", "wasm-no-io"}
-TIER2 = {"coverage", "msrv", "fuzz-check", "render", "deny", "audit"}
+# Tier 1 runs for every heavy change; tier 2 for main pushes, dispatches,
+# merge groups whose diff touches its inputs, and PRs labelled `ci:full`; the
+# package build when the diff touches WASM-affecting paths or tier 2 is
+# selected. Fuzz compile and render joined tier 1 in fleet-ci-v4.yml.
+TIER1 = {"test", "approx-census", "wasm-no-io", "fuzz-check", "render"}
+TIER2 = {"coverage", "msrv", "deny", "audit"}
 PACKAGE = {"wasm"}
 HEAVY = TIER1 | TIER2 | PACKAGE
 ALWAYS = {"changes", "repo-policy", "secrets-scan"}
@@ -344,7 +345,7 @@ class ConvergenceTests(unittest.TestCase):
         self.assertEqual(config["bypass_actors"], [])
         queue = config["rules"][0]["parameters"]
         self.assertEqual(queue["grouping_strategy"], "ALLGREEN")
-        self.assertEqual(queue["max_entries_to_build"], 2)
+        self.assertEqual(queue["max_entries_to_build"], 4)
         self.assertEqual(queue["max_entries_to_merge"], 2)
         self.assertEqual(queue["min_entries_to_merge"], 1)
         self.assertEqual(queue["min_entries_to_merge_wait_minutes"], 0)

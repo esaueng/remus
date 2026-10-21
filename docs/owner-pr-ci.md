@@ -1,6 +1,6 @@
 # Trusted owner CI fleet
 
-Required Linux CI jobs and their completion gate live in `fleet-ci-v3.yml`, called
+Required Linux CI jobs and their completion gate live in `fleet-ci-v4.yml`, called
 at an immutable commit from `ci.yml`. Benchmarks, corpus gauntlets, fuzzing,
 mutation checks, OSV scans, WASM candidates and size reports each have their
 own immutable `fleet-*.yml` callee. Their shared pre-checkout guard is a pinned
@@ -73,8 +73,8 @@ workflow jobs install browser binaries without sudo.
 
 ## Activation and rollback
 
-Approve the exact immutable `fleet-ci-v3.yml` runner-group entry without removing
-existing restrictions. Configure the external controller's selected repository
+Approve the exact immutable `fleet-ci-v4.yml@9e5b65b9e00f004d83eb583ab3934c863ad7956d`
+runner-group entry (the pin in `ci.yml`) without removing existing restrictions. Configure the external controller's selected repository
 identities and dedicated GitHub credential, then validate both hosts. The
 required completion check is `checks / CI Pass`, the existing gate inside the
 reusable suite. It validates every selected job and runs on
@@ -195,14 +195,15 @@ kernel PR waits only for the checks that can fail on its diff:
 
 - **Tier 1** (`heavy`, every source change): Test (clippy, nextest, doc
   tests, complexity guards in one job), Approximation Census, WASM without
-  optional I/O. Roughly 12 minutes of runner time.
-- **Tier 2** (`full`): Coverage, MSRV, Fuzz Targets Compile,
-  Software Rendering, Cargo Deny, Security Audit. Selected for every main
+  optional I/O, Fuzz Targets Compile and Software Rendering. The last two
+  joined in `fleet-ci-v4.yml`: both build against most kernel crates, so a
+  queue entry that skips tier 2 must still run them.
+- **Tier 2** (`full`): Coverage, MSRV, Cargo Deny, Security Audit. Selected for every main
   push and dispatch, and for a PR only while it carries the `ci:full` label
   (label it, then re-run or push). A merge group selects it only when its
   diff touches a tier-2 input: a `Cargo.toml`, `Cargo.lock`,
   `rust-toolchain.toml`, `deny.toml`, `clippy.toml`, `.cargo/`, `.config/`,
-  `fuzz/`, `crates/render/`, `.github/workflows/` or a committed package
+  `.github/workflows/` or a committed package
   (a queue batch can pair a refresh with source PRs). Any other merge group
   runs tier 1 and the package build (mode `queue`), and the main push of the
   same squashed tree runs tier 2 after the merge. Coverage took about 40 of a
@@ -210,10 +211,6 @@ kernel PR waits only for the checks that can fail on its diff:
   spends in the queue; a coverage or source-level MSRV regression now turns
   `main` red instead of blocking the entry. The pinned callee still passes
   `--full` for merge groups; the classifier reads `GITHUB_EVENT_NAME` itself.
-  The staged `fleet-ci-v4.yml` moves Fuzz Targets Compile and Software
-  Rendering into tier 1, because both build against most kernel crates and a
-  queue entry would otherwise skip them; it applies once an activation PR
-  selects it.
 - **Package build** (`wasm`): WASM Build & Validate and the advisory size
   report. Selected with tier 2, and on any PR whose diff touches any crate
   under `crates/`, `xtask`, `tools/vs-bench`, the WASM scripts,
@@ -253,7 +250,7 @@ groups always use hosted runners: the owner-only single-PR authorization does
 not authorize a group containing other contributors' code.
 
 `.github/merge-queue-ruleset.json` is an initially disabled, additive ruleset.
-It uses squash merging, limits speculative merge builds to two, requires every
+It uses squash merging, limits speculative merge builds to four, requires every
 group's PR merge commit to pass (`ALLGREEN`), and adds no bypass actor. It neither replaces
 existing branch protection nor changes review requirements. Do not enable it
 until the caller, pinned callee and passing exact-head CI are on main. Creating

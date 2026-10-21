@@ -14,6 +14,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runB6SectionSplitPackaged } from './b6-section-split-packaged.mjs';
 import { runCircularPatternPackaged } from './circular-pattern-packaged.mjs';
+import { runGridPatternPackaged } from './grid-pattern-packaged.mjs';
 import { runProjectCurvePackaged } from './project-curve-packaged.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
 import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
@@ -1549,11 +1550,10 @@ for (const operation of ['fillet', 'chamfer']) {
   assert.throws(() => hammerKernel.resizeBlend(solid, seed, 3, 2), /band-touches-freeform/);
 
   assert.deepEqual(Array.from(hammerKernel.getEntityCounts(solid)), beforeCounts);
-  // Same approximate-volume pin as HAMMER_HOLDER_VOLUME in
-  // crates/io/tests/resize_blend_step.rs. The resolved cylinder-wall grid
-  // and curved NURBS trim-band paths remove inward chords and move this closer
-  // to the finer mesh and independent integrator; retain the 0.01 tolerance.
-  assert.ok(Math.abs(hammerKernel.volume(solid, 0.01) - 50_242.575_649_036_3) <= 0.01);
+  // Same pin as HAMMER_HOLDER_VOLUME in crates/io/tests/resize_blend_step.rs:
+  // the volume is read off the body's qualified face integrals, not its mesh;
+  // retain the 0.01 tolerance.
+  assert.ok(Math.abs(hammerKernel.volume(solid, 0.01) - 50_245.219_468_635_71) <= 0.01);
   const strict = JSON.parse(hammerKernel.validateSolidDetailed(solid));
   assert.equal(strict.errorCount, 0, 'refused edit must preserve strict topology');
   assert.equal(strict.warningCount, 0, 'refused edit must preserve warning-free topology');
@@ -1726,6 +1726,7 @@ runB6SectionSplitPackaged({ BrepKernel });
 // volume/census, original-versus-generated, journal, and typed-refusal
 // oracles plus session preservation.
 runCircularPatternPackaged({ BrepKernel });
+runGridPatternPackaged({ BrepKernel });
 runProjectCurvePackaged({ BrepKernel });
 runNextKernelCorrectnessPackaged({ BrepKernel });
 

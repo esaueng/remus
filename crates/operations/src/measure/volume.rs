@@ -532,6 +532,12 @@ fn required_closed_mesh_volume(
     deflection: f64,
     why: &'static str,
 ) -> Result<Option<f64>, crate::OperationsError> {
+    if let Some(volume) = crate::performance::timed("volume.face-integrals", || {
+        qualified_face_integral_volume(topo, solid)
+    })? {
+        vol_trace(|| format!("{why}: qualified face integrals -> {volume}"));
+        return Ok(Some(volume));
+    }
     required_closed_mesh_volume_with(topo, solid, deflection, why, |d| {
         tessellate::tessellate_solid_for_measurement(topo, solid, d)
     })
@@ -609,6 +615,336 @@ fn closed_mesh_or_exact_volume(
     let exact = open_mesh_exact_volume(topo, solid, why);
     vol_trace(|| format!("{why}: open whole-solid mesh -> exact fallback {exact:?}"));
     exact.map(Some)
+}
+
+/// Largest `|Σ N| / Σ A` of a shell whose face integrals measure its volume,
+/// `N` and `A` being each face's vector area `∫ n dA` and area.
+///
+/// The vector areas of a closed surface sum to zero, and that sum is what
+/// makes the divergence-theorem volume independent of the reference point.
+/// A face integrated over the wrong region breaks it: half of a periodic wall
+/// (8.5e-2 to 2.8e-1), an inflated sphere cap (6.1e-2), a zeroed NURBS
+/// band (1.3e-2), a NURBS-holed plane (5.0e-4). The trim outlines' chord
+/// error leaves 3.1e-6 on the hammer holder, 1.04e-5 on the left partition of
+/// its opening edit and 7.2e-8 on the mixed-rim fillet bodies. A shell that
+/// closes to `ε` reads within about `2ε` of its volume, the clamp mesh's own
+/// order (7e-5 on the holder), so the bound sits between the two families.
+const FACE_INTEGRAL_CLOSURE: f64 = 3e-5;
+
+/// How far, relative to the body's extent, an edge may stand off a face it
+/// bounds for the face integrals to measure the body. Imported STEP data
+/// carries real gaps: the hammer holder has NURBS edges up to 6.1e-4 off their
+/// faces (8.2e-6 of its 74 mm extent), far past their own stated tolerances,
+/// which moves its volume by about 1e-6. The defects the check is for are a
+/// hundred times larger: an imported parabolic band bounded by its chords
+/// stands 1.06 off (2.2e-2 of its extent), a variable fillet's NURBS wall
+/// 0.29 off (about 3e-2 of its).
+const BOUNDARY_GAP: f64 = 1e-4;
+
+/// The Gauss order whose face integrals the volume's are checked against.
+const CONVERGENCE_ORDER: usize = 3;
+
+/// Largest `Σ_f |V₅(f) − V₃(f)|`, relative to the volume, of a body whose
+/// fixed-order face integrals measure it. A face's order-5 reading is taken
+/// only where the independent order-3 one agrees with it; face by face, so
+/// errors of opposite sign cannot cancel. The hammer holder disagrees by
+/// 1.1e-7 (order 4 by 2.9e-10, order 8 by 5e-13).
+const ORDER_AGREEMENT: f64 = 1e-6;
+
+/// Intervals [`boundary_lies_on_faces`] samples a straight edge in.
+const LINE_SAMPLES: u32 = 8;
+
+/// Fewest intervals it samples a curved edge in.
+const CURVE_SAMPLES: u32 = 32;
+
+/// Most intervals it samples an edge in: the integrator's own trim density,
+/// so the check reads the boundary at least as finely as the integral does.
+const MAX_EDGE_SAMPLES: u32 = 128;
+
+/// Intervals to sample `curve` in: [`LINE_SAMPLES`] for a line,
+/// [`CURVE_SAMPLES`] for a conic, and four per knot span of a NURBS curve
+/// within those bounds, so an excursion inside one span is still sampled.
+fn edge_samples(curve: &EdgeCurve) -> u32 {
+    match curve {
+        EdgeCurve::Line => LINE_SAMPLES,
+        EdgeCurve::NurbsCurve(nurbs) => {
+            let knots = nurbs.knots();
+            let spans = knots.windows(2).filter(|pair| pair[1] > pair[0]).count();
+            u32::try_from(spans.saturating_mul(4))
+                .unwrap_or(MAX_EDGE_SAMPLES)
+                .clamp(CURVE_SAMPLES, MAX_EDGE_SAMPLES)
+        }
+        EdgeCurve::Circle(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => CURVE_SAMPLES,
+    }
+}
+
+/// The volume of `solid` from its boundary-trimmed face integrals, when they
+/// are certified to measure it; `None` sends the caller to the closed
+/// whole-solid mesh. This is S1: the strict validator's own fixed-order
+/// integrals, about the same shell references, through the thread's
+/// face-integral cache. After an edit the validation has already integrated
+/// every face, so the reading only sums; a face the cache re-expresses (about
+/// a moved reference, or translated by the edit) reads within rounding of a
+/// fresh integration, as the validator's probe does.
+///
+/// The integrator is not right for every face (its special paths each cover
+/// a family), so the reading is taken only when four certificates hold:
+///
+/// * no face is in a class it is known to mis-measure
+///   ([`gauss_unqualified_face`]);
+/// * every shell closes: `|Σ N|` is at most [`FACE_INTEGRAL_CLOSURE`] times `Σ A`, which a
+///   face integrated over the wrong region breaks;
+/// * every edge lies on each face it bounds, within the larger of its own
+///   tolerance and [`BOUNDARY_GAP`] of the body's extent
+///   ([`boundary_lies_on_faces`]).
+///   Faces whose edges stand off their surface still close, because a vector
+///   area depends on the boundary alone, but the integral then measures
+///   another body than the mesh: an imported parabolic band bounded by its
+///   chords (1.06 off) read 9500 against the file's 9540.
+/// * every face's order-5 term agrees with an independent order-3 one, summed
+///   face by face to [`ORDER_AGREEMENT`] of the volume, so a face the fixed
+///   rule has not resolved is caught even where closure, which tests only the
+///   vector-area integrand, holds.
+///
+/// Its residual is the curved faces' trim outlines' chord error, 128 samples
+/// per curved edge; planar faces integrate qualified polynomial boundaries exactly. The hammer holder reads 50245.22, the limit of ever
+/// finer meshes, where the clamp mesh reads 50241.71 (and the 32-chord outline
+/// its planar faces took before, 50245.53).
+fn qualified_face_integral_volume(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<Option<f64>, crate::OperationsError> {
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    for &fid in &faces {
+        if let Some(class) = gauss_unqualified_face(topo, fid)? {
+            vol_trace(|| format!("face integrals declined: face {} is a {class}", fid.index()));
+            return Ok(None);
+        }
+    }
+    let Some(floor) = negligible_volume(topo, solid) else {
+        return Ok(None);
+    };
+    // `negligible_volume` is the diagonal cubed times 1e-9.
+    let extent = (floor / 1e-9).cbrt();
+    if !boundary_lies_on_faces(topo, &faces, BOUNDARY_GAP * extent)? {
+        return Ok(None);
+    }
+    let order = remus_check::properties::PropertiesOptions::default().gauss_order;
+    let data = topo.solid(solid)?;
+    let (mut total, mut disagreement) = (0.0, 0.0);
+    for shell in std::iter::once(data.outer_shell()).chain(data.inner_shells().iter().copied()) {
+        let Some((signed, shell_disagreement)) = qualified_shell_volume(topo, shell, order)? else {
+            return Ok(None);
+        };
+        total += signed;
+        disagreement += shell_disagreement;
+    }
+    let volume = total.abs();
+    if !(volume.is_finite() && volume > floor) {
+        return Ok(None);
+    }
+    if disagreement.is_nan() || disagreement > ORDER_AGREEMENT * volume {
+        vol_trace(|| {
+            format!(
+                "face integrals declined: orders {CONVERGENCE_ORDER} and {order} differ by {:.3e} of the volume",
+                disagreement / volume
+            )
+        });
+        return Ok(None);
+    }
+    Ok(Some(volume))
+}
+
+/// The signed volume a shell's face integrals enclose about the shell's own
+/// reference (the point [`shell_signed_volume`] takes), with
+/// the sum over its faces of how far their `order` and [`CONVERGENCE_ORDER`]
+/// volume terms differ, when the shell
+/// closes within [`FACE_INTEGRAL_CLOSURE`]; `None` when it does not, or a face
+/// did not integrate or report its vector area.
+fn qualified_shell_volume(
+    topo: &Topology,
+    shell: remus_topology::shell::ShellId,
+    order: usize,
+) -> Result<Option<(f64, f64)>, crate::OperationsError> {
+    let faces = topo.shell(shell)?.faces().to_vec();
+    let Some(reference) = shell_reference(topo, &faces)? else {
+        return Ok(None);
+    };
+    let (mut volume, mut area, mut disagreement) = (0.0, 0.0, 0.0);
+    let mut vector_area = Vec3::new(0.0, 0.0, 0.0);
+    for fid in faces {
+        // The strict validator's own request: after an edit it already holds
+        // every face, about this very reference.
+        let Ok(term) = remus_check::properties::face_cache::integrate_face_volume_about_memoized(
+            topo, fid, order, reference,
+        ) else {
+            vol_trace(|| {
+                format!(
+                    "face integrals declined: face {} did not integrate",
+                    fid.index()
+                )
+            });
+            return Ok(None);
+        };
+        let Some(n) = term.vector_area else {
+            vol_trace(|| {
+                format!(
+                    "face integrals declined: face {} has no vector area",
+                    fid.index()
+                )
+            });
+            return Ok(None);
+        };
+        // Gauss orders are not nested, so a lower one is an independent
+        // reading: the two agree only where both have converged on the face.
+        let Ok(coarse) = remus_check::properties::face_cache::integrate_face_volume_about_memoized(
+            topo,
+            fid,
+            CONVERGENCE_ORDER,
+            reference,
+        ) else {
+            return Ok(None);
+        };
+        volume += term.volume;
+        area += term.area;
+        vector_area += n;
+        disagreement += (term.volume - coarse.volume).abs();
+    }
+    let closure = vector_area.length();
+    if closure.is_nan() || closure > FACE_INTEGRAL_CLOSURE * area {
+        vol_trace(|| {
+            format!(
+                "face integrals declined: shell {} closes to {:.3e} of its area",
+                shell.index(),
+                closure / area
+            )
+        });
+        return Ok(None);
+    }
+    Ok(Some((volume, disagreement)))
+}
+
+/// The vertex-box centre of `faces`, the reference [`shell_signed_volume`]
+/// integrates a shell about; `None` for a shell with no vertex.
+fn shell_reference(
+    topo: &Topology,
+    faces: &[FaceId],
+) -> Result<Option<Point3>, crate::OperationsError> {
+    let mut bounds: Option<(Point3, Point3)> = None;
+    for &fid in faces {
+        let face = topo.face(fid)?;
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid)?.edges() {
+                let edge = topo.edge(oe.edge())?;
+                for vid in [edge.start(), edge.end()] {
+                    let p = topo.vertex(vid)?.point();
+                    bounds = Some(bounds.map_or((p, p), |(lo, hi)| {
+                        (
+                            Point3::new(lo.x().min(p.x()), lo.y().min(p.y()), lo.z().min(p.z())),
+                            Point3::new(hi.x().max(p.x()), hi.y().max(p.y()), hi.z().max(p.z())),
+                        )
+                    }));
+                }
+            }
+        }
+    }
+    Ok(bounds.map(|(lo, hi)| {
+        Point3::new(
+            f64::midpoint(lo.x(), hi.x()),
+            f64::midpoint(lo.y(), hi.y()),
+            f64::midpoint(lo.z(), hi.z()),
+        )
+    }))
+}
+
+/// Whether every edge of every face lies on that face's surface: every point
+/// of [`edge_samples`] intervals along the edge's own span within the larger
+/// of the edge's tolerance (its vertices' when it has none) and `floor` of the
+/// surface. A sampled check, at the integrator's own boundary density at most:
+/// an excursion between samples is one the integral does not read either.
+fn boundary_lies_on_faces(
+    topo: &Topology,
+    faces: &[FaceId],
+    floor: f64,
+) -> Result<bool, crate::OperationsError> {
+    for &fid in faces {
+        let face = topo.face(fid)?;
+        let surface = face.surface();
+        // One seed grid serves every projection onto a NURBS face.
+        let grid = match surface {
+            FaceSurface::Nurbs(nurbs) => Some(
+                remus_math::nurbs::projection::SurfaceSeedGrid::for_surface(nurbs),
+            ),
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => None,
+        };
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid)?.edges() {
+                let edge = topo.edge(oe.edge())?;
+                let (start, end) = (topo.vertex(edge.start())?, topo.vertex(edge.end())?);
+                let tolerance = edge
+                    .tolerance()
+                    .unwrap_or_else(|| start.tolerance().max(end.tolerance()))
+                    .max(floor);
+                let (t0, t1) = if matches!(edge.curve(), EdgeCurve::Line) {
+                    (0.0, 1.0)
+                } else {
+                    tessellate::edge_param_span(topo, edge)?
+                };
+                let samples = edge_samples(edge.curve());
+                for k in 0..=samples {
+                    let f = f64::from(k) / f64::from(samples);
+                    let p = edge.curve().evaluate_with_endpoints(
+                        (t1 - t0).mul_add(f, t0),
+                        start.point(),
+                        end.point(),
+                    );
+                    let gap = surface_gap(surface, grid.as_ref(), p);
+                    if gap.is_nan() || gap > tolerance {
+                        vol_trace(|| {
+                            format!(
+                                "face integrals declined: an edge of face {} stands {gap:.3e} off it",
+                                fid.index()
+                            )
+                        });
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Distance from `p` to `surface` (infinite when it cannot be measured);
+/// `grid` is a NURBS surface's projection seed grid.
+fn surface_gap(
+    surface: &FaceSurface,
+    grid: Option<&remus_math::nurbs::projection::SurfaceSeedGrid>,
+    p: Point3,
+) -> f64 {
+    match surface {
+        FaceSurface::Plane { normal, d } => {
+            (normal.dot(Vec3::new(p.x(), p.y(), p.z())) - d).abs() / normal.length()
+        }
+        FaceSurface::Nurbs(nurbs) => grid.map_or(f64::INFINITY, |grid| {
+            remus_math::nurbs::projection::project_point_to_surface_with_grid(nurbs, p, 1e-9, grid)
+                .map_or(f64::INFINITY, |projection| projection.distance)
+        }),
+        FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => surface
+            .project_point(p)
+            .and_then(|(u, v)| surface.evaluate(u, v))
+            .map_or(f64::INFINITY, |q| (p - q).length()),
+    }
 }
 
 /// The exact fallback for a body whose required whole-solid mesh is open:
@@ -2232,9 +2568,13 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
 /// quadric wall trimmed by a NURBS intersection curve (a countersink cone
 /// clipped by the part's walls), a sphere patch off its latitudes, a
 /// scalloped sphere collar, an unqualified torus notch band, a NURBS face on
-/// the direct path, a torus bore beside a NURBS-rimmed plane — is measured on
-/// its closed whole-solid mesh, to that mesh's chord accuracy at the clamped
-/// deflection. When that mesh comes out OPEN, the result is the exact
+/// the direct path, a torus bore beside a NURBS-rimmed plane — is measured off
+/// its fixed-order face integrals when four certificates qualify them (no
+/// face in a class the integrator mis-measures, every shell's vector areas
+/// cancelling, every edge on the faces it bounds, successive Gauss orders
+/// agreeing face by face), and otherwise on its closed
+/// whole-solid mesh, to that mesh's chord accuracy at the clamped deflection.
+/// When that mesh comes out OPEN, the result is the exact
 /// boundary-trimmed Gauss integral over every face (the [`mass_properties`]
 /// route, to its stated bound), or, when a face is outside what that
 /// integrator measures, a typed [`crate::OperationsError::Unsupported`]. It
@@ -2281,7 +2621,10 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
 /// With this thread's volume memo enabled (see
 /// [`super::enable_thread_volume_memo`]; off by default), a repeated reading
 /// of the same solid at the same deflection on an unchanged topology returns
-/// the previous result, bit for bit.
+/// the previous result, bit for bit. With the face-integral cache enabled, a
+/// reading off certified face integrals that re-expresses cached faces (about
+/// a moved reference, or translated by an edit) is within rounding of an
+/// uncached one, not bit-identical to it.
 pub fn solid_volume(
     topo: &Topology,
     solid: SolidId,
@@ -5863,6 +6206,156 @@ mod regression_tests {
                 "scale {scale:e}: clamp mesh read {retried:?}, expected {expected:e}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod face_integral_certificate_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::primitives::make_box;
+    use remus_topology::shell::Shell;
+
+    #[test]
+    fn a_closed_shell_measures_and_an_open_one_declines() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 4.0, 3.0, 2.0).unwrap();
+        let shell = topo.solid(solid).unwrap().outer_shell();
+        let order = remus_check::properties::PropertiesOptions::default().gauss_order;
+        let (volume, disagreement) = qualified_shell_volume(&topo, shell, order)
+            .unwrap()
+            .unwrap();
+        assert!((volume - 24.0).abs() <= 24.0 * 1e-12, "{volume}");
+        // Planar faces integrate in closed form at every order.
+        assert!(disagreement <= 24.0 * 1e-12, "{disagreement}");
+        // Without its last face the shell's vector areas no longer cancel.
+        let mut faces = topo.shell(shell).unwrap().faces().to_vec();
+        faces.pop();
+        let open = topo.add_shell(Shell::new(faces).unwrap());
+        assert_eq!(qualified_shell_volume(&topo, open, order).unwrap(), None);
+    }
+
+    #[test]
+    fn edges_are_sampled_per_knot_span_up_to_the_trim_density() {
+        let nurbs = |spans: usize| {
+            let mut knots = vec![0.0, 0.0];
+            knots.extend((0..=spans).map(|i| i as f64));
+            knots.push(spans as f64);
+            knots.push(spans as f64);
+            let points = (0..spans + 2)
+                .map(|i| Point3::new(i as f64, 0.0, 0.0))
+                .collect::<Vec<_>>();
+            let weights = vec![1.0; points.len()];
+            EdgeCurve::NurbsCurve(
+                remus_math::nurbs::curve::NurbsCurve::new(2, knots, points, weights).unwrap(),
+            )
+        };
+        assert_eq!(edge_samples(&EdgeCurve::Line), LINE_SAMPLES);
+        assert_eq!(edge_samples(&nurbs(1)), CURVE_SAMPLES);
+        assert_eq!(edge_samples(&nurbs(12)), 48);
+        assert_eq!(edge_samples(&nurbs(400)), MAX_EDGE_SAMPLES);
+    }
+
+    #[test]
+    fn an_edge_off_its_face_declines() {
+        let mut topo = Topology::new();
+        let solid = make_box(&mut topo, 4.0, 3.0, 2.0).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        assert!(boundary_lies_on_faces(&topo, &faces, 1e-9).unwrap());
+        assert!(
+            qualified_face_integral_volume(&topo, solid)
+                .unwrap()
+                .is_some()
+        );
+        // Lift one corner: the edges meeting there leave a plane they bound.
+        let vertex = topo
+            .edge(
+                topo.wire(topo.face(faces[0]).unwrap().outer_wire())
+                    .unwrap()
+                    .edges()[0]
+                    .edge(),
+            )
+            .unwrap()
+            .start();
+        let p = topo.vertex(vertex).unwrap().point();
+        topo.vertex_mut(vertex)
+            .unwrap()
+            .set_point(Point3::new(p.x(), p.y(), p.z() + 0.05));
+        assert!(!boundary_lies_on_faces(&topo, &faces, 1e-9).unwrap());
+        assert_eq!(qualified_face_integral_volume(&topo, solid).unwrap(), None);
+    }
+
+    /// A closed spline profile, extruded: two free-form cubic halves that no
+    /// curve recognition takes. Its caps used to drop to the 32-chord fan,
+    /// whose sliver the closure certificate cannot see (the two caps miss it
+    /// alike and their vector areas still cancel), so the face integrals read
+    /// 6207.07 against 6210, 4.7e-4 short. Integrated span by span, the caps
+    /// are exact and so is the volume.
+    #[test]
+    fn a_free_form_spline_extrude_measures_its_exact_volume() {
+        use remus_math::nurbs::NurbsCurve;
+        use remus_topology::edge::Edge;
+        use remus_topology::face::Face;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        const HEIGHT: f64 = 10.0;
+        // Exact polynomial Green integral: expanding the two cubic halves
+        // and integrating (x*y' - y*x')/2 gives area 621 exactly.
+        const AREA: f64 = 621.0;
+        let halves = [
+            [(0.0, 0.0), (30.0, -6.0), (38.0, 18.0), (12.0, 26.0)],
+            [(12.0, 26.0), (-4.0, 14.0), (-10.0, 4.0), (0.0, 0.0)],
+        ]
+        .map(|points| {
+            NurbsCurve::new(
+                3,
+                vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                points.map(|(x, y)| Point3::new(x, y, 0.0)).to_vec(),
+                vec![1.0; 4],
+            )
+            .unwrap()
+        });
+        let mut topo = Topology::new();
+        let ends = [Point3::new(0.0, 0.0, 0.0), Point3::new(12.0, 26.0, 0.0)]
+            .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+        let [first, second] = halves;
+        let edges = [
+            topo.add_edge(Edge::new(ends[0], ends[1], EdgeCurve::NurbsCurve(first))),
+            topo.add_edge(Edge::new(ends[1], ends[0], EdgeCurve::NurbsCurve(second))),
+        ];
+        let wire = topo.add_wire(
+            Wire::new(
+                edges.iter().map(|&e| OrientedEdge::new(e, true)).collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let solid =
+            crate::extrude::extrude(&mut topo, face, Vec3::new(0.0, 0.0, 1.0), HEIGHT).unwrap();
+
+        let exact = AREA * HEIGHT;
+        let integrals = qualified_face_integral_volume(&topo, solid)
+            .unwrap()
+            .unwrap();
+        assert!(
+            ((integrals - exact) / exact).abs() < 1e-9,
+            "{integrals} against {exact}"
+        );
+        let volume = solid_volume(&topo, solid, 0.01).unwrap();
+        assert!(
+            ((volume - exact) / exact).abs() < 1e-9,
+            "{volume} against {exact}"
+        );
     }
 }
 

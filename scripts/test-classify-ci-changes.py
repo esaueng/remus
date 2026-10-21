@@ -279,6 +279,16 @@ class ClassifyCiChangesTests(unittest.TestCase):
         self.assertTrue(result.wasm)
         self.assertEqual(result.mode, "queue")
 
+    def test_merge_group_leaves_fuzz_and_render_to_the_first_tier(self) -> None:
+        # Both jobs run with tier 1 (fleet-ci-v4.yml), so their sources alone
+        # do not select tier 2.
+        for path in ("fuzz/fuzz_targets/nurbs_surface.rs", "crates/render/src/lib.rs"):
+            with self.subTest(path=path):
+                result = MODULE.classify_paths([path], force_full=True, merge_group=True)
+                self.assertTrue(result.heavy)
+                self.assertFalse(result.full)
+                self.assertEqual(result.mode, "queue")
+
     def test_merge_group_without_wasm_paths_skips_the_package_build(self) -> None:
         result = MODULE.classify_paths(
             ["scripts/check-boundaries.sh"], force_full=True, merge_group=True
@@ -291,8 +301,7 @@ class ClassifyCiChangesTests(unittest.TestCase):
         for path in (
             "Cargo.lock", "Cargo.toml", "crates/math/Cargo.toml", "deny.toml",
             "rust-toolchain.toml", "clippy.toml", ".cargo/config.toml",
-            ".config/nextest.toml", "fuzz/fuzz_targets/nurbs_surface.rs",
-            "crates/render/src/lib.rs", ".github/workflows/ci.yml",
+            ".config/nextest.toml", ".github/workflows/ci.yml",
         ):
             with self.subTest(path=path):
                 result = MODULE.classify_paths(
