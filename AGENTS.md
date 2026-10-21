@@ -551,8 +551,9 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Offset v2 (delegates to remus-offset) | `offset_v2.rs` |
 | Shared winding utilities | `winding.rs` |
 | Edge projection with hidden-line removal | `projection.rs` |
-| Exact silhouettes of cylinder, cone, sphere and torus faces (torus branches sampled adaptively), trimmed and split by the same occlusion probe (NURBS reported unsupported) | `projection/silhouette.rs` |
-| Closed-form oracles for silhouettes: side, axial and oblique views, seam rulings, bores across scales, notch trims, the torus condition and torus views (tests) | `projection/silhouette_tests.rs` |
+| Exact silhouettes of cylinder, cone, sphere and torus faces (torus branches sampled adaptively), trimmed and split by the same occlusion probe; NURBS faces' traced ones, reported approximate | `projection/silhouette.rs` |
+| NURBS silhouette tracing: `n·d` sampled on a knot-aligned grid, marching squares, crossings bisected onto `n·d = 0`, refined to the deflection | `projection/silhouette/nurbs.rs` |
+| Closed-form oracles for silhouettes: side, axial and oblique views, seam rulings, bores across scales, notch trims, the torus condition and torus views, and traced NURBS cylinders, spheres and tori against their exact outlines (tests) | `projection/silhouette_tests.rs` |
 | Shared loft/sweep/pipe/revolve end caps | `cap.rs` |
 | Journal ingestion for modeling operations | `journal_ops.rs` |
 | Direct push/pull face editing | `push_pull.rs` |
