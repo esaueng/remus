@@ -126,7 +126,7 @@
     clippy::struct_excessive_bools
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_6, PI};
 use std::time::Instant;
 
@@ -1077,11 +1077,27 @@ fn classify_refusal(e: &OperationsError) -> RefusalClass {
             | OperationsError::BodyClassOperationUnsupported { .. }
             | OperationsError::BodyClassMeasureMismatch { .. }
             | OperationsError::BodyValidationFailed { .. }
-            | OperationsError::Offset(remus_offset::OffsetError::AssemblyFailed { .. })
     ) {
         RefusalClass::Refused
     } else {
         RefusalClass::Untyped
+    }
+}
+
+/// Classify an offset error. Offset wire-loop assembly failures stay
+/// untyped (the offsets kept in generation are tripwires), except in the
+/// retained X6 cell — an inward offset of a boolean result, finding F7 —
+/// whose typed `Offset(AssemblyFailed)` refusal is the qualified answer.
+fn classify_offset_refusal(e: &OperationsError, retained_x6: bool) -> RefusalClass {
+    if retained_x6
+        && matches!(
+            e,
+            OperationsError::Offset(remus_offset::OffsetError::AssemblyFailed { .. })
+        )
+    {
+        RefusalClass::Refused
+    } else {
+        classify_refusal(e)
     }
 }
 
@@ -1090,6 +1106,9 @@ fn classify_refusal(e: &OperationsError) -> RefusalClass {
 struct ExecState<'a> {
     topo: Topology,
     live: BTreeMap<u32, LiveInfo>,
+    /// Live handles produced by a boolean, carried through copies, mirrors
+    /// and in-place transforms, not through offsets (the X6 cell).
+    from_bool: BTreeSet<u32>,
     limits: &'a SeqLimits,
     fault: Fault,
     start: Instant,
@@ -1104,6 +1123,7 @@ impl<'a> ExecState<'a> {
         Self {
             topo: Topology::new(),
             live: BTreeMap::new(),
+            from_bool: BTreeSet::new(),
             limits,
             fault,
             start: Instant::now(),
@@ -2289,6 +2309,9 @@ fn exec_one(st: &mut ExecState<'_>, index: usize, op: &Value) -> bool {
                         note(st, index, "mirror", SeqKind::Incorrect, oracle, detail);
                     } else {
                         st.live.insert(fresh.index() as u32, exact0);
+                        if st.from_bool.contains(&handle) {
+                            st.from_bool.insert(fresh.index() as u32);
+                        }
                         note(
                             st,
                             index,
@@ -2435,6 +2458,9 @@ fn exec_one(st: &mut ExecState<'_>, index: usize, op: &Value) -> bool {
                             Some(_) => None,
                         };
                         st.live.insert(fresh.index() as u32, exact);
+                        if st.from_bool.contains(&handle) {
+                            st.from_bool.insert(fresh.index() as u32);
+                        }
                         note(
                             st,
                             index,
@@ -2501,7 +2527,10 @@ fn exec_one(st: &mut ExecState<'_>, index: usize, op: &Value) -> bool {
             let solids_before = st.topo.num_solids();
             let produced =
                 match remus_operations::offset_v2::offset_solid_v2(&mut st.topo, solid, distance) {
-                    Err(e) => match classify_refusal(&e) {
+                    Err(e) => match classify_offset_refusal(
+                        &e,
+                        distance < 0.0 && st.from_bool.contains(&handle),
+                    ) {
                         RefusalClass::Empty => {
                             note(
                                 st,
@@ -2941,6 +2970,7 @@ fn exec_one(st: &mut ExecState<'_>, index: usize, op: &Value) -> bool {
                 st.live.remove(&hb);
                 if let Some(handle) = main_solid.map(|s| s.index() as u32) {
                     st.live.insert(handle, exact);
+                    st.from_bool.insert(handle);
                 }
             }
             // A boolean that yields no solid breaks the chain; one that
@@ -5950,6 +5980,54 @@ fn finding_inward_offset_of_fuse_untyped() {
             SeqKind::ExactOk | SeqKind::Approximate | SeqKind::Empty | SeqKind::Refused
         ),
         "inward offset must succeed (exactly or approximately) or refuse typed, got {} / {}",
+        report.kind.label(),
+        report.oracle
+    );
+}
+
+/// The F7 allowance is confined to the retained X6 cell. Elsewhere an
+/// offset wire-loop assembly failure stays untyped, so the offsets kept in
+/// generation as tripwires (boxes, spheres, tori, outward offsets of
+/// boolean results, composed results) still fail the campaign on one.
+#[test]
+fn offset_assembly_failure_is_refused_only_in_the_x6_cell() {
+    let assembly = OperationsError::Offset(remus_offset::OffsetError::AssemblyFailed {
+        reason: "no unvisited edge from vertex 58".to_owned(),
+    });
+    assert!(matches!(classify_refusal(&assembly), RefusalClass::Untyped));
+    assert!(matches!(
+        classify_offset_refusal(&assembly, false),
+        RefusalClass::Untyped
+    ));
+    assert!(matches!(
+        classify_offset_refusal(&assembly, true),
+        RefusalClass::Refused
+    ));
+    // The cell admits only the assembly refusal, not a mistyped error.
+    let invalid = OperationsError::InvalidInput {
+        reason: "assembly failed".to_owned(),
+    };
+    assert!(matches!(
+        classify_offset_refusal(&invalid, true),
+        RefusalClass::Untyped
+    ));
+}
+
+/// Boolean provenance survives a copy, as the generator's `from_bool` does:
+/// an inward offset of a copied F7 fuse is still the retained X6 cell.
+#[test]
+fn copied_fuse_inward_offset_stays_in_the_x6_cell() {
+    let ops: Vec<Value> = serde_json::from_str(
+        r#"[{"args":{"height":1.0,"radius":1.0},"op":"makeCylinder"},{"args":{"depth":1.0,"height":1.0,"width":1.0},"op":"makeBox"},{"args":{"exactOnly":true,"operation":"fuse","solidA":1,"solidB":0},"op":"booleanWithQuality"},{"args":{"solid":2},"op":"copySolid"},{"args":{"distance":-0.25,"solid":3},"op":"offsetSolidV2"}]"#,
+    )
+    .expect("copied finding bundle parses");
+    let report = execute_sequence(&ops, &SeqLimits::default(), Fault::None);
+    assert!(
+        matches!(
+            report.kind,
+            SeqKind::ExactOk | SeqKind::Approximate | SeqKind::Empty | SeqKind::Refused
+        ),
+        "copied inward offset must succeed or refuse typed, got {} / {}",
         report.kind.label(),
         report.oracle
     );
