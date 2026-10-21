@@ -1019,6 +1019,7 @@ fn trim_support_corner(
     corner_preserved: &mut HashMap<usize, Point3>,
     qs: &[Point3],
     cap_chains: &remus_math::det_hash::DetHashMap<usize, CapChain>,
+    line_paired_runout: bool,
     radius: f64,
     tol: Tolerance,
 ) -> Result<Vec<Point3>, crate::OperationsError> {
@@ -1083,6 +1084,11 @@ fn trim_support_corner(
                 // where a concave stripe running out across this face puts
                 // it. Distance to `pos + dir·r` alone picks the other contact
                 // there, so the line decides whenever it singles one out.
+                // A convex run-out keeps the old pairing when the selection
+                // also has curved-neighbour stripes: it can end a G1 chain
+                // around a corner fillet, whose NURBS wall is not exact yet
+                // (`regress_g1_chain_corner_wall_dig.rs`), and pairing it
+                // right turns that refusal into a wrong solid.
                 let off_line = |q: Point3| {
                     let v = q - pos;
                     (v - dir_prev * v.dot(dir_prev)).length()
@@ -1090,7 +1096,7 @@ fn trim_support_corner(
                 let on_line = tol.linear * 100.0;
                 let (l0, l1) = (off_line(unique_contacts[0]), off_line(unique_contacts[1]));
                 let approx_prev = pos + dir_prev * radius;
-                let (d0, d1) = if (l0 <= on_line) == (l1 <= on_line) {
+                let (d0, d1) = if !line_paired_runout || (l0 <= on_line) == (l1 <= on_line) {
                     (
                         (unique_contacts[0] - approx_prev).length(),
                         (unique_contacts[1] - approx_prev).length(),
@@ -2852,6 +2858,25 @@ pub fn fillet_rolling_ball_with_origins(
             (verbatim, untouched)
         };
 
+        // Vertices whose side faces pair run-out contacts by edge line (see
+        // `trim_support_corner`): all of them when every stripe is straight
+        // between two planes, else those where every ending stripe is concave.
+        let all_planar_stripes = filtered_edges
+            .iter()
+            .all(|edge_id| planar_edge_sides.contains_key(&edge_id.index()));
+        let line_paired_runouts: HashSet<usize> = vertex_fillet_edges
+            .iter()
+            .filter(|(_, incident)| {
+                all_planar_stripes
+                    || incident.iter().all(|edge_id| {
+                        planar_edge_sides
+                            .get(&edge_id.index())
+                            .is_some_and(|side| *side > 0.0)
+                    })
+            })
+            .map(|(&vi, _)| vi)
+            .collect();
+
         // Phase 3: Build modified (trimmed) planar faces.
         let mut all_specs: Vec<FaceSpec> = Vec::new();
         let mut all_spec_origins: Vec<FaceSpecOrigin> = Vec::new();
@@ -3278,6 +3303,7 @@ pub fn fillet_rolling_ball_with_origins(
                     &mut corner_preserved,
                     &all_qs,
                     &cap_chains,
+                    line_paired_runouts.contains(&vi),
                     radius,
                     tol,
                 )?);
@@ -3342,6 +3368,7 @@ pub fn fillet_rolling_ball_with_origins(
                             &mut corner_preserved,
                             &all_qs,
                             &cap_chains,
+                            line_paired_runouts.contains(&ids[j].index()),
                             radius,
                             tol,
                         )?);
