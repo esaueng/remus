@@ -162,10 +162,11 @@ test('stale or missing provenance identity fails', () => {
   assert.throws(
     () => validateProvenance({
       mode: 'fresh-tarball',
-      sourceRevision: 'abc',
+      sourceRevision: 'ab'.repeat(20),
       sourceDirty: false,
-      toolchain: {},
-      buildOptions: {},
+      toolchain: { rustc: 'rustc 1.0', cargo: 'cargo 1.0', node: 'v22', wasmPack: 'wasm-pack 0.15' },
+      target: 'nodejs',
+      buildOptions: { target: 'nodejs', profile: 'release', features: 'default' },
       packageVersion: '1.0.0',
       tarballSha256: 'ab'.repeat(32),
       wasmSha256: 'not-a-hash',
