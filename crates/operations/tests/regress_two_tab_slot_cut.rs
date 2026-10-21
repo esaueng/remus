@@ -103,6 +103,28 @@ fn analytic_classifier_never_misplaces_the_void_between_tabs() {
 }
 
 #[test]
+fn a_large_plate_cannot_hide_a_thin_misplaced_void() {
+    // Same construction with a wide plate and hairline tabs: the wrong model
+    // keeps a 0.01-deep slab across the whole back edge, whose volume is
+    // small next to the plate's boundary area times the tolerance. The proof
+    // must stay local to each model face, so the shortcut still declines.
+    let (w, tab) = (1000.0, 0.01);
+    let mut topo = Topology::new();
+    let plate = placed_box(&mut topo, (0.0, 0.0, 0.0), (w, w, 4.0));
+    let left = placed_box(&mut topo, (0.0, 0.0, 0.0), (tab, tab, 40.0));
+    let right = placed_box(&mut topo, (w - tab, 0.0, 0.0), (w, tab, 40.0));
+    let fused = exact(&mut topo, BooleanOp::Fuse, plate, left);
+    let body = exact(&mut topo, BooleanOp::Fuse, fused, right);
+    let tol = Tolerance::loose();
+    let p = Point3::new(0.5 * w, 0.5 * tab, 20.0);
+    let class = classify_analytic_with_tolerance(&topo, body, p, tol);
+    assert!(
+        !matches!(class, Some(FaceClass::Inside)),
+        "{p:?} lies above the plate but classified {class:?}"
+    );
+}
+
+#[test]
 fn composite_model_still_serves_an_open_cup() {
     // A cup is exactly `outer \ inner`, so the shortcut must survive the new
     // proof and keep classifying correctly.

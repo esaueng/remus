@@ -1162,9 +1162,11 @@ fn try_build_composite_classifier(
 /// with two flush tabs is non-convex with only two offsets per axis, so it
 /// builds a model whose void (the region over the plate between and in front
 /// of the tabs) is not one box, and votes Inside above the plate. Require every
-/// boundary vertex and edge midpoint to lie on the model's boundary, and the
-/// enclosed volumes to agree within the linear tolerance swept over the
-/// boundary area. Anything else defers to the ray classifier.
+/// boundary vertex and edge midpoint to lie on the model's boundary, and every
+/// model face to be covered by solid faces on its plane: their areas must agree
+/// within the linear tolerance swept along that face's own perimeter. A
+/// whole-solid bound would let a large unrelated face hide a thin misplaced
+/// region. Anything else defers to the ray classifier.
 fn composite_matches_solid(
     topo: &Topology,
     faces: &[remus_topology::face::FaceId],
@@ -1187,26 +1189,29 @@ fn composite_matches_solid(
     else {
         return false;
     };
-    let extent = |lo: Point3, hi: Point3| (hi.x() - lo.x(), hi.y() - lo.y(), hi.z() - lo.z());
-    let (ox, oy, oz) = extent(*omin, *omax);
-    let overlap = |a0: f64, a1: f64, b0: f64, b1: f64| (a1.min(b1) - a0.max(b0)).max(0.0);
-    let outer_volume = ox * oy * oz;
-    let model_volume = outer_volume
-        - overlap(omin.x(), omax.x(), imin.x(), imax.x())
-            * overlap(omin.y(), omax.y(), imin.y(), imax.y())
-            * overlap(omin.z(), omax.z(), imin.z(), imax.z());
+    let model = composite_model_faces(*omin, *omax, *imin, *imax, tol.linear);
+    let mut covered = vec![0.0; model.len()];
 
-    // Divergence theorem over planar faces: V = (1/3) * sum(d_out * area).
-    let mut solid_volume = 0.0;
-    let mut boundary_area = 0.0;
     for &fid in faces {
         let Ok(face) = topo.face(fid) else {
             return false;
         };
-        let FaceSurface::Plane { d, .. } = face.surface() else {
+        let FaceSurface::Plane { normal, d } = face.surface() else {
             return false;
         };
-        let d_out = if face.is_reversed() { -*d } else { *d };
+        // `build_box` admitted only axis-aligned planes.
+        let axis = (0..3)
+            .max_by(|&a, &b| coord(*normal, a).abs().total_cmp(&coord(*normal, b).abs()))
+            .unwrap_or(0);
+        let n_axis = coord(*normal, axis);
+        let positive = (n_axis > 0.0) != face.is_reversed();
+        let offset = d / n_axis;
+        let Some(slot) = model.iter().position(|m| {
+            m.axis == axis && m.positive == positive && (m.offset - offset).abs() <= tol.linear
+        }) else {
+            return false;
+        };
+
         let mut face_area = 0.0;
         for (k, wid) in std::iter::once(face.outer_wire())
             .chain(face.inner_wires().iter().copied())
@@ -1249,11 +1254,109 @@ fn composite_matches_solid(
             let loop_area = 0.5 * area.length();
             face_area += if k == 0 { loop_area } else { -loop_area };
         }
-        solid_volume += d_out * face_area / 3.0;
-        boundary_area += face_area;
+        covered[slot] += face_area;
     }
-    let volume_tol = 10.0 * tol.linear * boundary_area + 1e-12 * outer_volume.abs();
-    (solid_volume - model_volume).abs() <= volume_tol
+
+    model
+        .iter()
+        .zip(&covered)
+        .all(|(m, &area)| (area - m.area).abs() <= 10.0 * tol.linear * m.perimeter + 1e-12 * m.area)
+}
+
+/// One boundary face of an `outer \ inner` box model: the plane
+/// `x[axis] = offset`, its outward normal along `+axis` when `positive`.
+struct CompositeModelFace {
+    axis: usize,
+    positive: bool,
+    offset: f64,
+    area: f64,
+    /// Length of the face's boundary, which bounds its tolerance area error.
+    perimeter: f64,
+}
+
+/// The boundary faces of `outer \ inner`: each outer box face less the
+/// opening the inner box cuts through it, and each inner box face that lies
+/// strictly inside the outer box, clipped to it.
+fn composite_model_faces(
+    omin: Point3,
+    omax: Point3,
+    imin: Point3,
+    imax: Point3,
+    tl: f64,
+) -> Vec<CompositeModelFace> {
+    let overlap = |a0: f64, a1: f64, b0: f64, b1: f64| (a1.min(b1) - a0.max(b0)).max(0.0);
+    let mut faces = Vec::with_capacity(12);
+    for axis in 0..3 {
+        let (b, c) = ((axis + 1) % 3, (axis + 2) % 3);
+        let (ob, oc) = (
+            coord_p(omax, b) - coord_p(omin, b),
+            coord_p(omax, c) - coord_p(omin, c),
+        );
+        let (hb, hc) = (
+            overlap(
+                coord_p(omin, b),
+                coord_p(omax, b),
+                coord_p(imin, b),
+                coord_p(imax, b),
+            ),
+            overlap(
+                coord_p(omin, c),
+                coord_p(omax, c),
+                coord_p(imin, c),
+                coord_p(imax, c),
+            ),
+        );
+        let (o0, o1) = (coord_p(omin, axis), coord_p(omax, axis));
+        let (i0, i1) = (coord_p(imin, axis), coord_p(imax, axis));
+        // The inner box opens an outer face when it reaches the face from
+        // inside the outer box.
+        for (offset, positive, opened) in [
+            (o0, false, i0 < o0 + tl && i1 > o0 + tl),
+            (o1, true, i1 > o1 - tl && i0 < o1 - tl),
+        ] {
+            let (hole, hole_perimeter) = if opened {
+                (hb * hc, 2.0 * (hb + hc))
+            } else {
+                (0.0, 0.0)
+            };
+            faces.push(CompositeModelFace {
+                axis,
+                positive,
+                offset,
+                area: ob * oc - hole,
+                perimeter: 2.0 * (ob + oc) + hole_perimeter,
+            });
+        }
+        // An inner face's outward normal points into the void.
+        for (offset, positive) in [(i0, true), (i1, false)] {
+            if offset > o0 + tl && offset < o1 - tl {
+                faces.push(CompositeModelFace {
+                    axis,
+                    positive,
+                    offset,
+                    area: hb * hc,
+                    perimeter: 2.0 * (hb + hc),
+                });
+            }
+        }
+    }
+    faces
+}
+
+fn coord(v: Vec3, axis: usize) -> f64 {
+    match axis {
+        0 => v.x(),
+        1 => v.y(),
+        _ => v.z(),
+    }
+}
+
+fn coord_p(p: Point3, axis: usize) -> f64 {
+    match axis {
+        0 => p.x(),
+        1 => p.y(),
+        _ => p.z(),
+    }
 }
 
 // ---------------------------------------------------------------------------
