@@ -999,7 +999,7 @@ fn ledge_corner(
 /// untouched corners pass through; fillet-adjacent corners resolve to
 /// Phase 4 contacts, setback preservations, and runout legs exactly as the
 /// Phase 3 outer loop always has.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn trim_support_corner(
     pos: Point3,
     prev_pos: Point3,
