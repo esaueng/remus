@@ -40,7 +40,7 @@ that an original reference remains Bound. Test paths are repository-relative.
 | Analytic blend-band resize | Journaled single-cylinder/planar-support path retains F/E/V on resize and records complete merges/deletions on removal; legacy resize remains faces-only | `crates/operations/tests/journal_resize_blend.rs`; WASM `blend_resize_history_has_direct_batch_parity_and_rollback`; packaged consumer regression | Multi-face regions, curved supports and ambiguous boundaries remain outside the journaled path |
 | Linear pattern | Total F/E/V construction lineage for the journaled linear path: original Modified-into-itself, copies Generated from same-kind copy-time source, zero Preserved/Deleted/Unresolved, Construction origin; legacy face map and material results unchanged | `crates/operations/tests/regress_pattern_evolution_fev.rs` (census, original-only naming, arena round-trip/restore/subsequent edit, scales/curved/cavity/placement, typed refusals); WASM `linear_pattern_journaled_resolves_all_kinds_direct_and_batch`; `crates/operations/src/pattern.rs` `PatternTracker`/`linear_pattern_with_entity_history`, `journal_ops.rs` `linear_pattern_journaled` | Grid pattern; broader blend/shell/split E/V beyond their faces-only scope |
 | Circular pattern | Total F/E/V construction lineage for the journaled circular path: original Modified-into-itself, copies Generated from same-kind copy-time source, zero Preserved/Deleted/Unresolved, Construction origin; legacy face map, minimum count 2, origin-based axis and material results unchanged | `crates/operations/tests/regress_circular_pattern_evolution_fev.rs` (census 2/3/6, disjoint/touching, box/cylinder/hollow-box at 1e-3/1/1e3, consistent rotation, rotated positions/carriers, original-only naming, arena round-trip/restore/subsequent edit, typed refusals); WASM `circular_pattern_journaled_resolves_all_kinds_direct_and_batch`; packaged runtime `scripts/circular-pattern-packaged.mjs` (`runCircularPatternPackaged`, wired into `scripts/test-wasm-smoke.mjs`) — origin count-2 and offset count-3 through direct, `executeBatch`, and `executeBatchV2` with rotated-vertex/volume/census/original-versus-generated/journal oracles plus typed count/axis/overlap/foreign refusals with session preservation, from fresh `2.130.56` packages built from `49099bc6`; `crates/operations/src/pattern.rs` `circular_pattern_with_entity_history`, `journal_ops.rs` `circular_pattern_journaled` | Grid pattern; broader blend/shell/split E/V beyond their faces-only scope |
-| Grid pattern | Total F/E/V construction lineage for the journaled grid path (native-only): original Modified-into-itself, copies Generated from same-kind copy-time source, zero Preserved/Deleted/Unresolved, Construction origin; legacy face map, placement, validation and overlap policy unchanged | `crates/operations/tests/regress_grid_pattern_evolution_fev.rs` (census 1x1/1xN/Nx1/multi, box/cylinder/hollow-box at 1e-3/1/1e3, touching/disjoint, consistent body+direction transform, translated row/column geometry, original-only naming, arena round-trip/restore/subsequent edit, typed refusals with rollback and stale-slot growth); `crates/operations/src/pattern.rs` `grid_pattern_with_entity_history`, `journal_ops.rs` `grid_pattern_journaled` | Browser exposure (direct/batch WASM) remains a separate integration task; broader blend/shell/split E/V beyond their faces-only scope |
+| Grid pattern | Total F/E/V construction lineage for the journaled grid path: original Modified-into-itself, copies Generated from same-kind copy-time source, zero Preserved/Deleted/Unresolved, Construction origin; legacy face map, placement, validation and overlap policy unchanged | `crates/operations/tests/regress_grid_pattern_evolution_fev.rs` (census 1x1/1xN/Nx1/multi, box/cylinder/hollow-box at 1e-3/1/1e3, touching/disjoint, consistent body+direction transform, translated row/column geometry, original-only naming, arena round-trip/restore/subsequent edit, typed refusals with rollback and stale-slot growth); `crates/operations/src/pattern.rs` `grid_pattern_with_entity_history`, `journal_ops.rs` `grid_pattern_journaled`; browser `gridPatternJournaled` direct/`executeBatch`/`executeBatchV2`, native WASM `grid_pattern_contract_tests` and packaged `scripts/grid-pattern-packaged.mjs` ([browser qualification](#browser-grid-pattern-history-2026-10-21)) | Downstream application adoption needs a qualified committed-package pin; broader blend/shell/split E/V beyond their faces-only scope |
 | Default V2 offset | F/E/V: one-to-one construction face map, plus edge/vertex claims induced from it by exact incidence and checked against the actual result sets; shared incidence stays typed unresolved | `crates/operations/tests/qualify_offset_entity_evolution.rs`; `crates/operations/tests/journal.rs`: `journaled_offsets_carry_face_references_through_exact_evolution`; WASM `offset_journaled_typed_unresolved_survives_every_envelope` | Torus seams and sphere equator rings need engine-level edge records; arc-joint and self-intersection-removal provenance; curved offsets refuse from 100 units (B55) |
 | Shell / plane split | Face maps, including explicitly unresolved generated caps/rims | `crates/operations/tests/qualify_evolution_coverage.rs` | Edge/vertex maps; whole-call rollback repaired by this audit's regression slice |
 | Extrude | Total F/E/V construction lineage for the journaled extrusion path: both caps Modified from the profile face, every side wall Generated from it, shared/split/translated boundary entities Modified from source, longitudinal edges and split-new vertices Generated from the profile; zero Deleted/Unresolved on the qualified classes, Construction origin; legacy signature, geometry and material results unchanged | `crates/operations/tests/regress_extrusion_evolution_fev.rs` (profile-class censuses with independent oracles, dropped/phantom checker proofs, split naming, edit/arena/checkpoint evidence, atomic refusals, legacy STEP parity); WASM `extrude_journaled_has_direct_batch_parity_census_and_rollback`; `crates/operations/src/extrude.rs` `ExtrudeConstruction`/`extrude_with_entity_evolution`, `journal_ops.rs` `extrude_journaled` | Revolve/sweep/loft history remains open |
@@ -51,6 +51,46 @@ this baseline. Its production caller is the explicit WASM naming barrier
 API (`crates/wasm/src/bindings/naming.rs`). Therefore a zero-wrapper-call
 search does **not** close B18: faces-only wrappers and unjournaled operations
 still leave unresolved reference paths.
+
+## Browser grid-pattern history (2026-10-21)
+
+**Tier: core**: `gridPatternJournaled` edits live topology handles and the
+session evolution journal that persistent references resolve against. It adds
+browser access to the existing native `grid_pattern_journaled` producer; the
+legacy `gridPattern` signature, geometry and overlap policy stay unchanged.
+
+The additive direct API and both batch envelopes share strict finite-vector,
+spacing, integer-count and work-product validation. The direct counts are
+validated before integer conversion so fractional or wrapping JavaScript
+numbers cannot silently become another grid. Non-orthogonal independent
+axes remain supported; native parallel-axis and material-overlap refusals
+remain authoritative. The result retains the established `{compound, op}`
+journal envelope.
+
+Qualification uses the actual result face, edge and vertex sets, unique
+construction-origin resolution and source-relative translated geometry.
+Native WASM tests inspect the actual same-kind Modified/Generated journal
+records; the packaged witness `scripts/grid-pattern-packaged.mjs` runs via
+source smoke and the npm-installed paired-tarball consumer suite.
+
+The restore witness checkpoints **before** pattern creation: restored output
+references must report `unknownOperation`, while original references stay bound
+to their original entities. Restored arena documents match in every field except
+the explicitly monotonic `next_op` and `next_ordinal` high-water counters;
+those are checked separately and may not decrease. A subsequent edit of a copied member must preserve
+every untouched original reference. Early invalid input preserves slot counts;
+late overlap refusal preserves live geometry, journal and references while
+retaining the existing permanently retired allocation high-water behavior.
+
+These stronger assertions avoid two limitations in the older native grid
+fixture: its restore snapshot was taken after the grid, and its subsequent-edit
+loop permitted every anchor to be unresolved. Those old checks alone do not
+establish the stronger browser contract.
+
+Package qualification and exact source/artifact evidence are recorded with this
+slice's delivery. Downstream application adoption still needs a qualified
+committed-package pin. Broader shell, split, blend and swept-family attribution
+remain separate B18 work.
 
 ## Confirmed rollback correction
 
@@ -337,7 +377,7 @@ This slice neither bypasses the failing test nor changes CI routing.
 3. Extend one B18 family at a time. **Done: default V2 offset F/E/V
     (2026-09-25, above). Done: journaled linear-pattern F/E/V (this slice,
     above). Done: journaled circular-pattern F/E/V (this slice, above). Done:
-    journaled grid-pattern F/E/V, native-only (this slice, above). Done:
+    journaled grid-pattern F/E/V, including the bounded browser integration (2026-10-21, above). Done:
     extrusion F/E/V (2026-09-30, above).**
     Remaining, in order: shell boundary maps
     (`shell_op` rebuilds both skins and rims from polygon specs, so it needs
