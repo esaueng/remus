@@ -56,21 +56,17 @@ fn g(surface: &NurbsSurface, view: Vec3, (u, v): (f64, f64)) -> f64 {
     surface.normal(u, v).map_or(0.0, |n| n.dot(view))
 }
 
-/// Knots closer than this fraction of the domain to the previous breakpoint
-/// add no span of their own.
-const KNOT_GAP: f64 = 1e-12;
-
 /// Grid parameters along one direction: [`INTERVALS_PER_SPAN`] intervals in
 /// every nonzero knot span of `[lo, hi]` (fewer when there are more than
 /// [`MAX_GRID_INTERVALS`] / [`INTERVALS_PER_SPAN`] spans, but never fewer than
 /// one, and more when there are too few spans for [`MIN_GRID_INTERVALS`]), so
-/// a narrow span is sampled as finely as a wide one. The two end values are
-/// inset by [`EDGE_INSET`] of their interval.
+/// a narrow span is sampled as finely as a wide one, however narrow: only
+/// repeated knots (equal stored values) share a breakpoint. The two end
+/// values are inset by [`EDGE_INSET`] of their interval.
 fn grid_axis(knots: &[f64], (lo, hi): (f64, f64)) -> Vec<f64> {
-    let gap = (hi - lo) * KNOT_GAP;
     let mut breaks = vec![lo];
     for &knot in knots {
-        if knot < hi - gap && breaks.last().is_some_and(|&last| knot > last + gap) {
+        if knot < hi && breaks.last().is_some_and(|&last| knot > last) {
             breaks.push(knot);
         }
     }
@@ -379,6 +375,18 @@ mod tests {
         assert!(axis.iter().any(|&u| (u - 0.001).abs() < 1e-15));
         assert!(axis.windows(2).all(|pair| pair[1] > pair[0]));
         assert!(axis[0] > 0.0 && axis[axis.len() - 1] < 1.0);
+    }
+
+    /// A span far narrower than any tolerance still gets its own samples:
+    /// a valid knot vector may hold one, and its geometry can be large.
+    #[test]
+    fn grid_samples_a_vanishingly_narrow_span() {
+        let (a, b) = (0.5, 0.5 + 1e-13);
+        let knots = [0.0, 0.0, 0.0, a, b, 1.0, 1.0, 1.0];
+        let axis = grid_axis(&knots, (0.0, 1.0));
+        let inside = axis.iter().filter(|&&u| u >= a && u <= b).count();
+        assert!(inside > INTERVALS_PER_SPAN, "{inside} values in the span");
+        assert!(axis.windows(2).all(|pair| pair[1] > pair[0]));
     }
 
     /// Refinement stops at the vertex budget instead of running to its
