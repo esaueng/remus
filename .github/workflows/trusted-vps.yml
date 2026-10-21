@@ -32,11 +32,11 @@ jobs:
       ((vars.CI_FLEET_ENABLED == 'true' && contains(fromJSON('["ci-server-jane","ci-server-john"]'), vars.CI_FLEET_TARGET)) || contains(fromJSON('["ci-server-jane","ci-server-jane-1","ci-server-jane-2","ci-server-jane-3","ci-server-john"]'), inputs.runner))
     runs-on:
       group: ci-trusted-main
-      labels: ${{ contains(fromJSON('["ci-server-jane","ci-server-jane-1","ci-server-jane-2","ci-server-jane-3","ci-server-john"]'), inputs.runner) && inputs.runner || vars.CI_FLEET_TARGET }}
+      labels: ${{ (inputs.runner == 'ci-server-jane' || (inputs.runner == 'auto' && vars.CI_FLEET_TARGET == 'ci-server-jane')) && 'ci-server-jane-5gb' || contains(fromJSON('["ci-server-jane","ci-server-jane-1","ci-server-jane-2","ci-server-jane-3","ci-server-john"]'), inputs.runner) && inputs.runner || vars.CI_FLEET_TARGET }}
     timeout-minutes: 5
     strategy:
       fail-fast: false
-      # The shared Jane label exercises all three independent slots concurrently.
+      # The profile label exercises all three independent slots concurrently.
       max-parallel: 3
       matrix:
         probe: [1, 2, 3]

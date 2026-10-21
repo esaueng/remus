@@ -42,10 +42,12 @@ OLD = previous_workflow()
 
 
 def legacy_jane_profile(text):
-    """Normalize only the reviewed slot-name, RAM and page-alignment delta."""
+    """Normalize only the reviewed resource and scheduling-selector delta."""
     return (text.replace('ci-server-jane-1|ci-server-jane-2|ci-server-jane-3)',
                          'ci-server-jane-1|ci-server-jane-2)')
             .replace('CI_MEMORY=5000000000', 'CI_MEMORY=6442450944')
+            .replace('"labels":"ci-server-jane-5gb"', '"labels":"ci-server-jane"')
+            .replace('labels: ci-server-jane-5gb\n', 'labels: ci-server-jane\n')
             .replace('          CI_MEMORY=$((CI_MEMORY / $(getconf PAGESIZE) * $(getconf PAGESIZE)))\n', ''))
 
 
@@ -236,7 +238,7 @@ class QueueWorkflowTests(unittest.TestCase):
         self.assertNotIn("uses:", block)
         self.assertNotIn("checkout", block.split("    steps:\n", 1)[1].split("        env:", 1)[0].replace("before checkout", ""))
         self.assertIn("group: ci-trusted-main", block)
-        self.assertIn("labels: ci-server-jane", block)
+        self.assertIn("      labels: ci-server-jane-5gb\n", block)
         self.assertIn("vars.CI_FLEET_ENABLED == 'true'", block)
         self.assertIn("vars.CI_FLEET_TARGET == 'ci-server-jane'", block)
         self.assertIn("github.event_name == 'merge_group'", block)
@@ -255,7 +257,7 @@ class QueueWorkflowTests(unittest.TestCase):
         hosted = "ubuntu-24.04" if REMUS else "ubuntu-latest"
         for expression in expressions:
             self.assertEqual(evaluate(expression, github, variables, needs),
-                             {"group": "ci-trusted-main", "labels": "ci-server-jane"})
+                             {"group": "ci-trusted-main", "labels": "ci-server-jane-5gb"})
             for changed_vars, changed_needs in [
                 ({**variables, "CI_FLEET_ENABLED": "false"}, needs),
                 ({**variables, "CI_FLEET_TARGET": "github-hosted"}, needs),
@@ -264,7 +266,7 @@ class QueueWorkflowTests(unittest.TestCase):
                 self.assertEqual(evaluate(expression, github, changed_vars, changed_needs), hosted)
             # The old ordinary-PR/main routing predicate is retained verbatim.
             old_expressions = re.findall(r"^    runs-on: (?:&fleet(?:-light)?-runner )?(\$\{\{ fromJSON\(.+\) \}\})$", OLD, re.M)
-            self.assertTrue(any(old[3:-3].removeprefix(" fromJSON(").rstrip()[:-1] in expression
+            self.assertTrue(any(old[3:-3].removeprefix(" fromJSON(").rstrip()[:-1] in legacy_jane_profile(expression)
                                 for old in old_expressions))
 
     def test_every_existing_command_and_security_guard_is_preserved(self):

@@ -210,6 +210,26 @@ class UbuntuRoutingTests(unittest.TestCase):
             self.assertNotIn("contents: write", blocks[run])
             self.assertIn("contents: write", blocks["publish"])
 
+    def test_main_probe_maps_jane_preference_to_profile_selector(self):
+        text = (WORKFLOWS / "trusted-vps.yml").read_text()
+        source = re.search(r"^      labels: \$\{\{ (.+) \}\}$", text, re.M)[1]
+        source = source.replace("&&", " and ").replace("||", " or ")
+        for runner, target, expected in (
+            ("auto", "ci-server-jane", "ci-server-jane-5gb"),
+            ("ci-server-jane", "github-hosted", "ci-server-jane-5gb"),
+            ("ci-server-jane-1", "ci-server-jane", "ci-server-jane-1"),
+            ("ci-server-jane-2", "ci-server-jane", "ci-server-jane-2"),
+            ("ci-server-jane-3", "ci-server-jane", "ci-server-jane-3"),
+            ("auto", "ci-server-john", "ci-server-john"),
+            ("ci-server-john", "ci-server-jane", "ci-server-john"),
+        ):
+            with self.subTest(runner=runner, target=target):
+                self.assertEqual(eval(source, {"__builtins__": {}}, {
+                    "vars": DIRECT.Context({"CI_FLEET_TARGET": target}),
+                    "inputs": DIRECT.Context({"runner": runner}),
+                    "fromJSON": DIRECT.json.loads, "contains": lambda values, item: item in values,
+                }), expected)
+
     def test_main_probe_has_no_hosted_bootstrap(self):
         text = (WORKFLOWS / "trusted-vps.yml").read_text()
         self.assertNotIn("select-runner.yml", text)

@@ -133,10 +133,17 @@ Policy verification: `python3 scripts/test-direct-fleet.py`,
 `fleet-ci-v6.yml` combines the owner-only queue authorization staged in v5
 with Jane's three-slot, nominal 5 GB profile. Its queue policy and every
 existing command, gate, timeout and permission match the reviewed v5 bytes;
-only the runner-name table, memory value and page alignment differ. The
+only the runner-name table, memory value, page alignment and profile selector differ. The
 canonical policy is embedded in the immutable callee before candidate checkout.
 The required direct-fleet suite executes the combined queue policy, scheduling
 and optional-probe failure-gate regressions.
+
+The combined workflow selects `ci-server-jane-5gb` while the controller
+preference remains `CI_FLEET_TARGET=ci-server-jane`. Deploy the reviewed
+controller profile mapping before adding that label to verified slots and
+approving the exact compatible main revisions. Keep the old shared
+`ci-server-jane` label withheld, so historical 6 GiB callers remain quarantined.
+The profile label is a selector, not a runner identity or permission grant.
 
 Keep the active caller unchanged while staging. Once v6 and the shared guard
 land on main, stage replacement auxiliary callees pinned to that actual guard

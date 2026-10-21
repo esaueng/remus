@@ -22,7 +22,7 @@ class FleetRunnerPolicy(unittest.TestCase):
             for name, allowed in [('ci-vm-1441561', True), ('ci-server-jane', True), ('ci-server-john', True),
                                   ('ci-server-jane-1', True), ('ci-server-jane-2', True), ('ci-server-jane-3', True),
                                   ('ci-server-jane-0', False), ('ci-server-jane-4', False),
-                                  ('', False), ('ci-server-jane-extra', False), ('unknown', False)]:
+                                  ('', False), ('ci-server-jane-5gb', False), ('ci-server-jane-extra', False), ('unknown', False)]:
                 with self.subTest(workflow=workflow, runner=name):
                     result = subprocess.run(['bash', '-c', guard], env=dict(os.environ, RUNNER_NAME=name),
                                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -63,6 +63,8 @@ class FleetRunnerPolicy(unittest.TestCase):
         baseline = baseline.replace('CI_MEMORY=5000000000', 'CI_MEMORY=6442450944')
         baseline = baseline.replace(
             '          CI_MEMORY=$((CI_MEMORY / $(getconf PAGESIZE) * $(getconf PAGESIZE)))\n', '')
+        baseline = baseline.replace('labels: ci-server-jane-5gb\n', 'labels: ci-server-jane\n')
+        baseline = baseline.replace('"labels":"ci-server-jane-5gb"', '"labels":"ci-server-jane"')
         self.assertEqual(hashlib.sha256(baseline.encode()).hexdigest(),
                          '00fb516f35614a9f66bf34d840b3eb8287bc9ffcbf7b48a1bb7fdac5107a0f03')
 
