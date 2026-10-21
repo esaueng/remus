@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
@@ -31,18 +31,28 @@ function freshProvenance(overrides = {}) {
 }
 
 test('wrong installed entry is refused', () => {
-  assert.throws(
-    () => validateInstalledEntry(
-      '/tmp/other/remus_wasm.js',
-      '/tmp/consumer/node_modules/remus-wasm',
-    ),
-    /resolved outside install/,
-  );
-  assert.throws(() => validateInstalledEntry(null, '/tmp/consumer'), /missing/);
-  assert.ok(validateInstalledEntry(
-    '/tmp/consumer/node_modules/remus-wasm/remus_wasm.js',
-    '/tmp/consumer/node_modules/remus-wasm',
-  ));
+  const dir = mkdtempSync(resolve(tmpdir(), 'remus-entry-'));
+  const installed = resolve(dir, 'consumer/node_modules/remus-wasm');
+  const foreign = resolve(dir, 'foreign');
+  mkdirSync(installed, { recursive: true });
+  mkdirSync(foreign);
+  const entry = resolve(installed, 'remus_wasm.js');
+  writeFileSync(entry, 'export {};');
+  writeFileSync(resolve(foreign, 'remus_wasm.js'), 'export {};');
+  try {
+    assert.throws(
+      () => validateInstalledEntry(
+        resolve(foreign, 'remus_wasm.js'), installed,
+      ),
+      /resolved outside install/,
+    );
+    assert.throws(() => validateInstalledEntry(null, '/tmp/consumer'), /missing/);
+    assert.ok(validateInstalledEntry(entry, installed));
+    assert.throws(() => validateInstalledEntry(installed, installed), /resolved outside install/);
+    symlinkSync(foreign, resolve(installed, 'escape'), 'junction');
+    assert.throws(() => validateInstalledEntry(resolve(installed, 'escape/remus_wasm.js'), installed), /resolved outside install/);
+    if (process.platform === 'win32') assert.ok(validateInstalledEntry(entry.toUpperCase(), installed.toLowerCase()));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('missing provenance fields are refused', () => {
