@@ -125,6 +125,32 @@ fn a_large_plate_cannot_hide_a_thin_misplaced_void() {
 }
 
 #[test]
+fn features_near_the_tolerance_band_leave_the_shortcut_undecided() {
+    // Plate thickness, tab width, depth and protrusion all ten times the
+    // classification tolerance: each missing strip of the wrong model fits
+    // inside a per-face area allowance, yet a point midway above the plate
+    // between the tabs sits five tolerances from every model plane.
+    let tol = Tolerance {
+        linear: 1e-2,
+        ..Tolerance::default()
+    };
+    let f = 10.0 * tol.linear;
+    let w = 100.0;
+    let mut topo = Topology::new();
+    let plate = placed_box(&mut topo, (0.0, 0.0, 0.0), (w, w, f));
+    let left = placed_box(&mut topo, (0.0, 0.0, 0.0), (f, f, 2.0 * f));
+    let right = placed_box(&mut topo, (w - f, 0.0, 0.0), (w, f, 2.0 * f));
+    let fused = exact(&mut topo, BooleanOp::Fuse, plate, left);
+    let body = exact(&mut topo, BooleanOp::Fuse, fused, right);
+    let p = Point3::new(0.5 * w, 0.5 * f, 1.5 * f);
+    let class = classify_analytic_with_tolerance(&topo, body, p, tol);
+    assert!(
+        !matches!(class, Some(FaceClass::Inside)),
+        "{p:?} lies above the plate but classified {class:?}"
+    );
+}
+
+#[test]
 fn composite_model_still_serves_an_open_cup() {
     // A cup is exactly `outer \ inner`, so the shortcut must survive the new
     // proof and keep classifying correctly.

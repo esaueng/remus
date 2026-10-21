@@ -1164,9 +1164,15 @@ fn try_build_composite_classifier(
 /// of the tabs) is not one box, and votes Inside above the plate. Require every
 /// boundary vertex and edge midpoint to lie on the model's boundary, and every
 /// model face to be covered by solid faces on its plane: their areas must agree
-/// within the linear tolerance swept along that face's own perimeter. A
-/// whole-solid bound would let a large unrelated face hide a thin misplaced
-/// region. Anything else defers to the ray classifier.
+/// within the linear tolerance swept along that face's own perimeter.
+///
+/// Area totals prove coverage only when that allowance cannot hide a real
+/// mismatch. Every solid face lies on a model plane and every edge on two, so
+/// a mismatch is a union of cells of the grid the model planes cut, each at
+/// least `gap²` in area, where `gap` is the smallest spacing between distinct
+/// offsets on an axis. The allowance must stay below half that; features near
+/// the tolerance band leave the proof undecided. Anything else defers to the
+/// ray classifier.
 fn composite_matches_solid(
     topo: &Topology,
     faces: &[remus_topology::face::FaceId],
@@ -1257,10 +1263,34 @@ fn composite_matches_solid(
         covered[slot] += face_area;
     }
 
-    model
-        .iter()
-        .zip(&covered)
-        .all(|(m, &area)| (area - m.area).abs() <= 10.0 * tol.linear * m.perimeter + 1e-12 * m.area)
+    let gap = composite_min_gap(*omin, *omax, *imin, *imax, tol.linear);
+    model.iter().zip(&covered).all(|(m, &area)| {
+        let allowance = 10.0 * tol.linear * m.perimeter + 1e-12 * m.area;
+        allowance < 0.5 * gap * gap && (area - m.area).abs() <= allowance
+    })
+}
+
+/// Smallest spacing between distinct model plane offsets on any axis, counting
+/// inner offsets only where they cut the outer box.
+fn composite_min_gap(omin: Point3, omax: Point3, imin: Point3, imax: Point3, tl: f64) -> f64 {
+    let mut gap = f64::INFINITY;
+    for axis in 0..3 {
+        let (o0, o1) = (coord_p(omin, axis), coord_p(omax, axis));
+        let mut offsets = vec![o0, o1];
+        offsets.extend(
+            [coord_p(imin, axis), coord_p(imax, axis)]
+                .into_iter()
+                .filter(|&v| v > o0 + tl && v < o1 - tl),
+        );
+        offsets.compact_sort_by(f64::total_cmp);
+        for pair in offsets.windows(2) {
+            let d = pair[1] - pair[0];
+            if d > tl {
+                gap = gap.min(d);
+            }
+        }
+    }
+    gap
 }
 
 /// One boundary face of an `outer \ inner` box model: the plane
