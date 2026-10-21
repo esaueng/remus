@@ -346,7 +346,7 @@ impl Model {
         let mut kept = Vec::with_capacity(edges.len());
         for &edge in edges {
             let no_dihedral = !filletable.contains(&edge)
-                && match faces.get(&edge.index()).map(|f| f.as_slice()) {
+                && match faces.get(&edge.index()).map(|f| &f[..]) {
                     Some(&[a, b]) if a == b => true,
                     Some(&[a, b]) => {
                         remus_operations::query::edge_is_g1(&self.topology, edge, a, b)?
