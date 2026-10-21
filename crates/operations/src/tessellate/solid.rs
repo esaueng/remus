@@ -37,6 +37,46 @@ use super::{MERGE_GRID, point_merge_key};
 
 const MAX_PLANAR_CONTACT_CANDIDATE_PAIRS: usize = 4_000_000;
 
+/// Synchronize a qualified cylinder-rim arc to the face's angular step.
+/// Giving every piece of a partition the full-turn count multiplies rim
+/// density by the number of pieces and can exhaust a neighbour's grid budget.
+/// The edge's own chord/angle sampler remains the lower bound at the caller.
+fn coaxial_rim_grid_sample_count(
+    surface: &FaceSurface,
+    circle: &remus_math::curves::Circle3D,
+    face_span: f64,
+    face_segments: usize,
+    native: (f64, f64),
+) -> Option<usize> {
+    let FaceSurface::Cylinder(cylinder) = surface else {
+        return None;
+    };
+    let tolerance = remus_math::tolerance::Tolerance::new();
+    let offset = circle.center() - cylinder.origin();
+    let radial = offset - cylinder.axis() * offset.dot(cylinder.axis());
+    let span = (native.1 - native.0).abs();
+    if ![span, face_span, radial.length()]
+        .into_iter()
+        .all(f64::is_finite)
+        || face_span <= 0.0
+        || span <= 0.0
+        || span > face_span + tolerance.angular
+        || face_span > std::f64::consts::TAU + tolerance.angular
+        || circle.normal().cross(cylinder.axis()).length() > tolerance.angular
+        || radial.length() > tolerance.linear
+        || (circle.radius() - cylinder.radius()).abs() > tolerance.linear
+    {
+        return None;
+    }
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let segments = (face_segments as f64 * (span / face_span).min(1.0)).ceil() as usize;
+    Some(segments.max(1) + 1)
+}
+
 fn add_planar_contact_work(
     total: &mut usize,
     line_count: usize,
@@ -74,6 +114,79 @@ mod contact_budget_tests {
             add_planar_contact_work(&mut overflow_work, usize::MAX, 2),
             Err(OperationsError::InvalidInput { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod rim_density_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_precision_loss)]
+    use super::*;
+    use remus_math::curves::Circle3D;
+    use remus_math::surfaces::CylindricalSurface;
+    use std::f64::consts::TAU;
+
+    #[test]
+    fn split_cylinder_rims_keep_chord_accuracy_without_full_turn_density_per_piece() {
+        for scale in [0.001_f64, 1.0, 1000.0] {
+            let center = Point3::new(7.0 * scale, -3.0 * scale, 2.0 * scale);
+            let axis = Vec3::new(1.0, 2.0, 3.0).normalize().unwrap();
+            let surface =
+                FaceSurface::Cylinder(CylindricalSurface::new(center, axis, scale).unwrap());
+            let circle = Circle3D::new(center + axis * scale, axis, scale).unwrap();
+            let deflection = 0.00001 * scale;
+            let full = segments_for_chord_deviation_a(scale, TAU, deflection, 0.35, false);
+            assert_eq!(
+                coaxial_rim_grid_sample_count(&surface, &circle, TAU, full, (0.0, TAU)),
+                Some(full + 1)
+            );
+            for parts in [4, 8, 16, 32] {
+                for direction in [-1.0, 1.0] {
+                    let span = direction * TAU / f64::from(parts);
+                    let count =
+                        coaxial_rim_grid_sample_count(&surface, &circle, TAU, full, (0.0, span))
+                            .unwrap();
+                    assert!((count - 1) * parts as usize <= full + parts as usize);
+                    let step = span / (count - 1) as f64;
+                    let start = circle.evaluate(0.0);
+                    let end = circle.evaluate(step);
+                    let chord_middle = start + (end - start) * 0.5;
+                    assert!((circle.evaluate(step * 0.5) - chord_middle).length() <= deflection);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unqualified_rim_density_keeps_existing_dispatch() {
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let axis = Vec3::new(0.0, 0.0, 1.0);
+        let surface = FaceSurface::Cylinder(CylindricalSurface::new(center, axis, 1.0).unwrap());
+        let circle = Circle3D::new(center, axis, 1.0).unwrap();
+        for changed in [
+            Circle3D::new(Point3::new(0.1, 0.0, 0.0), axis, 1.0).unwrap(),
+            Circle3D::new(center, Vec3::new(1.0, 0.0, 0.0), 1.0).unwrap(),
+            Circle3D::new(center, axis, 1.1).unwrap(),
+        ] {
+            assert!(
+                coaxial_rim_grid_sample_count(&surface, &changed, TAU, 100, (0.0, 1.0)).is_none()
+            );
+        }
+        for (face_span, native) in [
+            (0.0, (0.0, 1.0)),
+            (TAU, (0.0, 0.0)),
+            (TAU, (0.0, f64::NAN)),
+            (TAU, (0.0, 2.0 * TAU)),
+            (f64::NAN, (0.0, 1.0)),
+        ] {
+            assert!(
+                coaxial_rim_grid_sample_count(&surface, &circle, face_span, 100, native).is_none()
+            );
+        }
+        let plane = FaceSurface::Plane {
+            normal: axis,
+            d: 0.0,
+        };
+        assert!(coaxial_rim_grid_sample_count(&plane, &circle, TAU, 100, (0.0, 1.0)).is_none());
     }
 }
 
@@ -637,35 +750,39 @@ fn build_boundary_plan(
             {
                 continue;
             }
-            let face_nu = match face_data.surface() {
+            let (face_nu, face_span) = match face_data.surface() {
                 FaceSurface::Cone(cone) => {
                     let v_range =
                         compute_v_param_range(topo, face_data, |p| cone.project_point(p).1);
                     let u_range =
                         compute_angular_range(topo, face_data, |p| cone.project_point(p))?;
                     let max_radius = cone.radius_at(v_range.1.abs().max(v_range.0.abs()));
-                    segments_for_chord_deviation_a(
-                        max_radius.max(0.01),
+                    (
+                        segments_for_chord_deviation_a(
+                            max_radius.max(0.01),
+                            u_range.1 - u_range.0,
+                            deflection,
+                            angular_tol,
+                            circle_floor,
+                        ),
                         u_range.1 - u_range.0,
-                        deflection,
-                        angular_tol,
-                        circle_floor,
                     )
                 }
                 FaceSurface::Cylinder(cyl) => {
                     let u_range = compute_angular_range(topo, face_data, |p| cyl.project_point(p))?;
-                    segments_for_chord_deviation_a(
-                        cyl.radius(),
+                    (
+                        segments_for_chord_deviation_a(
+                            cyl.radius(),
+                            u_range.1 - u_range.0,
+                            deflection,
+                            angular_tol,
+                            circle_floor,
+                        ),
                         u_range.1 - u_range.0,
-                        deflection,
-                        angular_tol,
-                        circle_floor,
                     )
                 }
                 _ => continue,
             };
-            let expected_count = face_nu + 1;
-
             let mut wire_ids = vec![face_data.outer_wire()];
             wire_ids.extend_from_slice(face_data.inner_wires());
             for &wire_id in &wire_ids {
@@ -683,9 +800,24 @@ fn build_boundary_plan(
                     };
 
                     if let Some(pts) = edge_points.get(&edge_idx)
-                        && pts.len() < expected_count
+                        && pts.len() < face_nu + 1
                     {
+                        // Preserve the old parameter-authority error timing:
+                        // only an existing chain needing synchronization reads
+                        // this domain. The qualified arc count can only lower
+                        // the old full-face synchronization target.
                         let (t_start, t_end) = circle_param_range(edge_data)?;
+                        let expected_count = coaxial_rim_grid_sample_count(
+                            face_data.surface(),
+                            circle,
+                            face_span,
+                            face_nu,
+                            (t_start, t_end),
+                        )
+                        .unwrap_or(face_nu + 1);
+                        if pts.len() >= expected_count {
+                            continue;
+                        }
                         let mut new_pts = super::edge_sampling::sample_circle_uniform(
                             circle,
                             t_start,
