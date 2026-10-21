@@ -7,7 +7,7 @@
 //! test appends read-only probes (`validateSolid`, `volume`, `meshQuality`)
 //! on the final produced solid and checks the pinned acceptance or defect signature:
 //!
-//! - fixed orientation findings F1/F2/F5/F11/F12/F16 must validate clean and mesh
+//! - fixed orientation findings F1/F2/F5/F11/F12/F16/F17 must validate clean and mesh
 //!   watertight with their closed-form volumes through batch.
 //! - open orientation finding F10 must show validation errors through
 //!   batch with matching volumes: an engine defect, not a binding one. A
@@ -242,6 +242,16 @@ fn cross_checks() -> Vec<CrossCheck> {
                 // Same weldable-crack nuance as F14: the batch probe welds
                 // and reports clean; the native unwelded oracle fails it.
                 watertight: None,
+            },
+        },
+        CrossCheck {
+            file: "opseq81-equal-frustum-fuse-orientation.json",
+            signature: Signature::Probes {
+                // Independent horizontal-disc overlap integral; the native
+                // and packaged matrices retain the tighter quantity gates.
+                volume_near: (426.554_124_672_275_07, 0.05),
+                validate: ValidateExpect::Clean,
+                watertight: Some(true),
             },
         },
         CrossCheck {

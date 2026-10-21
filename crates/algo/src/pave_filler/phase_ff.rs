@@ -768,15 +768,21 @@ fn perform_seeded(
             // the plane; the face keeps its NURBS carrier everywhere else.
             let plane_a = super::helpers::planar_nurbs_as_plane(surf_a, tol);
             let plane_b = super::helpers::planar_nurbs_as_plane(surf_b, tol);
-            let mut raw_curves = compute_raw_curves(
-                plane_a.as_ref().unwrap_or(surf_a),
-                plane_b.as_ref().unwrap_or(surf_b),
-                bbox_a,
-                bbox_b,
-                v_range_a,
-                v_range_b,
-                context,
-            )?;
+            let mut raw_curves = if let Some(exact) =
+                equal_cone_frustum_section(topo, fa, fb, surf_a, surf_b, tol)?
+            {
+                exact
+            } else {
+                compute_raw_curves(
+                    plane_a.as_ref().unwrap_or(surf_a),
+                    plane_b.as_ref().unwrap_or(surf_b),
+                    bbox_a,
+                    bbox_b,
+                    v_range_a,
+                    v_range_b,
+                    context,
+                )?
+            };
             raw_curves =
                 restrict_exact_ruled_cap_spans(topo, fa, fb, surf_a, surf_b, raw_curves, tol)?;
             // A tangent rim the pair carries exactly replaces any marched
@@ -7561,6 +7567,195 @@ fn cylinder_cylinder_parallel_lines(
         });
     }
     Some(results)
+}
+
+/// Qualify a complete native frustum wall; partial and edited trims keep the
+/// existing intersection path. Read unresolved topology/domains as a decline.
+fn complete_cone_band(
+    topo: &Topology,
+    face_id: FaceId,
+    cone: &remus_math::surfaces::ConicalSurface,
+    tol: Tolerance,
+) -> Option<(f64, f64, f64, f64)> {
+    let face = topo.face(face_id).ok()?;
+    let wire = topo.wire(face.outer_wire()).ok()?;
+    if !face.inner_wires().is_empty() || !wire.is_closed() || wire.edges().len() != 4 {
+        return None;
+    }
+    let mut levels = Vec::new();
+    let mut radii = Vec::new();
+    let mut rim_vertices = Vec::new();
+    let mut seams = Vec::new();
+    for oriented in wire.edges() {
+        let edge = topo.edge(oriented.edge()).ok()?;
+        match edge.curve() {
+            EdgeCurve::Circle(circle) => {
+                let (lo, hi) = edge.trim()?;
+                let delta = circle.center() - cone.apex();
+                let axial = delta.dot(cone.axis());
+                let radial = delta - cone.axis() * axial;
+                let radius = axial * cone.half_angle().cos() / cone.half_angle().sin();
+                if edge.start() != edge.end()
+                    || ![
+                        lo,
+                        hi,
+                        axial,
+                        radius,
+                        circle.radius(),
+                        radial.length(),
+                        circle.normal().cross(cone.axis()).length(),
+                    ]
+                    .into_iter()
+                    .all(f64::is_finite)
+                    || (hi - lo - std::f64::consts::TAU).abs() > tol.angular
+                    || circle.normal().cross(cone.axis()).length() > tol.angular
+                    || radial.length() > tol.linear
+                    || axial <= tol.linear
+                    || (circle.radius() - radius).abs() > tol.linear
+                {
+                    return None;
+                }
+                let point = topo.vertex(edge.start()).ok()?.point();
+                let errors = [
+                    (circle.evaluate(lo) - point).length(),
+                    (circle.evaluate(hi) - point).length(),
+                ];
+                if errors.into_iter().any(|d| !d.is_finite() || d > tol.linear) {
+                    return None;
+                }
+                levels.push(axial / cone.half_angle().sin());
+                radii.push(circle.radius());
+                rim_vertices.push(edge.start());
+            }
+            EdgeCurve::Line => seams.push((oriented.edge(), oriented.is_forward())),
+            EdgeCurve::Ellipse(_)
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return None,
+        }
+    }
+    if levels.len() != 2
+        || seams.len() != 2
+        || seams[0].0 != seams[1].0
+        || seams[0].1 == seams[1].1
+        || (levels[0] - levels[1]).abs() <= tol.linear
+    {
+        return None;
+    }
+    let seam = topo.edge(seams[0].0).ok()?;
+    if !rim_vertices.contains(&seam.start())
+        || !rim_vertices.contains(&seam.end())
+        || seam.start() == seam.end()
+    {
+        return None;
+    }
+    let start = topo.vertex(seam.start()).ok()?.point() - cone.apex();
+    let end = topo.vertex(seam.end()).ok()?.point() - cone.apex();
+    let deviation = start.cross(end).length() / start.length().max(end.length());
+    if !deviation.is_finite() || deviation > tol.linear {
+        return None;
+    }
+    Some((
+        levels[0].min(levels[1]),
+        levels[0].max(levels[1]),
+        radii[0].min(radii[1]),
+        radii[0].max(radii[1]),
+    ))
+}
+
+/// Exact rational quadratic section with endpoints on the two complete bands.
+/// A generic march stops inside F17's walls, leaving no boundary anchor. The
+/// resolved hyperbola's tangent triangle and positive weight represent its
+/// entire finite arc exactly; no sample fitting is involved.
+fn equal_cone_frustum_section(
+    topo: &Topology,
+    fa: FaceId,
+    fb: FaceId,
+    surface_a: &FaceSurface,
+    surface_b: &FaceSurface,
+    tol: Tolerance,
+) -> Result<Option<Vec<RawCurve>>, AlgoError> {
+    let (FaceSurface::Cone(first), FaceSurface::Cone(second)) = (surface_a, surface_b) else {
+        return Ok(None);
+    };
+    let Some(hyperbola) =
+        analytic_intersection::exact_equal_parallel_cone_hyperbola(first, second, tol)?
+    else {
+        return Ok(None);
+    };
+    let (Some(a), Some(b)) = (
+        complete_cone_band(topo, fa, first, tol),
+        complete_cone_band(topo, fb, second, tol),
+    ) else {
+        return Ok(None);
+    };
+    let axis = first.axis();
+    let delta = second.apex() - first.apex();
+    let along = delta.dot(axis);
+    // The downstream slice is qualified for congruent co-height bands.
+    // Structural rim-radius identity excludes unequal finite trims; the
+    // existing linear tolerance only admits axial placement roundoff.
+    // Genuine axially shifted cones retain the established path even though
+    // the independent math helper can represent their radical-plane conic.
+    if a.2.to_bits() != b.2.to_bits()
+        || a.3.to_bits() != b.3.to_bits()
+        || !along.is_finite()
+        || along.abs() > tol.linear
+    {
+        return Ok(None);
+    }
+    let distance = (delta - axis * along).length();
+    let (sin, cos) = first.half_angle().sin_cos();
+    let coefficient = distance * sin / (2.0 * cos);
+    let lower =
+        ((a.0 * sin - along * 0.5) / coefficient).max((b.0 * sin + along * 0.5) / coefficient);
+    let upper =
+        ((a.1 * sin - along * 0.5) / coefficient).min((b.1 * sin + along * 0.5) / coefficient);
+    // This bounded family includes the smooth turn in both face interiors.
+    // Other windows, tangencies and near-degenerate ranges retain the old path.
+    if ![lower, upper].into_iter().all(f64::is_finite) || lower >= 1.0 || upper <= 1.0 {
+        return Ok(None);
+    }
+    let limit = upper.acosh();
+    let weight = limit.cosh();
+    let controls = vec![
+        hyperbola.evaluate(-limit),
+        hyperbola.tangent_intersection(-limit, limit),
+        hyperbola.evaluate(limit),
+    ];
+    if !weight.is_finite()
+        || controls
+            .iter()
+            .any(|p| ![p.x(), p.y(), p.z()].into_iter().all(f64::is_finite))
+    {
+        return Ok(None);
+    }
+    let bbox = Aabb3::try_from_points(controls.iter().copied())
+        .ok_or_else(|| AlgoError::IntersectionFailed("empty exact cone section hull".into()))?;
+    let curve = remus_math::nurbs::curve::NurbsCurve::new(
+        2,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        controls,
+        vec![1.0, weight, 1.0],
+    )?;
+    // Keep the conic distinct from the rim span with the same endpoints.
+    // Exact knot insertion also exposes its turn as a shared section vertex.
+    let (left, right) = remus_math::nurbs::knot_ops::curve_split(&curve, 0.5)?;
+    Ok(Some(
+        [left, right]
+            .into_iter()
+            .map(|curve| {
+                let t_range = curve.domain();
+                RawCurve {
+                    p_start: curve.evaluate(t_range.0),
+                    p_end: curve.evaluate(t_range.1),
+                    curve: EdgeCurve::NurbsCurve(curve),
+                    bbox,
+                    t_range,
+                }
+            })
+            .collect(),
+    ))
 }
 
 /// Analytic-analytic surface intersection using marching.

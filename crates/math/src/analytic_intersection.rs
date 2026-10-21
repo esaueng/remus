@@ -8,7 +8,7 @@ use crate::compact_sort::CompactSort;
 use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, SQRT_2, TAU};
 
 use crate::MathError;
-use crate::curves::{Circle3D, Ellipse3D};
+use crate::curves::{Circle3D, Ellipse3D, Hyperbola3D};
 use crate::fma::FusedMulAdd;
 use crate::frame::Frame3;
 use crate::nurbs::fitting::interpolate;
@@ -2492,6 +2492,70 @@ fn try_algebraic_intersection(
         } // Every pair of the five variants has an arm above; a future variant
           // is flagged here by the compiler instead of silently marching.
     }
+}
+
+/// Exact positive-nappe hyperbola for structurally identical parallel cones.
+///
+/// Stored axes and angles must match exactly: nearby carriers keep the general
+/// path. With `m = cot(angle)`, apex displacement `delta`, `h = axis·delta`,
+/// and perpendicular length `d`, subtracting the two cone equations gives the
+/// radical plane `(delta - axis*(1+m*m)*h)·(p-midpoint) = 0`. For a resolved
+/// transverse separation `d > m*abs(h)`, its restriction is one hyperbola on
+/// both positive nappes. The other branch is on both negative nappes.
+///
+/// `None` leaves coincident, unequal, nonparallel and unresolved/degenerate
+/// configurations on their existing path. Tolerance only rejects a section;
+/// it never promotes unequal carrier parameters to this family.
+///
+/// # Errors
+/// Returns a math error if the qualified finite hyperbola frame is invalid.
+pub fn exact_equal_parallel_cone_hyperbola(
+    first: &ConicalSurface,
+    second: &ConicalSurface,
+    tolerance: Tolerance,
+) -> Result<Option<Hyperbola3D>, MathError> {
+    let axis = first.axis();
+    let axis_bits = |v: Vec3| [v.x().to_bits(), v.y().to_bits(), v.z().to_bits()];
+    if axis_bits(axis) != axis_bits(second.axis())
+        || first.half_angle().to_bits() != second.half_angle().to_bits()
+        || !tolerance.linear.is_finite()
+        || tolerance.linear <= 0.0
+    {
+        return Ok(None);
+    }
+    let (sin, cos) = first.half_angle().sin_cos();
+    let slope = cos / sin;
+    let slope2 = slope * slope;
+    if !slope2.is_finite() || sin <= 0.0 || cos <= 0.0 {
+        return Ok(None);
+    }
+    let delta = second.apex() - first.apex();
+    let along = delta.dot(axis);
+    let perpendicular = delta - axis * along;
+    let distance = perpendicular.length();
+    let gap = distance - slope * along.abs();
+    let sum = distance + slope * along.abs();
+    if ![distance, along, gap, sum].into_iter().all(f64::is_finite) || gap <= tolerance.linear {
+        return Ok(None);
+    }
+    let normal = perpendicular - axis * (slope2 * along);
+    let normal_length = normal.length();
+    let major = 0.5 * (normal_length / slope);
+    let minor = 0.5 * (gap * sum).sqrt();
+    if ![normal_length, major, minor]
+        .into_iter()
+        .all(f64::is_finite)
+        || major <= tolerance.linear
+        || minor <= tolerance.linear
+    {
+        return Ok(None);
+    }
+    let normal = normal * normal_length.recip();
+    let real_axis = axis - normal * normal.dot(axis);
+    let center = first.apex() + delta * 0.5;
+    Ok(Some(Hyperbola3D::with_axes(
+        center, normal, real_axis, major, minor,
+    )?))
 }
 
 /// Exact coaxial cone-cone intersection: returns the shared circle.
