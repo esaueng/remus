@@ -40,7 +40,7 @@ that an original reference remains Bound. Test paths are repository-relative.
 | Analytic blend-band resize | Journaled single-cylinder/planar-support path retains F/E/V on resize and records complete merges/deletions on removal; legacy resize remains faces-only | `crates/operations/tests/journal_resize_blend.rs`; WASM `blend_resize_history_has_direct_batch_parity_and_rollback`; packaged consumer regression | Multi-face regions, curved supports and ambiguous boundaries remain outside the journaled path |
 | Linear pattern | Total F/E/V construction lineage for the journaled linear path: original Modified-into-itself, copies Generated from same-kind copy-time source, zero Preserved/Deleted/Unresolved, Construction origin; legacy face map and material results unchanged | `crates/operations/tests/regress_pattern_evolution_fev.rs` (census, original-only naming, arena round-trip/restore/subsequent edit, scales/curved/cavity/placement, typed refusals); WASM `linear_pattern_journaled_resolves_all_kinds_direct_and_batch`; `crates/operations/src/pattern.rs` `PatternTracker`/`linear_pattern_with_entity_history`, `journal_ops.rs` `linear_pattern_journaled` | Grid pattern; broader blend/shell/split E/V beyond their faces-only scope |
 | Circular pattern | Total F/E/V construction lineage for the journaled circular path: original Modified-into-itself, copies Generated from same-kind copy-time source, zero Preserved/Deleted/Unresolved, Construction origin; legacy face map, minimum count 2, origin-based axis and material results unchanged | `crates/operations/tests/regress_circular_pattern_evolution_fev.rs` (census 2/3/6, disjoint/touching, box/cylinder/hollow-box at 1e-3/1/1e3, consistent rotation, rotated positions/carriers, original-only naming, arena round-trip/restore/subsequent edit, typed refusals); WASM `circular_pattern_journaled_resolves_all_kinds_direct_and_batch`; packaged runtime `scripts/circular-pattern-packaged.mjs` (`runCircularPatternPackaged`, wired into `scripts/test-wasm-smoke.mjs`) — origin count-2 and offset count-3 through direct, `executeBatch`, and `executeBatchV2` with rotated-vertex/volume/census/original-versus-generated/journal oracles plus typed count/axis/overlap/foreign refusals with session preservation, from fresh `2.130.56` packages built from `49099bc6`; `crates/operations/src/pattern.rs` `circular_pattern_with_entity_history`, `journal_ops.rs` `circular_pattern_journaled` | Grid pattern; broader blend/shell/split E/V beyond their faces-only scope |
-| Grid pattern | Total F/E/V construction lineage for the journaled grid path: original Modified-into-itself, copies Generated from same-kind copy-time source, zero Preserved/Deleted/Unresolved, Construction origin; legacy face map, placement, validation and overlap policy unchanged | `crates/operations/tests/regress_grid_pattern_evolution_fev.rs` (census 1x1/1xN/Nx1/multi, box/cylinder/hollow-box at 1e-3/1/1e3, touching/disjoint, consistent body+direction transform, translated row/column geometry, original-only naming, arena round-trip/restore/subsequent edit, typed refusals with rollback and stale-slot growth); `crates/operations/src/pattern.rs` `grid_pattern_with_entity_history`, `journal_ops.rs` `grid_pattern_journaled`; browser `gridPatternJournaled` direct/`executeBatch`/`executeBatchV2`, native WASM `grid_pattern_contract_tests` and packaged `scripts/grid-pattern-packaged.mjs` ([browser qualification](#browser-grid-pattern-history-2026-10-21)) | Downstream application adoption needs a qualified committed-package pin; broader blend/shell/split E/V beyond their faces-only scope |
+| Grid pattern | Total F/E/V construction lineage for the journaled grid path: original Modified-into-itself, copies Generated from same-kind copy-time source, zero Preserved/Deleted/Unresolved, Construction origin; legacy face map, placement, validation and overlap policy unchanged | `crates/operations/tests/regress_grid_pattern_evolution_fev.rs` (census 1x1/1xN/Nx1/multi, box/cylinder/hollow-box at 1e-3/1/1e3, touching/disjoint, consistent body+direction transform, translated row/column geometry, original-only naming, arena round-trip/restore/subsequent edit, typed refusals with rollback and stale-slot growth); `crates/operations/src/pattern.rs` `grid_pattern_with_entity_history`, `journal_ops.rs` `grid_pattern_journaled`; browser `gridPatternJournaled` direct/`executeBatch`/`executeBatchV2`, native WASM `grid_pattern_contract_tests` and packaged `scripts/grid-pattern-packaged.mjs` ([browser qualification](#browser-grid-pattern-history-2026-10-21)) | Bounded grid face/qualified-edge adoption in [OpenZCAD #807](https://github.com/esaueng/OpenZCAD/pull/807) is recorded below; native vertex-reference adoption, history through collapsed multi-solid modifiers and broader blend/shell/split E/V beyond their faces-only scope remain open |
 | Default V2 offset | F/E/V: one-to-one construction face map, plus edge/vertex claims induced from it by exact incidence and checked against the actual result sets; shared incidence stays typed unresolved | `crates/operations/tests/qualify_offset_entity_evolution.rs`; `crates/operations/tests/journal.rs`: `journaled_offsets_carry_face_references_through_exact_evolution`; WASM `offset_journaled_typed_unresolved_survives_every_envelope` | Torus seams and sphere equator rings need engine-level edge records; arc-joint and self-intersection-removal provenance; curved offsets refuse from 100 units (B55) |
 | Shell / plane split | Face maps, including explicitly unresolved generated caps/rims | `crates/operations/tests/qualify_evolution_coverage.rs` | Edge/vertex maps; whole-call rollback repaired by this audit's regression slice |
 | Extrude | Total F/E/V construction lineage for the journaled extrusion path: both caps Modified from the profile face, every side wall Generated from it, shared/split/translated boundary entities Modified from source, longitudinal edges and split-new vertices Generated from the profile; zero Deleted/Unresolved on the qualified classes, Construction origin; legacy signature, geometry and material results unchanged | `crates/operations/tests/regress_extrusion_evolution_fev.rs` (profile-class censuses with independent oracles, dropped/phantom checker proofs, split naming, edit/arena/checkpoint evidence, atomic refusals, legacy STEP parity); WASM `extrude_journaled_has_direct_batch_parity_census_and_rollback`; `crates/operations/src/extrude.rs` `ExtrudeConstruction`/`extrude_with_entity_evolution`, `journal_ops.rs` `extrude_journaled` | Revolve/sweep/loft history remains open |
@@ -116,6 +116,47 @@ and qualified committed-package refresh/pin. Consumers publishing another
 instance order must obtain instance claims in producer order, then permute
 members and claims together. Broader shell, split, blend and swept-family
 attribution remain separate B18 work.
+
+**Committed-package and consumer follow-up:** the provenance-stamped distribution
+copy of the qualified canonical build at
+`b66d65356e6c725b3b93a43c5820bde227917ea0` matches all 20 files in the
+[publisher artifact from run 39592714438](https://github.com/esaueng/remus/actions/runs/39592714438).
+The stamp adds package repository/homepage metadata; it does not embed a build
+source revision. The paired `2026.1.71` distribution merged in
+[#1248](https://github.com/esaueng/remus/pull/1248) at
+`b464097112a6a25878666740442a46eb54b0ed7a` passes
+[four-host run 39605453765](https://github.com/esaueng/remus/actions/runs/39605453765):
+439 required gates per Linux/macOS x86-64/arm64 host, with four advisory gaps
+retained. Build-source attribution, committed-byte identity and each report's
+checkout identity are separate evidence. These later committed bytes differ
+from the earlier local-source artifacts with the same version number:
+
+| Committed 2026.1.71 module | Raw bytes | SHA-256 |
+| --- | ---: | --- |
+| Kernel | 10,493,298 | `607eafe5304a4810c28803b5bda3297b40f261366fcb48e36aa499a215eebfd8` |
+| Translator | 3,086,386 | `d9bba144cb977a55a155e34187e4390ad3ff74ba2129d5a2664e60d4667f7b8d` |
+
+[OpenZCAD #807](https://github.com/esaueng/OpenZCAD/pull/807), reviewed at
+`96079458035ce8562dfa778eaac1bdcd09b4da7f`, merged at
+`2cbf82edc0f75a97025d28e620cb7041cd99187f` after
+[head checks](https://github.com/esaueng/OpenZCAD/actions/runs/39616051752) and
+[merge-group checks](https://github.com/esaueng/OpenZCAD/actions/runs/39619832382)
+on that same merge candidate. Its normal pin, lockfile and checksums select
+both packages from that distribution. The adapter verifies face claims in
+producer order before permuting members and claims together into its existing
+column order; qualified edge names require complete construction-origin journal
+evidence, independently counted result topology and unique transformed witnesses.
+Invalid, ambiguous or over-budget edge evidence preserves geometry and qualified
+face history while withholding edge names. Count edits, removed cells, cold
+replay and datum-axis/endpoint regressions qualify this bounded adoption.
+Native vertex-reference adoption and history through collapsed multi-solid
+modifiers remain open. B18 and consumer K05 remain **Partial**; shell,
+split/section, blend and swept-family attribution retain their existing gaps.
+
+The earlier statement that downstream adoption needs a refresh/pin describes the
+preceding local-source snapshot. This follow-up records the later bounded
+integration; it does not qualify every evolution family or prove a standalone
+production deployment.
 
 ## Confirmed rollback correction
 
