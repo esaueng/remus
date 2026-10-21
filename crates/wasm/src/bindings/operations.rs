@@ -39,12 +39,15 @@ use remus_operations::revolve::revolve;
 use remus_operations::sweep::{sweep, sweep_wire};
 use remus_topology::transaction::run_transacted;
 
-fn optional_fillet_number(spec: &serde_json::Value, field: &str) -> Result<f64, WasmError> {
+fn optional_fillet_number(spec: &serde_json::Value, field: &str) -> Result<Option<f64>, WasmError> {
     match spec.get(field) {
-        None | Some(serde_json::Value::Null) => Ok(0.0),
-        Some(value) => value.as_f64().ok_or_else(|| WasmError::InvalidInput {
-            reason: format!("'{field}' in fillet spec must be a number"),
-        }),
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => value
+            .as_f64()
+            .map(Some)
+            .ok_or_else(|| WasmError::InvalidInput {
+                reason: format!("'{field}' in fillet spec must be a number"),
+            }),
     }
 }
 
@@ -63,10 +66,12 @@ pub(super) fn parse_variable_fillet_specs(
             reason: "'edge' in fillet spec exceeds the u32 range".into(),
         })?;
         let edge_id = kernel.resolve_edge(edge_handle)?;
-        let start_val = spec["start"]
-            .as_f64()
-            .or_else(|| spec["startRadius"].as_f64());
-        let end_val = spec["end"].as_f64().or_else(|| spec["endRadius"].as_f64());
+        // Validate supplied aliases even when a primary field takes precedence.
+        let start_val =
+            optional_fillet_number(spec, "start")?.or(optional_fillet_number(spec, "startRadius")?);
+        let end_val =
+            optional_fillet_number(spec, "end")?.or(optional_fillet_number(spec, "endRadius")?);
+        let radius = optional_fillet_number(spec, "radius")?;
         let law_str = match spec.get("law") {
             None => match (start_val, end_val) {
                 (Some(start), Some(end)) if (start - end).abs() > f64::EPSILON => "linear",
@@ -86,7 +91,7 @@ pub(super) fn parse_variable_fillet_specs(
                 end: end_val.unwrap_or(1.0),
             },
             "constant" => remus_operations::fillet::FilletRadiusLaw::Constant(
-                spec["radius"].as_f64().or(start_val).unwrap_or(1.0),
+                radius.or(start_val).unwrap_or(1.0),
             ),
             _ => {
                 return Err(WasmError::InvalidInput {
@@ -97,8 +102,8 @@ pub(super) fn parse_variable_fillet_specs(
         edge_specs.push(remus_operations::fillet::FilletEdgeSetback {
             edge: edge_id,
             law,
-            start_setback: optional_fillet_number(spec, "startSetback")?,
-            end_setback: optional_fillet_number(spec, "endSetback")?,
+            start_setback: optional_fillet_number(spec, "startSetback")?.unwrap_or(0.0),
+            end_setback: optional_fillet_number(spec, "endSetback")?.unwrap_or(0.0),
         });
     }
     Ok(edge_specs)
@@ -1765,6 +1770,8 @@ impl BrepKernel {
     ///
     /// Also accepts brepjs-style fields: `startRadius`/`endRadius` as aliases for `start`/`end`.
     /// When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
+    /// Missing or `null` numeric fields retain their defaults. Every other supplied
+    /// numeric field must be a number, including aliases shadowed by `start`/`end`.
     /// A supplied `law` must be `"constant"`, `"linear"`, or `"scurve"`.
     ///
     /// Returns a new solid handle.
@@ -2863,6 +2870,77 @@ mod tests {
             assert_eq!(kernel.serialize_solids(&[solid]).unwrap(), before);
             assert_eq!(kernel.topo().allocated_slot_count(), slots);
         }
+    }
+
+    #[test]
+    fn variable_fillet_json_rejects_malformed_explicit_numeric_fields() {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let edge = kernel.get_solid_edges(solid).unwrap()[0];
+        for field in [
+            "radius",
+            "start",
+            "end",
+            "startRadius",
+            "endRadius",
+            "startSetback",
+            "endSetback",
+        ] {
+            for invalid in [
+                serde_json::json!("1"),
+                serde_json::json!(true),
+                serde_json::json!([]),
+                serde_json::json!({}),
+            ] {
+                // Even a lower-precedence alias or an unused field must not
+                // silently hide a malformed, explicitly supplied number.
+                let mut spec = serde_json::json!({
+                    "edge": edge, "law": "constant", "radius": 1.0,
+                    "start": 1.0, "end": 1.0,
+                });
+                spec[field] = invalid;
+                let error =
+                    super::parse_variable_fillet_specs(&kernel, std::slice::from_ref(&spec))
+                        .expect_err("a malformed explicit field must not become a default");
+                assert!(
+                    matches!(error, crate::error::WasmError::InvalidInput { ref reason }
+                        if reason.contains(field) && reason.contains("must be a number")),
+                    "{spec}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn variable_fillet_json_keeps_numeric_null_defaults_and_alias_precedence() {
+        use remus_operations::fillet::FilletRadiusLaw;
+
+        let mut kernel = BrepKernel::new();
+        let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let edge = kernel.get_solid_edges(solid).unwrap()[0];
+        let specs = [
+            serde_json::json!({ "edge": edge, "radius": null, "start": null, "end": null,
+                "startRadius": null, "endRadius": null, "startSetback": null, "endSetback": null }),
+            serde_json::json!({ "edge": edge, "start": null, "end": null, "startRadius": 1.0, "endRadius": 2.0 }),
+            serde_json::json!({ "edge": edge, "law": "linear", "start": 2.0, "end": 3.0,
+                "startRadius": 4.0, "endRadius": 5.0 }),
+            serde_json::json!({ "edge": edge, "law": "constant", "radius": 4.0, "start": 2.0 }),
+        ];
+        let parsed = super::parse_variable_fillet_specs(&kernel, &specs).unwrap();
+        assert!(matches!(&parsed[0].law, FilletRadiusLaw::Constant(radius)
+            if radius.to_bits() == 1.0_f64.to_bits()));
+        assert_eq!(parsed[0].start_setback.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(parsed[0].end_setback.to_bits(), 0.0_f64.to_bits());
+        assert!(
+            matches!(&parsed[1].law, FilletRadiusLaw::Linear { start, end }
+            if start.to_bits() == 1.0_f64.to_bits() && end.to_bits() == 2.0_f64.to_bits())
+        );
+        assert!(
+            matches!(&parsed[2].law, FilletRadiusLaw::Linear { start, end }
+            if start.to_bits() == 2.0_f64.to_bits() && end.to_bits() == 3.0_f64.to_bits())
+        );
+        assert!(matches!(&parsed[3].law, FilletRadiusLaw::Constant(radius)
+            if radius.to_bits() == 4.0_f64.to_bits()));
     }
 
     #[test]
