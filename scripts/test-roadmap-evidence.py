@@ -75,6 +75,13 @@ class FoldTests(unittest.TestCase):
             ['<a id="perf-n04"></a>PERF-N04', "P1 / 3 / M", "Prune seeds.", "Pending Measured."],
         )
 
+    def test_keeps_earlier_evidence_when_a_later_fragment_sets_a_shared_state_cell(self):
+        out = evidence.fold_evidence(ROADMAP, [
+            fragment("PERF-N04", "Measured.", name="perf-n04--a.md"),
+            fragment("PERF-N04", "Closed.", state="Done", name="perf-n04--b.md"),
+        ])
+        self.assertEqual(evidence.split_row(row_of(out, "perf-n04"))[3], "Done Measured. Closed.")
+
     def test_orders_fragments_for_one_row_by_file_name(self):
         out = evidence.fold_evidence(ROADMAP, [
             fragment("8.1", "Second.", name="8.1--b.md"),

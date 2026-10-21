@@ -198,12 +198,19 @@ def fold_evidence(markdown, fragments):
         placed.append((fragment, index, target, state))
     if errors:
         raise FragmentError("\n".join(errors))
-    for fragment, index, target, state in placed:
-        cells = split_row(lines[index])
+    # States first, then every body: where a table has no Evidence column the
+    # state cell also receives evidence, and a state applied after an earlier
+    # fragment's body would overwrite that body.
+    row_cells = {}
+    for fragment, index, _, state in placed:
+        cells = row_cells.setdefault(index, split_row(lines[index]))
         if fragment.get("state") is not None:
             cells[state] = escape_cell(fragment["state"])
+    for fragment, index, target, _ in placed:
+        cells = row_cells[index]
         text = escape_cell(fragment["evidence"])
         cells[target] = text if cells[target] in EMPTY_CELLS else f"{cells[target]} {text}"
+    for index, cells in row_cells.items():
         lines[index] = join_row(cells)
     return "\n".join(lines)
 
