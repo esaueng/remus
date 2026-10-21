@@ -62,8 +62,10 @@ You are working on `offset_solid`, `thick_solid`, arc-joint offsets, `move_faces
 - "Validation passed, so orientation is fine." See Traps 1.
 - "The fold is obviously empty; pass the faces and delete." `removable_faces` must equal the complete folded component exactly or the call refuses (PR #237).
 - "Retry an inward arc offset with mitre options." Different construction, different volume — pick the joint the drawing needs.
-- "A refused offset mutated the solid." Every entry point rolls back (`run_transacted` / snapshot restore); assert arena counts before/after as the face-map test does.
+- "A refused offset mutated the solid." The public `thick_solid` boundary (also reached by `offset_solid`) now opens its own transaction; caller wrappers alone previously left lower native refusals unprotected (F7, `regress_opseq_offset_refusal.rs`). Every entry point rolls back (`run_transacted` / snapshot restore); assert arena counts before/after as the face-map test does.
 - "Widen the general validator to catch orientation." Rejected in #86: per-op signed-volume postcondition instead, to avoid false refusals on curved offsets.
+
+- Internal `OffsetError::AssemblyFailed` must survive the operations adapter as `OperationsError::Offset`; its former wildcard-to-`InvalidInput` conversion blamed callers for wire-loop construction failures (F7, `offset_v2.rs`).
 
 ## Related skills
 

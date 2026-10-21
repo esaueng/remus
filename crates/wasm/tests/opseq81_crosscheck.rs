@@ -84,10 +84,8 @@ enum Signature {
         /// When set, the mesh watertightness flag must equal it.
         watertight: Option<bool>,
     },
-    /// The sequence ends in a batch-side error at `op_index` with every
-    /// earlier op succeeding: the engine defect (here: a mistyped refusal)
-    /// is visible through the binding with the same code the native
-    /// executor classifies.
+    /// The sequence ends in a typed assembly refusal at `op_index`,
+    /// with every earlier operation succeeding exactly.
     TerminalError { op_index: usize },
 }
 
@@ -320,18 +318,17 @@ fn opseq81_native_batch_crosscheck() {
                     .and_then(Value::as_str)
                     .unwrap_or_else(|| {
                         panic!(
-                            "{}: terminal op must error through batch (mistyped refusal), got {terminal}",
+                            "{}: terminal op must refuse assembly through batch, got {terminal}",
                             check.file
                         )
                     });
-                // The native executor classifies this InvalidInput as
-                // untyped (outside the refusal contract); the batch code
-                // must name the same invalid-argument family, proving one
-                // shared mistyping rather than two divergent defects.
+                assert_eq!(code, "operation_failed", "{}", check.file);
+                assert_eq!(terminal["error"]["category"], "internal", "{}", check.file);
                 assert!(
-                    code.contains("invalid"),
-                    "{}: terminal error code `{code}` must name the invalid-argument family",
-                    check.file
+                    terminal["error"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("wire loop walk")
                 );
                 println!(
                     "B81XCHECK {}: terminal error `{code}` at op {op_index}",

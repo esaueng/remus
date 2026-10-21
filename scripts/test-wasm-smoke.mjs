@@ -21,6 +21,7 @@ import { runWasmParserReferencesPackaged } from './wasm-parser-refs-packaged.mjs
 import { runOpseqF5Packaged } from './opseq-f5-packaged.mjs';
 import { runOpseqF6Packaged } from './opseq-f6-packaged.mjs';
 import { runOpseqOffsetWallPackaged } from './opseq-offset-wall-packaged.mjs';
+import { runOpseqOffsetRefusalPackaged } from './opseq-offset-refusal-packaged.mjs';
 import { runWasmRayTorusPackaged } from './wasm-ray-torus-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
 import { runPackageQueueWitness } from './queue-contracts-packaged.mjs';
@@ -1733,6 +1734,7 @@ runKernelCorrectnessPackaged({ BrepKernel });
 runOpseqF5Packaged({ BrepKernel });
 runOpseqF6Packaged({ BrepKernel });
 runOpseqOffsetWallPackaged({ BrepKernel });
+runOpseqOffsetRefusalPackaged({ BrepKernel });
 
 runWasmRayTorusPackaged({ BrepKernel });
 

@@ -354,10 +354,10 @@ fn get_u32(args: &Value, key: &str) -> Option<u32> {
 ///   the broader generator family stays excluded pending wider qualification.
 ///   Placed variants and the reverse order stay in generation as tripwires.
 /// - X6: an inward (`distance < 0.0`) offset of a boolean result
-///   (`finding_inward_offset_of_fuse_untyped`, F7: the offset engine's
-///   wire-loop assembly failure surfaces as `InvalidInput` instead of a
-///   typed refusal — offset-lane affinity). Outward offsets of boolean
-///   results stay in generation as tripwires.
+///   The literal F7 and neighboring prism cells now refuse with the
+///   offset producer's typed assembly failure and restore live topology.
+///   Broader inward boolean-offset generation remains unqualified;
+///   outward offsets stay in generation as tripwires.
 /// - X7: an unmoved prim sphere–box FUSE pair in either operand order.
 ///   The literal F8 union is independently qualified and active below;
 ///   the broader generated family remains excluded pending qualification.
@@ -393,8 +393,8 @@ fn get_u32(args: &Value, key: &str) -> Option<u32> {
 /// - X8: an offset of a cylinder or cone — prim or copy, either sign.
 ///   Literal F9/F14/F15 and neighboring signed primitive cells now pass
 ///   independent native geometry and batch checks. The broad exclusion
-///   stays until the original 16-cell matrices and the remaining mistyped
-///   wire-loop refusals are requalified; box/sphere/torus offsets mesh
+///   stays until the original 16-cell matrices and wider wire-loop
+///   refusal outcomes are requalified; box/sphere/torus offsets mesh
 ///   watertight. Offsets of boxes, spheres, tori, outward offsets of
 ///   boolean results, and composed results stay in generation as
 ///   tripwires.
@@ -1077,6 +1077,7 @@ fn classify_refusal(e: &OperationsError) -> RefusalClass {
             | OperationsError::BodyClassOperationUnsupported { .. }
             | OperationsError::BodyClassMeasureMismatch { .. }
             | OperationsError::BodyValidationFailed { .. }
+            | OperationsError::Offset(remus_offset::OffsetError::AssemblyFailed { .. })
     ) {
         RefusalClass::Refused
     } else {
@@ -5919,27 +5920,17 @@ fn finding_sphere_minus_box_open_mesh() {
     );
 }
 
-/// 8.1 finding F7 (retained, kernel untouched): an inward offset (-0.25)
-/// of a plain unmoved box–cylinder fuse fails inside the offset engine's
-/// wire-loop assembly (`no unvisited edge from vertex 58`) and the failure
-/// surfaces as `InvalidInput` — a caller-input code for an internal
-/// assembly failure. The boolean prefix is exactly right (closed forms π
-/// for the cylinder and 1.0 for the box, full battery green), so the
-/// defect is wholly inside the offset lane: either the loop walk must close, or
-/// the failure must refuse typed (`Unsupported` and friends) instead of
-/// wearing `InvalidInput`. Owns exclusion cell X6 (inward offsets of
-/// boolean results steer into placements until this closes).
-///
-/// Minimized from CI-matrix seed `0xC10B` (7 ops shrink to 4; dims simplify
-/// to unit cylinder/box, the pre-offset rotation deletes, the trailing
-/// operations cascade away).
-///
-/// Acceptance: any verdict EXCEPT `Incorrect`/`Crash`/`Timeout`
-/// (`Approximate` success or typed `Refused` both close it — the harness
-/// never demands success, only an honest answer). No geometry fix in this
-/// harness PR.
+/// F7 regression: the inward unit box-cylinder-fuse offset reaches an
+/// assembly limitation and refuses with `Offset(AssemblyFailed)`. The
+/// original wildcard adapter blamed caller input and the lower native
+/// entry left temporary vertices/edges live. Both native levels now restore
+/// the pre-call model while preserving retired handle high-water marks.
+/// Neighboring widths/distances, rigid placements, scale and all public
+/// execution routes are pinned in `regress_opseq_offset_refusal.rs` and
+/// `scripts/opseq-offset-refusal-packaged.mjs`. General inward offsets of
+/// boolean results remain behind X6 pending wider qualification.
+/// Minimized from CI-matrix seed `0xC10B` (7 ops shrink to 4).
 #[test]
-#[ignore = "8.1 finding F7: inward offset of a box-cylinder fuse dies in the wire-loop walk and mistypes as InvalidInput; route to the offset lane"]
 fn finding_inward_offset_of_fuse_untyped() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"height":1.0,"radius":1.0},"op":"makeCylinder"},{"args":{"depth":1.0,"height":1.0,"width":1.0},"op":"makeBox"},{"args":{"exactOnly":true,"operation":"fuse","solidA":1,"solidB":0},"op":"booleanWithQuality"},{"args":{"distance":-0.25,"solid":2},"op":"offsetSolidV2"}]"#,
