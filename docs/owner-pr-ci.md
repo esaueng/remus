@@ -22,7 +22,7 @@ a label or repository variable does not grant execution authority.
 can publish this variable after checking fresh collector health and GitHub runner connectivity. A manually selected target stays fixed
 until an administrator or controller updates it; GitHub does not automatically
 switch hosts when that server goes offline. The preferred order is Jane, then
-John, then GitHub-hosted. Busy Jane remains available; jobs queue for either of her two slots.
+John, then GitHub-hosted. Busy Jane remains available; jobs queue for any of her three slots.
 Missing/invalid configuration selects hosted. Hosted fallback still depends on
 GitHub billing and capacity.
 
@@ -31,10 +31,12 @@ GitHub billing and capacity.
 `CI_FLEET_LIGHT_POOL_ENABLED=true` lets Classify Changes, Repository Policy,
 Secrets Scan, Documentation, Cargo Deny, Security Audit and CI Pass
 use any free runner carrying `ci-remus-light` in `ci-trusted-main`. Provision
-that label only on `ci-vm-1441561` (John), `ci-server-jane-1` and
-`ci-server-jane-2`; keep their existing labels. Do not label the retired
-`ci-server-jane` registration or any additional runner. No new runner process
-or extra machine capacity is created.
+that label only on explicitly selected, independently validated runners;
+keep their existing labels. The three-slot migration does not enable this
+optional pool or add `ci-remus-light` to slot 3. Keep the pool disabled until
+its membership and workflow pins are separately validated. Do not label the
+retired `ci-server-jane` registration. No new runner process or extra machine
+capacity is created by adding a pool label.
 
 The pool is opt-in. Missing/false pool configuration preserves the selected-host
 routing above. All existing owner, repository, event and protected-ref checks
@@ -52,7 +54,7 @@ membership. Removing a label prevents new matching assignments; allow active
 jobs to finish. GitHub chooses any available matching runner, without a Jane
 preference inside the pool.
 
-Activation order: add the label to the three verified runner IDs in the
+Activation order: add the label only to the selected verified runner IDs in the
 restricted group; append the exact new callee SHA to the existing workflow
 allowlist; enable the pool variable; then validate the PR's immutable caller.
 Preserve every existing runner-group permission and workflow entry. Confirm
@@ -62,7 +64,14 @@ merging. Roll back subsequent scheduling with
 
 Before checkout, self-hosted jobs verify the non-root identity, protected runner
 files, NoNewPrivileges, fresh storage, empty rootless Docker state, mount options
-and exact cgroup limits. Jane slots each have six CPU equivalents and 6 GiB RAM;
+and exact cgroup limits. The staged `fleet-ci-v6.yml` profile recognizes
+`ci-server-jane-1`, `ci-server-jane-2` and `ci-server-jane-3`, each with six CPU
+equivalents and a 5,000,000,000-byte RAM setting. systemd aligns the enforced
+limit to whole host pages: 4,999,999,488 bytes on a 4 KiB-page host. Each slot
+has a separate 150 GiB image. The v4 caller retains its legacy 6 GiB contract
+until a second PR activates the v6 file at its landed main commit; keep new
+local assignments paused during this transition.
+
 John has one CPU equivalent and 3 GiB. Guard failure fails the job.
 Rust build and registry caches are restored from GitHub after the isolation
 check; only main saves them. Runner homes and workspaces are still erased
@@ -148,9 +157,9 @@ merging these files does not change repository variables or runner permissions.
 The caller cancels superseded runs only for the same ref. There is no global
 suite concurrency group: separate PR suites can make progress at the same time,
 and one suite's slow coverage job cannot prevent another suite from starting.
-Jane's two registered slots bound actual server execution to two jobs across
+Jane's three registered slots bound actual server execution to three jobs across
 all workflows and repositories. Jobs wait for a free slot without oversubscribing
-the host. Two coverage jobs may run together when both slots are available.
+the host. Coverage jobs may run together when separate slots are available.
 
 The WASM size report comment runs in its own immutable callee after the
 suite, because it needs a write token that the suite never receives. The size

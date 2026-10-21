@@ -65,8 +65,8 @@ class FleetRunnerPolicy(unittest.TestCase):
 
     def test_activated_profile_cannot_restore_the_retired_budget(self):
         active = workflow_path('ci')
-        if active.name == 'fleet-ci-v4.yml':
-            return  # This staging change deliberately leaves the current pin intact.
+        if active.name != 'fleet-ci-v6.yml':
+            return  # Other independently staged workflow versions keep their own contract.
         guard = re.search(r'case "\$RUNNER_NAME" in\n.*?\besac', active.read_text(), re.S).group()
         self.assertIn('ci-server-jane-1|ci-server-jane-2|ci-server-jane-3)', guard)
         self.assertIn('CI_MEMORY=5000000000', guard)

@@ -23,6 +23,14 @@ GUARD = (ROOT / GUARD_PATH).read_text()
 HOSTED = "ubuntu-24.04"
 
 
+def legacy_jane_profile(text):
+    """Normalize only the reviewed three-slot resource delta during rollout."""
+    return (text.replace('ci-server-jane-1|ci-server-jane-2|ci-server-jane-3)',
+                         'ci-server-jane-1|ci-server-jane-2)')
+            .replace('CI_MEMORY=5000000000', 'CI_MEMORY=6442450944')
+            .replace('        CI_MEMORY=$((CI_MEMORY / $(getconf PAGESIZE) * $(getconf PAGESIZE)))\n', ''))
+
+
 def jobs(text):
     return dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)",
                            text.split("\njobs:\n", 1)[1], re.M | re.S))
@@ -114,8 +122,16 @@ class UbuntuRoutingTests(unittest.TestCase):
                 with self.subTest(file=path.name, job=name):
                     reference = re.search(r"uses: esaueng/remus/\.github/actions/fleet-guard@([a-f0-9]{40})", block)
                     self.assertIsNotNone(reference)
-                    self.assertEqual(subprocess.check_output(
-                        ["git", "show", f"{reference[1]}:{GUARD_PATH}"], cwd=ROOT, text=True), GUARD)
+                    self.assertEqual(subprocess.run(
+                        ["git", "merge-base", "--is-ancestor", reference[1], "origin/main"],
+                        cwd=ROOT).returncode, 0)
+                    pinned = subprocess.check_output(
+                        ["git", "show", f"{reference[1]}:{GUARD_PATH}"], cwd=ROOT, text=True)
+                    self.assertEqual(legacy_jane_profile(pinned), legacy_jane_profile(GUARD))
+                    if workflow_path("ci").name == "fleet-ci-v6.yml":
+                        self.assertIn('ci-server-jane-1|ci-server-jane-2|ci-server-jane-3)', pinned)
+                        self.assertIn('CI_MEMORY=5000000000', pinned)
+                        self.assertIn('CI_MEMORY=$((CI_MEMORY / $(getconf PAGESIZE)', pinned)
                     if "actions/checkout@" in block:
                         self.assertLess(block.index("fleet-guard@"), block.index("actions/checkout@"))
                         self.assertIn("persist-credentials: false", block)
@@ -131,7 +147,7 @@ class UbuntuRoutingTests(unittest.TestCase):
             block = re.search(r"      - &" + anchor + r"\n(.*?)(?=^      - )", original, re.M | re.S)[1]
             script = block.split("        run: |\n", 1)[1]
             normalized = "\n".join(line[2:] if line.startswith("  ") else line for line in script.splitlines())
-            self.assertIn(normalized, GUARD)
+            self.assertIn(legacy_jane_profile(normalized), legacy_jane_profile(GUARD))
 
     def test_osv_keeps_base_comparison_and_blocking_reports(self):
         text = workflow_path("osv").read_text()
