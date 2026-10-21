@@ -41,7 +41,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::f64::consts::FRAC_PI_4;
+use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
 
 use remus::prelude::*;
 use remus_topology::edge::EdgeCurve;
@@ -51,6 +51,11 @@ use remus_topology::face::FaceSurface;
 /// edge: the square corner minus the quarter disc.
 fn spandrel(r: f64) -> f64 {
     (1.0 - FRAC_PI_4) * r * r
+}
+
+/// Distance from the corner to the spandrel's centroid, along either leg.
+fn spandrel_centroid(r: f64) -> f64 {
+    r * (5.0 / 6.0 - FRAC_PI_4) / (1.0 - FRAC_PI_4)
 }
 
 const BODY: f64 = 74.0 * 60.0 * 4.0 - 30.0 * 8.0 * 4.0 + 2.0 * 18.0 * 10.0 * 36.0;
@@ -141,6 +146,15 @@ fn f4_edges(model: &Model, solid: SolidId) -> Vec<EdgeId> {
 fn f5_edges(model: &Model, solid: SolidId) -> Vec<EdgeId> {
     edges_where(model, solid, |a, b, _| {
         near(a.z(), 40.0) && near(b.z(), 40.0)
+    })
+}
+
+fn f6_edges(model: &Model, solid: SolidId) -> Vec<EdgeId> {
+    edges_where(model, solid, |a, b, curve| {
+        near(a.z(), 4.0)
+            && near(b.z(), 4.0)
+            && ((matches!(curve, EdgeCurve::Circle(_)) && a.y() > 50.0 && b.y() > 50.0)
+                || (near(a.y(), 60.0) && near(b.y(), 60.0)))
     })
 }
 
@@ -358,6 +372,69 @@ fn concave_tab_base_after_corner_and_slot_fillets() {
         2.0 * spandrel(3.0) * 18.0,
     );
     assert_cylinder_walls_g1(&model, s4, "F4");
+}
+
+#[test]
+fn base_perimeter_chain_after_every_earlier_pass() {
+    let mut model = Model::new();
+    let s0 = bracket(&mut model);
+    let edges = f1_edges(&model, s0);
+    let s1 = pass(
+        &mut model,
+        s0,
+        "F1",
+        &edges,
+        6.0,
+        -2.0 * spandrel(6.0) * 4.0,
+    );
+    let edges = f2_edges(&model, s1);
+    let s2 = pass(&mut model, s1, "F2", &edges, 2.0, 2.0 * spandrel(2.0) * 4.0);
+    let edges = f3_edges(&model, s2);
+    let s3 = pass(
+        &mut model,
+        s2,
+        "F3",
+        &edges,
+        2.0,
+        -4.0 * spandrel(2.0) * 36.0,
+    );
+
+    // F5 rounds the tab tops, whose loops now carry the F3 arcs. Its r = 2
+    // arc bands collapse to a pole on the r = 2 F3 axes; the mesh must still
+    // close there.
+    let edges = f5_edges(&model, s3);
+    assert_eq!(edges.len(), 12);
+    let result = model.fillet(s3, &edges, 2.0).unwrap();
+    let s5 = result.solid;
+    let v5 = assert_sound(&model, s5, "F5");
+    assert!(
+        v5 < model.volume(s3, 0.01).unwrap() - 50.0,
+        "F5 removed no material"
+    );
+
+    // F6: the front edge, G1-propagated across the F1 arcs onto the two side
+    // edges, which run into the tabs at y = 10.
+    let edges = f6_edges(&model, s5);
+    assert_eq!(edges.len(), 3);
+    let result = model.fillet(s5, &edges, 1.0).unwrap();
+    let s6 = result.solid;
+    assert!(result.failed.is_empty() && !result.is_partial);
+    let v6 = assert_sound(&model, s6, "F6");
+    assert_cylinder_walls_g1(&model, s6, "F6");
+
+    // Closed form: three straight runs (62 + 2 × 44) of the r = 1 section and
+    // two quarter tori around the F1 arcs (Pappus: the spandrel's centroid
+    // sits `spandrel_centroid` inside the r = 6 rim).
+    let straight = spandrel(1.0) * (62.0 + 2.0 * 44.0);
+    let tori = 2.0 * spandrel(1.0) * FRAC_PI_2 * (6.0 - spandrel_centroid(1.0));
+    let removed = v5 - v6;
+    // The arc bands are lofted NURBS approximations of the tori; their error
+    // bounds the agreement (≈ 0.05 here, 0.15 % of the removed volume).
+    assert!(
+        (removed - (straight + tori)).abs() < 0.1,
+        "F6 removed {removed}, closed form {}",
+        straight + tori
+    );
 }
 
 #[test]

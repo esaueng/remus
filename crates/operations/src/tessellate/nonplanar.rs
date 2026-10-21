@@ -2947,6 +2947,32 @@ pub(super) fn tessellate_nonplanar_cdt(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    // A boundary sample lies on the face, so a chart point that misses it by
+    // more than the deflection came from a Newton start in the wrong basin.
+    // Near a pole every node of the collapsed row ties for nearest, the first
+    // in scan order wins, and Newton stalls on the singular row: a sample a
+    // little way along one side lands on the far side's corner and the CDT
+    // drops the triangle at the pole. Re-seed such a sample from its
+    // neighbours' chart points and keep the closer answer.
+    if let Some(frame) = nurbs_frame.as_ref() {
+        let limit = deflection.max(1e-9);
+        let n = boundary_uv.len();
+        for i in 0..n {
+            let point = boundary_3d[i].0;
+            let mut best = frame.residual(point, boundary_uv[i]);
+            if best <= limit {
+                continue;
+            }
+            for seed in [boundary_uv[(i + n - 1) % n], boundary_uv[(i + 1) % n]] {
+                if let Some((uv, distance)) = frame.project_seeded(point, seed)
+                    && distance < best
+                {
+                    best = distance;
+                    boundary_uv[i] = uv;
+                }
+            }
+        }
+    }
     // Step 2a: Unwrap periodic u across the seam for polyline boundaries.
     //
     // Analytic revolution surfaces have period TAU; a NURBS surface that is
@@ -3978,6 +4004,30 @@ impl NurbsFrame {
     /// The carrier in this frame (same parameterization as the face's).
     pub(super) const fn surface(&self) -> &FaceSurface {
         &self.surface
+    }
+
+    /// `(u, v)` of a world point, re-projected from `seed`, with the
+    /// distance from the point to the surface there.
+    fn project_seeded(&self, point: Point3, seed: (f64, f64)) -> Option<((f64, f64), f64)> {
+        let FaceSurface::Nurbs(rel) = &self.surface else {
+            return None;
+        };
+        remus_math::nurbs::projection::project_point_to_surface_seeded(
+            rel,
+            self_relative(point, self.anchor),
+            1e-6,
+            seed,
+        )
+        .ok()
+        .map(|proj| ((proj.u, proj.v), proj.distance))
+    }
+
+    /// Distance from a world point to the surface at `(u, v)`.
+    fn residual(&self, point: Point3, uv: (f64, f64)) -> f64 {
+        let FaceSurface::Nurbs(rel) = &self.surface else {
+            return f64::INFINITY;
+        };
+        (rel.evaluate(uv.0, uv.1) - self_relative(point, self.anchor)).length()
     }
 
     /// `(u, v)` of a world point, projected in this frame.
