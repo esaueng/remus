@@ -65,8 +65,10 @@ translation(13s,−7s,9s) times Rx(0.37) times Rz(0.23).
 
 Every refused cell pins that exact error and preserves arena counts and
 serialized operands. The packaged direct and both batch surfaces also check
-retained slot/journal state, the direct detailed refusal code, and the batch
-v2 category/code. They do not accept arbitrary errors as successful tests.
+live-slot/journal state, the direct detailed refusal code, and the batch
+v2 category/code. Allocated slot high-water marks remain monotonic: each new
+slot from a refused call must be a reserved tombstone, preserving the existing
+stale-handle contract. They do not accept arbitrary errors as successful tests.
 
 A clean rebuild of an immutable `ed34a9abe1a1cc9de62613d23350f91df44d74c5`
 archive executed this complete 24-cell matrix: eight incorrect exact

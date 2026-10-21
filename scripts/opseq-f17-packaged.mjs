@@ -7,7 +7,10 @@ const dot = (a, b) => a.reduce((sum, v, i) => sum + v * b[i], 0);
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const state = kernel => {
   const usage = JSON.parse(kernel.checkpointMemoryStats());
-  return { slots: usage.allocatedSlots, retired: usage.retiredSlots, journal: kernel.journalSummary() };
+  assert.equal(usage.checkpoints, 0, 'F17 live-state oracle has no retained checkpoints');
+  assert.equal(usage.uniqueTopologies, 1, 'F17 live-state oracle has one current topology');
+  return { liveSlots: usage.allocatedSlots - usage.retiredSlots,
+    slots: usage.allocatedSlots, retired: usage.retiredSlots, journal: kernel.journalSummary() };
 };
 const translation = x => [1, 0, 0, x, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 function matrix(scale, placed) {
@@ -53,10 +56,24 @@ function fixture(BrepKernel, api, scale, placed, swapped, mirrored, operation = 
     const ids = Uint32Array.of(a, b), original = kernel.serializeSolids(ids);
     const solidA = swapped ? b : a, solidB = swapped ? a : b;
     if (placed || (!mirrored && scale === 0.001)) {
-      const before = state(kernel);
+      const assertRollback = before => {
+        const after = state(kernel);
+        assert.deepEqual({ liveSlots: after.liveSlots, journal: after.journal },
+          { liveSlots: before.liveSlots, journal: before.journal }, `${label}: live-state rollback`);
+        // Reserved tombstones prevent a failed allocation's handle from ever
+        // naming a later entity. High-water marks must not rewind on refusal.
+        assert.ok(after.slots >= before.slots && after.retired >= before.retired,
+          `${label}: monotonic reserved slots`);
+        assert.equal(after.slots - before.slots, after.retired - before.retired,
+          `${label}: every new slot is retired`);
+        assert.deepEqual(kernel.serializeSolids(ids), original, `${label}: refused operands`);
+        return after;
+      };
+      let before = state(kernel);
       if (api === 'direct') {
         assert.throws(() => kernel.booleanWithQuality('fuse', solidA, solidB, true),
           error => !(error instanceof WebAssembly.RuntimeError) && error.message === refusal, label);
+        before = assertRollback(before);
         const detailed = kernel.fuseDetailed(solidA, solidB);
         assert.equal(detailed.status, 'error', label);
         assert.equal(detailed.code, 'exact_only_unattainable', label);
@@ -72,8 +89,7 @@ function fixture(BrepKernel, api, scale, placed, swapped, mirrored, operation = 
           assert.equal(row.error.message, refusal, label);
         }
       }
-      assert.deepEqual(state(kernel), before, `${label}: refusal rollback`);
-      assert.deepEqual(kernel.serializeSolids(ids), original, `${label}: refused operands`);
+      assertRollback(before);
       return false;
     }
     const outcome = run('booleanWithQuality', { operation, solidA, solidB, exactOnly: true }, [operation, solidA, solidB, true]);
