@@ -250,7 +250,7 @@ groups always use hosted runners: the owner-only single-PR authorization does
 not authorize a group containing other contributors' code.
 
 `.github/merge-queue-ruleset.json` is an initially disabled, additive ruleset.
-It uses squash merging, limits speculative merge builds to two, requires every
+It uses squash merging, limits speculative merge builds to four, requires every
 group's PR merge commit to pass (`ALLGREEN`), and adds no bypass actor. It neither replaces
 existing branch protection nor changes review requirements. Do not enable it
 until the caller, pinned callee and passing exact-head CI are on main. Creating
