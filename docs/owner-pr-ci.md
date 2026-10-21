@@ -128,6 +128,24 @@ Policy verification: `python3 scripts/test-direct-fleet.py`,
 2026-10-19; callers use the active `fleet-ci` callee named in
 `.github/fleet-workflows.json`.
 
+## Combined three-slot and queue staging
+
+`fleet-ci-v6.yml` combines the owner-only queue authorization staged in v5
+with Jane's three-slot, nominal 5 GB profile. Its queue policy and every
+existing command, gate, timeout and permission match the reviewed v5 bytes;
+only the runner-name table, memory value and page alignment differ. The
+canonical policy is embedded in the immutable callee before candidate checkout.
+The required direct-fleet suite executes the combined queue policy, scheduling
+and optional-probe failure-gate regressions.
+
+Keep the active caller unchanged while staging. Once v6 and the shared guard
+land on main, stage replacement auxiliary callees pinned to that actual guard
+commit. Activate v6, the compatible auxiliary manifest and every caller together
+only after those stages pass normal checks and land. Preserve exact runner-group
+restrictions and keep Jane's shared scheduling label withheld during the
+transition. The combined workflow must retain both queue authorization and the
+new memory contract; activating either legacy profile alone is insufficient.
+
 ## Updating immutable workflow dependencies
 
 `.github/fleet-workflows.json` names the active file for each workflow family.

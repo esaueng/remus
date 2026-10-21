@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise the runner identity table in the fleet guard and the trusted pilot."""
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -54,14 +55,16 @@ class FleetRunnerPolicy(unittest.TestCase):
                 self.assertEqual(result.returncode, expected)
 
     def test_staging_preserves_every_other_workflow_byte(self):
-        previous = subprocess.check_output(
-            ['git', 'show', '9e5b65b9e00f004d83eb583ab3934c863ad7956d:.github/workflows/fleet-ci-v4.yml'], cwd=ROOT, text=True)
-        expected = previous.replace('ci-server-jane-1|ci-server-jane-2)',
-                                    'ci-server-jane-1|ci-server-jane-2|ci-server-jane-3)')
-        expected = expected.replace('CI_MEMORY=6442450944', 'CI_MEMORY=5000000000')
-        expected = expected.replace('          CI_CGROUP=',
-                                    '          CI_MEMORY=$((CI_MEMORY / $(getconf PAGESIZE) * $(getconf PAGESIZE)))\n          CI_CGROUP=')
-        self.assertEqual((ROOT / '.github/workflows/fleet-ci-v6.yml').read_text(), expected)
+        # fleet-ci-v5.yml at reviewed routing stage ea5480872be1cda9ccd0410e6b11c4f901dae45f.
+        # A committed digest keeps this check independent of peer branch reachability.
+        staged = (ROOT / '.github/workflows/fleet-ci-v6.yml').read_text()
+        baseline = staged.replace('ci-server-jane-1|ci-server-jane-2|ci-server-jane-3)',
+                                  'ci-server-jane-1|ci-server-jane-2)')
+        baseline = baseline.replace('CI_MEMORY=5000000000', 'CI_MEMORY=6442450944')
+        baseline = baseline.replace(
+            '          CI_MEMORY=$((CI_MEMORY / $(getconf PAGESIZE) * $(getconf PAGESIZE)))\n', '')
+        self.assertEqual(hashlib.sha256(baseline.encode()).hexdigest(),
+                         '00fb516f35614a9f66bf34d840b3eb8287bc9ffcbf7b48a1bb7fdac5107a0f03')
 
     def test_activated_profile_cannot_restore_the_retired_budget(self):
         active = workflow_path('ci')
