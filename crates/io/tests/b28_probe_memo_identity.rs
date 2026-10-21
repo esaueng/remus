@@ -21,7 +21,10 @@
 //! `libm` may move the last bits of the analytic faces). The hammer holder's
 //! was re-recorded when the fixed rule was aligned to NURBS knot spans
 //! (B131): 50 245.521 289 691 05 before, 2.2e-7 off the converged adaptive
-//! volume 50 245.532 161 522 77 that it now meets to 4e-17.
+//! volume 50 245.532 161 522 77 that it then met to 4e-17. It was recorded
+//! again when planar faces began integrating their free-form NURBS edges
+//! exactly instead of over a 32-chord outline: 50 245.219 468 635 71, the
+//! limit of ever finer meshes.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
