@@ -1,8 +1,8 @@
 # Remus master roadmap
 
 **The single source of truth for priorities, dependencies, implementation status,
-and remaining work.** Start here, choose one bounded item, and update its row in
-the PR that changes it. Specifications define scope and acceptance; audits retain
+and remaining work.** Start here, choose one bounded item, and record the PR's
+evidence for its row as a [fragment](roadmap-evidence/README.md). Specifications define scope and acceptance; audits retain
 source-pinned evidence. Neither maintains a competing work queue.
 
 **Priority review:** 2026-09-21 against `main` at
@@ -1300,7 +1300,11 @@ No requirement is considered complete merely because its document was consolidat
    `lazy:<module>`, none for `native`), transactional refusal, scale, census and
    regression requirements from the existing specifications.
    A documentation edit does not establish new geometry or benchmark evidence.
-4. Update state and remaining scope **here**, with the exact PR/artifact evidence.
+4. Record state and remaining scope, with the exact PR/artifact evidence, as a
+   [fragment](roadmap-evidence/README.md) for the owner row, not by editing the
+   row: `python3 scripts/roadmap-evidence.py --fold` applies fragments in a
+   standalone `docs(roadmap): fold evidence` PR. Edit rows here directly only
+   to add or restructure them.
    If blocked, record the blocker in the selected row and stop; do not switch
    items. Update capability/stability claims only when their promotion gates pass.
 5. If a PERF work specification changes, regenerate its CSV/JSON exports and run
