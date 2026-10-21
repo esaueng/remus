@@ -101,3 +101,12 @@ lifecycle diagnostic, not a face-edit or presentation benchmark. Freeing an
 old kernel releases its owned payload to the module allocator; linear memory
 need not shrink, and both owners coexist during copying. Browser worker
 adoption, undo migration and whole-session reclamation remain open.
+
+The [WASM session observations](evidence/wasm-document-copy/session.json)
+record 20 copy cycles after 25 allocation/restore ticks each: 1,728 accounted
+slots before a copy (including the retained checkpoint), 64 slots and 7,824
+estimated current-topology bytes afterwards on every cycle. Module linear
+memory stayed at 4,259,840 bytes during this diagnostic. This is an observed
+allocator high-water plateau for the box lifecycle; it is not a portable
+memory guarantee, a shrink result, or an imported face-edit workload. The
+record includes exact candidate package, driver and runtime source hashes.
