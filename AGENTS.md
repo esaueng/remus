@@ -27,6 +27,10 @@ approved repository Git identity.
 - A merge request authorizes the identified pull request’s merge and its
   existing automatic deployment. Mention that consequence and proceed
   without another confirmation.
+- The owner standing-authorizes an agent session to arm auto-merge on a pull
+  request it opened once that PR is done (green on its exact head, no
+  conflict, every review thread answered and resolved), unless the PR carries
+  the `hold` label. See the merge gate in `.claude/skills/pr-workflow/SKILL.md`.
 - Before merging, verify the current head, mergeability, reviews, and required
   checks. Wait for pending checks. Existing approval remains valid for the
   authorized change.
