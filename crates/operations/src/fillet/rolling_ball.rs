@@ -2664,6 +2664,15 @@ pub fn fillet_rolling_ball_with_origins(
         // Such faces are copied verbatim instead. `verbatim` marks the faces whose
         // loops must survive as topology; `untouched` marks the ones the blend does
         // not reach, whose outer wire can be copied as well instead of rebuilt.
+        //
+        // The same holds for a face the blend does not reach whose boundary has
+        // a curved edge: rebuilt from positions, only an arc some cylindrical
+        // spec happens to mint survives, and every other one becomes a chord.
+        // An earlier blend's sphere corner and the ledge under it share their
+        // z-level great-circle arc and nothing else, so a later fillet anywhere
+        // on the body flattened both onto the chord and silently cut away the
+        // material between them. Copied whole, the face keeps its exact edges,
+        // and neighbours rebuilt from positions reuse them by vertex sharing.
         let (verbatim_faces, untouched_faces) = {
             let mut verbatim: HashSet<usize> = HashSet::default();
             let mut untouched: HashSet<usize> = HashSet::default();
@@ -2671,6 +2680,7 @@ pub fn fillet_rolling_ball_with_origins(
                 let face = topo.face(face_id)?;
                 let has_holes = !face.inner_wires().is_empty();
                 let mut closed_edge = false;
+                let mut curved_edge = false;
                 let mut touched = false;
                 for wid in
                     std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
@@ -2678,12 +2688,13 @@ pub fn fillet_rolling_ball_with_origins(
                     for oe in topo.wire(wid)?.edges() {
                         let edge = topo.edge(oe.edge())?;
                         closed_edge |= edge.start() == edge.end();
+                        curved_edge |= !matches!(edge.curve(), EdgeCurve::Line);
                         touched |= target_set.contains(&oe.edge().index());
                         touched |= vertex_fillet_edges.contains_key(&edge.start().index());
                         touched |= vertex_fillet_edges.contains_key(&edge.end().index());
                     }
                 }
-                if has_holes || closed_edge {
+                if has_holes || closed_edge || (curved_edge && !touched) {
                     verbatim.insert(face_id.index());
                 }
                 if !touched {

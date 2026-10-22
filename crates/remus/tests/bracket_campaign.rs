@@ -26,6 +26,7 @@
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_6, PI};
 
 use remus::prelude::*;
+use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
 use remus_topology::explorer::solid_faces;
 use remus_topology::face::FaceSurface;
 
@@ -479,7 +480,7 @@ fn f1_f2(m: &mut Model) -> SolidId {
     fillet(m, body, Pass::F2, 2, -2.0 * PLATE_T * spandrel(2.0), 1e-5)
 }
 
-/// F1, F2, then F5 (F3 and F4 currently refuse, so they are skipped).
+/// F1, F2, then F5 (F3 and F4 run in their own sequences below).
 fn f1_f2_f5(m: &mut Model) -> SolidId {
     let body = f1_f2(m);
     fillet(m, body, Pass::F5, 8, f5_removed(), CURVED_VOLUME_TOL)
@@ -541,13 +542,57 @@ fn sequence_f6_after_f1_f2_f5() {
     );
 }
 
+/// The rolling-ball rebuild re-emits every face, the F5 corner balls and
+/// their ledges included. Their shared equator arc used to come back as a
+/// chord, cutting about 0.7 mm³ from each of the eight corners while the
+/// result stayed valid, watertight and analytic. Those faces are untouched by
+/// F7, so the change is the four lip spandrels alone: it matches the closed
+/// form to ~1e-11 mm³ at both deflections, hence the planar tolerance.
 #[test]
-#[ignore = "open: F7 groove lip fillet on the filleted, holed body fails postcondition: 4 inconsistent orientations"]
 fn f7_groove_lips_on_filleted_holed_body() {
     let mut m = Model::new();
     let body = f1_f2_f5(&mut m);
     let body = cut_features(&mut m, body, &[]);
-    fillet(&mut m, body, Pass::F7, 4, 4.0 * 18.0 * spandrel(0.5), 1e-3);
+    let removed = 4.0 * 18.0 * spandrel(0.5);
+    // Below the 5e-3 clamp this body's bounding box sets for `volume`.
+    let fine = |m: &Model, s: SolidId| m.volume(s, 1e-3).unwrap();
+    let before = fine(&m, body);
+    let filleted = fillet(&mut m, body, Pass::F7, 4, removed, PLANAR_VOLUME_TOL);
+    assert_volume(
+        before - fine(&m, filleted),
+        removed,
+        PLANAR_VOLUME_TOL,
+        "F7 at deflection 1e-3",
+    );
+
+    let classify =
+        |p: Point3| classify_point(m.topology(), filleted, p, &ClassifyOptions::default()).unwrap();
+    let (inside, outside) = (PointClassification::Inside, PointClassification::Outside);
+    for x0 in [0.0, 56.0] {
+        // Tab material under the F5 corners and around the cross hole: the
+        // points the chorded rebuild classified Outside.
+        for (x, y, z) in [
+            (11.63, 4.13, 36.13),
+            (13.13, 2.13, 35.13),
+            (0.63, 0.63, 37.13),
+            (17.13, 9.13, 37.63),
+            // In the lens between the equator's chord and arc, above a ledge.
+            (0.75, 0.75, 38.1),
+        ] {
+            assert_eq!(
+                classify(Point3::new(x0 + x, y, z)),
+                inside,
+                "({x}, {y}, {z})"
+            );
+        }
+        // Each lip: the corner it rounds away is empty, its ball centre
+        // (0.5 in from both faces) is material.
+        for (corner_z, centre_z) in [(25.95, 25.5), (29.05, 29.5)] {
+            let x = x0 + 5.0;
+            assert_eq!(classify(Point3::new(x, 9.95, corner_z)), outside);
+            assert_eq!(classify(Point3::new(x, 9.5, centre_z)), inside);
+        }
+    }
 }
 
 // ── Fillet passes after the cuts ─────────────────────────────────────────
@@ -602,7 +647,6 @@ fn f3_after_groove_refuses_with_cliff() {
 }
 
 #[test]
-#[ignore = "open: the tab-back groove alone turns F5's tab-top corners into an unsupported 2-stripe vertex blend"]
 fn f5_tab_top_loops_after_groove() {
     let mut m = Model::new();
     let body = tabbed(&mut m);
@@ -611,7 +655,6 @@ fn f5_tab_top_loops_after_groove() {
 }
 
 #[test]
-#[ignore = "open: any groove lip fillet (even one edge) fails postcondition: 4 inconsistent orientations"]
 fn f7_groove_lips_after_groove() {
     let mut m = Model::new();
     let body = tabbed(&mut m);
@@ -664,53 +707,14 @@ fn every_edge_r2() {
 
 // ── Today's refusals, pinned ─────────────────────────────────────────────
 
-fn postcondition_reason(err: &OperationsError) -> &str {
-    match err {
-        OperationsError::InvalidInput { reason } => reason,
-        other => panic!("expected a fillet postcondition refusal, got {other:?}"),
-    }
-}
-
 /// Every failing step refuses with a typed error and leaves its input body
-/// untouched. When a fix lands, delete its row here and remove the
-/// `#[ignore]` on its ready-repro above.
+/// untouched. When a fix lands, remove its case here and the `#[ignore]` on
+/// its ready-repro above.
 #[test]
 fn current_refusals_are_typed_and_atomic() {
     let mut m = Model::new();
     let tabs = tabbed(&mut m);
-    let grooved = cut_features(&mut m, tabs, &["groove"]);
-
-    let cases: [(&str, SolidId, Pass, usize); 2] = [
-        ("F5 after groove", grooved, Pass::F5, 8),
-        ("F7 after groove", grooved, Pass::F7, 4),
-    ];
-    for (label, body, pass, n) in cases {
-        let before = volume(&m, body);
-        let err = try_fillet(&mut m, body, pass, n).err().expect(label);
-        match label {
-            "F5 after groove" => assert!(
-                matches!(
-                    err,
-                    OperationsError::Blend(BlendError::UnsupportedVertexBlend { stripes: 2, .. })
-                ),
-                "{label}: {err:?}"
-            ),
-            "F7 after groove" => {
-                let reason = postcondition_reason(&err);
-                assert!(
-                    reason.contains("4 shared edges have inconsistent face orientations"),
-                    "{label}: {reason}"
-                );
-            }
-            _ => unreachable!(),
-        }
-        assert!(
-            m.validate(body).unwrap().is_valid(),
-            "{label}: input damaged"
-        );
-        assert_volume(volume(&m, body), before, 1e-9, label);
-    }
-
+    let before = volume(&m, tabs);
     for radius in [0.5, 1.0, 2.0] {
         let edges = m.solid_edges(tabs).unwrap();
         let err = m.fillet(tabs, &edges, radius).err().expect("every edge");
@@ -721,5 +725,7 @@ fn current_refusals_are_typed_and_atomic() {
             ),
             "every edge r {radius}: {err:?}"
         );
+        assert!(m.validate(tabs).unwrap().is_valid(), "input damaged");
+        assert_volume(volume(&m, tabs), before, 1e-9, "refusal is atomic");
     }
 }
