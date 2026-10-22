@@ -1028,6 +1028,185 @@ fn dedupe_preserves_thin_plate_geometry() {
     );
 }
 
+/// Two actual polar facets from the tiny tilted F10 hemisphere. All six
+/// vertices are distinct, but their two quantized corner triples match.
+fn fine_grid_polar_pair() -> TriangleMesh {
+    TriangleMesh {
+        positions: vec![
+            Point3::new(
+                0.009_999_550_438_828_678,
+                -0.006_594_609_317_999_310_5,
+                0.002_085_856_579_719_698,
+            ),
+            Point3::new(
+                0.009_999_720_257_210_32,
+                -0.006_597_499_373_618_133_6,
+                0.002_084_580_332_576_267_7,
+            ),
+            Point3::new(
+                0.009_999_580_389_311_976,
+                -0.006_597_500_404_520_481,
+                0.002_084_579_932_727_223_6,
+            ),
+            Point3::new(
+                0.010_000_299_709_944_925,
+                -0.006_594_608_213_514_414_5,
+                0.002_085_857_008_108_701_6,
+            ),
+            Point3::new(
+                0.010_000_419_610_688_024,
+                -0.006_597_500_404_520_481,
+                0.002_084_579_932_727_223_6,
+            ),
+            Point3::new(
+                0.010_000_279_742_789_681,
+                -0.006_597_499_373_618_133_6,
+                0.002_084_580_332_576_267_7,
+            ),
+        ],
+        normals: vec![Vec3::new(0.0, 0.0, 1.0); 6],
+        indices: vec![0, 1, 2, 3, 4, 5],
+    }
+}
+
+#[test]
+fn dedupe_preserves_separated_polar_facets_in_the_same_grid_cells() {
+    // Keep the previous implementation as an independent regression witness:
+    // the coarse key alone cancels both facets.
+    let mut old = fine_grid_polar_pair();
+    super::tests::mesh_passes::reference::dedupe_coincident_triangles(&mut old, None);
+    assert!(old.indices.is_empty());
+
+    for permutation in 0..3 {
+        for attributed in [false, true] {
+            for same_winding in [false, true] {
+                let mut mesh = fine_grid_polar_pair();
+                for p in &mut mesh.positions {
+                    *p = match permutation {
+                        0 => *p,
+                        1 => Point3::new(p.z(), p.x(), p.y()),
+                        _ => Point3::new(p.y(), p.z(), p.x()),
+                    };
+                }
+                if same_winding {
+                    mesh.indices.swap(4, 5);
+                }
+                let before = mesh.clone();
+                let mut faces = vec![7, 9];
+                assert!(!super::mesh_ops::dedupe_coincident_triangles(
+                    &mut mesh,
+                    attributed.then_some(&mut faces),
+                ));
+                assert_eq!(mesh.indices, before.indices);
+                assert_eq!(mesh.positions, before.positions);
+                assert_eq!(mesh.normals, before.normals);
+                assert_eq!(faces, [7, 9]);
+            }
+        }
+    }
+}
+
+#[test]
+fn dedupe_retains_the_existing_normal_offset_cancellation_policy() {
+    // Disjoint parallel planes alone cannot distinguish floating-point noise
+    // on intended coincident faces. Their dominant projections still overlap.
+    for opposed in [false, true] {
+        let mut mesh = TriangleMesh {
+            positions: vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(0.0, 0.0, 2e-7),
+                Point3::new(1.0, 0.0, 2e-7),
+                Point3::new(0.0, 1.0, 2e-7),
+            ],
+            normals: vec![Vec3::new(0.0, 0.0, 1.0); 6],
+            indices: vec![0, 1, 2, 3, 4, 5],
+        };
+        if opposed {
+            mesh.indices.swap(4, 5);
+        }
+        assert!(super::mesh_ops::dedupe_coincident_triangles(
+            &mut mesh, None
+        ));
+        assert_eq!(mesh.indices.len(), if opposed { 0 } else { 3 });
+    }
+}
+
+#[test]
+fn dedupe_rechecks_preserved_collisions_after_positions_change_within_grid_cells() {
+    use super::face_cache::RetentionClass;
+    use super::reuse::{Session, disable_mesh_reuse, enable_mesh_reuse, mesh_reuse_stats};
+
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            disable_mesh_reuse();
+        }
+    }
+    disable_mesh_reuse();
+    enable_mesh_reuse();
+    let _reset = Reset;
+    for _ in 0..4 {
+        let mut mesh = fine_grid_polar_pair();
+        let mut session = Session::begin(RetentionClass::Display).unwrap();
+        assert!(!super::mesh_ops::dedupe_coincident_triangles_cached(
+            &mut mesh,
+            None,
+            Some(&mut session),
+        ));
+        assert_eq!(mesh.indices.len(), 6);
+    }
+    assert_eq!(mesh_reuse_stats().unwrap().cleanup_hits, 0);
+
+    // Each replacement remains in the same cell as its old position. The
+    // candidate's partition and indices are unchanged, but it now coincides
+    // exactly with the other facet, with opposing winding, and must cancel.
+    let mut mesh = fine_grid_polar_pair();
+    mesh.positions[3] = mesh.positions[0];
+    mesh.positions[4] = mesh.positions[2];
+    mesh.positions[5] = mesh.positions[1];
+    let mut session = Session::begin(RetentionClass::Display).unwrap();
+    assert!(super::mesh_ops::dedupe_coincident_triangles_cached(
+        &mut mesh,
+        None,
+        Some(&mut session),
+    ));
+    assert!(mesh.indices.is_empty());
+}
+
+#[test]
+fn dedupe_preserves_legacy_resolution_for_unresolved_candidates() {
+    let mut touching = fine_grid_polar_pair();
+    touching.positions[3] = touching.positions[0];
+    let mut non_finite = fine_grid_polar_pair();
+    for i in [0, 3] {
+        let p = non_finite.positions[i];
+        non_finite.positions[i] = Point3::new(p.x(), p.y(), f64::NAN);
+    }
+    let mut collinear = fine_grid_polar_pair();
+    let points = [
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1e-6, 1e-6, 0.0),
+        Point3::new(2e-6, 2e-6, 0.0),
+    ];
+    collinear.positions = vec![
+        points[0], points[1], points[2], points[0], points[2], points[1],
+    ];
+    let mut larger_group = fine_grid_polar_pair();
+    larger_group.indices.extend_from_slice(&[0, 1, 2]);
+    for mut mesh in [touching, non_finite, collinear, larger_group] {
+        let mut reference = mesh.clone();
+        super::tests::mesh_passes::reference::dedupe_coincident_triangles(&mut reference, None);
+        assert!(super::mesh_ops::dedupe_coincident_triangles(
+            &mut mesh, None
+        ));
+        assert_eq!(mesh.indices, reference.indices);
+        assert_eq!(mesh.positions, reference.positions);
+        assert_eq!(mesh.normals, reference.normals);
+    }
+}
+
 #[test]
 fn tessellate_boolean_cut_cylinder_watertight() {
     use remus_math::mat::Mat4;

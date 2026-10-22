@@ -1,0 +1,114 @@
+{
+  "packages": {
+    "baseline": {
+      "source": "e3585dd7ff8253f955224645807fbd3c5401d42a",
+      "runtimeEdited": false,
+      "proofOnlyOverlaySha256": "2cbbd9aad61781d4df062e0c20321eee686dd2f9a61a3bc50357fdbc88957eee",
+      "files": {
+        "kernel/package.json": "d79ae1da0eaca83ed21fe0ba637399b7359bc8683a86dc63257225cc95aba152",
+        "kernel/remus_wasm_bg.js": "24da2d26ee3478e12797e12f7ff147936b275cd622f05ae233fc69b2f771cdfb",
+        "kernel/remus_wasm.d.ts": "5d9bfe42273ddf06fc29dd84aec850b5db4d88fc5d2d7aa95a148c4c8ab2a1a5",
+        "kernel/remus_wasm_bg.wasm.d.ts": "0c2b5082114cb68b3bd1182da7bd7aad9b2b7d2fe2a21e0bd7bc13603e55e2b4",
+        "kernel/.gitignore": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
+        "kernel/remus_wasm_node.cjs": "60f3aac1eb04b35ac31916be591712391936792e7ac5632d91eb30d0fb5f5e8a",
+        "kernel/remus_wasm_bg.wasm": "badcb15af1397e92e84a66a6931a66d41fee6c9e8d40b197324cfa16091683e1",
+        "kernel/remus_wasm.js": "cfda49baec77439c7544a7dca80a5534f07fd735bf65c75302a5fc2f2a30d6c5",
+        "kernel/LICENSE-APACHE": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811",
+        "kernel/NOTICE": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9",
+        "io/remus_wasm_io_bg.wasm": "87a51dff1183ce265166a1909576ba6353edc2535c91ce42ecdfefccaa26a8e4",
+        "io/remus_wasm_io_node.cjs": "fb134e228bb2e5566f9b84dbb290ae602fd896b2b19cceed9f671e3170018469",
+        "io/package.json": "eb53aee217b204e543c18a6ba2d65b013df26f7846466f52f593eb18157ae2d0",
+        "io/remus_wasm_io_bg.wasm.d.ts": "bd01bf4aa45bf771e527675e8d095bf5e580ca37aad44d670715e73fd98acdb3",
+        "io/.gitignore": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
+        "io/remus_wasm_io.d.ts": "c8e79635083298bd399cbac4aff923a433dc89b7a893ffa871b1d24245c880d0",
+        "io/LICENSE-APACHE": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811",
+        "io/remus_wasm_io.js": "fe90ec123d3389eb4567206441963288bb342ebf7e72ad8392a9f799a6c37e9d",
+        "io/remus_wasm_io_bg.js": "845849c710d91965f6105b23e93b7acdc36824ea2acedb1f50cdcf24d7e52db9",
+        "io/NOTICE": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9"
+      },
+      "compilerStackBytes": 67108864,
+      "binaryenThreads": 1,
+      "canonicalRuntimeTests": "Passed: canonical paired kernel/translator build, fresh package smoke tests and installed tarball consumer regressions.",
+      "canonicalLogSha256": "98d2c6c3fafa1f41f87116cccfbd675cc0ff3a1361f074e9e236aec15e72aefb",
+      "distributionVersion": "2026.1.70"
+    },
+    "candidate": {
+      "source": "852611823e36759e7964c0c2c00f012bf3238139",
+      "baseSource": "e3585dd7ff8253f955224645807fbd3c5401d42a",
+      "files": {
+        "kernel/package.json": "d79ae1da0eaca83ed21fe0ba637399b7359bc8683a86dc63257225cc95aba152",
+        "kernel/remus_wasm_bg.js": "24da2d26ee3478e12797e12f7ff147936b275cd622f05ae233fc69b2f771cdfb",
+        "kernel/remus_wasm.d.ts": "5d9bfe42273ddf06fc29dd84aec850b5db4d88fc5d2d7aa95a148c4c8ab2a1a5",
+        "kernel/remus_wasm_bg.wasm.d.ts": "0c2b5082114cb68b3bd1182da7bd7aad9b2b7d2fe2a21e0bd7bc13603e55e2b4",
+        "kernel/.gitignore": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
+        "kernel/remus_wasm_node.cjs": "60f3aac1eb04b35ac31916be591712391936792e7ac5632d91eb30d0fb5f5e8a",
+        "kernel/remus_wasm_bg.wasm": "57cfd2a79abdac944d5c7c01478662042b1e84479a7f36a807d409a04ae4e5f8",
+        "kernel/remus_wasm.js": "cfda49baec77439c7544a7dca80a5534f07fd735bf65c75302a5fc2f2a30d6c5",
+        "kernel/LICENSE-APACHE": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811",
+        "kernel/NOTICE": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9",
+        "io/remus_wasm_io_bg.wasm": "49f58d067acb83f9d0df754b6f97d229652385c4dcd3180f9400461103acab33",
+        "io/remus_wasm_io_node.cjs": "fb134e228bb2e5566f9b84dbb290ae602fd896b2b19cceed9f671e3170018469",
+        "io/package.json": "eb53aee217b204e543c18a6ba2d65b013df26f7846466f52f593eb18157ae2d0",
+        "io/remus_wasm_io_bg.wasm.d.ts": "bd01bf4aa45bf771e527675e8d095bf5e580ca37aad44d670715e73fd98acdb3",
+        "io/.gitignore": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
+        "io/remus_wasm_io.d.ts": "c8e79635083298bd399cbac4aff923a433dc89b7a893ffa871b1d24245c880d0",
+        "io/LICENSE-APACHE": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811",
+        "io/remus_wasm_io.js": "fe90ec123d3389eb4567206441963288bb342ebf7e72ad8392a9f799a6c37e9d",
+        "io/remus_wasm_io_bg.js": "845849c710d91965f6105b23e93b7acdc36824ea2acedb1f50cdcf24d7e52db9",
+        "io/NOTICE": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9"
+      },
+      "compilerStackBytes": 67108864,
+      "binaryenThreads": 1,
+      "canonicalRuntimeTests": "Passed: canonical paired kernel/translator build, fresh package smoke tests and installed tarball consumer regressions.",
+      "runtimeSourceSha256": "bff5e83195af8e0518f89a66454200b812c24e925f554240baf221d00ce6130c",
+      "rawRustWasmSha256": "2df95cafb0cfb611468bb8c90b797640e81f372a8f6b934d3cc8aa7e1ba16ea9",
+      "canonicalLogSha256": "4a82d193fe0cfbf5c15255aa0d70c0cc41289a80539d7aa9aed1145c36cf7beb",
+      "distributionVersion": "2026.1.70"
+    }
+  },
+  "sourceVersion": "2026.1.0",
+  "canonicalCommand": "cargo xtask wasm-build",
+  "canonicalPolicy": {
+    "cargoJobs": 2,
+    "rustMinStackBytes": 67108864,
+    "osStackKiB": 65536,
+    "binaryenThreads": 1,
+    "affinity": "0-14,16-30",
+    "wasmOptFlags": [
+      "-Oz",
+      "--enable-simd"
+    ],
+    "wasmBindgen": "0.2.126",
+    "wasmOpt": "117"
+  },
+  "packageSourceAttestation": "Source SHAs are explicitly attested by this build record; the benchmark suppliedSourceSha field alone is not verification. Runtime source is frozen at 852611823; subsequent report commit changes documentation/evidence only.",
+  "runtimeSourceSha256": "bff5e83195af8e0518f89a66454200b812c24e925f554240baf221d00ce6130c",
+  "cargoLockSha256": "b4805b17c543f5c019d0de6d045b3cc86bc21f81fea3a938f41075ff28524db1",
+  "harnesses": {
+    "scripts/perf/parameter-rebuild/parameter_bench.cjs": "70e8c538d1ecb9bc8cabe17591bd4d8694208aeae442da0b10a24e3b927832c1",
+    "scripts/perf/parameter-rebuild/holder_recipe.cjs": "68a572fe2294321a2c53893ffc0edf160e3b318e1b3395fb82602f6d1f0811a5",
+    "scripts/perf/parameter-rebuild/verify_recipe.cjs": "4c1b9bbdc3b8be1404553a1af9a63ba73a9467f937e032adc7f9cc5f551ca007",
+    "scripts/perf/parameter-rebuild/compare_variants.cjs": "9952a2c448485e12568239ceedb55cac518e46d8f85f7d990cb78b342cbf207b",
+    "scripts/perf/filleted-face-edit/wasm_edit_bench.cjs": "605bcfe13bb916afa6663be7b91135ecbde7ec865a786f8864c06e18a4c5f03b"
+  },
+  "localChecks": {
+    "mathNextest": {
+      "passed": 1089,
+      "skipped": 1
+    },
+    "mathCargoTests": {
+      "passed": 1089,
+      "ignored": 1
+    },
+    "projectionTests": {
+      "passed": 22
+    },
+    "newComparatorTests": {
+      "passed": 3
+    },
+    "existingParameterTests": {
+      "passed": 9
+    },
+    "requiredPrecommit": "Passed workspace all-target/all-feature Clippy, fmt, taplo and cargo-machete; dev debug=0 recovery and 64MiB stack; no hook bypass."
+  }
+}

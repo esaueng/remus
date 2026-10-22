@@ -1,0 +1,44 @@
+{
+  "cause": "Unproven; no hardware, toolchain or source-cause diagnosis asserted.",
+  "excludedBuildAttempts": {
+    "seed-reference-compiler-sigsegv": {
+      "logSha256": "201a78a20922c3af38c642f0756d73a08ef2a85b1b084119bfaa9f5f17c2559c",
+      "excluded": true
+    },
+    "baseline-native-bench-debug-sigsegv": {
+      "logSha256": "07c1dc8b3fdca870268c479406ce69fb1d6fb69245f372aa7bde07c198e8f019",
+      "excluded": true
+    },
+    "baseline-wasm-build-sigsegv": {
+      "logSha256": "0149396378fa06c6542fc189ae52afc168b190843f24fdda73db766324c68caa",
+      "excluded": true
+    },
+    "baseline-wasm-opt-sigsegv": {
+      "logSha256": "fa471a5809a5de21b47425cb9eba59da756e75c42ca53de93ed42fa7a4c150e1",
+      "excluded": true
+    },
+    "baseline-wasm-opt-second-sigsegv": {
+      "logSha256": "3dd484297ad13047399d5618fbd0e6c90c55f28d6ddf66991cb439456c7be4e1",
+      "excluded": true
+    }
+  },
+  "nativeRecovery": "Unchanged source, ci-test/debugfalse,64MiB Rust stack. Profiling benchmarks use the same opt3/LTO-off/debugfalse override on both variants after a debug-enabled LLVM register-allocation SIGSEGV.",
+  "wasmRecovery": {
+    "optimizerVersion": 117,
+    "officialAndCachedBinarySha256": "621b5a984f16d0323ea7aa8b389ac9ccda0950ddee5de0e99292970129f571ed",
+    "verification": "Official same-version release archive checked against its published SHA256; fresh extraction matched cached executable bytes. Shared cache was not overwritten.",
+    "rawBaselineRustWasmSha256": "52fdb308d852ac1209952f4bdbcfbf836defa829b29d081048699e54fa736e0a",
+    "failedBindgenInputSha256": "3a8f401c51ff57a8f97c1ecfba7cadb4df58b865ba580a24e5baf4e1265425d0",
+    "regeneratedBindgenInputSha256": "ded1dd45ee0da74843bd7875c3d73143205408aa2326bce497837b299398795f",
+    "inputDifference": {
+      "bytes": 12376807,
+      "differingOffsets": 1,
+      "offsetHex": "0x219d3e",
+      "failedByteHex": "0x40",
+      "regeneratedByteHex": "0x00"
+    },
+    "recovery": "Unmodified canonical regeneration with same raw Rust WASM, pinned tools and optimizer flags. Fresh bindgen bundler output matches successful named Node diagnostic input exactly. No manual byte patch, weaker optimizer setting or tool version was used.",
+    "officialArchiveSha256": "3dc677006555b355ea2da5e82602065a161d5e83eaefd3f759afa00b96e83212",
+    "officialArchive": "https://github.com/WebAssembly/binaryen/releases/download/version_117/binaryen-version_117-x86_64-linux.tar.gz"
+  }
+}

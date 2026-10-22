@@ -1,6 +1,6 @@
 # Trusted owner CI fleet
 
-Required Linux CI jobs and their completion gate live in `fleet-ci-v4.yml`, called
+Required Linux CI jobs and their completion gate live in `fleet-ci-v6.yml`, called
 at an immutable commit from `ci.yml`. Benchmarks, corpus gauntlets, fuzzing,
 mutation checks, OSV scans, WASM candidates and size reports each have their
 own immutable `fleet-*.yml` callee. Their shared pre-checkout guard is a pinned
@@ -21,8 +21,9 @@ a label or repository variable does not grant execution authority.
 `ci-server-jane`, `ci-server-john`, or `github-hosted`. An external controller
 can publish this variable after checking fresh collector health and GitHub runner connectivity. A manually selected target stays fixed
 until an administrator or controller updates it; GitHub does not automatically
-switch hosts when that server goes offline. The preferred order is Jane, then
-John, then GitHub-hosted. Busy Jane remains available; jobs queue for any of her three slots.
+switch hosts when that server goes offline. Production keeps GitHub-hosted execution primary and selects idle Jane slots
+under verified hosted queue pressure. John and the legacy local-first policy
+remain available only in separately validated configurations.
 Missing/invalid configuration selects hosted. Hosted fallback still depends on
 GitHub billing and capacity.
 
@@ -64,13 +65,13 @@ merging. Roll back subsequent scheduling with
 
 Before checkout, self-hosted jobs verify the non-root identity, protected runner
 files, NoNewPrivileges, fresh storage, empty rootless Docker state, mount options
-and exact cgroup limits. The staged `fleet-ci-v6.yml` profile recognizes
+and exact cgroup limits. The active `fleet-ci-v6.yml` profile recognizes
 `ci-server-jane-1`, `ci-server-jane-2` and `ci-server-jane-3`, each with six CPU
 equivalents and a 5,000,000,000-byte RAM setting. systemd aligns the enforced
 limit to whole host pages: 4,999,999,488 bytes on a 4 KiB-page host. Each slot
-has a separate 150 GiB image. The v4 caller retains its legacy 6 GiB contract
-until a second PR activates the v6 file at its landed main commit; keep new
-local assignments paused during this transition.
+has a separate 150 GiB image. Historical v4 callers retain their legacy 6 GiB contract; keep the old shared
+label absent so those callers cannot match migrated slots. The active v6
+caller selects only the verified 5 GB profile.
 
 John has one CPU equivalent and 3 GiB. Guard failure fails the job.
 Rust build and registry caches are restored from GitHub after the isolation
@@ -82,15 +83,15 @@ workflow jobs install browser binaries without sudo.
 
 ## Activation and rollback
 
-Approve the exact immutable `fleet-ci-v4.yml@9e5b65b9e00f004d83eb583ab3934c863ad7956d`
-runner-group entry (the pin in `ci.yml`) without removing existing restrictions. Configure the external controller's selected repository
-identities and dedicated GitHub credential, then validate both hosts. The
+Approve the exact immutable v6 and helper entries named in the combined
+activation below without removing existing entries or restrictions. Configure the external controller's selected repository
+identities and dedicated GitHub credential, then validate every selected slot. The
 required completion check is `checks / CI Pass`, the existing gate inside the
 reusable suite. It validates every selected job and runs on
 the selected fleet for eligible events. Review requirements stay unchanged.
 
 Run an authorized real application job on each Jane slot, verify cleanup and
-unavailable-only selection, then enable normal routing. Code merge alone does
+hosted-first overflow selection, then enable normal routing. Code merge alone does
 not activate the runner group, repository variables, or controller.
 
 For validation before broad activation, leave `CI_FLEET_ENABLED=false` and set
@@ -128,9 +129,10 @@ Policy verification: `python3 scripts/test-direct-fleet.py`,
 2026-10-19; callers use the active `fleet-ci` callee named in
 `.github/fleet-workflows.json`.
 
-## Combined three-slot and queue staging
+## Combined three-slot and queue activation
 
-`fleet-ci-v6.yml` combines the owner-only queue authorization staged in v5
+`ci.yml` activates `fleet-ci-v6.yml` at #1260's landed main commit. It combines
+the owner-only queue authorization staged in v5
 with Jane's three-slot, nominal 5 GB profile. Its queue policy and every
 existing command, gate, timeout and permission match the reviewed v5 bytes;
 only the runner-name table, memory value, page alignment and profile selector differ. The
@@ -145,13 +147,83 @@ approving the exact compatible main revisions. Keep the old shared
 `ci-server-jane` label withheld, so historical 6 GiB callers remain quarantined.
 The profile label is a selector, not a runner identity or permission grant.
 
-Keep the active caller unchanged while staging. Once v6 and the shared guard
-land on main, stage replacement auxiliary callees pinned to that actual guard
-commit. Activate v6, the compatible auxiliary manifest and every caller together
-only after those stages pass normal checks and land. Preserve exact runner-group
-restrictions and keep Jane's shared scheduling label withheld during the
-transition. The combined workflow must retain both queue authorization and the
-new memory contract; activating either legacy profile alone is insufficient.
+The combined activation switches v6, the compatible auxiliary manifest and
+every caller together using their landed main commits. Both queue authorization
+and the new memory contract remain required. Approve every exact workflow
+revision before adding the profile selector or enabling Jane execution; keep
+the legacy shared scheduling label absent.
+
+### Auxiliary profile stage
+
+The next auxiliary versions replace only the shared guard pin and the Jane
+runner selector. `.github/fleet-profile-stage.json` records their immutable
+source, landed guard commit and filenames. Required Repository Policy runs
+the complete delta, main-ancestry and active-byte regressions through
+`scripts/test-fleet-runner-policy.py`; every existing command, permission,
+publisher boundary, toolchain and hosted fallback remains unchanged.
+
+| Family | Compatible helper |
+| --- | --- |
+| Benchmark | `fleet-benchmark-v3.yml` |
+| Fuzz | `fleet-fuzz-v4.yml` |
+| Gauntlet | `fleet-gauntlet-v4.yml` |
+| Sharded mutants | `fleet-mutants-sharded-v4.yml` |
+| Mutation scope | `fleet-mutation-scope-v3.yml` |
+| OSV | `fleet-osv-v5.yml` |
+| WASM candidate | `fleet-wasm-candidate-v4.yml` |
+| WASM size report | `fleet-wasm-size-v5.yml` |
+
+The helper stage left the manifest, active files and callers unchanged. This
+activation pins all eight helpers to the stage's actual squash commit and v6
+to #1260's actual squash commit, switches the manifest and retires the previous
+files. Append each exact filename and landed SHA to the
+existing `ci-trusted-main` allowlist before Jane execution. Composite-action
+pins need no separate runner-group entry. Preserve the existing
+`trusted-vps.yml@refs/heads/main` diagnostic entry and every repository and
+workflow restriction.
+
+The landed CI revision is #1260's
+`05fca2fc1029be782afe41ee6ebbeae812e5e40c`; the landed helper revision is
+[#1267](https://github.com/esaueng/remus/pull/1267)'s
+`4e5bd846fae03e87e3d4ca1169e35b18952d4fb9`. Append these exact Remus entries to
+`ci-trusted-main`, retaining all existing entries and group restrictions:
+
+```text
+esaueng/remus/.github/workflows/fleet-ci-v6.yml@05fca2fc1029be782afe41ee6ebbeae812e5e40c
+esaueng/remus/.github/workflows/fleet-benchmark-v3.yml@4e5bd846fae03e87e3d4ca1169e35b18952d4fb9
+esaueng/remus/.github/workflows/fleet-fuzz-v4.yml@4e5bd846fae03e87e3d4ca1169e35b18952d4fb9
+esaueng/remus/.github/workflows/fleet-gauntlet-v4.yml@4e5bd846fae03e87e3d4ca1169e35b18952d4fb9
+esaueng/remus/.github/workflows/fleet-mutants-sharded-v4.yml@4e5bd846fae03e87e3d4ca1169e35b18952d4fb9
+esaueng/remus/.github/workflows/fleet-mutation-scope-v3.yml@4e5bd846fae03e87e3d4ca1169e35b18952d4fb9
+esaueng/remus/.github/workflows/fleet-osv-v5.yml@4e5bd846fae03e87e3d4ca1169e35b18952d4fb9
+esaueng/remus/.github/workflows/fleet-wasm-candidate-v4.yml@4e5bd846fae03e87e3d4ca1169e35b18952d4fb9
+esaueng/remus/.github/workflows/fleet-wasm-size-v5.yml@4e5bd846fae03e87e3d4ca1169e35b18952d4fb9
+```
+
+OpenZCAD's compatible activation is on main via
+[#819](https://github.com/esaueng/OpenZCAD/pull/819). Its corresponding group
+entry is
+`esaueng/OpenZCAD/.github/workflows/fleet-ci-v2.yml@6cd1c223fe3b3ac49f6379e0999f1b4bbe310f04`.
+The shared runtime rollout owner applies the group and label cutover after both
+compatible activation callers are on main; merging this PR alone grants no runner
+access.
+
+After the controller mapping, exact allowlist and per-slot guards are verified,
+add `ci-server-jane-5gb` to `ci-server-jane-1`, `ci-server-jane-2` and
+`ci-server-jane-3`, retaining their individual slot labels and default platform
+labels. Keep shared `ci-server-jane` and `ci-remus-light` labels absent from
+Jane's slots, and keep `CI_FLEET_LIGHT_POOL_ENABLED=false` during this rollout.
+The controller target remains `ci-server-jane`; the profile label does not
+replace the target. New queue candidates use v6 only after the activation
+caller reaches main. Existing PRs must pick up that caller, and jobs already
+assigned retain their runner.
+
+The profile label is shared with OpenZCAD. If it is added for OpenZCAD before
+this combined activation reaches Remus main, keep Remus
+`CI_FLEET_ENABLED=false` so legacy callers remain hosted. The simplest
+coordinated order is to merge both compatible activations with hosted CI,
+then add the shared profile label and enable fleet routing. Do not let the
+controller select Jane for the old Remus manifest during the transition.
 
 ## Updating immutable workflow dependencies
 
@@ -196,20 +268,18 @@ new caller before their runs stop using the old admission queue.
 
 ### Required-check migration
 
-Removing the hosted wrapper changes the required check context from `CI Pass`
-to `checks / CI Pass`. Before merging this routing PR, obtain maintainer approval
-and verify its exact head has a successful `checks / CI Pass` from GitHub Actions
-(app ID 15368). Replace only that context in the existing required-status-check
-configuration, preserving strict mode, app identity and every review requirement.
-Then perform the exact-head guarded merge. This is a check-name migration, not
-a bypass of a failed or pending test. Older PR branches must pick up the new
-caller before they can satisfy the migrated requirement.
+The earlier hosted-wrapper migration changed the required check context from
+`CI Pass` to `checks / CI Pass`. The current protection already requires
+`checks / CI Pass` from GitHub Actions (app ID 15368). This activation retains
+that context, the other required checks, the active merge queue and every
+review/protection setting. No check-name migration is needed. Older PR branches
+must pick up the activated caller to use its routing policy.
 
 The runner-group allowlist must include each exact callee revision in the
 callers. Preserve every existing allowed repository and workflow. Each callee
 pins the shared guard action separately; updating its content requires a new
 commit and corresponding pin updates. Missing configuration still uses hosted
-runners. Untrusted PRs and merge groups remain hosted.
+runners. PRs and merge groups without verified owner trust remain hosted.
 
 Repository Policy and Secrets Scan run before any expensive checks. CI Pass
 requires both to succeed, requires the classifier outputs to be valid, and
@@ -280,8 +350,11 @@ regression tests remain required for every full CI suite.
 
 `merge_group: checks_requested` validates the actual merge-group SHA against
 `merge_group.base_sha`, including changes from every PR in the group. Merge
-groups always use hosted runners: the owner-only single-PR authorization does
-not authorize a group containing other contributors' code.
+groups may use Jane only after the immutable metadata probe verifies the exact
+candidate SHA, every constituent owner author/enqueuer, the non-fork repository
+and its squash chain to protected main. Missing or unsupported evidence retains
+hosted execution. The probe never checks out candidate code, and a skipped or
+failed probe cannot skip the application suite or satisfy a failed CI Pass gate.
 
 `.github/merge-queue-ruleset.json` is an initially disabled, additive ruleset.
 It uses squash merging, limits speculative merge builds to four, requires every

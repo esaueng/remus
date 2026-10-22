@@ -6,6 +6,7 @@ import importlib.util
 import re
 import subprocess
 import unittest
+from test_jane_helper_workflows import STAGE
 from pathlib import Path
 from fleet_workflows import workflow_path, is_ci_workflow, validate_calls
 
@@ -15,6 +16,7 @@ SPEC = importlib.util.spec_from_file_location("direct", ROOT / "scripts/test-dir
 DIRECT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(DIRECT)
 FILES = sorted(p for p in WORKFLOWS.glob("fleet-*.yml") if not is_ci_workflow(p))
+PROFILE_FILES = {entry['staged'] for entry in STAGE['workflows'].values()}
 GUARD_PATH = ".github/actions/fleet-guard/action.yml"
 GUARD = (ROOT / GUARD_PATH).read_text()
 # Hosted jobs name an exact image: `ubuntu-latest` moves to a new Ubuntu
@@ -58,7 +60,8 @@ class UbuntuRoutingTests(unittest.TestCase):
                     github["ref"] = "refs/heads/main"
                 with self.subTest(file=filename, event=event):
                     self.assertEqual(DIRECT.evaluate(expression, github, self.variables),
-                                     {"group": "ci-trusted-main", "labels": "ci-server-jane"})
+                                     {"group": "ci-trusted-main", "labels":
+                                      "ci-server-jane-5gb" if filename in PROFILE_FILES else "ci-server-jane"})
 
     def test_forks_other_actors_and_unprotected_refs_remain_hosted(self):
         cases = []
@@ -128,7 +131,7 @@ class UbuntuRoutingTests(unittest.TestCase):
                     pinned = subprocess.check_output(
                         ["git", "show", f"{reference[1]}:{GUARD_PATH}"], cwd=ROOT, text=True)
                     self.assertEqual(legacy_jane_profile(pinned), legacy_jane_profile(GUARD))
-                    if workflow_path("ci").name == "fleet-ci-v6.yml":
+                    if path.name in PROFILE_FILES or workflow_path("ci").name == "fleet-ci-v6.yml":
                         self.assertIn('ci-server-jane-1|ci-server-jane-2|ci-server-jane-3)', pinned)
                         self.assertIn('CI_MEMORY=5000000000', pinned)
                         self.assertIn('CI_MEMORY=$((CI_MEMORY / $(getconf PAGESIZE)', pinned)
