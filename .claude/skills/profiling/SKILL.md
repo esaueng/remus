@@ -37,6 +37,7 @@ Bench files (`crates/operations/benches/`), one line each:
 | `boolean_tracking.rs` | Small fast suite CI tracks for trend (`boolean/cut_cylinder_through_box`, `boolean/perforated_cut_36`) |
 | `compound_cut_perf.rs` | `compound_cut` vs sequential cuts: cylinder grids and honeycomb grids |
 | `fuse_perf.rs` | `fuse_all` tree-reduce vs sequential left-fold (`fuse_balanced` has `balanced_N=` and `sequential_N=`; `fuse_touching` has only `balanced_N=`) |
+| `fillet_multipass.rs` | Sequential and many-edge fillets through the binding's cascade, plus a hole/countersink cut through a filleted body: `fillet_multipass/bracket/*` and `fillet_multipass/plate/*`, each pass alone and `full_sequence` |
 
 ## Method: the perf loop
 

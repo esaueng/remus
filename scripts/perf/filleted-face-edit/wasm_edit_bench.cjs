@@ -319,7 +319,7 @@ function main(argv = process.argv.slice(2), recognitionObserver = null) {
   } finally { sourceKernel.free(); }
 }
 
-module.exports = { main };
+module.exports = { main, meshQuality };
 if (require.main === module) {
   try { main(); } catch (error) {
     process.stderr.write(`${error.stack || error}\n`);

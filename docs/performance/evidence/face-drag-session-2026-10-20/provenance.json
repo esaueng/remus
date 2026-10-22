@@ -1,0 +1,265 @@
+{
+  "startedUtc": "2026-10-20T21:15:23.334781+00:00",
+  "cpu": 31,
+  "physicalSiblingExcluded": 15,
+  "hostCondition": "reserved physical core; concurrent validation isolated to other CPUs, not fully idle host",
+  "harnessBase": "de6352906ebeb7eaa5ff24fbede68d0fffdc8949",
+  "preview": [
+    {
+      "label": "prepared-unique",
+      "file": "prepared-unique.json",
+      "command": [
+        "taskset",
+        "-c",
+        "31",
+        "node",
+        "scripts/perf/face-drag-session/drag_session_bench.cjs",
+        "--kernel-pkg",
+        "crates/wasm/pkg",
+        "--io-pkg",
+        "crates/wasm-io/pkg",
+        "--fixture",
+        "crates/io/tests/data/shapr3d_hammer_holder.step",
+        "--move",
+        "prepared",
+        "--pattern",
+        "unique",
+        "--ticks",
+        "24",
+        "--warmup",
+        "2",
+        "--label",
+        "prepared-unique",
+        "--timing-status",
+        "measured",
+        "--package-source-sha",
+        "62626997c6584a531b3c8f3c9103fe5b73c7e137",
+        "--out",
+        "OUTPUT/prepared-unique.json"
+      ]
+    },
+    {
+      "label": "unprepared-repeated",
+      "file": "unprepared-repeated.json",
+      "command": [
+        "taskset",
+        "-c",
+        "31",
+        "node",
+        "scripts/perf/face-drag-session/drag_session_bench.cjs",
+        "--kernel-pkg",
+        "crates/wasm/pkg",
+        "--io-pkg",
+        "crates/wasm-io/pkg",
+        "--fixture",
+        "crates/io/tests/data/shapr3d_hammer_holder.step",
+        "--move",
+        "unprepared",
+        "--pattern",
+        "repeated",
+        "--ticks",
+        "24",
+        "--warmup",
+        "2",
+        "--label",
+        "unprepared-repeated",
+        "--timing-status",
+        "measured",
+        "--package-source-sha",
+        "62626997c6584a531b3c8f3c9103fe5b73c7e137",
+        "--out",
+        "OUTPUT/unprepared-repeated.json"
+      ]
+    },
+    {
+      "label": "prepared-repeated",
+      "file": "prepared-repeated.json",
+      "command": [
+        "taskset",
+        "-c",
+        "31",
+        "node",
+        "scripts/perf/face-drag-session/drag_session_bench.cjs",
+        "--kernel-pkg",
+        "crates/wasm/pkg",
+        "--io-pkg",
+        "crates/wasm-io/pkg",
+        "--fixture",
+        "crates/io/tests/data/shapr3d_hammer_holder.step",
+        "--move",
+        "prepared",
+        "--pattern",
+        "repeated",
+        "--ticks",
+        "24",
+        "--warmup",
+        "2",
+        "--label",
+        "prepared-repeated",
+        "--timing-status",
+        "measured",
+        "--package-source-sha",
+        "62626997c6584a531b3c8f3c9103fe5b73c7e137",
+        "--out",
+        "OUTPUT/prepared-repeated.json"
+      ]
+    },
+    {
+      "label": "unprepared-unique",
+      "file": "unprepared-unique.json",
+      "command": [
+        "taskset",
+        "-c",
+        "31",
+        "node",
+        "scripts/perf/face-drag-session/drag_session_bench.cjs",
+        "--kernel-pkg",
+        "crates/wasm/pkg",
+        "--io-pkg",
+        "crates/wasm-io/pkg",
+        "--fixture",
+        "crates/io/tests/data/shapr3d_hammer_holder.step",
+        "--move",
+        "unprepared",
+        "--pattern",
+        "unique",
+        "--ticks",
+        "24",
+        "--warmup",
+        "2",
+        "--label",
+        "unprepared-unique",
+        "--timing-status",
+        "measured",
+        "--package-source-sha",
+        "62626997c6584a531b3c8f3c9103fe5b73c7e137",
+        "--out",
+        "OUTPUT/unprepared-unique.json"
+      ]
+    }
+  ],
+  "completion": [
+    {
+      "label": "completion-geometry-first",
+      "file": "completion-geometry-first/results.json",
+      "command": [
+        "taskset",
+        "-c",
+        "31",
+        "node",
+        "scripts/perf/filleted-face-edit/wasm_edit_bench.cjs",
+        "--kernel-pkg",
+        "crates/wasm/pkg",
+        "--io-pkg",
+        "crates/wasm-io/pkg",
+        "--fixture",
+        "crates/io/tests/data/shapr3d_hammer_holder.step",
+        "--warmup",
+        "2",
+        "--samples",
+        "4",
+        "--order",
+        "geometry-first",
+        "--label",
+        "completion-geometry-first",
+        "--timing-status",
+        "measured",
+        "--out",
+        "OUTPUT/completion-geometry-first"
+      ]
+    },
+    {
+      "label": "completion-volume-first",
+      "file": "completion-volume-first/results.json",
+      "command": [
+        "taskset",
+        "-c",
+        "31",
+        "node",
+        "scripts/perf/filleted-face-edit/wasm_edit_bench.cjs",
+        "--kernel-pkg",
+        "crates/wasm/pkg",
+        "--io-pkg",
+        "crates/wasm-io/pkg",
+        "--fixture",
+        "crates/io/tests/data/shapr3d_hammer_holder.step",
+        "--warmup",
+        "2",
+        "--samples",
+        "4",
+        "--order",
+        "volume-first",
+        "--label",
+        "completion-volume-first",
+        "--timing-status",
+        "measured",
+        "--out",
+        "OUTPUT/completion-volume-first"
+      ]
+    }
+  ],
+  "reservationSnapshot": {
+    "buildProcesses": [
+      {
+        "command": "cargo",
+        "affinity": "0-14,16-30"
+      },
+      {
+        "command": "cargo",
+        "affinity": "0-14,16-30"
+      },
+      {
+        "command": "rustc",
+        "affinity": "0-14,16-30"
+      },
+      {
+        "command": "rustc",
+        "affinity": "0-14,16-30"
+      }
+    ]
+  },
+  "finishedUtc": "2026-10-20T21:15:51.214207+00:00",
+  "reservationSnapshotAfter": {
+    "buildProcesses": [
+      {
+        "command": "cargo",
+        "affinity": "0-14,16-30"
+      },
+      {
+        "command": "wasm-opt",
+        "affinity": "0-14,16-30"
+      },
+      {
+        "command": "cargo",
+        "affinity": "0-14,16-30"
+      },
+      {
+        "command": "clippy-driver",
+        "affinity": "0-14,16-30"
+      },
+      {
+        "command": "rustc",
+        "affinity": "0-14,16-30"
+      }
+    ]
+  },
+  "timingInterpretation": "Reserved-core observations with co-resident validation; no fully idle-host timing qualification, speedup, cache-hit, FPS or tail-confidence claim.",
+  "normalization": [
+    "Repository-local paths made relative; output roots replaced with OUTPUT.",
+    "Full worker results retained; mesh/arena payload files are regenerated by recorded commands and their hashes remain in results."
+  ],
+  "harnesses": {
+    "scripts/perf/face-drag-session/drag_session_bench.cjs": "ace015f0534925e95883ab8fcf0c09005e8da301b5a612c2b036bb416042542a",
+    "scripts/perf/filleted-face-edit/wasm_edit_bench.cjs": "605bcfe13bb916afa6663be7b91135ecbde7ec865a786f8864c06e18a4c5f03b"
+  },
+  "evidenceFiles": {
+    "preview-runs.json": "e29684348223a1153c1d49318e6e3d490089c2a0c91405d165388b6d633b8241",
+    "completion-runs.json": "288d1e1253b386eb15c78a31f9edbf36114f35b30c085af591e30f7d9e933e08",
+    "package-verification.json": "5b50198d7e141a52ba82c92ea0f04d37b549d22d6f4c547cc454f07aef586993"
+  },
+  "offlineOutputAudit": {
+    "previewAccepted": 96,
+    "completionEdits": 12,
+    "completionCarrierCensusAndRadiiMatchSource": true
+  }
+}
