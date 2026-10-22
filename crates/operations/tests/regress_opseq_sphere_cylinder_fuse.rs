@@ -13,6 +13,7 @@ use remus_operations::measure::{mass_properties, solid_surface_area, solid_volum
 use remus_operations::primitives::{make_cylinder, make_sphere};
 use remus_operations::tessellate::{
     boundary_edge_count, non_manifold_edge_count, tessellate_solid_grouped_with_tolerance,
+    tessellate_solid_with_tolerance,
 };
 use remus_operations::transform::transform_solid;
 use remus_topology::Topology;
@@ -149,6 +150,18 @@ fn check_fixture(
         &[0.1, 0.01]
     };
     for &deflection in deflections {
+        if fine_mesh {
+            // The ungrouped route does not retain face attribution. A correct
+            // coincidence decision must not depend on that optional metadata.
+            let plain =
+                tessellate_solid_with_tolerance(&topo, solid, deflection * scale, 0.35).unwrap();
+            assert_eq!(boundary_edge_count(&plain), 0, "{label}: plain fine mesh");
+            assert_eq!(
+                non_manifold_edge_count(&plain),
+                0,
+                "{label}: plain incidence"
+            );
+        }
         let (mesh, offsets) =
             tessellate_solid_grouped_with_tolerance(&topo, solid, deflection * scale, 0.35)
                 .unwrap();
@@ -303,8 +316,7 @@ fn hemisphere_union_retains_material_orientation_and_quantities() {
 /// All six vertex identities in each pair differ. A shared-edge exclusion does
 /// not apply; changing the near-coincidence policy needs its own qualification.
 #[test]
-#[ignore = "open fine-mesh polar dedup: tiny tilted F10 has 16 boundary edges at 1e-5 relative deflection"]
-fn hemisphere_union_tiny_placed_fine_mesh_polar_dedup_open() {
+fn hemisphere_union_tiny_placed_fine_mesh_polar_dedup() {
     check_fixture(0.001, true, 16, 1.0, false, true);
 }
 
