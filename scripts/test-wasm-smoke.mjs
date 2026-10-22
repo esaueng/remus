@@ -22,6 +22,7 @@ import { runWasmParserReferencesPackaged } from './wasm-parser-refs-packaged.mjs
 import { runVariableFilletInputPackaged } from './variable-fillet-input-packaged.mjs';
 import { runOpseqF5Packaged } from './opseq-f5-packaged.mjs';
 import { runOpseqF6Packaged } from './opseq-f6-packaged.mjs';
+import { runOpseqF10Packaged } from './opseq-f10-packaged.mjs';
 import { runOpseqF13Packaged } from './opseq-f13-packaged.mjs';
 import { runWasmRayTorusPackaged } from './wasm-ray-torus-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
@@ -1736,6 +1737,7 @@ runNextKernelCorrectnessPackaged({ BrepKernel });
 runKernelCorrectnessPackaged({ BrepKernel });
 runOpseqF5Packaged({ BrepKernel });
 runOpseqF6Packaged({ BrepKernel });
+runOpseqF10Packaged({ BrepKernel });
 runOpseqF13Packaged({ BrepKernel });
 
 runWasmRayTorusPackaged({ BrepKernel });
