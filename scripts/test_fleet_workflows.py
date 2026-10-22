@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Keep staged dependency updates and active immutable workflow calls exact."""
 
+import hashlib
 import json
 import re
 import subprocess
@@ -12,6 +13,37 @@ from fleet_workflows import (
     FAMILIES, ROOT, PREFIX, parse_reference, validate_calls, validate_reference,
     workflow_calls, workflow_manifest, workflow_path,
 )
+from test_jane_helper_workflows import STAGE
+
+CI_V4_LANDED = '9e5b65b9e00f004d83eb583ab3934c863ad7956d'
+
+
+def historical_workflow(family, text):
+    """Separate older dependency/tier proofs from the exact profile/queue proofs.
+
+    test_jane_helper_workflows proves the complete auxiliary delta against its
+    immutable source. The required three-slot queue suite proves v6 against v4,
+    including every application step and guard. Keep the earlier Action-update
+    regressions against their original source after those versions are retired.
+    """
+    if family == 'ci' and '  queue-trust:\n' in text:
+        return subprocess.check_output(
+            ['git', 'show', f'{CI_V4_LANDED}:.github/workflows/fleet-ci-v4.yml'],
+            cwd=ROOT, text=True,
+        )
+    return (text.replace('esaueng/remus/.github/actions/fleet-guard@' + STAGE['guard'],
+                         'esaueng/remus/.github/actions/fleet-guard@' + STAGE['previous_guard'])
+            .replace('\"labels\":\"ci-server-jane-5gb\"', '\"labels\":\"ci-server-jane\"'))
+
+
+def retained_workflow(filename):
+    path = ROOT / '.github/workflows' / filename
+    if path.exists():
+        return path.read_text()
+    return subprocess.check_output(
+        ['git', 'show', f"{STAGE['source']}:.github/workflows/{filename}"],
+        cwd=ROOT, text=True,
+    )
 
 # This rollout starts from an existing main commit. The next workflow version
 # changes only these reviewed Action dependencies; commands, guards, permissions,
@@ -153,7 +185,49 @@ def main_workflow_manifest():
     return manifest
 
 
+# Exact main revision containing the reviewed guard and legacy auxiliary bytes.
+THREE_SLOT_GUARD_LANDED = "05fca2fc1029be782afe41ee6ebbeae812e5e40c"
+THREE_SLOT_AUXILIARIES = {
+    "fleet-benchmark-v3.yml": ("fleet-benchmark-v2.yml", 2),
+    "fleet-fuzz-v4.yml": ("fleet-fuzz-v3.yml", 2),
+    "fleet-gauntlet-v4.yml": ("fleet-gauntlet-v3.yml", 2),
+    "fleet-mutants-sharded-v4.yml": ("fleet-mutants-sharded-v3.yml", 2),
+    "fleet-mutation-scope-v3.yml": ("fleet-mutation-scope-v2.yml", 1),
+    "fleet-osv-v5.yml": ("fleet-osv-v4.yml", 1),
+    "fleet-wasm-candidate-v4.yml": ("fleet-wasm-candidate-v3.yml", 1),
+    "fleet-wasm-size-v5.yml": ("fleet-wasm-size-v4.yml", 1),
+}
+
+
 class FleetWorkflowTests(unittest.TestCase):
+    def test_three_slot_auxiliaries_only_change_guard_pin_and_profile_selector(self):
+        self.assertEqual(subprocess.run(
+            ["git", "merge-base", "--is-ancestor", THREE_SLOT_GUARD_LANDED, "origin/main"],
+            cwd=ROOT, capture_output=True,
+        ).returncode, 0)
+        old_guard = "esaueng/remus/.github/actions/fleet-guard@c1fe861d46b5e932cc69ccbcff6803cd1a38804b"
+        new_guard = "esaueng/remus/.github/actions/fleet-guard@" + THREE_SLOT_GUARD_LANDED
+        guard = subprocess.check_output(
+            ["git", "show", THREE_SLOT_GUARD_LANDED + ":.github/actions/fleet-guard/action.yml"], cwd=ROOT,
+        )
+        self.assertEqual(hashlib.sha256(guard).hexdigest(),
+                         "599087ce5da442d89e0805db24691a07b5badd6c76f52f56d8314a9fb60079b7")
+        for new, (old, guard_count) in THREE_SLOT_AUXILIARIES.items():
+            with self.subTest(workflow=new):
+                source = subprocess.check_output(
+                    ["git", "show", THREE_SLOT_GUARD_LANDED + ":.github/workflows/" + old], cwd=ROOT, text=True,
+                )
+                self.assertEqual(source.count(old_guard), guard_count)
+                self.assertEqual(source.count('"labels":"ci-server-jane"'), 1)
+                expected = source.replace(old_guard, new_guard).replace(
+                    '"labels":"ci-server-jane"', '"labels":"ci-server-jane-5gb"')
+                actual = (ROOT / ".github/workflows" / new).read_text()
+                self.assertEqual(actual, expected,
+                                 "Only the reviewed guard pin and Jane selector may change")
+                self.assertEqual(actual.count(new_guard), guard_count)
+                self.assertNotIn(old_guard, actual)
+                self.assertNotIn('"labels":"ci-server-jane"', actual)
+
     def test_all_active_callers_keep_exact_bytes_and_main_ancestry(self):
         self.assertGreater(validate_calls(), 0)
 
@@ -219,7 +293,7 @@ class FleetWorkflowTests(unittest.TestCase):
                 )
                 path = ROOT / f".github/workflows/fleet-{family}-v3.yml"
                 if family not in REFRESHED and family != "ci":
-                    self.assertEqual(path.read_text(), text)
+                    self.assertEqual(retained_workflow(path.name), text)
                 jobs = re.split(r"(?m)^(?=  [\w-]+:\n)", text.split("\njobs:\n", 1)[1])
                 for job in filter(None, jobs):
                     self.assertRegex(job, r"(?m)^    runs-on: .*\n    timeout-minutes: [0-9]+$")
@@ -232,7 +306,7 @@ class FleetWorkflowTests(unittest.TestCase):
                 active = workflow_path(family)
                 self.assertNotEqual(active.name, filename)
                 self.assertFalse((ROOT / ".github/workflows" / filename).exists(), filename)
-                text, previous = active.read_text(), replaced_callee(family)
+                text, previous = historical_workflow(family, active.read_text()), replaced_callee(family)
                 self.assertNotEqual(text, previous)
                 self.assertEqual(strip_refresh_deltas(text), strip_refresh_deltas(previous),
                                  "A refresh may change only comments and the reviewed gauntlet tier step")
@@ -258,20 +332,22 @@ class FleetWorkflowTests(unittest.TestCase):
                 )
                 retained = ROOT / f".github/workflows/fleet-{family}-v2.yml"
                 if family not in V3_FAMILIES | REFRESHED.keys():
-                    self.assertEqual(retained.read_text(), staged)
+                    self.assertEqual(retained_workflow(retained.name), staged)
                 active = workflow_path(family)
                 assert_reviewed_workflow_delta(strip_refresh_deltas(strip_v3_deltas(staged)),
                                                strip_refresh_deltas(strip_v3_deltas(
-                                                   revert_ci_v4_tier_move(active.read_text()))),
+                                                   revert_ci_v4_tier_move(historical_workflow(family, active.read_text())))),
                                                carries_reviewed_updates(active.name))
                 main_file = main_manifest[family]
-                self.assertIn(main_file, tuple(f"fleet-{family}{suffix}.yml" for suffix in ("", "-v2", "-v3", "-v4")))
+                allowed = {f"fleet-{family}{suffix}.yml" for suffix in ("", "-v2", "-v3", "-v4")}
+                allowed.add('fleet-ci-v6.yml' if family == 'ci' else STAGE['workflows'][family]['staged'])
+                self.assertIn(main_file, allowed)
                 main_active = subprocess.check_output(
                     ["git", "show", f"origin/main:.github/workflows/{main_file}"], cwd=ROOT, text=True,
                 )
                 assert_reviewed_workflow_delta(strip_refresh_deltas(strip_v3_deltas(staged)),
                                                strip_refresh_deltas(strip_v3_deltas(
-                                                   revert_ci_v4_tier_move(main_active))),
+                                                   revert_ci_v4_tier_move(historical_workflow(family, main_active)))),
                                                carries_reviewed_updates(main_file))
     def test_staged_ci_v4_only_moves_fuzz_and_render_into_tier_one(self):
         expected = subprocess.check_output(
@@ -280,7 +356,7 @@ class FleetWorkflowTests(unittest.TestCase):
         for old, new in CI_V4_TIER_MOVE:
             self.assertEqual(expected.count(old), 1, old)
             expected = expected.replace(old, new)
-        self.assertEqual(CI_V4.read_text(), expected,
+        self.assertEqual(retained_workflow(CI_V4.name), expected,
                          "Staged ci v4 may change only the reviewed tier move")
 
 

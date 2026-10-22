@@ -1,5 +1,6 @@
 """Keep the three-slot auxiliary stage exact and tied to its landed guard."""
 
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -54,6 +55,30 @@ class JaneHelperWorkflowTests(unittest.TestCase):
                     self.assertFalse((WORKFLOWS / entry['previous']).exists(),
                                      'Activation retires the previous helper file')
                 self.assertEqual(active, expected)
+
+    def test_reviewed_guard_digest_and_helper_call_counts(self):
+        # Preserve the independent digest/count oracle from duplicate stage #1268.
+        reviewed = '05fca2fc1029be782afe41ee6ebbeae812e5e40c'
+        self.assertEqual(STAGE['source'], reviewed)
+        self.assertEqual(STAGE['guard'], reviewed)
+        guard = subprocess.check_output(
+            ['git', 'show', reviewed + ':.github/actions/fleet-guard/action.yml'], cwd=ROOT,
+        )
+        self.assertEqual(hashlib.sha256(guard).hexdigest(),
+                         '599087ce5da442d89e0805db24691a07b5badd6c76f52f56d8314a9fb60079b7')
+        counts = {'benchmark': 2, 'fuzz': 2, 'gauntlet': 2, 'mutants-sharded': 2,
+                  'mutation-scope': 1, 'osv': 1, 'wasm-candidate': 1, 'wasm-size': 1}
+        prefix = 'esaueng/remus/.github/actions/fleet-guard@'
+        old, new = prefix + STAGE['previous_guard'], prefix + reviewed
+        for family, entry in STAGE['workflows'].items():
+            with self.subTest(family=family):
+                source = original(entry['previous'])
+                actual = (WORKFLOWS / entry['staged']).read_text()
+                self.assertEqual(source.count(old), counts[family])
+                self.assertEqual(source.count('"labels":"ci-server-jane"'), 1)
+                self.assertEqual(actual.count(new), counts[family])
+                self.assertNotIn(old, actual)
+                self.assertNotIn('"labels":"ci-server-jane"', actual)
 
     def test_guard_pin_is_on_main_and_has_the_verified_three_slot_contract(self):
         for pin in (STAGE['source'], STAGE['guard']):

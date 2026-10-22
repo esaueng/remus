@@ -1415,16 +1415,15 @@ fn gridfinity_d3_shelled_box_with_lip() {
     assert!(fc < 200, "fused solid should have < 200 faces: got {fc}");
 }
 
-/// D5: Shelled box + lip ring whose peak-rim fillet is REFUSED → fuse.
+/// D5: Shelled box + lip ring with the peak rim filleted → fuse.
 ///
-/// Like D4 (rounded-rectangle body matching the tool), but attempts the tool's
-/// `TOP_FILLET` on the lip's peak rim before the fuse. The fillet is a typed
-/// refusal on this geometry (the walking trimmer cannot retrim the peak face —
-/// bridge item B4 — and the rolling-ball fallback's closed-but-non-orientable
-/// answer is no longer accepted as success). The test pins the fail-closed
-/// contract on the consumer's real geometry: the refusal names the blocker,
-/// the lip survives byte-for-byte, and the chain completes on the un-filleted
-/// lip with an analytic fuse.
+/// Like D4 (rounded-rectangle body matching the tool), but applies the tool's
+/// `TOP_FILLET` to the lip's peak rim before the fuse. The walking trimmer
+/// cannot retrim the peak face (bridge item B4); the rolling-ball rebuild
+/// rounds the whole rim. The test pins that result on the consumer's real
+/// geometry — orientable, watertight, the removed volume and material side
+/// checked — with the input lip untouched, and the chain completing with an
+/// analytic fuse.
 ///
 /// Earlier this test built the body with a sharp `makeBox` (the real tool uses
 /// a rounded-rect body, like D4) and filleted `edges[0]` — which happens to be
@@ -1534,18 +1533,15 @@ fn gridfinity_d5_box_with_filleted_lip() {
         })
         .expect("lip should have a peak rim edge near Z_PEAK");
 
-    // K-S1 fail-closed contract on this exact consumer geometry. The walking
-    // builder refuses the peak rim (a tangent-seam crossing), and the rolling-ball
-    // fallback's answer — which this test historically accepted under the
-    // `lip_val <= 2` bar — carries 22 orientation-inconsistent shared edges
-    // (a closed, manifold, non-orientable shell: damaged goods that happened
-    // to fuse analytically afterwards). The chain now refuses by name instead
-    // of shipping that lip. The un-refused capability is the walking
-    // trimmer's, tracked as bridge item B4 (`docs/kernel-maturity/roadmap.md`).
-    //
-    // What must be true now: the refusal is typed, and the lip is untouched —
-    // identical counts, validity, and volume — so the chain can fall back to
-    // the un-filleted lip deliberately instead of never knowing.
+    // The peak rim is the lip's outer top edge: a tangent ridgeline of four
+    // lines and four corner arcs between the vertical outer wall and the flat
+    // top ring, which the seed expands to whole. The walking builder refuses
+    // the seam crossing; the rolling-ball rebuild closes it. Its answer used
+    // to carry 22 orientation-inconsistent shared edges because it rebuilt
+    // the cut's reversed inner faces unreversed, so the chain refused it.
+    // With those faces kept reversed the rim fillet is a correct success:
+    // orientable, watertight, material on the right side, and the input lip
+    // untouched.
     let lip_id = k.resolve_solid(lip_handle).unwrap();
     let pre_counts = k.get_entity_counts(lip_handle).unwrap();
     let pre_valid = k.validate_solid(lip_handle).unwrap();
@@ -1561,27 +1557,14 @@ fn gridfinity_d5_box_with_filleted_lip() {
         r#"[{{"op": "fillet", "args": {{"solid": {lip_handle}, "radius": {TOP_FILLET}, "edges": [{peak_edge}]}}}}]"#
     ));
     let p5c = parse_batch(&r5c);
-    let error = p5c[0]["error"]
-        .as_str()
-        .expect("the peak-rim fillet must be a typed refusal, not a damaged success");
-    // The peak rim is one tangent ridgeline of lines and corner arcs; the seed
-    // expands around it, and the walking builder refuses the seam crossing by
-    // name before the rolling-ball engine declines the closed rim.
-    assert!(
-        error.contains("tangent seam"),
-        "the refusal must name the failing configuration, got: {error}"
-    );
+    assert_ok(&p5c, 0);
+    let filleted = p5c[0]["ok"].as_u64().unwrap() as u32;
+    let filleted_id = k.resolve_solid(filleted).unwrap();
+    assert_ne!(filleted_id, lip_id, "the fillet must return a new solid");
 
-    let post_counts = k.get_entity_counts(lip_handle).unwrap();
-    assert_eq!(
-        pre_counts, post_counts,
-        "a refused fillet must leave the lip's counts unchanged"
-    );
-    assert_eq!(
-        pre_valid,
-        k.validate_solid(lip_handle).unwrap(),
-        "a refused fillet must leave the lip's validity unchanged"
-    );
+    // The input lip is untouched.
+    assert_eq!(pre_counts, k.get_entity_counts(lip_handle).unwrap());
+    assert_eq!(pre_valid, k.validate_solid(lip_handle).unwrap());
     let post_vol = {
         let r = k.execute_batch(&format!(
             r#"[{{"op": "volume", "args": {{"solid": {lip_handle}, "deflection": 0.05}}}}]"#
@@ -1590,17 +1573,101 @@ fn gridfinity_d5_box_with_filleted_lip() {
     };
     assert!(
         (pre_vol - post_vol).abs() < 1e-6,
-        "a refused fillet must not move the lip's volume: {pre_vol} -> {post_vol}"
+        "the fillet must not move the input lip's volume: {pre_vol} -> {post_vol}"
     );
-    let post_faces = remus_topology::explorer::solid_faces(&k.topo, lip_id).unwrap();
     assert_eq!(
-        pre_faces, post_faces,
-        "a refused fillet must not re-mint the lip's faces"
+        pre_faces,
+        remus_topology::explorer::solid_faces(&k.topo, lip_id).unwrap()
     );
 
-    // The lip that survived is the un-filleted one; the rest of the chain runs
-    // on it exactly as D4's does.
-    let lip_final = lip_handle;
+    // One blend face per rim edge: four cylinders along the lines, four
+    // corner patches on the arcs.
+    let post_counts = k.get_entity_counts(filleted).unwrap();
+    assert_eq!(
+        post_counts[0],
+        pre_counts[0] + 8,
+        "{pre_counts:?} -> {post_counts:?}"
+    );
+    let ops_report = remus_operations::validate::validate_solid(&k.topo, filleted_id).unwrap();
+    assert!(ops_report.is_valid(), "{:?}", ops_report.issues);
+    let check_report = remus_check::validate::validate_solid(
+        &k.topo,
+        filleted_id,
+        &remus_check::validate::ValidateOptions::default(),
+    )
+    .unwrap();
+    assert!(check_report.is_valid(), "{check_report:?}");
+    let quality = remus_operations::tessellate::welded_mesh_quality(
+        &remus_operations::tessellate::tessellate_solid(&k.topo, filleted_id, 0.01).unwrap(),
+    );
+    assert_eq!(quality.boundary_edges, 0);
+    assert_eq!(quality.non_manifold_edges, 0);
+
+    // Removed volume: the 90° rim's corner section r²(1 − π/4) swept along
+    // the four straight runs, and by Pappus around the four corners at the
+    // section centroid's radius. The corner patches are NURBS and their
+    // tessellated volume moves by ~0.1 mm³ with deflection, so this is a 3%
+    // bound, not an exact match.
+    let section = TOP_FILLET * TOP_FILLET * (1.0 - std::f64::consts::FRAC_PI_4);
+    let centroid = TOP_FILLET * (5.0 / 6.0 - std::f64::consts::FRAC_PI_4)
+        / (1.0 - std::f64::consts::FRAC_PI_4);
+    let removed_closed_form = section * 4.0 * (OUTER_DIM - 2.0 * CORNER_R)
+        + section * std::f64::consts::TAU * (CORNER_R - centroid);
+    let lip_volume = remus_operations::measure::solid_volume(&k.topo, lip_id, 0.001).unwrap();
+    let filleted_volume =
+        remus_operations::measure::solid_volume(&k.topo, filleted_id, 0.001).unwrap();
+    let removed = lip_volume - filleted_volume;
+    assert!(
+        (removed - removed_closed_form).abs() < 0.03 * removed_closed_form,
+        "rim fillet removed {removed:.4} mm³, closed form {removed_closed_form:.4}"
+    );
+
+    // Ray-cast probes on a straight run (x = +20.75 wall) and at a corner
+    // (arc centre (16.75, 16.75)): the rim corner is gone, the material
+    // inside the rolling ball and the top ring stay.
+    let half = OUTER_DIM / 2.0;
+    let arc_centre = half - CORNER_R;
+    let diag = std::f64::consts::FRAC_1_SQRT_2;
+    let at_corner = |radius: f64, z: f64| {
+        remus_math::vec::Point3::new(arc_centre + radius * diag, arc_centre + radius * diag, z)
+    };
+    let classify = |p: remus_math::vec::Point3| {
+        remus_check::classify::classify_point(
+            &k.topo,
+            filleted_id,
+            p,
+            &remus_check::classify::ClassifyOptions::default(),
+        )
+        .unwrap()
+    };
+    let (inside, outside) = (
+        remus_check::classify::PointClassification::Inside,
+        remus_check::classify::PointClassification::Outside,
+    );
+    for (p, expected) in [
+        (
+            remus_math::vec::Point3::new(half - 0.02, 0.0, Z_PEAK - 0.02),
+            outside,
+        ),
+        (
+            remus_math::vec::Point3::new(half - 0.25, 0.0, Z_PEAK - 0.3),
+            inside,
+        ),
+        (at_corner(CORNER_R - 0.02, Z_PEAK - 0.02), outside),
+        (at_corner(CORNER_R - 0.35, Z_PEAK - 0.3), inside),
+        (
+            remus_math::vec::Point3::new(half - 1.75, 0.0, Z_PEAK - 0.01),
+            inside,
+        ),
+        (
+            remus_math::vec::Point3::new(half - 1.75, 0.0, Z_PEAK + 0.01),
+            outside,
+        ),
+    ] {
+        assert_eq!(classify(p), expected, "probe {p:?}");
+    }
+
+    let lip_final = filleted;
 
     // Step 4: translate lip onto the box top and fuse.
     let mat = translate_matrix(0.0, 0.0, WALL_HEIGHT);

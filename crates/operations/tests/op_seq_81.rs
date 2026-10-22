@@ -126,7 +126,7 @@
     clippy::struct_excessive_bools
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_6, PI};
 use std::time::Instant;
 
@@ -354,10 +354,10 @@ fn get_u32(args: &Value, key: &str) -> Option<u32> {
 ///   the broader generator family stays excluded pending wider qualification.
 ///   Placed variants and the reverse order stay in generation as tripwires.
 /// - X6: an inward (`distance < 0.0`) offset of a boolean result
-///   (`finding_inward_offset_of_fuse_untyped`, F7: the offset engine's
-///   wire-loop assembly failure surfaces as `InvalidInput` instead of a
-///   typed refusal — offset-lane affinity). Outward offsets of boolean
-///   results stay in generation as tripwires.
+///   The literal F7 and neighboring prism cells now refuse with the
+///   offset producer's typed assembly failure and restore live topology.
+///   Broader inward boolean-offset generation remains unqualified;
+///   outward offsets stay in generation as tripwires.
 /// - X7: an unmoved prim sphere–box FUSE pair in either operand order.
 ///   The literal F8 union is independently qualified and active below;
 ///   the broader generated family remains excluded pending qualification.
@@ -373,8 +373,8 @@ fn get_u32(args: &Value, key: &str) -> Option<u32> {
 ///   prim or copy (`finding_pointed_cone_fuse_orientation`, F11: two
 ///   demonstrated instances with identical minimal signatures) — and ANY
 ///   boolean on a cone–cone pair (`finding_placed_frustum_pair_fuse_
-///   orientation`, F17: the pair's complementary fuse leg misorients 4
-///   edges). Other operators on mixed pairs stay in generation as
+///   orientation`, F17: the literal is repaired, but the general cone-pair
+///   family still has retained placement/scale limits). Other mixed pairs stay as
 ///   tripwires.
 /// - X11: a CUT of two prim cylinders with a translated-but-unrotated side
 ///   on either operand (`finding_translated_cyl_cut_orientation`, F12: 3
@@ -392,10 +392,10 @@ fn get_u32(args: &Value, key: &str) -> Option<u32> {
 ///   exact). Fuses with mirrored boxes and all other mirrored operands
 ///   stay in generation as tripwires.
 /// - X8: an offset of a cylinder or cone — prim or copy, either sign.
-///   Retained witnesses F9 (pointed cone, both signs, four instances),
-///   F14 (frustum cone), and F15 (unit cylinder); 16-cell probe matrices
-///   per family show open meshes at every size/sign with occasional
-///   mistyped wire-loop refusals, while box/sphere/torus offsets mesh
+///   Literal F9/F14/F15 and neighboring signed primitive cells now pass
+///   independent native geometry and batch checks. The broad exclusion
+///   stays until the original 16-cell matrices and wider wire-loop
+///   refusal outcomes are requalified; box/sphere/torus offsets mesh
 ///   watertight. Offsets of boxes, spheres, tori, outward offsets of
 ///   boolean results, and composed results stay in generation as
 ///   tripwires.
@@ -790,10 +790,11 @@ fn generate_sequence(seed: u64, len: usize) -> Vec<Value> {
             // X6: an inward offset of a boolean result steers into a
             // placement instead (retained finding F7). X8: an offset of a
             // cylinder or cone — prim or copy, either sign — steers the
-            // same way (retained findings F9/F14/F15 plus 16-cell probe
-            // matrices per family showing open meshes at every size/sign
-            // and occasional mistyped refusals, while box/sphere/torus
-            // offsets mesh watertight). Offsets of boxes, spheres, tori,
+            // same way until the broad matrices are requalified. Literal
+            // F9/F14/F15 are fixed, with signed rims and explicit apex
+            // seams; remaining mistyped refusal cells stay outside this
+            // bounded repair. Box/sphere/torus offsets mesh watertight.
+            // Offsets of boxes, spheres, tori,
             // outward offsets of boolean results, and composed results
             // without cylinder/cone faces stay in generation as tripwires.
             let pick = (rng.below(live.len() as u64)) as usize;
@@ -1084,11 +1085,31 @@ fn classify_refusal(e: &OperationsError) -> RefusalClass {
     }
 }
 
+/// Classify an offset error. Offset wire-loop assembly failures stay
+/// untyped (the offsets kept in generation are tripwires), except in the
+/// retained X6 cell — an inward offset of a boolean result, finding F7 —
+/// whose typed `Offset(AssemblyFailed)` refusal is the qualified answer.
+fn classify_offset_refusal(e: &OperationsError, retained_x6: bool) -> RefusalClass {
+    if retained_x6
+        && matches!(
+            e,
+            OperationsError::Offset(remus_offset::OffsetError::AssemblyFailed { .. })
+        )
+    {
+        RefusalClass::Refused
+    } else {
+        classify_refusal(e)
+    }
+}
+
 // ── Execution ──────────────────────────────────────────────────────
 
 struct ExecState<'a> {
     topo: Topology,
     live: BTreeMap<u32, LiveInfo>,
+    /// Live handles produced by a boolean, carried through copies, mirrors
+    /// and in-place transforms, not through offsets (the X6 cell).
+    from_bool: BTreeSet<u32>,
     limits: &'a SeqLimits,
     fault: Fault,
     start: Instant,
@@ -1103,6 +1124,7 @@ impl<'a> ExecState<'a> {
         Self {
             topo: Topology::new(),
             live: BTreeMap::new(),
+            from_bool: BTreeSet::new(),
             limits,
             fault,
             start: Instant::now(),
@@ -2288,6 +2310,9 @@ fn exec_one(st: &mut ExecState<'_>, index: usize, op: &Value) -> bool {
                         note(st, index, "mirror", SeqKind::Incorrect, oracle, detail);
                     } else {
                         st.live.insert(fresh.index() as u32, exact0);
+                        if st.from_bool.contains(&handle) {
+                            st.from_bool.insert(fresh.index() as u32);
+                        }
                         note(
                             st,
                             index,
@@ -2434,6 +2459,9 @@ fn exec_one(st: &mut ExecState<'_>, index: usize, op: &Value) -> bool {
                             Some(_) => None,
                         };
                         st.live.insert(fresh.index() as u32, exact);
+                        if st.from_bool.contains(&handle) {
+                            st.from_bool.insert(fresh.index() as u32);
+                        }
                         note(
                             st,
                             index,
@@ -2500,7 +2528,10 @@ fn exec_one(st: &mut ExecState<'_>, index: usize, op: &Value) -> bool {
             let solids_before = st.topo.num_solids();
             let produced =
                 match remus_operations::offset_v2::offset_solid_v2(&mut st.topo, solid, distance) {
-                    Err(e) => match classify_refusal(&e) {
+                    Err(e) => match classify_offset_refusal(
+                        &e,
+                        distance < 0.0 && st.from_bool.contains(&handle),
+                    ) {
                         RefusalClass::Empty => {
                             note(
                                 st,
@@ -2940,6 +2971,7 @@ fn exec_one(st: &mut ExecState<'_>, index: usize, op: &Value) -> bool {
                 st.live.remove(&hb);
                 if let Some(handle) = main_solid.map(|s| s.index() as u32) {
                     st.live.insert(handle, exact);
+                    st.from_bool.insert(handle);
                 }
             }
             // A boolean that yields no solid breaks the chain; one that
@@ -5919,27 +5951,17 @@ fn finding_sphere_minus_box_open_mesh() {
     );
 }
 
-/// 8.1 finding F7 (retained, kernel untouched): an inward offset (-0.25)
-/// of a plain unmoved box–cylinder fuse fails inside the offset engine's
-/// wire-loop assembly (`no unvisited edge from vertex 58`) and the failure
-/// surfaces as `InvalidInput` — a caller-input code for an internal
-/// assembly failure. The boolean prefix is exactly right (closed forms π
-/// for the cylinder and 1.0 for the box, full battery green), so the
-/// defect is wholly inside the offset lane: either the loop walk must close, or
-/// the failure must refuse typed (`Unsupported` and friends) instead of
-/// wearing `InvalidInput`. Owns exclusion cell X6 (inward offsets of
-/// boolean results steer into placements until this closes).
-///
-/// Minimized from CI-matrix seed `0xC10B` (7 ops shrink to 4; dims simplify
-/// to unit cylinder/box, the pre-offset rotation deletes, the trailing
-/// operations cascade away).
-///
-/// Acceptance: any verdict EXCEPT `Incorrect`/`Crash`/`Timeout`
-/// (`Approximate` success or typed `Refused` both close it — the harness
-/// never demands success, only an honest answer). No geometry fix in this
-/// harness PR.
+/// F7 regression: the inward unit box-cylinder-fuse offset reaches an
+/// assembly limitation and refuses with `Offset(AssemblyFailed)`. The
+/// original wildcard adapter blamed caller input and the lower native
+/// entry left temporary vertices/edges live. Both native levels now restore
+/// the pre-call model while preserving retired handle high-water marks.
+/// Neighboring widths/distances, rigid placements, scale and all public
+/// execution routes are pinned in `regress_opseq_offset_refusal.rs` and
+/// `scripts/opseq-offset-refusal-packaged.mjs`. General inward offsets of
+/// boolean results remain behind X6 pending wider qualification.
+/// Minimized from CI-matrix seed `0xC10B` (7 ops shrink to 4).
 #[test]
-#[ignore = "8.1 finding F7: inward offset of a box-cylinder fuse dies in the wire-loop walk and mistypes as InvalidInput; route to the offset lane"]
 fn finding_inward_offset_of_fuse_untyped() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"height":1.0,"radius":1.0},"op":"makeCylinder"},{"args":{"depth":1.0,"height":1.0,"width":1.0},"op":"makeBox"},{"args":{"exactOnly":true,"operation":"fuse","solidA":1,"solidB":0},"op":"booleanWithQuality"},{"args":{"distance":-0.25,"solid":2},"op":"offsetSolidV2"}]"#,
@@ -5959,6 +5981,54 @@ fn finding_inward_offset_of_fuse_untyped() {
             SeqKind::ExactOk | SeqKind::Approximate | SeqKind::Empty | SeqKind::Refused
         ),
         "inward offset must succeed (exactly or approximately) or refuse typed, got {} / {}",
+        report.kind.label(),
+        report.oracle
+    );
+}
+
+/// The F7 allowance is confined to the retained X6 cell. Elsewhere an
+/// offset wire-loop assembly failure stays untyped, so the offsets kept in
+/// generation as tripwires (boxes, spheres, tori, outward offsets of
+/// boolean results, composed results) still fail the campaign on one.
+#[test]
+fn offset_assembly_failure_is_refused_only_in_the_x6_cell() {
+    let assembly = OperationsError::Offset(remus_offset::OffsetError::AssemblyFailed {
+        reason: "no unvisited edge from vertex 58".to_owned(),
+    });
+    assert!(matches!(classify_refusal(&assembly), RefusalClass::Untyped));
+    assert!(matches!(
+        classify_offset_refusal(&assembly, false),
+        RefusalClass::Untyped
+    ));
+    assert!(matches!(
+        classify_offset_refusal(&assembly, true),
+        RefusalClass::Refused
+    ));
+    // The cell admits only the assembly refusal, not a mistyped error.
+    let invalid = OperationsError::InvalidInput {
+        reason: "assembly failed".to_owned(),
+    };
+    assert!(matches!(
+        classify_offset_refusal(&invalid, true),
+        RefusalClass::Untyped
+    ));
+}
+
+/// Boolean provenance survives a copy, as the generator's `from_bool` does:
+/// an inward offset of a copied F7 fuse is still the retained X6 cell.
+#[test]
+fn copied_fuse_inward_offset_stays_in_the_x6_cell() {
+    let ops: Vec<Value> = serde_json::from_str(
+        r#"[{"args":{"height":1.0,"radius":1.0},"op":"makeCylinder"},{"args":{"depth":1.0,"height":1.0,"width":1.0},"op":"makeBox"},{"args":{"exactOnly":true,"operation":"fuse","solidA":1,"solidB":0},"op":"booleanWithQuality"},{"args":{"solid":2},"op":"copySolid"},{"args":{"distance":-0.25,"solid":3},"op":"offsetSolidV2"}]"#,
+    )
+    .expect("copied finding bundle parses");
+    let report = execute_sequence(&ops, &SeqLimits::default(), Fault::None);
+    assert!(
+        matches!(
+            report.kind,
+            SeqKind::ExactOk | SeqKind::Approximate | SeqKind::Empty | SeqKind::Refused
+        ),
+        "copied inward offset must succeed or refuse typed, got {} / {}",
         report.kind.label(),
         report.oracle
     );
@@ -5992,34 +6062,11 @@ fn finding_sphere_box_fuse_open_mesh() {
     );
 }
 
-/// 8.1 finding F9 (retained, kernel untouched): an outward offset (+0.25)
-/// of a unit pointed cone validates clean yet tessellates open (67 boundary
-/// edges at deflection 0.01; the batch welded probe stays open too, so
-/// this sign is a genuine missing patch, not a weldable crack). The inward
-/// twin (-0.25, volume 0.0653) fails identically under the native oracle
-/// (57 boundary); its hole-vs-crack character is untested, so the twin is
-/// deduplicated here by native signature only. The primitive pins its
-/// closed form (π/3), the offset measures 4.318000 with both volume routes
-/// agreeing, and every oracle up to the mesh gate passes.
-/// Tessellation-lane affinity (the same family #849's notes attribute to
-/// pcurve-less wire stitching on offset walls). Co-owns exclusion cell X8
-/// with F14/F15 (offsets of every cylinder and cone steer into placements
-/// until this closes; see the X8 entry for the probe-matrix breadth).
-///
-/// Minimized from campaign seed `13725346062887547438` (6 ops shrink to 2:
-/// the companion cone, its placement, the cylinder, and the trailing
-/// intersect cascade away; the cone simplifier finds the pointed form).
-/// Three further instances corroborate the mechanism without their own
-/// witnesses: seed `6679316808501194307` (same 6-op shape plus a trailing
-/// placement, identical mesh/416-boundary signature at the same op),
-/// seed `7949996931551529061` (shrinks to the same pair with distance
-/// -0.25), and seed `4230651428139851084` (shrinks to a top-pointed cone
-/// with distance +0.25) — all deduplicated here by demonstrated mechanism.
-///
-/// Acceptance: the harness `ExactOk` verdict (watertight mesh). No geometry
-/// fix in this harness PR.
+/// F9 regression: a pointed-cone offset retains its explicit apex seam and
+/// meshes outward and watertight. Offsets retain the harness's disclosed
+/// approximate quality classification; the full geometry oracle lives in
+/// `regress_opseq_offset_wall.rs`.
 #[test]
-#[ignore = "8.1 finding F9: outward offset of a pointed cone validates clean yet tessellates open (true hole; inward twin deduplicated by native signature); route to the tessellation lane"]
 fn finding_pointed_cone_offset_open_mesh() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"bottomRadius":0.0,"height":1.0,"topRadius":1.0},"op":"makeCone"},{"args":{"distance":0.25,"solid":0},"op":"offsetSolidV2"}]"#,
@@ -6035,7 +6082,7 @@ fn finding_pointed_cone_offset_open_mesh() {
     }
     assert_eq!(
         report.kind,
-        SeqKind::ExactOk,
+        SeqKind::Approximate,
         "pointed-cone offset must tessellate watertight"
     );
 }
@@ -6179,25 +6226,10 @@ fn finding_placed_sphere_box_cut_open_mesh() {
     );
 }
 
-/// 8.1 finding F14 (retained, kernel untouched): an outward offset (+0.25)
-/// of a unit-scale frustum cone (4, 2, 3) validates clean yet tessellates
-/// open under the native unwelded mesh oracle (47 boundary edges at
-/// deflection 0.01, identical with angular tolerance; volume 124.764117
-/// with both routes agreeing). Nuance the cross-check caught: the batch
-/// `meshQuality` probe — which welds before counting — reports this body
-/// watertight, while the F6/F8/F9/F13/F15 holes stay open welded. So F14
-/// is a weldable-crack (T-junction) defect, not a missing patch; both
-/// still fail the strict B26 boundary oracle, but the owner needs the
-/// distinction. The frustum member of the offset-wall family: a 16-cell
-/// probe matrix (four frustum sizes × four signed distances) shows open
-/// meshes in 15 cells and a mistyped `InvalidInput` wire-loop refusal in
-/// the 16th. Co-owns exclusion cell X8 with F9/F15; this witness pins the
-/// frustum shape permanently. Tessellation-lane affinity.
-///
-/// Acceptance: the harness `ExactOk` verdict (watertight mesh). No geometry
-/// fix in this harness PR.
+/// F14 regression: signed frustum rims retain opposing uses and outward caps.
+/// The old directional mesh defect was a same-sense cap, despite the welded
+/// probe counting its incidence as closed. Quality remains disclosed approximate.
 #[test]
-#[ignore = "8.1 finding F14: outward offset of a frustum cone validates clean yet tessellates open (F9 family breadth); route to the tessellation lane"]
 fn finding_frustum_cone_offset_open_mesh() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"bottomRadius":4.0,"height":3.0,"topRadius":2.0},"op":"makeCone"},{"args":{"distance":0.25,"solid":0},"op":"offsetSolidV2"}]"#,
@@ -6213,29 +6245,15 @@ fn finding_frustum_cone_offset_open_mesh() {
     }
     assert_eq!(
         report.kind,
-        SeqKind::ExactOk,
+        SeqKind::Approximate,
         "frustum-cone offset must tessellate watertight"
     );
 }
 
-/// 8.1 finding F15 (retained, kernel untouched): an inward offset (-0.25)
-/// of a unit cylinder validates clean yet tessellates open under the
-/// native unwelded oracle (volume 0.883573 with both routes agreeing).
-/// Weldable-crack nuance shared with F14: the batch welded probe reports
-/// this body clean, so the cross-check pins volume + validation only.
-/// The cylinder member of the offset-wall family: a 16-cell probe matrix
-/// (four cylinder sizes × four signed distances) shows open meshes in 15
-/// cells and a mistyped `InvalidInput` wire-loop refusal in the 16th —
-/// while box, sphere, and torus offsets mesh watertight with exact
-/// volumes at every probe. So cylinder and cone offsets (the two
-/// seam/apex surfaces) fail broadly and all other primitives pass: the
-/// exclusion cell X8 covers both. Minimized from candidate-seed
-/// `13332684310450544615` (8 ops shrink to 2). Tessellation-lane affinity.
-///
-/// Acceptance: the harness `ExactOk` verdict (watertight mesh). No geometry
-/// fix in this harness PR.
+/// F15 regression: signed cylinder rims retain opposing uses and outward caps.
+/// The independent native fixture checks raw mesh orientation, material,
+/// closed-form quantities, rigid placement, scale and unchanged operands.
 #[test]
-#[ignore = "8.1 finding F15: inward offset of a unit cylinder validates clean yet tessellates open (cylinder member of the offset-wall family); route to the tessellation lane"]
 fn finding_cylinder_offset_open_mesh() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"height":1.0,"radius":1.0},"op":"makeCylinder"},{"args":{"distance":-0.25,"solid":0},"op":"offsetSolidV2"}]"#,
@@ -6251,7 +6269,7 @@ fn finding_cylinder_offset_open_mesh() {
     }
     assert_eq!(
         report.kind,
-        SeqKind::ExactOk,
+        SeqKind::Approximate,
         "cylinder offset must tessellate watertight"
     );
 }
@@ -6294,21 +6312,22 @@ fn finding_mirrored_box_intersect_orientation() {
     );
 }
 
-/// 8.1 finding F17 (retained, kernel untouched): a fuse of a frustum cone
+/// 8.1 finding F17 regression: a fuse of a frustum cone
 /// (4.5, 2.5, 5.5) with its copy translated 7 along x carries 4 shared edges
 /// with inconsistent face orientations. Surfaced by the bounded campaign
 /// (seed `9220677054601863815`) as the complementary fuse leg of an exact
 /// intersect of the cone with its mirror across x = 3.5 — geometrically
 /// this same translated copy, since the cone is axisymmetric. Before B122 the
 /// mirrored cone was misoriented and the leg refused, masking the defect;
-/// the translated twin reproduces it on `main` without any mirror. X10
-/// family (fuse consuming a cone); widens X10 to every operator on a
-/// cone–cone pair.
+/// the translated twin reproduced it on the original base without a mirror. X10
+/// family (fuse consuming a cone). The bounded repair supplies the exact
+/// equal-cone conic, relocates a proved-clear artificial seam, and synchronizes
+/// its untouched rim with the cap. The broad X10 generator exclusion remains.
 ///
-/// Acceptance: the harness `ExactOk` verdict (valid topology with agreeing
-/// volumes). No geometry fix in this PR.
+/// Acceptance: the harness `ExactOk` verdict plus the independent quantity,
+/// material, raw-mesh and accepted/refused matrix in
+/// `regress_opseq_equal_frustum_fuse.rs`.
 #[test]
-#[ignore = "8.1 finding F17: fuse of two placed frustum cones misorients 4 shared edges; route to the B33 orientation family"]
 fn finding_placed_frustum_pair_fuse_orientation() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"bottomRadius":4.5,"height":5.5,"topRadius":2.5},"op":"makeCone"},{"args":{"bottomRadius":4.5,"height":5.5,"topRadius":2.5},"op":"makeCone"},{"args":{"matrix":[1.0,0.0,0.0,7.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],"solid":1},"op":"transform"},{"args":{"exactOnly":true,"operation":"fuse","solidA":1,"solidB":0},"op":"booleanWithQuality"}]"#,

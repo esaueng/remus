@@ -5,7 +5,7 @@ use remus_math::det_hash::DetHashMap as HashMap;
 use remus_math::vec::Point3;
 use remus_math::vec::Vec3;
 use remus_topology::edge::EdgeId;
-use remus_topology::face::FaceId;
+use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::vertex::VertexId;
 
 /// Extract inner wire vertex positions from a face's topology.
@@ -36,11 +36,41 @@ pub(super) struct FacePolygon {
     pub(super) vertex_ids: Vec<VertexId>,
     pub(super) positions: Vec<Point3>,
     pub(super) wire_edge_ids: Vec<EdgeId>,
+    /// Plane normal. The rolling-ball engine stores the outward one whatever
+    /// the source face's reversal; the v1 bevel and variable paths store the
+    /// surface normal and leave `reversed` false.
     pub(super) normal: Vec3,
     #[allow(dead_code)]
     pub(super) d: f64,
+    /// The source face is reversed: its wires wind about `-normal`.
+    pub(super) reversed: bool,
     /// Inner wire vertex positions (holes in the face).
     pub(super) inner_wires: Vec<Vec<Point3>>,
+}
+
+impl FacePolygon {
+    /// The rebuilt face over `vertices` (in source wire order) on the plane
+    /// `normal · p = d`, in the source face's own orientation convention.
+    pub(super) fn spec(&self, vertices: Vec<Point3>, d: f64) -> crate::boolean::FaceSpec {
+        if self.reversed {
+            crate::boolean::FaceSpec::Surface {
+                vertices,
+                surface: FaceSurface::Plane {
+                    normal: -self.normal,
+                    d: -d,
+                },
+                reversed: true,
+                inner_wires: self.inner_wires.clone(),
+            }
+        } else {
+            crate::boolean::FaceSpec::Planar {
+                vertices,
+                normal: self.normal,
+                d,
+                inner_wires: self.inner_wires.clone(),
+            }
+        }
+    }
 }
 
 pub(super) struct FilletEdgeData {

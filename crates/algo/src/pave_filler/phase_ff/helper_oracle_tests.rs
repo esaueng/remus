@@ -1615,3 +1615,112 @@ fn conic_extrema_need_a_finite_window() {
         );
     }
 }
+
+fn equal_frustum_wall(topo: &mut Topology, origin: Point3) -> FaceId {
+    let axis = Vec3::new(0.0, 0.0, 1.0);
+    let bottom = Circle3D::new_with_ref(origin, axis, 4.5, Vec3::new(1.0, 0.0, 0.0)).unwrap();
+    let top =
+        Circle3D::new_with_ref(origin + axis * 5.5, axis, 2.5, Vec3::new(1.0, 0.0, 0.0)).unwrap();
+    let a = vertex(topo, bottom.evaluate(0.0));
+    let b = vertex(topo, top.evaluate(0.0));
+    let low = arc_edge(topo, &bottom, (0.0, TAU), a, a);
+    let high = arc_edge(topo, &top, (0.0, TAU), b, b);
+    let seam = line_edge(topo, a, b);
+    let wire = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(low, true),
+                OrientedEdge::new(seam, true),
+                OrientedEdge::new(high, false),
+                OrientedEdge::new(seam, false),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let cone = remus_math::surfaces::ConicalSurface::new(
+        origin + axis * 12.375,
+        -axis,
+        (11.0_f64 / 4.0).atan(),
+    )
+    .unwrap();
+    topo.add_face(Face::new(wire, vec![], FaceSurface::Cone(cone)))
+}
+
+#[test]
+fn exact_equal_frustum_section_is_a_split_rational_conic_on_both_walls() {
+    let mut topo = Topology::new();
+    let a = equal_frustum_wall(&mut topo, Point3::new(0.0, 0.0, 0.0));
+    let b = equal_frustum_wall(&mut topo, Point3::new(7.0, 0.0, 0.0));
+    let sa = topo.face(a).unwrap().surface();
+    let sb = topo.face(b).unwrap().surface();
+    let pieces = super::equal_cone_frustum_section(&topo, a, b, sa, sb, Tolerance::new())
+        .unwrap()
+        .unwrap();
+    assert_eq!(pieces.len(), 2);
+    assert!((pieces[0].p_end - Point3::new(3.5, 0.0, 2.75)).length() < 1e-12);
+    assert_eq!(pieces[0].p_end, pieces[1].p_start);
+    for piece in pieces {
+        let EdgeCurve::NurbsCurve(curve) = piece.curve else {
+            panic!("exact conic required")
+        };
+        assert_eq!(curve.degree(), 2);
+        assert_eq!(curve.control_points().len(), 3);
+        assert!(curve.weights().iter().all(|w| *w > 0.0));
+        for i in 0..=64 {
+            let p = curve.evaluate(
+                piece.t_range.0 + (piece.t_range.1 - piece.t_range.0) * f64::from(i) / 64.0,
+            );
+            assert!((p.x() - 3.5).abs() < 1e-12);
+            assert!(p.z() >= -1e-12 && p.z() <= 2.75 + 1e-12);
+            for center in [0.0, 7.0] {
+                assert!(((p.x() - center).hypot(p.y()) - (4.5 - 4.0 * p.z() / 11.0)).abs() < 1e-12);
+            }
+        }
+    }
+}
+
+#[test]
+fn exact_equal_frustum_section_declines_partial_holed_and_axially_shifted_bands() {
+    for variant in 0..4 {
+        let mut topo = Topology::new();
+        let a = equal_frustum_wall(&mut topo, Point3::new(0.0, 0.0, 0.0));
+        let original_b = equal_frustum_wall(
+            &mut topo,
+            Point3::new(7.0, 0.0, if variant == 2 { 1.0 } else { 0.0 }),
+        );
+        let face = topo.face(original_b).unwrap().clone();
+        let b = if variant == 0 {
+            topo.add_face(Face::new(
+                face.outer_wire(),
+                vec![face.outer_wire()],
+                face.surface().clone(),
+            ))
+        } else if variant == 1 || variant == 3 {
+            let edge_id = topo.wire(face.outer_wire()).unwrap().edges()[0].edge();
+            topo.edge_mut(edge_id).unwrap().set_trim(Some((
+                0.0,
+                if variant == 1 {
+                    std::f64::consts::PI
+                } else {
+                    -TAU
+                },
+            )));
+            original_b
+        } else {
+            original_b
+        };
+        assert!(
+            super::equal_cone_frustum_section(
+                &topo,
+                a,
+                b,
+                topo.face(a).unwrap().surface(),
+                topo.face(b).unwrap().surface(),
+                Tolerance::new()
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+}

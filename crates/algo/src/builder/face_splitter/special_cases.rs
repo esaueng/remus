@@ -7034,7 +7034,7 @@ mod tests {
 }
 
 mod cylinder_seam {
-    //! Relocate a full cylinder's artificial seam away from a bounded section chain.
+    //! Relocate a complete analytic band's artificial seam away from a section.
     //!
     //! First slice: two full circular rims, one repeated ruling, no holes, and a
     //! mixed ellipse/NURBS section chain. Only an antipodal meridian proved clear
@@ -7043,7 +7043,7 @@ mod cylinder_seam {
     use std::f64::consts::{PI, TAU};
 
     use remus_math::curves2d::{Curve2D, Line2D};
-    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::surfaces::{ConicalSurface, CylindricalSurface};
     use remus_math::vec::{Point2, Point3, Vec2, Vec3};
     use remus_topology::edge::EdgeCurve;
     use remus_topology::face::FaceSurface;
@@ -7335,25 +7335,137 @@ mod cylinder_seam {
         Some(([*r0, *r1], [*s0, *s1]))
     }
 
+    /// A full frustum with a single repeated generator and rational quadratic
+    /// section pieces. Positive weights make their entire carried spans lie in
+    /// the control hull used by `all_sections_clear`; samples cannot admit it.
+    fn qualify_cone(
+        edges: &[OrientedPCurveEdge],
+        sections: &[SectionEdge],
+        cone: &ConicalSurface,
+        tol: f64,
+    ) -> Option<([usize; 2], [usize; 2])> {
+        if edges.len() != 4
+            || !(1..=2).contains(&sections.len())
+            || !tol.is_finite()
+            || tol <= 0.0
+            || sections.iter().any(|s| {
+                let EdgeCurve::NurbsCurve(curve) = &s.curve_3d else {
+                    return true;
+                };
+                let knots = curve.knots();
+                let (a, b) = curve.domain();
+                curve.degree() != 2
+                    || curve.control_points().len() != 3
+                    || knots.len() != 6
+                    || !a.is_finite()
+                    || !b.is_finite()
+                    || a >= b
+                    || knots[..3].iter().any(|&k| k.to_bits() != a.to_bits())
+                    || knots[3..].iter().any(|&k| k.to_bits() != b.to_bits())
+                    || s.trim != Some((a, b))
+                    || curve.weights().iter().any(|w| !w.is_finite() || *w <= 0.0)
+            })
+        {
+            return None;
+        }
+        let mut rims = Vec::new();
+        let mut seams = Vec::new();
+        let mut levels = Vec::new();
+        for (index, edge) in edges.iter().enumerate() {
+            match &edge.curve_3d {
+                EdgeCurve::Circle(circle) => {
+                    let (a, b) = edge.trim?;
+                    let delta = circle.center() - cone.apex();
+                    let axial = delta.dot(cone.axis());
+                    let radial = (delta - cone.axis() * axial).length();
+                    let radius = axial * cone.half_angle().cos() / cone.half_angle().sin();
+                    let errors = [
+                        radial,
+                        (circle.radius() - radius).abs(),
+                        (edge.start_3d - edge.end_3d).length(),
+                        (circle.evaluate(a) - edge.start_3d).length(),
+                        (circle.evaluate(b) - edge.end_3d).length(),
+                    ];
+                    let normal_error = circle.normal().cross(cone.axis()).length();
+                    let uv_turn = edge.end_uv.x() - edge.start_uv.x();
+                    if ![a, b, axial, radius, normal_error, uv_turn]
+                        .into_iter()
+                        .all(f64::is_finite)
+                        || axial <= tol
+                        || radius <= tol
+                        || errors.into_iter().any(|d| !d.is_finite() || d > tol)
+                        || (b - a - TAU).abs() > 32.0 * f64::EPSILON * TAU
+                        || normal_error > 1e-12
+                        || (uv_turn.abs() - TAU).abs() > 1e-8
+                    {
+                        return None;
+                    }
+                    rims.push(index);
+                    levels.push(axial);
+                }
+                EdgeCurve::Line => seams.push(index),
+                EdgeCurve::Ellipse(_)
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Parabola(_)
+                | EdgeCurve::Hyperbola(_) => return None,
+            }
+        }
+        let ([r0, r1], [s0, s1]) = (rims.as_slice(), seams.as_slice()) else {
+            return None;
+        };
+        let (a, b) = (&edges[*s0], &edges[*s1]);
+        let near = |p: Point3, q: Point3| {
+            let d = (p - q).length();
+            d.is_finite() && d <= tol
+        };
+        if (levels[0] - levels[1]).abs() <= tol
+            || a.forward == b.forward
+            || a.source_topo_edge.is_none()
+            || a.source_topo_edge != b.source_topo_edge
+            || !near(a.start_3d, b.end_3d)
+            || !near(a.end_3d, b.start_3d)
+            || near(a.start_3d, a.end_3d)
+            || [a.start_3d, a.end_3d]
+                .iter()
+                .any(|&p| [*r0, *r1].iter().all(|&r| !near(edges[r].start_3d, p)))
+        {
+            return None;
+        }
+        let start = a.start_3d - cone.apex();
+        let end = a.end_3d - cone.apex();
+        let deviation = start.cross(end).length() / start.length().max(end.length());
+        if !deviation.is_finite() || deviation > tol {
+            return None;
+        }
+        Some(([*r0, *r1], [*s0, *s1]))
+    }
+
     pub(in crate::builder::face_splitter) fn relocate_clear_seam(
         edges: &[OrientedPCurveEdge],
         sections: &[SectionEdge],
         surface: &FaceSurface,
         tol: f64,
     ) -> Result<Option<Vec<OrientedPCurveEdge>>, AlgoError> {
-        let FaceSurface::Cylinder(cyl) = surface else {
-            return Ok(None);
+        let (origin, qualified) = match surface {
+            FaceSurface::Cylinder(cyl) => {
+                if !sections
+                    .iter()
+                    .any(|s| matches!(s.curve_3d, EdgeCurve::Ellipse(_)))
+                    || !sections
+                        .iter()
+                        .any(|s| matches!(s.curve_3d, EdgeCurve::NurbsCurve(_)))
+                {
+                    return Ok(None);
+                }
+                (cyl.origin(), qualify(edges, cyl, tol))
+            }
+            FaceSurface::Cone(cone) => (cone.apex(), qualify_cone(edges, sections, cone, tol)),
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => return Ok(None),
         };
-        if !sections
-            .iter()
-            .any(|s| matches!(s.curve_3d, EdgeCurve::Ellipse(_)))
-            || !sections
-                .iter()
-                .any(|s| matches!(s.curve_3d, EdgeCurve::NurbsCurve(_)))
-        {
-            return Ok(None);
-        }
-        let Some((rims, seams)) = qualify(edges, cyl, tol) else {
+        let Some((rims, seams)) = qualified else {
             return Ok(None);
         };
         let old = [edges[rims[0]].start_3d, edges[rims[1]].start_3d];
@@ -7361,7 +7473,7 @@ mod cylinder_seam {
             return Ok(None);
         };
         let direction = old[0] - first.center();
-        if all_sections_clear(sections, cyl.origin(), direction, old, tol) {
+        if all_sections_clear(sections, origin, direction, old, tol) {
             return Ok(None);
         }
         let mut result = edges.to_vec();
@@ -7378,13 +7490,16 @@ mod cylinder_seam {
             new[k] = circle.evaluate(a + PI);
             edge.start_3d = new[k];
             edge.end_3d = new[k];
-            let (u, v) = cyl.project_point(new[k]);
+            let Some((u, v)) = surface.project_point(new[k]) else {
+                return Ok(None);
+            };
             let u = u.rem_euclid(TAU);
+            let sense = (edge.end_uv.x() - edge.start_uv.x()).signum();
             edge.start_uv = Point2::new(u, v);
-            edge.end_uv = Point2::new(u + TAU, v);
-            edge.pcurve = Curve2D::Line(Line2D::new(edge.start_uv, Vec2::new(1.0, 0.0))?);
+            edge.end_uv = Point2::new(u + sense * TAU, v);
+            edge.pcurve = Curve2D::Line(Line2D::new(edge.start_uv, Vec2::new(sense, 0.0))?);
         }
-        if !all_sections_clear(sections, cyl.origin(), new[0] - first.center(), new, tol) {
+        if !all_sections_clear(sections, origin, new[0] - first.center(), new, tol) {
             return Ok(None);
         }
         for &index in &seams {
@@ -7398,8 +7513,12 @@ mod cylinder_seam {
             };
             edge.start_3d = map(edge.start_3d);
             edge.end_3d = map(edge.end_3d);
-            let (u, a) = cyl.project_point(edge.start_3d);
-            let (_, b) = cyl.project_point(edge.end_3d);
+            let (Some((u, a)), Some((_, b))) = (
+                surface.project_point(edge.start_3d),
+                surface.project_point(edge.end_3d),
+            ) else {
+                return Ok(None);
+            };
             let u = u.rem_euclid(TAU);
             edge.start_uv = Point2::new(u, a);
             edge.end_uv = Point2::new(u, b);
@@ -7652,6 +7771,141 @@ mod cylinder_seam {
                     .unwrap()
                     .is_none()
             );
+        }
+
+        fn cone_fixture() -> (FaceSurface, Vec<OrientedPCurveEdge>, Vec<SectionEdge>) {
+            let cone = ConicalSurface::new(
+                Point3::new(0.0, 0.0, 12.375),
+                Vec3::new(0.0, 0.0, -1.0),
+                (11.0_f64 / 4.0).atan(),
+            )
+            .unwrap();
+            let mut edges = Vec::new();
+            let mut points = Vec::new();
+            for (index, z, radius, forward) in [(0, 0.0, 4.5, true), (1, 5.5, 2.5, false)] {
+                let circle = Circle3D::new_with_ref(
+                    Point3::new(0.0, 0.0, z),
+                    Vec3::new(0.0, 0.0, 1.0),
+                    radius,
+                    Vec3::new(1.0, 0.0, 0.0),
+                )
+                .unwrap();
+                let point = circle.evaluate(0.0);
+                let mut rim = edge(
+                    EdgeCurve::Circle(circle),
+                    Some((0.0, TAU)),
+                    point,
+                    point,
+                    forward,
+                    index,
+                );
+                let (u, v) = cone.project_point(point);
+                rim.start_uv = Point2::new(u, v);
+                rim.end_uv = Point2::new(u + if forward { -TAU } else { TAU }, v);
+                edges.push(rim);
+                points.push(point);
+            }
+            edges.push(edge(EdgeCurve::Line, None, points[0], points[1], true, 2));
+            edges.push(edge(EdgeCurve::Line, None, points[1], points[0], false, 2));
+            // Independent rational conic from x=7/2 and the two bottom
+            // crossings y²=8. Its tangent-control height is44/9.
+            let curve = NurbsCurve::new(
+                2,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![
+                    Point3::new(3.5, 8.0_f64.sqrt(), 0.0),
+                    Point3::new(3.5, 0.0, 44.0 / 9.0),
+                    Point3::new(3.5, -8.0_f64.sqrt(), 0.0),
+                ],
+                vec![1.0, 9.0 / 7.0, 1.0],
+            )
+            .unwrap();
+            (
+                FaceSurface::Cone(cone),
+                edges,
+                vec![section(EdgeCurve::NurbsCurve(curve), (0.0, 1.0))],
+            )
+        }
+
+        #[test]
+        fn cone_seam_relocation_preserves_native_rim_winding_and_carriers() {
+            let (surface, edges, sections) = cone_fixture();
+            let relocated = relocate_clear_seam(&edges, &sections, &surface, 1e-7)
+                .unwrap()
+                .unwrap();
+            for i in 0..2 {
+                assert!(matches!((&relocated[i].curve_3d, &edges[i].curve_3d),
+                    (EdgeCurve::Circle(a), EdgeCurve::Circle(b))
+                    if a.center() == b.center() && a.normal() == b.normal()
+                        && a.u_axis() == b.u_axis() && a.v_axis() == b.v_axis()
+                        && a.radius().to_bits() == b.radius().to_bits()));
+                assert_eq!(relocated[i].forward, edges[i].forward);
+                assert!(
+                    ((relocated[i].end_uv.x() - relocated[i].start_uv.x())
+                        - (edges[i].end_uv.x() - edges[i].start_uv.x()))
+                    .abs()
+                        < 1e-14
+                );
+                assert_eq!(relocated[i].source_topo_edge, edges[i].source_topo_edge);
+                let EdgeCurve::Circle(circle) = &edges[i].curve_3d else {
+                    unreachable!()
+                };
+                assert!((relocated[i].start_3d - circle.evaluate(PI)).length() < 1e-14);
+            }
+            for seam in &relocated[2..] {
+                assert!(seam.source_topo_edge.is_none());
+                assert!(seam.source_edge_idx.is_none());
+                assert!(seam.pave_block_id.is_none());
+            }
+            assert_eq!(relocated[2].start_3d, relocated[3].end_3d);
+            assert_eq!(relocated[2].end_3d, relocated[3].start_3d);
+        }
+
+        #[test]
+        fn cone_seam_relocation_requires_whole_positive_hull_and_original_seam_identity() {
+            for variant in 0..5 {
+                let (surface, mut edges, mut sections) = cone_fixture();
+                match variant {
+                    0 => edges[3].source_topo_edge = Some(99),
+                    1 => edges[0].trim = Some((0.0, PI)),
+                    2 => sections[0].trim = Some((0.1, 0.9)),
+                    3 | 4 => {
+                        let EdgeCurve::NurbsCurve(curve) = &sections[0].curve_3d else {
+                            unreachable!()
+                        };
+                        let mut controls = curve.control_points().to_vec();
+                        if variant == 3 {
+                            controls[1] = Point3::new(-10.0, 0.0, 3.0);
+                            sections[0].curve_3d = EdgeCurve::NurbsCurve(
+                                NurbsCurve::new(
+                                    2,
+                                    curve.knots().to_vec(),
+                                    controls,
+                                    curve.weights().to_vec(),
+                                )
+                                .unwrap(),
+                            );
+                        } else {
+                            sections[0].curve_3d = EdgeCurve::NurbsCurve(
+                                NurbsCurve::new(
+                                    1,
+                                    vec![0.0, 0.0, 1.0, 1.0],
+                                    vec![controls[0], controls[2]],
+                                    vec![1.0, 1.0],
+                                )
+                                .unwrap(),
+                            );
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+                assert!(
+                    relocate_clear_seam(&edges, &sections, &surface, 1e-7)
+                        .unwrap()
+                        .is_none(),
+                    "variant={variant}"
+                );
+            }
         }
     }
 }

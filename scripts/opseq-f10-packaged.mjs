@@ -24,8 +24,8 @@ function invoke(kernel, api, op, args, direct, label) {
   return cell.ok;
 }
 
-function checkFixture(BrepKernel, api, scale, placed, swapped, segments = 16, height = 1) {
-  const label = `F10 ${api} scale=${scale} placed=${placed} swapped=${swapped} segments=${segments} h=${height}`;
+function checkFixture(BrepKernel, api, scale, placed, swapped, segments = 16, height = 1, fineMesh = false) {
+  const label = `F10 ${api} scale=${scale} placed=${placed} swapped=${swapped} segments=${segments} h=${height} fine=${fineMesh}`;
   const kernel = new BrepKernel();
   const run = (op, args, direct) => invoke(kernel, api, op, args, direct, label);
   try {
@@ -83,16 +83,23 @@ function checkFixture(BrepKernel, api, scale, placed, swapped, segments = 16, he
     }
     const validation = JSON.parse(kernel.validateSolidDetailed(solid));
     assert.equal(validation.errorCount, 0, `${label}: strict validation ${JSON.stringify(validation)}`);
-    for (const deflection of [0.1, 0.01]) {
+    for (const deflection of fineMesh ? [0.00002, 0.00001] : [0.1, 0.01]) {
       const mesh = JSON.parse(kernel.tessellateSolidGrouped(solid, deflection * scale, 0.35));
-      const points = Array.from({ length: mesh.positions.length / 3 }, (_, i) => local(m, mesh.positions.slice(3 * i, 3 * i + 3), scale));
-      const meshUses = new Map();
+      const point = i => local(m, mesh.positions.slice(3 * i, 3 * i + 3), scale);
+      const meshUses = fineMesh ? null : new Map();
+      // Fine grids have millions of edges. Sorting exact integer encodings
+      // keeps the independent raw-ID incidence oracle bounded in JS memory.
+      // No position weld, tolerance or geometric clustering enters this key.
+      const vertexCount = mesh.positions.length / 3;
+      assert.ok(2 * vertexCount ** 2 < Number.MAX_SAFE_INTEGER, `${label}: exact edge keys`);
+      const edgeUses = fineMesh ? new Float64Array(mesh.indices.length) : null;
+      let nextEdge = 0;
       assert.equal(mesh.faceOffsets.length, faces.length + 1, `${label}: face grouping`);
       for (let fi = 0; fi < faces.length; fi++) {
         assert.ok(mesh.faceOffsets[fi + 1] > mesh.faceOffsets[fi], `${label}: empty face`);
         const sphereFace = Object.hasOwn(doc.faces[faces[fi]].surface, 'Sphere');
         for (let at = mesh.faceOffsets[fi]; at < mesh.faceOffsets[fi + 1]; at += 3) {
-          const indices = mesh.indices.slice(at, at + 3), [a, b, c] = indices.map(i => points[i]);
+          const indices = mesh.indices.slice(at, at + 3), [a, b, c] = indices.map(point);
           const normal = cross(sub(b, a), sub(c, a));
           assert.ok(Math.hypot(...normal) > 1e-15, `${label}: degenerate triangle`);
           if (sphereFace) {
@@ -103,14 +110,28 @@ function checkFixture(BrepKernel, api, scale, placed, swapped, segments = 16, he
             }
           }
           for (const [a, b] of [[indices[0], indices[1]], [indices[1], indices[2]], [indices[2], indices[0]]]) {
-            const key = a < b ? `${a},${b}` : `${b},${a}`, directions = meshUses.get(key) ?? [];
-            directions.push(a < b); meshUses.set(key, directions);
+            if (edgeUses) edgeUses[nextEdge++] = 2 * (Math.min(a, b) * vertexCount + Math.max(a, b)) + Number(a < b);
+            else {
+              const key = a < b ? `${a},${b}` : `${b},${a}`, directions = meshUses.get(key) ?? [];
+              directions.push(a < b); meshUses.set(key, directions);
+            }
           }
         }
       }
-      for (const [edge, directions] of meshUses) {
-        assert.equal(directions.length, 2, `${label}: raw mesh incidence ${edge}`);
-        assert.notEqual(directions[0], directions[1], `${label}: raw mesh winding ${edge}`);
+      if (edgeUses) {
+        assert.equal(nextEdge, edgeUses.length, `${label}: all edges checked`);
+        edgeUses.sort();
+        assert.equal(edgeUses.length % 2, 0, `${label}: paired edge uses`);
+        for (let i = 0; i < edgeUses.length; i += 2) {
+          assert.equal(edgeUses[i] % 2, 0, `${label}: first edge direction ${i}`);
+          assert.equal(edgeUses[i + 1], edgeUses[i] + 1, `${label}: opposing raw edge pair ${i}`);
+          if (i > 0) assert.ok(edgeUses[i] > edgeUses[i - 1], `${label}: exactly two uses ${i}`);
+        }
+      } else {
+        for (const [edge, directions] of meshUses) {
+          assert.equal(directions.length, 2, `${label}: raw mesh incidence ${edge}`);
+          assert.notEqual(directions[0], directions[1], `${label}: raw mesh winding ${edge}`);
+        }
       }
     }
     const coverage = [0, 0, 0, 0];
@@ -158,5 +179,12 @@ export function runOpseqF10Packaged({ BrepKernel }) {
     }
     for (const segments of [4, 8, 32]) checkFixture(BrepKernel, api, 1, false, false, segments);
     checkFixture(BrepKernel, api, 1, false, false, 16, 1.25);
+  }
+  runOpseqF10FineGridPackaged({ BrepKernel });
+}
+
+export function runOpseqF10FineGridPackaged({ BrepKernel }) {
+  for (const api of ['direct', 'executeBatch', 'executeBatchV2']) {
+    checkFixture(BrepKernel, api, 0.001, true, false, 16, 1, true);
   }
 }

@@ -4826,7 +4826,9 @@ mod tests {
         };
         let ring = |topo: &mut Topology, circle: remus_math::curves::Circle3D, at: f64| {
             let v = topo.add_vertex(Vertex::new(circle.evaluate(at), 1e-7));
-            let e = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+            let mut edge = Edge::new(v, v, EdgeCurve::Circle(circle));
+            edge.set_trim(Some((at, at + std::f64::consts::TAU)));
+            let e = topo.add_edge(edge);
             topo.add_wire(Wire::new(vec![OrientedEdge::new(e, true)], true).unwrap())
         };
         let outer = ring(topo, rim, seam);

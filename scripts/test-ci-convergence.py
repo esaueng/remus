@@ -102,10 +102,10 @@ class ConvergenceTests(unittest.TestCase):
     def test_expensive_jobs_wait_for_both_early_gates(self):
         for name in HEAVY | {"docs"}:
             with self.subTest(name=name):
-                self.assertIn("needs: [changes, repo-policy, secrets-scan]", JOBS[name])
+                self.assertIn("needs: [queue-trust, changes, repo-policy, secrets-scan]", JOBS[name])
                 self.assertNotIn("always()", JOBS[name].split("    steps:", 1)[0])
         for name in ALWAYS:
-            self.assertNotIn("    needs:", JOBS[name])
+            self.assertIn("    needs: queue-trust", JOBS[name])
 
     def test_each_job_is_selected_by_its_tier_flag(self):
         for name, flag in [*((n, "heavy") for n in TIER1), *((n, "full") for n in TIER2),
@@ -143,7 +143,7 @@ class ConvergenceTests(unittest.TestCase):
 
     def test_every_required_job_is_in_completion_gate(self):
         names = re.search(r"needs: \[([^]]+)\]", JOBS["ci-pass"])[1]
-        self.assertEqual(set(names.split(", ")), HEAVY | ALWAYS | {"docs", SIZE_GATE})
+        self.assertEqual(set(names.split(", ")), HEAVY | ALWAYS | {"queue-trust", "docs", SIZE_GATE})
         self.assertNotIn("continue-on-error", FLEET)
 
     def test_full_suite_passes(self):
@@ -261,9 +261,10 @@ class ConvergenceTests(unittest.TestCase):
 
     def test_size_gate_runs_trusted_base_code_without_write_access(self):
         gate = JOBS[SIZE_GATE]
-        self.assertIn("needs: [changes, wasm]", gate)
-        self.assertIn("if: github.event_name == 'pull_request' && "
-                      "needs.changes.outputs.wasm == 'true'", gate)
+        self.assertIn("needs: [queue-trust, changes, wasm]", gate)
+        self.assertIn("if: ${{ !cancelled() && needs.changes.result == 'success' && "
+                      "needs.wasm.result == 'success' && (github.event_name == 'pull_request' && "
+                      "needs.changes.outputs.wasm == 'true') }}", gate)
         self.assertNotIn("always()", gate)
         self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", gate)
         self.assertNotIn("write", gate)
@@ -309,9 +310,8 @@ class ConvergenceTests(unittest.TestCase):
         self.assertIn("PR_BODY: ${{ github.event.pull_request.body }}", comment)
         self.assertEqual(comment.count("github.event.pull_request.body"), 1)
 
-    def test_staged_v4_requires_fuzz_and_render_with_the_first_tier(self):
-        # fleet-ci-v4.yml is staged, not active; run its own completion gate.
-        staged = jobs((ROOT / ".github/workflows/fleet-ci-v4.yml").read_text())
+    def test_active_suite_requires_fuzz_and_render_with_the_first_tier(self):
+        staged = JOBS
         command = staged["ci-pass"].rsplit("        run: |\n", 1)[1]
 
         def complete(results, heavy, full, wasm):
@@ -323,7 +323,7 @@ class ConvergenceTests(unittest.TestCase):
 
         moved = {"fuzz-check", "render"}
         for name in moved:
-            self.assertIn("if: needs.changes.outputs.heavy == 'true'", staged[name])
+            self.assertIn("needs.changes.outputs.heavy == 'true'", staged[name])
         results = self.success()
         for name in (TIER2 - moved) | PACKAGE | {SIZE_GATE}:
             results[name]["result"] = "skipped"
