@@ -308,6 +308,8 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **An unexamined tail is a plan problem, not a verdict:** a sharded mutation run that times out reports its remainder as unexamined — carry that tail into the next in-diff set or a catch-up shard matrix instead of quoting the reachable prefix (M2 proof tranche, 84 unexamined in one shard, 2026-10-01).
 - **A gate inside a chain of interval checks shows only when every later check stays decided:** the curved clip's event-order mutants survived because the midpoint, material-sample and native-range checks refused the same near-coincident input; model the chain in a few lines to find a chart (subnormal or 2^60-wide) where only the targeted gate decides, and reach constructor-pre-empted gates through deserialized NURBS (B19 F3c, `crates/algo/src/pave_filler/curved_section_clip/tests.rs`).
 
+- **Periodic seam adjacency needs DCEL twin owners, never close endpoints:** distinct close rulings retain two physical sectors and exact source spans; a single real ruling stays a boundary (`arrangement/oracle_tests.rs::close_distinct_rulings_preserve_topology_area_and_source_spans`).
+
 ## Subsystem trap notes
 
 - **heal `fix_duplicate_faces` IS implemented** (solid-scoped, `crates/heal/src/fix/solid.rs`,
