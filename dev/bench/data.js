@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792651406844,
+  "lastUpdate": 1792652242572,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -124135,6 +124135,294 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 87747,
             "range": "± 392",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "1f92e54d96d67c97d3d764e28c0759757b624183",
+          "message": "fix(algo): keep the far rim when a cut's section chain ends on the cylinder seam (#1254)\n\n## Change\n\n**Problem.** The B26 proptest (`prop_boolean_invariants.rs`, seed\n`c36b6629`) found a cut that fails check-crate validation with a single\n`ShellOrientationConsistent` error. The input is cylinder r=2, h=2 minus\na box 4×1.5×1.5, rotated π/4 about z and offset (2.25, −0.25, 1.75), all\nscaled ×1000. It still reproduced on current `main`. It also fails at\nscales 1 and 1e-3, so it does not depend on scale. The operations strict\nvalidator reports \"7 shared edges have inconsistent face orientations\".\nThe result's volume is about 17.17 against the true ≈24.9 (unit scale).\n\n**Root cause.** One box wall passes exactly through (2, 0), which is on\nthe cylinder's seam line. The notch's floor arc (z = 1.75) therefore\nends *on* the seam, and the upper seam piece becomes the notch's fourth\nside. That FF section lies on the boundary, so it is not a section of\nthe lateral face. In the face splitter, both seam uses of the lateral\nstore the same `u` copy. At the seam node (u0, 1.75), the greedy angular\nwalker turned from the seam-up use onto the floor arc and closed \"seam\nup → notch → seam down\" early. It then discarded the bottom rim\n(\"discarding incomplete loop of 4 edge(s) … at vertex (47123890, 0)\").\nInstrumenting below the gate (raw `remus_algo::gfa::boolean`) shows:\n- the lateral comes back as one inside-out band with no bottom rim and\nno seam;\n- `BuilderSolid` drops the bottom cap as an open 1-face sliver;\n- the result is a 5-face \"closed\" shell whose lateral is reversed\nagainst every neighbour.\n\nThe DCEL trace on the same edge set produces the right partition: the\nfull annulus with the notch carved out, plus the notch. The\nbroken-cylinder rescue didn't adopt it because both traces have two\nloops and neither is degenerate. The cone arm further down already\nrescues this orphaned-rim signature (B32), but it is gated to cones.\n\n**Fix** (`crates/algo/src/builder/face_splitter/mod.rs`, broken-cylinder\nrescue). The DCEL trace is now also adopted on the orphaned-rim\nsignature. This fires when:\n- the greedy loops leave a boundary edge uncovered, and\n- the DCEL covers every boundary edge, with no duplicate cover and\nhealthy period-aware area.\n\nThis is the same bar the cone arm uses. The existing relative self-cross\nand nesting bars still apply. It only fires when the greedy trace has\nalready dropped part of the face.\n\nRoadmap row: B26 (proptest finding). The roadmap ledger is not updated\nin this PR.\n\n## Verification\n\nRegression coverage: new\n`crates/operations/tests/regress_cylinder_oblique_box_notch_cut.rs`\nbuilds this cut deterministically at 1e3, 1 and 1e-3 under\n`FallbackPolicy::ExactOnly`. At each scale it asserts:\n- the operations strict validator is valid;\n- the check-crate validator has no Error issues (all checks enabled);\n- every edge is used exactly twice in opposite senses;\n- the mesh is closed and manifold;\n- ray-cast `classify_point` probes (inside the notch: Outside; under the\nnotch floor and away from it: Inside);\n- `solid_volume` at two deflections finer than the clamp is within 1e-6\nrelative of an exact closed form. The closed form is the cylinder minus\nthe notch prism, using the exact disc ∩ rotated-footprint area. That\narea is pinned by a separate test against an independent 2000×2000 grid\nestimate (1e-3).\n\nAll three scale tests failed before the fix with the validator error\nabove. The proptest seed is appended to\n`prop_boolean_invariants.proptest-regressions`. Without the fix,\n`prop_random_primitive_pair_identities` fails on it; with the fix, it\npasses.\n\nCommands run locally (Linux, `--profile ci-test` for tests):\n- `cargo test -p remus-operations --test\nregress_cylinder_oblique_box_notch_cut`: 4 passed\n- `cargo test -p remus-operations --test prop_boolean_invariants`: 33\npassed, 8 ignored (pre-existing)\n- `cargo test -p remus-algo -p remus-check`: all passed (algo lib 744\npassed / 1 ignored; check 280 passed)\n- `cargo test -p remus-operations -p remus-io --no-fail-fast`: 390\ntargets, 4196 passed, 0 failed, 34 ignored\n- `cargo clippy --workspace --all-targets --all-features -- -D\nwarnings`: clean\n- `cargo fmt --all -- --check`: clean\n- `./scripts/check-boundaries.sh`: OK\n- `./scripts/check-doc-paths.sh`: OK\n- `cargo run --example approx_census -p remus-operations` before and\nafter: identical, apart from timing columns\n\nNot run: the full `cargo test --workspace` (wasm, render, sketch, heal,\noffset, the facade and others), which is left to CI. No module-map entry\nwas added: per-bug `regress_*` integration tests are not listed there\n(for example `regress_b33_tangent_seam_fuse.rs`).\n\n## Compatibility and risks\n\nNone to public APIs, formats, units or tolerances. Geometry behaviour\nchanges only for cylinder (and duplicated-ring cone) laterals whose\ngreedy trace was already broken *and* orphaned a boundary edge, which\nmeans the result was already missing a region. No recorded volumes or\npins changed.\n\n## WASM module tier\n\nWASM module tier: none (no new capability; a fix inside an existing\nkernel path).\n\n---\n_Generated by [Claude\nCode](https://claude.ai/code/session_0179reg6tDLuhXn8eRjUjpNn)_\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-10-21T21:09:59Z",
+          "tree_id": "08c27f1e12804f5bce24bd7de3967518078f4251",
+          "url": "https://github.com/esaueng/remus/commit/1f92e54d96d67c97d3d764e28c0759757b624183"
+        },
+        "date": 1792652239964,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1186331,
+            "range": "± 55974",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1271984,
+            "range": "± 29679",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27421,
+            "range": "± 102",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7300003,
+            "range": "± 17946",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7283495,
+            "range": "± 16213",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7125350,
+            "range": "± 26314",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 28455,
+            "range": "± 101",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3469577,
+            "range": "± 21048",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 30422461,
+            "range": "± 470074",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 40,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 115,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 243,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 156,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 868,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 169,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 395,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 252,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 593,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 627,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3510,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 4083,
+            "range": "± 114",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 15227,
+            "range": "± 288",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 53252,
+            "range": "± 126",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5389,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 500955,
+            "range": "± 1570",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2466487,
+            "range": "± 6092",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 143977,
+            "range": "± 522",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 296159,
+            "range": "± 1446",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 362057,
+            "range": "± 845",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 64116,
+            "range": "± 1059",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 34950,
+            "range": "± 62",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 20858,
+            "range": "± 76",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 117117,
+            "range": "± 1795",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 142692,
+            "range": "± 324",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 652204,
+            "range": "± 33913",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 8104244,
+            "range": "± 162394",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 554333,
+            "range": "± 1776",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1189926,
+            "range": "± 2557",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 86608,
+            "range": "± 2836",
             "unit": "ns/iter"
           }
         ]
