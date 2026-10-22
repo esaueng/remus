@@ -1162,32 +1162,27 @@ fn trim_support_corner(
 
             if unique_contacts.len() >= 2 {
                 let dir_prev = (prev_pos - pos).normalize()?;
-                // The contact that belongs on the "before" edge lies on that
-                // edge's line — possibly on its extension past the corner,
-                // where a concave stripe running out across this face puts
-                // it. Distance to `pos + dir·r` alone picks the other contact
-                // there, so the line decides whenever it singles one out.
-                // A convex run-out keeps the old pairing when the selection
-                // also has curved-neighbour stripes: it can end a G1 chain
-                // around a corner fillet, whose NURBS wall is not exact yet
-                // (`regress_g1_chain_corner_wall_dig.rs`), and pairing it
-                // right turns that refusal into a wrong solid.
-                let off_line = |q: Point3| {
-                    let v = q - pos;
-                    (v - dir_prev * v.dot(dir_prev)).length()
-                };
-                let on_line = tol.linear * 100.0;
-                let (l0, l1) = (off_line(unique_contacts[0]), off_line(unique_contacts[1]));
-                let approx_prev = pos + dir_prev * radius;
-                let (d0, d1) = if !line_paired_runout || (l0 <= on_line) == (l1 <= on_line) {
-                    (
-                        (unique_contacts[0] - approx_prev).length(),
-                        (unique_contacts[1] - approx_prev).length(),
-                    )
+                let (c0, c1) = (unique_contacts[0], unique_contacts[1]);
+                // Pair each contact with its own support-edge line, including
+                // extensions past a narrower face. Only qualified planar or
+                // concave run-outs use this pairing. Convex run-outs next to
+                // curved stripes keep the old pairing: an unqualified G1
+                // corner wall must still refuse rather than cut material
+                // (`regress_g1_chain_corner_wall_dig.rs`).
+                let by_line = if line_paired_runout {
+                    (next_pos - pos).normalize().ok().and_then(|dir_next| {
+                        let off_line = |c: Point3, dir: Vec3| (c - pos).cross(dir).length();
+                        let keep = off_line(c0, dir_prev) + off_line(c1, dir_next);
+                        let swap = off_line(c1, dir_prev) + off_line(c0, dir_next);
+                        ((keep - swap).abs() > tol.linear).then_some(keep < swap)
+                    })
                 } else {
-                    (l0, l1)
+                    None
                 };
-                if d0 <= d1 {
+                let approx_prev = pos + dir_prev * radius;
+                let first_is_prev = by_line
+                    .unwrap_or_else(|| (c0 - approx_prev).length() <= (c1 - approx_prev).length());
+                if first_is_prev {
                     out.push(unique_contacts[0]);
                     out.push(unique_contacts[1]);
                 } else {
