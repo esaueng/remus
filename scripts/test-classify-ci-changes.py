@@ -138,7 +138,10 @@ class ClassifyCiChangesTests(unittest.TestCase):
         jobs = fleet_jobs()
         wasm = jobs["wasm"]
         self.assertIn("name: WASM Build & Validate", wasm)
-        self.assertRegex(wasm, r"(?m)^    if: needs\.changes\.outputs\.wasm == 'true'$")
+        self.assertIn('needs: [queue-trust, changes, repo-policy, secrets-scan]', wasm)
+        self.assertIn("if: ${{ !cancelled() && needs.changes.result == 'success' && "
+                      "needs.repo-policy.result == 'success' && needs.secrets-scan.result == 'success' && "
+                      "(needs.changes.outputs.wasm == 'true') }}", wasm)
         self.assertIn("cargo xtask wasm-build", wasm)
         changes = jobs["changes"]
         self.assertIn("wasm: ${{ steps.classify.outputs.wasm }}", changes)
