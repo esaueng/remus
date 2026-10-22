@@ -7982,9 +7982,33 @@ fn split_face_2d_impl(
                 Some(std::f64::consts::TAU),
                 None,
             );
+        // Orphaned-rim signature on a broken cylinder trace: the cylinder
+        // sibling of the cone rescue further down (B32). A section chain that
+        // ends ON the seam meridian (a box wall through the seam line notching
+        // the top rim, B26 seed c36b6629) meets the two seam uses at one
+        // node, and both store the same `u` copy, so the greedy walker turns
+        // from the seam-up use onto the notch arc, closes "seam up → notch →
+        // seam down" early and discards the far rim — the result then drops
+        // that rim with the cap beyond it and keeps the lateral inside-out.
+        // Loop count is unchanged (two either way), so the count bar above
+        // cannot see it. The DCEL trace glues the seam pair as twins and
+        // keeps every boundary edge; adopt it under the same health bars as
+        // the cone arm (every boundary edge covered, no duplicate cover,
+        // period-aware area), plus the relative bars below.
+        let boundary = &all_edges[..n_boundary_edges.min(all_edges.len())];
+        let dcel_rim_ok = loops_orphan_boundary_edges(&loops, boundary, tol.linear)
+            && !loops_orphan_boundary_edges(&dcel, boundary, tol.linear)
+            && !wire_loops_duplicate_cover(&dcel, tol.linear)
+            && !wire_loops_have_degenerate_area_periodic(
+                &dcel,
+                tol.linear,
+                Some(std::f64::consts::TAU),
+                None,
+            );
         let dcel_adopted = ((!wire_loops_have_degenerate_area(&dcel, tol.linear)
             && (dcel.len() > loops.len() || wire_loops_have_degenerate_area(&loops, tol.linear)))
-            || dcel_ring_ok)
+            || dcel_ring_ok
+            || dcel_rim_ok)
             && (!wire_loops_self_cross(&dcel, tol.linear)
                 || wire_loops_self_cross(&loops, tol.linear))
             && (!greedy_outer_loops_nested(&dcel, cw_loops)
