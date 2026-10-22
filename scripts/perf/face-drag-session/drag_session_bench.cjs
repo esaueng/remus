@@ -44,6 +44,9 @@ function options(argv) {
       throw new Error(`Invalid --${key}`);
     }
   }
+  if (result.ticks <= Math.max(result.warmup, 1)) {
+    throw new Error('Ticks must leave a retained sample after cold and warmup exclusions');
+  }
   if (!['prepared', 'unprepared'].includes(result.move)) throw new Error('Invalid --move');
   if (!['unique', 'repeated'].includes(result.pattern)) throw new Error('Invalid --pattern');
   if (!['measured', 'contended-smoke-excluded'].includes(result['timing-status'])) {

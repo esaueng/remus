@@ -1,8 +1,48 @@
 # E6b: Arena compaction and slot reuse (deferred design)
 
-Status: deferred. E6a adds permanent retirement tombstones and deliberately
-does not reclaim or reuse slots. E6b would change handle lifetime semantics and
-therefore requires an explicit compatibility design before implementation.
+Status: the native document copy slice is implemented (2026-10-20); in-place
+compaction, slot reuse and whole-WASM-session reclamation remain deferred.
+E6a retains permanent retirement tombstones. Copy compaction constructs a
+separate topology and leaves the original handle lifetime semantics intact.
+
+## Native document copy slice
+
+Tier: native. `remus_io::arena_io::compact_document` takes a `CompactionRoots`
+selection and returns `CompactedDocument { topology, roots }`. Its explicit
+entity-limit variant is `compact_document_with_limit`. It traverses only the
+selected roots using the existing arena-document discovery, clones carrier
+data directly, and runs checked arena reconstruction into a fresh topology.
+There is no JSON formatting/parsing, healing or geometric approximation.
+
+The first slice settles these scope decisions:
+
+- Solid, first-class sheet, first-class wire and compound roots are supported.
+  Returned root lists preserve selection order and duplicate aliases; shared
+  reachable subtrees are copied once. Unselected live entities and tombstones
+  are intentionally omitted.
+- The API returns root remaps only. Arbitrary entity handles are not portable
+  across topology instances; callers use the returned roots in the new owner.
+  Source handles, retirement state and caller-held snapshots remain untouched.
+- Per-use pcurves, boundary authority, original floating-point carrier data,
+  supported face/solid attributes and the selected entities' journal lineage
+  follow the exact arena-document contract. Persistent references covered by
+  that lineage retain the fresh-document resolution behavior; no unrelated
+  session reference is automatically rebound.
+- Assemblies, comp-solids, sketches, checkpoints and prepared moves are not
+  selected or migrated. This is a document operation, not a whole-kernel swap.
+- Resource checks bound topology tables and reference lists before copying
+  them where counts are available. The entity budget is not a total byte or
+  history-storage cap. Invalid selected geometry can refuse checked replay;
+  compaction itself does not certify a solid's geometric validity.
+- Reclamation requires dropping the source owner and any retained snapshots.
+  While both owners exist, peak memory includes both. No allocation, retirement
+  or restore API changes, and no in-place reuse or automatic compaction occurs.
+
+`crates/io/tests/arena_compaction.rs` covers repeated restore tombstones,
+source snapshots and stale handles, mixed/shared/duplicate roots, attributes,
+selected journal references, NURBS and cavity fixtures, malformed geometry and
+resource refusal. The native session diagnostic and its measured limits are
+recorded in [native document compaction](../performance/native-document-compaction.md).
 
 ## Context
 
@@ -154,8 +194,8 @@ kernel and start the new kernel with none.
 
 ## Validation plan
 
-Before implementation, approve the handle and state-coverage decisions above.
-Then require:
+Before any broader implementation, review its handle and state-coverage
+decisions separately from the native document slice above. Require:
 
 - property tests that every reachable reference resolves after remapping;
 - stale-handle tests proving no old handle aliases a new entity;
@@ -166,5 +206,6 @@ Then require:
 - Rust/WASM compatibility tests and an explicit downstream migration plan for
   any new handle representation.
 
-Until that review is complete, permanent tombstones remain the safe public
-contract and callers needing memory reclamation should create a new kernel.
+Permanent tombstones remain the public contract within each topology. The
+native copy API provides an explicit document-reclamation boundary; browser
+callers still need a separately designed fresh-kernel migration path.

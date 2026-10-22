@@ -25,6 +25,17 @@ test('invalid policies and counts fail before package loading', () => {
   }
 });
 
+test('tick and warmup counts leave a post-cold retained sample', () => {
+  for (const [ticks, warmup] of [[1, 0], [1, 1], [2, 2], [2, 3]]) {
+    assert.throws(() => options([...required, '--ticks', String(ticks), '--warmup', String(warmup)]),
+      /retained sample/);
+  }
+  for (const [ticks, warmup] of [[2, 0], [2, 1], [3, 2]]) {
+    const result = options([...required, '--ticks', String(ticks), '--warmup', String(warmup)]);
+    assert.equal(result.ticks, ticks); assert.equal(result.warmup, warmup);
+  }
+});
+
 test('existing evidence is preserved before loading the package', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'remus-parameter-evidence-'));
   const out = path.join(directory, 'existing.json');

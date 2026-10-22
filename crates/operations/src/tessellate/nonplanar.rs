@@ -5365,6 +5365,8 @@ fn fill_sphere_hemisphere_patch(
     let result = fill_sphere_hemisphere_patch_impl(
         sphere,
         boundary,
+        &[],
+        None,
         deflection,
         angular_tol,
         merged,
@@ -5389,6 +5391,8 @@ fn fill_sphere_hemisphere_patch(
 fn fill_sphere_hemisphere_patch_impl(
     sphere: &remus_math::surfaces::SphericalSurface,
     boundary: &[u32],
+    holes: &[Vec<u32>],
+    selected_hemisphere: Option<f64>,
     deflection: f64,
     angular_tol: f64,
     merged: &mut TriangleMesh,
@@ -5397,16 +5401,25 @@ fn fill_sphere_hemisphere_patch_impl(
     use remus_math::cdt::Cdt;
     use remus_math::vec::Point2;
 
-    let Some(hemisphere) = sphere_boundary_hemisphere(sphere, boundary, &merged.positions) else {
+    let Some(hemisphere) = selected_hemisphere
+        .or_else(|| sphere_boundary_hemisphere(sphere, boundary, &merged.positions))
+    else {
         return Ok(false);
     };
+    let mut loop_ranges = vec![(0, boundary.len())];
+    let mut all_boundary = boundary.to_vec();
+    for hole in holes {
+        let start = all_boundary.len();
+        all_boundary.extend_from_slice(hole);
+        loop_ranges.push((start, all_boundary.len()));
+    }
 
     let center = sphere.center();
     let radius = sphere.radius();
     let hemisphere_tol = radius * 1e-8;
-    let mut projected = Vec::with_capacity(boundary.len());
-    let mut projected_z = Vec::with_capacity(boundary.len());
-    for &gid in boundary {
+    let mut projected = Vec::with_capacity(all_boundary.len());
+    let mut projected_z = Vec::with_capacity(all_boundary.len());
+    for &gid in &all_boundary {
         let point = merged.positions[gid as usize];
         let offset = point - center;
         let x = offset.dot(sphere.x_axis()) / radius;
@@ -5449,7 +5462,7 @@ fn fill_sphere_hemisphere_patch_impl(
         Point2::new(x_min - margin, y_min - margin),
         Point2::new(x_max + margin, y_max + margin),
     );
-    let mut cdt = Cdt::with_capacity(bounds, boundary.len());
+    let mut cdt = Cdt::with_capacity(bounds, all_boundary.len());
     let boundary_ids = cdt
         .insert_points_hilbert(&projected)
         .map_err(crate::OperationsError::Math)?;
@@ -5461,13 +5474,17 @@ fn fill_sphere_hemisphere_patch_impl(
 
     let max_boundary_id = boundary_ids.iter().copied().max().unwrap_or(2);
     let mut cdt_to_global = vec![None; max_boundary_id + 1];
-    for (&cdt_id, &global_id) in boundary_ids.iter().zip(boundary) {
+    for (&cdt_id, &global_id) in boundary_ids.iter().zip(&all_boundary) {
         if cdt_to_global[cdt_id].replace(global_id).is_some() {
             return Ok(false);
         }
     }
-    let boundary_pairs: Vec<(usize, usize)> = (0..boundary_ids.len())
-        .map(|i| (boundary_ids[i], boundary_ids[(i + 1) % boundary_ids.len()]))
+    let boundary_pairs: Vec<(usize, usize)> = loop_ranges
+        .iter()
+        .flat_map(|&(start, end)| {
+            (start..end).map(move |i| (i, start + (i + 1 - start) % (end - start)))
+        })
+        .map(|(a, b)| (boundary_ids[a], boundary_ids[b]))
         .collect();
     for &(a, b) in &boundary_pairs {
         cdt.insert_constraint(a, b)
@@ -5481,18 +5498,52 @@ fn fill_sphere_hemisphere_patch_impl(
     let n_y = angular_segments.saturating_mul(2);
     validate_interior_grid_size(n_x, n_y)?;
 
-    let polygon: Vec<(f64, f64)> = projected.iter().map(|p| (p.x(), p.y())).collect();
+    let polygons: Vec<Vec<(f64, f64)>> = loop_ranges
+        .iter()
+        .map(|&(start, end)| {
+            projected[start..end]
+                .iter()
+                .map(|p| (p.x(), p.y()))
+                .collect()
+        })
+        .collect();
+    let in_patch = |point: Point2| {
+        point_in_polygon_2d(&polygons[0], point)
+            && !polygons[1..]
+                .iter()
+                .any(|hole| point_in_polygon_2d(hole, point))
+    };
+    if projected[boundary.len()..]
+        .iter()
+        .any(|&point| !point_in_polygon_2d(&polygons[0], point))
+    {
+        return Ok(false);
+    }
+    // The chart chord is an approximation to a native small-circle arc.
+    // A grid point almost on its retained side can still inverse-project
+    // into the removed patch and fold the boundary stitch. Leave one quarter
+    // of a grid cell clear, as in the pole chart, without adding samples.
+    // This spacing rule is not an admission proof: the complete holed run
+    // below must also pass the radial-orientation and incidence guards.
+    let clearance_sq = if holes.is_empty() {
+        1e-24
+    } else {
+        (0.25 * ((x_max - x_min) / n_x as f64).min((y_max - y_min) / n_y as f64)).powi(2)
+    };
     let on_boundary_chord = |point: Point2| {
-        projected.iter().enumerate().any(|(index, &start)| {
-            let end = projected[(index + 1) % projected.len()];
-            let chord = end - start;
-            let length_sq = chord.dot(chord);
-            if length_sq <= 1e-24 {
-                return (point - start).dot(point - start) <= 1e-24;
-            }
-            let fraction = ((point - start).dot(chord) / length_sq).clamp(0.0, 1.0);
-            let nearest = start + chord * fraction;
-            (point - nearest).dot(point - nearest) <= 1e-24
+        loop_ranges.iter().any(|&(first, last)| {
+            (first..last).any(|index| {
+                let start = projected[index];
+                let end = projected[first + (index + 1 - first) % (last - first)];
+                let chord = end - start;
+                let length_sq = chord.dot(chord);
+                if length_sq <= 1e-24 {
+                    return (point - start).dot(point - start) <= clearance_sq;
+                }
+                let fraction = ((point - start).dot(chord) / length_sq).clamp(0.0, 1.0);
+                let nearest = start + chord * fraction;
+                (point - nearest).dot(point - nearest) <= clearance_sq
+            })
         })
     };
     let mut interior = Vec::new();
@@ -5504,11 +5555,10 @@ fn fill_sphere_hemisphere_patch_impl(
                 continue;
             }
             let point = Point2::new(x, y);
-            // A point inserted exactly on a constraint makes the CDT split
-            // that boundary chord with a face-local vertex.  Adjacent faces
-            // use different hemisphere charts/grids, so the split is not
-            // shared and appears as a deflection-dependent crack.
-            if point_in_polygon_2d(&polygon, point) && !on_boundary_chord(point) {
+            // A point inserted on a constraint splits the boundary chord
+            // with an unshared face-local vertex. The holed path additionally
+            // leaves clearance for curved native trims, as described above.
+            if in_patch(point) && !on_boundary_chord(point) {
                 interior.push(point);
             }
         }
@@ -5523,7 +5573,7 @@ fn fill_sphere_hemisphere_patch_impl(
         }
     }
 
-    cdt.remove_exterior(&boundary_pairs);
+    cdt.remove_exterior(&boundary_pairs[..boundary.len()]);
     let cdt_vertices = cdt.vertices();
     let mut global_ids = vec![0_u32; cdt_vertices.len()];
     for i in 3..cdt_vertices.len() {
@@ -5562,7 +5612,7 @@ fn fill_sphere_hemisphere_patch_impl(
         // ear is disconnected from the patch and becomes a one-sided mesh
         // triangle.  The hemisphere chart is bijective, so the projected
         // centroid is an exact final inside/outside guard.
-        if !point_in_polygon_2d(&polygon, projected_centroid) {
+        if !in_patch(projected_centroid) {
             continue;
         }
         let mut triangle = [global_ids[a], global_ids[b], global_ids[c]];
@@ -5591,7 +5641,7 @@ fn fill_sphere_hemisphere_patch_impl(
         // circle boundary lies in a plane through the sphere centre, where
         // `geometric · (centroid - centre)` is identically zero and leaves
         // adjacent hemisphere ears with arbitrary equal winding.
-        if geometric.dot(outward) < 0.0 {
+        if holes.is_empty() && geometric.dot(outward) < 0.0 {
             triangle.swap(1, 2);
         }
         // Opposite hemispheres must not share a flat ear across their
@@ -5635,21 +5685,23 @@ fn fill_sphere_hemisphere_patch_impl(
             *boundary_incidence.entry(key).or_default() += 1;
         }
     }
-    for index in 0..boundary.len() {
-        let a = boundary[index];
-        let b = boundary[(index + 1) % boundary.len()];
-        let key = if a < b { (a, b) } else { (b, a) };
-        if boundary_incidence.get(&key) != Some(&1) {
-            return Ok(false);
-        }
-    }
-    let boundary_keys: DetHashSet<(u32, u32)> = (0..boundary.len())
-        .map(|index| {
-            let a = boundary[index];
-            let b = boundary[(index + 1) % boundary.len()];
+    let boundary_keys: DetHashSet<(u32, u32)> = loop_ranges
+        .iter()
+        .flat_map(|&(start, end)| {
+            (start..end).map(move |i| (i, start + (i + 1 - start) % (end - start)))
+        })
+        .map(|(a, b)| {
+            let a = all_boundary[a];
+            let b = all_boundary[b];
             if a < b { (a, b) } else { (b, a) }
         })
         .collect();
+    if boundary_keys
+        .iter()
+        .any(|key| boundary_incidence.get(key) != Some(&1))
+    {
+        return Ok(false);
+    }
     if boundary_incidence.iter().any(|(edge, &count)| {
         if boundary_keys.contains(edge) {
             count != 1
@@ -5660,8 +5712,33 @@ fn fill_sphere_hemisphere_patch_impl(
         return Ok(false);
     }
 
+    let index_start = merged.indices.len();
     for triangle in triangles {
         merged.indices.extend_from_slice(&triangle);
+    }
+    if !holes.is_empty() {
+        // The CDT is coherently oriented in its bijective chart. Decide the
+        // outward orientation once for the entire new holed-face run.
+        orient_triangle_run(
+            merged,
+            index_start,
+            &|point| sphere.project_point(point),
+            &|u, v| sphere.normal(u, v),
+        );
+        // A stereographic CDT has coherent chart winding, but its straight
+        // 3D facets need not preserve that orientation near a curved trim.
+        // The plane normal has constant dot product with radial offsets
+        // over a facet, so a strict positive sign proves that entire facet
+        // faces outward. Defer the whole attempt on any folded/flat facet;
+        // never repair its winding independently of neighboring facets.
+        for triangle in merged.indices[index_start..].chunks_exact(3) {
+            let [a, b, c] =
+                [triangle[0], triangle[1], triangle[2]].map(|id| merged.positions[id as usize]);
+            let sense = remus_math::filtered::filtered_orient3d(a, b, c, center);
+            if !sense.is_finite() || sense <= 0.0 {
+                return Ok(false);
+            }
+        }
     }
     Ok(true)
 }
@@ -5957,7 +6034,144 @@ pub(super) fn tessellate_nurbs_pole_cap_shared(
     Ok(merged.indices.len() > idx_save)
 }
 
-/// Tessellate a spherical face with no inner wires from shared boundary samples.
+/// A native conic loop must close by vertex identity and lie on the sphere
+/// over its whole support. The quadratic coefficient residual bounds every
+/// parameter value, including extrema between shared samples.
+fn sphere_conic_loop_on_sphere(
+    topo: &Topology,
+    sphere: &remus_math::surfaces::SphericalSurface,
+    edges: &[remus_topology::wire::OrientedEdge],
+) -> Result<bool, crate::OperationsError> {
+    if edges.is_empty() {
+        return Ok(false);
+    }
+    for (i, oriented) in edges.iter().enumerate() {
+        let edge = topo.edge(oriented.edge())?;
+        let next_use = edges[(i + 1) % edges.len()];
+        let next = topo.edge(next_use.edge())?;
+        let end = if oriented.is_forward() {
+            edge.end()
+        } else {
+            edge.start()
+        };
+        let next_start = if next_use.is_forward() {
+            next.start()
+        } else {
+            next.end()
+        };
+        let Some(c) = sphere_boundary_conic(edge.curve()) else {
+            return Ok(false);
+        };
+        let Ok((a, b)) = edge.strict_domain() else {
+            return Ok(false);
+        };
+        if end != next_start || (b - a).abs() > std::f64::consts::TAU {
+            return Ok(false);
+        }
+        let d = c.center - sphere.center();
+        let u = c.u * c.a;
+        let v = c.v * c.b;
+        let radius_sq = sphere.radius().powi(2);
+        let residual = (d.dot(d) + (u.dot(u) + v.dot(v)) * 0.5 - radius_sq).abs()
+            + 2.0 * (d.dot(u).abs() + d.dot(v).abs())
+            + (u.dot(u) - v.dot(v)).abs() * 0.5
+            + u.dot(v).abs();
+        let roundoff = 128.0 * f64::EPSILON * (d.dot(d) + u.dot(u) + v.dot(v) + radius_sq);
+        if !(residual + roundoff).is_finite()
+            || (residual + roundoff).next_up()
+                > sphere.radius() * remus_math::tolerance::Tolerance::new().linear / 8.0
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// A complete native equator and one native inner loop bound a holed
+/// hemisphere. Project from its excluded pole, constrain both shared loops,
+/// and accept only a triangulation with every boundary segment once, every
+/// interior segment twice, and one coherent outward facet orientation.
+/// Other holed spherical faces keep dispatch.
+#[allow(clippy::too_many_arguments)]
+fn tessellate_sphere_holed_hemisphere_shared(
+    topo: &Topology,
+    face: &remus_topology::face::Face,
+    sphere: &remus_math::surfaces::SphericalSurface,
+    deflection: f64,
+    angular_tol: f64,
+    edge_global_indices: &DetHashMap<usize, Vec<u32>>,
+    merged: &mut TriangleMesh,
+    point_to_global: &mut PointMergeMap,
+) -> Result<bool, crate::OperationsError> {
+    if face.inner_wires().len() != 1 {
+        return Ok(false);
+    }
+    let equator = remus_topology::face::Face::new(
+        face.outer_wire(),
+        Vec::new(),
+        FaceSurface::Sphere(sphere.clone()),
+    );
+    let Some(side) = analytic_sphere_equator_direction(topo, &equator)? else {
+        return Ok(false);
+    };
+    let hole_edges = topo.wire(face.inner_wires()[0])?.edges();
+    if !sphere_conic_loop_on_sphere(topo, sphere, hole_edges)?
+        || !sphere_native_arcs_in_hemisphere(topo, sphere, hole_edges, side)?
+    {
+        return Ok(false);
+    }
+    let pos_save = merged.positions.len();
+    let nrm_save = merged.normals.len();
+    let idx_save = merged.indices.len();
+    let result = (|| {
+        let boundary = collect_boundary_loop(
+            topo,
+            topo.wire(face.outer_wire())?.edges(),
+            deflection,
+            angular_tol,
+            edge_global_indices,
+            merged,
+            point_to_global,
+        )?;
+        let hole = collect_boundary_loop(
+            topo,
+            hole_edges,
+            deflection,
+            angular_tol,
+            edge_global_indices,
+            merged,
+            point_to_global,
+        )?;
+        if sphere_boundary_hemisphere(sphere, &hole, &merged.positions) != Some(side) {
+            return Ok(false);
+        }
+        fill_sphere_hemisphere_patch_impl(
+            sphere,
+            &boundary,
+            &[hole],
+            Some(side),
+            deflection,
+            angular_tol,
+            merged,
+            point_to_global,
+        )
+    })();
+    if !matches!(result, Ok(true)) {
+        merged.positions.truncate(pos_save);
+        merged.normals.truncate(nrm_save);
+        merged.indices.truncate(idx_save);
+        point_to_global.retain(|_, gid| (*gid as usize) < pos_save);
+    }
+    // The old generic holed-face dispatch also deferred failed CDT math
+    // attempts to its established fallback. Keep that behavior, while
+    // topology and resource-policy errors remain visible to the caller.
+    match result {
+        Err(crate::OperationsError::Math(_)) => Ok(false),
+        result => result,
+    }
+}
+
+/// Tessellate qualified spherical caps and one-hole native hemispheres.
 ///
 /// Constant-latitude polar caps use structured latitude rows. Other suitable
 /// caps (for example, the corner ball patch a fillet leaves at a box corner)
@@ -5971,7 +6185,10 @@ pub(super) fn tessellate_nurbs_pole_cap_shared(
 /// sphere. Primitive spheres with polygonal equators retain their existing
 /// dispatch and triangle semantics.
 ///
-/// Returns `Ok(true)` when the face is such a cap and was tessellated here;
+/// A complete native equator with one qualified inner loop uses the bounded
+/// holed-hemisphere chart above. All other inner-wire faces defer unchanged.
+///
+/// Returns `Ok(true)` when the face was tessellated here;
 /// `Ok(false)` defers to the CDT/snap path.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn tessellate_sphere_cap_shared(
@@ -5989,7 +6206,16 @@ pub(super) fn tessellate_sphere_cap_shared(
         return Ok(false);
     };
     if !face_data.inner_wires().is_empty() {
-        return Ok(false);
+        return tessellate_sphere_holed_hemisphere_shared(
+            topo,
+            face_data,
+            sphere,
+            deflection,
+            angular_tol,
+            edge_global_indices,
+            merged,
+            point_to_global,
+        );
     }
 
     let wire = topo.wire(face_data.outer_wire())?;

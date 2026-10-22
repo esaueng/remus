@@ -60,7 +60,9 @@ All four runs start with zero allocated slots and 1,507,328 bytes of WASM linear
 
 Final process RSS is A 426.2 / 491.3 MB, B 428.7 / 514.6 MB (decimal). Every stage's RSS, JS heap, external and array-buffer observations remain in the raw runs, including decreases. They include V8, diagnostic buffers, fixture reads, transfers and GC; they do not attribute memory solely to a kernel or establish a portable bound. **No memory reduction is claimed.**
 
-All **40 captured ticks / 320 output-solid instances** pass strict validation and finite, closed, consistently oriented indexed display meshes. Every result retains the 108-face holder and seven separate text solids, opening envelope, floor/arm material, empty opening and both empty mounting-bore centers. The [cross-variant comparison](evidence/surface-seed-pruning-2026-10-21/qualification.json) requires exact complete reachable arena, every mesh buffer, every recorded volume and complete feature record, in addition to inventories, material and policy. All four processes agree at all ten widths. This is actual captured-output identity, not only a sampled geometry check.
+All **40 captured ticks / 320 output-solid instances** pass strict validation and finite, closed, consistently oriented indexed display meshes. Every result retains the 108-face holder and seven separate text solids, opening envelope, floor/arm material, empty opening and both empty mounting-bore centers. The [guarded cross-variant comparison](evidence/surface-seed-pruning-2026-10-21/guarded-qualification.json) requires different recorded kernel WASM identities and exact complete reachable arena, every mesh buffer, every recorded volume and complete feature record, in addition to inventories, material and policy. The pairs A first/B first `[0,1]`, A first/B second `[0,2]` and A last/B first `[3,1]` cover all four processes and all 40 captured records at all ten widths. This is actual captured-output identity, not only a sampled geometry check. The later qualification rechecks the existing captures; it collects no new timings.
+
+The original [qualification record](evidence/surface-seed-pruning-2026-10-21/qualification.json) remains unchanged. Its third pair `[0,3]` compares A with A and provides same-variant drift agreement, rather than cross-variant proof. The historical comparator SHA-256 `9952a2c448485e12568239ceedb55cac518e46d8f85f7d990cb78b342cbf207b` remains pinned in [build provenance](evidence/surface-seed-pruning-2026-10-21/build.json). The separate guarded record pins the fixed comparator, its validation dependency and the unchanged capture input by hash; its cross-variant pairs replace the original record as the proof covering every process across A and B.
 
 The unchanged independent verifier runs separately for each package, matching its 20 actual capture records at **all ten captured widths**, and retaining its original five-request forward/reverse fixture contract. It rejects mixed-package audit inputs by exact package hash; an initial mixed-array invocation was rejected and preserved, then rerun with correctly split inputs. No verifier guard or measurement is relaxed. [Baseline](evidence/surface-seed-pruning-2026-10-21/baseline-quality.json), [candidate](evidence/surface-seed-pruning-2026-10-21/candidate-quality.json) and [summary](evidence/surface-seed-pruning-2026-10-21/quality-summary.json) record:
 
@@ -76,7 +78,7 @@ Both variants pass the complete canonical paired kernel/translator build, fresh-
 
 Early compiler/optimizer attempts faulted and are excluded. A bounded recovery verifies Binaryen 117's official release archive/checksum and byte-identical cached executable. An unchanged bindgen regeneration differs from a failed optimizer input by one bit while raw Rust WASM remains identical; unmodified canonical regeneration then succeeds. No byte patch, optimizer/version weakening or shared-cache overwrite is used. The cause remains unproven. [Recovery evidence](evidence/surface-seed-pruning-2026-10-21/recovery.json) records these hashes and the native debug-information override separately from successful qualification.
 
-Local validation passes all **1,089 math nextest cases** (one existing skipped), all 1,089 math cargo-test cases, the 22 projection tests, three new cross-variant comparator tests and nine existing parameter-driver tests. Normal commit hooks pass workspace all-target/all-feature Clippy, fmt, taplo and cargo-machete. Layer boundaries, documentation paths/module map and roadmap inventory are checked. Hosted CI and eventual committed-package refresh remain separate delivery signals.
+Capture-time local validation passed all **1,089 math nextest cases** (one existing skipped), all 1,089 math cargo-test cases, the 22 projection tests, three cross-variant comparator tests and nine parameter-driver tests. Normal capture-time commit hooks passed workspace all-target/all-feature Clippy, fmt, taplo and cargo-machete. The 2026-10-22 integration recheck passed **1,092 math nextest cases** (one existing skipped) and all **35 maintained performance-script tests**, including five comparator cases that reject identical kernels while retaining exact semantic checks. Layer boundaries, deterministic-hash policy, documentation paths/module map, roadmap inventory and the guarded qualification hashes passed. Hosted CI and eventual committed-package refresh remain separate delivery signals.
 
 To reproduce the native comparison, build baseline source with the preserved test/benchmark overlay and candidate source with the maintained benchmark, using separate targets. Preserve both executables and run A–B–B–A with fresh Criterion output directories:
 
@@ -100,5 +102,23 @@ node scripts/perf/parameter-rebuild/verify_recipe.cjs \
 ```
 
 Run the verifier separately for each exact package's run array. Cross-variant comparisons require all semantic outputs exactly; independent audit re-query residuals remain a separate observation. The baseline and candidate report the same full recipe fidelity boundary as the maintained fixture: this does not execute the complete pinned consumer compiler/build graph.
+
+To recheck all historical records with the maintained identity guard, compare the captured runs across the two kernel WASM identities. The original A/A drift pair is intentionally absent from this cross-variant check:
+
+```sh
+node <<'NODE'
+const fs = require('node:fs');
+const { compareVariants } = require('./scripts/perf/parameter-rebuild/compare_variants.cjs');
+const runs = JSON.parse(fs.readFileSync(
+  'docs/performance/evidence/surface-seed-pruning-2026-10-21/runs.json'));
+for (const pair of [[0, 1], [0, 2], [3, 1]]) {
+  console.log(JSON.stringify({
+    pair, ...compareVariants(...pair.map(index => runs[index])),
+  }, null, 2));
+}
+NODE
+```
+
+Check the comparator, validation dependency and input hashes against `guarded-qualification.json` when reproducing that particular qualification. The capture-time harness and build hashes remain historical evidence; the maintained drivers include subsequent sample-retention guards.
 
 PERF-N08 and PERF-M08 remain partial. The measured native cubic case and observed volume-stage medians support this bounded exact optimization. Higher-degree gains, a complete-workflow improvement, general safeguarded projection, long sessions and browser/worker/input-to-frame behavior remain unqualified. Repeated-width and suffix captures from the earlier measurement report are not cross-revision performance evidence here.

@@ -8,46 +8,6 @@ use remus_math::curves2d::Curve2D;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::TAU;
 
-/// Whether two lifted regions share a non-seam edge with the same 3D
-/// endpoints (within tolerance). Two sectors sharing both the seam and a
-/// ruling (the one-ruling case) are distinct adjacent faces, not one wrapping
-/// face. Wrapping cells share only the seam.
-fn shares_non_seam_edge(
-    a: &Arrangement,
-    seam_uses: [u64; 2],
-    fx: usize,
-    fy: usize,
-    tol: f64,
-) -> bool {
-    let mut edges_fx = Vec::new();
-    for cycle in std::iter::once(&a.regions[fx].outer).chain(&a.regions[fx].holes) {
-        for &h in &a.cycles[*cycle].edges {
-            let e = &a.half_edges[h];
-            if e.source.use_id == seam_uses[0] || e.source.use_id == seam_uses[1] {
-                continue;
-            }
-            edges_fx.push(e.endpoints_3d);
-        }
-    }
-    for cycle in std::iter::once(&a.regions[fy].outer).chain(&a.regions[fy].holes) {
-        for &h in &a.cycles[*cycle].edges {
-            let e = &a.half_edges[h];
-            if e.source.use_id == seam_uses[0] || e.source.use_id == seam_uses[1] {
-                continue;
-            }
-            for &[p0, p1] in &edges_fx {
-                let [q0, q1] = e.endpoints_3d;
-                if ((p0 - q0).length() <= tol && (p1 - q1).length() <= tol)
-                    || ((p0 - q1).length() <= tol && (p1 - q0).length() <= tol)
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
 #[allow(clippy::too_many_lines)]
 pub(super) fn quotient(
     a: &mut Arrangement,
@@ -124,6 +84,20 @@ pub(super) fn quotient(
             }
         }
     }
+    // A shared edge is certified by the DCEL's two owners, never by endpoint
+    // proximity: distinct close rulings and complementary circular subspans
+    // can have indistinguishable endpoint positions within linear tolerance.
+    // Index each undirected edge once, charging the operation work budget.
+    let mut shared_non_seam = BTreeSet::new();
+    for (h, e) in a.half_edges.iter().enumerate().step_by(2) {
+        work.step()?;
+        if seam_uses.contains(&e.source.use_id) {
+            continue;
+        }
+        if let (Some(fx), Some(fy)) = (face_of[h], face_of[e.twin]) {
+            shared_non_seam.insert((fx.min(fy), fx.max(fy)));
+        }
+    }
     let mut adjacency = vec![Vec::new(); a.regions.len()];
     for (&x, &y) in seam_edges[0].iter().zip(&seam_edges[1]) {
         work.step()?;
@@ -170,7 +144,7 @@ pub(super) fn quotient(
         // seam stays in both boundaries (shared via duplicate-edge merge
         // downstream) instead of becoming interior. Vertex aliasing above
         // already records the same-3D identification.
-        if fx != fy && shares_non_seam_edge(a, seam_uses, fx, fy, work.context.tolerance.linear) {
+        if fx != fy && shared_non_seam.contains(&(fx.min(fy), fx.max(fy))) {
             continue;
         }
         counterpart.insert(hx, hy);

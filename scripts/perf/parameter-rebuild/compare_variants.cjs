@@ -4,10 +4,12 @@ const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const { checkRun } = require('./compare_runs.cjs');
 
-// Package hashes deliberately differ across revisions. Every measured input,
+// Kernel WASM hashes must differ across variants. Every measured input,
 // replay policy and semantic output must still be present and exactly equal.
 function compareVariants(before, after) {
   checkRun(before, 'completion'); checkRun(after, 'completion');
+  assert.notEqual(before.metadata.package.wasmSha256, after.metadata.package.wasmSha256,
+    'Expected different kernel WASM hashes for cross-variant comparison');
   for (const key of ['rebuildMode', 'pattern', 'ticks', 'warmup', 'harnessSha256',
     'recipeHarnessSha256', 'meshQualityHarnessSha256', 'prefixDocumentSha256',
     'fixture', 'policy', 'node', 'platform', 'architecture']) {

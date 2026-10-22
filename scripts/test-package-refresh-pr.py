@@ -206,6 +206,30 @@ class PackageRefreshTests(unittest.TestCase):
                          [f'{own} (carried from #19)', f'{declared} (carried from #20)'])
         self.assertEqual(self.gate(body, 145 * KIB), [])
 
+    def test_squash_merged_refresh_dates_the_span_from_its_source(self):
+        declared = 'WASM-Size: +80 KiB raw, curve projection, Tier: core (writes the journal)'
+        self.history([commit('1' * 40, 'feat(ops): curve projection (#20)')],
+                     [pull(20, '1' * 40, declared)])
+        api = json.loads(self.fixture.read_text())
+        # The newest refresh landed squash-merged under its PR title, which
+        # names no source; an older one still has a source-style subject.
+        api[f'repos/{REPO}/commits?sha={self.source}&path=crates/wasm/pkg/package.json&per_page=30'] = [
+            commit('c' * 40, 'chore(wasm): refresh committed packages to v2026.1.3 (#5)'),
+            commit('d' * 40, f'chore(wasm): refresh packages to v2026.1.2 from {"e" * 12} (#4)'),
+        ]
+        api[f'repos/{REPO}/pulls/5'] = {**pull(5, 'c' * 40, 'carried lines'),
+                                         'head': {'ref': 'codex/wasm-refresh-' + PREVIOUS}}
+        for key in [key for key in api if key.startswith(f'repos/{REPO}/compare/{PREVIOUS[:12]}...')]:
+            api[key.replace(PREVIOUS[:12], PREVIOUS, 1)] = api.pop(key)
+        self.fixture.write_text(json.dumps(api))
+        body = self.description()
+        self.assertNotIn('Could not collect', body)
+        self.assertIn(f'`{PREVIOUS[:12]}`..`{self.source[:12]}`', body)
+        self.assertEqual([line for line in body.splitlines() if line.startswith('WASM-Size:')],
+                         [f'{declared} (carried from #20)'])
+        calls = self.log.read_text()
+        self.assertNotIn('e' * 12, calls)
+
     def test_growth_within_the_threshold_needs_no_carried_line(self):
         self.history([commit('1' * 40, 'fix(ops): small change (#11)')],
                      [pull(11, '1' * 40, 'No size change worth declaring.')])
