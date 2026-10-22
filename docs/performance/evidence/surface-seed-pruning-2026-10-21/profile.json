@@ -1,0 +1,204 @@
+{
+  "namedOnlyDiagnostic": true,
+  "timingsExcluded": true,
+  "module": {
+    "exactShippingBytes": true,
+    "shippingSha256": "badcb15af1397e92e84a66a6931a66d41fee6c9e8d40b197324cfa16091683e1",
+    "namedSha256": "605f7981749e70794a2f629eb4f87a04a0325670918e257b0199896f42fcaa79",
+    "shippingBytes": 10484215,
+    "functionNames": 7301,
+    "sections": [
+      {
+        "kind": 1,
+        "customName": null,
+        "bytes": 3937
+      },
+      {
+        "kind": 2,
+        "customName": null,
+        "bytes": 2811
+      },
+      {
+        "kind": 3,
+        "customName": null,
+        "bytes": 7569
+      },
+      {
+        "kind": 4,
+        "customName": null,
+        "bytes": 11
+      },
+      {
+        "kind": 5,
+        "customName": null,
+        "bytes": 3
+      },
+      {
+        "kind": 6,
+        "customName": null,
+        "bytes": 25
+      },
+      {
+        "kind": 7,
+        "customName": null,
+        "bytes": 12300
+      },
+      {
+        "kind": 9,
+        "customName": null,
+        "bytes": 2471
+      },
+      {
+        "kind": 12,
+        "customName": null,
+        "bytes": 2
+      },
+      {
+        "kind": 10,
+        "customName": null,
+        "bytes": 10097021
+      },
+      {
+        "kind": 11,
+        "customName": null,
+        "bytes": 357781
+      },
+      {
+        "kind": 0,
+        "customName": "name",
+        "bytes": 614621
+      },
+      {
+        "kind": 0,
+        "customName": "producers",
+        "bytes": 124
+      },
+      {
+        "kind": 0,
+        "customName": "target_features",
+        "bytes": 116
+      }
+    ]
+  },
+  "profile": {
+    "samples": 11881,
+    "branches": {
+      "emulatedFma": 3511,
+      "surfaceProjection": 757,
+      "rayTorus": 89,
+      "area": 283,
+      "preparation": 50,
+      "edgeRelations": 1070,
+      "rayCrossings": 917,
+      "lineNurbs": 686,
+      "normals": 10
+    },
+    "unmappedFunctionCount": 0,
+    "unmappedAncestrySamples": 0,
+    "unmappedLeafSamples": 0,
+    "unmappedFunctions": [],
+    "leaf": [
+      {
+        "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+        "samples": 3511
+      },
+      {
+        "name": "remus_math::nurbs::basis::ders_basis_funs_first_into::hf5f65a0e917f966a",
+        "samples": 923
+      },
+      {
+        "name": "remus_math::nurbs::surface::NurbsSurface::contract_first_order::heec76c2fedf73b2c",
+        "samples": 910
+      },
+      {
+        "name": "meshQuality",
+        "samples": 571
+      },
+      {
+        "name": "remus_math::nurbs::surface::NurbsSurface::first_order_into::h4ecce75270adfb43",
+        "samples": 320
+      },
+      {
+        "name": "remus_check::properties::face_integrator::integrate_parametric::h4e63a20fff767583",
+        "samples": 273
+      },
+      {
+        "name": "remus_check::properties::face_integrator::integrate_parametric::hbcd1a04c186d54bb",
+        "samples": 213
+      },
+      {
+        "name": "fma",
+        "samples": 187
+      },
+      {
+        "name": "remus_math::nurbs::surface::DerivativeScratch::span_hinted_point_and_partials_from::he0f73ac76b31be8d",
+        "samples": 187
+      },
+      {
+        "name": "",
+        "samples": 167
+      },
+      {
+        "name": "remus_operations::tessellate::solid::tessellate_faces_core::hac6d420193e05788",
+        "samples": 145
+      },
+      {
+        "name": "compiler_builtins[3552e40272914b90]::math::libm_math::sin::sin",
+        "samples": 128
+      },
+      {
+        "name": "compiler_builtins[3552e40272914b90]::math::libm_math::rem_pio2::rem_pio2",
+        "samples": 108
+      },
+      {
+        "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_u::h00f7844687a0ea2d",
+        "samples": 106
+      },
+      {
+        "name": "compiler_builtins[3552e40272914b90]::math::libm_math::cos::cos",
+        "samples": 100
+      }
+    ],
+    "inclusive": [
+      {
+        "name": "remus_check::properties::face_integrator::integrate_face_impl::h35cf0c0f40200bfb",
+        "samples": 5455
+      },
+      {
+        "name": "remus_math::nurbs::surface::NurbsSurface::first_order_into::h4ecce75270adfb43",
+        "samples": 2661
+      },
+      {
+        "name": "remus_math::nurbs::projection::project_point_to_surface_with_grid::h309c52b8a00fa896",
+        "samples": 600
+      },
+      {
+        "name": "remus_math::nurbs::projection::refine_from::hc48e0a6c5e2a882a",
+        "samples": 430
+      },
+      {
+        "name": "remus_check::properties::face_integrator::integrate_face_impl::{{closure}}::h657541fd33f5392e",
+        "samples": 236
+      },
+      {
+        "name": "remus_math::nurbs::projection::project_point_to_surface::h0e0fed4e55e52368",
+        "samples": 116
+      },
+      {
+        "name": "remus_check::properties::face_integrator::integrate_face_impl::{{closure}}::h8a1fea838df1dde1",
+        "samples": 9
+      },
+      {
+        "name": "remus_check::properties::face_integrator::integrate_face_impl::{{closure}}::h039c9646404fdac3",
+        "samples": 1
+      }
+    ]
+  },
+  "capture": {
+    "mode": "full 31-feature / completion / unique, 3 ticks, warmup 1",
+    "timingStatus": "contended-smoke-excluded",
+    "rawCpuProfileSha256": "d2d6c40f230aa82f8135b60df19e7fc3b996d50d004e02ad5517210f3b1005ac",
+    "qualification": "Removing only the name section gives exactly the baseline canonical shipping module. No optimizer setting or executable section differs.",
+    "attributionLimit": "Sampled inclusive wrappers overlap; projection-minus-refinement is only an upper envelope for seed work, not a direct nearest-scan sample count. Diagnostic JavaScript quality checks are included in the profile."
+  }
+}

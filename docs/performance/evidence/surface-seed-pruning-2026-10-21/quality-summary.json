@@ -1,0 +1,20 @@
+{
+  "baseline": {
+    "qualified": true,
+    "capturedWidths": 10,
+    "matchedRecords": 20,
+    "maxVolumeDeltaResidual": 0.0005611901614201997,
+    "maxBodyCarrierResidual": 3.552713678800501e-15,
+    "maxTextCarrierResidual": 0,
+    "maxVolumeRereadResidual": 2.1100277081131935e-10
+  },
+  "candidate": {
+    "qualified": true,
+    "capturedWidths": 10,
+    "matchedRecords": 20,
+    "maxVolumeDeltaResidual": 0.0005611901614201997,
+    "maxBodyCarrierResidual": 3.552713678800501e-15,
+    "maxTextCarrierResidual": 0,
+    "maxVolumeRereadResidual": 2.1100277081131935e-10
+  }
+}

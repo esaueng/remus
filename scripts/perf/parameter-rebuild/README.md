@@ -117,3 +117,19 @@ verified; reports must attest package bytes against their committed revision
 separately. `--timing-status contended-smoke-excluded` labels development
 observations that must not enter measured timing claims. Coordinate quiet or
 explicitly reserved-core runs and record co-resident activity honestly.
+
+## Comparing kernel revisions
+
+Use `compare_variants.cjs` for two completion captures from different kernel
+packages with distinct validated WASM SHA-256 values. It requires the same
+driver, fixture, replay and measurement policy, then compares every recorded
+arena/mesh digest, quantity, feature record,
+material result and topology inventory exactly. Package identities remain
+separate provenance; wrapper, package metadata or externally supplied source
+labels cannot establish different kernels. The comparator makes no timing or
+speedup claim.
+
+```sh
+node scripts/perf/parameter-rebuild/compare_variants.cjs before.json after.json
+node scripts/perf/parameter-rebuild/compare_variants.test.cjs
+```

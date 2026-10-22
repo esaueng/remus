@@ -1,0 +1,97 @@
+{
+  "order": "ABBA",
+  "events": [
+    {
+      "case": "0-A",
+      "variant": "A",
+      "packageHashes": {
+        "remus_wasm_bg.wasm": "badcb15af1397e92e84a66a6931a66d41fee6c9e8d40b197324cfa16091683e1",
+        "remus_wasm_node.cjs": "60f3aac1eb04b35ac31916be591712391936792e7ac5632d91eb30d0fb5f5e8a",
+        "package.json": "d79ae1da0eaca83ed21fe0ba637399b7359bc8683a86dc63257225cc95aba152"
+      },
+      "suppliedSourceSha": "e3585dd7ff8253f955224645807fbd3c5401d42a",
+      "startUtcSeconds": 1792561420.8358057,
+      "endUtcSeconds": 1792561432.8454225,
+      "exitCode": 0
+    },
+    {
+      "case": "1-B",
+      "variant": "B",
+      "packageHashes": {
+        "remus_wasm_bg.wasm": "57cfd2a79abdac944d5c7c01478662042b1e84479a7f36a807d409a04ae4e5f8",
+        "remus_wasm_node.cjs": "60f3aac1eb04b35ac31916be591712391936792e7ac5632d91eb30d0fb5f5e8a",
+        "package.json": "d79ae1da0eaca83ed21fe0ba637399b7359bc8683a86dc63257225cc95aba152"
+      },
+      "suppliedSourceSha": "852611823e36759e7964c0c2c00f012bf3238139",
+      "startUtcSeconds": 1792561432.8529177,
+      "endUtcSeconds": 1792561444.3601508,
+      "exitCode": 0
+    },
+    {
+      "case": "2-B",
+      "variant": "B",
+      "packageHashes": {
+        "remus_wasm_bg.wasm": "57cfd2a79abdac944d5c7c01478662042b1e84479a7f36a807d409a04ae4e5f8",
+        "remus_wasm_node.cjs": "60f3aac1eb04b35ac31916be591712391936792e7ac5632d91eb30d0fb5f5e8a",
+        "package.json": "d79ae1da0eaca83ed21fe0ba637399b7359bc8683a86dc63257225cc95aba152"
+      },
+      "suppliedSourceSha": "852611823e36759e7964c0c2c00f012bf3238139",
+      "startUtcSeconds": 1792561444.3672535,
+      "endUtcSeconds": 1792561455.1754239,
+      "exitCode": 0
+    },
+    {
+      "case": "3-A",
+      "variant": "A",
+      "packageHashes": {
+        "remus_wasm_bg.wasm": "badcb15af1397e92e84a66a6931a66d41fee6c9e8d40b197324cfa16091683e1",
+        "remus_wasm_node.cjs": "60f3aac1eb04b35ac31916be591712391936792e7ac5632d91eb30d0fb5f5e8a",
+        "package.json": "d79ae1da0eaca83ed21fe0ba637399b7359bc8683a86dc63257225cc95aba152"
+      },
+      "suppliedSourceSha": "e3585dd7ff8253f955224645807fbd3c5401d42a",
+      "startUtcSeconds": 1792561455.1824028,
+      "endUtcSeconds": 1792561466.3907938,
+      "exitCode": 0
+    }
+  ],
+  "cpu": 15,
+  "idleSibling": 31,
+  "context": "Reserved physical core with co-resident team validation; coordinator verified masks before this window.",
+  "reservationSnapshots": {
+    "before": {
+      "utcSeconds": 1792561420.827731,
+      "scope": "Observed matching process trees and all readable threads; not proof of total host idleness.",
+      "observedProcesses": 5,
+      "readableThreads": 21,
+      "reservedCoreViolations": [],
+      "processNames": [
+        "cargo",
+        "rustc"
+      ]
+    },
+    "after": {
+      "utcSeconds": 1792561466.4527285,
+      "scope": "Observed matching process trees and all readable threads; not proof of total host idleness.",
+      "observedProcesses": 8,
+      "readableThreads": 28,
+      "reservedCoreViolations": [],
+      "processNames": [
+        "cargo",
+        "cargo-clippy",
+        "clippy-driver",
+        "rustc"
+      ]
+    }
+  },
+  "coordinatorLiveAuditBefore": {
+    "observedTeamProcesses": 23,
+    "readableThreads": 51,
+    "allExcludedCpus": [
+      15,
+      31
+    ],
+    "scope": "Coordinator reported live audit/restriction immediately before start; local agent snapshots have narrower visibility."
+  },
+  "command": "taskset -c 15 node scripts/perf/parameter-rebuild/parameter_bench.cjs --kernel-pkg <frozen-A-or-B>/kernel --out <new-output>.json --rebuild full --mode completion --pattern unique --ticks 10 --warmup 2 --package-source-sha <attested-source>",
+  "reservationVisibilityLimit": "The local heavy-process-name filter omits Node24 processes named MainThread; snapshots are a partial build-tool view. The coordinator separately audited all observed team processes/threads and enforced inherited masks excluding15/31. These snapshots are not proof of an idle host."
+}

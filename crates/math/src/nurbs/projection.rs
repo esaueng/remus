@@ -404,13 +404,34 @@ impl SurfaceSeedGrid {
     /// The grid node nearest `point`: the first node in scan order with the
     /// smallest squared distance (strict `<` tie-break).
     fn nearest(&self, point: Point3) -> (f64, f64) {
-        let mut best = self.origin;
+        self.nearest_sample(point)
+            .map_or(self.origin, |(index, _)| {
+                let (u, v, _) = self.nodes[index];
+                (u, v)
+            })
+    }
+
+    /// Retain the exact full-fold distance of the selected node. Appending a
+    /// square cannot decrease a nonnegative rounded partial sum, so a partial
+    /// already `>= best` cannot win the strict comparison. NaN comparisons do
+    /// not prune. Every surviving term keeps `length_squared`'s FMA order.
+    fn nearest_sample(&self, point: Point3) -> Option<(usize, f64)> {
+        let mut best = None;
         let mut best_dist_sq = f64::INFINITY;
-        for &(u, v, pt) in &self.nodes {
-            let d_sq = (pt - point).length_squared();
+        for (index, &(_, _, pt)) in self.nodes.iter().enumerate() {
+            let delta = pt - point;
+            let d_sq = delta.x() * delta.x();
+            if d_sq >= best_dist_sq {
+                continue;
+            }
+            let d_sq = delta.y().fma(delta.y(), d_sq);
+            if d_sq >= best_dist_sq {
+                continue;
+            }
+            let d_sq = delta.z().fma(delta.z(), d_sq);
             if d_sq < best_dist_sq {
                 best_dist_sq = d_sq;
-                best = (u, v);
+                best = Some((index, d_sq));
             }
         }
         best
@@ -1128,6 +1149,171 @@ mod tests {
             assert!((u - want_u).abs() < 1e-15 && (v - want_v).abs() < 1e-15);
             assert_eq!(pt.x().to_bits(), s.evaluate(u, v).x().to_bits());
         }
+    }
+
+    /// The untouched full-distance scan, including its strict first-node tie
+    /// rule and fallback when every comparison is unordered or infinite.
+    fn full_seed_scan(grid: &SurfaceSeedGrid, point: Point3) -> Option<(usize, f64)> {
+        let mut seed = None;
+        let mut closest = f64::INFINITY;
+        for (index, &(_, _, sample)) in grid.nodes.iter().enumerate() {
+            let distance = (sample - point).length_squared();
+            if distance < closest {
+                seed = Some((index, distance));
+                closest = distance;
+            }
+        }
+        seed
+    }
+
+    fn assert_same_seed(grid: &SurfaceSeedGrid, point: Point3) {
+        let expected = full_seed_scan(grid, point);
+        let actual = grid.nearest_sample(point);
+        assert_eq!(
+            actual.map(|(index, distance)| (index, distance.to_bits())),
+            expected.map(|(index, distance)| (index, distance.to_bits())),
+            "nearest index and squared distance for {point:?}"
+        );
+        let expected = expected.map_or(grid.origin, |(index, _)| {
+            let (u, v, _) = grid.nodes[index];
+            (u, v)
+        });
+        let actual = grid.nearest(point);
+        assert_eq!(
+            (actual.0.to_bits(), actual.1.to_bits()),
+            (expected.0.to_bits(), expected.1.to_bits()),
+            "nearest seed for {point:?}"
+        );
+    }
+
+    #[test]
+    fn seed_scan_preserves_ties_nonfinite_and_extreme_distances() {
+        let values = [
+            -f64::MAX,
+            -1.0,
+            -f64::MIN_POSITIVE,
+            -f64::from_bits(1),
+            -0.0,
+            0.0,
+            f64::from_bits(1),
+            f64::MIN_POSITIVE,
+            1.0,
+            f64::MAX,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NAN,
+        ];
+        let grid = SurfaceSeedGrid {
+            nodes: values
+                .iter()
+                .enumerate()
+                .map(|(i, &x)| {
+                    #[allow(clippy::cast_precision_loss)]
+                    (i as f64, -(i as f64), Point3::new(x, x, x))
+                })
+                .collect(),
+            origin: (-1.0, -1.0),
+        };
+        for &x in &values {
+            for &y in &values {
+                for &z in &values {
+                    assert_same_seed(&grid, Point3::new(x, y, z));
+                }
+            }
+        }
+        // Two equidistant candidates must retain the first identity, including
+        // signed-zero coordinates and a zero distance formed by underflow.
+        for epsilon in [0.0, f64::from_bits(1), f64::MIN_POSITIVE, 1.0] {
+            let tied = SurfaceSeedGrid {
+                nodes: vec![
+                    (0.25, 0.5, Point3::new(-epsilon, -0.0, 0.0)),
+                    (0.75, 0.5, Point3::new(epsilon, 0.0, -0.0)),
+                ],
+                origin: (-1.0, -1.0),
+            };
+            assert_same_seed(&tied, Point3::new(0.0, 0.0, 0.0));
+            assert_eq!(tied.nearest(Point3::new(0.0, 0.0, 0.0)), (0.25, 0.5));
+        }
+    }
+
+    #[test]
+    fn seed_scan_matches_full_scan_on_holder_boundary_queries() {
+        let fixtures: [&[u8]; 2] = [
+            include_bytes!("../../../../scripts/perf/parameter-rebuild/fixtures/base.arena.json"),
+            include_bytes!("../../../../scripts/perf/parameter-rebuild/fixtures/text.arena.json"),
+        ];
+        let mut surfaces = 0;
+        let mut queries = 0;
+        let numbers = |value: &serde_json::Value| -> Vec<f64> {
+            value
+                .as_array()
+                .expect("numeric array")
+                .iter()
+                .map(|v| v.as_f64().expect("finite fixture coordinate"))
+                .collect()
+        };
+        for bytes in fixtures {
+            let doc: serde_json::Value =
+                serde_json::from_slice(bytes).expect("public holder arena");
+            for face in doc["faces"].as_array().expect("faces") {
+                let Some(surface) = face["surface"].get("Nurbs") else {
+                    continue;
+                };
+                let control_points = surface["control_points"]
+                    .as_array()
+                    .expect("control rows")
+                    .iter()
+                    .map(|row| {
+                        row.as_array()
+                            .expect("control row")
+                            .iter()
+                            .map(|point| {
+                                let p = numbers(point);
+                                Point3::new(p[0], p[1], p[2])
+                            })
+                            .collect()
+                    })
+                    .collect();
+                let weights = surface["weights"]
+                    .as_array()
+                    .expect("weight rows")
+                    .iter()
+                    .map(&numbers)
+                    .collect();
+                let surface = NurbsSurface::new(
+                    usize::try_from(surface["degree_u"].as_u64().expect("u degree"))
+                        .expect("degree fits"),
+                    usize::try_from(surface["degree_v"].as_u64().expect("v degree"))
+                        .expect("degree fits"),
+                    numbers(&surface["knots_u"]),
+                    numbers(&surface["knots_v"]),
+                    control_points,
+                    weights,
+                )
+                .expect("canonical NURBS carrier");
+                let grid = surface.seed_grid();
+                surfaces += 1;
+                for wire in std::iter::once(&face["outer_wire"])
+                    .chain(face["inner_wires"].as_array().expect("inner wires"))
+                {
+                    let wire = wire.as_u64().expect("wire index") as usize;
+                    for edge in doc["wires"][wire]["edges"].as_array().expect("wire edges") {
+                        let index = edge["edge"].as_u64().expect("edge index") as usize;
+                        for endpoint in ["start", "end"] {
+                            let vertex = doc["edges"][index][endpoint]
+                                .as_u64()
+                                .expect("vertex index")
+                                as usize;
+                            let p = numbers(&doc["vertices"][vertex]["point"]);
+                            assert_same_seed(grid, Point3::new(p[0], p[1], p[2]));
+                            queries += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(surfaces, 42, "all canonical holder and text NURBS carriers");
+        assert_eq!(queries, 336, "actual stored boundary endpoint uses");
     }
 
     #[test]
