@@ -71,6 +71,33 @@ allocation coincidence.
 
 ## Design options
 
+### WASM selected-document copy contract (2026-10-20)
+
+Tier: core. `BrepKernel.copyDocument` resolves live solid, sheet and wire
+handles in its source session and returns a `KernelDocumentCopy` containing a
+fresh kernel and ordered root remaps. It uses the native document-copy API
+without JSON transport. The transfer object's `takeKernel()` hands out that
+kernel once; dropping an untaken transfer also drops its copied topology.
+The source, its handles, checkpoints and session state remain unchanged.
+Numeric handles are scoped to their owning kernel and may have equal numbers
+in different kernels; this API does not make a foreign handle detectable.
+
+Only the selected document is copied. Checkpoints, sketches/GCS, assemblies,
+prepared moves and classification preparation stay in the old owner; the new
+owner starts with empty session stores. Module-wide bounded content caches
+retain their existing configuration and lifetime. Compound/comp-solid roots
+and arbitrary subentity remaps are not exposed by this binding. Batch JSON
+cannot transfer ownership of a kernel object, so the method is direct-only.
+
+An optional entity/reference budget may reduce the native default, never
+increase it. A failure leaves the source intact. A poisoned native kernel
+refuses copying. Copying is not geometric validation, and callers must rebuild
+their selections/preparation using the new owner and returned roots. Both
+owners coexist during the copy; reclamation requires releasing all old owner,
+checkpoint and wrapper references. Freed allocations can be reused inside the
+module; WASM linear memory is not promised to shrink. No in-place compaction,
+automatic swapping, handle reuse or consumer integration is introduced.
+
 ### Option A: Copy live roots into a new kernel
 
 Build a new topology by traversing selected live roots, densely remapping the

@@ -1,0 +1,523 @@
+{
+  "runtimeSource": "98c0ca364ce016ee1f15acaa9863b151ebd1a8fa",
+  "parent": "9a9d69ca2a12b1dd8f4fd0aadc724245bd179368",
+  "interpretation": "WASM ownership and allocation/restore diagnostic; concurrent validation, no timing or browser-presentation qualification and no linear-memory shrink claim",
+  "node": "v24.14.0",
+  "platform": "linux",
+  "architecture": "x64",
+  "cpu": "AMD Ryzen 9 5900XT 16-Core Processor",
+  "hashes": {
+    "crates/wasm/pkg/remus_wasm_bg.wasm": "05f7029f3cf2893a3e6eb316bba75bbdc4cf6859e76700d060697eaf87670f19",
+    "crates/wasm/pkg/remus_wasm_node.cjs": "a831ed92ce980f2575c7032d405b0e56c0fa522daa703bd42c1904dc85133d80",
+    "crates/wasm-io/pkg/remus_wasm_io_bg.wasm": "da2c60089ac4489bdc82bea4e48c5726842f468348cde223f80ffe3999292f7e",
+    "crates/wasm-io/pkg/remus_wasm_io_node.cjs": "fb134e228bb2e5566f9b84dbb290ae602fd896b2b19cceed9f671e3170018469",
+    "scripts/document-copy-packaged.mjs": "fef143a0ac8ecb731a4fb3ff7b87afe05818f98685efc65d0836a9bb631ba614",
+    "crates/wasm/src/bindings/arena.rs": "5284a1f4bc1296a192df08aa5f8bc41ff9468a31f0b52eedd3e18954727a0b55",
+    "crates/wasm/src/kernel.rs": "de148722ff68b4ab0309914acf64e64cdf80035b4486810d06b1bf4519e149da",
+    "crates/wasm/src/lib.rs": "4f372880415c9a44e2ead956d39b9f360438771abd0c474475b2bedd95f8611a"
+  },
+  "cycles": 20,
+  "ticksPerCycle": 25,
+  "observations": [
+    {
+      "cycle": 0,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 1,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 2,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 3,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 4,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 5,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 6,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 7,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 8,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 9,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 10,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 11,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 12,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 13,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 14,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 15,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 16,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 17,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 18,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    },
+    {
+      "cycle": 19,
+      "before": {
+        "allocatedSlots": 1728,
+        "checkpoints": 1,
+        "currentEstimatedBytes": 188192,
+        "estimatedBytes": 196016,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 196016,
+        "retiredSlots": 1600,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 2
+      },
+      "after": {
+        "allocatedSlots": 64,
+        "checkpoints": 0,
+        "currentEstimatedBytes": 7824,
+        "estimatedBytes": 7824,
+        "linearMemoryBytes": 4259840,
+        "nextMutationEstimatedBytes": 7824,
+        "retiredSlots": 0,
+        "uniqueNurbsBytes": 0,
+        "uniqueTopologies": 1
+      }
+    }
+  ]
+}
