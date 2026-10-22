@@ -12,8 +12,11 @@ For the bounded recurring proof, run:
 bash scripts/test-o15-proof.sh
 ```
 
+The shared driver also runs directly with `node scripts/test-o15-proof.mjs`,
+including in Windows PowerShell; the Bash script remains a local convenience.
+
 The `Native WASM Parity` workflow registers this proof nightly and on manual
-dispatch on four native hosts; changes to its harness also run it on pull requests.
+dispatch on five native hosts; changes to its harness also run it on pull requests.
 The explicit labels follow the [GitHub runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners):
 
 | Runner | Native OS / architecture | Compiler host |
@@ -22,6 +25,7 @@ The explicit labels follow the [GitHub runner reference](https://docs.github.com
 | `ubuntu-24.04-arm` | Linux / arm64 | `aarch64-unknown-linux-gnu` |
 | `macos-15-intel` | macOS / x86-64 | `x86_64-apple-darwin` |
 | `macos-15` | macOS / arm64 | `aarch64-apple-darwin` |
+| `windows-2025` | Windows / x86-64 | `x86_64-pc-windows-msvc` |
 
 Each host builds the release native runners and both Node-target WASM packages once,
 then executes the 12-cell contract and 6-cell split import/export slices against
@@ -46,11 +50,24 @@ refuses. The verdict binds this host evidence to both matrices' source, compiler
 Node and actual native executable paths/hashes. A runner label alone grants no
 architecture qualification. Local runs without matrix expectations record the
 observed host and leave GitHub labels absent.
+POSIX hosts retain their existing `uname -m` evidence. Windows records
+`osMachine` with `osMachineSource: node:os.machine`, leaves `unameMachine` absent
+as an observation (`null`), and requires fully qualified `.exe` paths before
+hashing and executing both native runners. The Node runtime, compiler host,
+native OS machine and both executed binaries must agree on x86-64.
+Windows checkout disables automatic CRLF conversion before files are read.
+`committed-checkout.json` independently records every tracked file in both package
+roots, exact actual file sets, raw Git blob identity without filters and SHA-256;
+normalizing a modified distribution back to a clean Git status cannot pass.
+This establishes checkout byte identity while committed-package build source
+attribution remains unverified. Fresh and committed archives use separate
+directories, including when both packages have the same version.
 Source-status collection failures and malformed source/toolchain/build metadata
 refuse provenance instead of claiming a clean, identified build. Committed
 package source attribution remains unverified. Registration does not establish
 a hosted pass on the new hosts; actual hosted evidence must qualify each cell.
-Windows and wider nightly geometric coverage remain open under O1.5. WASM hash
+Windows x64 is registered here; this change records no hosted Windows pass.
+Windows arm64 and wider nightly geometric coverage remain open under O1.5. WASM hash
 differences across hosts remain evidence rather than a new byte-identity gate.
 
 The script builds the native facade runner and a release Node-target WASM
