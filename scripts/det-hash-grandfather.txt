@@ -35,9 +35,6 @@ crates/operations/src/copy.rs
 crates/operations/src/defeature.rs
 crates/operations/src/evolution.rs
 crates/operations/src/feature_recognition.rs
-crates/operations/src/fillet/helpers.rs
-crates/operations/src/fillet/mod.rs
-crates/operations/src/fillet/rolling_ball.rs
 crates/operations/src/heal.rs
 crates/operations/src/helix.rs
 crates/operations/src/measure/volume.rs

@@ -1,6 +1,6 @@
 //! Helper types and functions for fillet operations.
 
-use std::collections::HashMap;
+use remus_math::det_hash::DetHashMap as HashMap;
 
 use remus_math::vec::Point3;
 use remus_math::vec::Vec3;
@@ -80,7 +80,7 @@ pub(super) struct FilletEdgeData {
 impl FilletEdgeData {
     pub(super) fn new() -> Self {
         Self {
-            points: HashMap::new(),
+            points: HashMap::default(),
         }
     }
 

@@ -789,6 +789,103 @@ mod tests {
 
     // -- Curve tests -------------------------------------------------------
 
+    /// This degree-one carrier is exactly C(u)=(u,0,0), including the
+    /// repeated internal knot. The complete public sweep must retain both
+    /// nonempty spans, their shared endpoint twice, and seeds far outside the
+    /// closest five. Its distance ordering has a Cartesian closed form.
+    #[test]
+    fn coarse_seeds_cover_nonuniform_repeated_spans_and_rank_cartesian_distance() {
+        let expected = [
+            -4.0, -3.9, -3.8, -3.7, -3.6, -3.5, -3.4, -3.3, -3.2, -3.1, -3.0, -3.0, -2.6, -2.2,
+            -1.8, -1.4, -1.0, -0.6, -0.2, 0.2, 0.6, 1.0,
+        ];
+        for scale in [1.0 / 1024.0, 1.0, 1024.0] {
+            for placed in [false, true] {
+                // A signed axis permutation plus translation is a rigid
+                // placement; powers-of-two scaling keeps the oracle simple.
+                let transform = |x: f64, y: f64, z: f64| {
+                    if placed {
+                        Point3::new((11.0 - z) * scale, (x - 7.0) * scale, (y + 5.0) * scale)
+                    } else {
+                        Point3::new(x * scale, y * scale, z * scale)
+                    }
+                };
+                let curve = NurbsCurve::new(
+                    1,
+                    vec![-4.0, -4.0, -3.0, -3.0, 1.0, 1.0],
+                    [-4.0, -3.0, -3.0, 1.0]
+                        .into_iter()
+                        .map(|u| transform(u, 0.0, 0.0))
+                        .collect(),
+                    vec![1.0; 4],
+                )
+                .expect("valid nonuniform line");
+                let seeds = curve_coarse_seeds_public(&curve, transform(0.125, 3.0, 0.5));
+                assert_eq!(
+                    seeds.len(),
+                    expected.len(),
+                    "complete sweep, not top-five seeds"
+                );
+                assert!(seeds.iter().all(|u| (-4.0..=1.0).contains(u)));
+                let distance_sq = |u: f64| (u - 0.125).powi(2) + 9.25;
+                for pair in seeds.windows(2) {
+                    assert!(
+                        distance_sq(pair[0]) <= distance_sq(pair[1]) + 64.0 * f64::EPSILON,
+                        "scale={scale} placed={placed}: wrongly ordered seeds {pair:?}"
+                    );
+                }
+                let mut by_parameter = seeds;
+                by_parameter.sort_by(f64::total_cmp);
+                for (actual, expected) in by_parameter.into_iter().zip(expected) {
+                    assert!(
+                        (actual - expected).abs() <= 8.0 * f64::EPSILON,
+                        "scale={scale} placed={placed}: {actual} vs {expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// On the exact rational quarter circle, the squared distance to (2,-1)
+    /// is 6-4x+2y, strictly increasing along the arc. Mirroring the query to
+    /// (-1,2) reverses the ranking without changing the complete seed set.
+    #[test]
+    fn coarse_seeds_rank_a_rational_arc_by_independent_circle_geometry() {
+        let curve = quarter_circle();
+        for (query, increasing) in [
+            (Point3::new(2.0, -1.0, 0.0), true),
+            (Point3::new(-1.0, 2.0, 0.0), false),
+        ] {
+            let seeds = curve_coarse_seeds_public(&curve, query);
+            assert_eq!(
+                seeds.len(),
+                11,
+                "the far end of the arc must remain available"
+            );
+            let (first, last) = if increasing { (0.0, 1.0) } else { (1.0, 0.0) };
+            assert_eq!(seeds.first().copied(), Some(first));
+            assert_eq!(seeds.last().copied(), Some(last));
+            for pair in seeds.windows(2) {
+                assert!(
+                    if increasing {
+                        pair[0] < pair[1]
+                    } else {
+                        pair[0] > pair[1]
+                    },
+                    "query={query:?}: circle-distance order is wrong: {pair:?}"
+                );
+            }
+            let mut by_parameter = seeds;
+            by_parameter.sort_by(f64::total_cmp);
+            for (actual, expected) in by_parameter
+                .into_iter()
+                .zip([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
+            {
+                assert!((actual - expected).abs() <= f64::EPSILON);
+            }
+        }
+    }
+
     #[test]
     fn project_to_line() {
         let c = line_curve();

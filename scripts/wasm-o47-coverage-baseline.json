@@ -1073,6 +1073,16 @@
       "reason": "transform/pattern family; O4.7 solid twin pending"
     },
     {
+      "js": "gridPatternJournaled",
+      "rust": "grid_pattern_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
       "js": "guidedSweep",
       "rust": "guided_sweep",
       "file": "bindings/operations.rs",

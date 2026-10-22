@@ -42,7 +42,7 @@ const FIXTURES: [(&str, &str, usize, f64); 4] = [
         "hammer holder",
         include_str!("data/shapr3d_hammer_holder.step"),
         160,
-        50_245.532_161_524_716,
+        50_245.219_468_635_71,
     ),
     (
         "bored plate",

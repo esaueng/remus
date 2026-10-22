@@ -1,0 +1,14 @@
+{
+  "architecture": "Linux x86_64",
+  "baselineSource": "de6352906ebeb7eaa5ff24fbede68d0fffdc8949",
+  "binarySha256": "2a128c27df67fa45c0a3633d7f85c73d826d975950c7d0ae604abbda4d80c2e5",
+  "candidateFilesSha256": {
+    "crates/io/examples/compact_session.rs": "439e854efcc9408610ae62140fe50426c0f5dc1a8a5685c78d32e49988160f8b",
+    "crates/io/src/arena_io.rs": "a46d5be3e52c7d358e6963f66cdd4c3aff4f50256e0beee92fe8cc12d02bf291"
+  },
+  "compiler": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "contention": "concurrent agent builds; diagnostic observations only",
+  "cpu": "AMD Ryzen 9 5900XT",
+  "profile": "ci-test",
+  "samplePlan": "three alternating independent process pairs at20cycles, one each at40/80 compacted;100ticks/cycle"
+}

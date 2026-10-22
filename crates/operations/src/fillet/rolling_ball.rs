@@ -2,7 +2,7 @@
 //! exact cylinders where the swept geometry is one, NURBS elsewhere.
 
 use remus_math::compact_sort::CompactSort;
-use std::collections::{HashMap, HashSet};
+use remus_math::det_hash::{DetHashMap as HashMap, DetHashSet as HashSet};
 
 use remus_blend::BlendFaceOrigins;
 use remus_math::nurbs::fitting::interpolate_with_params;
@@ -50,10 +50,10 @@ fn origins_from_face_specs(
         .iter()
         .map(|&(assembled, final_face)| (assembled.index(), final_face))
         .collect();
-    let mut modified_by_result: HashMap<usize, (FaceId, Vec<FaceId>)> = HashMap::new();
-    let mut generated_by_result: HashMap<usize, (FaceId, Vec<FaceId>)> = HashMap::new();
-    let mut unattributed: HashMap<usize, FaceId> = HashMap::new();
-    let mut modified_presence: HashMap<usize, (FaceId, bool)> = HashMap::new();
+    let mut modified_by_result: HashMap<usize, (FaceId, Vec<FaceId>)> = HashMap::default();
+    let mut generated_by_result: HashMap<usize, (FaceId, Vec<FaceId>)> = HashMap::default();
+    let mut unattributed: HashMap<usize, FaceId> = HashMap::default();
+    let mut modified_presence: HashMap<usize, (FaceId, bool)> = HashMap::default();
 
     for (origin, assembled) in spec_origins.iter().zip(faces_by_spec) {
         if let FaceSpecOrigin::Modified(source) = origin {
@@ -942,11 +942,11 @@ pub fn fillet_rolling_ball_with_origins(
         let shell = topo.shell(solid_data.outer_shell())?;
         let shell_face_ids: Vec<FaceId> = shell.faces().to_vec();
 
-        let mut edge_to_faces: HashMap<usize, Vec<FaceId>> = HashMap::new();
-        let mut face_polygons: HashMap<usize, FacePolygon> = HashMap::new();
-        let mut face_surfaces: HashMap<usize, FaceSurface> = HashMap::new();
-        let mut face_reversed: HashMap<usize, bool> = HashMap::new();
-        let mut vertex_faces: HashMap<usize, Vec<FaceId>> = HashMap::new();
+        let mut edge_to_faces: HashMap<usize, Vec<FaceId>> = HashMap::default();
+        let mut face_polygons: HashMap<usize, FacePolygon> = HashMap::default();
+        let mut face_surfaces: HashMap<usize, FaceSurface> = HashMap::default();
+        let mut face_reversed: HashMap<usize, bool> = HashMap::default();
+        let mut vertex_faces: HashMap<usize, Vec<FaceId>> = HashMap::default();
 
         for &face_id in &shell_face_ids {
             let face = topo.face(face_id)?;
@@ -1030,7 +1030,7 @@ pub fn fillet_rolling_ball_with_origins(
 
         // Precompute edge → polygon entries for O(|filtered_edges|) Phase 2d lookup
         // instead of O(|filtered_edges| × |planar_faces|) nested iteration.
-        let mut edge_to_poly_pos: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+        let mut edge_to_poly_pos: HashMap<usize, Vec<(usize, usize)>> = HashMap::default();
         for (&face_key, poly) in &face_polygons {
             for (i, eid) in poly.wire_edge_ids.iter().enumerate() {
                 edge_to_poly_pos
@@ -1069,7 +1069,7 @@ pub fn fillet_rolling_ball_with_origins(
         }
 
         let target_set: HashSet<usize> = filtered_edges.iter().map(|e| e.index()).collect();
-        let mut vertex_fillet_edges: HashMap<usize, Vec<EdgeId>> = HashMap::new();
+        let mut vertex_fillet_edges: HashMap<usize, Vec<EdgeId>> = HashMap::default();
 
         for &edge_id in &filtered_edges {
             let edge = topo.edge(edge_id)?;
@@ -1087,7 +1087,7 @@ pub fn fillet_rolling_ball_with_origins(
         // The exact section and N-way corner solvers below use the same signed
         // plane constraints, so a stripe endpoint and its corner ball cannot
         // disagree about which side of a support face contains the result.
-        let mut planar_edge_sides: HashMap<usize, f64> = HashMap::new();
+        let mut planar_edge_sides: HashMap<usize, f64> = HashMap::default();
         let mut concavity = crate::query::ConcavityProbe::new(topo, solid);
         for &edge_id in &filtered_edges {
             let edge = topo.edge(edge_id)?;
@@ -1150,14 +1150,14 @@ pub fn fillet_rolling_ball_with_origins(
         let mut torus_corners: HashMap<
             usize,
             (crate::fillet::notch_torus::NotchTorus, [Vec3; 3], usize),
-        > = HashMap::new();
+        > = HashMap::default();
         // (edge index, vertex index) -> setback distance, merged into
         // `setback_map` with the ball stations below.
-        let mut torus_setbacks: HashMap<(usize, usize), f64> = HashMap::new();
+        let mut torus_setbacks: HashMap<(usize, usize), f64> = HashMap::default();
         // Per torus vertex: incident edges [pair_a, pair_b, singleton] and
         // support faces [cap, wall_a, wall_b], for the contact-map overwrite
         // below (exact stations must be bitwise identical everywhere).
-        let mut torus_station_faces: HashMap<usize, ([EdgeId; 3], [usize; 3])> = HashMap::new();
+        let mut torus_station_faces: HashMap<usize, ([EdgeId; 3], [usize; 3])> = HashMap::default();
         for (&vertex_index, incident_edges) in &vertex_fillet_edges {
             if incident_edges.len() != 3 || exact_corner_balls.contains_key(&vertex_index) {
                 continue;
@@ -1392,7 +1392,7 @@ pub fn fillet_rolling_ball_with_origins(
         // Cap-tangency split points per torus vertex, computed now so
         // Phase 3 inserts them into cap polygons (emission reuses the same
         // source; both are pure and deterministic).
-        let mut torus_qs: HashMap<usize, Vec<Point3>> = HashMap::new();
+        let mut torus_qs: HashMap<usize, Vec<Point3>> = HashMap::default();
         for (&vi, (torus, dirs, singleton_pos)) in &torus_corners {
             torus_qs.insert(
                 vi,
@@ -1912,7 +1912,7 @@ pub fn fillet_rolling_ball_with_origins(
         // the arc of an earlier fillet's band), they should share contact
         // points for G1 tangent continuity rather than get a corner patch.
         let mut vertex_fillet_adjacency: HashMap<usize, Vec<(EdgeId, usize, usize)>> =
-            HashMap::new();
+            HashMap::default();
         for &edge_id in &filtered_edges {
             let edge = topo.edge(edge_id)?;
             if let Some(faces) = edge_to_faces.get(&edge_id.index())
@@ -1943,7 +1943,7 @@ pub fn fillet_rolling_ball_with_origins(
                 };
                 Ok(t.normalize().ok())
             };
-        let mut g1_chain_vertices: HashSet<usize> = HashSet::new();
+        let mut g1_chain_vertices: HashSet<usize> = HashSet::default();
         for (vi, adj) in &vertex_fillet_adjacency {
             if adj.len() != 2 {
                 continue;
@@ -1968,7 +1968,7 @@ pub fn fillet_rolling_ball_with_origins(
         //
         // Key: (edge_index, vertex_index) → setback distance along the edge.
         let mut setback_map: HashMap<(usize, usize), f64> = {
-            let mut map = HashMap::new();
+            let mut map = HashMap::default();
             for &edge_id in &filtered_edges {
                 let edge = topo.edge(edge_id)?;
                 let start_vid = edge.start();
@@ -2147,7 +2147,7 @@ pub fn fillet_rolling_ball_with_origins(
             usize,
             Vec<remus_blend::fillet_builder::BlendCrossSection>,
         > = {
-            let mut cache = HashMap::new();
+            let mut cache = HashMap::default();
             for &edge_id in &filtered_edges {
                 let Ok(edge) = topo.edge(edge_id) else {
                     continue;
@@ -2199,7 +2199,7 @@ pub fn fillet_rolling_ball_with_origins(
         //
         // Key: (vertex_index, edge_index, face_index) → contact Point3
         let mut fillet_contact_map: HashMap<(usize, usize, usize), Point3> = {
-            let mut map = HashMap::new();
+            let mut map = HashMap::default();
             // For G1 junctions: keep the first edge's contacts (entry().or_insert).
             for &edge_id in &filtered_edges {
                 let edge = topo.edge(edge_id)?;
@@ -2369,7 +2369,7 @@ pub fn fillet_rolling_ball_with_origins(
         // Key: corner vertex index → (corner C, contact A on fa, fa, contact B on fb, fb).
         #[allow(clippy::type_complexity)]
         let arc_runout: HashMap<usize, (Point3, Point3, usize, Point3, usize)> = {
-            let mut map = HashMap::new();
+            let mut map = HashMap::default();
             for &edge_id in &filtered_edges {
                 // Only arcs run out tangent to a neighbour; straight fillets meet a
                 // perpendicular face whose plane already contains the strip end.
@@ -2434,8 +2434,8 @@ pub fn fillet_rolling_ball_with_origins(
         // loops must survive as topology; `untouched` marks the ones the blend does
         // not reach, whose outer wire can be copied as well instead of rebuilt.
         let (verbatim_faces, untouched_faces) = {
-            let mut verbatim: HashSet<usize> = HashSet::new();
-            let mut untouched: HashSet<usize> = HashSet::new();
+            let mut verbatim: HashSet<usize> = HashSet::default();
+            let mut untouched: HashSet<usize> = HashSet::default();
             for &face_id in &shell_face_ids {
                 let face = topo.face(face_id)?;
                 let has_holes = !face.inner_wires().is_empty();
@@ -2474,7 +2474,7 @@ pub fn fillet_rolling_ball_with_origins(
         // a fixed distance up the shared unfilleted edge), so the sub-edge survives
         // as a shared boundary. Phase 5b reads P to close the patch against it.
         // Key: corner vertex index → preserved trim point P.
-        let mut corner_preserved: HashMap<usize, Point3> = HashMap::new();
+        let mut corner_preserved: HashMap<usize, Point3> = HashMap::default();
         // Analytic seam overrides for the assembly: torus corner patches
         // (Phase 5b) and carried-through analytic faces (below) publish
         // their exact boundary circles here; neighbours pick them up by
@@ -3015,11 +3015,11 @@ pub fn fillet_rolling_ball_with_origins(
         // the blend the caller asked for. The guard after the loop turns that into
         // a typed error naming the edges, so a partial blend can never be mistaken
         // for a complete one.
-        let mut blended_edges: HashSet<usize> = HashSet::new();
-        let mut vertex_contacts: HashMap<usize, Vec<(usize, Point3)>> = HashMap::new();
+        let mut blended_edges: HashSet<usize> = HashSet::default();
+        let mut vertex_contacts: HashMap<usize, Vec<(usize, Point3)>> = HashMap::default();
         // For G1 chain junctions, store the contact points computed by the first
         // edge so the second edge can reuse them exactly.
-        let mut g1_contact_cache: HashMap<usize, (Point3, Point3)> = HashMap::new();
+        let mut g1_contact_cache: HashMap<usize, (Point3, Point3)> = HashMap::default();
 
         for &edge_id in &filtered_edges {
             let edge = topo.edge(edge_id)?;

@@ -32,12 +32,13 @@ use super::geometry::{
     distance, intersections, ray_crossing, roundoff, tangent_order, validate_use,
 };
 use super::*;
-use remus_math::context::{OperationContext, WorkBudgets};
+use remus_math::context::{CancellationToken, OperationContext, WorkBudgets};
 use remus_math::curves::Circle3D;
 use remus_math::curves2d::{Circle2D, Line2D};
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Vec2, Vec3};
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 // ── Fixture builders ────────────────────────────────────────────────────
@@ -1202,32 +1203,39 @@ fn plain_strip_is_one_annulus_with_signed_rim_windings() {
     }
 }
 
-/// Ready-repro (found 2026-09-29 while writing these oracles, not by a
-/// mutant): a strip cut by ONE ruling is two cells joined across the seam
-/// into one annulus (χ = 0, two rim boundaries), but `quotient` treats every
-/// non-seam half-edge as boundary, so the ruling's two halves, both inside
-/// the joined region, are walked as a slit: the rim cycles merge into one
-/// zero-winding cycle and the χ check refuses with `NonManifoldEmbedding`.
-/// Two rulings pass only because each ruling then has one half per region.
+/// A section ruling remains a real boundary. The production adapter retains
+/// the artificial seam as a shared boundary too, yielding two disc sectors.
+/// The former ignored annulus expectation would erase the supplied section.
 #[test]
-#[ignore = "open: quotient refuses a strip cut by a single ruling (interior edge shared by two cells of one periodic region is walked as boundary)"]
-fn one_ruling_joins_two_sectors_into_one_annulus() {
-    let uses = strip(TAU, false, &[3.0], &[]);
-    let a = build_cylinder(&uses, &context()).unwrap();
-    assert_eq!(a.periodic_regions.len(), 1);
-    let r = &a.periodic_regions[0];
-    assert_eq!(r.cells.len(), 2);
-    // V = 4 (two seam heights identified plus the ruling's ends), E = 6
-    // (four rim pieces, the ruling once, the seam once), F = 2.
-    assert_eq!(r.euler_characteristic, 0);
-    assert_eq!(r.boundaries.len(), 2);
-    assert_eq!(winding_of(&a, r, 0), 1);
-    assert_eq!(winding_of(&a, r, 2), -1);
-    near(r.area, 12.0 * PI, 1e-9);
+fn one_ruling_preserves_two_sectors_with_shared_section_and_seam() {
+    for seam_up in [false, true] {
+        let uses = strip(TAU, seam_up, &[3.0], &[]);
+        let a = build_cylinder(&uses, &context()).unwrap();
+        assert_eq!(a.periodic_regions.len(), 2);
+        let mut areas = Vec::new();
+        for r in &a.periodic_regions {
+            assert_eq!(r.cells.len(), 1);
+            assert_eq!(r.euler_characteristic, 1);
+            assert_eq!(r.boundaries.len(), 1);
+            assert_eq!(r.boundaries[0].1, 0);
+            let sources: BTreeSet<_> = r.boundaries[0]
+                .0
+                .iter()
+                .map(|&h| a.half_edges[h].source.use_id)
+                .collect();
+            assert!(sources.contains(&10), "supplied ruling must survive");
+            assert_eq!(sources.intersection(&BTreeSet::from([1, 3])).count(), 1);
+            areas.push(r.area);
+        }
+        areas.sort_by(f64::total_cmp);
+        near(areas[0], 18.0, 1e-12);
+        near(areas[1], 6.0 * (TAU - 3.0), 1e-12);
+        assert_eq!(a.identifications.len(), 2);
+    }
 }
 
-/// The accepted shape of the same geometry today: two rulings, so each
-/// ruling has one half per periodic region.
+/// Two rulings bound two physical sectors; the seam-spanning sector joins
+/// two lifted cells while each ruling has one half per periodic region.
 #[test]
 fn two_rulings_give_a_joined_sector_and_a_separate_one() {
     let uses = strip(TAU, false, &[1.0, 3.0], &[]);
@@ -1252,6 +1260,182 @@ fn two_rulings_give_a_joined_sector_and_a_separate_one() {
     near(lone.area, 12.0, 1e-9);
     near(joined.area, 6.0 * (TAU - 2.0), 1e-9);
     assert_eq!(a.identifications.len(), 2);
+}
+
+/// With two close rulings, the seam-adjacent cells have distinct ruling
+/// boundaries whose 3D endpoints can lie inside linear tolerance. They share
+/// no non-seam edge and must join across the declared seam. Proximity would
+/// falsely keep them apart, emitting three periodic regions instead of two.
+#[test]
+fn close_distinct_rulings_preserve_topology_area_and_source_spans() {
+    for (u0, u1) in [
+        (1.0, 1.0 + 5e-9),
+        (1.0, 1.0 + 5e-7),
+        (1.0, 1.0 + 5e-3),
+        (1e-8, TAU - 1e-8),
+    ] {
+        for linear in [1e-10, 1e-7, 1e-3] {
+            for seam_up in [false, true] {
+                for bands in [&[][..], &[0.5, 2.0][..]] {
+                    let uses = strip(TAU, seam_up, &[u0, u1], bands);
+                    let original = format!("{uses:?}");
+                    let ctx = context().with_tolerance(Tolerance {
+                        linear,
+                        ..Tolerance::default()
+                    });
+                    let a = build_cylinder(&uses, &ctx).unwrap();
+                    assert_eq!(a.periodic_regions.len(), 2 * (bands.len() + 1));
+                    assert_eq!(a.identifications.len(), bands.len() + 2);
+                    let heights: Vec<_> = std::iter::once(0.0)
+                        .chain(bands.iter().copied())
+                        .chain(std::iter::once(3.0))
+                        .collect();
+                    for dz in heights.windows(2).map(|v| v[1] - v[0]) {
+                        for (cells, width) in [(1, u1 - u0), (2, TAU - (u1 - u0))] {
+                            let matches = a
+                                .periodic_regions
+                                .iter()
+                                .filter(|r| {
+                                    r.cells.len() == cells
+                                        && (r.area - 2.0 * width * dz).abs() < 1e-12
+                                })
+                                .count();
+                            assert_eq!(matches, 1, "u={u0}..{u1}, dz={dz}, cells={cells}");
+                        }
+                    }
+                    near(
+                        a.periodic_regions.iter().map(|r| r.area).sum(),
+                        12.0 * PI,
+                        1e-12,
+                    );
+                    for r in &a.periodic_regions {
+                        assert_eq!(r.euler_characteristic, 1);
+                        assert_eq!(r.boundaries.len(), 1);
+                        assert_eq!(r.boundaries[0].1, 0);
+                        let mut ruling_uses = BTreeSet::new();
+                        for &h in &r.boundaries[0].0 {
+                            let e = &a.half_edges[h];
+                            assert!(![1, 3].contains(&e.source.use_id), "seam must be interior");
+                            let parent = uses
+                                .iter()
+                                .find(|u| u.source.use_id == e.source.use_id)
+                                .unwrap();
+                            assert_eq!(e.source, parent.source);
+                            for end in 0..2 {
+                                near(
+                                    e.source_range[end],
+                                    parent.source_parameter(e.range[end]),
+                                    1e-12,
+                                );
+                                assert!(
+                                    (e.endpoints_3d[end] - parent.point_3d(e.range[end])).length()
+                                        < 1e-12
+                                );
+                            }
+                            if [10, 11].contains(&e.source.use_id) {
+                                ruling_uses.insert(e.source.use_id);
+                                // Native ruling parameter maps z=0..3 to 0..1,
+                                // independently of half-edge traversal sense.
+                                near(e.source_range[0], e.endpoints_3d[0].z() / 3.0, 1e-12);
+                                near(e.source_range[1], e.endpoints_3d[1].z() / 3.0, 1e-12);
+                            }
+                        }
+                        assert_eq!(ruling_uses, BTreeSet::from([10, 11]));
+                    }
+                    assert_eq!(format!("{uses:?}"), original, "input uses are read-only");
+                    // Reversing source uses swaps both native intervals and
+                    // endpoint certificates; canonical arrangement is stable.
+                    let mut reversed = uses.clone();
+                    reversed.reverse();
+                    for u in &mut reversed {
+                        u.range.swap(0, 1);
+                        u.source_range.swap(0, 1);
+                        u.endpoints.swap(0, 1);
+                        u.endpoints_3d.swap(0, 1);
+                    }
+                    let b = build_cylinder(&reversed, &ctx).unwrap();
+                    assert_eq!(a.half_edges, b.half_edges);
+                    assert_eq!(a.periodic_regions, b.periodic_regions);
+                }
+            }
+        }
+    }
+}
+
+/// Quotient work stays bounded by the chart's edges/cells rather than
+/// pairwise endpoint comparisons. Every smaller work budget must stop the
+/// same successful calculation, and cancellation remains observable.
+#[test]
+fn quotient_grid_work_is_linear_and_every_budget_prefix_refuses() {
+    for n in [2_u32, 4, 8] {
+        let rulings: Vec<_> = (1..=n)
+            .map(|i| TAU * f64::from(i) / f64::from(n + 1))
+            .collect();
+        let bands: Vec<_> = (1..=n)
+            .map(|i| 3.0 * f64::from(i) / f64::from(n + 1))
+            .collect();
+        let uses = strip(TAU, false, &rulings, &bands);
+        let planar = build(&uses).unwrap();
+        let ctx = context();
+        let mut work = Work::new(&ctx);
+        let mut a = planar.clone();
+        super::periodic::quotient(&mut a, &lookup(&uses), cylinder_domain(), &mut work).unwrap();
+        let spent = ctx.budgets.march_steps - work.remaining;
+        assert!(spent <= 16 * (a.half_edges.len() + a.regions.len() + uses.len()));
+        assert_eq!(
+            a.periodic_regions.len(),
+            usize::try_from(n * (n + 1)).unwrap()
+        );
+        near(
+            a.periodic_regions.iter().map(|r| r.area).sum(),
+            12.0 * PI,
+            1e-11,
+        );
+        for r in &a.periodic_regions {
+            assert_eq!(r.euler_characteristic, 1);
+            assert_eq!(r.boundaries.len(), 1);
+            assert_eq!(r.boundaries[0].1, 0);
+        }
+        if n == 2 {
+            for steps in 0..spent {
+                let ctx = budget(steps);
+                let mut work = Work::new(&ctx);
+                assert_eq!(
+                    super::periodic::quotient(
+                        &mut planar.clone(),
+                        &lookup(&uses),
+                        cylinder_domain(),
+                        &mut work
+                    ),
+                    Err(ArrangementError::WorkBudgetExceeded),
+                    "budget {steps} of {spent}"
+                );
+            }
+            let ctx = budget(spent);
+            let mut work = Work::new(&ctx);
+            super::periodic::quotient(
+                &mut planar.clone(),
+                &lookup(&uses),
+                cylinder_domain(),
+                &mut work,
+            )
+            .unwrap();
+            assert_eq!(work.remaining, 0);
+            let cancellation = CancellationToken::new();
+            let ctx = context().with_cancellation(cancellation.clone());
+            cancellation.cancel();
+            let mut work = Work::new(&ctx);
+            assert_eq!(
+                super::periodic::quotient(
+                    &mut planar.clone(),
+                    &lookup(&uses),
+                    cylinder_domain(),
+                    &mut work
+                ),
+                Err(ArrangementError::Cancelled)
+            );
+        }
+    }
 }
 
 #[test]
