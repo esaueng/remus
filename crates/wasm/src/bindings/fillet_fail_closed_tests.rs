@@ -446,6 +446,65 @@ fn batch_variable_setback_mismatch_keeps_the_input_and_code() {
 }
 
 #[test]
+fn batch_variable_fillet_malformed_numeric_specs_are_typed_and_atomic() {
+    let mut kernel = BrepKernel::new();
+    let solid = make_box(&mut kernel, 10.0, 10.0, 10.0);
+    let edge = edge_handles(&mut kernel, solid)[0];
+    let before = kernel.serialize_solids(&[solid]).unwrap();
+    let counts = live_counts(&kernel);
+    let slots = kernel.topo().allocated_slot_count();
+    let journal = kernel.journal_summary();
+    for field in ["radius", "start", "end", "startRadius", "endRadius"] {
+        let mut spec = serde_json::json!({"edge": edge, "law": "constant", "radius": 1.0});
+        spec[field] = serde_json::json!("one");
+        let direct = serde_json::to_value(kernel.fillet_variable_detailed_impl(
+            solid,
+            std::slice::from_ref(&spec),
+            false,
+        ))
+        .unwrap();
+        assert_eq!(direct["status"], "error", "{field}: {direct}");
+        assert_eq!(direct["code"], "invalid_argument");
+        assert_eq!(direct["category"], "invalid_input");
+        for operation in ["filletVariable", "filletVariableDetailed"] {
+            let request = [
+                op(
+                    operation,
+                    serde_json::json!({"solid": solid, "specs": [spec]}),
+                ),
+                op(
+                    "volume",
+                    serde_json::json!({"solid": solid, "deflection": 0.01}),
+                ),
+            ];
+            let legacy = run(&mut kernel, &request);
+            let structured = run_v2(&mut kernel, &request);
+            if operation == "filletVariable" {
+                assert!(legacy[0]["error"].as_str().unwrap().contains(field));
+                assert_eq!(structured[0]["error"]["code"], "invalid_argument");
+                assert_eq!(structured[0]["error"]["category"], "invalid_input");
+                assert!(
+                    structured[0]["error"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains(field)
+                );
+            } else {
+                assert_eq!(legacy[0]["ok"], direct);
+                assert_eq!(structured[0]["ok"], direct);
+            }
+            for output in [&legacy, &structured] {
+                assert!((output[1]["ok"].as_f64().unwrap() - 1000.0).abs() < 1e-9);
+            }
+            assert_eq!(kernel.serialize_solids(&[solid]).unwrap(), before);
+            assert_eq!(live_counts(&kernel), counts);
+            assert_eq!(kernel.topo().allocated_slot_count(), slots);
+            assert_eq!(kernel.journal_summary(), journal);
+        }
+    }
+}
+
+#[test]
 fn batch_variable_setback_rejects_a_present_nonnumeric_distance() {
     let mut kernel = BrepKernel::new();
     let input = make_box(&mut kernel, 10.0, 10.0, 10.0);

@@ -393,3 +393,235 @@ fn native_vector_area_declines_the_complement_and_keeps_descending_carrier_ident
         }
     }
 }
+
+fn holed_hemisphere(radius: f64, matrix: Mat4, side: f64, hole_z: f64) -> ChartFixture {
+    holed_hemisphere_tilt(radius, matrix, side, hole_z, 0.0)
+}
+
+fn holed_hemisphere_tilt(
+    radius: f64,
+    matrix: Mat4,
+    side: f64,
+    hole_z: f64,
+    tilt: f64,
+) -> ChartFixture {
+    let mut topo = Topology::new();
+    let mut mesh = TriangleMesh {
+        positions: vec![],
+        normals: vec![],
+        indices: vec![],
+    };
+    let mut pool = DetHashMap::default();
+    let mut map = super::super::PointMergeMap::default();
+    let center = matrix.mul_point(Point3::new(0.0, 0.0, 0.0));
+    let mut wires = Vec::new();
+    for (ring, z) in [0.0_f64, hole_z].into_iter().enumerate() {
+        let angle = if ring == 0 { 0.0 } else { tilt };
+        let axis = Vec3::new(angle.sin(), 0.0, angle.cos());
+        let ring_radius = radius * (1.0 - z * z).sqrt();
+        let circle = Circle3D::with_axes(
+            matrix.mul_point(Point3::new(
+                axis.x() * z * radius,
+                0.0,
+                axis.z() * z * radius,
+            )),
+            direction(matrix, axis),
+            ring_radius,
+            direction(matrix, Vec3::new(angle.cos(), 0.0, -angle.sin())),
+            direction(matrix, Vec3::new(0.0, 1.0, 0.0)),
+        )
+        .unwrap();
+        let mut vertices = Vec::new();
+        let mut ring_ids = Vec::new();
+        for i in 0..64 {
+            let p = circle.evaluate(std::f64::consts::TAU * f64::from(i) / 64.0);
+            let id = mesh.positions.len() as u32;
+            mesh.positions.push(p);
+            mesh.normals.push((p - center) * (1.0 / radius));
+            map.insert(point_merge_key(p, super::MERGE_GRID), id);
+            ring_ids.push(id);
+            if i % 16 == 0 {
+                vertices.push(topo.add_vertex(Vertex::new(p, 1e-7)));
+            }
+        }
+        let mut uses = Vec::new();
+        for i in 0..4 {
+            let mut edge = Edge::new(
+                vertices[i],
+                vertices[(i + 1) % 4],
+                EdgeCurve::Circle(circle.clone()),
+            );
+            edge.set_trim(Some((
+                std::f64::consts::FRAC_PI_2 * i as f64,
+                std::f64::consts::FRAC_PI_2 * (i + 1) as f64,
+            )));
+            let id = topo.add_edge(edge);
+            pool.insert(
+                id.index(),
+                (0..=16).map(|j| ring_ids[(i * 16 + j) % 64]).collect(),
+            );
+            uses.push(OrientedEdge::new(id, true));
+        }
+        // The inner wire has opposite traversal. A south hemisphere reverses
+        // both loops, preserving the same retained latitude band.
+        if (z != 0.0) == (side > 0.0) {
+            uses = uses
+                .into_iter()
+                .rev()
+                .map(|e| OrientedEdge::new(e.edge(), false))
+                .collect();
+        }
+        wires.push(topo.add_wire(Wire::new(uses, true).unwrap()));
+    }
+    let sphere =
+        SphericalSurface::with_axis(center, radius, direction(matrix, Vec3::new(0.0, 0.0, 1.0)))
+            .unwrap();
+    let face = Face::new(wires[0], vec![wires[1]], FaceSurface::Sphere(sphere));
+    (topo, face, mesh, pool, map)
+}
+
+#[test]
+fn holed_hemisphere_keeps_both_shared_loops_and_the_selected_side() {
+    for radius in [0.001, 1.0, 1000.0] {
+        for side in [-1.0, 1.0] {
+            for (hole_height, tilt) in [(0.5, 0.0_f64), (0.8, 0.58)] {
+                for deflection in [0.03, 0.003] {
+                    let matrix = Mat4::translation(13.0 * radius, -7.0 * radius, 3.0 * radius)
+                        * Mat4::rotation_y(0.53)
+                        * Mat4::rotation_x(0.21);
+                    let inverse = matrix.inverse().unwrap();
+                    let (topo, face, mut mesh, pool, mut map) =
+                        holed_hemisphere_tilt(radius, matrix, side, hole_height * side, tilt);
+                    let positions = mesh.positions.clone();
+                    let normals = mesh.normals.clone();
+                    assert!(
+                        super::tessellate_sphere_cap_shared(
+                            &topo,
+                            &face,
+                            deflection * radius,
+                            0.35,
+                            false,
+                            false,
+                            &pool,
+                            &mut mesh,
+                            &mut map
+                        )
+                        .unwrap()
+                    );
+                    assert_eq!(&mesh.positions[..positions.len()], positions);
+                    assert_eq!(&mesh.normals[..normals.len()], normals);
+                    let mut uses = std::collections::BTreeMap::new();
+                    let mut area = 0.0;
+                    for t in mesh.indices.chunks_exact(3) {
+                        let [a, b, c] = [t[0], t[1], t[2]].map(|i| {
+                            (inverse.mul_point(mesh.positions[i as usize])
+                                - Point3::new(0.0, 0.0, 0.0))
+                                * (1.0 / radius)
+                        });
+                        let normal = (b - a).cross(c - a);
+                        assert!(normal.dot((a + b + c) * (1.0 / 3.0)) > 0.0);
+                        area += normal.length() * 0.5;
+                        for p in [a, b, c] {
+                            assert!((p.length() - 1.0).abs() < 1e-10);
+                            assert!(p.z() * side >= -1e-10);
+                            // The removed tilted cap is exactly n.p > hole_height.
+                            // A linear halfspace check at all facet vertices also
+                            // excludes every interior point of the flat triangle.
+                            let axis = Vec3::new(tilt.sin(), 0.0, tilt.cos());
+                            assert!(side * p.dot(axis) <= hole_height + 1e-10);
+                        }
+                        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                            uses.entry((a.min(b), a.max(b)))
+                                .or_insert_with(Vec::new)
+                                .push(a < b);
+                        }
+                    }
+                    let boundary: std::collections::BTreeSet<_> = pool
+                        .values()
+                        .flat_map(|ids| ids.windows(2).map(|p| (p[0].min(p[1]), p[0].max(p[1]))))
+                        .collect();
+                    for edge in &boundary {
+                        assert_eq!(uses.get(edge).unwrap().len(), 1, "shared segment {edge:?}");
+                    }
+                    for (edge, directions) in uses {
+                        if !boundary.contains(&edge) {
+                            assert_eq!(directions.len(), 2);
+                            assert_ne!(directions[0], directions[1]);
+                        }
+                    }
+                    // Hemisphere minus a cap of height (1-hole_height), independent
+                    // of tilt while that entire cap remains inside the hemisphere.
+                    let exact_area = std::f64::consts::TAU * hole_height;
+                    assert!(
+                        (area - exact_area).abs() < exact_area * deflection,
+                        "area={area} expected={exact_area} tilt={tilt}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn holed_hemisphere_defers_unsupported_boundaries_without_mutation() {
+    for variant in 0..4 {
+        let (mut topo, mut face, mut mesh, pool, mut map) = holed_hemisphere(
+            1.0,
+            Mat4::identity(),
+            1.0,
+            if variant == 0 { -0.5 } else { 0.5 },
+        );
+        if variant == 1 {
+            face = Face::new(face.outer_wire(), vec![], face.surface().clone());
+        }
+        if variant == 2 {
+            face = Face::new(
+                face.outer_wire(),
+                vec![face.inner_wires()[0]; 2],
+                face.surface().clone(),
+            );
+        }
+        if variant == 3 {
+            let partial = topo.wire(face.outer_wire()).unwrap().edges()[..3].to_vec();
+            let outer = topo.add_wire(Wire::new(partial, false).unwrap());
+            face = Face::new(outer, face.inner_wires().to_vec(), face.surface().clone());
+        }
+        let before = (
+            mesh.positions.clone(),
+            mesh.normals.clone(),
+            mesh.indices.clone(),
+            map.clone(),
+        );
+        let FaceSurface::Sphere(sphere) = face.surface() else {
+            panic!("sphere fixture")
+        };
+        assert!(
+            !super::tessellate_sphere_holed_hemisphere_shared(
+                &topo, &face, sphere, 0.01, 0.35, &pool, &mut mesh, &mut map
+            )
+            .unwrap()
+        );
+        assert_eq!((mesh.positions, mesh.normals, mesh.indices, map), before);
+    }
+}
+
+#[test]
+fn holed_hemisphere_budget_refusal_restores_the_attempt() {
+    let (topo, face, mut mesh, pool, mut map) = holed_hemisphere(1.0, Mat4::identity(), 1.0, 0.5);
+    let before = (
+        mesh.positions.clone(),
+        mesh.normals.clone(),
+        mesh.indices.clone(),
+        map.clone(),
+    );
+    let FaceSurface::Sphere(sphere) = face.surface() else {
+        panic!("sphere fixture")
+    };
+    let result = super::tessellate_sphere_holed_hemisphere_shared(
+        &topo, &face, sphere, 1e-14, 0.0, &pool, &mut mesh, &mut map,
+    );
+    assert!(
+        matches!(result,Err(crate::OperationsError::InvalidInput{reason}) if reason.contains("work limit"))
+    );
+    assert_eq!((mesh.positions, mesh.normals, mesh.indices, map), before);
+}
