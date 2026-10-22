@@ -22,19 +22,21 @@ REPO_ID = int(re.search(r"github.repository_id == '([0-9]+)'", TEXT)[1])
 class Context(dict):
     def __getattr__(self, key):
         value = self.get(key)
-        return Context(value) if isinstance(value, dict) else value
+        return Context(value or {}) if value is None or isinstance(value, dict) else value
 
 
-def evaluate(expression, github, variables):
+def evaluate(expression, github, variables, needs=None):
     source = expression[3:-3].replace("&&", " and ").replace("||", " or ")
     source = re.sub(r"\btrue\b(?!\')", "True", source)
     source = re.sub(r"\bfalse\b(?!\')", "False", source)
+    source = source.replace('needs.queue-trust', 'needs.queue_trust')
     return eval(
         source,
         {"__builtins__": {}},
         {
             "github": Context(github),
             "vars": Context(variables),
+            "needs": Context({'queue_trust': (needs or {}).get('queue-trust', {})}),
             "fromJSON": json.loads,
             "format": lambda template, value: template.format(value),
         },
@@ -86,8 +88,39 @@ class DirectFleetTests(unittest.TestCase):
             for expression in EXPRESSIONS:
                 self.assertEqual(
                     evaluate(expression, self.github, self.variables),
-                    {"group": "ci-trusted-main", "labels": target},
+                    {"group": "ci-trusted-main", "labels": "ci-server-jane-5gb" if target == "ci-server-jane" else target},
                 )
+
+    def test_merge_groups_need_successful_queue_trust_for_the_exact_sha(self):
+        self.github.update(event_name="merge_group", sha="a" * 40, event={})
+        for result, sha, expected in (
+            ("success", "a" * 40, {"group": "ci-trusted-main", "labels": "ci-server-jane-5gb"}),
+            ("success", "b" * 40, "ubuntu-24.04"),
+            ("failure", "a" * 40, "ubuntu-24.04"),
+            ("skipped", "a" * 40, "ubuntu-24.04"),
+        ):
+            needs = {"queue-trust": {"result": result, "outputs": {"sha": sha}}}
+            for expression in EXPRESSIONS:
+                with self.subTest(result=result, sha=sha):
+                    self.assertEqual(evaluate(expression, self.github, self.variables, needs), expected)
+
+    def test_queue_trust_cannot_override_disabled_or_other_fleet_targets(self):
+        self.github.update(event_name="merge_group", sha="a" * 40, event={})
+        needs = {"queue-trust": {"result": "success", "outputs": {"sha": "a" * 40}}}
+        for enabled, target in (("false", "ci-server-jane"), ("true", "ci-server-john"),
+                                ("true", "github-hosted")):
+            variables = {"CI_FLEET_ENABLED": enabled, "CI_FLEET_TARGET": target}
+            for expression in EXPRESSIONS:
+                with self.subTest(enabled=enabled, target=target):
+                    self.assertEqual(evaluate(expression, self.github, variables, needs), "ubuntu-24.04")
+
+    def test_queue_trust_missing_outputs_fall_back_to_hosted(self):
+        self.github.update(event_name="merge_group", sha="a" * 40, event={})
+        for needs in ({}, {"queue-trust": {}}, {"queue-trust": {"result": "success"}},
+                      {"queue-trust": {"result": "success", "outputs": {}}}):
+            for expression in EXPRESSIONS:
+                with self.subTest(needs=needs):
+                    self.assertEqual(evaluate(expression, self.github, self.variables, needs), "ubuntu-24.04")
 
     def test_untrusted_events_never_schedule_on_home_fleet(self):
         self.variables["CI_FLEET_LIGHT_POOL_ENABLED"] = "true"
@@ -155,7 +188,7 @@ class DirectFleetTests(unittest.TestCase):
             for enabled in ("true", "false", "", None):
                 variables = dict(self.variables, CI_FLEET_TARGET=target,
                                  CI_FLEET_LIGHT_POOL_ENABLED=enabled)
-                expected = {"group": "ci-trusted-main", "labels": target}
+                expected = {"group": "ci-trusted-main", "labels": "ci-server-jane-5gb" if target == "ci-server-jane" else target}
                 self.assertEqual(evaluate(heavy, self.github, variables), expected)
                 if enabled == "true":
                     expected = {"group": "ci-trusted-main",

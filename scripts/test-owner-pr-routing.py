@@ -39,7 +39,7 @@ class OwnerRoutingTests(unittest.TestCase):
                            ("docs", "docs")):
             with self.subTest(name=name):
                 block = job(name)
-                self.assertIn("needs: [changes, repo-policy, secrets-scan]", block)
+                self.assertIn("needs: [queue-trust, changes, repo-policy, secrets-scan]", block)
                 self.assertNotIn("needs.owner-pr", block)
                 self.assertRegex(block, r"runs-on: [*&]fleet(?:-light)?-runner")
                 self.assertIn(f"needs.changes.outputs.{flag} == 'true'", block)
@@ -57,7 +57,7 @@ class OwnerRoutingTests(unittest.TestCase):
 
     def test_ci_pass_rejects_vps_failure_or_cancellation(self):
         block = job("ci-pass")
-        self.assertIn("needs: [changes, repo-policy,", block)
+        self.assertIn("needs: [queue-trust, changes, repo-policy,", block)
         self.assertIn("if: always()", block)
         command = block.rsplit("        run: |\n", 1)[1].strip()
         for result, expected in (("success", 0), ("failure", 1), ("cancelled", 1)):
