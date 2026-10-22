@@ -1,0 +1,67 @@
+name: Windows ARM Tooling Probe
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/windows-arm-tooling.yml'
+      - 'scripts/platform-probes/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-arm-tooling-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_BUILD_JOBS: '1'
+  RUST_MIN_STACK: '33554432'
+  RUSTUP_TOOLCHAIN: '1.96.0-aarch64-pc-windows-msvc'
+  PROBE_OUT: target/windows-arm-tooling
+
+jobs:
+  tooling:
+    name: Native ARM Node and Rust with disclosed build helpers
+    runs-on: windows-11-arm
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Initialize failure evidence
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:PROBE_OUT | Out-Null
+          @{runner_os=$env:RUNNER_OS; runner_arch=$env:RUNNER_ARCH; checkout_sha=$env:GITHUB_SHA; scope='tooling only; no Remus geometry qualification'} | ConvertTo-Json | Set-Content -Encoding utf8NoBOM "$env:PROBE_OUT/workflow.json"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          architecture: arm64
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: '1.96.0-aarch64-pc-windows-msvc'
+          targets: wasm32-unknown-unknown
+      # These pinned helpers use x64 Windows assets. Emulation is disclosed
+      # separately from the actual native Node/compiler/program PE identities.
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: wasm-pack@0.15.0,wasm-bindgen@0.2.126
+          checksum: true
+          fallback: none
+      - name: Check PE and proof controls
+        run: node --test scripts/platform-probes/windows-arm.test.mjs
+      - name: Execute native and installed WASM tooling probe
+        timeout-minutes: 20
+        run: node scripts/platform-probes/windows-arm.mjs "$env:PROBE_OUT"
+      - name: Retain probe and failure evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-arm-tooling-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ env.PROBE_OUT }}/
+          if-no-files-found: error
+          retention-days: 14
