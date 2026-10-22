@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792683446378,
+  "lastUpdate": 1792686362628,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -127639,6 +127639,306 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 86151,
             "range": "± 337",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "c356a43ee9f5ad0180e98b39b504ef7a3f6b1747",
+          "message": "fix(fillet): keep reversed planes reversed and pair run-out contacts by line (#1249)\n\n## Change\n\nThree straight-edge fillets that come up a lot in real parts failed the\nfillet postcondition through `fillet_cascade` / `Model::fillet`. There\nare four root causes: two in the rolling-ball rebuild and two in the\nwalking engine.\n\n**Rolling-ball rebuild (`crates/operations/src/fillet/rolling_ball.rs`,\n`helpers.rs`)**\n1. **Reversed planes rebuilt unreversed** (cases 2 and 3). A cut's tool\nfaces are reversed planes. Phase 1 read their stored normal as the\noutward normal, and Phase 3 re-emitted them as unreversed\n`FaceSpec::Planar`. So every groove, slot or pocket face in the body\ncame out flipped, even far from the blend. That gives 8 bad edges per\ngroove, which is the 4/8/16 \"inconsistent face orientations\" signature.\nNow reversed planes are recorded as their outward plane, and\n`FacePolygon::spec` rebuilds them reversed in their original wire order.\n- Case 3 bisect: the groove is what breaks it. The holes alone pass, and\nthe groove alone fails the rolling-ball rebuild.\n2. **Run-out contact pairing** (case 1). At a fillet endpoint on a side\nface, the two strip contacts were paired by how close they are to points\none radius along the boundary edges. At a T-junction (tab narrower than\nthe plate), the plate-top contact sits on the *extension* of the side\nface's bottom edge, past the corner. The x = 30 side face picked the\nwrong one and wound through itself. Contacts now pair by the boundary\nline they lie on, and proximity only breaks a tie.\n\n**Walking engine (`crates/blend/src/fillet_builder.rs`)**\n3. **Wire traversal ignored face reversal.** `wire_traversal_of`\nreturned raw wire flags. Against a reversed groove floor or ceiling, the\nstitched wall loop \"could not alternate\" and fell back to a misoriented\ndetached band. It now returns the effective sense.\n4. **Corner-patch normal for concave fillets.** `stitch_end` Case B\nalways used the convex end normal. **The flush-tab control the issue\nlists as passing was actually broken:** both end patches faced inward,\nand its volume showed only 1/3 of the added fillet volume (12.88 instead\nof 38.63). The sign now comes from the patch's own winding.\n\nCases 1–3 now go through the rolling-ball engine and stay analytic\n(planes plus cylinders). The walking engine also handles cases 2 and 3\nand the flush control on its own.\n\n**Not fixed:** the walking engine still fails case 1 by itself. Its\ntrimmer cuts the contact line across the whole plate top instead of\nstopping it at the tab's side faces. The cascade doesn't need it there.\nIt belongs with curved-face trimming (B4).\n\n## Verification\n\n- New `crates/operations/tests/regress_fillet_runout_reversed.rs` covers\nthe T-junction, the flush tab (cascade and walking), the groove lips\n(cascade, rolling-ball, walking) and the bracket in all four groove/hole\ncombinations. Each case is checked for:\n  - no NURBS faces and a bounded face count,\n  - `validate_solid` valid,\n  - a watertight welded mesh,\n- volume matching the closed form within 1e-6 relative at two\ndeflections below the clamp (L·r²(1−π/4) per edge, plus the\nprofile/tab/groove/hole volumes),\n- ray-cast probes at the run-out ends, the removed or added corner, and\nthe ball centre.\n- All 4 tests fail on `main` and pass on this branch.\n- `cargo test --release -p remus-blend -p remus-operations -p remus-io\n-p remus-wasm -p remus` passes. The only failures were the existing\ntests updated below.\n- `cargo clippy --all-targets -- -D warnings` passes on the touched\ncrates.\n- `scripts/check-approx-census.py` matches all 52 committed rows.\n`check-boundaries.sh`, `check-doc-paths.sh` and `check-det-hash.sh`\npass.\n\n**Existing tests updated (please review):**\n- `crates/io/tests/fillet_preserves_input.rs` pinned `engine == Walking`\non a pocketed plate. It only did that because the rolling-ball rebuild\nused to fail on the pockets' reversed faces; the cascade now takes the\nrolling-ball route there. Each input-preservation contract now runs on\nboth the cascade (asserting `RollingBall`) and the walking builder\ncalled directly, so the walking copy-on-write coverage stays. The\narena-independence test calls the walking builder directly.\n- `gridfinity_d5_box_with_filleted_lip` pinned a *refusal*. The reason\ngiven was that the rolling-ball answer had 22 orientation-inconsistent\nedges, which is fix 1. It now pins a checked success:\n  - the input lip is untouched,\n  - F + 8 faces,\n  - valid under both validators,\n  - a watertight mesh,\n- removed volume within 3% of a closed-form estimate (approximate: the\nNURBS corner patches' tessellated volume moves about 0.1 mm³ with\ndeflection),\n  - six ray-cast probes on a straight run and at a corner,\n  - and the downstream fuse still analytic.\n- Consumer-visible: the D5 peak-rim fillet now succeeds where it used to\nrefuse.\n\n## Compatibility and risks\n\n- No public API, format, unit or tolerance changes.\n- Behavior change: the cascade now picks the rolling-ball rebuild on cut\nbodies where it used to fail and fall through to walking (pocketed\nplate, gridfinity lip). Face counts on those results differ from the\nwalking output.\n- New dev-dependency only: `remus-blend` for `remus-io` tests (L2 under\nL3, so allowed). No runtime dependency changes.\n- Not fixed here, the same bug class in legacy paths: the v1 flat bevel\nand `fillet_variable` still read reversed planes' stored normals. They\nare outside the cascade.\n\n## WASM module tier\n\nNone\n\n---\n_Generated by [Claude\nCode](https://claude.ai/code/session_01WWHXfByxBwoRapmJ7kHtJY)_\n\n## Follow-up: exact rebuild of untouched curved faces (482d2ac)\n\nMerged with main, this PR stopped refusing the F7 groove-lip fillet on\nthe filleted, holed bracket, and that exposed a bug already on main.\n- The rolling-ball rebuild re-emits every face from its vertex\npositions.\n- An untouched face such as an F5 corner ledge kept its arc edge only if\na cylindrical spec happened to mint it. Otherwise the arc came back as a\nstraight chord on both faces.\n- The result still validated, meshed watertight and stayed analytic, but\nlost about 0.7 mm³ per corner.\n- Main shows the same bug: F5 then F6 removed 21.80 mm³ against a closed\nform of 15.88.\n\n**Fix:** in `fillet/rolling_ball.rs`, a face the blend does not touch\nand that has any non-line edge is now copied whole, the same way holed\nfaces already are. Its exact edges go into the shared pool, and rebuilt\nneighbours reuse them.\n\n| Case | Removed (mm³) | Closed form (mm³) |\n|---|---|---|\n| F5 then F6 | 15.880535908600 | 15.880535908589 |\n| F5 then F1 | 61.80532894155 | 61.805328941535 |\n| F7 on F1+F2+F5 + all cuts | 3.8628330588 | 3.862833058846 |\n\n**Tests**\n- New `crates/operations/tests/regress_fillet_after_corner_ball.rs`\nchecks:\n  - the closed-form volume at two deflections, to within 1e-6 mm³;\n  - that the ledge arcs are kept;\n  - per-corner point probes;\n  - analytic faces, a valid shell and a watertight mesh.\n- It fails without the fix.\n- `bracket_campaign.rs`:\n- Six repros now pass their oracles and are no longer ignored, including\n`f7_groove_lips_on_filleted_holed_body` with volume and point-probe\nchecks.\n  - The six refusal rows that now build are removed.\n  - The every-edge refusal loop is kept and gains an atomicity check.\n- `sequence_f6_after_f1_f2_f5` stays ignored because its arc bands are\nlofted NURBS.\n\n**Local checks:** all pass.\n- Tests: `cargo test -p remus`, `-p remus-operations` (lib 1614 passed),\n`-p remus-io` and `-p remus-wasm`.\n- Lints and guards: clippy with `-D warnings`, fmt,\n`check-boundaries.sh` and `check-doc-paths.sh`.\n- Census: the approximation census matches all 52 rows.\n\n#1251 was stacked on this branch and has been retargeted to `main`.\n\n\n---\n_Generated by [Claude Code](https://claude.ai/code)_\n\n## Current integration verification\n\nGuarded head `e57929a3512570aa8196fd6a9f8b2ba36d3176a7`: The actual\n#1227 source is incorporated. Bracket conflict resolution retains main’s\nF4 promotion, this PR’s positive F5/F7 grooves and remaining typed\natomic refusals. A fresh isolated operations/blend/io/wasm run completed\n5,225 passed, 1 failed, 36 skipped; its sole Hammer Holder pinned-digest\nfailure reproduces with identical digests on fresh unchanged main c737.\nThe original digest-recording source 994e8744 also fails its unchanged\npin on this host, with a different actual digest; the underlying cause\nis unestablished. No expected value, platform gate, geometry assertion\nor tolerance was changed. All 5 runout regressions and the long seam\ncase (982 seconds) pass in the clean target; strict Clippy passes. The\nearlier shared-target fillet failures do not reproduce in the isolated\ntarget. These results do not claim a fully passing local suite. Fresh\nhosted CI and each protected merge-group candidate remain separate\nqualifications. Hosted head success does not establish immutable\nmerge-group or final-merge success. A protected merge includes its\nexisting automatic workflows; no standalone production deployment or\nmanual migration is performed.\n\n## WASM size review\n\nWASM-Size: +66.0 KiB raw kernel (10,560,886 B total) against the\ncommitted base package; reversed-plane fillets and straight run-out\ncontacts, Tier: core (edits live body topology and journal/evolution).\n\nThe hosted size measurement includes merged source changes whose paired\npackage refresh has not landed; this is the full measured delta, not\nisolated attribution to this PR. The lazy translator is +35.9 KiB raw\nversus that same package baseline (Tier: lazy:io). The current measured\nkernel is below the 11 MiB raw review target, 12 MiB raw hard limit, 4.5\nMiB gzip hard limit and 3 MiB Brotli review target. No size threshold or\nassertion is changed. Final coherent paired-package publication remains\nseparate.\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-10-22T14:05:19Z",
+          "tree_id": "3f035ae7423f0487956060b3812d5c08812fd3d4",
+          "url": "https://github.com/esaueng/remus/commit/c356a43ee9f5ad0180e98b39b504ef7a3f6b1747"
+        },
+        "date": 1792686359621,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1158514,
+            "range": "± 38496",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1248389,
+            "range": "± 39779",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26862,
+            "range": "± 101",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7241028,
+            "range": "± 5228",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7222028,
+            "range": "± 10045",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7080671,
+            "range": "± 4969",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 28725,
+            "range": "± 48",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3357400,
+            "range": "± 6170",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 28661999,
+            "range": "± 416689",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 115,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 230,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 157,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 893,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 168,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 395,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 212,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 567,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 627,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3496,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 24009,
+            "range": "± 128",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 143366,
+            "range": "± 296",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 3964,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 14929,
+            "range": "± 45",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 53656,
+            "range": "± 116",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5290,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 499581,
+            "range": "± 1230",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2433563,
+            "range": "± 3730",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 142987,
+            "range": "± 884",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 291137,
+            "range": "± 423",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 359983,
+            "range": "± 525",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 64026,
+            "range": "± 83",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 34741,
+            "range": "± 41",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 22469,
+            "range": "± 100",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 120692,
+            "range": "± 87",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 143375,
+            "range": "± 317",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 650480,
+            "range": "± 29538",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 7902985,
+            "range": "± 127910",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 548287,
+            "range": "± 4010",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1178357,
+            "range": "± 2494",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 87448,
+            "range": "± 559",
             "unit": "ns/iter"
           }
         ]
