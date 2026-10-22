@@ -1162,32 +1162,27 @@ fn trim_support_corner(
 
             if unique_contacts.len() >= 2 {
                 let dir_prev = (prev_pos - pos).normalize()?;
-                // The contact that belongs on the "before" edge lies on that
-                // edge's line — possibly on its extension past the corner,
-                // where a concave stripe running out across this face puts
-                // it. Distance to `pos + dir·r` alone picks the other contact
-                // there, so the line decides whenever it singles one out.
-                // A convex run-out keeps the old pairing when the selection
-                // also has curved-neighbour stripes: it can end a G1 chain
-                // around a corner fillet, whose NURBS wall is not exact yet
-                // (`regress_g1_chain_corner_wall_dig.rs`), and pairing it
-                // right turns that refusal into a wrong solid.
-                let off_line = |q: Point3| {
-                    let v = q - pos;
-                    (v - dir_prev * v.dot(dir_prev)).length()
-                };
-                let on_line = tol.linear * 100.0;
-                let (l0, l1) = (off_line(unique_contacts[0]), off_line(unique_contacts[1]));
-                let approx_prev = pos + dir_prev * radius;
-                let (d0, d1) = if !line_paired_runout || (l0 <= on_line) == (l1 <= on_line) {
-                    (
-                        (unique_contacts[0] - approx_prev).length(),
-                        (unique_contacts[1] - approx_prev).length(),
-                    )
+                let (c0, c1) = (unique_contacts[0], unique_contacts[1]);
+                // Pair each contact with its own support-edge line, including
+                // extensions past a narrower face. Only qualified planar or
+                // concave run-outs use this pairing. Convex run-outs next to
+                // curved stripes keep the old pairing: an unqualified G1
+                // corner wall must still refuse rather than cut material
+                // (`regress_g1_chain_corner_wall_dig.rs`).
+                let by_line = if line_paired_runout {
+                    (next_pos - pos).normalize().ok().and_then(|dir_next| {
+                        let off_line = |c: Point3, dir: Vec3| (c - pos).cross(dir).length();
+                        let keep = off_line(c0, dir_prev) + off_line(c1, dir_next);
+                        let swap = off_line(c1, dir_prev) + off_line(c0, dir_next);
+                        ((keep - swap).abs() > tol.linear).then_some(keep < swap)
+                    })
                 } else {
-                    (l0, l1)
+                    None
                 };
-                if d0 <= d1 {
+                let approx_prev = pos + dir_prev * radius;
+                let first_is_prev = by_line
+                    .unwrap_or_else(|| (c0 - approx_prev).length() <= (c1 - approx_prev).length());
+                if first_is_prev {
                     out.push(unique_contacts[0]);
                     out.push(unique_contacts[1]);
                 } else {
@@ -1401,8 +1396,21 @@ pub fn fillet_rolling_ball_with_origins(
 
         for &face_id in &shell_face_ids {
             let face = topo.face(face_id)?;
-            face_surfaces.insert(face_id.index(), face.surface().clone());
-            face_reversed.insert(face_id.index(), face.is_reversed());
+            // A reversed plane (a cut's tool face) is recorded as its outward
+            // plane, unreversed: every phase below reads a plane's `normal` as
+            // the outward normal. Its wire still winds about the stored
+            // surface normal, so `FacePolygon::reversed` re-emits it reversed.
+            let plane_reversed =
+                face.is_reversed() && matches!(face.surface(), FaceSurface::Plane { .. });
+            let surface = match face.surface() {
+                FaceSurface::Plane { normal, d } if plane_reversed => FaceSurface::Plane {
+                    normal: -*normal,
+                    d: -*d,
+                },
+                other => other.clone(),
+            };
+            face_surfaces.insert(face_id.index(), surface);
+            face_reversed.insert(face_id.index(), face.is_reversed() && !plane_reversed);
 
             let wire = topo.wire(face.outer_wire())?;
             let mut vertex_ids = Vec::with_capacity(wire.edges().len());
@@ -1447,8 +1455,8 @@ pub fn fillet_rolling_ball_with_origins(
             // Build polygon data for planar faces (used for Phase 3 trimming).
             // Non-planar faces are stored in face_surfaces and passed through
             // untrimmed — their fillet geometry is still computed in Phase 4.
-            let (normal, d) = match face.surface() {
-                FaceSurface::Plane { normal, d } => (*normal, *d),
+            let (normal, d) = match face_surfaces.get(&face_id.index()) {
+                Some(FaceSurface::Plane { normal, d }) => (*normal, *d),
                 _ => continue,
             };
 
@@ -1460,6 +1468,7 @@ pub fn fillet_rolling_ball_with_origins(
                     wire_edge_ids,
                     normal,
                     d,
+                    reversed: plane_reversed,
                     inner_wires: face_inner_wires,
                 },
             );
@@ -3060,6 +3069,15 @@ pub fn fillet_rolling_ball_with_origins(
         // Such faces are copied verbatim instead. `verbatim` marks the faces whose
         // loops must survive as topology; `untouched` marks the ones the blend does
         // not reach, whose outer wire can be copied as well instead of rebuilt.
+        //
+        // The same holds for a face the blend does not reach whose boundary has
+        // a curved edge: rebuilt from positions, only an arc some cylindrical
+        // spec happens to mint survives, and every other one becomes a chord.
+        // An earlier blend's sphere corner and the ledge under it share their
+        // z-level great-circle arc and nothing else, so a later fillet anywhere
+        // on the body flattened both onto the chord and silently cut away the
+        // material between them. Copied whole, the face keeps its exact edges,
+        // and neighbours rebuilt from positions reuse them by vertex sharing.
         let (verbatim_faces, untouched_faces) = {
             let mut verbatim: HashSet<usize> = HashSet::default();
             let mut untouched: HashSet<usize> = HashSet::default();
@@ -3067,6 +3085,7 @@ pub fn fillet_rolling_ball_with_origins(
                 let face = topo.face(face_id)?;
                 let has_holes = !face.inner_wires().is_empty();
                 let mut closed_edge = false;
+                let mut curved_edge = false;
                 let mut touched = false;
                 for wid in
                     std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
@@ -3074,12 +3093,13 @@ pub fn fillet_rolling_ball_with_origins(
                     for oe in topo.wire(wid)?.edges() {
                         let edge = topo.edge(oe.edge())?;
                         closed_edge |= edge.start() == edge.end();
+                        curved_edge |= !matches!(edge.curve(), EdgeCurve::Line);
                         touched |= target_set.contains(&oe.edge().index());
                         touched |= vertex_fillet_edges.contains_key(&edge.start().index());
                         touched |= vertex_fillet_edges.contains_key(&edge.end().index());
                     }
                 }
-                if has_holes || closed_edge {
+                if has_holes || closed_edge || (curved_edge && !touched) {
                     verbatim.insert(face_id.index());
                 }
                 if !touched {
@@ -3499,12 +3519,7 @@ pub fn fillet_rolling_ball_with_origins(
                     push_face_spec(
                         &mut all_specs,
                         &mut all_spec_origins,
-                        FaceSpec::Planar {
-                            vertices: poly.positions.clone(),
-                            normal: poly.normal,
-                            d: poly.d,
-                            inner_wires: poly.inner_wires.clone(),
-                        },
+                        poly.spec(poly.positions.clone(), poly.d),
                         FaceSpecOrigin::Modified(face_id),
                     );
                 }
@@ -3674,12 +3689,7 @@ pub fn fillet_rolling_ball_with_origins(
                 push_face_spec(
                     &mut all_specs,
                     &mut all_spec_origins,
-                    FaceSpec::Planar {
-                        vertices: new_verts,
-                        normal: poly.normal,
-                        d: new_d,
-                        inner_wires: poly.inner_wires.clone(),
-                    },
+                    poly.spec(new_verts, new_d),
                     FaceSpecOrigin::Modified(face_id),
                 );
             }
