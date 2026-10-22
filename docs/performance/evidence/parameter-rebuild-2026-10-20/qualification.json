@@ -1,0 +1,62 @@
+{
+  "crossMode": [
+    {
+      "qualified": true,
+      "records": 10,
+      "rebuildMode": "full",
+      "pattern": "unique",
+      "arenaAndMeshBytesMatch": true,
+      "timingsComparedAsSpeedup": false
+    },
+    {
+      "qualified": true,
+      "records": 10,
+      "rebuildMode": "full",
+      "pattern": "repeated",
+      "arenaAndMeshBytesMatch": true,
+      "timingsComparedAsSpeedup": false
+    },
+    {
+      "qualified": true,
+      "records": 10,
+      "rebuildMode": "suffix",
+      "pattern": "unique",
+      "arenaAndMeshBytesMatch": true,
+      "timingsComparedAsSpeedup": false
+    },
+    {
+      "qualified": true,
+      "records": 10,
+      "rebuildMode": "suffix",
+      "pattern": "repeated",
+      "arenaAndMeshBytesMatch": true,
+      "timingsComparedAsSpeedup": false
+    }
+  ],
+  "crossScope": [
+    {
+      "mode": "preview",
+      "pattern": "unique",
+      "records": 10,
+      "fullArenaMeshAndQuantitiesMatch": true
+    },
+    {
+      "mode": "preview",
+      "pattern": "repeated",
+      "records": 10,
+      "fullArenaMeshAndQuantitiesMatch": true
+    },
+    {
+      "mode": "completion",
+      "pattern": "unique",
+      "records": 10,
+      "fullArenaMeshAndQuantitiesMatch": true
+    },
+    {
+      "mode": "completion",
+      "pattern": "repeated",
+      "records": 10,
+      "fullArenaMeshAndQuantitiesMatch": true
+    }
+  ]
+}

@@ -1569,6 +1569,79 @@ mod tests {
         );
     }
 
+    /// These rulings are angularly distinct inside the declared production
+    /// domain, while their physical endpoints are closer than linear tol.
+    /// The seam-spanning sector must still join, and both original sections
+    /// must survive with their exact line carriers and pave provenance.
+    #[test]
+    fn close_distinct_rulings_emit_two_sectors_without_an_extra_seam() {
+        let radius = 1e-3;
+        let (u0, u1) = (1.0, 1.0 + 5e-6);
+        for reversed in [false, true] {
+            let (topo, face) = lateral(radius, 3.0, reversed);
+            let mut sections = vec![
+                section_ruling(radius, u0, 3.0),
+                section_ruling(radius, u1, 3.0),
+            ];
+            sections[1].pave_block_id = Some(201);
+            assert!((sections[0].start - sections[1].start).length() < Tolerance::default().linear);
+            let inputs = collect(&topo, face, &sections).expect("qualified close rulings");
+            let arrangement = super::run_cylinder_arrangement(&inputs, &test_context()).unwrap();
+            assert_eq!(arrangement.periodic_regions.len(), 2);
+            for r in &arrangement.periodic_regions {
+                assert_eq!(r.euler_characteristic, 1);
+                assert_eq!(r.boundaries.len(), 1);
+                assert_eq!(r.boundaries[0].1, 0);
+            }
+            let subs = split_emit(&topo, face, &sections).expect("two physical sectors");
+            assert_eq!(subs.len(), 2);
+            let mut areas: Vec<_> = subs
+                .iter()
+                .map(|s| wire_area(&s.outer_wire, radius))
+                .collect();
+            areas.sort_by(f64::total_cmp);
+            assert!(
+                (areas[0] - radius * (u1 - u0) * 3.0).abs() < 1e-13,
+                "{areas:?}"
+            );
+            assert!(
+                (areas[1] - radius * (TAU - (u1 - u0)) * 3.0).abs() < 1e-13,
+                "{areas:?}"
+            );
+            for sub in &subs {
+                assert_eq!(sub.reversed, reversed);
+                assert!(matches!(sub.surface, FaceSurface::Cylinder(_)));
+                assert!(sub.inner_wires.is_empty());
+                assert_eq!(
+                    sub.outer_wire
+                        .iter()
+                        .filter(|e| matches!(e.curve_3d, EdgeCurve::Line))
+                        .count(),
+                    2
+                );
+                let mut paves = BTreeSet::new();
+                for e in &sub.outer_wire {
+                    if let Some(pave) = e.pave_block_id {
+                        paves.insert(pave);
+                        assert!(matches!(e.curve_3d, EdgeCurve::Line));
+                        assert!(sections.iter().any(|s| s.pave_block_id == Some(pave)
+                            && ((e.start_3d == s.start && e.end_3d == s.end)
+                                || (e.start_3d == s.end && e.end_3d == s.start))));
+                    } else {
+                        assert!(
+                            matches!(e.curve_3d, EdgeCurve::Circle(_)),
+                            "no artificial seam line"
+                        );
+                        assert!(e.trim.is_some());
+                    }
+                }
+                assert_eq!(paves, BTreeSet::from([200, 201]));
+            }
+            sections.reverse();
+            assert_eq!(split_emit(&topo, face, &sections).unwrap().len(), 2);
+        }
+    }
+
     #[test]
     fn nonzero_seam_and_reversed_coedges_agree() {
         // Lateral between z=5..8 (nonzero `v`) with reversed face; sections
