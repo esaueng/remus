@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { machine } from 'node:os';
+import { resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { collectSourceProvenance, hashFile } from './provenance.mjs';
@@ -12,10 +13,16 @@ export const HOSTS = Object.freeze([
   { runner: 'ubuntu-24.04-arm', platform: 'linux', arch: 'arm64', rustHost: 'aarch64-unknown-linux-gnu', runnerOs: 'Linux', runnerArch: 'ARM64', nativeOs: 'linux', nativeArch: 'aarch64' },
   { runner: 'macos-15-intel', platform: 'darwin', arch: 'x64', rustHost: 'x86_64-apple-darwin', runnerOs: 'macOS', runnerArch: 'X64', nativeOs: 'macos', nativeArch: 'x86_64' },
   { runner: 'macos-15', platform: 'darwin', arch: 'arm64', rustHost: 'aarch64-apple-darwin', runnerOs: 'macOS', runnerArch: 'ARM64', nativeOs: 'macos', nativeArch: 'aarch64' },
+  { runner: 'windows-2025', platform: 'win32', arch: 'x64', rustHost: 'x86_64-pc-windows-msvc', runnerOs: 'Windows', runnerArch: 'X64', nativeOs: 'windows', nativeArch: 'x86_64' },
 ]);
 
 function nonemptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+function requireWindowsExecutable(path) {
+  assert.ok(nonemptyString(path) && win32.isAbsolute(path) && win32.parse(path).root.length > 1
+    && /\.exe$/i.test(path), 'Windows executable must have an absolute drive/UNC path and explicit .exe suffix');
 }
 
 /** Reject missing/mixed host evidence while leaving package-origin claims separate. */
@@ -33,8 +40,16 @@ export function validateHostProof(proof) {
   assert.equal(matches.length, 1, 'compiler must report exactly one host triple');
   assert.equal(proof.rustc.host, matches[0][1], 'compiler host disagrees with verbose identity');
   assert.equal(proof.rustc.host, host.rustHost, 'Node and Rust compiler architectures differ');
-  const machine = host.platform === 'darwin' && host.arch === 'arm64' ? 'arm64' : host.nativeArch;
-  assert.equal(proof.unameMachine, machine, 'OS machine identity differs from compiler/runtime');
+  const expectedMachine = host.platform === 'darwin' && host.arch === 'arm64' ? 'arm64' : host.nativeArch;
+  if (host.platform === 'win32') {
+    assert.equal(proof.osMachineSource, 'node:os.machine', 'Windows native OS machine probe is missing');
+    assert.equal(proof.osMachine, expectedMachine, 'Windows native OS machine differs from compiler/runtime');
+    assert.equal(proof.unameMachine, null, 'Windows proof cannot substitute a compatibility-shell uname');
+  } else {
+    assert.equal(proof.unameMachine, expectedMachine, 'OS machine identity differs from compiler/runtime');
+    // Older POSIX reports retain their original uname evidence and remain replayable.
+    if (proof.osMachine !== undefined) assert.equal(proof.osMachine, expectedMachine, 'Node OS machine differs from uname');
+  }
   assert.ok(proof.buildTarget === null, 'cross-target builds cannot qualify a native host');
   if (proof.expected !== null) {
     assert.deepEqual(proof.expected, {
@@ -48,6 +63,7 @@ export function validateHostProof(proof) {
   for (const [key, binary] of [['kernel', 'remus-parity-native'], ['splitIo', 'remus-split-io-native']]) {
     const runner = proof.native?.[key];
     assert.ok(nonemptyString(runner?.path), `${key}: native executable path is missing`);
+    if (host.platform === 'win32') requireWindowsExecutable(runner.path);
     assert.match(runner?.sha256 ?? '', /^[0-9a-f]{64}$/, `${key}: native executable hash is missing`);
     assert.deepEqual(runner.runtime, {
       schemaVersion: 1, binary, os: host.nativeOs, arch: host.nativeArch, pointerWidth: 64,
@@ -72,6 +88,7 @@ export function collectHostProof(nativeRunner, splitRunner, env = process.env) {
   const native = {};
   for (const [key, runner] of [['kernel', nativeRunner], ['splitIo', splitRunner]]) {
     const path = resolve(runner);
+    if (process.platform === 'win32') requireWindowsExecutable(path);
     const sha256 = hashFile(path);
     const runtime = JSON.parse(run(path, ['--runtime-identity']));
     assert.equal(hashFile(path), sha256, `${key}: executable changed while collecting identity`);
@@ -86,7 +103,9 @@ export function collectHostProof(nativeRunner, splitRunner, env = process.env) {
     runner: { os: env.RUNNER_OS ?? null, arch: env.RUNNER_ARCH ?? null },
     node: { platform: process.platform, arch: process.arch, version: process.version, v8: process.versions.v8 },
     rustc: { host, verbose },
-    unameMachine: run('uname', ['-m']),
+    unameMachine: process.platform === 'win32' ? null : run('uname', ['-m']),
+    osMachine: machine(),
+    osMachineSource: 'node:os.machine',
     buildTarget: env.CARGO_BUILD_TARGET ?? null,
     native,
   };

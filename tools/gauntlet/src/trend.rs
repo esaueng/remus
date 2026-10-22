@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{GauntletError, SCHEMA_VERSION, Scoreboard};
+use crate::{GauntletError, SCHEMA_VERSION, Scoreboard, triage::FailureDetails};
 
 /// Stable trend-row schema.
 pub const TREND_SCHEMA: &str = "remus-gauntlet-trend-v1";
@@ -44,6 +44,9 @@ pub struct TrendRow {
     pub stages: BTreeMap<String, TrendStage>,
     /// Primary failures grouped by stable taxonomy category.
     pub failure_categories: BTreeMap<String, usize>,
+    /// Optional aggregate details; historical rows predate this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_details: Option<FailureDetails>,
     /// Probe booleans completed exactly.
     pub boolean_exact: usize,
     /// Probe booleans completed through disclosed approximation.
@@ -109,6 +112,11 @@ pub fn build_trend_row(
             },
         );
     }
+    if let Some(details) = &scoreboard.failure_details
+        && let Some(read) = scoreboard.stages.get("read")
+    {
+        details.validate(scoreboard.failed, read.failed)?;
+    }
 
     Ok(TrendRow {
         schema: TREND_SCHEMA.to_owned(),
@@ -119,6 +127,7 @@ pub fn build_trend_row(
         models: scoreboard.models,
         stages,
         failure_categories: scoreboard.failure_categories.clone(),
+        failure_details: scoreboard.failure_details.clone(),
         boolean_exact: scoreboard.boolean_exact,
         boolean_approximate: scoreboard.boolean_approximate,
     })
@@ -285,6 +294,21 @@ fn validate_history_row(row: &TrendRow, line: usize) -> Result<(), GauntletError
             )));
         }
     }
+    if let Some(details) = &row.failure_details {
+        // Stages cascade, so a model failing any stage fails the final one.
+        let failed = |name: &str| {
+            row.stages
+                .get(name)
+                .map_or(0, |stage| stage.total - stage.passed)
+        };
+        details
+            .validate(failed("round_trip"), failed("read"))
+            .map_err(|_| {
+                GauntletError::message(format!(
+                    "gauntlet_trend_history_invalid: line {line}: inconsistent_failure_details"
+                ))
+            })?;
+    }
     Ok(())
 }
 
@@ -371,6 +395,7 @@ mod tests {
             failed: models - passed,
             stages,
             failure_categories: BTreeMap::new(),
+            failure_details: None,
             boolean_exact: passed,
             boolean_approximate: 0,
         }
@@ -483,6 +508,47 @@ mod tests {
     }
 
     #[test]
+    fn history_failure_details_are_validated_on_load() {
+        let mut source = scoreboard(49, 50);
+        let mut details = FailureDetails::default();
+        details.record(
+            "read",
+            &crate::DiagnosticRecord::error(
+                remus_math::diagnostic::FailureCategory::InvalidInput,
+                "step_parse_error",
+                "parse error: no DATA section found",
+            ),
+        );
+        source.failure_details = Some(details);
+        let valid = build_trend_row(
+            &source,
+            "smoke",
+            "2026-10-20",
+            "0123456789abcdef0123456789abcdef01234567",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .unwrap();
+        let path = history_file("valid-details", std::slice::from_ref(&valid));
+        let latest = load_latest_trend(&path, "smoke").unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(latest, Some(valid.clone()));
+
+        // A truncated or hand-edited row whose details no longer match its
+        // failed/read denominators must fail closed, like any other field.
+        let mut corrupt = valid;
+        corrupt.failure_details = Some(FailureDetails::default());
+        let path = history_file("corrupt-details", &[corrupt]);
+        let error = load_latest_trend(&path, "smoke").unwrap_err();
+        let baseline = load_ratchet_baseline(&path, "smoke", 50).unwrap_err();
+        fs::remove_file(path).unwrap();
+        for error in [error, baseline] {
+            let text = error.to_string();
+            assert!(text.contains("gauntlet_trend_history_invalid"), "{text}");
+            assert!(text.contains("inconsistent_failure_details"), "{text}");
+        }
+    }
+
+    #[test]
     fn malformed_history_fails_closed() {
         let path =
             std::env::temp_dir().join(format!("remus-gauntlet-bad-history-{}", std::process::id()));
@@ -503,6 +569,54 @@ mod tests {
         assert_eq!(row.schema, TREND_SCHEMA);
         assert_eq!(row.kernel_sha.len(), 40);
         assert_eq!(row.manifest_sha256.len(), 64);
+    }
+
+    #[test]
+    fn failure_details_survive_trends_and_legacy_rows_remain_readable() {
+        let mut source = scoreboard(49, 50);
+        let mut details = FailureDetails::default();
+        details.record(
+            "read",
+            &crate::DiagnosticRecord::error(
+                remus_math::diagnostic::FailureCategory::InvalidInput,
+                "step_parse_error",
+                "parse error: no DATA section found",
+            ),
+        );
+        source.failure_details = Some(details.clone());
+        let row = build_trend_row(
+            &source,
+            "smoke",
+            "2026-10-20",
+            "0123456789abcdef0123456789abcdef01234567",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .unwrap();
+        assert_eq!(row.failure_details.as_ref(), Some(&details));
+        let encoded = serde_json::to_string(&row).unwrap();
+        let restored: TrendRow = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored, row);
+
+        let mut legacy = serde_json::to_value(&row).unwrap();
+        legacy.as_object_mut().unwrap().remove("failure_details");
+        let historical: TrendRow = serde_json::from_value(legacy).unwrap();
+        assert!(historical.failure_details.is_none());
+        validate_history_row(&historical, 1).unwrap();
+        let mut legacy = serde_json::to_value(&source).unwrap();
+        legacy.as_object_mut().unwrap().remove("failure_details");
+        let historical: Scoreboard = serde_json::from_value(legacy).unwrap();
+        assert!(historical.failure_details.is_none());
+
+        source.failure_details = Some(FailureDetails::default());
+        let error = build_trend_row(
+            &source,
+            "smoke",
+            "2026-10-20",
+            "0123456789abcdef0123456789abcdef01234567",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("inconsistent_failure_details"));
     }
 
     #[test]
