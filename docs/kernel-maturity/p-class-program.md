@@ -931,6 +931,17 @@ corners are supported; alternating convex/concave material sides return typed
 sphere fan cannot reverse its effective normal between wedges. Nonplanar and
 variable-radius corners remain for Issues 5.4 and later.
 
+Two-stripe mixed corners (one concave and one convex stripe at a rectangular
+planar vertex whose third edge stays sharp) close exactly in the rolling-ball
+rebuild: the notch torus quarter of the three-edge mixed corner, ended on the
+missing stripe's station plane by a planar ledge back to the sharp edge. The
+quarter removes `πr³(11 − 3π)/12` past the stripes (Pappus over the chip),
+pinned by `crates/operations/tests/regress_mixed_two_stripe_corner.rs`; the
+torture corpus row `mixed-convexity-chain` flips to built. The same change
+lets a torus corner's cap plane arrive split three ways by flush fuses, so the
+whole-edge flanged bracket of `crates/remus/tests/whole_edge_bracket_fillet.rs`
+builds. Oblique two-stripe mixed corners keep the typed refusal.
+
 > **Exit gate:** all-edges-filleted box (3-stripe corners) and 4-stripe
 > pyramid apex close watertight; G1 across every stripe-corner boundary
 > within angular tolerance.

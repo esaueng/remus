@@ -688,19 +688,17 @@ fn fillet_every_edge(radius: f64) {
 }
 
 #[test]
-#[ignore = "open: filleting every edge at r0.5 refuses: unsupported vertex blend, 2 stripes meet"]
 fn every_edge_r0_5() {
     fillet_every_edge(0.5);
 }
 
 #[test]
-#[ignore = "open: filleting every edge at r1 refuses: unsupported vertex blend, 2 stripes meet"]
 fn every_edge_r1() {
     fillet_every_edge(1.0);
 }
 
 #[test]
-#[ignore = "open: filleting every edge at r2 refuses: unsupported vertex blend, 2 stripes meet"]
+#[ignore = "open: every edge at r2 refuses: the 4 mm plate's top and bottom stripes meet edge to edge (the cascade reports the walking engine's 2-stripe refusal)"]
 fn every_edge_r2() {
     fillet_every_edge(2.0);
 }
@@ -715,7 +713,8 @@ fn current_refusals_are_typed_and_atomic() {
     let mut m = Model::new();
     let tabs = tabbed(&mut m);
     let before = volume(&m, tabs);
-    for radius in [0.5, 1.0, 2.0] {
+    {
+        let radius = 2.0;
         let edges = m.solid_edges(tabs).unwrap();
         let err = m.fillet(tabs, &edges, radius).err().expect("every edge");
         assert!(

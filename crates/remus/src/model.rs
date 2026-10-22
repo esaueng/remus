@@ -321,19 +321,51 @@ impl Model {
     /// engine that produced the result is disclosed in
     /// [`BlendResult::engine`]. This is the same policy the WASM `fillet`
     /// binding runs, so both surfaces return the same geometry for the same
-    /// request.
+    /// request. Like that binding, it first drops edges with no dihedral to
+    /// round — tangent edges and the flat seams a fuse leaves between coplanar
+    /// faces — so "every edge of the body" is a valid selection.
     ///
     /// # Errors
     ///
-    /// Returns [`OperationsError`] for invalid or unsupported blends; a
-    /// refusal leaves the topology unchanged.
+    /// Returns [`OperationsError`] for invalid or unsupported blends, or when
+    /// no selected edge is filletable; a refusal leaves the topology
+    /// unchanged.
     pub fn fillet(
         &mut self,
         solid: SolidId,
         edges: &[EdgeId],
         radius: f64,
     ) -> Result<BlendResult, OperationsError> {
-        remus_operations::blend_ops::fillet_cascade(&mut self.topology, solid, edges, radius)
+        // Only edges this solid joins smoothly, and its periodic seams, are
+        // dropped. Anything else the filter would skip (a foreign or
+        // non-manifold edge) stays, so the cascade refuses rather than
+        // blending a subset of the request.
+        let filletable =
+            remus_operations::query::filter_filletable_edges(&self.topology, solid, edges)?;
+        let faces = remus_topology::explorer::edge_to_face_map(&self.topology, solid)?;
+        let mut kept = Vec::with_capacity(edges.len());
+        for &edge in edges {
+            let no_dihedral = !filletable.contains(&edge)
+                && match faces.get(&edge.index()).map(|f| &f[..]) {
+                    Some(&[a, b]) if a == b => true,
+                    Some(&[a, b]) => {
+                        remus_operations::query::edge_is_g1(&self.topology, edge, a, b)?
+                    }
+                    _ => false,
+                };
+            if !no_dihedral {
+                kept.push(edge);
+            }
+        }
+        let edges = kept;
+        if edges.is_empty() {
+            return Err(OperationsError::InvalidInput {
+                reason: "no filletable edges in the selection (tangent and degenerate edges are \
+                         skipped)"
+                    .into(),
+            });
+        }
+        remus_operations::blend_ops::fillet_cascade(&mut self.topology, solid, &edges, radius)
     }
 
     /// Chamfers selected edges with the v2 validated blend engine.
@@ -958,6 +990,32 @@ mod tests {
         );
         let volume = model.volume(result.solid, 0.05).unwrap();
         assert!(volume < 1000.0 && volume > 990.0, "{volume}");
+    }
+
+    #[test]
+    fn fillet_skips_a_cylinder_seam_in_a_whole_body_selection() {
+        let mut model = Model::new();
+        let solid = model.make_cylinder(5.0, 10.0).unwrap();
+        let edges = remus_topology::explorer::solid_edges(model.topology(), solid).unwrap();
+        let result = model.fillet(solid, &edges, 1.0).unwrap();
+        assert!(!result.succeeded.is_empty());
+        assert!(result.succeeded.len() < edges.len(), "the seam is dropped");
+    }
+
+    #[test]
+    fn fillet_refuses_edges_of_another_solid() {
+        let mut model = Model::new();
+        let solid = model.make_box(10.0, 10.0, 10.0).unwrap();
+        let other = model.make_box(5.0, 5.0, 5.0).unwrap();
+        let own = remus_topology::explorer::solid_edges(model.topology(), solid).unwrap();
+        let foreign = remus_topology::explorer::solid_edges(model.topology(), other).unwrap();
+        let counts =
+            remus_topology::explorer::solid_entity_counts(model.topology(), solid).unwrap();
+        assert!(model.fillet(solid, &[own[0], foreign[0]], 1.0).is_err());
+        assert_eq!(
+            remus_topology::explorer::solid_entity_counts(model.topology(), solid).unwrap(),
+            counts
+        );
     }
 
     #[test]
