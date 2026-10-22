@@ -19,9 +19,11 @@ import { runProjectCurvePackaged } from './project-curve-packaged.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
 import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
 import { runWasmParserReferencesPackaged } from './wasm-parser-refs-packaged.mjs';
+import { runVariableFilletInputPackaged } from './variable-fillet-input-packaged.mjs';
 import { runWasmRayNurbsPackaged } from './wasm-ray-nurbs-packaged.mjs';
 import { runOpseqF5Packaged } from './opseq-f5-packaged.mjs';
 import { runOpseqF6Packaged } from './opseq-f6-packaged.mjs';
+import { runOpseqF13Packaged } from './opseq-f13-packaged.mjs';
 import { runWasmRayTorusPackaged } from './wasm-ray-torus-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
 import { runPackageQueueWitness } from './queue-contracts-packaged.mjs';
@@ -104,9 +106,11 @@ try {
   runKernelCorrectnessPackaged(packageExports);
   runNextKernelCorrectnessPackaged(packageExports);
   runWasmParserReferencesPackaged(packageExports);
+  runVariableFilletInputPackaged(packageExports);
   runWasmRayNurbsPackaged(packageExports);
   runOpseqF5Packaged(packageExports);
   runOpseqF6Packaged(packageExports);
+  runOpseqF13Packaged(packageExports);
   runWasmRayTorusPackaged(packageExports);
   console.log('\nInstalled-tarball consumer regressions passed');
 } finally {

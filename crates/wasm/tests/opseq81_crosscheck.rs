@@ -216,9 +216,9 @@ fn cross_checks() -> Vec<CrossCheck> {
         CrossCheck {
             file: "opseq81-placed-sphere-box-cut-mesh.json",
             signature: Signature::Probes {
-                volume_near: (112.711_52, 0.5),
+                volume_near: (112.711_520_498_865_48, 1e-4),
                 validate: ValidateExpect::Clean,
-                watertight: Some(false),
+                watertight: Some(true),
             },
         },
         CrossCheck {
@@ -474,5 +474,65 @@ fn opseq81_native_batch_crosscheck() {
             "B81XCHECK {}: batch signature holds (volume {v:.6})",
             check.file
         );
+    }
+}
+
+#[test]
+fn f13_both_batches_keep_holed_sphere_mesh_closed_on_cache_replay() {
+    let bundle = ReproBundle::from_json(include_str!(
+        "repro/opseq81-placed-sphere-box-cut-mesh.json"
+    ))
+    .unwrap();
+    for v2 in [false, true] {
+        for (operation, reverse, expected) in [
+            ("cut", false, 112.711_520_498_865_48),
+            ("fuse", false, 113.711_520_498_865_48),
+            ("fuse", true, 113.711_520_498_865_48),
+            ("intersect", false, 0.385_815_030_367_076_43),
+        ] {
+            let mut kernel = remus_wasm::kernel::BrepKernel::new();
+            let mut ops = bundle.operations.clone();
+            ops[3]["args"]["operation"] = serde_json::json!(operation);
+            if reverse {
+                ops[3]["args"]["solidA"] = serde_json::json!(0);
+                ops[3]["args"]["solidB"] = serde_json::json!(1);
+            }
+            let run = |kernel: &mut remus_wasm::kernel::BrepKernel, request: &str| {
+                if v2 {
+                    kernel.execute_batch_v2(request)
+                } else {
+                    kernel.execute_batch(request)
+                }
+            };
+            let prefix: Vec<Value> =
+                serde_json::from_str(&run(&mut kernel, &serde_json::to_string(&ops).unwrap()))
+                    .unwrap();
+            assert!(
+                prefix.iter().all(|cell| cell.get("ok").is_some()),
+                "{prefix:?}"
+            );
+            assert_eq!(prefix[3]["ok"]["quality"], "exact");
+            let solid = produced_handle(&prefix[3]).unwrap();
+            for deflection in [0.1, 0.01, 0.003] {
+                let probes = serde_json::json!([
+                    {"op":"validateSolid","args":{"solid":solid}},
+                    {"op":"volume","args":{"solid":solid,"deflection":0.0001}},
+                    {"op":"meshQuality","args":{"solid":solid,"deflection":deflection}}
+                ])
+                .to_string();
+                let cold = run(&mut kernel, &probes);
+                let warm = run(&mut kernel, &probes);
+                assert_eq!(cold, warm, "F13 {operation} batchv2={v2}: cache replay");
+                let cells: Vec<Value> = serde_json::from_str(&cold).unwrap();
+                assert_eq!(cells[0]["ok"], 0);
+                assert!((cells[1]["ok"].as_f64().unwrap() - expected).abs() < expected * 2e-4);
+                assert_eq!(
+                    cells[2]["ok"]["isWatertight"], true,
+                    "F13 {operation} d={deflection}: {cells:?}"
+                );
+                assert_eq!(cells[2]["ok"]["boundaryEdges"], 0);
+                assert_eq!(cells[2]["ok"]["nonManifoldEdges"], 0);
+            }
+        }
     }
 }
