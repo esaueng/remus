@@ -127,10 +127,34 @@ def validate_policy(text: str) -> None:
     require(len(proof_budget) == 1 and 1 <= int(proof_budget[0]) < int(job_budget[0]),
             "proof timeout must leave job time for failure uploads")
     require(proof_budget[0] == "75", "the qualified proof budget must remain 75 minutes")
+    initializers = [step for step in steps if step.startswith("name: Initialize proof artifacts\n")]
+    require(len(initializers) == 1, "one fresh workflow receipt initialization is required")
+    initializer = initializers[0]
+    setup_markers = ("uses: dtolnay/rust-toolchain@", "uses: actions/setup-node@",
+                     "uses: Swatinem/rust-cache@", "uses: taiki-e/install-action@",
+                     "name: Check workflow policy")
+    setup_indexes = [index for index, step in enumerate(steps)
+                     if any(marker in step for marker in setup_markers)]
+    require(setup_indexes and max(setup_indexes) < steps.index(initializer)
+            and steps.index(initializer) + 1 == steps.index(proof),
+            "initialize workflow receipts after setup/cache/policy and immediately before proof")
+    require('mkdir -p "$O15_PROOF_OUT"' in initializer
+            and '> "$O15_PROOF_OUT/workflow.txt"' in initializer,
+            "initialization must write a fresh retained workflow receipt")
+    receipt_guards = [step for step in steps if step.startswith("name: Require retained workflow receipt\n")]
+    require(len(receipt_guards) == 1, "one success-path workflow receipt guard is required")
+    receipt_guard = receipt_guards[0]
+    require("if: success()" in receipt_guard and "continue-on-error" not in receipt_guard
+            and "||" not in receipt_guard,
+            "missing success-path receipts must fail the job")
+    require('run: test -s "$O15_PROOF_OUT/workflow.txt"' in receipt_guard,
+            "the workflow receipt must be nonempty before upload")
     uploads = [step for step in steps if "uses: actions/upload-artifact@" in step]
     require(len(uploads) == 1, "one proof artifact upload is required")
     upload = uploads[0]
     require(steps.index(upload) > steps.index(proof), "upload must follow proof execution")
+    require(steps.index(proof) < steps.index(receipt_guard) < steps.index(upload),
+            "the workflow receipt guard must follow proof and precede upload")
     require("if: always()" in upload, "failed proof reports and logs must upload")
     require(re.search(r"(?m)^          path: \$\{\{ env.O15_PROOF_OUT \}\}/$", upload) is not None
             and "if-no-files-found: error" in upload,
@@ -159,6 +183,40 @@ class ParityWorkflowTests(unittest.TestCase):
         self.assertIn(before, self.text)
         with self.assertRaisesRegex(ValueError, reason):
             validate_policy(self.text.replace(before, after, 1))
+
+    def test_early_receipt_initialization_is_rejected(self) -> None:
+        start = self.text.index("      - name: Initialize proof artifacts\n")
+        end = self.text.index("      - ", start + 1)
+        initializer = self.text[start:end]
+        edited = self.text[:start] + self.text[end:]
+        marker = "      - uses: Swatinem/rust-cache@"
+        edited = edited.replace(marker, initializer + marker, 1)
+        with self.assertRaisesRegex(ValueError, "after setup/cache/policy"):
+            validate_policy(edited)
+
+    def test_missing_receipt_guard_is_rejected(self) -> None:
+        self.reject_edit("      - name: Require retained workflow receipt\n"
+                         "        if: success()\n"
+                         '        run: test -s "$O15_PROOF_OUT/workflow.txt"\n',
+                         "", "receipt guard")
+
+    def test_empty_receipt_cannot_pass(self) -> None:
+        self.reject_edit('run: test -s "$O15_PROOF_OUT/workflow.txt"',
+                         'run: test -e "$O15_PROOF_OUT/workflow.txt"', "nonempty")
+
+    def test_softened_receipt_guard_is_rejected(self) -> None:
+        self.reject_edit('run: test -s "$O15_PROOF_OUT/workflow.txt"',
+                         'run: test -s "$O15_PROOF_OUT/workflow.txt" || true', "must fail")
+
+    def test_receipt_guard_before_proof_is_rejected(self) -> None:
+        start = self.text.index("      - name: Require retained workflow receipt\n")
+        end = self.text.index("      - ", start + 1)
+        guard = self.text[start:end]
+        edited = self.text[:start] + self.text[end:]
+        marker = "      - name: Initialize proof artifacts\n"
+        edited = edited.replace(marker, guard + marker, 1)
+        with self.assertRaisesRegex(ValueError, "follow proof and precede upload"):
+            validate_policy(edited)
 
     def test_removing_daily_schedule_is_rejected(self) -> None:
         self.reject_edit('cron: "43 5 * * *"', 'cron: "43 5 * * 0"', "daily")

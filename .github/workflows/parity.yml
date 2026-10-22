@@ -73,11 +73,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Initialize proof artifacts
-        run: |
-          mkdir -p "$O15_PROOF_OUT"
-          printf 'runner_os=%s\nrunner_arch=%s\ncheckout_sha=%s\nrust_min_stack=%s\n' \
-            "$RUNNER_OS" "$RUNNER_ARCH" "$GITHUB_SHA" "$RUST_MIN_STACK" > "$O15_PROOF_OUT/workflow.txt"
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
           toolchain: ${{ matrix.os == 'windows-11-arm' && '1.96.0-aarch64-pc-windows-msvc' || '1.96.0' }}
@@ -108,11 +103,19 @@ jobs:
         run: |
           "$O15_PYTHON" scripts/test-o15-workflow.py
           "$O15_PYTHON" scripts/test-o15-proof.py
+      - name: Initialize proof artifacts
+        run: |
+          mkdir -p "$O15_PROOF_OUT"
+          printf 'runner_os=%s\nrunner_arch=%s\ncheckout_sha=%s\nrust_min_stack=%s\n' \
+            "$RUNNER_OS" "$RUNNER_ARCH" "$GITHUB_SHA" "$RUST_MIN_STACK" > "$O15_PROOF_OUT/workflow.txt"
       - name: Run contract and split-translator proof
         timeout-minutes: 75
         run: |
           set -o pipefail
           node scripts/test-o15-proof.mjs 2>&1 | tee "$O15_PROOF_OUT/run.log"
+      - name: Require retained workflow receipt
+        if: success()
+        run: test -s "$O15_PROOF_OUT/workflow.txt"
       - name: Retain parity reports and failure logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
