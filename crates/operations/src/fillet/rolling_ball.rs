@@ -3109,16 +3109,35 @@ pub fn fillet_rolling_ball_with_origins(
             (verbatim, untouched)
         };
 
-        // Vertices whose side faces pair run-out contacts by edge line (see
-        // `trim_support_corner`): all of them when every stripe is straight
-        // between two planes, else those where every ending stripe is concave.
-        let all_planar_stripes = filtered_edges
-            .iter()
-            .all(|edge_id| planar_edge_sides.contains_key(&edge_id.index()));
-        let line_paired_runouts: HashSet<usize> = vertex_fillet_edges
+        // A curved stripe keeps the conservative pairing throughout its
+        // connected selected-stripe component, including planar endpoints
+        // reached through G1 propagation. Independent planar features retain
+        // line pairing even when the request also contains a curved feature.
+        let mut curved_components: HashSet<usize> = HashSet::default();
+        let mut pending: Vec<usize> = vertex_fillet_edges
             .iter()
             .filter(|(_, incident)| {
-                all_planar_stripes
+                incident
+                    .iter()
+                    .any(|edge_id| !planar_edge_sides.contains_key(&edge_id.index()))
+            })
+            .map(|(&vi, _)| vi)
+            .collect();
+        while let Some(vi) = pending.pop() {
+            if !curved_components.insert(vi) {
+                continue;
+            }
+            if let Some(incident) = vertex_fillet_edges.get(&vi) {
+                for &edge_id in incident {
+                    let edge = topo.edge(edge_id)?;
+                    pending.extend([edge.start().index(), edge.end().index()]);
+                }
+            }
+        }
+        let line_paired_runouts: HashSet<usize> = vertex_fillet_edges
+            .iter()
+            .filter(|(vi, incident)| {
+                !curved_components.contains(vi)
                     || incident.iter().all(|edge_id| {
                         planar_edge_sides
                             .get(&edge_id.index())
