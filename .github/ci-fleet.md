@@ -31,7 +31,7 @@ revisions; labels alone grant no access.
 
 `trusted-vps.yml` retains its filename for the existing main-only group entry.
 Its default (`auto`) uses the `CI_FLEET_TARGET` runner. Explicit manual
-diagnostics may target Jane, one of its two slots, or John. Old VPS labels and
+diagnostics may target Jane, one of its three slots, or John. Old VPS labels and
 arbitrary inputs are rejected; main pushes never override the configured target. Protected main and the trusted-pilot
 activation switch remain required.
 
