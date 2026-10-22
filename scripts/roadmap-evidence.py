@@ -206,6 +206,14 @@ def fold_evidence(markdown, fragments):
             if state < 0:
                 errors.append(f'{name}: row "{row}" has no state column')
                 continue
+            if state == target:
+                # The state cell also holds every earlier fold's evidence, so
+                # replacing it would erase that history.
+                errors.append(
+                    f'{name}: row "{row}" keeps its evidence in the state cell; '
+                    "change its state by editing the row, not with a fragment"
+                )
+                continue
             if index in state_setters:
                 errors.append(f'{name}: {state_setters[index]} already sets the state of row "{row}"')
                 continue

@@ -84,12 +84,20 @@ class FoldTests(unittest.TestCase):
             ['<a id="perf-n04"></a>PERF-N04', "P1 / 3 / M", "Prune seeds.", "Pending Measured."],
         )
 
-    def test_keeps_earlier_evidence_when_a_later_fragment_sets_a_shared_state_cell(self):
-        out = evidence.fold_evidence(ROADMAP, [
-            fragment("PERF-N04", "Measured.", name="perf-n04--a.md"),
-            fragment("PERF-N04", "Closed.", state="Done", name="perf-n04--b.md"),
-        ])
-        self.assertEqual(evidence.split_row(row_of(out, "perf-n04"))[3], "Done Measured. Closed.")
+    def test_refuses_state_changes_where_the_state_cell_holds_the_evidence(self):
+        # Evidence from earlier folds lives in that cell, so a state would erase it.
+        for fragments in (
+            [fragment("PERF-N04", "Closed.", state="Done")],
+            [
+                fragment("PERF-N04", "Measured.", name="perf-n04--a.md"),
+                fragment("PERF-N04", "Closed.", state="Done", name="perf-n04--b.md"),
+            ],
+        ):
+            with self.assertRaisesRegex(evidence.FragmentError, "keeps its evidence in the state cell"):
+                evidence.fold_evidence(ROADMAP, fragments)
+        folded = evidence.fold_evidence(ROADMAP, [fragment("PERF-N04", "Measured.")])
+        out = evidence.fold_evidence(folded, [fragment("PERF-N04", "Again.")])
+        self.assertEqual(evidence.split_row(row_of(out, "perf-n04"))[3], "Pending Measured. Again.")
 
     def test_orders_fragments_for_one_row_by_file_name(self):
         out = evidence.fold_evidence(ROADMAP, [

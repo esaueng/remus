@@ -30,6 +30,8 @@ Stage-2 campaign extended to sweeps (`tests/differential.rs`, PR #1235).
 The text lands in the row's Evidence column. Rows without one (the PERF
 inventory, whose `Priority / phase / evidence` column holds codes that
 `scripts/sync-roadmap-inventory.py` parses) receive it in their State column.
+Those rows refuse a `state` fragment, because replacing that cell would erase
+the evidence earlier folds put there; change their state by editing the row.
 
 `python3 scripts/roadmap-evidence.py` checks every fragment against the
 roadmap; `python3 scripts/test-roadmap-evidence.py` tests the tool.
