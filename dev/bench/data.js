@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792660006948,
+  "lastUpdate": 1792662433530,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -124999,6 +124999,294 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 85548,
             "range": "± 441",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "133e2050eada38a6b5490487781eae0f4c8be24e",
+          "message": "fix(fillet): sequential bracket fillets — straight runouts, sphere pass-through, pole meshing (#1247)\n\n## Change\n\nSequential fillets on a tabbed bracket (profile extruded 4 mm, two 18 ×\n10 × 40 tabs fused on), one feature per pass through `Model::fillet`.\nThree passes failed after earlier ones. Each had its own cause:\n\n| Pass | Was | Root cause | Now |\n|---|---|---|---|\n| F3 tab verticals r2 (after F1/F2) | open shell, 11 free edges | An\nearlier rolling-ball pass merges the tab's front face with the base's\ninto one L-shaped face. The F3 spine then ends at a reflex corner of a\nsupport face. The rolling ball assumed a cap face holds both end\ncontacts, so it swapped the corner out on the wrong faces. The walking\nstitch misses its end arc by 4, the support's extent past the end. |\nRolling ball, exact volume |\n| F4 concave tab/base r3 (after F1/F2) | trimming failure | Same capless\nstraight end, on the concave side. | Rolling ball, exact volume |\n| F6 base perimeter r1 | \"cannot follow the ridgeline across the tangent\nseam\" | The chain crosses the F1 arcs, so only the rolling ball can take\nit (the walking engine refuses seam crossings by design). Its side edges\nthen run into the tabs: the same capless end. | Rolling ball,\nclosed-form volume |\n| F4 after F3 | — (F3 used to fail first) | G1 propagation carries the\nconcave chain around the F3 cylinders onto an arc that ends tangent to\nthe coplanar front face. There the band overflows the body **for any\nradius**. Needs rollover (roadmap 5.8 / curved trimming). | Typed\n`cliff-encountered` refusal, input untouched; ignored ready-repro |\n\nThree commits, one per defect:\n\n1. **`fix(fillet)` straight runout.** When no corner face carries both\nend contacts on its own edges (all-planar corners only), the rolling\nball keeps the corner on the faces beside each leg and closes the end\nsection with a planar facet. The facet's plane comes from its own\nvertices. Its winding follows the neighbour that already runs along a\nleg. This applies **only in the cascade's last attempt, after the\nwalking engine has refused**: the rolling ball tried ahead of the\nwalking builder still refuses these ends. So every selection the walking\nbuilder already handles keeps its result. An ungated first version\nchanged two such results (`regress_direct_edit_corpus` T3 and wasm\n`try_fillet_openzcad_bracket_corners`: same volume, coplanar faces\nmerged), and the gate restores them.\n2. **`fix(fillet)` sphere pass-through (pre-existing).** The rebuild\nre-emitted earlier sphere corner patches as positional `Surface` specs,\nso their arcs and the planar spandrel under each became chords. Area\nwent 4 − π → 2, and the \"valid\" solid's exact and mesh volumes\ndisagreed. Reproduced on `main` with F5 then F1. Such spheres now go\nthrough `SphereCapFace`, but only when every edge is a short\ngreat-circle arc of that sphere.\n3. **`fix(tessellate)` pole reseed (pre-existing, exposed by 1).**\nBoundary samples are charted by Newton from the nearest coarse-grid\nnode. Near a pole every collapsed-row node ties, the first wins, and\nNewton stalls on the singular row, which dropped the triangle at the\npole. This only happened with the pole on the last row, so F5 after the\nnew F3 meshed with 3 open edges. A NURBS boundary sample whose chart\npoint misses it by more than the deflection is now re-projected from its\nneighbours' chart points.\n\nRoadmap: B4 gets the observed walking-stitch signature; 5.8 gets the\nready-repro.\n\n## Verification\n\n- New `crates/remus/tests/bracket_sequential_fillets.rs`, all through\n`Model::fillet`. Every pass asserts:\n  - validity and a closed shell;\n  - a watertight, manifold mesh at 0.002 deflection;\n- the closed-form volume change to 1e-6 relative (spandrel area ×\nlength);\n  - agreement between the exact and mesh volumes;\n  - G1 at every cylinder/plane seam (equal outward normals).\n- F6 oracle: straight runs exact, plus Pappus for the two quarter tori.\nAgreement is within 0.1 against the meshed volume. **Approximation:**\nthe rolling ball's arc bands are lofted NURBS, which costs ≈0.05 here.\n- Fails before, passes after: 4 of the 5 non-ignored tests fail on\n`main`. The fifth pins the F4-after-F3 refusal and that it leaves the\ninput untouched. Per commit:\n- the tessellator commit's test fails with only that commit reverted (3\nopen mesh edges);\n  - the sphere commit's test fails without it.\n- `cargo test --workspace --profile ci-test`: 8850 passed, 0 failed, 41\nignored (487 targets). Run on the tree before the final clippy-only\nbranch flip; the bracket tests were re-run on each commit.\n- `cargo clippy -p remus-operations -p remus --all-targets -- -D\nwarnings` and `cargo fmt --check` are clean on each commit. `cargo\nclippy --workspace --all-targets --all-features -- -D warnings` is clean\non the head.\n- `scripts/check-approx-census.py` on the head: matches all 52 committed\nrows.\n- `check-det-hash.sh`, `check-boundaries.sh` and `check-doc-paths.sh`\npass.\n\nFound, not fixed (outside this PR):\n- The rolling ball refuses **every** edge of a valid prism whose loops\nwind CW about their outward normals: an XZ profile drawn with normal −y,\nthen extruded along +y. On `main` it succeeds on 18/18 edges with the\nprofile wound the other way and 0/18 like this. The walking engine\ncovers single edges.\n- `solid_volume` at fine deflection and Gauss `mass_properties` disagree\nwith the mesh by up to ~76 on the rolling ball's lofted NURBS arc bands.\nThis is also on `main` (F1 then F6 without tabs: Gauss −9.5). The tests\nuse the mesh oracle for those passes.\n- The F4-after-F3 refusal quotes \"available radius 2\". That number comes\nfrom a collinear leg vertex; the overflow holds at every radius.\n\n## Compatibility and risks\n\nNo public API, format, unit or tolerance change. Rolling-ball output\nchanges only where it used to fail (capless straight ends) or return\nchords (sphere pass-through). The tessellator change only touches NURBS\nboundary samples whose chart point misses them by more than the\ndeflection.\n\n## WASM module tier\n\nNone. No new capability; the kernel grows only by the code above.\n\n---\n_Generated by [Claude\nCode](https://claude.ai/code/session_01YToz4a8j14E1cERCyECDVi)_\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-10-21T23:11:27Z",
+          "tree_id": "873c20f07966aa340ae86c3dc075f7ac2b3fa3e2",
+          "url": "https://github.com/esaueng/remus/commit/133e2050eada38a6b5490487781eae0f4c8be24e"
+        },
+        "date": 1792662429433,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 936626,
+            "range": "± 1429",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1006673,
+            "range": "± 1852",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 22224,
+            "range": "± 69",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 6029256,
+            "range": "± 41450",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 6002296,
+            "range": "± 4376",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 5883699,
+            "range": "± 11308",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 22137,
+            "range": "± 52",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 2907267,
+            "range": "± 13769",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 24170169,
+            "range": "± 452320",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 89,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 51,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 185,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 128,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 671,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 145,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 297,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 170,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 435,
+            "range": "± 27",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 547,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2729,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 26,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 74,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 74,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 3173,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 12665,
+            "range": "± 301",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 49637,
+            "range": "± 2820",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 4181,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 397012,
+            "range": "± 1573",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2037444,
+            "range": "± 3385",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 115167,
+            "range": "± 83",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 244155,
+            "range": "± 1166",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 286702,
+            "range": "± 392",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 48757,
+            "range": "± 549",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 27646,
+            "range": "± 17",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 16481,
+            "range": "± 81",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 89083,
+            "range": "± 96",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 112330,
+            "range": "± 89",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 526112,
+            "range": "± 41285",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 6803652,
+            "range": "± 193629",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 447082,
+            "range": "± 4577",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 938179,
+            "range": "± 2360",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 79180,
+            "range": "± 542",
             "unit": "ns/iter"
           }
         ]
