@@ -6105,12 +6105,15 @@ fn split_face_2d_impl(
     };
 
     // If no section edges, the face is unsplit -- return as-is with original holes.
-    if original_inner_wires.is_empty()
+    let relocated_cone_seam = if original_inner_wires.is_empty()
         && let Some(relocated) =
             special_cases::relocate_clear_seam(&boundary_edges, sections, &surface, tol.linear)?
     {
         boundary_edges = relocated;
-    }
+        matches!(surface, FaceSurface::Cone(_))
+    } else {
+        false
+    };
 
     // If no section edges, the face is unsplit -- return as-is with original holes.
     if sections.is_empty() {
@@ -6296,7 +6299,7 @@ fn split_face_2d_impl(
     if u_periodic
         && !is_plane
         && original_inner_wires.is_empty()
-        && let Some(parts) = split_periodic_face_by_rim_chains(
+        && let Some(mut parts) = split_periodic_face_by_rim_chains(
             &surface,
             &boundary_edges,
             sections,
@@ -6306,6 +6309,35 @@ fn split_face_2d_impl(
             tol.linear,
         )?
     {
+        if relocated_cone_seam {
+            // A moved artificial seam changes the anchor of an untouched far
+            // rim. Give its cap mate several exact native circle vertices:
+            // global arc refinement deliberately declines a single cut of a
+            // closed circle, whose two children would share both endpoints.
+            for part in &mut parts {
+                let mut wire = Vec::new();
+                for edge in std::mem::take(&mut part.outer_wire) {
+                    if let EdgeCurve::Circle(circle) = &edge.curve_3d
+                        && (edge.start_3d - edge.end_3d).length() <= tol.linear
+                        && let Some((a, b)) = edge.trim
+                    {
+                        let points: Vec<_> = (1..4)
+                            .map(|k| circle.evaluate(a + (b - a) * f64::from(k) / 4.0))
+                            .collect();
+                        wire.extend(split_boundary_edges_at_3d_points(
+                            vec![edge],
+                            &points,
+                            None,
+                            &surface,
+                            tol.linear,
+                        )?);
+                    } else {
+                        wire.push(edge);
+                    }
+                }
+                part.outer_wire = wire;
+            }
+        }
         return Ok(parts);
     }
 

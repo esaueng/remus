@@ -31,8 +31,8 @@ use remus_math::mat::Mat4;
 use remus_offset::{OffsetOptions, offset_solid};
 use remus_operations::measure::solid_volume;
 use remus_operations::primitives::{make_cone, make_cylinder};
-use remus_operations::tessellate::non_manifold_edge_count;
 use remus_operations::tessellate::tessellate_solid;
+use remus_operations::tessellate::{boundary_edge_count, non_manifold_edge_count};
 use remus_operations::transform::transform_solid;
 use remus_operations::validate::validate_solid;
 use remus_topology::Topology;
@@ -126,21 +126,20 @@ fn assert_offset_result(
         report.issues
     );
 
-    // Tessellation runs to completion with a deterministic triangle budget
-    // and no degenerate gluing. The mesh is NOT asserted watertight: offset
-    // cap/lateral junctions tessellate with unstitched rims (tens of open
-    // boundary edges) at every scale, identically with the legacy sampler on
-    // the pre-fix tree (77 open edges at unit scale there) — a
-    // tessellation-side stitching gap on pcurve-less offset wires, not a
-    // missing loop: the B-Rep above validates closed and `solid_volume`
-    // below integrates the exact analytic faces. That neighbor stays with
-    // its operations-tessellation owner and must not gate B55.
+    // The signed-rim orientation repair (F14/F15) also closes this original
+    // scale matrix. Count directional half-edges before any welding: an
+    // inverted cap has correct geometric incidence but no opposing twin.
     let scale = expected_volume.cbrt();
     let mesh = tessellate_solid(topo, result, 1e-3 * scale).unwrap();
     assert!(
         mesh.indices.len() >= 3 * 12,
         "{context}: degenerate mesh with {} triangles",
         mesh.indices.len() / 3
+    );
+    assert_eq!(
+        boundary_edge_count(&mesh),
+        0,
+        "{context}: open or misoriented mesh"
     );
     assert_eq!(
         non_manifold_edge_count(&mesh),

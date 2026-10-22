@@ -23,6 +23,7 @@ import { runVariableFilletInputPackaged } from './variable-fillet-input-packaged
 import { runWasmRayNurbsPackaged } from './wasm-ray-nurbs-packaged.mjs';
 import { runOpseqF5Packaged } from './opseq-f5-packaged.mjs';
 import { runOpseqF6Packaged } from './opseq-f6-packaged.mjs';
+import { runOpseqOffsetWallPackaged } from './opseq-offset-wall-packaged.mjs';
 import { runOpseqF10Packaged } from './opseq-f10-packaged.mjs';
 import { runOpseqF13Packaged } from './opseq-f13-packaged.mjs';
 import { runWasmRayTorusPackaged } from './wasm-ray-torus-packaged.mjs';
@@ -30,6 +31,7 @@ import { runSecurityResourceRegressions } from './security-resource-packaged.mjs
 import { runPackageQueueWitness } from './queue-contracts-packaged.mjs';
 import { runPointedConeCutPackaged } from './pointed-cone-cut-packaged.mjs';
 import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
+import { runOpseqF17Packaged } from './opseq-f17-packaged.mjs';
 import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
 import { runGridPatternPackaged } from './grid-pattern-packaged.mjs';
 
@@ -100,6 +102,7 @@ try {
   runPackageQueueWitness({ ...packageExports, ...ioExports });
   runPointedConeCutPackaged(packageExports);
   runOpseqF3Packaged(packageExports);
+  runOpseqF17Packaged(packageExports);
   runDocumentCopyPackaged({ ...packageExports, ...ioExports });
   runOpenZcadConsumerRegressions({ ...packageExports, ...ioExports });
   runGridPatternPackaged(packageExports);
@@ -111,6 +114,7 @@ try {
   runWasmRayNurbsPackaged(packageExports);
   runOpseqF5Packaged(packageExports);
   runOpseqF6Packaged(packageExports);
+  runOpseqOffsetWallPackaged(packageExports);
   runOpseqF10Packaged(packageExports);
   runOpseqF13Packaged(packageExports);
   runWasmRayTorusPackaged(packageExports);

@@ -141,6 +141,10 @@ that does not exist yet; without it, stop.
   (F6).** Qualify whole native arcs before hemisphere meshing; use oriented
   great-circle containment for qualified concave trims and boundary queries.
   Agreeing volume routes do not prove material or raw mesh closure.
+- **Offset conic rim uses must follow their signed stored spans, and pointed
+  walls need the apex seam (F9/F14/F15).** Cap and lateral consumers must agree
+  on native traversal (`offset/src/loops.rs`, `check/src/util.rs`,
+  `regress_opseq_offset_wall.rs`).
 
 - **An equatorial boundary does not locate a hemisphere interior (F10).** Qualify the complete signed native circle partition before sampling its represented side; shared cylinder-rim synchronization may scale with each native arc span only on qualified complete circular two-rim bands, preserving the edge sampler and grid budget; stepped/CDT boundaries keep their established density (`regress_opseq_sphere_cylinder_fuse.rs`).
 

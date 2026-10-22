@@ -7,7 +7,7 @@
 //! test appends read-only probes (`validateSolid`, `volume`, `meshQuality`)
 //! on the final produced solid and checks the pinned acceptance or defect signature:
 //!
-//! - fixed orientation findings F1/F2/F5/F10/F11/F12/F16 must validate clean and mesh
+//! - fixed orientation findings F1/F2/F5/F10/F11/F12/F16/F17 must validate clean and mesh
 //!   watertight with their closed-form volumes through batch.
 //! - fixed material findings F3/F6/F8 must retain their independently derived
 //!   remainders and mesh watertight through batch.
@@ -166,9 +166,12 @@ fn cross_checks() -> Vec<CrossCheck> {
         CrossCheck {
             file: "opseq81-pointed-cone-offset-mesh.json",
             signature: Signature::Probes {
-                volume_near: (4.317_963, 0.05),
+                volume_near: (
+                    std::f64::consts::PI * (1.25 + std::f64::consts::SQRT_2 / 4.0).powi(3) / 3.0,
+                    1e-6,
+                ),
                 validate: ValidateExpect::Clean,
-                watertight: Some(false),
+                watertight: Some(true),
             },
         },
         CrossCheck {
@@ -218,24 +221,34 @@ fn cross_checks() -> Vec<CrossCheck> {
         CrossCheck {
             file: "opseq81-frustum-cone-offset-mesh.json",
             signature: Signature::Probes {
-                volume_near: (124.764_117, 0.5),
+                volume_near: (
+                    {
+                        let a = 4.0 + (13.0_f64.sqrt() + 2.0) / 12.0;
+                        let b = 2.0 + (13.0_f64.sqrt() - 2.0) / 12.0;
+                        std::f64::consts::PI * 3.5 * (a * a + a * b + b * b) / 3.0
+                    },
+                    2e-5,
+                ),
                 validate: ValidateExpect::Clean,
-                // No watertight pin: the batch probe welds before counting
-                // and reports this weldable-crack body clean, while the
-                // native unwelded oracle fails it. That blindness IS the
-                // surface result here — a coverage gap for T-junction-class
-                // defects, documented in the finding.
-                watertight: None,
+                watertight: Some(true),
             },
         },
         CrossCheck {
             file: "opseq81-cylinder-offset-mesh.json",
             signature: Signature::Probes {
-                volume_near: (0.883_573, 0.05),
+                volume_near: (9.0 * std::f64::consts::PI / 32.0, 1e-9),
                 validate: ValidateExpect::Clean,
-                // Same weldable-crack nuance as F14: the batch probe welds
-                // and reports clean; the native unwelded oracle fails it.
-                watertight: None,
+                watertight: Some(true),
+            },
+        },
+        CrossCheck {
+            file: "opseq81-equal-frustum-fuse-orientation.json",
+            signature: Signature::Probes {
+                // Independent horizontal-disc overlap integral; the native
+                // and packaged matrices retain the tighter quantity gates.
+                volume_near: (426.554_124_672_275_07, 0.05),
+                validate: ValidateExpect::Clean,
+                watertight: Some(true),
             },
         },
         CrossCheck {
