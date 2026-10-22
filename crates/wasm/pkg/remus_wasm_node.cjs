@@ -7,6 +7,12 @@
  * invokes methods to create, transform, and query geometry.
  */
 class BrepKernel {
+    static __wrap(ptr) {
+        const obj = Object.create(BrepKernel.prototype);
+        obj.__wbg_ptr = ptr;
+        BrepKernelFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
@@ -1119,6 +1125,42 @@ class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Copy selected solid, sheet and wire roots into a fresh kernel.
+     *
+     * Retains exact document data and selected lineage without JSON transport,
+     * omitting unrelated live entities and retired slots. Root order and
+     * duplicate aliases are preserved. `maxEntities`, when supplied, can only
+     * lower the native default entity/reference budget; it is not a byte cap.
+     *
+     * The source and its checkpoints stay intact. The returned kernel has no
+     * checkpoints, sketches, assemblies or prepared moves. Rebuild selections
+     * in that owner from the returned roots. Numeric handles remain scoped to
+     * their kernel; equal numbers in two kernels do not imply equal identity.
+     * Release the old owner and its wrappers explicitly to reclaim its data.
+     * WASM linear memory need not shrink, and both documents coexist while
+     * copying. This does not validate geometric correctness.
+     *
+     * Direct-only: a JSON batch cannot return ownership of another kernel.
+     * @param {Uint32Array} solids
+     * @param {Uint32Array} sheets
+     * @param {Uint32Array} wires
+     * @param {number | null} [max_entities]
+     * @returns {KernelDocumentCopy}
+     */
+    copyDocument(solids, sheets, wires, max_entities) {
+        const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray32ToWasm0(sheets, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArray32ToWasm0(wires, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_copyDocument(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return KernelDocumentCopy.__wrap(ret[0]);
     }
     /**
      * Deep copy a face, returning a new independent face handle.
@@ -2365,6 +2407,8 @@ class BrepKernel {
      *
      * Also accepts brepjs-style fields: `startRadius`/`endRadius` as aliases for `start`/`end`.
      * When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
+     * Missing or `null` numeric fields retain their defaults. Every other supplied
+     * numeric field must be a number, including aliases shadowed by `start`/`end`.
      * A supplied `law` must be `"constant"`, `"linear"`, or `"scurve"`.
      *
      * Returns a new solid handle.
@@ -6172,9 +6216,12 @@ class BrepKernel {
      * The view arguments and `hidden_lines` match `projectEdges`, and the two
      * results together make the outline drawing. Returns a JSON string
      * `{"visible": [[x,y,…]], "hidden": [[…]], "unsupported": [{"face": id,
-     * "surface": "nurbs"}]}`: cylinder, cone, sphere and torus outlines are
-     * exact curves clipped to the face, and faces whose outline is not
-     * computed are named rather than approximated.
+     * "surface": tag}], "approximate": [id]}`: cylinder, cone, sphere and
+     * torus outlines are exact curves clipped to the face; NURBS outlines
+     * are traced on a grid of the face's parameters with every vertex on
+     * the silhouette, and every NURBS face but a certified flat one is
+     * listed in `approximate`, even where no contour was found.
+     * `unsupported` is empty today: every surface type is handled.
      *
      * # Errors
      *
@@ -8737,6 +8784,75 @@ if (Symbol.dispose) JsVec3.prototype[Symbol.dispose] = JsVec3.prototype.free;
 exports.JsVec3 = JsVec3;
 
 /**
+ * A selected document copied into a fresh kernel, with ordered root remaps.
+ *
+ * Read the roots and call `takeKernel()` once. Each root belongs exclusively
+ * to that new owner. Freeing this object before taking the kernel drops the
+ * copied document; freeing it afterwards leaves the taken kernel intact.
+ */
+class KernelDocumentCopy {
+    static __wrap(ptr) {
+        const obj = Object.create(KernelDocumentCopy.prototype);
+        obj.__wbg_ptr = ptr;
+        KernelDocumentCopyFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        KernelDocumentCopyFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_kerneldocumentcopy_free(ptr, 0);
+    }
+    /**
+     * Sheet roots corresponding to the requested sheets, including aliases.
+     * @returns {Uint32Array}
+     */
+    get sheets() {
+        const ret = wasm.kerneldocumentcopy_sheets(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Solid roots corresponding to the requested solids, including aliases.
+     * @returns {Uint32Array}
+     */
+    get solids() {
+        const ret = wasm.kerneldocumentcopy_solids(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Transfer the new kernel to the caller. A second call throws.
+     * @returns {BrepKernel}
+     */
+    takeKernel() {
+        const ret = wasm.kerneldocumentcopy_takeKernel(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return BrepKernel.__wrap(ret[0]);
+    }
+    /**
+     * Wire roots corresponding to the requested wires, including aliases.
+     * @returns {Uint32Array}
+     */
+    get wires() {
+        const ret = wasm.kerneldocumentcopy_wires(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+}
+if (Symbol.dispose) KernelDocumentCopy.prototype[Symbol.dispose] = KernelDocumentCopy.prototype.free;
+exports.KernelDocumentCopy = KernelDocumentCopy;
+
+/**
  * A one-shot cooperative cancellation signal for a modeling operation.
  *
  * Clones share one monotonic flag. Native multithreaded hosts can signal it
@@ -9120,6 +9236,9 @@ const JsPoint3Finalization = (typeof FinalizationRegistry === 'undefined')
 const JsVec3Finalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_jsvec3_free(ptr, 1));
+const KernelDocumentCopyFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_kerneldocumentcopy_free(ptr, 1));
 const OperationCancellationTokenFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_operationcancellationtoken_free(ptr, 1));
