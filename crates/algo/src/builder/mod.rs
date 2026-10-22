@@ -1845,6 +1845,133 @@ fn sample_holed_face_interior(
     Ok(best.map(|(_, c)| frame.evaluate(c.x(), c.y())))
 }
 
+/// A complete circular partition, qualified as a great circle within the
+/// caller's linear tolerance, bounds the hemisphere on its
+/// left when viewed from the sphere's outward normal. The native spans and
+/// coedge directions decide that side; a centroid on the equator cannot.
+///
+/// Decline other spherical trims, holes and unresolved native intervals.
+/// Face reversal changes the material normal, not this stored trim domain.
+fn sample_complete_sphere_equator(
+    topo: &Topology,
+    face_id: FaceId,
+    tol: Tolerance,
+) -> Result<Option<Point3>, AlgoError> {
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::face::FaceSurface;
+    use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, TAU};
+
+    let face = topo.face(face_id)?;
+    let FaceSurface::Sphere(sphere) = face.surface() else {
+        return Ok(None);
+    };
+    if !face.inner_wires().is_empty() {
+        return Ok(None);
+    }
+    let wire = topo.wire(face.outer_wire())?;
+    if !wire.is_closed() {
+        return Ok(None);
+    }
+    let edges = wire.edges();
+    let Some(first) = edges.first() else {
+        return Ok(None);
+    };
+    let EdgeCurve::Circle(reference) = topo.edge(first.edge())?.curve() else {
+        return Ok(None);
+    };
+    let near = |a: Point3, b: Point3| {
+        let distance = (a - b).length();
+        distance.is_finite() && distance <= tol.linear
+    };
+    if edges.len() < 4
+        || !near(reference.center(), sphere.center())
+        || (reference.radius() - sphere.radius()).abs() > tol.linear
+        || !reference.radius().is_finite()
+        || reference.radius() <= tol.linear
+        || !sphere.radius().is_finite()
+        || sphere.radius() <= tol.linear
+    {
+        return Ok(None);
+    }
+    let mut turn = 0.0_f64;
+    let mut first_start = None;
+    let mut previous_end: Option<f64> = None;
+    let mut previous_vertex = None;
+    let mut initial_vertex = None;
+    for oe in edges {
+        let edge = topo.edge(oe.edge())?;
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            return Ok(None);
+        };
+        // Frame equality qualifies one stored partition; it does not merge
+        // near-coincident carriers or introduce a geometric snap tolerance.
+        if circle.center() != reference.center()
+            || circle.normal() != reference.normal()
+            || circle.u_axis() != reference.u_axis()
+            || circle.v_axis() != reference.v_axis()
+            || circle.radius().to_bits() != reference.radius().to_bits()
+            || edge.trim().is_none()
+        {
+            return Ok(None);
+        }
+        let Ok((a, b)) = edge.strict_domain() else {
+            return Ok(None);
+        };
+        let (start, end) = if oe.is_forward() { (a, b) } else { (b, a) };
+        let delta = end - start;
+        if ![start, end, delta].into_iter().all(f64::is_finite)
+            || start.abs() > 64.0 * TAU
+            || end.abs() > 64.0 * TAU
+            || delta.abs() <= 1e-12
+            || delta.abs() > FRAC_PI_2 + 1e-12
+            || (turn != 0.0 && delta.is_sign_positive() != turn.is_sign_positive())
+            || !near(
+                circle.evaluate(start),
+                topo.vertex(oe.oriented_start(edge))?.point(),
+            )
+            || !near(
+                circle.evaluate(end),
+                topo.vertex(oe.oriented_end(edge))?.point(),
+            )
+        {
+            return Ok(None);
+        }
+        if let Some(previous) = previous_end {
+            let gap = (start - previous).rem_euclid(TAU);
+            if gap.min(TAU - gap) > 1e-12 || previous_vertex != Some(oe.oriented_start(edge)) {
+                return Ok(None);
+            }
+        } else {
+            first_start = Some(start);
+            initial_vertex = Some(oe.oriented_start(edge));
+        }
+        previous_end = Some(end);
+        previous_vertex = Some(oe.oriented_end(edge));
+        turn += delta;
+    }
+    let Some(start) = first_start else {
+        return Ok(None);
+    };
+    let Some(end) = previous_end else {
+        return Ok(None);
+    };
+    let gap = (end - start).rem_euclid(TAU);
+    if gap.min(TAU - gap) > 1e-12
+        || previous_vertex != initial_vertex
+        || (turn.abs() - TAU).abs() > 1e-12 * edges.len() as f64
+    {
+        return Ok(None);
+    }
+
+    // Stay clear of both the equator and the pole: the pole can touch an
+    // opposing planar cap even though the hemisphere's interior is inside.
+    let radial = (reference.evaluate(start) - reference.center()) * (1.0 / reference.radius());
+    let side = reference.normal() * turn.signum();
+    Ok(Some(
+        sphere.center() + (radial + side) * (sphere.radius() * FRAC_1_SQRT_2),
+    ))
+}
+
 fn sample_face_interior(
     topo: &Topology,
     face_id: FaceId,
@@ -1860,6 +1987,10 @@ fn sample_face_interior(
         return Err(AlgoError::FaceSplitFailed(format!(
             "face {face_id:?} has empty outer wire"
         )));
+    }
+
+    if let Some(point) = sample_complete_sphere_equator(topo, face_id, tol)? {
+        return Ok(point);
     }
 
     if let Some(((u, du), (v, dv))) =
@@ -2158,6 +2289,187 @@ mod tests {
     use super::*;
     use remus_math::vec::Vec3;
     use remus_topology::builder::{make_face_from_wire, make_polygon_wire};
+
+    fn equator_sample_fixture(
+        scale: f64,
+        parts: usize,
+        north: bool,
+        descending: bool,
+        reversed: bool,
+    ) -> (Topology, FaceId, remus_topology::edge::EdgeId, Vec3) {
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::SphericalSurface;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::face::{Face, FaceSurface};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+        let mut topo = Topology::new();
+        let center = Point3::new(7.0 * scale, -3.0 * scale, 2.0 * scale);
+        let axis = Vec3::new(1.0, 2.0, 3.0).normalize().unwrap();
+        let circle = Circle3D::new(center, axis, scale).unwrap();
+        let vertices: Vec<_> = (0..parts)
+            .map(|i| {
+                topo.add_vertex(Vertex::new(
+                    circle.evaluate(std::f64::consts::TAU * i as f64 / parts as f64),
+                    1e-7,
+                ))
+            })
+            .collect();
+        let mut uses: Vec<_> = (0..parts)
+            .map(|i| {
+                let a = std::f64::consts::TAU * i as f64 / parts as f64;
+                let b = std::f64::consts::TAU * (i + 1) as f64 / parts as f64;
+                let (from, to, trim) = if descending {
+                    (vertices[(i + 1) % parts], vertices[i], (b, a))
+                } else {
+                    (vertices[i], vertices[(i + 1) % parts], (a, b))
+                };
+                let mut edge = Edge::new(from, to, EdgeCurve::Circle(circle.clone()));
+                edge.set_trim(Some(trim));
+                OrientedEdge::new(topo.add_edge(edge), !descending)
+            })
+            .collect();
+        let edge = uses[0].edge();
+        if !north {
+            uses.reverse();
+            uses = uses
+                .into_iter()
+                .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+                .collect();
+        }
+        uses.rotate_left(parts / 2);
+        let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+        // Deliberately use another sphere UV pole: any great circle works.
+        let mut face = Face::new(
+            wire,
+            vec![],
+            FaceSurface::Sphere(SphericalSurface::new(center, scale).unwrap()),
+        );
+        face.set_reversed(reversed);
+        let face = topo.add_face(face);
+        (topo, face, edge, axis)
+    }
+
+    #[test]
+    fn complete_equator_sample_respects_native_traversal_and_geometric_domain() {
+        for scale in [0.001_f64, 1.0, 1000.0] {
+            for parts in [4, 16, 32] {
+                for north in [false, true] {
+                    for descending in [false, true] {
+                        for reversed in [false, true] {
+                            let (topo, face, _, axis) =
+                                equator_sample_fixture(scale, parts, north, descending, reversed);
+                            let center = Point3::new(7.0 * scale, -3.0 * scale, 2.0 * scale);
+                            let point =
+                                sample_face_interior(&topo, face, Tolerance::default()).unwrap();
+                            let radial = (point - center) * scale.recip();
+                            assert!((radial.length() - 1.0).abs() < 1e-12);
+                            let expected = if north {
+                                std::f64::consts::FRAC_1_SQRT_2
+                            } else {
+                                -std::f64::consts::FRAC_1_SQRT_2
+                            };
+                            assert!((radial.dot(axis) - expected).abs() < 1e-12);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn complete_equator_sample_declines_unqualified_boundaries() {
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::SphericalSurface;
+        use remus_topology::edge::EdgeCurve;
+        use remus_topology::face::Face;
+        use remus_topology::face::FaceSurface;
+        use remus_topology::wire::Wire;
+        let (original, face, edge, _) = equator_sample_fixture(1.0, 16, true, false, false);
+        for trim in [
+            None,
+            Some((0.0, f64::NAN)),
+            Some((0.0, 1.0)),
+            Some((0.0, 2.0 * std::f64::consts::TAU)),
+        ] {
+            let mut topo = original.clone();
+            topo.edge_mut(edge).unwrap().set_trim(trim);
+            assert!(
+                sample_complete_sphere_equator(&topo, face, Tolerance::default())
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        for repeat in [false, true] {
+            let mut topo = original.clone();
+            let source = topo.face(face).unwrap().clone();
+            let mut edges = topo.wire(source.outer_wire()).unwrap().edges().to_vec();
+            if repeat {
+                edges.extend(edges.clone());
+            } else {
+                edges.pop();
+            }
+            let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+            let face = topo.add_face(Face::new(wire, vec![], source.surface().clone()));
+            assert!(
+                sample_complete_sphere_equator(&topo, face, Tolerance::default())
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        for changed_surface in [
+            SphericalSurface::new(Point3::new(7.0, -3.0, 2.001), 1.0).unwrap(),
+            SphericalSurface::new(Point3::new(7.0, -3.0, 2.0), 1.001).unwrap(),
+        ] {
+            let mut topo = original.clone();
+            let source = topo.face(face).unwrap().clone();
+            let changed = topo.add_face(Face::new(
+                source.outer_wire(),
+                vec![],
+                FaceSurface::Sphere(changed_surface),
+            ));
+            assert!(
+                sample_complete_sphere_equator(&topo, changed, Tolerance::default())
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        let EdgeCurve::Circle(circle) = original.edge(edge).unwrap().curve() else {
+            unreachable!()
+        };
+        for curve in [
+            EdgeCurve::Line,
+            EdgeCurve::Circle(
+                Circle3D::new_with_ref(
+                    circle.center(),
+                    circle.normal(),
+                    circle.radius(),
+                    circle.v_axis(),
+                )
+                .unwrap(),
+            ),
+        ] {
+            let mut topo = original.clone();
+            topo.edge_mut(edge).unwrap().set_curve(curve);
+            assert!(
+                sample_complete_sphere_equator(&topo, face, Tolerance::default())
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        let mut topo = original;
+        let source = topo.face(face).unwrap().clone();
+        let face = topo.add_face(Face::new(
+            source.outer_wire(),
+            vec![source.outer_wire()],
+            source.surface().clone(),
+        ));
+        assert!(
+            sample_complete_sphere_equator(&topo, face, Tolerance::default())
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn torus_patch_sample_is_clear_of_its_trimmed_boundaries() {
