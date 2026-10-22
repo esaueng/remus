@@ -116,7 +116,7 @@ fn expected_volume(model: &Model, solid: SolidId, r: f64) -> (f64, [usize; 3]) {
 
 #[test]
 fn whole_edge_bracket_fillet_matches_closed_form() {
-    for r in [0.5, 1.0] {
+    for (r, journaled) in [(0.5, false), (0.5, true), (1.0, false), (1.0, true)] {
         let mut model = Model::new();
         let solid = bracket(&mut model);
         let (expected, census) = expected_volume(&model, solid, r);
@@ -125,9 +125,17 @@ fn whole_edge_bracket_fillet_matches_closed_form() {
         // rib-base tori.
         assert_eq!(census, [18, 8, 2]);
         let edges = model.solid_edges(solid).unwrap();
-        let result = model
-            .fillet(solid, &edges, r)
-            .unwrap_or_else(|e| panic!("r={r}: whole-edge bracket must build: {e}"));
+        let result = if journaled {
+            let recorded = model
+                .fillet_journaled(solid, &edges, r)
+                .unwrap_or_else(|e| panic!("r={r}: journaled whole-edge bracket must build: {e}"));
+            assert_eq!(model.journal().len(), 1);
+            recorded.result
+        } else {
+            model
+                .fillet(solid, &edges, r)
+                .unwrap_or_else(|e| panic!("r={r}: whole-edge bracket must build: {e}"))
+        };
         assert!(!result.is_partial);
         let out = result.solid;
         assert!(model.validate(out).unwrap().is_valid(), "r={r}: invalid");

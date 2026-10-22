@@ -336,35 +336,8 @@ impl Model {
         edges: &[EdgeId],
         radius: f64,
     ) -> Result<BlendResult, OperationsError> {
-        // Only edges this solid joins smoothly, and its periodic seams, are
-        // dropped. Anything else the filter would skip (a foreign or
-        // non-manifold edge) stays, so the cascade refuses rather than
-        // blending a subset of the request.
-        let filletable =
-            remus_operations::query::filter_filletable_edges(&self.topology, solid, edges)?;
-        let faces = remus_topology::explorer::edge_to_face_map(&self.topology, solid)?;
-        let mut kept = Vec::with_capacity(edges.len());
-        for &edge in edges {
-            let no_dihedral = !filletable.contains(&edge)
-                && match faces.get(&edge.index()).map(|f| &f[..]) {
-                    Some(&[a, b]) if a == b => true,
-                    Some(&[a, b]) => {
-                        remus_operations::query::edge_is_g1(&self.topology, edge, a, b)?
-                    }
-                    _ => false,
-                };
-            if !no_dihedral {
-                kept.push(edge);
-            }
-        }
-        let edges = kept;
-        if edges.is_empty() {
-            return Err(OperationsError::InvalidInput {
-                reason: "no filletable edges in the selection (tangent and degenerate edges are \
-                         skipped)"
-                    .into(),
-            });
-        }
+        let edges =
+            remus_operations::query::normalize_fillet_selection(&self.topology, solid, edges)?;
         remus_operations::blend_ops::fillet_cascade(&mut self.topology, solid, &edges, radius)
     }
 
@@ -1000,6 +973,52 @@ mod tests {
         let result = model.fillet(solid, &edges, 1.0).unwrap();
         assert!(!result.succeeded.is_empty());
         assert!(result.succeeded.len() < edges.len(), "the seam is dropped");
+    }
+
+    #[test]
+    fn journaled_fillet_skips_a_cylinder_seam_in_a_whole_body_selection() {
+        let mut model = Model::new();
+        let solid = model.make_cylinder(5.0, 10.0).unwrap();
+        let edges = remus_topology::explorer::solid_edges(model.topology(), solid).unwrap();
+        let source_volume = model.volume(solid, 0.01).unwrap();
+        let journaled = model.fillet_journaled(solid, &edges, 1.0).unwrap();
+        assert!(!journaled.result.is_partial);
+        assert!(journaled.result.succeeded.len() < edges.len());
+        assert!(model.validate(journaled.result.solid).unwrap().is_valid());
+        assert!(model.volume(journaled.result.solid, 0.01).unwrap() < source_volume);
+        assert_eq!(
+            model.volume(solid, 0.01).unwrap().to_bits(),
+            source_volume.to_bits()
+        );
+        assert_eq!(model.journal().len(), 1);
+    }
+
+    #[test]
+    fn journaled_fillet_keeps_foreign_edges_for_atomic_refusal() {
+        let mut model = Model::new();
+        let solid = model.make_box(10.0, 10.0, 10.0).unwrap();
+        let other = model.make_box(5.0, 5.0, 5.0).unwrap();
+        let own = remus_topology::explorer::solid_edges(model.topology(), solid).unwrap();
+        let foreign = remus_topology::explorer::solid_edges(model.topology(), other).unwrap();
+        let live = |topo: &remus_topology::Topology| {
+            [
+                topo.num_solids(),
+                topo.num_shells(),
+                topo.num_faces(),
+                topo.num_wires(),
+                topo.num_edges(),
+                topo.num_vertices(),
+            ]
+        };
+        let before_live = live(model.topology());
+        assert!(
+            model
+                .fillet_journaled(solid, &[own[0], foreign[0]], 1.0)
+                .is_err()
+        );
+        assert_eq!(live(model.topology()), before_live);
+        assert!(model.journal().is_empty());
+        assert!(model.validate(solid).unwrap().is_valid());
     }
 
     #[test]

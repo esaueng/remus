@@ -1054,6 +1054,49 @@ pub fn filter_filletable_edges(
     Ok(result)
 }
 
+/// Normalizes an explicit fillet request without silently dropping invalid edges.
+///
+/// Tangent/flat joins and a solid's periodic seams have no dihedral to round.
+/// Foreign and non-manifold edges remain in the request so the blend refuses
+/// them instead of applying a successful subset. Native and journaled callers
+/// share this policy before opening a modeling transaction.
+///
+/// # Errors
+///
+/// Returns topology/query errors, or invalid input when no edge remains.
+pub fn normalize_fillet_selection(
+    topo: &Topology,
+    solid: SolidId,
+    edge_ids: &[EdgeId],
+) -> Result<Vec<EdgeId>, OperationsError> {
+    // Only edges this solid joins smoothly, and its periodic seams, are
+    // dropped. Anything else the filter would skip (a foreign or
+    // non-manifold edge) stays, so the cascade refuses rather than
+    // blending a subset of the request.
+    let filletable = filter_filletable_edges(topo, solid, edge_ids)?;
+    let faces = remus_topology::explorer::edge_to_face_map(topo, solid)?;
+    let mut kept = Vec::with_capacity(edge_ids.len());
+    for &edge in edge_ids {
+        let no_dihedral = !filletable.contains(&edge)
+            && match faces.get(&edge.index()).map(|f| &f[..]) {
+                Some(&[a, b]) if a == b => true,
+                Some(&[a, b]) => edge_is_g1(topo, edge, a, b)?,
+                _ => false,
+            };
+        if !no_dihedral {
+            kept.push(edge);
+        }
+    }
+    if kept.is_empty() {
+        return Err(OperationsError::InvalidInput {
+            reason: "no filletable edges in the selection (tangent and degenerate edges are \
+                         skipped)"
+                .into(),
+        });
+    }
+    Ok(kept)
+}
+
 /// Whether the two faces of `eid` meet tangentially (G1) — their effective
 /// outward normals stay aligned at every interior edge sample, so there is no
 /// real dihedral to round.
