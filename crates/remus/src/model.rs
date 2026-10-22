@@ -321,19 +321,24 @@ impl Model {
     /// engine that produced the result is disclosed in
     /// [`BlendResult::engine`]. This is the same policy the WASM `fillet`
     /// binding runs, so both surfaces return the same geometry for the same
-    /// request.
+    /// request. Like that binding, it first drops edges with no dihedral to
+    /// round — tangent edges and the flat seams a fuse leaves between coplanar
+    /// faces — so "every edge of the body" is a valid selection.
     ///
     /// # Errors
     ///
-    /// Returns [`OperationsError`] for invalid or unsupported blends; a
-    /// refusal leaves the topology unchanged.
+    /// Returns [`OperationsError`] for invalid or unsupported blends, or when
+    /// no selected edge is filletable; a refusal leaves the topology
+    /// unchanged.
     pub fn fillet(
         &mut self,
         solid: SolidId,
         edges: &[EdgeId],
         radius: f64,
     ) -> Result<BlendResult, OperationsError> {
-        remus_operations::blend_ops::fillet_cascade(&mut self.topology, solid, edges, radius)
+        let edges =
+            remus_operations::query::normalize_fillet_selection(&self.topology, solid, edges)?;
+        remus_operations::blend_ops::fillet_cascade(&mut self.topology, solid, &edges, radius)
     }
 
     /// Chamfers selected edges with the v2 validated blend engine.
@@ -958,6 +963,78 @@ mod tests {
         );
         let volume = model.volume(result.solid, 0.05).unwrap();
         assert!(volume < 1000.0 && volume > 990.0, "{volume}");
+    }
+
+    #[test]
+    fn fillet_skips_a_cylinder_seam_in_a_whole_body_selection() {
+        let mut model = Model::new();
+        let solid = model.make_cylinder(5.0, 10.0).unwrap();
+        let edges = remus_topology::explorer::solid_edges(model.topology(), solid).unwrap();
+        let result = model.fillet(solid, &edges, 1.0).unwrap();
+        assert!(!result.succeeded.is_empty());
+        assert!(result.succeeded.len() < edges.len(), "the seam is dropped");
+    }
+
+    #[test]
+    fn journaled_fillet_skips_a_cylinder_seam_in_a_whole_body_selection() {
+        let mut model = Model::new();
+        let solid = model.make_cylinder(5.0, 10.0).unwrap();
+        let edges = remus_topology::explorer::solid_edges(model.topology(), solid).unwrap();
+        let source_volume = model.volume(solid, 0.01).unwrap();
+        let journaled = model.fillet_journaled(solid, &edges, 1.0).unwrap();
+        assert!(!journaled.result.is_partial);
+        assert!(journaled.result.succeeded.len() < edges.len());
+        assert!(model.validate(journaled.result.solid).unwrap().is_valid());
+        assert!(model.volume(journaled.result.solid, 0.01).unwrap() < source_volume);
+        assert_eq!(
+            model.volume(solid, 0.01).unwrap().to_bits(),
+            source_volume.to_bits()
+        );
+        assert_eq!(model.journal().len(), 1);
+    }
+
+    #[test]
+    fn journaled_fillet_keeps_foreign_edges_for_atomic_refusal() {
+        let mut model = Model::new();
+        let solid = model.make_box(10.0, 10.0, 10.0).unwrap();
+        let other = model.make_box(5.0, 5.0, 5.0).unwrap();
+        let own = remus_topology::explorer::solid_edges(model.topology(), solid).unwrap();
+        let foreign = remus_topology::explorer::solid_edges(model.topology(), other).unwrap();
+        let live = |topo: &remus_topology::Topology| {
+            [
+                topo.num_solids(),
+                topo.num_shells(),
+                topo.num_faces(),
+                topo.num_wires(),
+                topo.num_edges(),
+                topo.num_vertices(),
+            ]
+        };
+        let before_live = live(model.topology());
+        assert!(
+            model
+                .fillet_journaled(solid, &[own[0], foreign[0]], 1.0)
+                .is_err()
+        );
+        assert_eq!(live(model.topology()), before_live);
+        assert!(model.journal().is_empty());
+        assert!(model.validate(solid).unwrap().is_valid());
+    }
+
+    #[test]
+    fn fillet_refuses_edges_of_another_solid() {
+        let mut model = Model::new();
+        let solid = model.make_box(10.0, 10.0, 10.0).unwrap();
+        let other = model.make_box(5.0, 5.0, 5.0).unwrap();
+        let own = remus_topology::explorer::solid_edges(model.topology(), solid).unwrap();
+        let foreign = remus_topology::explorer::solid_edges(model.topology(), other).unwrap();
+        let counts =
+            remus_topology::explorer::solid_entity_counts(model.topology(), solid).unwrap();
+        assert!(model.fillet(solid, &[own[0], foreign[0]], 1.0).is_err());
+        assert_eq!(
+            remus_topology::explorer::solid_entity_counts(model.topology(), solid).unwrap(),
+            counts
+        );
     }
 
     #[test]

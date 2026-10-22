@@ -1868,6 +1868,45 @@ mod evolution_contract_tests {
     }
 
     #[test]
+    fn whole_body_journaled_fillet_filters_periodic_seams_in_direct_and_batch_routes() {
+        for batch in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let made = run(
+                &mut kernel,
+                serde_json::json!([
+                    {"op":"makeCylinder", "args":{"radius":5.0, "height":10.0}},
+                    {"op":"solidEdges", "args":{"solid":0}}
+                ]),
+            );
+            let edges: Vec<u32> = made[1]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| u32::try_from(v.as_u64().unwrap()).unwrap())
+                .collect();
+            let result =
+                if batch {
+                    run(&mut kernel, serde_json::json!([
+                    {"op":"filletJournaled", "args":{"solid":0, "edges":edges, "radius":1.0}}
+                ]))[0].clone()
+                } else {
+                    kernel.fillet_journaled_json(0, &edges, 1.0).unwrap()
+                };
+            assert_eq!(result["isPartial"], false);
+            assert_eq!(result["failedEdges"], serde_json::json!([]));
+            assert!(result["op"].is_u64());
+            let out = u32::try_from(result["solid"].as_u64().unwrap()).unwrap();
+            let id = kernel.resolve_solid(out).unwrap();
+            assert!(
+                remus_operations::validate::validate_solid(kernel.topo(), id)
+                    .unwrap()
+                    .is_valid()
+            );
+            assert_eq!(kernel.topo().journal().len(), 1);
+        }
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)]
     fn journaled_healing_direct_and_batch_preserve_repaired_references() {
         use remus_topology::{
