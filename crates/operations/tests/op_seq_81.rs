@@ -381,8 +381,9 @@ fn get_u32(args: &Value, key: &str) -> Option<u32> {
 ///   misoriented edges outside the X1/X2/X3 cells). Rotated variants stay
 ///   out (rotated tool is X3, the rest are tripwires).
 /// - X12: a FUSE or CUT of a placed prim sphere with an unmoved prim box
-///   (`finding_placed_sphere_box_cut_open_mesh`, F13: both operators
-///   mesh-hole on the same placed pair; the unmoved twin refuses clean).
+///   (F13's literal `finding_placed_sphere_box_cut_open_mesh` is fixed;
+///   the broader placed sphere/box family remains unqualified, including
+///   separately retained pre-mesh equator-orientation foils).
 ///   Box-placed variants, moved boxes, and intersects stay in generation
 ///   as tripwires.
 /// - X13: an INTERSECT or CUT consuming a mirrored box — prim, copy, or
@@ -6148,23 +6149,16 @@ fn finding_translated_cyl_cut_orientation() {
     );
 }
 
-/// 8.1 finding F13 (retained, kernel untouched): a cut of a rotY30-placed
-/// r3 sphere minus a unit box validates clean yet tessellates open (87
-/// boundary edges at deflection 0.01; volume 112.71152, the sphere minus
-/// its box bite). Tessellation-lane affinity with F6/F8 on a PLACED
-/// sphere–box pair — the unmoved twin refuses typed (clean), so the
-/// placement is load-bearing and this is not F8's shape. Shrunk from
-/// campaign seed `5893993303627188661` (7 ops to 4; the torus, second
-/// transform, and intersect cascade away; the fuse shrinks across the
-/// sibling-operation swap into this cut — both operators mesh-hole on the
-/// same placed pair, and the cut form is minimal). Owns exclusion cell
-/// X12 (fuse/cut of a placed prim sphere with an unmoved prim box);
-/// box-placed variants, moved boxes, and intersects stay in generation.
-///
-/// Acceptance: the harness `ExactOk` verdict (watertight mesh). No geometry
-/// fix in this harness PR.
+/// F13 regression: a rotated r3 sphere minus the positive unit box retains
+/// a native-equator hemisphere with one inner conic loop. The former snap
+/// path opened the equator and box rim; shared stereographic meshing keeps
+/// both loops. Independent material, Cartesian quantity and raw mesh oracles
+/// cover the cut and fuse sibling across scales and rigid placement in
+/// `regress_opseq_sphere_box_cut.rs`. The broad X12 family stays excluded.
+/// Shrunk from seed `5893993303627188661` (7 ops to 4): the torus,
+/// second transform and intersect disappear, and the fuse sibling swaps
+/// into this minimal cut. The original four operations below are unchanged.
 #[test]
-#[ignore = "8.1 finding F13: placed sphere-box cut validates clean yet tessellates open (unmoved twin refuses clean); route to the tessellation lane"]
 fn finding_placed_sphere_box_cut_open_mesh() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"depth":1.0,"height":1.0,"width":1.0},"op":"makeBox"},{"args":{"radius":3.0,"segments":16},"op":"makeSphere"},{"args":{"matrix":[0.8660254037844386,0.0,0.5,0.0,0.0,1.0,0.0,0.0,-0.5,0.0,0.8660254037844386,-2.5,0.0,0.0,0.0,1.0],"solid":1},"op":"transform"},{"args":{"exactOnly":true,"operation":"cut","solidA":1,"solidB":0},"op":"booleanWithQuality"}]"#,

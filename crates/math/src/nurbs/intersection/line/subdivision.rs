@@ -1127,6 +1127,67 @@ mod tests {
     }
 
     #[test]
+    fn split_net_degree_boundary_matches_closed_polynomial_on_both_axes() {
+        // Degree-elevated Bernstein coefficients of the fixed polynomial
+        // (u² - u/2)(1 + v) + v². Evaluate the results with the explicit
+        // Bernstein sum, independently of the subdivision recurrence.
+        let quadratic = |i: usize, degree: usize| {
+            (i * i.saturating_sub(1)) as f64 / (degree * (degree - 1)) as f64
+        };
+        let bernstein = |degree: usize, i: usize, t: f64| {
+            let mut choose = 1.0;
+            for k in 0..i {
+                choose *= (degree - k) as f64 / (k + 1) as f64;
+            }
+            choose
+                * t.powi(i32::try_from(i).unwrap())
+                * (1.0 - t).powi(i32::try_from(degree - i).unwrap())
+        };
+        for degree in [31, 32, 33] {
+            for along_u in [true, false] {
+                let (p, q) = if along_u { (degree, 2) } else { (2, degree) };
+                let net: Vec<f64> = (0..=p)
+                    .flat_map(|i| {
+                        (0..=q).map(move |j| {
+                            (quadratic(i, p) - 0.5 * i as f64 / p as f64)
+                                * (1.0 + j as f64 / q as f64)
+                                + quadratic(j, q)
+                        })
+                    })
+                    .collect();
+                let mut low = vec![0.0; net.len()];
+                let mut high = vec![0.0; net.len()];
+                split_net(&net, p, q, along_u, &mut low, &mut high);
+                for u in [0.0, 0.125, 0.5, 0.875, 1.0] {
+                    for v in [0.0, 0.125, 0.5, 0.875, 1.0] {
+                        for (half, upper) in [(&low, false), (&high, true)] {
+                            let mut actual = 0.0;
+                            for i in 0..=p {
+                                for j in 0..=q {
+                                    actual += bernstein(p, i, u)
+                                        * bernstein(q, j, v)
+                                        * half[i * (q + 1) + j];
+                                }
+                            }
+                            let offset = if upper { 0.5 } else { 0.0 };
+                            let (s, r) = if along_u {
+                                (0.5 * u + offset, v)
+                            } else {
+                                (u, 0.5 * v + offset)
+                            };
+                            let expected = (s * s - 0.5 * s) * (1.0 + r) + r * r;
+                            assert!(
+                                (actual - expected).abs() < 1e-12,
+                                "degree={degree}, along_u={along_u}, upper={upper}, ({u}, {v}): {actual} vs {expected}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn line_box_slab_test() {
         let bounds = Aabb3 {
             min: Point3::new(0.0, 0.0, 0.0),
