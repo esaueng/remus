@@ -6040,30 +6040,16 @@ fn finding_pointed_cone_offset_open_mesh() {
     );
 }
 
-/// 8.1 finding F10 (retained, kernel untouched): an unmoved sphere–cylinder
-/// fuse carries 16 shared edges with inconsistent face orientations — and
-/// the two volume routes split 24% on the same body (tessellated 5.218487
-/// vs Gauss 4.188790, the latter exactly the sphere alone, as if the
-/// cylinder cancelled out). Orientation-family affinity with F1/F2/F5
-/// (B33), on a curved pair the 2.4 sphere–cylinder matrices qualified only
-/// in other configurations — the paired intersect validates clean, so the
-/// defect is specific to the fuse assembly on these operands. Surfaced by
-/// campaign seed `7314656870026361684` through the intersect's
-/// complementary fuse leg (the main intersect refused typed while its
-/// scratch-clone fuse leg came back misoriented); hand-shelling the same
-/// operands onto the accused operator gives this direct fuse witness,
-/// which the harness confirms independently. (The shrinker's
-/// sibling-operation swap only fires within one oracle tag, so it keeps
-/// the leg-shell here — the hand derivation is the documented path for
-/// cross-tag shelling.) Owns exclusion cell X9 (pair-level: any boolean on
-/// the unmoved prim sphere–cylinder pair, since every operator runs the
-/// defective fuse as a complementary leg); placed variants stay in
-/// generation.
-///
-/// Acceptance: the harness `ExactOk` verdict (valid topology with agreeing
-/// volumes). No geometry fix in this harness PR.
+/// 8.1 F10 regression: the equal-radius cylinder starts on the sphere's
+/// equator. Its fuse must retain the lower hemisphere, cylinder wall and
+/// top disc. The unsplit-face sampler formerly ignored coedge direction,
+/// classified both hemispheres below the equator and selected both; shell
+/// assembly then retained the upper one with 16 same-sense shared edges.
+/// Independent volume 5π/3, area 5π, material, opposing coedges and raw mesh
+/// checks live in `regress_opseq_sphere_cylinder_fuse.rs`.
+/// The broader X9 generator family remains excluded: this qualification is
+/// the exact equal-radius equatorial family, not every sphere–cylinder pair.
 #[test]
-#[ignore = "8.1 finding F10: unmoved sphere-cylinder fuse misorients 16 shared edges; route to the B33 orientation family"]
 fn finding_sphere_cyl_fuse_orientation() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"radius":1.0,"segments":16},"op":"makeSphere"},{"args":{"height":1.0,"radius":1.0},"op":"makeCylinder"},{"args":{"exactOnly":true,"operation":"fuse","solidA":1,"solidB":0},"op":"booleanWithQuality"}]"#,

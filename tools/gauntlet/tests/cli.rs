@@ -81,6 +81,70 @@ fn run_isolates_models_and_writes_all_outputs() {
     fs::remove_dir_all(&root).unwrap();
 }
 
+#[test]
+fn run_retains_import_causes_without_names_or_messages() {
+    let root = temp_dir("private-model-names");
+    fs::create_dir_all(&root).unwrap();
+    let syntax = root.join("private-syntax.step");
+    let encoding = root.join("private-encoding.step");
+    let units = root.join("private-units.step");
+    let missing = root.join("private-unavailable.step");
+    let good = root.join("private-good.step");
+    let output = root.join("results");
+    fs::write(&syntax, "not STEP").unwrap();
+    fs::write(&encoding, [0xff, 0xfe]).unwrap();
+    fs::write(
+        &units,
+        "ISO-10303-21;HEADER;ENDSEC;DATA;\n\
+         #1=MANIFOLD_SOLID_BREP('',#2);\n\
+         #2=CLOSED_SHELL('',());\nENDSEC;END-ISO-10303-21;",
+    )
+    .unwrap();
+    write_box_step(&good);
+
+    let status = Command::new(env!("CARGO_BIN_EXE_remus-gauntlet"))
+        .args(["run", "--jobs", "2", "--output"])
+        .arg(&output)
+        .args([&syntax, &encoding, &units, &missing, &good])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let json = fs::read_to_string(output.join("scoreboard.json")).unwrap();
+    let scoreboard: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(scoreboard["models"], 5);
+    assert_eq!(scoreboard["passed"], 1);
+    assert_eq!(scoreboard["failed"], 4);
+    let details = &scoreboard["failure_details"];
+    assert_eq!(
+        details["first_failure_codes"]["read"]["step_parse_error"],
+        2
+    );
+    assert_eq!(
+        details["first_failure_codes"]["read"]["step_input_not_utf8"],
+        1
+    );
+    assert_eq!(details["first_failure_codes"]["read"]["model_io_error"], 1);
+    assert_eq!(details["import_families"]["syntax"], 1);
+    assert_eq!(details["import_families"]["units_or_context"], 1);
+    assert_eq!(details["import_families"]["input_access"], 2);
+    for text in [
+        json,
+        fs::read_to_string(output.join("scoreboard.md")).unwrap(),
+    ] {
+        assert!(!text.contains("private-"), "aggregate leaked an input path");
+        assert!(
+            !text.contains("no DATA section found"),
+            "aggregate leaked diagnostic prose"
+        );
+        assert!(
+            !text.contains("parse error:"),
+            "aggregate leaked diagnostic prose"
+        );
+    }
+    fs::remove_dir_all(&root).unwrap();
+}
+
 fn scoreboard(passed: usize, models: usize) -> Scoreboard {
     let mut stages = std::collections::BTreeMap::new();
     for name in ["read", "validate", "boolean", "tessellate", "round_trip"] {
@@ -99,6 +163,7 @@ fn scoreboard(passed: usize, models: usize) -> Scoreboard {
         failed: models - passed,
         stages,
         failure_categories: std::collections::BTreeMap::new(),
+        failure_details: None,
         boolean_exact: passed,
         boolean_approximate: 0,
     }
@@ -212,6 +277,16 @@ fn zero_budget_kills_only_its_model_and_reports_resource_limit() {
             "model_wall_clock_budget_exceeded"
         );
     }
+    let scoreboard: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("scoreboard.json")).unwrap()).unwrap();
+    assert_eq!(
+        scoreboard["failure_details"]["first_failure_codes"]["read"]["model_wall_clock_budget_exceeded"],
+        2
+    );
+    assert_eq!(
+        scoreboard["failure_details"]["import_families"]["resource_limit"],
+        2
+    );
 
     fs::remove_dir_all(&root).unwrap();
 }

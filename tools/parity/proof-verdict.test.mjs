@@ -133,18 +133,20 @@ function goodReport(kind) {
   };
 }
 
-function hostBoundReports() {
+function hostBoundReports(windows = false) {
+  const rustHost = windows ? 'x86_64-pc-windows-msvc' : 'x86_64-unknown-linux-gnu';
   const host = {
     schema_version: 1,
     sourceRevision: 'ab'.repeat(20), sourceDirty: false, checkoutSha: 'ab'.repeat(20),
-    expected: { runner: 'ubuntu-24.04', platform: 'linux', arch: 'x64', rustHost: 'x86_64-unknown-linux-gnu' },
-    runner: { os: 'Linux', arch: 'X64' },
-    node: { platform: 'linux', arch: 'x64', version: 'v24', v8: '13.6' },
-    rustc: { host: 'x86_64-unknown-linux-gnu', verbose: 'rustc 1.96\nhost: x86_64-unknown-linux-gnu' },
-    unameMachine: 'x86_64', buildTarget: null,
+    expected: { runner: windows ? 'windows-2025' : 'ubuntu-24.04', platform: windows ? 'win32' : 'linux', arch: 'x64', rustHost },
+    runner: { os: windows ? 'Windows' : 'Linux', arch: 'X64' },
+    node: { platform: windows ? 'win32' : 'linux', arch: 'x64', version: 'v24', v8: '13.6' },
+    rustc: { host: rustHost, verbose: `rustc 1.96\nhost: ${rustHost}` },
+    unameMachine: windows ? null : 'x86_64', buildTarget: null,
+    ...(windows ? { osMachine: 'x86_64', osMachineSource: 'node:os.machine' } : {}),
     native: Object.fromEntries([['kernel', 'remus-parity-native'], ['splitIo', 'remus-split-io-native']].map(([key, binary]) => [key, {
-      path: `/tmp/${binary}`, sha256: '12'.repeat(32),
-      runtime: { schemaVersion: 1, binary, os: 'linux', arch: 'x86_64', pointerWidth: 64 },
+      path: windows ? `C:\\native with spaces\\${binary}.exe` : `/tmp/${binary}`, sha256: '12'.repeat(32),
+      runtime: { schemaVersion: 1, binary, os: windows ? 'windows' : 'linux', arch: 'x86_64', pointerWidth: 64 },
     }])),
   };
   const contract = goodReport('contract');
@@ -161,6 +163,8 @@ test('complete proof is rescored with the existing owners and preserves minimal 
   assert.equal(summary.passed, true);
   assert.equal(summary.contract.cases, 12);
   assert.equal(summary.splitIo.cases, 6);
+  assert.equal(summary.contract.requiredStages, 217);
+  assert.equal(summary.splitIo.requiredStages, 222);
 });
 
 test('empty, malformed and wrong-schema evidence cannot be green', () => {
@@ -365,6 +369,24 @@ test('host qualification binds actual native executable hashes, source, compiler
     mutate(changed);
     assert.throws(() => validateProofReports(...changed), /host proof|splitIo/);
   }
+});
+
+test('Windows qualification binds both actual .exe identities and OS probe to the unchanged 439 gates', () => {
+  const reports = hostBoundReports(true);
+  const summary = validateProofReports(...reports);
+  assert.equal(summary.host.rustHost, 'x86_64-pc-windows-msvc');
+  assert.equal(summary.contract.requiredStages + summary.splitIo.requiredStages, 439);
+  for (const mutate of [
+    ([, , host]) => { host.native.kernel.path = 'C:\\other.exe'; },
+    ([, split]) => { split.provenance.native.binarySha256 = '34'.repeat(32); },
+    ([, , host]) => { host.osMachine = 'arm64'; },
+  ]) {
+    const changed = hostBoundReports(true);
+    mutate(changed);
+    assert.throws(() => validateProofReports(...changed));
+  }
+  reports[2].rustc.verbose = reports[2].rustc.verbose.replaceAll('\n', '\r\n');
+  assert.equal(validateProofReports(...reports).passed, true);
 });
 
 test('CLI rejects missing and malformed report files and emits a valid summary only for complete reports', () => {

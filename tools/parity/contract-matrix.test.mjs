@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 import test from 'node:test';
 
 import {
@@ -7,11 +10,32 @@ import {
   HAMMER_SHIFTED_INTERSECT_ID,
   classifyFailures,
   expandContractMatrix,
+  installPackage,
   resolveFixtures,
   scoreContractCase,
   summarizeEvolution,
   summarizeFailureClasses,
 } from './contract-matrix.mjs';
+import { hashFile } from './provenance.mjs';
+
+test('same-version fresh and committed package archives cannot overwrite each other', (t) => {
+  const root = mkdtempSync(resolve(tmpdir(), 'remus same version ü '));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const label of ['fresh', 'committed']) {
+    const dir = resolve(root, label);
+    mkdirSync(dir);
+    writeFileSync(resolve(dir, 'package.json'), JSON.stringify({ name: 'remus-wasm', version: '0.0.0', main: 'index.cjs' }));
+    writeFileSync(resolve(dir, 'index.cjs'), `module.exports = ${JSON.stringify(label)};`);
+  }
+  const fresh = installPackage(resolve(root, 'fresh'), root, 'fresh');
+  const original = hashFile(fresh.tarballPath);
+  const committed = installPackage(resolve(root, 'committed'), root, 'committed');
+  assert.equal(hashFile(fresh.tarballPath), original, 'fresh tarball was overwritten before provenance collection');
+  assert.notEqual(fresh.tarballPath, committed.tarballPath);
+  assert.notEqual(original, hashFile(committed.tarballPath));
+  assert.match(readFileSync(fresh.entry, 'utf8'), /fresh/);
+  assert.match(readFileSync(committed.entry, 'utf8'), /committed/);
+});
 
 test('contract matrix covers the twelve required evidence cells', () => {
   const cases = expandContractMatrix();
