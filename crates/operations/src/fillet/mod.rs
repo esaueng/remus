@@ -41,7 +41,7 @@ pub use rolling_ball::fillet_rolling_ball;
 pub(crate) use rolling_ball::fillet_rolling_ball_with_origins;
 
 use remus_math::compact_sort::CompactSort;
-use std::collections::{HashMap, HashSet};
+use remus_math::det_hash::{DetHashMap as HashMap, DetHashSet as HashSet, DetState};
 
 use remus_math::frame::Frame3;
 use remus_math::tolerance::Tolerance;
@@ -156,8 +156,8 @@ fn fillet_transacted(
     let shell = topo.shell(solid_data.outer_shell())?;
     let shell_face_ids: Vec<_> = shell.faces().to_vec();
 
-    let mut edge_to_faces: HashMap<usize, Vec<_>> = HashMap::new();
-    let mut face_polygons: HashMap<usize, FacePolygon> = HashMap::new();
+    let mut edge_to_faces: HashMap<usize, Vec<_>> = HashMap::default();
+    let mut face_polygons: HashMap<usize, FacePolygon> = HashMap::default();
 
     for &face_id in &shell_face_ids {
         let face = topo.face(face_id)?;
@@ -265,7 +265,7 @@ fn fillet_transacted(
     let target_set: HashSet<usize> = filtered_edges.iter().map(|e| e.index()).collect();
 
     // Vertices at endpoints of filleted edges (used to detect side-face corners).
-    let mut vertex_fillet_endpoints: HashSet<usize> = HashSet::new();
+    let mut vertex_fillet_endpoints: HashSet<usize> = HashSet::default();
     for &edge_id in &filtered_edges {
         let edge = topo.edge(edge_id)?;
         vertex_fillet_endpoints.insert(edge.start().index());
@@ -274,7 +274,7 @@ fn fillet_transacted(
 
     // Strategy: identical to chamfer but with more offset segments to
     // approximate the circular fillet.
-    let mut fillet_data: HashMap<usize, FilletEdgeData> = HashMap::new();
+    let mut fillet_data: HashMap<usize, FilletEdgeData> = HashMap::default();
     let mut result_specs: Vec<FaceSpec> = Vec::new();
 
     for &face_id in &shell_face_ids {
@@ -490,7 +490,7 @@ pub fn fillet_variable(
     edge_laws: &[(EdgeId, FilletRadiusLaw)],
 ) -> Result<SolidId, crate::OperationsError> {
     remus_topology::transaction::run_transacted(topo, |t| {
-        fillet_variable_transacted(t, solid, edge_laws, &HashMap::new())
+        fillet_variable_transacted(t, solid, edge_laws, &HashMap::default())
     })
 }
 
@@ -514,9 +514,9 @@ pub fn fillet_variable_with_setbacks(
     solid: SolidId,
     specs: &[FilletEdgeSetback],
 ) -> Result<SolidId, crate::OperationsError> {
-    let mut seen = HashSet::with_capacity(specs.len());
+    let mut seen = HashSet::with_capacity_and_hasher(specs.len(), DetState);
     let mut edge_laws = Vec::with_capacity(specs.len());
-    let mut setbacks = HashMap::with_capacity(specs.len());
+    let mut setbacks = HashMap::with_capacity_and_hasher(specs.len(), DetState);
     for spec in specs {
         if seen.insert(spec.edge) {
             edge_laws.push((spec.edge, spec.law.clone()));
@@ -720,7 +720,7 @@ fn fillet_variable_transacted(
     // Collapse repeated edges, keeping the caller's order: a repeated seed
     // would emit two coincident canal surfaces for one edge. First occurrence
     // wins, matching the constant-radius engines.
-    let mut seen_edges = HashSet::with_capacity(edge_laws.len());
+    let mut seen_edges = HashSet::with_capacity_and_hasher(edge_laws.len(), DetState);
     let edge_laws: Vec<(EdgeId, FilletRadiusLaw)> = edge_laws
         .iter()
         .filter(|(edge_id, _)| seen_edges.insert(*edge_id))
@@ -736,8 +736,9 @@ fn fillet_variable_transacted(
     // domain. The first qualified cell is deliberately exact: straight
     // spines only, where distance and parameter are affine. Curved-spine arc
     // length inversion remains outside this issue rather than being sampled.
-    let mut active_intervals: HashMap<usize, (f64, f64)> = HashMap::with_capacity(edge_laws.len());
-    let mut declared_endpoint_setbacks: HashMap<(usize, usize), f64> = HashMap::new();
+    let mut active_intervals: HashMap<usize, (f64, f64)> =
+        HashMap::with_capacity_and_hasher(edge_laws.len(), DetState);
+    let mut declared_endpoint_setbacks: HashMap<(usize, usize), f64> = HashMap::default();
     for (edge_id, _) in edge_laws {
         let edge = topo.edge(*edge_id)?;
         let (mut start_setback, mut end_setback) = requested_setbacks
@@ -803,14 +804,10 @@ fn fillet_variable_transacted(
     let shell = topo.shell(solid_data.outer_shell())?;
     let shell_face_ids: Vec<_> = shell.faces().to_vec();
 
-    let mut edge_to_faces: std::collections::HashMap<usize, Vec<_>> =
-        std::collections::HashMap::new();
-    let mut face_polygons: std::collections::HashMap<usize, FacePolygon> =
-        std::collections::HashMap::new();
-    let mut face_surfaces: std::collections::HashMap<usize, FaceSurface> =
-        std::collections::HashMap::new();
-    let target_set: std::collections::HashSet<usize> =
-        edge_laws.iter().map(|(e, _)| e.index()).collect();
+    let mut edge_to_faces: HashMap<usize, Vec<_>> = HashMap::default();
+    let mut face_polygons: HashMap<usize, FacePolygon> = HashMap::default();
+    let mut face_surfaces: HashMap<usize, FaceSurface> = HashMap::default();
+    let target_set: HashSet<usize> = edge_laws.iter().map(|(e, _)| e.index()).collect();
 
     for &face_id in &shell_face_ids {
         let face = topo.face(face_id)?;
@@ -898,7 +895,7 @@ fn fillet_variable_transacted(
         .map(|(eid, law)| (eid.index(), law))
         .collect();
 
-    let mut vertex_fillet_edges: HashMap<usize, Vec<EdgeId>> = HashMap::new();
+    let mut vertex_fillet_edges: HashMap<usize, Vec<EdgeId>> = HashMap::default();
     for (edge_id, _) in edge_laws {
         let edge = topo.edge(*edge_id)?;
         vertex_fillet_edges
@@ -920,7 +917,7 @@ fn fillet_variable_transacted(
     let mut qualified_setback_corners: HashMap<
         usize,
         (remus_topology::vertex::VertexId, Point3, f64, bool),
-    > = HashMap::new();
+    > = HashMap::default();
     let mut selected_vertex_indices: Vec<_> = vertex_fillet_edges.keys().copied().collect();
     selected_vertex_indices.sort_unstable();
     for vertex_index in selected_vertex_indices {
@@ -957,7 +954,8 @@ fn fillet_variable_transacted(
         }
 
         let mut radii = Vec::with_capacity(incident_edges.len());
-        let mut planar_edge_sides = HashMap::with_capacity(incident_edges.len());
+        let mut planar_edge_sides =
+            HashMap::with_capacity_and_hasher(incident_edges.len(), DetState);
         for edge_id in incident_edges {
             let edge = topo.edge(*edge_id)?;
             let law_t = if edge.start().index() == vertex_index {
@@ -1106,7 +1104,7 @@ fn fillet_variable_transacted(
     // Geometry uses the active (possibly setback) station; the normalized law
     // still uses 0/1 at the built stripe endpoints.
     let fillet_contact_map: HashMap<(usize, usize, usize), Point3> = {
-        let mut map = HashMap::new();
+        let mut map = HashMap::default();
         for (edge_id, law) in edge_laws {
             let edge = topo.edge(*edge_id)?;
             let p_start = topo.vertex(edge.start())?.point();
@@ -1182,7 +1180,7 @@ fn fillet_variable_transacted(
     // such a vertex but whose own edges are not filleted) must split that
     // corner into the two blend contact points, or the blend boundary is left
     // unmatched and the shell becomes non-manifold.
-    let mut vertex_fillet_endpoints: HashSet<usize> = HashSet::new();
+    let mut vertex_fillet_endpoints: HashSet<usize> = HashSet::default();
     for (edge_id, _) in edge_laws {
         let edge = topo.edge(*edge_id)?;
         vertex_fillet_endpoints.insert(edge.start().index());
@@ -1306,7 +1304,7 @@ fn fillet_variable_transacted(
     let n_samples = 5; // Number of cross-sections along each edge
     // Every requested edge must end up carrying a blend surface; the loop's
     // early `continue`s are where a silent subset used to come from.
-    let mut blended_edges: HashSet<usize> = HashSet::new();
+    let mut blended_edges: HashSet<usize> = HashSet::default();
 
     for (edge_id, law) in edge_laws {
         let edge = topo.edge(*edge_id)?;

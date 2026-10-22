@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "sources": [
+    {
+      "path": "scripts/perf/parameter-rebuild/parameter_bench.cjs",
+      "snapshot": "scripts/perf/parameter-rebuild/parameter_bench.cjs.txt",
+      "sha256": "70e8c538d1ecb9bc8cabe17591bd4d8694208aeae442da0b10a24e3b927832c1",
+      "sourceCommit": "e3585dd7ff8253f955224645807fbd3c5401d42a"
+    },
+    {
+      "path": "scripts/perf/parameter-rebuild/holder_recipe.cjs",
+      "snapshot": "scripts/perf/parameter-rebuild/holder_recipe.cjs.txt",
+      "sha256": "68a572fe2294321a2c53893ffc0edf160e3b318e1b3395fb82602f6d1f0811a5",
+      "sourceCommit": "e3585dd7ff8253f955224645807fbd3c5401d42a"
+    },
+    {
+      "path": "scripts/perf/filleted-face-edit/wasm_edit_bench.cjs",
+      "snapshot": "scripts/perf/filleted-face-edit/wasm_edit_bench.cjs.txt",
+      "sha256": "605bcfe13bb916afa6663be7b91135ecbde7ec865a786f8864c06e18a4c5f03b",
+      "sourceCommit": "e3585dd7ff8253f955224645807fbd3c5401d42a"
+    },
+    {
+      "path": "scripts/perf/face-drag-session/drag_session_bench.cjs",
+      "snapshot": "scripts/perf/face-drag-session/drag_session_bench.cjs.txt",
+      "sha256": "ace015f0534925e95883ab8fcf0c09005e8da301b5a612c2b036bb416042542a",
+      "sourceCommit": "f00a5062ebbd01d46cbdb3818f0ebe0b72c36b9a"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "scripts/perf/parameter-rebuild/fixtures/recipe.json",
+      "sha256": "8a24356effac832b714ca6724d33feedf91c1251d2bb62096d332ed2c55c8719"
+    },
+    {
+      "path": "scripts/perf/parameter-rebuild/fixtures/base.arena.json",
+      "sha256": "7a8a3fac03a2ce63eb0e84ed61fd9fc09c6454973cc6225d5122cc1e3bf05026"
+    },
+    {
+      "path": "scripts/perf/parameter-rebuild/fixtures/text.arena.json",
+      "sha256": "dd59dd4c7de07fb7c63c2c8b69aac17fd4ba97244bab7ba3fcfb3638b4b0a96f"
+    },
+    {
+      "path": "scripts/perf/parameter-rebuild/fixtures/pinned-source-manifest.json",
+      "sha256": "f5fa969c94a6da14f9f91e4d3a3fe7eeaf196ec8ce5df3e5ed388f83366d4651"
+    },
+    {
+      "path": "crates/io/tests/data/shapr3d_hammer_holder.step",
+      "sha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8"
+    }
+  ],
+  "captures": [
+    {
+      "name": "parameter-rebuild",
+      "provenance": "docs/performance/evidence/parameter-rebuild-2026-10-20/provenance.json",
+      "provenanceSha256": "14b24d73567b53a184279ee131a53fad7094db7622ae375d8d45725e0fb7c834",
+      "runs": "docs/performance/evidence/parameter-rebuild-2026-10-20/runs.json",
+      "driverPath": "scripts/perf/parameter-rebuild/parameter_bench.cjs"
+    },
+    {
+      "name": "face-drag-session",
+      "provenance": "docs/performance/evidence/face-drag-session-2026-10-20/provenance.json",
+      "provenanceSha256": "f88d9ac64a85e9e8f30dfcb413390758f2622e37bfc32f902cfbb464ac48fca8",
+      "runs": "docs/performance/evidence/face-drag-session-2026-10-20/preview-runs.json",
+      "driverPath": "scripts/perf/face-drag-session/drag_session_bench.cjs"
+    }
+  ]
+}

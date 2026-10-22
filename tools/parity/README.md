@@ -6,6 +6,101 @@ Run the O1.5 slices from the repository root:
 bash scripts/test-o15-parity.sh
 ```
 
+For the bounded recurring proof, run:
+
+```bash
+bash scripts/test-o15-proof.sh
+```
+
+The shared driver also runs directly with `node scripts/test-o15-proof.mjs`,
+including in Windows PowerShell; the Bash script remains a local convenience.
+
+The `Native WASM Parity` workflow registers this proof nightly and on manual
+dispatch on six native hosts; changes to its harness also run it on pull requests.
+The explicit labels follow the [GitHub runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners):
+
+| Runner | Native OS / architecture | Compiler host |
+| --- | --- | --- |
+| `ubuntu-24.04` | Linux / x86-64 | `x86_64-unknown-linux-gnu` |
+| `ubuntu-24.04-arm` | Linux / arm64 | `aarch64-unknown-linux-gnu` |
+| `macos-15-intel` | macOS / x86-64 | `x86_64-apple-darwin` |
+| `macos-15` | macOS / arm64 | `aarch64-apple-darwin` |
+| `windows-2025` | Windows / x86-64 | `x86_64-pc-windows-msvc` |
+| `windows-11-arm` | Windows / arm64 | `aarch64-pc-windows-msvc` |
+
+Each host builds the release native runners and both Node-target WASM packages once,
+then executes the 12-cell contract and 6-cell split import/export slices against
+native, freshly packed/installed packages and separately identified committed
+packages. These use the existing `--no-opt` parity build configuration, not the
+optimized browser distribution build. The 54-cell and 366-cell geometric
+matrices remain separate local commands; their known differences stay open.
+
+Reports, subprocess exit statuses and exact build commands/compiler flags are kept under a new
+`target/o15-proof/run.*` directory per invocation (`O15_PROOF_OUT` overrides the
+parent). The workflow uploads this directory and its build log even on failure.
+A failed contract slice still allows the split slice to run, and either failure
+fails the proof. Build failures leave both slices explicitly `not_run`.
+`proof-verdict.mjs` checks complete matrix and surface coverage and rescores
+raw observations with the existing oracles; an empty or falsely green report
+cannot pass merely because its process exited successfully.
+`host.json` records Node's actual platform, architecture, version and V8 version,
+the verbose Rust compiler host, OS machine identity, and both native executables'
+runtime OS/architecture, pointer width and SHA-256. Matrix expectations must match
+those observations; a cross-target override, wrong checkout or mixed runtime
+refuses. The verdict binds this host evidence to both matrices' source, compiler,
+Node and actual native executable paths/hashes. A runner label alone grants no
+architecture qualification. Local runs without matrix expectations record the
+observed host and leave GitHub labels absent.
+POSIX hosts retain their existing `uname -m` evidence. Windows records
+`osMachine` with `osMachineSource: node:os.machine`, leaves `unameMachine` absent
+as an observation (`null`), and requires fully qualified `.exe` paths before
+hashing and executing both native runners. The Node runtime, compiler host,
+native OS machine and both executed binaries must agree on the declared
+architecture. Windows ARM records Node OS machine `arm64` and Rust runtime
+architecture `aarch64`; these are distinct spellings of the same native ISA.
+Windows checkout disables automatic CRLF conversion before files are read.
+`committed-checkout.json` independently records every tracked file in both package
+roots, exact actual file sets, raw Git blob identity without filters and SHA-256;
+normalizing a modified distribution back to a clean Git status cannot pass.
+This establishes checkout byte identity while committed-package build source
+attribution remains unverified. Fresh and committed archives use separate
+directories, including when both packages have the same version.
+Source-status collection failures and malformed source/toolchain/build metadata
+refuse provenance instead of claiming a clean, identified build. Committed
+package source attribution remains unverified. Registration does not establish
+a hosted pass on the new hosts; actual hosted evidence must qualify each cell.
+Windows ARM is registered here; this change records no hosted geometry pass for
+that new lane. Wider nightly geometric coverage remains open under O1.5. WASM hash
+differences across hosts remain evidence rather than a new byte-identity gate.
+
+
+The ARM lane adds `windows-arm-build.json` before any native build. It resolves
+actual compiler and Cargo paths through the explicit native Rust 1.96.0 toolchain,
+then checks their ARM64 PE headers and hashes alongside native Node 24. Both full
+Remus geometry executables must also have ARM64 PE headers and report Windows,
+aarch64 and 64-bit pointers. The original five host proof formats remain replayable.
+
+The pinned install action supplies wasm-pack 0.15.0 and wasm-bindgen 0.2.126 as
+**x64-emulated build helpers**, with checksum verification and no Cargo fallback.
+The configured official archive recipe is recorded separately from the actual
+helper executable PE/hash/version observations; that helper archive is not
+retained in the parity artifact. The verified native compiler directory stays
+first on PATH and the helper directory second. Builds use the verified `RUSTC`,
+empty compiler wrappers, private Cargo/cache directories, one Cargo job, the
+existing 32 MiB Rust thread stack and no cross-target override. These are an
+isolated proof environment, not the canonical optimized package configuration.
+
+The early envelope's `prepared` state establishes host/tool setup only. After
+both full kernel and translator WASM builds, the driver rechecks compiler,
+Cargo, Node, helper files/versions and PATH lookup, source cleanliness, exact
+build argv/environment and cache fallback absence. The final matrix verdict
+requires `completed` and binds those tool versions to every fresh-package
+report. A prepared receipt, a successful tiny tooling fixture or a runner label
+cannot stand in for the full 439-gate native/installed-package result. Native,
+fresh and committed evidence modes and the four existing advisory gaps keep
+their original meanings. No cross-host byte-identity or optimized distribution
+claim follows from this Node-target `--no-opt` proof.
+
 The script builds the native facade runner and a release Node-target WASM
 package, packs `remus-wasm`, installs that tarball into a disposable npm
 consumer, and then executes the same generated `executeBatchV2` bundle on
@@ -93,9 +188,10 @@ finding: seed plus new §B row. Serialized arena SHA-256 is compared as a
 visible non-gating gap, as in the first slice. Timings are recorded as
 evidence only; they are not a competitive benchmark.
 
-This extends but does not complete O1.5. Byte identity and the
-Linux/macOS/Windows x86-64/arm64 nightly matrix remain open; the contract
-slice below carries the failure/evolution fixtures.
+This extends but does not complete O1.5. Byte identity, Windows and the full
+geometric nightly matrix remain open; the recurring Linux/macOS contract/split
+proof above covers a bounded subset. The contract slice
+below carries the failure/evolution fixtures.
 
 ## Contract slice
 

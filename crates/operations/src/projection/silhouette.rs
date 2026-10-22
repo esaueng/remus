@@ -7,9 +7,13 @@
 //! a great circle of a sphere, the two branches `v(u)` of a torus — and is
 //! clipped to the face's trims, then sampled and split into visible and
 //! hidden runs with the same occlusion probe as [`super::project_edges`].
-//! NURBS faces have no closed form here; they are reported in
-//! [`ProjectedSilhouettes::unsupported`] rather than approximated.
+//! A NURBS face has no closed form: its silhouette is traced on a grid of
+//! its parameter domain ([`nurbs`]) and the face is listed in
+//! [`ProjectedSilhouettes::approximate`].
 
+pub(super) mod nurbs;
+
+use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::face::{FaceId, FaceSurface};
@@ -39,6 +43,9 @@ const MAX_TRIM_REFINEMENT_QUERIES: usize = 100_000;
 /// in a torus's equatorial plane, where its outline is four circles.
 const AXIAL_VIEW_TOLERANCE: f64 = 1e-12;
 
+/// Bound on normal evaluations over all NURBS faces' contouring grids.
+const MAX_NURBS_GRID_POINTS: usize = 1_000_000;
+
 /// Halvings of one sample interval while refining a torus silhouette: enough
 /// to follow a near-side view's turn through a meridian, which is about
 /// `2·|axis·view|/|view in plane|` wide in `u`, down to that tolerance.
@@ -53,8 +60,16 @@ pub struct ProjectedSilhouettes {
     /// Silhouette polylines hidden behind the solid (empty when
     /// `hidden_lines` is false).
     pub hidden: Vec<Vec<Point2>>,
-    /// Curved faces whose silhouette this function does not compute.
+    /// Curved faces whose silhouette this function does not compute. Every
+    /// surface type is handled today, so this is empty; it stays so a
+    /// drawing can name any face a later surface type leaves out.
     pub unsupported: Vec<UnsupportedSilhouette>,
+    /// NURBS faces whose silhouette was traced rather than solved in closed
+    /// form: its vertices lie on the silhouette, but a contour smaller than
+    /// the tracing grid can be missed. Listed whether or not the tracing
+    /// found a contour; only a NURBS face certified to be flat is left out,
+    /// since it has no silhouette.
+    pub approximate: Vec<FaceId>,
 }
 
 /// A curved face left out of [`ProjectedSilhouettes`], named so a drawing can
@@ -63,12 +78,12 @@ pub struct ProjectedSilhouettes {
 pub struct UnsupportedSilhouette {
     /// The face.
     pub face: FaceId,
-    /// Its surface type tag (`"nurbs"`).
+    /// Its surface type tag.
     pub surface: &'static str,
 }
 
 /// A silhouette curve on one face, parameterized by `t ∈ [0, 1]`.
-pub(super) enum Curve {
+pub(super) enum Curve<'a> {
     /// `start + dir·t`.
     Segment { start: Point3, dir: Vec3 },
     /// `center + radius·(cos 2πt·u + sin 2πt·v)`, closed.
@@ -94,9 +109,17 @@ pub(super) enum Curve {
         az: f64,
         offset: f64,
     },
+    /// A traced NURBS silhouette: the surface at parameter points `uv`,
+    /// linear in `(u, v)` between them, with `t` spread evenly over the
+    /// segments so each vertex sits at `t = k / segments`.
+    Contour {
+        surface: &'a NurbsSurface,
+        uv: Vec<(f64, f64)>,
+        closed: bool,
+    },
 }
 
-impl Curve {
+impl Curve<'_> {
     pub(super) fn at(&self, t: f64) -> Point3 {
         match *self {
             Self::Segment { start, dir } => start + dir * t,
@@ -126,11 +149,32 @@ impl Curve {
                 let (sin_v, cos_v) = ((-h * w.cos()).atan2(az) + offset).sin_cos();
                 center + (x * cos_u + y * sin_u) * (minor * cos_v + major) + z * (minor * sin_v)
             }
+            Self::Contour {
+                surface,
+                ref uv,
+                closed,
+            } => {
+                let n = uv.len();
+                let segments = if closed { n } else { n - 1 };
+                // A closed contour is periodic like the circles: a run joined
+                // across its seam continues past t = 1.
+                let t = if closed { t.rem_euclid(1.0) } else { t };
+                let x = (t * segments as f64).clamp(0.0, segments as f64);
+                // A float-to-int cast truncates toward zero, and x ≥ 0.
+                let k = (x as usize).min(segments - 1);
+                let f = x - k as f64;
+                let (a, b) = (uv[k], uv[(k + 1) % n]);
+                surface.evaluate(a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f)
+            }
         }
     }
 
     const fn is_closed(&self) -> bool {
-        matches!(self, Self::Circle { .. } | Self::Torus { .. })
+        match *self {
+            Self::Segment { .. } => false,
+            Self::Circle { .. } | Self::Torus { .. } => true,
+            Self::Contour { closed, .. } => closed,
+        }
     }
 
     /// The parameters to sample, sorted from 0 to 1, or `None` when there
@@ -140,6 +184,14 @@ impl Curve {
     /// chord strays more than `deflection` from the curve at its middle, or
     /// is longer than a chord of the tube at that deflection.
     pub(super) fn sample_ts(&self, deflection: f64, limit: usize) -> Option<Vec<f64>> {
+        if let Self::Contour { ref uv, closed, .. } = *self {
+            // Already refined to the deflection: sample exactly its vertices.
+            let segments = if closed { uv.len() } else { uv.len() - 1 };
+            if segments > limit {
+                return None;
+            }
+            return Some((0..=segments).map(|k| k as f64 / segments as f64).collect());
+        }
         let count = self.sample_count(deflection);
         if count > limit {
             return None;
@@ -216,6 +268,7 @@ impl Curve {
             Self::Segment { dir, .. } => dir.length() / deflection,
             Self::Circle { radius, .. } => circle(radius),
             Self::Torus { major, minor, .. } => circle(major + minor),
+            Self::Contour { ref uv, .. } => uv.len() as f64,
         };
         // A float-to-int cast saturates: an infinite count is usize::MAX.
         (raw.ceil() as usize).max(MIN_CURVE_SAMPLES)
@@ -235,8 +288,11 @@ impl Curve {
 /// ends on, as exactly as the trim test places that edge: it samples
 /// curved trims, so a clip point on one carries that sampling's error
 /// (1.04e-4 on the notched-torus oracle). Torus silhouettes are their exact
-/// branches sampled adaptively to `deflection`. Planes have none. NURBS faces are listed in
-/// [`ProjectedSilhouettes::unsupported`]. `deflection` sets the sampling of
+/// branches sampled adaptively to `deflection`. Planes have none. NURBS
+/// silhouettes are traced on a grid of the face's parameter domain, refined
+/// to `deflection`, and their faces listed in
+/// [`ProjectedSilhouettes::approximate`] (all but certified flat ones, even
+/// where no contour is found). `deflection` sets the sampling of
 /// each curve, which also bounds how small a trim feature crossing a
 /// silhouette is resolved.
 ///
@@ -296,10 +352,10 @@ pub(super) fn silhouettes_within(
     let mut carriers: Vec<(&FaceSurface, Vec<FaceId>)> = Vec::new();
     for face in remus_topology::explorer::solid_faces(topo, solid)? {
         let surface = topo.face(face)?.surface();
-        let unsupported = match surface {
-            FaceSurface::Plane { .. } => continue,
-            FaceSurface::Nurbs(_) => "nurbs",
-            FaceSurface::Sphere(_)
+        match surface {
+            FaceSurface::Plane { .. } => {}
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Sphere(_)
             | FaceSurface::Cylinder(_)
             | FaceSurface::Cone(_)
             | FaceSurface::Torus(_) => {
@@ -310,21 +366,31 @@ pub(super) fn silhouettes_within(
                     Some((_, faces)) => faces.push(face),
                     None => carriers.push((surface, vec![face])),
                 }
-                continue;
             }
-        };
-        result.unsupported.push(UnsupportedSilhouette {
-            face,
-            surface: unsupported,
-        });
+        }
     }
 
     // Every curve is built and counted before any trim query runs, so an
     // over-budget request is refused before the expensive work.
     let mut curves: Vec<(&[FaceId], Curve, Vec<f64>)> = Vec::new();
     let mut samples = 0usize;
+    let mut grid_budget = MAX_NURBS_GRID_POINTS;
     for (surface, faces) in &carriers {
-        for curve in carrier_silhouettes(topo, surface, faces, view.dir)? {
+        let built = carrier_silhouettes(
+            topo,
+            surface,
+            faces,
+            view.dir,
+            deflection,
+            &mut grid_budget,
+            MAX_SILHOUETTE_SAMPLES - samples,
+        )?;
+        // A traced face is approximate even when tracing found nothing: the
+        // grid can miss a contour. Only a certified plane provably has none.
+        if matches!(surface, FaceSurface::Nurbs(n) if !nurbs::is_certified_plane(n)) {
+            result.approximate.extend_from_slice(faces);
+        }
+        for curve in built {
             let limit = (MAX_SILHOUETTE_SAMPLES - samples) / faces.len().max(1);
             let ts = curve.sample_ts(deflection, limit).ok_or_else(|| {
                 crate::OperationsError::InvalidInput {
@@ -383,10 +449,10 @@ const SAME_CARRIER_LINEAR: f64 = 1e-7;
 const SAME_CARRIER_ANGULAR: f64 = 1e-9;
 
 /// Whether two support surfaces are the same sphere, cylinder, cone or
-/// torus, so have the same silhouette in every view. A cylinder's frame and
+/// torus, or one NURBS definition, so have the same silhouette in every view. A cylinder's frame and
 /// origin along its axis, and a cylinder's or torus's axis sense, do not
 /// change it.
-fn same_carrier(a: &FaceSurface, b: &FaceSurface) -> bool {
+pub(super) fn same_carrier(a: &FaceSurface, b: &FaceSurface) -> bool {
     let parallel = |p: Vec3, q: Vec3| p.cross(q).length() <= SAME_CARRIER_ANGULAR;
     if let (FaceSurface::Sphere(a), FaceSurface::Sphere(b)) = (a, b) {
         return (a.center() - b.center()).length() <= SAME_CARRIER_LINEAR
@@ -411,20 +477,46 @@ fn same_carrier(a: &FaceSurface, b: &FaceSurface) -> bool {
             && (a.major_radius() - b.major_radius()).abs() <= SAME_CARRIER_LINEAR
             && (a.minor_radius() - b.minor_radius()).abs() <= SAME_CARRIER_LINEAR;
     }
+    // A split NURBS face keeps a clone of its carrier: the faces share one
+    // definition exactly (degrees, knots, control points and weights), not
+    // just approximately, so they share one trace.
+    if let (FaceSurface::Nurbs(a), FaceSurface::Nurbs(b)) = (a, b) {
+        return a == b;
+    }
     false
 }
 
 /// The silhouette curves of a support surface, untrimmed and long enough to
-/// cover all of `faces`: up to four curves. Planes and NURBS surfaces have
-/// none here.
-pub(super) fn carrier_silhouettes(
+/// cover all of `faces`: up to four for an analytic surface, one per traced
+/// contour of a NURBS surface, none for a plane. A NURBS trace spends
+/// `grid_budget` normal evaluations and may hold at most `max_vertices`
+/// vertices.
+pub(super) fn carrier_silhouettes<'a>(
     topo: &Topology,
-    surface: &FaceSurface,
+    surface: &'a FaceSurface,
     faces: &[FaceId],
     view: Vec3,
-) -> Result<Vec<Curve>, crate::OperationsError> {
+    deflection: f64,
+    grid_budget: &mut usize,
+    max_vertices: usize,
+) -> Result<Vec<Curve<'a>>, crate::OperationsError> {
     Ok(match surface {
-        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => Vec::new(),
+        FaceSurface::Plane { .. } => Vec::new(),
+        FaceSurface::Nurbs(nurbs) => {
+            nurbs::contours(nurbs, view, deflection, grid_budget, max_vertices)
+                .ok_or_else(|| crate::OperationsError::InvalidInput {
+                    reason:
+                        "silhouette tracing exceeds the projection work limit; increase deflection"
+                            .into(),
+                })?
+                .into_iter()
+                .map(|contour| Curve::Contour {
+                    surface: nurbs,
+                    uv: contour.uv,
+                    closed: contour.closed,
+                })
+                .collect()
+        }
         FaceSurface::Torus(torus) => {
             // Normal at (u, v) is radial(u)·cos v + axis·sin v, so the
             // silhouette is cos v·(radial(u)·d) + sin v·(axis·d) = 0.

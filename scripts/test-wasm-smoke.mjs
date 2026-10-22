@@ -14,12 +14,17 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runB6SectionSplitPackaged } from './b6-section-split-packaged.mjs';
 import { runCircularPatternPackaged } from './circular-pattern-packaged.mjs';
+import { runGridPatternPackaged } from './grid-pattern-packaged.mjs';
 import { runProjectCurvePackaged } from './project-curve-packaged.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
 import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
 import { runWasmParserReferencesPackaged } from './wasm-parser-refs-packaged.mjs';
+import { runVariableFilletInputPackaged } from './variable-fillet-input-packaged.mjs';
 import { runOpseqF5Packaged } from './opseq-f5-packaged.mjs';
 import { runOpseqF6Packaged } from './opseq-f6-packaged.mjs';
+import { runOpseqOffsetWallPackaged } from './opseq-offset-wall-packaged.mjs';
+import { runOpseqF10Packaged } from './opseq-f10-packaged.mjs';
+import { runOpseqF13Packaged } from './opseq-f13-packaged.mjs';
 import { runWasmRayTorusPackaged } from './wasm-ray-torus-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
 import { runPackageQueueWitness } from './queue-contracts-packaged.mjs';
@@ -27,6 +32,8 @@ import { runPointedConeCutPackaged } from './pointed-cone-cut-packaged.mjs';
 import { runTruckNurbsReusePackaged } from './truck-nurbs-reuse-packaged.mjs';
 import { runWasmRayNurbsPackaged } from './wasm-ray-nurbs-packaged.mjs';
 import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
+import { runOpseqF17Packaged } from './opseq-f17-packaged.mjs';
+import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
@@ -74,7 +81,10 @@ runPointedConeCutPackaged({ BrepKernel });
 runTruckNurbsReusePackaged({ BrepKernel });
 runWasmRayNurbsPackaged({ BrepKernel });
 runWasmParserReferencesPackaged({ BrepKernel });
+runVariableFilletInputPackaged({ BrepKernel });
 runOpseqF3Packaged({ BrepKernel });
+runOpseqF17Packaged({ BrepKernel });
+runDocumentCopyPackaged({ BrepKernel, RemusIo });
 
 const DEFLECTION = 0.1;
 
@@ -1552,7 +1562,7 @@ for (const operation of ['fillet', 'chamfer']) {
   // Same pin as HAMMER_HOLDER_VOLUME in crates/io/tests/resize_blend_step.rs:
   // the volume is read off the body's qualified face integrals, not its mesh;
   // retain the 0.01 tolerance.
-  assert.ok(Math.abs(hammerKernel.volume(solid, 0.01) - 50_245.532_161_524_25) <= 0.01);
+  assert.ok(Math.abs(hammerKernel.volume(solid, 0.01) - 50_245.219_468_635_71) <= 0.01);
   const strict = JSON.parse(hammerKernel.validateSolidDetailed(solid));
   assert.equal(strict.errorCount, 0, 'refused edit must preserve strict topology');
   assert.equal(strict.warningCount, 0, 'refused edit must preserve warning-free topology');
@@ -1725,12 +1735,16 @@ runB6SectionSplitPackaged({ BrepKernel });
 // volume/census, original-versus-generated, journal, and typed-refusal
 // oracles plus session preservation.
 runCircularPatternPackaged({ BrepKernel });
+runGridPatternPackaged({ BrepKernel });
 runProjectCurvePackaged({ BrepKernel });
 runNextKernelCorrectnessPackaged({ BrepKernel });
 
 runKernelCorrectnessPackaged({ BrepKernel });
 runOpseqF5Packaged({ BrepKernel });
 runOpseqF6Packaged({ BrepKernel });
+runOpseqOffsetWallPackaged({ BrepKernel });
+runOpseqF10Packaged({ BrepKernel });
+runOpseqF13Packaged({ BrepKernel });
 
 runWasmRayTorusPackaged({ BrepKernel });
 

@@ -4,7 +4,43 @@ Row: [O3.3 SIMD in NURBS evaluation](roadmap.md#o-o3-3) (evidence-gated).
 Prerequisite: [O3.1 inner-loop baseline](o31-inner-loop-baseline.md).
 Related perf item: [PERF-N10](roadmap.md#perf-n10).
 
-## Verdict
+## Re-verification (2026-10-21): do not enable
+
+The `simd` feature stays default-off and is not enabled by the WASM crate.
+Since this note was written, the default build gained bit-identical
+first-order fast paths (the u-basis memo, `point_and_partials_with_spans`,
+the stack `normal`/`point_and_normal_with` paths and the per-axis
+`first_order_at` tables). The `simd` feature compiles all of them out and
+keeps only the general solve with its 4-lane contraction, so enabling it
+now trades those paths for the 4-lane loop and is a large regression.
+Output is still bit-identical.
+
+Re-measured on `main` at `ed34a9a` (4-core Linux x86-64 cloud container,
+Rust 1.96.0, shared and noisy; the deltas below are far outside its noise):
+
+| Measurement | Default | `simd` | Delta |
+|---|---|---:|---:|
+| Native `nurbs_properties/validate_solid strict (hammer holder)` | 877.7 ms | 1.967 s | **+124%** |
+| Native `nurbs_properties/mass_properties (hammer holder)` | 1.854 s | 5.003 s | **+170%** |
+| Native `nurbs/surface_derivatives/degree3` | 1.239 µs | 1.683 µs | +37% |
+| Native `nurbs/surface_derivatives/degree9` | 5.191 µs | 4.011 µs | −21% |
+| WASM `massProperties`, hammer holder (`cargo xtask wasm-build` package, Node 22, median of 5, two runs) | 4.09 / 4.17 s | 8.93 / 9.19 s | **+118…+120%** |
+| WASM kernel `remus_wasm_bg.wasm` raw / gzip -9 | 10,484,203 / 3,867,452 B | 10,468,753 / 3,860,474 B | −15,450 / −6,978 B |
+
+Bit-identity: `cargo test -p remus-math --release` passes with and without
+the feature (1087 / 1086 tests, the difference being the feature-gated
+oracles), and the WASM `massProperties` JSON for the hammer holder is
+character-identical between the two packages. The shipped kernel does
+target simd128: `xtask` passes `-C target-feature=+simd128` and wasm-opt
+runs with `--enable-simd`; the default package holds about 107k `v128`
+instructions (`wasm-dis | grep -cE 'v128|f64x2|i8x16'`).
+
+Reviving the 4-lane loop would mean keeping the first-order fast paths
+under the feature and swapping only the general solve's contraction. The
+hammer-holder workloads no longer reach that contraction, so it could not
+clear the 3% end-to-end threshold there; PERF-N10 stays the place for it.
+
+## Verdict (2026-09, superseded above)
 
 **Ship.** The hottest NURBS loop clears the 3% inclusive threshold on a
 NURBS-heavy workload on both targets with bit-identical results, so the

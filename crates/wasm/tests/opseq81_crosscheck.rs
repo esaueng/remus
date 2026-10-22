@@ -7,12 +7,8 @@
 //! test appends read-only probes (`validateSolid`, `volume`, `meshQuality`)
 //! on the final produced solid and checks the pinned acceptance or defect signature:
 //!
-//! - fixed orientation findings F1/F2/F5/F11/F12/F16 must validate clean and mesh
+//! - fixed orientation findings F1/F2/F5/F10/F11/F12/F16/F17 must validate clean and mesh
 //!   watertight with their closed-form volumes through batch.
-//! - open orientation finding F10 must show validation errors through
-//!   batch with matching volumes: an engine defect, not a binding one. A
-//!   batch-side refusal or a clean validation would mean the defect moved
-//!   or the binding diverges — either fails loudly here.
 //! - fixed material findings F3/F6/F8 must retain their independently derived
 //!   remainders and mesh watertight through batch.
 //!
@@ -64,8 +60,6 @@ fn produced_handle(result: &Value) -> Option<u32> {
 
 #[derive(Clone, Copy)]
 enum ValidateExpect {
-    /// The engine defect must be visible: nonzero error count.
-    Defect,
     /// The result must validate clean.
     Clean,
 }
@@ -172,19 +166,22 @@ fn cross_checks() -> Vec<CrossCheck> {
         CrossCheck {
             file: "opseq81-pointed-cone-offset-mesh.json",
             signature: Signature::Probes {
-                volume_near: (4.317_963, 0.05),
+                volume_near: (
+                    std::f64::consts::PI * (1.25 + std::f64::consts::SQRT_2 / 4.0).powi(3) / 3.0,
+                    1e-6,
+                ),
                 validate: ValidateExpect::Clean,
-                watertight: Some(false),
+                watertight: Some(true),
             },
         },
         CrossCheck {
             file: "opseq81-sphere-cyl-fuse-orientation.json",
             signature: Signature::Probes {
-                // Tessellated reading; the Gauss route splits 24% lower
-                // (4.18879) on the same body — see the finding doc.
-                volume_near: (5.218_487, 0.05),
-                validate: ValidateExpect::Defect,
-                watertight: None,
+                // Cylinder plus lower hemisphere: π + 2π/3. The batch
+                // preview request uses the measurement mesh's fine clamp.
+                volume_near: (5.0 * std::f64::consts::PI / 3.0, 0.001),
+                validate: ValidateExpect::Clean,
+                watertight: Some(true),
             },
         },
         CrossCheck {
@@ -216,32 +213,42 @@ fn cross_checks() -> Vec<CrossCheck> {
         CrossCheck {
             file: "opseq81-placed-sphere-box-cut-mesh.json",
             signature: Signature::Probes {
-                volume_near: (112.711_52, 0.5),
+                volume_near: (112.711_520_498_865_48, 1e-4),
                 validate: ValidateExpect::Clean,
-                watertight: Some(false),
+                watertight: Some(true),
             },
         },
         CrossCheck {
             file: "opseq81-frustum-cone-offset-mesh.json",
             signature: Signature::Probes {
-                volume_near: (124.764_117, 0.5),
+                volume_near: (
+                    {
+                        let a = 4.0 + (13.0_f64.sqrt() + 2.0) / 12.0;
+                        let b = 2.0 + (13.0_f64.sqrt() - 2.0) / 12.0;
+                        std::f64::consts::PI * 3.5 * (a * a + a * b + b * b) / 3.0
+                    },
+                    2e-5,
+                ),
                 validate: ValidateExpect::Clean,
-                // No watertight pin: the batch probe welds before counting
-                // and reports this weldable-crack body clean, while the
-                // native unwelded oracle fails it. That blindness IS the
-                // surface result here — a coverage gap for T-junction-class
-                // defects, documented in the finding.
-                watertight: None,
+                watertight: Some(true),
             },
         },
         CrossCheck {
             file: "opseq81-cylinder-offset-mesh.json",
             signature: Signature::Probes {
-                volume_near: (0.883_573, 0.05),
+                volume_near: (9.0 * std::f64::consts::PI / 32.0, 1e-9),
                 validate: ValidateExpect::Clean,
-                // Same weldable-crack nuance as F14: the batch probe welds
-                // and reports clean; the native unwelded oracle fails it.
-                watertight: None,
+                watertight: Some(true),
+            },
+        },
+        CrossCheck {
+            file: "opseq81-equal-frustum-fuse-orientation.json",
+            signature: Signature::Probes {
+                // Independent horizontal-disc overlap integral; the native
+                // and packaged matrices retain the tighter quantity gates.
+                volume_near: (426.554_124_672_275_07, 0.05),
+                validate: ValidateExpect::Clean,
+                watertight: Some(true),
             },
         },
         CrossCheck {
@@ -405,23 +412,6 @@ fn opseq81_native_batch_crosscheck() {
         let mesh = ok_at(&results, base + 2);
 
         match validate {
-            ValidateExpect::Defect => {
-                let errors = validation
-                    .get("ok")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "{}: validateSolid must return a count, got {validation}",
-                            check.file
-                        )
-                    });
-                assert!(
-                    errors > 0,
-                    "{}: native reports misoriented edges but batch validates clean \
-                     (defect moved or binding diverges)",
-                    check.file
-                );
-            }
             ValidateExpect::Clean => {
                 assert_eq!(
                     validation.get("ok").and_then(Value::as_u64),
@@ -464,5 +454,65 @@ fn opseq81_native_batch_crosscheck() {
             "B81XCHECK {}: batch signature holds (volume {v:.6})",
             check.file
         );
+    }
+}
+
+#[test]
+fn f13_both_batches_keep_holed_sphere_mesh_closed_on_cache_replay() {
+    let bundle = ReproBundle::from_json(include_str!(
+        "repro/opseq81-placed-sphere-box-cut-mesh.json"
+    ))
+    .unwrap();
+    for v2 in [false, true] {
+        for (operation, reverse, expected) in [
+            ("cut", false, 112.711_520_498_865_48),
+            ("fuse", false, 113.711_520_498_865_48),
+            ("fuse", true, 113.711_520_498_865_48),
+            ("intersect", false, 0.385_815_030_367_076_43),
+        ] {
+            let mut kernel = remus_wasm::kernel::BrepKernel::new();
+            let mut ops = bundle.operations.clone();
+            ops[3]["args"]["operation"] = serde_json::json!(operation);
+            if reverse {
+                ops[3]["args"]["solidA"] = serde_json::json!(0);
+                ops[3]["args"]["solidB"] = serde_json::json!(1);
+            }
+            let run = |kernel: &mut remus_wasm::kernel::BrepKernel, request: &str| {
+                if v2 {
+                    kernel.execute_batch_v2(request)
+                } else {
+                    kernel.execute_batch(request)
+                }
+            };
+            let prefix: Vec<Value> =
+                serde_json::from_str(&run(&mut kernel, &serde_json::to_string(&ops).unwrap()))
+                    .unwrap();
+            assert!(
+                prefix.iter().all(|cell| cell.get("ok").is_some()),
+                "{prefix:?}"
+            );
+            assert_eq!(prefix[3]["ok"]["quality"], "exact");
+            let solid = produced_handle(&prefix[3]).unwrap();
+            for deflection in [0.1, 0.01, 0.003] {
+                let probes = serde_json::json!([
+                    {"op":"validateSolid","args":{"solid":solid}},
+                    {"op":"volume","args":{"solid":solid,"deflection":0.0001}},
+                    {"op":"meshQuality","args":{"solid":solid,"deflection":deflection}}
+                ])
+                .to_string();
+                let cold = run(&mut kernel, &probes);
+                let warm = run(&mut kernel, &probes);
+                assert_eq!(cold, warm, "F13 {operation} batchv2={v2}: cache replay");
+                let cells: Vec<Value> = serde_json::from_str(&cold).unwrap();
+                assert_eq!(cells[0]["ok"], 0);
+                assert!((cells[1]["ok"].as_f64().unwrap() - expected).abs() < expected * 2e-4);
+                assert_eq!(
+                    cells[2]["ok"]["isWatertight"], true,
+                    "F13 {operation} d={deflection}: {cells:?}"
+                );
+                assert_eq!(cells[2]["ok"]["boundaryEdges"], 0);
+                assert_eq!(cells[2]["ok"]["nonManifoldEdges"], 0);
+            }
+        }
     }
 }

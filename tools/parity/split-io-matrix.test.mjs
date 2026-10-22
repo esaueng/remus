@@ -1,13 +1,40 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 import test from 'node:test';
 
-import { expandSplitMatrix, ORACLES, scoreSplitCase } from './split-io-matrix.mjs';
+import { expandSplitMatrix, installSplitPair, ORACLES, scoreSplitCase } from './split-io-matrix.mjs';
 import {
   describeStaleness,
+  hashFile,
   requireObservations,
   validateInstalledEntry,
   validateProvenance,
 } from './provenance.mjs';
+
+test('same-version paired installs retain both original fresh tarballs after packing committed bytes', (t) => {
+  const root = mkdtempSync(resolve(tmpdir(), 'remus paired archives ü '));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const label of ['fresh', 'committed']) for (const [kind, name] of [['kernel', 'remus-wasm'], ['io', 'remus-wasm-io']]) {
+    const dir = resolve(root, label, kind);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(resolve(dir, 'package.json'), JSON.stringify({ name, version: '0.0.0', main: 'index.cjs' }));
+    writeFileSync(resolve(dir, 'index.cjs'), `module.exports = ${JSON.stringify(`${label}-${kind}`)};`);
+  }
+  const fresh = installSplitPair(resolve(root, 'fresh/kernel'), resolve(root, 'fresh/io'), root, 'consumer-fresh');
+  const original = [hashFile(fresh.kernelTarball), hashFile(fresh.ioTarball)];
+  const committed = installSplitPair(resolve(root, 'committed/kernel'), resolve(root, 'committed/io'), root, 'consumer-committed');
+  assert.deepEqual([hashFile(fresh.kernelTarball), hashFile(fresh.ioTarball)], original);
+  for (const key of ['kernelTarball', 'ioTarball']) {
+    assert.notEqual(fresh[key], committed[key]);
+    assert.notEqual(hashFile(fresh[key]), hashFile(committed[key]));
+  }
+  for (const key of ['kernelEntry', 'ioEntry']) {
+    assert.match(readFileSync(fresh[key], 'utf8'), /fresh/);
+    assert.match(readFileSync(committed[key], 'utf8'), /committed/);
+  }
+});
 
 function goodSuccess(id) {
   switch (id) {
@@ -162,10 +189,11 @@ test('stale or missing provenance identity fails', () => {
   assert.throws(
     () => validateProvenance({
       mode: 'fresh-tarball',
-      sourceRevision: 'abc',
+      sourceRevision: 'ab'.repeat(20),
       sourceDirty: false,
-      toolchain: {},
-      buildOptions: {},
+      toolchain: { rustc: 'rustc 1.0', cargo: 'cargo 1.0', node: 'v22', wasmPack: 'wasm-pack 0.15' },
+      target: 'nodejs',
+      buildOptions: { target: 'nodejs', profile: 'release', features: 'default' },
       packageVersion: '1.0.0',
       tarballSha256: 'ab'.repeat(32),
       wasmSha256: 'not-a-hash',

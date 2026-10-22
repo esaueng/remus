@@ -141,6 +141,12 @@ that does not exist yet; without it, stop.
   (F6).** Qualify whole native arcs before hemisphere meshing; use oriented
   great-circle containment for qualified concave trims and boundary queries.
   Agreeing volume routes do not prove material or raw mesh closure.
+- **Offset conic rim uses must follow their signed stored spans, and pointed
+  walls need the apex seam (F9/F14/F15).** Cap and lateral consumers must agree
+  on native traversal (`offset/src/loops.rs`, `check/src/util.rs`,
+  `regress_opseq_offset_wall.rs`).
+
+- **An equatorial boundary does not locate a hemisphere interior (F10).** Qualify the complete signed native circle partition before sampling its represented side; shared cylinder-rim synchronization may scale with each native arc span only on qualified complete circular two-rim bands, preserving the edge sampler and grid budget; stepped/CDT boundaries keep their established density (`regress_opseq_sphere_cylinder_fuse.rs`).
 
 ## Open items with a repro
 
@@ -308,6 +314,8 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **An unexamined tail is a plan problem, not a verdict:** a sharded mutation run that times out reports its remainder as unexamined — carry that tail into the next in-diff set or a catch-up shard matrix instead of quoting the reachable prefix (M2 proof tranche, 84 unexamined in one shard, 2026-10-01).
 - **A gate inside a chain of interval checks shows only when every later check stays decided:** the curved clip's event-order mutants survived because the midpoint, material-sample and native-range checks refused the same near-coincident input; model the chain in a few lines to find a chart (subnormal or 2^60-wide) where only the targeted gate decides, and reach constructor-pre-empted gates through deserialized NURBS (B19 F3c, `crates/algo/src/pave_filler/curved_section_clip/tests.rs`).
 
+- **Periodic seam adjacency needs DCEL twin owners, never close endpoints:** distinct close rulings retain two physical sectors and exact source spans; a single real ruling stays a boundary (`arrangement/oracle_tests.rs::close_distinct_rulings_preserve_topology_area_and_source_spans`).
+
 ## Subsystem trap notes
 
 - **heal `fix_duplicate_faces` IS implemented** (solid-scoped, `crates/heal/src/fix/solid.rs`,
@@ -368,3 +376,5 @@ Every box before "closed":
 `release-flow` (shipping a user-facing close), `parity-benchmarking`
 (RETIRED-HISTORICAL — capture recipes only). History:
 `docs/kernel-maturity/campaign-history.md`.
+
+- **A fresh document owner must not call the public constructor's global cache enablement again;** preserve module cache configuration and leave old checkpoint/sketch/prepared state with its owner (`wasm/src/bindings/arena.rs::document_copy_preserves_disabled_module_reuse_configuration`).

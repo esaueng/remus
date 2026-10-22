@@ -137,12 +137,12 @@ pub struct FaceContribution {
 ///
 /// # Accuracy
 ///
-/// * **Planar faces** bounded entirely by lines, circular arcs, ellipses,
-///   parabolas, hyperbolas, and NURBS arcs recognized as one of those forms
-///   are exact: `integrate_planar_face_exact` integrates the boundary in
-///   closed form by Green's theorem, holes included. Any other edge type on
-///   any of the face's wires drops the whole face to the chord-polygon fan
-///   path, which under-counts a circular cap by its sagitta area.
+/// * **Planar faces** bounded by analytic curves or unit-weight NURBS of
+///   degree at most six use Green's theorem, holes included. Recognized
+///   analytic forms integrate in closed form; the polynomial NURBS rule is
+///   exact within each knot span. Unsupported boundaries retain the
+///   chord-polygon fan approximation, including rational and higher-degree
+///   NURBS that no analytic form recognizes.
 /// * **Quadric faces** that span a full revolution, or whose boundary does not
 ///   trim the analytic domain, are integrated over that domain by composite
 ///   Gauss quadrature, converged to machine precision at the default order.
@@ -2195,11 +2195,9 @@ fn integrate_planar_face(
     let normal = normal.normalize().map_err(|_| {
         CheckError::IntegrationFailed("planar face has a zero or non-finite normal".into())
     })?;
-    // Faces whose wires consist only of line and circular-arc edges take an
-    // exact Green's-theorem boundary-integral path — a chord polygon
-    // undercounts a circular cap by the sagitta area (~0.2% at the default
-    // discretization), far above the accuracy of the parametric quadrature
-    // the curved faces get.
+    // Supported boundaries take the exact Green's-theorem path. A chord
+    // polygon loses the sagitta sliver; unsupported curves retain that
+    // existing approximation rather than claiming a fixed rational rule is exact.
     if let Some(contrib) = integrate_planar_face_exact(topo, face_id, normal, reference)? {
         return Ok(contrib);
     }
@@ -2422,10 +2420,8 @@ fn poly2_integrate(p: &Poly2, moments: &[f64; 10]) -> f64 {
 /// Region monomial moments `∫∫ sⁱtʲ ds dt` of one wire's enclosed planar
 /// region via Green's theorem: `M_ij = ∮ s^{i+1}/(i+1) · tʲ dt`.
 ///
-/// Returns `None` if the wire contains any edge that is not a line or a
-/// circular arc (the exact path only handles those); the caller falls back
-/// to chord-polygon integration. The result is winding-aligned so that the
-/// area moment `M₀₀` is positive.
+/// Returns `None` for unrecognized NURBS outside the proven polynomial
+/// family. The result is winding-aligned so that `M₀₀` is positive.
 fn planar_wire_monomial_moments(
     topo: &Topology,
     wire_id: remus_topology::wire::WireId,
@@ -2448,7 +2444,19 @@ fn planar_wire_monomial_moments(
         let forward = match prev_end {
             Some(pe) if start_vid == pe && end_vid != pe => true,
             Some(pe) if end_vid == pe && start_vid != pe => false,
-            _ => oe.is_forward(),
+            // A closed edge has no positional direction; retain its flag.
+            _ if start_vid == end_vid => oe.is_forward(),
+            // Assembly refinement can leave coincident endpoints with
+            // distinct IDs. Match the polygon path's positional fallback.
+            _ => match prev_end {
+                Some(previous_end) => {
+                    let last = topo.vertex(previous_end)?.point();
+                    let start = topo.vertex(start_vid)?.point();
+                    let end = topo.vertex(end_vid)?.point();
+                    (start - last).length_squared() <= (end - last).length_squared()
+                }
+                None => oe.is_forward(),
+            },
         };
         prev_end = Some(if forward { end_vid } else { start_vid });
 
@@ -2566,9 +2574,8 @@ fn planar_wire_monomial_moments(
                 // A NURBS boundary that curve recognition identifies as a
                 // line, circle, ellipse, hyperbola, or parabola IS that curve
                 // to recognition tolerance, so it integrates through the
-                // recognized form's exact arm rather than dropping the whole
-                // face to the chord-polygon fallback. An unrecognized NURBS
-                // still refuses (`None`), exactly as before.
+                // recognized form's exact arm. Unit-weight polynomial
+                // curves of bounded degree also have an exact span rule.
                 if !accumulate_recognized_nurbs_green_segment(
                     &mut moments,
                     nc,
@@ -2579,7 +2586,19 @@ fn planar_wire_monomial_moments(
                     e1,
                     e2,
                 )? {
-                    return Ok(None);
+                    if !has_exact_polynomial_green_rule(nc) {
+                        return Ok(None);
+                    }
+                    let traversal_start = topo.vertex(if forward { start_vid } else { end_vid })?;
+                    accumulate_nurbs_green_spans(
+                        &mut moments,
+                        nc,
+                        edge,
+                        traversal_start.point(),
+                        origin,
+                        e1,
+                        e2,
+                    )?;
                 }
             }
         }
@@ -2646,6 +2665,88 @@ fn accumulate_hyperbola_green_segments(
             e2,
         );
     }
+}
+
+/// Gauss order of one NURBS knot span in `accumulate_nurbs_green_spans`:
+/// exact through degree 31, so for a polynomial span of degree `p` through
+/// the degree `5p − 1` moment integrands (`s^{i+1} tʲ t'`, `i + j ≤ 3`) up to
+/// degree 6. This rule is never used for unrecognized rational spans or
+/// higher degrees: both can hide error from the volume order comparison.
+const NURBS_GREEN_ORDER: usize = 16;
+
+fn has_exact_polynomial_green_rule(nc: &remus_math::nurbs::curve::NurbsCurve) -> bool {
+    // Unit weights are an algebraic precondition, not a closeness test.
+    nc.degree() <= 6
+        && nc
+            .weights()
+            .iter()
+            .all(|weight| weight.to_bits() == 1.0_f64.to_bits())
+}
+
+fn oriented_nurbs_trim(
+    nc: &remus_math::nurbs::curve::NurbsCurve,
+    edge: &remus_topology::edge::Edge,
+    traversal_start: Point3,
+) -> Result<(f64, f64), CheckError> {
+    let (t0, t1) = match edge.strict_domain() {
+        Ok(trim) => trim,
+        Err(_) if edge.start() == edge.end() && edge.trim().is_none() => nc.domain(),
+        Err(error) => return Err(crate::error::edge_domain_validation(error)),
+    };
+    let (lo, hi) = (t0.min(t1), t0.max(t1));
+    if (nc.evaluate(lo) - traversal_start).length_squared()
+        <= (nc.evaluate(hi) - traversal_start).length_squared()
+    {
+        Ok((lo, hi))
+    } else {
+        Ok((hi, lo))
+    }
+}
+
+/// Integrate a qualified polynomial edge's Green contribution span by span.
+///
+/// The edge runs over its own parameter span (the carrier domain only for
+/// a closed edge with no stored trim), oriented against `traversal_start`, the vertex
+/// the wire reaches it from, exactly as the chord-polygon outline orients it
+/// (`crate::util::wire_polygon`): a stored curve direction can oppose the
+/// edge's vertex order. Each Gauss rule stays inside one knot span, where the
+/// curve is a polynomial piece. This replaces that outline's
+/// 32 chords per edge, whose sliver read a two-span spline extrude 4.7e-4 of
+/// its volume short.
+#[allow(clippy::too_many_arguments)]
+fn accumulate_nurbs_green_spans(
+    moments: &mut [f64; 10],
+    nc: &remus_math::nurbs::curve::NurbsCurve,
+    edge: &remus_topology::edge::Edge,
+    traversal_start: Point3,
+    origin: Point3,
+    e1: Vec3,
+    e2: Vec3,
+) -> Result<(), CheckError> {
+    debug_assert!(has_exact_polynomial_green_rule(nc));
+    let (from, to) = oriented_nurbs_trim(nc, edge, traversal_start)?;
+    let (lo, hi) = (from.min(to), from.max(to));
+    let dir_sign = if from < to { 1.0 } else { -1.0 };
+    let mut breaks = vec![lo];
+    breaks.extend(nc.knots().iter().copied().filter(|&k| k > lo && k < hi));
+    breaks.push(hi);
+    breaks.dedup();
+    for pair in breaks.windows(2) {
+        accumulate_green_segment(
+            moments,
+            (pair[0], pair[1]),
+            NURBS_GREEN_ORDER,
+            dir_sign,
+            |u| {
+                let d = nc.derivatives(u, 1);
+                (Point3::new(d[0].x(), d[0].y(), d[0].z()), d[1])
+            },
+            origin,
+            e1,
+            e2,
+        );
+    }
+    Ok(())
 }
 
 /// Integrate one NURBS edge's Green's-theorem contribution through its
@@ -3196,7 +3297,19 @@ fn wire_newell_normal(
         let forward = match prev_end {
             Some(pe) if start_vid == pe && end_vid != pe => true,
             Some(pe) if end_vid == pe && start_vid != pe => false,
-            _ => oe.is_forward(),
+            // A closed edge has no positional direction; retain its flag.
+            _ if start_vid == end_vid => oe.is_forward(),
+            // Assembly refinement can leave coincident endpoints with
+            // distinct IDs. Match the polygon path's positional fallback.
+            _ => match prev_end {
+                Some(previous_end) => {
+                    let last = topo.vertex(previous_end)?.point();
+                    let start = topo.vertex(start_vid)?.point();
+                    let end = topo.vertex(end_vid)?.point();
+                    (start - last).length_squared() <= (end - last).length_squared()
+                }
+                None => oe.is_forward(),
+            },
         };
         prev_end = Some(if forward { end_vid } else { start_vid });
 
@@ -3244,18 +3357,16 @@ fn wire_newell_normal(
                     pts.push(h.evaluate((to - from).fma(f, from)));
                 }
             }
-            // Matches the refusal in `planar_wire_monomial_moments`: the
-            // exact path does not handle unrecognized NURBS, so the normal
-            // it would produce is never used. A recognized NURBS takes the
-            // recognized form's arm below.
             EdgeCurve::NurbsCurve(nc) => {
-                if !nurbs_boundary_is_recognized(nc, edge, topo)? {
+                if !has_exact_polynomial_green_rule(nc)
+                    && !nurbs_boundary_is_recognized(nc, edge, topo)?
+                {
                     return Ok(None);
                 }
-                // Recognized: sample the NURBS itself (it IS the analytic
-                // form to recognition tolerance) for the plane determination.
-                let (t0, t1) = nc.domain();
-                let (from, to) = if forward { (t0, t1) } else { (t1, t0) };
+                // Unused carrier spans need not lie in the trimmed face's
+                // plane. Determine the frame from the authoritative trim.
+                let traversal_start = topo.vertex(if forward { start_vid } else { end_vid })?;
+                let (from, to) = oriented_nurbs_trim(nc, edge, traversal_start.point())?;
                 for k in 0..ARC_SAMPLES {
                     let f = k as f64 / ARC_SAMPLES as f64;
                     pts.push(nc.evaluate((to - from).fma(f, from)));
@@ -3284,7 +3395,7 @@ fn wire_newell_normal(
 /// Exact planar-face integration via Green's-theorem boundary integrals.
 ///
 /// Returns `Ok(None)` when any wire contains an edge type the exact path
-/// does not handle (hyperbola or NURBS), or when the boundary is too
+/// does not handle, or when the boundary is too
 /// degenerate to determine its plane; the caller then falls back to the
 /// chord-polygon fan path for the whole face.
 fn integrate_planar_face_exact(
@@ -4331,6 +4442,9 @@ fn integrate_with_trimming_to_pole<S: ParametricSurface, const AREA_ONLY: bool>(
 }
 
 #[cfg(test)]
+mod polynomial_boundary_tests;
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -4712,7 +4826,9 @@ mod tests {
         };
         let ring = |topo: &mut Topology, circle: remus_math::curves::Circle3D, at: f64| {
             let v = topo.add_vertex(Vertex::new(circle.evaluate(at), 1e-7));
-            let e = topo.add_edge(Edge::new(v, v, EdgeCurve::Circle(circle)));
+            let mut edge = Edge::new(v, v, EdgeCurve::Circle(circle));
+            edge.set_trim(Some((at, at + std::f64::consts::TAU)));
+            let e = topo.add_edge(edge);
             topo.add_wire(Wire::new(vec![OrientedEdge::new(e, true)], true).unwrap())
         };
         let outer = ring(topo, rim, seam);

@@ -25,11 +25,12 @@ use remus_topology::solid::SolidId;
 
 const DEFLECTION: f64 = 0.01;
 /// The fixture's volume. It is read off its certified face integrals, whose
-/// residual is the chord error of the sampled trim outlines; the mesh it was
+/// planar faces integrate their supported polynomial NURBS edges exactly; the mesh it was
 /// read off before converges upward towards it as the deflection shrinks
 /// (50 241.77 at 0.005, 50 243.83 at 0.002, 50 244.53 at 0.001, about
-/// 50 245.2 in the limit).
-const HAMMER_HOLDER_VOLUME: f64 = 50_245.532_161_524_25;
+/// 50 245.2 in the limit). The 32-chord outline those faces took before read
+/// 50 245.53.
+const HAMMER_HOLDER_VOLUME: f64 = 50_245.219_468_635_71;
 
 fn assert_valid(topo: &Topology, solid: SolidId) {
     let report = validate_solid(topo, solid, &ValidateOptions::default()).expect("validate solid");

@@ -15,3 +15,4 @@ cc 08b68860f1bc9496b62dd91086234c5a83e2692499385c847800d38541830323 # shrinks to
 cc faf15cbd40e6323fe4c378f107c23fd9f35dafe6f02421b32da92c576f2067b4 # shrinks to input = BoolPairInput { a: Box { dx: 1.5, dy: 1.0, dz: 2.5 }, b: Torus { major: 2.5, minor: 0.25 }, axis: 0, angle: 0.7853981633974483, offset: (0.0, -1.5, 0.0), scale: 1.0 }
 cc 5ebb16425dadf9e4dedf51a1d93b5e45189aa7248db04b32b30afe2561cbca46
 cc 59abb9be6a7732d650324fff350c2ec704278f5cde0aa60d866ec25ca7f7ce15 # shrinks to input = BoolPairInput { a: Cylinder { r: 1.5, h: 1.0 }, b: Cylinder { r: 4.0, h: 4.0 }, axis: 0, angle: 3.141592653589793, offset: (-1.25, 2.25, 0.75), scale: 1000.0 }
+cc c36b66296ed5da5b4180884b4e3b0929491bd6ea5c84455cc1ec669751078dc7 # shrinks to input = BoolPairInput { a: Cylinder { r: 2.0, h: 2.0 }, b: Box { dx: 4.0, dy: 1.5, dz: 1.5 }, axis: 2, angle: 0.7853981633974483, offset: (2.25, -0.25, 1.75), scale: 1000.0 }

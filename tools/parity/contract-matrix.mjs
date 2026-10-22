@@ -6,12 +6,14 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runNpm } from './npm-cli.mjs';
 import { performance } from 'node:perf_hooks';
 import {
   collectCommittedProvenance,
   collectFreshProvenance,
   collectSourceProvenance,
   describeStaleness,
+  hashFile,
   requireObservations,
   validateInstalledEntry,
   validateProvenance,
@@ -728,21 +730,22 @@ function attempt(command, args, payload) {
   }
 }
 
-function installPackage(packageDir, temporaryRoot, label) {
+export function installPackage(packageDir, temporaryRoot, label) {
   const consumerDir = resolve(temporaryRoot, `consumer-${label}`);
   mkdirSync(consumerDir, { recursive: true });
+  const archiveDir = resolve(consumerDir, 'archives');
+  mkdirSync(archiveDir);
   const npmEnvironment = {
     ...process.env,
     npm_config_cache: resolve(temporaryRoot, 'npm-cache'),
   };
-  const packed = JSON.parse(execFileSync(
-    'npm',
-    ['pack', resolve(packageDir), '--json', '--pack-destination', temporaryRoot],
+  const packed = JSON.parse(runNpm(
+    ['pack', resolve(packageDir), '--json', '--pack-destination', archiveDir],
     { encoding: 'utf8', env: npmEnvironment },
   ));
   assert.equal(packed.length, 1, 'npm pack must produce exactly one tarball');
-  const tarballPath = resolve(temporaryRoot, packed[0].filename);
-  execFileSync('npm', [
+  const tarballPath = resolve(archiveDir, packed[0].filename);
+  runNpm([
     'install',
     '--prefix', consumerDir,
     '--no-save',
@@ -1207,6 +1210,7 @@ async function main() {
       packageVersion: null,
       wasmSha256: null,
       installedEntry: resolve(nativeRunner),
+      binarySha256: hashFile(resolve(nativeRunner)),
     };
     const staleness = describeStaleness(freshProvenance, committedProvenance);
     const observations = [];
@@ -1354,7 +1358,7 @@ function normalizeNativeForContract(c, native) {
   return native;
 }
 
-function directConsistent(c, batch, direct) {
+export function directConsistent(c, batch, direct) {
   if (!batch || !direct || batch.outcome === undefined || direct.outcome === undefined) return false;
   if (batch.outcome !== direct.outcome) return false;
   if (c.expect.outcome === 'success' && c.expect.quality) {

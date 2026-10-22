@@ -29,6 +29,603 @@
 //! length-valued in it (some are `PRODUCT`/`COLOUR_RGB` only) still imports,
 //! as zero solids.
 
+pub mod assembly {
+    //! Named, rigid STEP occurrences over shared solid definitions.
+
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::rc::Rc;
+
+    use remus_math::mat::Mat4;
+    use remus_operations::assembly::{Assembly, ComponentId};
+
+    use super::{
+        AttrSlot, HashMap, ImportLimits, IoError, OccurrencePlacementOrder, SolidId, StepBuilder,
+        StepEntity, StepImportDiagnostic, Tolerance, Topology, diagnostic_entity_type,
+        ensure_input_size, ensure_limit, exact_reference_list, find_exact_composite_component,
+        is_solid_brep, merge_split_rim_arcs, occurrence_placement_order, parse_step_entities,
+        resolve_unit_scale, run_append_only, split_attr_slots,
+    };
+
+    /// An opt-in product structure; geometry remains in the caller's topology.
+    #[derive(Debug)]
+    pub struct StepAssemblyReadResult {
+        /// Unique solid definitions, ordered by STEP B-Rep entity number.
+        pub solids: Vec<SolidId>,
+        /// Named occurrences with parent-relative transforms in millimetres.
+        pub assembly: Assembly,
+        /// The geometry reader's import qualifications.
+        pub diagnostics: Vec<StepImportDiagnostic>,
+        /// Declared length factor applied once to both geometry and placements.
+        pub length_scale_to_mm: f64,
+    }
+
+    /// Read one root product and its solid-bearing, rigid component occurrences.
+    ///
+    /// Supports `NEXT_ASSEMBLY_USAGE_OCCURRENCE` linked through product shape and
+    /// context-dependent shape representations, with schema-ordered
+    /// `ITEM_DEFINED_TRANSFORMATION` placements. Nested components own a solid;
+    /// geometry-free intermediate groups, mapped items and mixed units are refused.
+    /// Nesting is limited to 256 component levels; expanded occurrences also consume
+    /// `ImportLimits::max_model_entities`, independently of the encoded entity count.
+    ///
+    /// # Errors
+    /// Returns typed parse, unsupported-entity, limit or geometry errors. A refused
+    /// import restores existing topology and permanently retires new handles.
+    pub fn read_step_assembly(
+        input: &str,
+        topo: &mut Topology,
+    ) -> Result<StepAssemblyReadResult, IoError> {
+        read_step_assembly_with_limits(input, topo, ImportLimits::default())
+    }
+
+    /// Read an assembly with explicit input, entity and expanded-occurrence limits.
+    ///
+    /// # Errors
+    /// Same refusals and atomicity as [`read_step_assembly`].
+    pub fn read_step_assembly_with_limits(
+        input: &str,
+        topo: &mut Topology,
+        limits: ImportLimits,
+    ) -> Result<StepAssemblyReadResult, IoError> {
+        ensure_input_size(input.len(), limits)?;
+        let entities = parse_step_entities(input, limits)?;
+        let units = resolve_unit_scale(&entities, true)?
+            .ok_or_else(|| invalid("missing assembly units"))?;
+        // The graph and component list are local to each attempt; imported geometry
+        // and rim repair touch only newly allocated entities, as in read_step.
+        // The guard retains mutation-local rollback and retires failed handles.
+        run_append_only(topo, |topo| {
+            let mut builder = StepBuilder::new(topo, &entities, units, limits)?;
+            let graph = Graph::read(&builder)?;
+            let definitions = builder.build_all_solids()?;
+            let solid_map = definitions.iter().copied().collect();
+            let assembly = graph.expand(&solid_map, limits)?;
+            let diagnostics = std::mem::take(&mut builder.diagnostics);
+            let solids: Vec<_> = definitions.into_iter().map(|(_, solid)| solid).collect();
+            for &solid in &solids {
+                merge_split_rim_arcs(builder.topo, solid, Tolerance::new())?;
+            }
+            Ok(StepAssemblyReadResult {
+                solids,
+                assembly,
+                diagnostics,
+                length_scale_to_mm: units.length,
+            })
+        })
+        .map(|(result, _)| result)
+    }
+
+    fn invalid(reason: impl Into<String>) -> IoError {
+        IoError::ParseError {
+            reason: reason.into(),
+        }
+    }
+
+    fn entity<'a, 'input>(
+        entities: &'a HashMap<u64, StepEntity<'input>>,
+        id: u64,
+        kind: &str,
+    ) -> Result<&'a StepEntity<'input>, IoError> {
+        entities
+            .get(&id)
+            .filter(|entity| entity.type_str().eq_ignore_ascii_case(kind))
+            .ok_or_else(|| invalid(format!("expected {kind} at #{id}")))
+    }
+
+    fn reference(slots: &[AttrSlot<'_>], index: usize) -> Result<u64, IoError> {
+        slots
+            .get(index)
+            .and_then(AttrSlot::as_ref_id)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "assembly attribute {index} must be an entity reference"
+                ))
+            })
+    }
+
+    fn name(slots: &[AttrSlot<'_>], index: usize) -> Result<String, IoError> {
+        match slots.get(index) {
+            Some(AttrSlot::Text(raw)) => Ok(super::attr_text_value(raw)),
+            _ => Err(invalid(format!(
+                "assembly attribute {index} must be a string"
+            ))),
+        }
+    }
+
+    /// Resolve each formation and product label once. Repeated product definitions
+    /// may name one formation/product, including a long label; decoding that label
+    /// for every alias would amplify input-sized work before graph validation.
+    fn product_id(
+        entities: &HashMap<u64, StepEntity<'_>>,
+        definition_id: u64,
+        formations: &mut BTreeMap<u64, u64>,
+        labels: &mut BTreeMap<u64, String>,
+    ) -> Result<u64, IoError> {
+        let definition = entity(entities, definition_id, "PRODUCT_DEFINITION")?;
+        let formation_id = reference(&split_attr_slots(&definition.attrs), 2)?;
+        if let Some(&product_id) = formations.get(&formation_id) {
+            return Ok(product_id);
+        }
+        let formation = entities
+            .get(&formation_id)
+            .ok_or_else(|| invalid("missing product formation"))?;
+        if !formation
+            .type_str()
+            .eq_ignore_ascii_case("PRODUCT_DEFINITION_FORMATION")
+            && !formation
+                .type_str()
+                .eq_ignore_ascii_case("PRODUCT_DEFINITION_FORMATION_WITH_SPECIFIED_SOURCE")
+        {
+            return Err(invalid("unsupported product formation"));
+        }
+        let product_id = reference(&split_attr_slots(&formation.attrs), 2)?;
+        if let std::collections::btree_map::Entry::Vacant(entry) = labels.entry(product_id) {
+            let product = entity(entities, product_id, "PRODUCT")?;
+            entry.insert(name(&split_attr_slots(&product.attrs), 1)?);
+        }
+        formations.insert(formation_id, product_id);
+        Ok(product_id)
+    }
+
+    struct Representation {
+        id: u64,
+        items: BTreeSet<u64>,
+        solid: Option<u64>,
+    }
+
+    /// Product definitions may share one representation. Cache this parsed payload
+    /// rather than cloning its entire item set for every definition.
+    fn read_representation(
+        entities: &HashMap<u64, StepEntity<'_>>,
+        representation_id: u64,
+    ) -> Result<Representation, IoError> {
+        let representation = entities
+            .get(&representation_id)
+            .ok_or_else(|| invalid("missing product representation"))?;
+        if !matches!(
+            representation.kind.as_str(),
+            "SHAPE_REPRESENTATION" | "ADVANCED_BREP_SHAPE_REPRESENTATION"
+        ) {
+            return Err(IoError::UnsupportedEntity {
+                entity: diagnostic_entity_type(representation),
+            });
+        }
+        let slots = split_attr_slots(&representation.attrs);
+        let Some(AttrSlot::List(raw_items)) = slots.get(1) else {
+            return Err(invalid("invalid representation items"));
+        };
+        let items: BTreeSet<_> = exact_reference_list(raw_items)
+            .map_err(invalid)?
+            .into_iter()
+            .collect();
+        if items.is_empty() {
+            return Err(invalid("assembly representation has no items"));
+        }
+        let mut solid = None;
+        for &id in &items {
+            let item = entities
+                .get(&id)
+                .ok_or_else(|| invalid("missing representation item"))?;
+            if is_solid_brep(item) {
+                if solid.replace(id).is_some() {
+                    return Err(invalid("assembly component must contain exactly one solid"));
+                }
+            } else if item.kind.as_str() != "AXIS2_PLACEMENT_3D" {
+                return Err(IoError::UnsupportedEntity {
+                    entity: diagnostic_entity_type(item),
+                });
+            }
+        }
+        Ok(Representation {
+            id: representation_id,
+            items,
+            solid,
+        })
+    }
+
+    struct Occurrence {
+        id: u64,
+        child: u64,
+        name: String,
+        transform: Mat4,
+    }
+
+    struct PendingOccurrence<'a> {
+        source: &'a Occurrence,
+        parent: Option<ComponentId>,
+        depth: usize,
+        parent_world: Mat4,
+    }
+
+    struct Graph {
+        root: u64,
+        name: String,
+        products: BTreeMap<u64, Rc<Representation>>,
+        children: BTreeMap<u64, Vec<Occurrence>>,
+    }
+
+    impl Graph {
+        #[allow(clippy::too_many_lines)]
+        fn read(builder: &StepBuilder<'_>) -> Result<Self, IoError> {
+            let entities = builder.entities;
+            let ordered: BTreeMap<_, _> =
+                entities.iter().map(|(&id, entity)| (id, entity)).collect();
+            let mut products = BTreeMap::new();
+            let mut representations = BTreeMap::<u64, Rc<Representation>>::new();
+            let mut formations = BTreeMap::new();
+            let mut labels = BTreeMap::new();
+            let mut definition_products = BTreeMap::new();
+            for instance in ordered.values().filter(|entity| {
+                entity
+                    .type_str()
+                    .eq_ignore_ascii_case("SHAPE_DEFINITION_REPRESENTATION")
+            }) {
+                let slots = split_attr_slots(&instance.attrs);
+                let shape = entity(entities, reference(&slots, 0)?, "PRODUCT_DEFINITION_SHAPE")?;
+                let definition = reference(&split_attr_slots(&shape.attrs), 2)?;
+                if products.contains_key(&definition) {
+                    return Err(invalid("ambiguous product shape representations"));
+                }
+                definition_products.insert(
+                    definition,
+                    product_id(entities, definition, &mut formations, &mut labels)?,
+                );
+                let representation_id = reference(&slots, 1)?;
+                let representation = match representations.entry(representation_id) {
+                    std::collections::btree_map::Entry::Occupied(entry) => Rc::clone(entry.get()),
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        let representation =
+                            Rc::new(read_representation(entities, representation_id)?);
+                        Rc::clone(entry.insert(representation))
+                    }
+                };
+                products.insert(definition, representation);
+            }
+            let mut links = BTreeMap::new();
+            let mut used_relations = BTreeSet::new();
+            for instance in ordered.values().filter(|entity| {
+                entity
+                    .type_str()
+                    .eq_ignore_ascii_case("CONTEXT_DEPENDENT_SHAPE_REPRESENTATION")
+            }) {
+                let slots = split_attr_slots(&instance.attrs);
+                let relation = reference(&slots, 0)?;
+                let shape = entity(entities, reference(&slots, 1)?, "PRODUCT_DEFINITION_SHAPE")?;
+                let occurrence = reference(&split_attr_slots(&shape.attrs), 2)?;
+                entity(entities, occurrence, "NEXT_ASSEMBLY_USAGE_OCCURRENCE")?;
+                if links.insert(occurrence, relation).is_some() || !used_relations.insert(relation)
+                {
+                    return Err(invalid("ambiguous occurrence shape relationship"));
+                }
+            }
+            let mut parents = BTreeSet::new();
+            let mut children_ids = BTreeSet::new();
+            let mut children: BTreeMap<u64, Vec<Occurrence>> = BTreeMap::new();
+            let mut occurrences = 0;
+            for (&id, instance) in &ordered {
+                if !instance
+                    .type_str()
+                    .eq_ignore_ascii_case("NEXT_ASSEMBLY_USAGE_OCCURRENCE")
+                {
+                    continue;
+                }
+                let slots = split_attr_slots(&instance.attrs);
+                let parent = reference(&slots, 3)?;
+                let child = reference(&slots, 4)?;
+                let parent_rep = products
+                    .get(&parent)
+                    .ok_or_else(|| invalid("parent product has no shape representation"))?;
+                let child_rep = products
+                    .get(&child)
+                    .ok_or_else(|| invalid("child product has no shape representation"))?;
+                if child_rep.solid.is_none() {
+                    return Err(invalid(
+                        "geometry-free intermediate assembly groups are unsupported",
+                    ));
+                }
+                let relation = links.get(&id).ok_or_else(|| {
+                    invalid("occurrence has no context-dependent shape representation")
+                })?;
+                let transform = occurrence_transform(builder, *relation, child_rep, parent_rep)?;
+                children.entry(parent).or_default().push(Occurrence {
+                    id,
+                    child,
+                    name: name(&slots, 1)?,
+                    transform,
+                });
+                parents.insert(parent);
+                children_ids.insert(child);
+                occurrences += 1;
+            }
+            let roots: Vec<_> = parents.difference(&children_ids).copied().collect();
+            if roots.len() != 1 || occurrences == 0 {
+                return Err(invalid(
+                    "assembly requires exactly one root and an acyclic occurrence graph",
+                ));
+            }
+            let root = roots[0];
+            if products[&root].solid.is_some() {
+                return Err(invalid("root assembly product must be geometry-free"));
+            }
+            if products
+                .keys()
+                .any(|id| *id != root && !children_ids.contains(id))
+            {
+                return Err(invalid("unconnected product definition"));
+            }
+            for (&id, instance) in &ordered {
+                if instance.is_complex()
+                    && find_exact_composite_component(
+                        &instance.attrs,
+                        "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION",
+                    )
+                    .is_some()
+                    && !used_relations.contains(&id)
+                {
+                    return Err(invalid(
+                        "unconnected transformed representation relationship",
+                    ));
+                }
+            }
+            let assigned: BTreeSet<_> = products
+                .values()
+                .filter_map(|representation| representation.solid)
+                .collect();
+            if ordered
+                .iter()
+                .any(|(id, instance)| is_solid_brep(instance) && !assigned.contains(id))
+            {
+                return Err(invalid("unassigned solid definition in assembly"));
+            }
+            let root_product = definition_products
+                .get(&root)
+                .ok_or_else(|| invalid("missing root product"))?;
+            let name = labels
+                .remove(root_product)
+                .ok_or_else(|| invalid("missing root product label"))?;
+            Ok(Self {
+                root,
+                name,
+                products,
+                children,
+            })
+        }
+
+        fn expand(
+            &self,
+            solids: &BTreeMap<u64, SolidId>,
+            limits: ImportLimits,
+        ) -> Result<Assembly, IoError> {
+            self.validate_acyclic()?;
+            let mut assembly = Assembly::new(&self.name);
+            // Ready occurrences follow file order, preserving the native writer's
+            // component insertion order and therefore its BOM representative names.
+            let mut pending: BTreeMap<_, PendingOccurrence<'_>> = self.children[&self.root]
+                .iter()
+                .enumerate()
+                .map(|(index, source)| {
+                    (
+                        (source.id, index),
+                        PendingOccurrence {
+                            source,
+                            parent: None,
+                            depth: 1,
+                            parent_world: Mat4::identity(),
+                        },
+                    )
+                })
+                .collect();
+            let mut expanded_name_bytes = self.name.len();
+            let mut scheduled = pending.len();
+            ensure_limit(
+                "expanded STEP occurrences",
+                scheduled,
+                limits.max_model_entities,
+            )?;
+            while let Some((_, current)) = pending.pop_first() {
+                let occurrence = current.source;
+                ensure_limit("STEP assembly depth", current.depth, 256)?;
+                let world = current.parent_world * occurrence.transform;
+                if world.0.iter().flatten().any(|value| !value.is_finite()) {
+                    return Err(invalid("non-finite composed assembly placement"));
+                }
+                let definition = self.products[&occurrence.child]
+                    .solid
+                    .ok_or_else(|| invalid("missing component solid"))?;
+                let solid = *solids
+                    .get(&definition)
+                    .ok_or_else(|| invalid("missing built solid definition"))?;
+                expanded_name_bytes = expanded_name_bytes.saturating_add(occurrence.name.len());
+                ensure_limit(
+                    "expanded STEP name bytes",
+                    expanded_name_bytes,
+                    limits.max_input_bytes,
+                )?;
+                let id = if let Some(parent) = current.parent {
+                    assembly.add_child_component(
+                        parent,
+                        &occurrence.name,
+                        solid,
+                        occurrence.transform,
+                    )?
+                } else {
+                    assembly.add_root_component(&occurrence.name, solid, occurrence.transform)
+                };
+                if let Some(children) = self.children.get(&occurrence.child) {
+                    ensure_limit(
+                        "expanded STEP occurrences",
+                        scheduled.saturating_add(children.len()),
+                        limits.max_model_entities,
+                    )?;
+                    for child in children {
+                        pending.insert(
+                            (child.id, scheduled),
+                            PendingOccurrence {
+                                source: child,
+                                parent: Some(id),
+                                depth: current.depth + 1,
+                                parent_world: world,
+                            },
+                        );
+                        scheduled += 1;
+                    }
+                }
+            }
+            Ok(assembly)
+        }
+
+        fn validate_acyclic(&self) -> Result<(), IoError> {
+            let mut incoming = BTreeMap::<u64, usize>::new();
+            for occurrence in self.children.values().flatten() {
+                *incoming.entry(occurrence.child).or_default() += 1;
+            }
+            let mut ready = vec![self.root];
+            let mut visited = 0;
+            while let Some(product) = ready.pop() {
+                visited += 1;
+                for occurrence in self.children.get(&product).into_iter().flatten() {
+                    let count = incoming
+                        .get_mut(&occurrence.child)
+                        .ok_or_else(|| invalid("missing assembly indegree"))?;
+                    *count -= 1;
+                    if *count == 0 {
+                        ready.push(occurrence.child);
+                    }
+                }
+            }
+            if visited != self.products.len() {
+                return Err(invalid("unreachable or cyclic assembly occurrences"));
+            }
+            Ok(())
+        }
+    }
+
+    fn occurrence_transform(
+        builder: &StepBuilder<'_>,
+        relation_id: u64,
+        child: &Representation,
+        parent: &Representation,
+    ) -> Result<Mat4, IoError> {
+        let relation = builder
+            .entities
+            .get(&relation_id)
+            .ok_or_else(|| invalid("missing occurrence relationship"))?;
+        if !relation.is_complex()
+            || find_exact_composite_component(&relation.attrs, "SHAPE_REPRESENTATION_RELATIONSHIP")
+                .is_none()
+        {
+            return Err(invalid(
+                "assembly occurrence requires a complex transformed shape relationship",
+            ));
+        }
+        let base =
+            find_exact_composite_component(&relation.attrs, "REPRESENTATION_RELATIONSHIP")
+                .ok_or_else(|| invalid("occurrence requires a transformed shape relationship"))?;
+        let slots = split_attr_slots(base);
+        if reference(&slots, 2)? != child.id || reference(&slots, 3)? != parent.id {
+            return Err(invalid(
+                "occurrence relationship must order child then parent representations",
+            ));
+        }
+        let transform = find_exact_composite_component(
+            &relation.attrs,
+            "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION",
+        )
+        .ok_or_else(|| invalid("missing occurrence transformation"))?;
+        let transform = entity(
+            builder.entities,
+            reference(&split_attr_slots(transform), 0)?,
+            "ITEM_DEFINED_TRANSFORMATION",
+        )?;
+        let slots = split_attr_slots(&transform.attrs);
+        let child_item = reference(&slots, 2)?;
+        let parent_item = reference(&slots, 3)?;
+        let order = occurrence_placement_order(
+            [
+                child.items.contains(&child_item),
+                child.items.contains(&parent_item),
+            ],
+            [
+                parent.items.contains(&child_item),
+                parent.items.contains(&parent_item),
+            ],
+        )?;
+        if order != Some(OccurrencePlacementOrder::Schema)
+            || child.items.contains(&parent_item)
+            || parent.items.contains(&child_item)
+        {
+            return Err(invalid(
+                "assembly placements require unambiguous schema-ordered representation membership",
+            ));
+        }
+        let child_frame = placement(builder, child_item)?;
+        let parent_frame = placement(builder, parent_item)?;
+        let inverse = child_frame
+            .inverse()
+            .map_err(|_| invalid("singular component placement"))?;
+        let result = parent_frame * inverse;
+        if result.0.iter().flatten().any(|value| !value.is_finite()) {
+            return Err(invalid("non-finite composed occurrence transform"));
+        }
+        Ok(result)
+    }
+
+    fn placement(builder: &StepBuilder<'_>, id: u64) -> Result<Mat4, IoError> {
+        let instance = entity(builder.entities, id, "AXIS2_PLACEMENT_3D")?;
+        let slots = split_attr_slots(&instance.attrs);
+        if slots.len() != 4 {
+            return Err(invalid("invalid assembly placement attribute count"));
+        }
+        // The legacy triple readers deliberately accept some historical syntax.
+        // The assembly API promises a schema-valid rigid frame: matching numbers
+        // on a different entity kind cannot establish its point or directions.
+        entity(builder.entities, reference(&slots, 1)?, "CARTESIAN_POINT")?;
+        for direction in &slots[2..4] {
+            if let AttrSlot::Ref(id) = direction {
+                entity(builder.entities, *id, "DIRECTION")?;
+            }
+        }
+        let (origin, axis, reference) = builder.axis2_placement_from_slots(id, &slots)?;
+        let z = axis
+            .normalize()
+            .map_err(|_| invalid("degenerate assembly placement axis"))?;
+        let x = (reference - z * reference.dot(z))
+            .normalize()
+            .map_err(|_| invalid("parallel assembly placement axes"))?;
+        let y = z.cross(x);
+        let matrix = Mat4([
+            [x.x(), y.x(), z.x(), origin.x()],
+            [x.y(), y.y(), z.y(), origin.y()],
+            [x.z(), y.z(), z.z(), origin.z()],
+            [0., 0., 0., 1.],
+        ]);
+        if matrix.0.iter().flatten().any(|value| !value.is_finite()) {
+            return Err(invalid("non-finite assembly placement"));
+        }
+        Ok(matrix)
+    }
+}
+
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
@@ -9803,6 +10400,35 @@ fn trimmed_curve_sense_is_reversed(curve_ref: u64, attrs: &str) -> Result<bool, 
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OccurrencePlacementOrder {
+    Schema,
+    Historical,
+}
+
+/// Resolve placement ownership before either occurrence geometry or uncertainty
+/// propagation uses it. ISO 10303-43 orders transformation items like their
+/// representations; historical files may reverse those two items. Membership
+/// must prove exactly one convention. Callers diagnose missing membership when
+/// neither fits; accepting both would guess which frame is inverted.
+fn occurrence_placement_order(
+    component_membership: [bool; 2],
+    assembly_membership: [bool; 2],
+) -> Result<Option<OccurrencePlacementOrder>, IoError> {
+    match (
+        component_membership[0] && assembly_membership[1],
+        component_membership[1] && assembly_membership[0],
+    ) {
+        (true, true) => Err(IoError::ParseError {
+            reason: "ambiguous occurrence placement membership satisfies both schema and historical order"
+                .to_string(),
+        }),
+        (true, false) => Ok(Some(OccurrencePlacementOrder::Schema)),
+        (false, true) => Ok(Some(OccurrencePlacementOrder::Historical)),
+        (false, false) => Ok(None),
+    }
+}
+
 /// Resolve the uncertainty cap for every imported body root through the
 /// `SHAPE_REPRESENTATION` that names it and its representation context.
 /// An uncertainty context elsewhere in the file is unrelated authority and
@@ -10004,10 +10630,7 @@ fn representation_model_tolerances(
             });
         }
         let transformation_slots = split_attr_slots(&transformation.attrs);
-        // ITEM_DEFINED_TRANSFORMATION names the rep_2 (assembly) placement
-        // first and the rep_1 (component) placement second. The Hammer corpus
-        // occurrence uses this canonical ordering.
-        let assembly_item = transformation_slots
+        let first_item = transformation_slots
             .get(2)
             .and_then(AttrSlot::as_ref_id)
             .ok_or_else(|| IoError::ParseError {
@@ -10015,7 +10638,7 @@ fn representation_model_tolerances(
                     "ITEM_DEFINED_TRANSFORMATION #{transformation_ref} has no first placement"
                 ),
             })?;
-        let component_item = transformation_slots
+        let second_item = transformation_slots
             .get(3)
             .and_then(AttrSlot::as_ref_id)
             .ok_or_else(|| IoError::ParseError {
@@ -10023,6 +10646,23 @@ fn representation_model_tolerances(
                     "ITEM_DEFINED_TRANSFORMATION #{transformation_ref} has no second placement"
                 ),
             })?;
+        let order = occurrence_placement_order(
+            [
+                representation_items[&component_rep].contains(&first_item),
+                representation_items[&component_rep].contains(&second_item),
+            ],
+            [
+                representation_items[&assembly_rep].contains(&first_item),
+                representation_items[&assembly_rep].contains(&second_item),
+            ],
+        )?;
+        // Keep the historical convention for the existing membership
+        // diagnostics when neither order fits. The checks below still refuse.
+        let (component_item, assembly_item) = if order == Some(OccurrencePlacementOrder::Schema) {
+            (first_item, second_item)
+        } else {
+            (second_item, first_item)
+        };
         for placement_ref in [component_item, assembly_item] {
             let placement = entities.get(&placement_ref).ok_or_else(|| IoError::ParseError {
                 reason: format!(
@@ -10388,15 +11028,111 @@ fn step_text_equals(raw: &str, expected: &str) -> bool {
     i == raw_bytes.len() && j == exp_bytes.len()
 }
 
-/// Owned decoded value of a raw STEP string inner (`''` collapsed to `'`).
+/// Owned decoded value of a raw STEP string inner (`''` collapsed to `'`,
+/// Part 21 control directives decoded by [`decode_step_directives`]).
 fn attr_text_value(raw: &str) -> String {
     // `str::replace` is UTF-8 safe; the fast path avoids allocation when
     // there is no escape to collapse.
-    if raw.contains("''") {
+    let collapsed = if raw.contains("''") {
         raw.replace("''", "'")
     } else {
         raw.to_string()
+    };
+    decode_step_directives(collapsed)
+}
+
+/// Decode the ISO 10303-21 string control directives of an already
+/// `''`-collapsed string: `\\`, `\X\hh`, `\X2\`…`\X0\`, `\X4\`…`\X0\`, and
+/// `\S\c` under the default ISO 8859-1 code page (`\PA\`). A directive that
+/// is malformed, or whose `\S\` needs another code page, stays verbatim, so
+/// a non-conforming lone backslash survives. The output is never longer
+/// than the input.
+fn decode_step_directives(text: String) -> String {
+    if !text.contains('\\') {
+        return text;
     }
+    let mut out = String::with_capacity(text.len());
+    let mut latin1 = true;
+    let mut rest = text.as_str();
+    while let Some(start) = rest.find('\\') {
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+        let used = decode_step_directive(rest, &mut latin1, &mut out);
+        rest = &rest[used..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Decode the one directive at the start of `text` (which starts with a
+/// backslash) into `out`; returns the bytes consumed, at least one.
+fn decode_step_directive(text: &str, latin1: &mut bool, out: &mut String) -> usize {
+    fn hex_units(hex: &str, width: usize) -> Option<Vec<u32>> {
+        if !hex.len().is_multiple_of(width) || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
+        (0..hex.len())
+            .step_by(width)
+            .map(|at| u32::from_str_radix(hex.get(at..at + width)?, 16).ok())
+            .collect()
+    }
+    if text.starts_with("\\\\") {
+        out.push('\\');
+        return 2;
+    }
+    if let Some(hex) = text.strip_prefix("\\X\\").and_then(|rest| rest.get(..2))
+        && let Some([code]) = hex_units(hex, 2).as_deref()
+        && let Some(ch) = char::from_u32(*code)
+    {
+        out.push(ch);
+        return 5;
+    }
+    for (open, width) in [("\\X2\\", 4), ("\\X4\\", 8)] {
+        let Some(rest) = text.strip_prefix(open) else {
+            continue;
+        };
+        let Some(end) = rest.find("\\X0\\") else {
+            break;
+        };
+        let decoded = hex_units(&rest[..end], width).and_then(|units| {
+            if width == 4 {
+                let units: Vec<u16> = units
+                    .into_iter()
+                    .map(u16::try_from)
+                    .collect::<Result<_, _>>()
+                    .ok()?;
+                String::from_utf16(&units).ok()
+            } else {
+                units.into_iter().map(char::from_u32).collect()
+            }
+        });
+        if let Some(decoded) = decoded {
+            out.push_str(&decoded);
+            return open.len() + end + "\\X0\\".len();
+        }
+        break;
+    }
+    if *latin1
+        && let Some(rest) = text.strip_prefix("\\S\\")
+        && let Some(ch @ ' '..='~') = rest.chars().next()
+        && let Some(high) = char::from_u32(u32::from(ch) + 0x80)
+    {
+        out.push(high);
+        return 4;
+    }
+    if let [b'\\', b'P', page, b'\\', ..] = text.as_bytes()
+        && page.is_ascii_uppercase()
+    {
+        // `\PA\` restates the default page; another page stays verbatim
+        // and leaves its `\S\` characters undecoded.
+        *latin1 = *page == b'A';
+        if !*latin1 {
+            out.push_str(&text[..4]);
+        }
+        return 4;
+    }
+    out.push('\\');
+    1
 }
 
 /// Borrowed inner of a STEP string literal: outer quotes removed, `''`
@@ -10875,7 +11611,7 @@ fn unescape_step_string(literal: &str) -> String {
     let inner = literal
         .strip_prefix('\'')
         .map_or(literal, |rest| rest.strip_suffix('\'').unwrap_or(rest));
-    inner.replace("''", "'")
+    decode_step_directives(inner.replace("''", "'"))
 }
 
 fn parse_trimmed_curve(curve_ref: u64, attrs: &str) -> Result<ParsedTrimmedCurve, IoError> {
@@ -11664,6 +12400,34 @@ mod tests {
 
     use super::*;
     use crate::step::writer;
+
+    #[test]
+    fn part21_string_directives_decode_and_malformed_ones_stay_verbatim() {
+        let decode = attr_text_value;
+        assert_eq!(decode(r"caf\X2\00E9\X0\"), "café");
+        assert_eq!(decode(r"\X2\D83DDE00\X0\ \X4\0001F600\X0\"), "😀 😀");
+        assert_eq!(decode(r"caf\X\E9 \S\i"), "café é");
+        assert_eq!(decode(r"\PA\\S\i"), "é");
+        assert_eq!(decode(r"a\\b'' c"), r"a\b' c");
+        // Lone, unterminated, odd-length, non-hex or unpaired directives,
+        // and `\S\` under a code page this decoder does not map, are kept.
+        for raw in [
+            r"C:\temp",
+            r"\X2\00E9",
+            r"\X2\00E\X0\",
+            r"\X2\00G9\X0\",
+            r"\X2\D83D\X0\",
+            r"\X\G1",
+            r"\PB\\S\i",
+            "trailing\\",
+        ] {
+            assert_eq!(decode(raw), raw, "{raw}");
+        }
+        assert_eq!(
+            unescape_step_string(r"'it''s caf\X2\00E9\X0\'"),
+            "it's café"
+        );
+    }
 
     /// A quarter-band LINE pcurve whose origin sits half a turn from the
     /// use's end: lifting each end independently ties at that half turn and
@@ -13653,6 +14417,72 @@ mod tests {
         let builder =
             StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
         assert!((builder.brep_tolerance_caps[&40] - 1e-5).abs() < 1e-15);
+    }
+
+    fn occurrence_membership_fixture(
+        transformation_items: &str,
+        component_items: &str,
+        assembly_items: &str,
+    ) -> String {
+        step_file(&format!(
+            "#50=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-08),\
+             #9001,'distance','part tolerance');\n\
+             #51=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+             GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#50))\
+             REPRESENTATION_CONTEXT('','part'));\n\
+             #52=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-05),\
+             #9001,'distance','occurrence tolerance');\n\
+             #53=(GEOMETRIC_REPRESENTATION_CONTEXT(3)\
+             GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#52))\
+             REPRESENTATION_CONTEXT('','root'));\n\
+             #40=MANIFOLD_SOLID_BREP('',#999);\n\
+             #45=CARTESIAN_POINT('',(0.,0.,0.));\n\
+             #46=DIRECTION('',(0.,0.,1.));\n\
+             #47=DIRECTION('',(1.,0.,0.));\n\
+             #48=AXIS2_PLACEMENT_3D('',#45,#46,#47);\n\
+             #15=AXIS2_PLACEMENT_3D('',#45,#46,#47);\n\
+             #49=ITEM_DEFINED_TRANSFORMATION('','',{transformation_items});\n\
+             #42=ADVANCED_BREP_SHAPE_REPRESENTATION('',({component_items}),#51);\n\
+             #54=SHAPE_REPRESENTATION('',({assembly_items}),#53);\n\
+             #44=(REPRESENTATION_RELATIONSHIP('','',#42,#54)\
+             REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#49)\
+             SHAPE_REPRESENTATION_RELATIONSHIP());"
+        ))
+    }
+
+    #[test]
+    fn schema_and_historical_occurrences_preserve_assembly_uncertainty() {
+        for items in ["#15,#48", "#48,#15"] {
+            let input = occurrence_membership_fixture(items, "#40,#15", "#48");
+            let entities = parse_step_entities(&input, ImportLimits::default()).unwrap();
+            let units = required_unit_scale(&entities).unwrap();
+            let mut topo = Topology::new();
+            let builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
+            assert!((builder.brep_tolerance_caps[&40] - 1e-5).abs() < 1e-15);
+            assert_eq!(topo.num_vertices(), 0);
+            assert_eq!(topo.num_edges(), 0);
+        }
+    }
+
+    #[test]
+    fn ambiguous_occurrence_membership_refuses_before_uncertainty_propagation() {
+        for items in ["#15,#48", "#48,#15", "#15,#15"] {
+            let input = occurrence_membership_fixture(items, "#40,#15,#48", "#15,#48");
+            let entities = parse_step_entities(&input, ImportLimits::default()).unwrap();
+            let units = required_unit_scale(&entities).unwrap();
+            let mut topo = Topology::new();
+            let error = StepBuilder::new(&mut topo, &entities, units, ImportLimits::default())
+                .err()
+                .expect("both placement conventions must not grant guessed authority");
+            assert!(
+                error
+                    .to_string()
+                    .contains("ambiguous occurrence placement membership")
+            );
+            assert_eq!(topo.num_vertices(), 0);
+            assert_eq!(topo.num_edges(), 0);
+        }
     }
 
     #[test]

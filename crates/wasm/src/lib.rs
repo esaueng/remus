@@ -23,6 +23,7 @@ pub mod shapes;
 mod state;
 mod types;
 
+pub use bindings::arena::KernelDocumentCopy;
 pub use types::FaceEvolutionPayloadV1;
 
 /// Decode and validate a serialized version-1 face-evolution payload.

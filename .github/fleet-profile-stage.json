@@ -1,0 +1,39 @@
+{
+  "source": "05fca2fc1029be782afe41ee6ebbeae812e5e40c",
+  "guard": "05fca2fc1029be782afe41ee6ebbeae812e5e40c",
+  "previous_guard": "c1fe861d46b5e932cc69ccbcff6803cd1a38804b",
+  "workflows": {
+    "benchmark": {
+      "previous": "fleet-benchmark-v2.yml",
+      "staged": "fleet-benchmark-v3.yml"
+    },
+    "fuzz": {
+      "previous": "fleet-fuzz-v3.yml",
+      "staged": "fleet-fuzz-v4.yml"
+    },
+    "gauntlet": {
+      "previous": "fleet-gauntlet-v3.yml",
+      "staged": "fleet-gauntlet-v4.yml"
+    },
+    "mutants-sharded": {
+      "previous": "fleet-mutants-sharded-v3.yml",
+      "staged": "fleet-mutants-sharded-v4.yml"
+    },
+    "mutation-scope": {
+      "previous": "fleet-mutation-scope-v2.yml",
+      "staged": "fleet-mutation-scope-v3.yml"
+    },
+    "osv": {
+      "previous": "fleet-osv-v4.yml",
+      "staged": "fleet-osv-v5.yml"
+    },
+    "wasm-candidate": {
+      "previous": "fleet-wasm-candidate-v3.yml",
+      "staged": "fleet-wasm-candidate-v4.yml"
+    },
+    "wasm-size": {
+      "previous": "fleet-wasm-size-v4.yml",
+      "staged": "fleet-wasm-size-v5.yml"
+    }
+  }
+}

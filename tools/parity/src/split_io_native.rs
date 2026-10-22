@@ -527,24 +527,38 @@ fn crash_observation(cold_init_ms: f64) -> Observation {
     }
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().nth(1).as_deref() == Some("--runtime-identity") {
+        serde_json::to_writer(
+            io::stdout(),
+            &serde_json::json!({
+                "schemaVersion": 1,
+                "binary": "remus-split-io-native",
+                "os": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+                "pointerWidth": usize::BITS,
+            }),
+        )?;
+        return Ok(());
+    }
     let init_started = Instant::now();
     let mut input = String::new();
     if io::stdin().read_to_string(&mut input).is_err() {
-        return;
+        return Ok(());
     }
     let cold_init_ms = init_started.elapsed().as_secs_f64() * 1_000.0;
     let Ok(case) = serde_json::from_str::<Case>(&input) else {
         emit(&crash_observation(cold_init_ms));
-        return;
+        return Ok(());
     };
     if case.schema_version != 1 {
         let mut observation = observe(&case, cold_init_ms);
         observation.outcome = "crash";
         emit(&observation);
-        return;
+        return Ok(());
     }
     let observation = observe(&case, cold_init_ms);
     emit(&observation);
     let _ = Value::Null;
+    Ok(())
 }

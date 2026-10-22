@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { resolve, sep } from 'node:path';
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 function runCapture(command, args, cwd) {
   try {
@@ -16,26 +16,49 @@ function sha256Hex(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+function nonemptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function validateSourceIdentity(source, requireWasmPack = false) {
+  assert.ok(
+    typeof source.sourceRevision === 'string'
+      && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(source.sourceRevision),
+    'provenance source revision must be a full Git object ID',
+  );
+  assert.equal(typeof source.sourceDirty, 'boolean', 'provenance source dirty flag must be boolean');
+  const tools = ['rustc', 'cargo', 'node', ...(requireWasmPack ? ['wasmPack'] : [])];
+  for (const tool of tools) {
+    assert.ok(nonemptyString(source.toolchain?.[tool]), `provenance toolchain is missing ${tool}`);
+  }
+}
+
 export function validateInstalledEntry(entry, installedDir) {
   assert.ok(entry, 'installed package entry is missing');
   assert.ok(installedDir, 'installed package dir is missing');
+  // Resolve filesystem spelling/case and symlinks before checking containment.
+  // path.relative also respects Windows drive and case semantics.
+  let within;
+  try { within = relative(realpathSync(installedDir), realpathSync(entry)); }
+  catch { assert.fail(`package resolved outside install or cannot be resolved: ${entry}`); }
   assert.ok(
-    entry.startsWith(`${installedDir}${sep}`),
+    within !== '' && within !== '..' && !within.startsWith(`..${sep}`) && !isAbsolute(within),
     `package resolved outside install: ${entry}`,
   );
   return true;
 }
 
 export function validateProvenance(provenance) {
-  assert.ok(provenance && typeof provenance === 'object', 'provenance is missing');
+  assert.ok(
+    provenance && typeof provenance === 'object' && !Array.isArray(provenance),
+    'provenance is missing',
+  );
   for (const field of [
     'mode',
     'sourceRevision',
     'sourceDirty',
     'toolchain',
     'buildOptions',
-    'packageVersion',
-    'wasmSha256',
     'installedEntry',
   ]) {
     assert.ok(
@@ -47,17 +70,50 @@ export function validateProvenance(provenance) {
     ['native', 'fresh-tarball', 'committed-package'].includes(provenance.mode),
     `unknown provenance mode: ${provenance.mode}`,
   );
+  validateSourceIdentity(provenance, provenance.mode === 'fresh-tarball');
+  assert.ok(nonemptyString(provenance.installedEntry), 'provenance installed entry is missing');
+  assert.ok(
+    provenance.buildOptions && typeof provenance.buildOptions === 'object'
+      && !Array.isArray(provenance.buildOptions),
+    'provenance build options must be an object',
+  );
+  if (provenance.mode === 'native') {
+    // Native evidence describes a host executable, not an npm/WASM artifact.
+    assert.equal(provenance.target, 'host', 'native build target must be host');
+    for (const field of ['profile', 'binary', 'facade']) {
+      assert.ok(nonemptyString(provenance.buildOptions[field]), `native build options are missing ${field}`);
+    }
+    return true;
+  }
+  assert.ok(nonemptyString(provenance.packageVersion), 'provenance package version is missing');
   // The tarball hash is required for freshly packed artifacts. Committed
   // package directories were not packed by this harness run, so they carry
   // no tarball hash by construction.
   if (provenance.mode === 'fresh-tarball') {
+    for (const field of ['target', 'profile', 'features']) {
+      assert.ok(nonemptyString(provenance.buildOptions[field]), `fresh build options are missing ${field}`);
+    }
     assert.ok(
-      provenance.tarballSha256 && /^[0-9a-f]{64}$/.test(provenance.tarballSha256),
+      ['nodejs', 'web', 'bundler', 'no-modules', 'deno'].includes(provenance.buildOptions.target),
+      'fresh build target is not a wasm-pack target',
+    );
+    assert.equal(provenance.target, provenance.buildOptions.target, 'fresh build target disagrees with artifact target');
+    assert.ok(
+      typeof provenance.tarballSha256 === 'string' && /^[0-9a-f]{64}$/.test(provenance.tarballSha256),
       'fresh-tarball provenance is missing its tarball hash',
+    );
+  } else {
+    // The harness knows its own toolchain, but cannot infer the committed
+    // artifact's original compiler flags or source identity from its bytes.
+    assert.ok(nonemptyString(provenance.buildOptions.origin), 'committed build origin is missing');
+    assert.ok(
+      nonemptyString(provenance.sourceRelationship)
+        && /^unverified\b/.test(provenance.sourceRelationship),
+      'committed source relationship must remain unverified',
     );
   }
   assert.ok(
-    /^[0-9a-f]{64}$/.test(provenance.wasmSha256),
+    typeof provenance.wasmSha256 === 'string' && /^[0-9a-f]{64}$/.test(provenance.wasmSha256),
     'provenance wasm hash is not a SHA-256 hex digest',
   );
   return true;
@@ -67,7 +123,8 @@ export function collectSourceProvenance(repoRoot) {
   const root = resolve(repoRoot);
   const sourceRevision = runCapture('git', ['rev-parse', 'HEAD'], root);
   assert.ok(sourceRevision, 'cannot determine source revision (git rev-parse HEAD)');
-  const status = runCapture('git', ['status', '--porcelain=v1'], root) ?? '';
+  const status = runCapture('git', ['status', '--porcelain=v1'], root);
+  assert.notEqual(status, null, 'cannot determine working tree status (git status --porcelain=v1)');
   const sourceDirty = status.trim().length > 0;
   const toolchain = {
     rustc: runCapture('rustc', ['--version'], root),
@@ -75,7 +132,9 @@ export function collectSourceProvenance(repoRoot) {
     node: runCapture('node', ['--version'], root),
     wasmPack: runCapture('wasm-pack', ['--version'], root),
   };
-  return { sourceRevision, sourceDirty, toolchain };
+  const source = { sourceRevision, sourceDirty, toolchain };
+  validateSourceIdentity(source);
+  return source;
 }
 
 export function readPackageVersion(packageDir) {

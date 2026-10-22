@@ -1,0 +1,335 @@
+{
+  "revision": "913bb9ddd015bf2e6284c60a231eaa5afe7f2106",
+  "files": [
+    {
+      "path": "packages/kernel-adapter/src/opening-recognition.ts",
+      "gitBlob": "5e22923f379819d21a7506bb84a3bfc62051f06b",
+      "sha256": "f1b2e0bf36bfb72b2f85872272e5e8298909a87c021ee3386b8d5fffffea6dbd",
+      "bytes": 28782
+    },
+    {
+      "path": "packages/kernel-adapter/src/planar-emboss.ts",
+      "gitBlob": "590cd9c7bedbd6123b0b5cf3a0abc247c55299e8",
+      "sha256": "ee3dd8b437145c8129ffb1b25196fdbb9fd6e291b8158fdc8e8db0c4b8e213f9",
+      "bytes": 12384
+    },
+    {
+      "path": "packages/kernel-adapter/src/exact-boolean-refusal.ts",
+      "gitBlob": "8df42fe0c7d8c12ad17d8455341b873bb49de716",
+      "sha256": "56fd387051be01d9a14663c84da6f284dad4cf5572086f17319965e679f77558",
+      "bytes": 14463
+    },
+    {
+      "path": "packages/kernel-adapter/src/reconstruction-measurement.ts",
+      "gitBlob": "970a1148409c3fa372f5ea3daa7baae2a1bb953f",
+      "sha256": "b95851bd481ec5e32c1d03ff1fa97daf6d20d24df990028cc7cc27c227acfdab",
+      "bytes": 39451
+    },
+    {
+      "path": "packages/kernel-adapter/src/exact-witnesses.ts",
+      "gitBlob": "e5e2728d4fd16dbea87fde0a305d22a79bc68030",
+      "sha256": "b9076eedc4d85e3c89a61e535b1379a661169d0d960cc63c5e7875d88ebb9d16",
+      "bytes": 17608
+    },
+    {
+      "path": "packages/kernel-adapter/src/exact-math.ts",
+      "gitBlob": "c92874091bdf306cc94205c5fa9c5277dbf30452",
+      "sha256": "05c05cdcce18828e560118c770f4fd9eba7f2877444fe18f058e550b1eceb12c",
+      "bytes": 8451
+    },
+    {
+      "path": "packages/kernel-adapter/src/kernel-refusal.ts",
+      "gitBlob": "5db814ba06072dbb23845bad62e76a3c8c9ac14b",
+      "sha256": "ce04d851ccbed04afff823453d5df76c4610d53a65602fc16c8e992be18026c4",
+      "bytes": 9734
+    },
+    {
+      "path": "packages/kernel-adapter/src/exact-face-distance.ts",
+      "gitBlob": "857cb018bf75902fa1723f3f235f34144d4e3803",
+      "sha256": "d91e67f9d482449c3844f17c127b0eea81606dd825ad7c02b528da2fc740c55f",
+      "bytes": 13385
+    },
+    {
+      "path": "packages/kernel-adapter/src/exact-measure.ts",
+      "gitBlob": "7b975cf460deeee199f14726040567e8ba693df3",
+      "sha256": "26795aba5a9770d8e3956f67277658191a229b9c8bc5cf83013b94d23fadefac",
+      "bytes": 24791
+    },
+    {
+      "path": "packages/kernel-adapter/src/kernel-step-import.ts",
+      "gitBlob": "53b930f754c0c28c87046a316a5b4a4dd7d3bc13",
+      "sha256": "2e186c05c4e342ec02815a8918a651acb58e73890756205e28d4f772a641af86",
+      "bytes": 5985
+    },
+    {
+      "path": "packages/kernel-adapter/src/topology-fingerprint.ts",
+      "gitBlob": "9c7d0b90e88bc3134d03c80ede4920d5c6e13826",
+      "sha256": "6425f6251cf26877914c9e4a7d46ddaefd24156ee1dc07677e376aceb5127320",
+      "bytes": 8086
+    },
+    {
+      "path": "packages/kernel-adapter/src/exact-brep.ts",
+      "gitBlob": "886983f1eaa2a694ef09945add8aaff842b68893",
+      "sha256": "b36afb51947c901f89504d21d69cf05eb1fb28131ef182d362b82e28f6635eed",
+      "bytes": 19907
+    },
+    {
+      "path": "packages/kernel-adapter/src/topology-lineage.ts",
+      "gitBlob": "192a58b52c6c062c0cd2db8c3c2f004fa66858cb",
+      "sha256": "5c36ff07b12379ceedc71ed406b394b979634cad7ba23569dffe1849c6a23411",
+      "bytes": 41222
+    },
+    {
+      "path": "packages/kernel-adapter/src/exact-sync-memo.ts",
+      "gitBlob": "2567a7531b75c0c0061b4316604509affe9e81a8",
+      "sha256": "18137243a82741945337b3f82563c93aa99f30a12a6e5b0d1b8276aa502897ed",
+      "bytes": 11125
+    },
+    {
+      "path": "packages/document-core/src/index.ts",
+      "gitBlob": "4a2a9ab33397ba85c89c30fd912191c405226899",
+      "sha256": "d87da0c0cd7a13f68e3c29827446677bba532d1ab1096b804d14e8373a49c89f",
+      "bytes": 160596
+    },
+    {
+      "path": "packages/geometry/src/index.ts",
+      "gitBlob": "192392d13f0933b5b25140dcfe3f941061103cc4",
+      "sha256": "0e450abbf702f9910a6a915ec505a5b83d94fc285feada34426a7bedb2ae3491",
+      "bytes": 16328
+    },
+    {
+      "path": "packages/kernel-adapter/src/exact-face-plane-frame.ts",
+      "gitBlob": "e80f923c62820bcd391413039dedb5a929dac907",
+      "sha256": "e5c4a924958f8b17c2568dd02ed97150b1d956790b73defda52b74b06f3144e1",
+      "bytes": 2597
+    },
+    {
+      "path": "packages/kernel-adapter/src/exact-shape-utils.ts",
+      "gitBlob": "187eaa83a1a1783f987f7d90da0dd21c6daadf4d",
+      "sha256": "bd40bcd88b3ee5196bc06ee3a6cd9489c9afb68213ad62c4d43f7a33a1a3c12d",
+      "bytes": 14461
+    },
+    {
+      "path": "packages/kernel-adapter/src/kernel-validation.ts",
+      "gitBlob": "3ee83715c0d477f77f9fe474fad7d9fe8be003ed",
+      "sha256": "0ea361e75ecc104be63b768c348d02d553d69b25bd463e0bd72bd2f161b6160c",
+      "bytes": 12287
+    },
+    {
+      "path": "packages/kernel-adapter/src/remus-lineage.ts",
+      "gitBlob": "f9e59b62f5dd841a4a3e8c0bf7f0b2ccc55f6b02",
+      "sha256": "b116afa91ecd3d006bd9842fa7604c33dc70886d71fa709375fc125b82724c6c",
+      "bytes": 85901
+    },
+    {
+      "path": "packages/kernel-adapter/src/exact-lineage-builders.ts",
+      "gitBlob": "4db797f1e4de70ba985be258d0f7e8c668b8534b",
+      "sha256": "378be255ec6f37889429a5d790cd3f2da4c622287de7db8cd3d680a2ac8b2d90",
+      "bytes": 39632
+    },
+    {
+      "path": "packages/kernel-adapter/src/exact-face-centroid.ts",
+      "gitBlob": "1f3e912f3c38ff7c831a6e71902fc1059e171091",
+      "sha256": "f79ab6b69e5f81658fbeb431bbc2f6c1c37f9d7b48a7d935f474fc06456a378d",
+      "bytes": 10657
+    },
+    {
+      "path": "packages/document-core/src/feature-order.ts",
+      "gitBlob": "611690373650278bf49bc73298b2581e83e959b8",
+      "sha256": "3e92f8f12b0b4a9549756e12f36fed3b03a49caab82c0e98ee949a39e92945dc",
+      "bytes": 774
+    },
+    {
+      "path": "packages/document-core/src/document-projection.ts",
+      "gitBlob": "4d3c4820f97b512146b1a71661d847a2017066a4",
+      "sha256": "cfde60aa8a42e9a7a4a7f8de644236a5f2660e3abfe67a57edb34a86e1a82cf6",
+      "bytes": 742
+    },
+    {
+      "path": "packages/document-core/src/legacy-bracket.ts",
+      "gitBlob": "2387bc52b3eaa49a0d9447dd60e54952581e4e98",
+      "sha256": "f0dae47a7a3a55a4602dfd346895f2b1ed4e7e5ac3b6aa7137f566c8814d63be",
+      "bytes": 8385
+    },
+    {
+      "path": "packages/document-core/src/parameter-expressions.ts",
+      "gitBlob": "9b4f8617bc38ff0a561ceab950968dcf4a830e25",
+      "sha256": "d5f6af2bfa3d0950a5c10f4395718a2ed05df7ddd984d8da95a346e86863b41c",
+      "bytes": 6231
+    },
+    {
+      "path": "packages/document-core/src/imported-source-artifacts.ts",
+      "gitBlob": "e888ee2ea6787052acf83a56777af700486f8150",
+      "sha256": "8b550bba3acea94745c07ced1427aa655f1b472df204a12bb2024c60d8d2bd75",
+      "bytes": 1519
+    },
+    {
+      "path": "packages/document-core/src/sketch-reference-dimensions.ts",
+      "gitBlob": "281dc780d2ea18186bb3bd94b13f14fa04fd6fe5",
+      "sha256": "c9e1295833a2906ec2da787a132ba89c506a895cf338cb43f409050fbc2aac72",
+      "bytes": 5975
+    },
+    {
+      "path": "packages/document-core/src/imported-source-placement.ts",
+      "gitBlob": "4a15b86c5b0529ea23956d57cc825c9e48c3e21c",
+      "sha256": "135064f10a7587ac0b0d5250bfd17209a9b9a144e22e611b9f00888a5ac3b22c",
+      "bytes": 2459
+    },
+    {
+      "path": "packages/document-core/src/document-history.ts",
+      "gitBlob": "f5d3283967f9ea6c5e80a4e769adbd565b037c91",
+      "sha256": "6a226ee7db1c02a94a7938ce02995f7d7d1b8944aa1ebd44c3a800add76e07d5",
+      "bytes": 12851
+    },
+    {
+      "path": "packages/shared/src/index.ts",
+      "gitBlob": "c11ae5f44a68bdc5bee4b076cbe62e1a2be737a0",
+      "sha256": "877ff2efdbfeb7937b006537a7416fb3a8c14883742cc453150ccb21ad6b0df1",
+      "bytes": 129395
+    },
+    {
+      "path": "packages/document-core/src/imported-payload-key.ts",
+      "gitBlob": "ec10d72c5eba3259b78beb0fcb4e13ac413fff72",
+      "sha256": "f2ed3b3e08ccf3ced8a3fc9706b9ed6846dc1dec361d453c817d747047c224cf",
+      "bytes": 3937
+    },
+    {
+      "path": "packages/geometry/src/tolerance.ts",
+      "gitBlob": "2a0af9d39e7992e106c58fb6e8e81c08307882d2",
+      "sha256": "7136216031e1dee58fa1863be6df2d3edee2695f83a43460be50f53e0619ab6a",
+      "bytes": 541
+    },
+    {
+      "path": "packages/geometry/src/regions.ts",
+      "gitBlob": "2498e1f7c3d98483c69bcb4c6fd711c4da5ea9d6",
+      "sha256": "25ebe40249bbfe38a45fc4c7f13bdba739889dcfb08edf49456789db243b59ee",
+      "bytes": 64848
+    },
+    {
+      "path": "packages/geometry/src/text/index.ts",
+      "gitBlob": "62a2a9fedba2e3f444c9ee711a42aee9c587fa45",
+      "sha256": "22658004ed3d9312e7af665cc1aa3e3216ddb56238127b501e11d86c8c9789b8",
+      "bytes": 2227
+    },
+    {
+      "path": "packages/shared/src/workspace-resume.ts",
+      "gitBlob": "91acc2384ea0c1eaec8a372de159e8836033711e",
+      "sha256": "c40e0fac65a943a34d4523cb6b4545908d7d9e39707d9bbe268b8e2437db7a63",
+      "bytes": 3881
+    },
+    {
+      "path": "packages/shared/src/document-validation.ts",
+      "gitBlob": "86ab9a802d2b6fb0a011058cb55a5aa0c0377bfd",
+      "sha256": "1fbcb160ca328b878556bc2329304617acdf9d5cfc95afef0720dfeff7ae7203",
+      "bytes": 4585
+    },
+    {
+      "path": "packages/shared/src/document-history.ts",
+      "gitBlob": "dfded38d0c5e9fd140fc9368760dba2444067e93",
+      "sha256": "06cbea17bdb717ff8950a570cc7b7a82042e8e82a298f31b5624c189ec6bf6ee",
+      "bytes": 6295
+    },
+    {
+      "path": "packages/shared/src/textLimits.ts",
+      "gitBlob": "1080a3b88b5782b77ef9d02f07ac8cd6b0b5a54a",
+      "sha256": "8108f9cb42cb795627feff6ebaaaf5950f1770c9237e0b12bf1e773e21d75fd9",
+      "bytes": 6191
+    },
+    {
+      "path": "packages/shared/src/imported-step-source.ts",
+      "gitBlob": "17205e649c1f28a4e0fb388ebe9f8b3ff6ae2c3e",
+      "sha256": "0985842dc05e38b79b8d7d1ec4325d36383712de65e219d68c31c0b18fefa398",
+      "bytes": 1588
+    },
+    {
+      "path": "packages/shared/src/imported-mesh-payload.ts",
+      "gitBlob": "7aecd379b5bcd77c14acdbf769abb90892df1e97",
+      "sha256": "9c68de354f4634362dfcd5bae7a1695af98408786432fb6894942be5025de644",
+      "bytes": 6867
+    },
+    {
+      "path": "packages/shared/src/sketch-reference-dimensions.ts",
+      "gitBlob": "c733ab2ad76daee1aca37b015842a51e0a11998f",
+      "sha256": "dffabed0527f1f3e77ceeddc6ffb38b5df33c83ac9dfe3a8ae240e314034b55f",
+      "bytes": 25423
+    },
+    {
+      "path": "packages/shared/src/mass-density.ts",
+      "gitBlob": "c9b572cc80f3a6aa6099f6232e690f58b54cec75",
+      "sha256": "be28bacdf388d1d5f2f25aafffcdf8b4082988c6dcd3b37b24e946a6934ee0ab",
+      "bytes": 8212
+    },
+    {
+      "path": "packages/geometry/src/text/sketchProfiles.ts",
+      "gitBlob": "a95b7e51ad40176d572bdd6eef696118f74b8fdc",
+      "sha256": "fff9e2ed5b3e1286f8b9a61ec3d48d12e624880bf2c8201655483f0a5df15491",
+      "bytes": 13427
+    },
+    {
+      "path": "packages/geometry/src/text/registry.ts",
+      "gitBlob": "3a3773f3ba7ab29e18ed78779bfd75663ef1cf31",
+      "sha256": "94e9689aef7a221d0c2cd37a9f854da92947eba036e74fab1e1827f311900a49",
+      "bytes": 5574
+    },
+    {
+      "path": "packages/geometry/src/text/profiles.ts",
+      "gitBlob": "7edcababdcc8a05dddc93ed91dbdfc4dbb488a05",
+      "sha256": "78e6396b74551ed99c564a3318cd3c22826b54819a7f9b5e5e0dec14a1878de9",
+      "bytes": 5813
+    },
+    {
+      "path": "packages/geometry/src/text/fontProvider.ts",
+      "gitBlob": "a277a47cdbd6ec65d7b6b17de34f4c98c4da0c72",
+      "sha256": "a90cdbda435844ff9167df3756c50be8641df4d66943ea49610abcf50ee0c397",
+      "bytes": 1384
+    },
+    {
+      "path": "packages/geometry/src/text/polygonUnion.ts",
+      "gitBlob": "099218b5c3172b1ab42d85aeb11a7e410b43ffd0",
+      "sha256": "9118ca4b5dfcb7b7f0d2401142f0686e40de6a0d48bb07c5167f87cb067b4b46",
+      "bytes": 13244
+    },
+    {
+      "path": "packages/geometry/src/text/loops.ts",
+      "gitBlob": "e3d880a5c375ea667bc87f8dabdef2f84392e040",
+      "sha256": "aabd6c5c8ea0e63656cbd2bea32465a3a8bbfd8502763f471a862b7cd9947171",
+      "bytes": 11426
+    },
+    {
+      "path": "packages/geometry/src/text/layout.ts",
+      "gitBlob": "f70530a45b91f63b6a750a5b76499f4a4d494d4a",
+      "sha256": "258324b823869bbf8d4ff22a4c4868a223681529879af35205ce1ccdb0e8f491",
+      "bytes": 4127
+    },
+    {
+      "path": "packages/geometry/src/text/types.ts",
+      "gitBlob": "b748c33b579ce6241acd295006922ab93b360d84",
+      "sha256": "3fb7da29add99119aa84933ec619e725ad6c0dae5c3baffcfba32c6ed9df3a12",
+      "bytes": 6512
+    },
+    {
+      "path": "packages/geometry/src/text/budget.ts",
+      "gitBlob": "d59b1f524b72fab908ef5058068fdb2286b3242e",
+      "sha256": "4f09a1600e83c6be825abdfb5470349fd68fe1df42de21b76547fd63f8a076cf",
+      "bytes": 257
+    },
+    {
+      "path": "packages/geometry/src/text/contours.ts",
+      "gitBlob": "5f4647720c080968724cd25b60d2b8b484075355",
+      "sha256": "85584fa25b713a12ac48a075ef709c2a03faf804c723675229409b5ee80d3e30",
+      "bytes": 5860
+    },
+    {
+      "path": "packages/geometry/src/text/nesting.ts",
+      "gitBlob": "bab76a1139c7d6862f069e75d9db9fcf90ad88d6",
+      "sha256": "3781e9b098dbe3761e27e5a56db1e1623b61b59922731d1b9b1a90a64e9a596d",
+      "bytes": 6543
+    },
+    {
+      "path": "packages/geometry/src/text/overlap.ts",
+      "gitBlob": "30fb6e7b6005c58ea8c0a7e995b892649ee39e6c",
+      "sha256": "685022058af496a77ab445347777fd4da973c5969d7d1ab7ff44bf401d5b4a34",
+      "bytes": 13733
+    }
+  ]
+}
