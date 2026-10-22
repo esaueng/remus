@@ -109,6 +109,7 @@ struct ThickSolidResult {
 ///
 /// Returns [`OffsetError`] if the offset collapses the solid, any
 /// intersection fails, or the result cannot be assembled into a valid solid.
+/// Any failure restores the live input topology; temporary handles stay retired.
 pub fn offset_solid(
     topo: &mut Topology,
     solid: SolidId,
@@ -172,6 +173,7 @@ pub fn offset_solid_with_face_map(
 ///
 /// Returns [`OffsetError`] if the offset collapses the solid, any
 /// intersection fails, or the result cannot be assembled into a valid solid.
+/// Any failure restores live topology while keeping temporary handles retired.
 #[allow(clippy::too_many_lines)]
 pub fn thick_solid(
     topo: &mut Topology,
@@ -180,7 +182,9 @@ pub fn thick_solid(
     exclude: &[FaceId],
     options: OffsetOptions,
 ) -> Result<SolidId, OffsetError> {
-    Ok(thick_solid_impl(topo, solid, distance, exclude, options)?.solid)
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        Ok(thick_solid_impl(topo, solid, distance, exclude, options)?.solid)
+    })
 }
 
 #[allow(clippy::too_many_lines)]

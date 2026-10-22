@@ -14,6 +14,9 @@ fn map_offset_error(e: OffsetError) -> OperationsError {
     match e {
         OffsetError::Topology(t) => OperationsError::Topology(t),
         OffsetError::Math(m) => OperationsError::Math(m),
+        // Construction has already accepted the arguments. Preserve the
+        // producer's typed assembly failure instead of blaming caller input.
+        error @ OffsetError::AssemblyFailed { .. } => OperationsError::Offset(error),
 
         other => OperationsError::InvalidInput {
             reason: format!("{other}"),

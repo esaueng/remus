@@ -23,6 +23,7 @@ import { runVariableFilletInputPackaged } from './variable-fillet-input-packaged
 import { runOpseqF5Packaged } from './opseq-f5-packaged.mjs';
 import { runOpseqF6Packaged } from './opseq-f6-packaged.mjs';
 import { runOpseqOffsetWallPackaged } from './opseq-offset-wall-packaged.mjs';
+import { runOpseqOffsetRefusalPackaged } from './opseq-offset-refusal-packaged.mjs';
 import { runOpseqF10Packaged } from './opseq-f10-packaged.mjs';
 import { runOpseqF13Packaged } from './opseq-f13-packaged.mjs';
 import { runWasmRayTorusPackaged } from './wasm-ray-torus-packaged.mjs';
@@ -1743,6 +1744,7 @@ runKernelCorrectnessPackaged({ BrepKernel });
 runOpseqF5Packaged({ BrepKernel });
 runOpseqF6Packaged({ BrepKernel });
 runOpseqOffsetWallPackaged({ BrepKernel });
+runOpseqOffsetRefusalPackaged({ BrepKernel });
 runOpseqF10Packaged({ BrepKernel });
 runOpseqF13Packaged({ BrepKernel });
 

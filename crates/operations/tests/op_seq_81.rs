@@ -126,7 +126,7 @@
     clippy::struct_excessive_bools
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_6, PI};
 use std::time::Instant;
 
@@ -354,10 +354,10 @@ fn get_u32(args: &Value, key: &str) -> Option<u32> {
 ///   the broader generator family stays excluded pending wider qualification.
 ///   Placed variants and the reverse order stay in generation as tripwires.
 /// - X6: an inward (`distance < 0.0`) offset of a boolean result
-///   (`finding_inward_offset_of_fuse_untyped`, F7: the offset engine's
-///   wire-loop assembly failure surfaces as `InvalidInput` instead of a
-///   typed refusal — offset-lane affinity). Outward offsets of boolean
-///   results stay in generation as tripwires.
+///   The literal F7 and neighboring prism cells now refuse with the
+///   offset producer's typed assembly failure and restore live topology.
+///   Broader inward boolean-offset generation remains unqualified;
+///   outward offsets stay in generation as tripwires.
 /// - X7: an unmoved prim sphere–box FUSE pair in either operand order.
 ///   The literal F8 union is independently qualified and active below;
 ///   the broader generated family remains excluded pending qualification.
@@ -394,8 +394,8 @@ fn get_u32(args: &Value, key: &str) -> Option<u32> {
 /// - X8: an offset of a cylinder or cone — prim or copy, either sign.
 ///   Literal F9/F14/F15 and neighboring signed primitive cells now pass
 ///   independent native geometry and batch checks. The broad exclusion
-///   stays until the original 16-cell matrices and the remaining mistyped
-///   wire-loop refusals are requalified; box/sphere/torus offsets mesh
+///   stays until the original 16-cell matrices and wider wire-loop
+///   refusal outcomes are requalified; box/sphere/torus offsets mesh
 ///   watertight. Offsets of boxes, spheres, tori, outward offsets of
 ///   boolean results, and composed results stay in generation as
 ///   tripwires.
@@ -1085,11 +1085,31 @@ fn classify_refusal(e: &OperationsError) -> RefusalClass {
     }
 }
 
+/// Classify an offset error. Offset wire-loop assembly failures stay
+/// untyped (the offsets kept in generation are tripwires), except in the
+/// retained X6 cell — an inward offset of a boolean result, finding F7 —
+/// whose typed `Offset(AssemblyFailed)` refusal is the qualified answer.
+fn classify_offset_refusal(e: &OperationsError, retained_x6: bool) -> RefusalClass {
+    if retained_x6
+        && matches!(
+            e,
+            OperationsError::Offset(remus_offset::OffsetError::AssemblyFailed { .. })
+        )
+    {
+        RefusalClass::Refused
+    } else {
+        classify_refusal(e)
+    }
+}
+
 // ── Execution ──────────────────────────────────────────────────────
 
 struct ExecState<'a> {
     topo: Topology,
     live: BTreeMap<u32, LiveInfo>,
+    /// Live handles produced by a boolean, carried through copies, mirrors
+    /// and in-place transforms, not through offsets (the X6 cell).
+    from_bool: BTreeSet<u32>,
     limits: &'a SeqLimits,
     fault: Fault,
     start: Instant,
@@ -1104,6 +1124,7 @@ impl<'a> ExecState<'a> {
         Self {
             topo: Topology::new(),
             live: BTreeMap::new(),
+            from_bool: BTreeSet::new(),
             limits,
             fault,
             start: Instant::now(),
@@ -2289,6 +2310,9 @@ fn exec_one(st: &mut ExecState<'_>, index: usize, op: &Value) -> bool {
                         note(st, index, "mirror", SeqKind::Incorrect, oracle, detail);
                     } else {
                         st.live.insert(fresh.index() as u32, exact0);
+                        if st.from_bool.contains(&handle) {
+                            st.from_bool.insert(fresh.index() as u32);
+                        }
                         note(
                             st,
                             index,
@@ -2435,6 +2459,9 @@ fn exec_one(st: &mut ExecState<'_>, index: usize, op: &Value) -> bool {
                             Some(_) => None,
                         };
                         st.live.insert(fresh.index() as u32, exact);
+                        if st.from_bool.contains(&handle) {
+                            st.from_bool.insert(fresh.index() as u32);
+                        }
                         note(
                             st,
                             index,
@@ -2501,7 +2528,10 @@ fn exec_one(st: &mut ExecState<'_>, index: usize, op: &Value) -> bool {
             let solids_before = st.topo.num_solids();
             let produced =
                 match remus_operations::offset_v2::offset_solid_v2(&mut st.topo, solid, distance) {
-                    Err(e) => match classify_refusal(&e) {
+                    Err(e) => match classify_offset_refusal(
+                        &e,
+                        distance < 0.0 && st.from_bool.contains(&handle),
+                    ) {
                         RefusalClass::Empty => {
                             note(
                                 st,
@@ -2941,6 +2971,7 @@ fn exec_one(st: &mut ExecState<'_>, index: usize, op: &Value) -> bool {
                 st.live.remove(&hb);
                 if let Some(handle) = main_solid.map(|s| s.index() as u32) {
                     st.live.insert(handle, exact);
+                    st.from_bool.insert(handle);
                 }
             }
             // A boolean that yields no solid breaks the chain; one that
@@ -5920,27 +5951,17 @@ fn finding_sphere_minus_box_open_mesh() {
     );
 }
 
-/// 8.1 finding F7 (retained, kernel untouched): an inward offset (-0.25)
-/// of a plain unmoved box–cylinder fuse fails inside the offset engine's
-/// wire-loop assembly (`no unvisited edge from vertex 58`) and the failure
-/// surfaces as `InvalidInput` — a caller-input code for an internal
-/// assembly failure. The boolean prefix is exactly right (closed forms π
-/// for the cylinder and 1.0 for the box, full battery green), so the
-/// defect is wholly inside the offset lane: either the loop walk must close, or
-/// the failure must refuse typed (`Unsupported` and friends) instead of
-/// wearing `InvalidInput`. Owns exclusion cell X6 (inward offsets of
-/// boolean results steer into placements until this closes).
-///
-/// Minimized from CI-matrix seed `0xC10B` (7 ops shrink to 4; dims simplify
-/// to unit cylinder/box, the pre-offset rotation deletes, the trailing
-/// operations cascade away).
-///
-/// Acceptance: any verdict EXCEPT `Incorrect`/`Crash`/`Timeout`
-/// (`Approximate` success or typed `Refused` both close it — the harness
-/// never demands success, only an honest answer). No geometry fix in this
-/// harness PR.
+/// F7 regression: the inward unit box-cylinder-fuse offset reaches an
+/// assembly limitation and refuses with `Offset(AssemblyFailed)`. The
+/// original wildcard adapter blamed caller input and the lower native
+/// entry left temporary vertices/edges live. Both native levels now restore
+/// the pre-call model while preserving retired handle high-water marks.
+/// Neighboring widths/distances, rigid placements, scale and all public
+/// execution routes are pinned in `regress_opseq_offset_refusal.rs` and
+/// `scripts/opseq-offset-refusal-packaged.mjs`. General inward offsets of
+/// boolean results remain behind X6 pending wider qualification.
+/// Minimized from CI-matrix seed `0xC10B` (7 ops shrink to 4).
 #[test]
-#[ignore = "8.1 finding F7: inward offset of a box-cylinder fuse dies in the wire-loop walk and mistypes as InvalidInput; route to the offset lane"]
 fn finding_inward_offset_of_fuse_untyped() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"height":1.0,"radius":1.0},"op":"makeCylinder"},{"args":{"depth":1.0,"height":1.0,"width":1.0},"op":"makeBox"},{"args":{"exactOnly":true,"operation":"fuse","solidA":1,"solidB":0},"op":"booleanWithQuality"},{"args":{"distance":-0.25,"solid":2},"op":"offsetSolidV2"}]"#,
@@ -5960,6 +5981,54 @@ fn finding_inward_offset_of_fuse_untyped() {
             SeqKind::ExactOk | SeqKind::Approximate | SeqKind::Empty | SeqKind::Refused
         ),
         "inward offset must succeed (exactly or approximately) or refuse typed, got {} / {}",
+        report.kind.label(),
+        report.oracle
+    );
+}
+
+/// The F7 allowance is confined to the retained X6 cell. Elsewhere an
+/// offset wire-loop assembly failure stays untyped, so the offsets kept in
+/// generation as tripwires (boxes, spheres, tori, outward offsets of
+/// boolean results, composed results) still fail the campaign on one.
+#[test]
+fn offset_assembly_failure_is_refused_only_in_the_x6_cell() {
+    let assembly = OperationsError::Offset(remus_offset::OffsetError::AssemblyFailed {
+        reason: "no unvisited edge from vertex 58".to_owned(),
+    });
+    assert!(matches!(classify_refusal(&assembly), RefusalClass::Untyped));
+    assert!(matches!(
+        classify_offset_refusal(&assembly, false),
+        RefusalClass::Untyped
+    ));
+    assert!(matches!(
+        classify_offset_refusal(&assembly, true),
+        RefusalClass::Refused
+    ));
+    // The cell admits only the assembly refusal, not a mistyped error.
+    let invalid = OperationsError::InvalidInput {
+        reason: "assembly failed".to_owned(),
+    };
+    assert!(matches!(
+        classify_offset_refusal(&invalid, true),
+        RefusalClass::Untyped
+    ));
+}
+
+/// Boolean provenance survives a copy, as the generator's `from_bool` does:
+/// an inward offset of a copied F7 fuse is still the retained X6 cell.
+#[test]
+fn copied_fuse_inward_offset_stays_in_the_x6_cell() {
+    let ops: Vec<Value> = serde_json::from_str(
+        r#"[{"args":{"height":1.0,"radius":1.0},"op":"makeCylinder"},{"args":{"depth":1.0,"height":1.0,"width":1.0},"op":"makeBox"},{"args":{"exactOnly":true,"operation":"fuse","solidA":1,"solidB":0},"op":"booleanWithQuality"},{"args":{"solid":2},"op":"copySolid"},{"args":{"distance":-0.25,"solid":3},"op":"offsetSolidV2"}]"#,
+    )
+    .expect("copied finding bundle parses");
+    let report = execute_sequence(&ops, &SeqLimits::default(), Fault::None);
+    assert!(
+        matches!(
+            report.kind,
+            SeqKind::ExactOk | SeqKind::Approximate | SeqKind::Empty | SeqKind::Refused
+        ),
+        "copied inward offset must succeed or refuse typed, got {} / {}",
         report.kind.label(),
         report.oracle
     );
