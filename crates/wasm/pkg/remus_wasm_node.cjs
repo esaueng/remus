@@ -2365,6 +2365,8 @@ class BrepKernel {
      *
      * Also accepts brepjs-style fields: `startRadius`/`endRadius` as aliases for `start`/`end`.
      * When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
+     * Missing or `null` numeric fields retain their defaults. Every other supplied
+     * numeric field must be a number, including aliases shadowed by `start`/`end`.
      * A supplied `law` must be `"constant"`, `"linear"`, or `"scurve"`.
      *
      * Returns a new solid handle.
