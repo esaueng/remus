@@ -153,6 +153,52 @@ restrictions and keep Jane's shared scheduling label withheld during the
 transition. The combined workflow must retain both queue authorization and the
 new memory contract; activating either legacy profile alone is insufficient.
 
+### Auxiliary profile stage
+
+The next auxiliary versions replace only the shared guard pin and the Jane
+runner selector. `.github/fleet-profile-stage.json` records their immutable
+source, landed guard commit and filenames. Required Repository Policy runs
+the complete delta, main-ancestry and active-byte regressions through
+`scripts/test-fleet-runner-policy.py`; every existing command, permission,
+publisher boundary, toolchain and hosted fallback remains unchanged.
+
+| Family | Compatible helper |
+| --- | --- |
+| Benchmark | `fleet-benchmark-v3.yml` |
+| Fuzz | `fleet-fuzz-v4.yml` |
+| Gauntlet | `fleet-gauntlet-v4.yml` |
+| Sharded mutants | `fleet-mutants-sharded-v4.yml` |
+| Mutation scope | `fleet-mutation-scope-v3.yml` |
+| OSV | `fleet-osv-v5.yml` |
+| WASM candidate | `fleet-wasm-candidate-v4.yml` |
+| WASM size report | `fleet-wasm-size-v5.yml` |
+
+This stage leaves the manifest, active files and callers unchanged. Once it
+lands, the combined activation pins all eight helpers to its actual squash
+commit and v6 to #1260's actual squash commit, switches the manifest and
+retires the previous files. Append each exact filename and landed SHA to the
+existing `ci-trusted-main` allowlist before Jane execution. Composite-action
+pins need no separate runner-group entry. Preserve the existing
+`trusted-vps.yml@refs/heads/main` diagnostic entry and every repository and
+workflow restriction.
+
+After the controller mapping, exact allowlist and per-slot guards are verified,
+add `ci-server-jane-5gb` to `ci-server-jane-1`, `ci-server-jane-2` and
+`ci-server-jane-3`, retaining their individual slot labels and default platform
+labels. Keep shared `ci-server-jane` and `ci-remus-light` labels absent from
+Jane's slots, and keep `CI_FLEET_LIGHT_POOL_ENABLED=false` during this rollout.
+The controller target remains `ci-server-jane`; the profile label does not
+replace the target. New queue candidates use v6 only after the activation
+caller reaches main. Existing PRs must pick up that caller, and jobs already
+assigned retain their runner.
+
+The profile label is shared with OpenZCAD. If it is added for OpenZCAD before
+this combined activation reaches Remus main, keep Remus
+`CI_FLEET_ENABLED=false` so legacy callers remain hosted. The simplest
+coordinated order is to merge both compatible activations with hosted CI,
+then add the shared profile label and enable fleet routing. Do not let the
+controller select Jane for the old Remus manifest during the transition.
+
 ## Updating immutable workflow dependencies
 
 `.github/fleet-workflows.json` names the active file for each workflow family.

@@ -5,9 +5,11 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import unittest
 
 from fleet_workflows import workflow_path
+import test_jane_helper_workflows
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ('.github/actions/fleet-guard/action.yml', '.github/workflows/trusted-vps.yml',
@@ -15,6 +17,21 @@ SOURCES = ('.github/actions/fleet-guard/action.yml', '.github/workflows/trusted-
 
 
 class FleetRunnerPolicy(unittest.TestCase):
+    def test_required_entrypoint_discovers_helper_stage_regressions(self):
+        loader = unittest.TestLoader()
+        expected = {case.id() for case in loader.loadTestsFromTestCase(
+            test_jane_helper_workflows.JaneHelperWorkflowTests)}
+
+        def ids(suite):
+            for case in suite:
+                if isinstance(case, unittest.TestSuite):
+                    yield from ids(case)
+                else:
+                    yield case.id()
+
+        self.assertTrue(expected)
+        self.assertLessEqual(expected, set(ids(loader.loadTestsFromModule(sys.modules[__name__]))))
+
     def test_only_provisioned_runner_names_pass(self):
         for workflow in SOURCES:
             text = (ROOT / workflow).read_text()
@@ -87,6 +104,12 @@ class FleetRunnerPolicy(unittest.TestCase):
                  + '\n' + align + '; printf "%s" "$CI_MEMORY"'],
                 env=dict(os.environ, RUNNER_NAME='ci-server-jane-3'), text=True)
             self.assertEqual(result, '4999999488')
+
+
+def load_tests(loader, tests, pattern):
+    # The immutable Repository Policy job invokes this required entrypoint.
+    tests.addTests(loader.loadTestsFromModule(test_jane_helper_workflows, pattern=pattern))
+    return tests
 
 
 if __name__ == '__main__':
