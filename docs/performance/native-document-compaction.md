@@ -59,3 +59,54 @@ handles needs a separate migration strategy. Assemblies, comp-solids, sketches,
 checkpoints, prepared moves, per-session caches and browser worker ownership are
 outside this slice. Neither process RSS nor total live memory is capped by the
 entity/reference budget. Old and new topologies coexist during the copy.
+
+## Explicit WASM ownership boundary
+
+Tier: core. The additive `BrepKernel.copyDocument(solids, sheets, wires,
+maxEntities?)` binding applies the same selected-document copy inside the
+module. `maxEntities` may lower the default entity/reference limit. It returns
+a `KernelDocumentCopy` with ordered `solids`, `sheets` and `wires` getters and
+a single-use `takeKernel()` method. No compound roots or arbitrary subentity
+remaps are exposed. The operation is direct-only; JSON batches cannot return
+ownership of a new kernel object.
+
+```js
+const transfer = source.copyDocument([body], [], []);
+const roots = Array.from(transfer.solids);
+const next = transfer.takeKernel();
+transfer.free(); // next remains independently owned
+// Use roots only with next; source handles and checkpoints stay with source.
+try {
+  const volume = next.volume(roots[0], 0.02);
+  // Rebuild any application selections and preparation in the new owner.
+} finally {
+  next.free();
+}
+```
+
+The old kernel retains its complete session until explicitly freed. The new
+one contains only the selected document and lineage, with no checkpoint,
+assembly, sketch, GCS or prepared-move state. Old numeric handles must stay
+with the old owner; equal numbers across owners do not imply identity, and
+the existing u32 API cannot detect foreign handles. A poisoned native kernel
+refuses copying. Dropping an untaken transfer drops its copied topology.
+Module-wide bounded content caches retain their previous configuration and
+lifetime; copying does not reset or re-enable them.
+
+The packaged contract in `scripts/document-copy-packaged.mjs` exercises
+three physical scales, mixed roots and aliases, exact Hammer Holder document
+bytes, refusal/state preservation, once-only transfer, old checkpoint
+restoration and repeated owner replacement. Its allocate/restore loop is a
+lifecycle diagnostic, not a face-edit or presentation benchmark. Freeing an
+old kernel releases its owned payload to the module allocator; linear memory
+need not shrink, and both owners coexist during copying. Browser worker
+adoption, undo migration and whole-session reclamation remain open.
+
+The [WASM session observations](evidence/wasm-document-copy/session.json)
+record 20 copy cycles after 25 allocation/restore ticks each: 1,728 accounted
+slots before a copy (including the retained checkpoint), 64 slots and 7,824
+estimated current-topology bytes afterwards on every cycle. Module linear
+memory stayed at 4,259,840 bytes during this diagnostic. This is an observed
+allocator high-water plateau for the box lifecycle; it is not a portable
+memory guarantee, a shrink result, or an imported face-edit workload. The
+record includes exact candidate package, driver and runtime source hashes.

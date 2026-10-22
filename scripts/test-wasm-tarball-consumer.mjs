@@ -32,6 +32,7 @@ import { runSecurityResourceRegressions } from './security-resource-packaged.mjs
 import { runPackageQueueWitness } from './queue-contracts-packaged.mjs';
 import { runPointedConeCutPackaged } from './pointed-cone-cut-packaged.mjs';
 import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
+import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
 import { runGridPatternPackaged } from './grid-pattern-packaged.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -101,6 +102,7 @@ try {
   runPackageQueueWitness({ ...packageExports, ...ioExports });
   runPointedConeCutPackaged(packageExports);
   runOpseqF3Packaged(packageExports);
+  runDocumentCopyPackaged({ ...packageExports, ...ioExports });
   runOpenZcadConsumerRegressions({ ...packageExports, ...ioExports });
   runGridPatternPackaged(packageExports);
   runProjectCurvePackaged(packageExports);

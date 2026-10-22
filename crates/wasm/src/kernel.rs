@@ -87,8 +87,16 @@ impl BrepKernel {
         remus_algo::wire_area_memo::enable_thread_wire_area_memo();
         remus_algo::ray_geom_memo::enable_thread_ray_geom_memo();
         remus_operations::query::enable_thread_crossing_memo();
+        Self::from_document_topology(Topology::new())
+    }
+}
+
+impl BrepKernel {
+    /// Fresh session stores around an independently owned document. Unlike
+    /// the public constructor, document copies preserve module cache settings.
+    pub(crate) fn from_document_topology(topology: Topology) -> Self {
         Self {
-            topo: Rc::new(Topology::new()),
+            topo: Rc::new(topology),
             assemblies: HandleStore::default(),
             sketches: HandleStore::default(),
             gcs_sketches: HandleStore::default(),

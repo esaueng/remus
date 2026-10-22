@@ -376,3 +376,5 @@ Every box before "closed":
 `release-flow` (shipping a user-facing close), `parity-benchmarking`
 (RETIRED-HISTORICAL — capture recipes only). History:
 `docs/kernel-maturity/campaign-history.md`.
+
+- **A fresh document owner must not call the public constructor's global cache enablement again;** preserve module cache configuration and leave old checkpoint/sketch/prepared state with its owner (`wasm/src/bindings/arena.rs::document_copy_preserves_disabled_module_reuse_configuration`).
