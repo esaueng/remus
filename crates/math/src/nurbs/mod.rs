@@ -107,3 +107,195 @@ pub(crate) fn validate_knot_domain(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod extreme_position_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::{NurbsCurve, NurbsSurface};
+    use crate::vec::Point3;
+
+    fn line(weights: Vec<f64>, points: Vec<Point3>) -> NurbsCurve {
+        NurbsCurve::new(1, vec![0., 0., 1., 1.], points, weights).unwrap()
+    }
+
+    fn patch(weights: Vec<Vec<f64>>, points: Vec<Vec<Point3>>) -> NurbsSurface {
+        NurbsSurface::new(
+            1,
+            1,
+            vec![0., 0., 1., 1.],
+            vec![0., 0., 1., 1.],
+            points,
+            weights,
+        )
+        .unwrap()
+    }
+
+    fn assert_point(actual: Point3, expected: Point3) {
+        for axis in 0..3 {
+            assert!(actual.0[axis].is_finite(), "{actual:?}");
+            let scale = expected.0[axis].abs().max(1.0);
+            assert!(
+                (actual.0[axis] / scale - expected.0[axis] / scale).abs() < 1e-12,
+                "{actual:?} != {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepted_subnormal_curve_weights_preserve_position_and_derivative_agreement() {
+        let tiny = f64::from_bits(1);
+        let points = vec![Point3::new(0., 0., 0.), Point3::new(2., 4., -2.)];
+        for (weights, ordinary) in [
+            (vec![tiny; 2], vec![1.; 2]),
+            (vec![2. * tiny, 3. * tiny], vec![2., 3.]),
+        ] {
+            let curve = line(weights, points.clone());
+            let reference = line(ordinary, points.clone());
+            for u in [0., 0.25, 0.5, 0.75, 1.] {
+                let actual = curve.evaluate(u);
+                assert_point(actual, reference.evaluate(u));
+                let derivative_point = curve.derivatives(u, 1)[0];
+                assert_point(
+                    actual,
+                    Point3::new(
+                        derivative_point.x(),
+                        derivative_point.y(),
+                        derivative_point.z(),
+                    ),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn finite_curve_coordinates_do_not_overflow_an_unnormalized_sum() {
+        let curve = line(
+            vec![1.; 2],
+            vec![
+                Point3::new(f64::MAX, f64::MAX, 0.),
+                Point3::new(f64::MAX, -f64::MAX, 1.),
+            ],
+        );
+        for u in [0., 0.25, 0.5, 0.75, 1.] {
+            assert_point(
+                curve.evaluate(u),
+                Point3::new(f64::MAX, f64::MAX * (1. - 2. * u), u),
+            );
+        }
+    }
+
+    #[test]
+    fn tiny_weighted_coordinates_survive_when_the_final_position_is_representable() {
+        let tiny = f64::from_bits(1);
+        let curve = line(
+            vec![tiny, 1.],
+            vec![Point3::new(f64::MAX, 0., 0.), Point3::new(0., 0., 0.)],
+        );
+        let actual = curve.evaluate(0.5).x();
+        let expected = f64::MAX * tiny;
+        assert!(actual.is_finite() && actual > 0.);
+        assert!(
+            (actual / expected - 1.).abs() < 1e-12,
+            "{actual:e} != {expected:e}"
+        );
+    }
+
+    #[test]
+    fn normal_weights_retain_coordinates_when_the_basis_product_underflows() {
+        let u = 1.0_f64.next_down();
+        for (weight, denominator_weight) in [
+            (f64::MIN_POSITIVE, 1.),
+            (f64::MIN_POSITIVE, 1e-300),
+            (8e-308, 1.),
+            (8e-308, 1e-300),
+        ] {
+            let expected = ((1. - u) * f64::MAX) * weight / (u * denominator_weight);
+            let curve = line(
+                vec![weight, denominator_weight],
+                vec![Point3::new(f64::MAX, 0., 0.), Point3::new(0., 0., 0.)],
+            );
+            let surface = patch(
+                vec![vec![weight, denominator_weight]; 2],
+                vec![vec![Point3::new(f64::MAX, 0., 0.), Point3::new(0., 0., 0.)]; 2],
+            );
+            for actual in [
+                curve.evaluate(u).x(),
+                surface.evaluate(0.5, u).x(),
+                surface.evaluator().point(0.5, u).x(),
+            ] {
+                assert!(actual.is_finite() && actual > 0.);
+                assert!(
+                    (actual / expected - 1.).abs() < 1e-12,
+                    "{actual:e} != {expected:e}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn accepted_subnormal_surface_weights_preserve_cached_and_derivative_positions() {
+        let tiny = f64::from_bits(1);
+        let points = vec![
+            vec![Point3::new(0., 0., 0.), Point3::new(0., 1., 2.)],
+            vec![Point3::new(1., 0., 1.), Point3::new(1., 1., 3.)],
+        ];
+        let surface = patch(vec![vec![tiny; 2]; 2], points.clone());
+        let reference = patch(vec![vec![1.; 2]; 2], points);
+        let mut evaluator = surface.evaluator();
+        for (u, v) in [(0., 0.), (0., 0.5), (0.5, 0.5), (1., 1.), (tiny, 0.5)] {
+            let expected = reference.evaluate(u, v);
+            assert_point(surface.evaluate(u, v), expected);
+            assert_point(evaluator.point(u, v), expected);
+            let point = surface.derivatives(u, v, 1)[0][0];
+            assert_point(Point3::new(point.x(), point.y(), point.z()), expected);
+        }
+    }
+
+    #[test]
+    fn finite_surface_coordinates_preserve_cached_positions_at_edges_and_interiors() {
+        let points = vec![
+            vec![Point3::new(f64::MAX, 0., 0.), Point3::new(f64::MAX, 1., 1.)],
+            vec![Point3::new(f64::MAX, 1., 0.), Point3::new(f64::MAX, 2., 1.)],
+        ];
+        let surface = patch(vec![vec![1.; 2]; 2], points);
+        let mut evaluator = surface.evaluator();
+        for (u, v) in [(0., 0.), (0., 0.5), (0.5, 0.5), (1., 1.), (1e-170, 0.5)] {
+            let expected = Point3::new(f64::MAX, u + v, v);
+            assert_point(surface.evaluate(u, v), expected);
+            assert_point(evaluator.point(u, v), expected);
+        }
+    }
+
+    #[test]
+    fn inactive_and_small_surface_rows_cannot_overflow_before_the_u_contraction() {
+        let points = vec![
+            vec![Point3::new(0., 0., 0.), Point3::new(0., 1., 2.)],
+            vec![Point3::new(1., 0., 1.), Point3::new(1., 1., 3.)],
+        ];
+        for (weights, u, v, expected) in [
+            (
+                vec![vec![1e-100; 2], vec![1e300; 2]],
+                0.,
+                0.5,
+                Point3::new(0., 0.5, 1.),
+            ),
+            (
+                vec![vec![1e-100; 2], vec![1e-100, 1e240]],
+                1e-170,
+                1e-170,
+                Point3::new(0.5, 0.5, 1.5),
+            ),
+            (
+                vec![vec![1e-100; 2], vec![1e-100, 1e300]],
+                1e-170,
+                1e-170,
+                Point3::new(1., 1., 3.),
+            ),
+        ] {
+            let surface = patch(weights, points.clone());
+            assert_point(surface.evaluate(u, v), expected);
+            assert_point(surface.evaluator().point(u, v), expected);
+        }
+    }
+}

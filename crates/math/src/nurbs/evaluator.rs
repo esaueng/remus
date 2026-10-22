@@ -142,7 +142,7 @@ impl<'a> SurfaceEvaluator<'a> {
         // Use the same normalized weights for the local scale and sums.
         // Form the whole basis product before dividing by the scale: scaling
         // a row first can overflow even when its final contribution is small.
-        let (scale, needs_exponent_scaling) = nu
+        let (scale, needs_exponent_scaling, tiny_terms) = nu
             .iter()
             .enumerate()
             .take(pu + 1)
@@ -156,15 +156,49 @@ impl<'a> SurfaceEvaluator<'a> {
                         let u_idx = span_u - pu + i;
                         let v_idx = span_v - pv + j;
                         let term = (nu_i * nv_j * (ws[u_idx][v_idx] / weight_scale)).abs();
-                        (term, term == 0.0)
+                        (term, term == 0.0, term < f64::MIN_POSITIVE)
                     })
             })
-            .fold((0.0_f64, false), |(scale, lost), (term, zero)| {
-                (scale.max(term), lost || zero)
+            .fold(
+                (0.0_f64, false, false),
+                |(scale, lost, tiny), (term, zero, small)| {
+                    (scale.max(term), lost || zero, tiny || small)
+                },
+            );
+        let compensated = tiny_terms
+            && has_compensated_coordinate((pu + 1) * (pv + 1), |index| {
+                let (i, j) = (index / (pv + 1), index % (pv + 1));
+                let w = ws[span_u - pu + i][span_v - pv + j];
+                (
+                    nu[i] * nv[j] * (w / weight_scale),
+                    [nu[i], nv[j], w],
+                    cps[span_u - pu + i][span_v - pv + j],
+                )
             });
         // Scale complete terms by their exponents only when a separately
         // formed weight ratio or basis product loses a nonzero contribution.
+        let stable_position = || {
+            if !nu.iter().chain(nv.iter()).all(|value| value.is_finite())
+                || !(span_u - pu..=span_u).all(|i| {
+                    cps[i][span_v - pv..=span_v]
+                        .iter()
+                        .all(|point| point.0.iter().all(|value| value.is_finite()))
+                })
+            {
+                return None;
+            }
+            Some(scaled_rational_position((pu + 1) * (pv + 1), |index| {
+                let (i, j) = (index / (pv + 1), index % (pv + 1));
+                (
+                    [nu[i], nv[j], ws[span_u - pu + i][span_v - pv + j]],
+                    cps[span_u - pu + i][span_v - pv + j],
+                )
+            }))
+        };
         if needs_exponent_scaling || !scale.is_finite() || scale == 0.0 {
+            if let Some(point) = stable_position() {
+                return point.0;
+            }
             let sum = scaled_homogeneous_sum(cps, ws, span_u - pu, span_v - pv, nu, nv);
             return Point3::new(sum[0] / sum[3], sum[1] / sum[3], sum[2] / sum[3]);
         }
@@ -193,9 +227,23 @@ impl<'a> SurfaceEvaluator<'a> {
             }
         }
 
+        if [wx, wy, wz, ww]
+            .iter()
+            .any(|value| !value.is_finite() || value.abs() > f64::MAX / 4.0)
+            && let Some(point) = stable_position()
+        {
+            return point.0;
+        }
         debug_assert!(scale.is_finite() && scale > 0.0);
         debug_assert!(ww.is_finite() && ww > 0.0);
-        Point3::new(wx / ww, wy / ww, wz / ww)
+        let point = Point3::new(wx / ww, wy / ww, wz / ww);
+        if compensated
+            && let Some(candidate) = stable_position()
+            && exceeds_position_roundoff(point, candidate, (pu + 1) * (pv + 1))
+        {
+            return candidate.0;
+        }
+        point
     }
 
     /// Evaluate the unit normal at parameters `(u, v)`.
@@ -384,6 +432,129 @@ fn downscale(value: f64, exponent: i32) -> f64 {
     } else {
         0.0
     }
+}
+
+/// A rounded subnormal homogeneous term can still carry a normal coordinate
+/// numerator before the perspective divide. Leave ordinary subnormal
+/// arithmetic alone, but retain contributions compensated by a large coordinate.
+pub(super) fn has_compensated_coordinate(
+    count: usize,
+    term: impl Fn(usize) -> (f64, [f64; 3], Point3),
+) -> bool {
+    (0..count).any(|index| {
+        let (formed, [a, b, weight], point) = term(index);
+        if formed.abs() >= f64::MIN_POSITIVE
+            || a == 0.0
+            || b == 0.0
+            || ![a, b, weight].iter().all(|value| value.is_finite())
+        {
+            return false;
+        }
+        let (mantissa, power) = weighted_parts(a, b, weight);
+        point.0.iter().any(|&coordinate| {
+            if coordinate == 0.0 || !coordinate.is_finite() {
+                return false;
+            }
+            let (coordinate, coordinate_power) = binary_parts(coordinate);
+            let (_, adjustment) = binary_parts(mantissa * coordinate);
+            power + coordinate_power + adjustment >= -1022
+        })
+    })
+}
+
+/// Keep the ordinary contraction when both answers differ only by its
+/// floating-point summation budget. This is relative arithmetic roundoff,
+/// independent of model units or geometric tolerances.
+pub(super) fn exceeds_position_roundoff(
+    ordinary: Point3,
+    candidate: (Point3, [f64; 3]),
+    terms: usize,
+) -> bool {
+    let relative_budget = 8.0 * terms as f64 * f64::EPSILON;
+    (0..3).any(|axis| {
+        let before = ordinary.0[axis];
+        let after = candidate.0.0[axis];
+        let scale = before.abs().max(after.abs()).max(candidate.1[axis]);
+        (before - after).abs() > relative_budget * scale
+    })
+}
+
+/// Exceptional position contraction: scale the denominator and each coordinate
+/// numerator independently. Keeping every factor's binary exponent avoids both
+/// subnormal weight products and overflowing coordinate sums. Ordinary queries
+/// retain their original contraction and floating-point operation order.
+pub(super) fn scaled_rational_position(
+    count: usize,
+    term: impl Fn(usize) -> ([f64; 3], Point3),
+) -> (Point3, [f64; 3]) {
+    let mut powers = [i32::MIN; 4];
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    for index in 0..count {
+        let ([a, b, weight], point) = term(index);
+        if a == 0.0 || b == 0.0 {
+            continue;
+        }
+        let (_, power) = weighted_parts(a, b, weight);
+        powers[3] = powers[3].max(power);
+        for axis in 0..3 {
+            let coordinate = point.0[axis];
+            min[axis] = min[axis].min(coordinate);
+            max[axis] = max[axis].max(coordinate);
+            if coordinate != 0.0 {
+                powers[axis] = powers[axis].max(power + binary_parts(coordinate).1);
+            }
+        }
+    }
+    let mut sums = [0.0; 4];
+    let mut absolute = [0.0; 3];
+    for index in 0..count {
+        let ([a, b, weight], point) = term(index);
+        if a == 0.0 || b == 0.0 {
+            continue;
+        }
+        let (mantissa, power) = weighted_parts(a, b, weight);
+        sums[3] += downscale(mantissa, power - powers[3]);
+        for axis in 0..3 {
+            if point.0[axis] != 0.0 {
+                let (coordinate, coordinate_power) = binary_parts(point.0[axis]);
+                let contribution = downscale(
+                    mantissa * coordinate,
+                    power + coordinate_power - powers[axis],
+                );
+                sums[axis] += contribution;
+                absolute[axis] += contribution.abs();
+            }
+        }
+    }
+    let mut coordinates = [0.0; 3];
+    let mut absolute_coordinates = [0.0; 3];
+    for axis in 0..3 {
+        let rescale = |numerator| {
+            if numerator == 0.0 {
+                return 0.0;
+            }
+            let (mantissa, power) = binary_parts(numerator / sums[3]);
+            let exponent = power + powers[axis] - powers[3];
+            if exponent > 1023 {
+                f64::INFINITY.copysign(mantissa)
+            } else {
+                downscale(mantissa, exponent)
+            }
+        };
+        // Positive NURBS weights make positions convex combinations. Rounding
+        // at the finite range boundary must not turn a finite carrier infinite.
+        coordinates[axis] = rescale(sums[axis]).clamp(min[axis], max[axis]);
+        // The absolute contribution sum supplies a conditioned roundoff scale
+        // even when positive and negative coordinates nearly cancel.
+        absolute_coordinates[axis] = rescale(absolute[axis])
+            .abs()
+            .min(min[axis].abs().max(max[axis].abs()));
+    }
+    (
+        Point3::new(coordinates[0], coordinates[1], coordinates[2]),
+        absolute_coordinates,
+    )
 }
 
 fn scaled_homogeneous_sum(

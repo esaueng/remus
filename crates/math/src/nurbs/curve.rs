@@ -82,30 +82,7 @@ impl NurbsCurve {
         control_points: Vec<Point3>,
         weights: Vec<f64>,
     ) -> Result<Self, MathError> {
-        let n = control_points.len();
-        if degree == 0 || degree >= n {
-            return Err(MathError::InvalidDegree {
-                degree,
-                control_points: n,
-            });
-        }
-        let expected_knots = n + degree + 1;
-        if knots.len() != expected_knots {
-            return Err(MathError::InvalidKnotVector {
-                expected: expected_knots,
-                got: knots.len(),
-            });
-        }
-        super::validate_knot_values(&knots)?;
-        super::validate_knot_domain(&knots, degree, n)?;
-        super::validate_control_point_values(control_points.iter().copied())?;
-        if weights.len() != n {
-            return Err(MathError::InvalidWeights {
-                expected: n,
-                got: weights.len(),
-            });
-        }
-        validate_weight_values(&weights)?;
+        validate_data(degree, &knots, &control_points, &weights)?;
         let curve = Self {
             degree,
             knots: knots.into(),
@@ -297,13 +274,12 @@ impl NurbsCurve {
     ///
     /// Returns the same validation errors as [`Self::new`].
     pub fn validate(&self) -> Result<(), MathError> {
-        Self::new(
+        validate_data(
             self.degree,
-            self.knots.as_ref().clone(),
-            self.control_points.as_ref().clone(),
-            self.weights.as_ref().clone(),
-        )?;
-        Ok(())
+            &self.knots,
+            &self.control_points,
+            &self.weights,
+        )
     }
 
     /// Evaluate the curve at parameter `u` using De Boor's algorithm.
@@ -330,12 +306,54 @@ impl NurbsCurve {
         // Scale homogeneous terms before summation. NURBS weights are
         // projective, so this preserves the point while preventing a common
         // factor such as 1e-300 from making the perspective divide unstable.
-        let scale = bf
+        let (scale, needs_scaling, tiny_terms) = bf
             .iter()
             .enumerate()
             .take(p + 1)
-            .map(|(j, &basis_val)| (basis_val * self.weights[span - p + j]).abs())
-            .fold(0.0_f64, f64::max);
+            .map(|(j, &basis_val)| {
+                let term = (basis_val * self.weights[span - p + j]).abs();
+                (
+                    term,
+                    basis_val != 0.0 && self.weights[span - p + j].is_subnormal(),
+                    basis_val != 0.0 && term < f64::MIN_POSITIVE,
+                )
+            })
+            .fold(
+                (0.0_f64, false, false),
+                |(scale, lost, tiny), (term, subnormal, small)| {
+                    (scale.max(term), lost || subnormal, tiny || small)
+                },
+            );
+        let compensated = tiny_terms
+            && super::evaluator::has_compensated_coordinate(p + 1, |j| {
+                let index = span - p + j;
+                (
+                    bf[j] * self.weights[index],
+                    [bf[j], 1.0, self.weights[index]],
+                    self.control_points[index],
+                )
+            });
+        let stable_position = || {
+            if !bf.iter().all(|value| value.is_finite())
+                || !self.control_points[span - p..=span]
+                    .iter()
+                    .all(|point| point.0.iter().all(|value| value.is_finite()))
+            {
+                return None;
+            }
+            Some(super::evaluator::scaled_rational_position(p + 1, |j| {
+                let index = span - p + j;
+                (
+                    [bf[j], 1.0, self.weights[index]],
+                    self.control_points[index],
+                )
+            }))
+        };
+        if (needs_scaling || scale < f64::MIN_POSITIVE)
+            && let Some(point) = stable_position()
+        {
+            return point.0;
+        }
         let mut wx = 0.0;
         let mut wy = 0.0;
         let mut wz = 0.0;
@@ -351,9 +369,23 @@ impl NurbsCurve {
             ww += bw;
         }
 
+        if [wx, wy, wz, ww]
+            .iter()
+            .any(|value| !value.is_finite() || value.abs() > f64::MAX / 4.0)
+            && let Some(point) = stable_position()
+        {
+            return point.0;
+        }
         debug_assert!(scale.is_finite() && scale > 0.0);
         debug_assert!(ww.is_finite() && ww > 0.0);
-        Point3::new(wx / ww, wy / ww, wz / ww)
+        let point = Point3::new(wx / ww, wy / ww, wz / ww);
+        if compensated
+            && let Some(candidate) = stable_position()
+            && super::evaluator::exceeds_position_roundoff(point, candidate, p + 1)
+        {
+            return candidate.0;
+        }
+        point
     }
 
     /// Compute curve derivatives up to order `d` at parameter `u`.
@@ -439,6 +471,41 @@ impl NurbsCurve {
     pub fn aabb(&self) -> Aabb3 {
         Aabb3::from_points(self.control_points.iter().copied())
     }
+}
+
+// Borrow the complete input so construction and later validation share
+// the same invariant and error ordering without copying geometry storage.
+fn validate_data(
+    degree: usize,
+    knots: &[f64],
+    control_points: &[Point3],
+    weights: &[f64],
+) -> Result<(), MathError> {
+    let n = control_points.len();
+    if degree == 0 || degree >= n {
+        return Err(MathError::InvalidDegree {
+            degree,
+            control_points: n,
+        });
+    }
+    let expected_knots = n + degree + 1;
+    if knots.len() != expected_knots {
+        return Err(MathError::InvalidKnotVector {
+            expected: expected_knots,
+            got: knots.len(),
+        });
+    }
+    super::validate_knot_values(knots)?;
+    super::validate_knot_domain(knots, degree, n)?;
+    super::validate_control_point_values(control_points.iter().copied())?;
+    if weights.len() != n {
+        return Err(MathError::InvalidWeights {
+            expected: n,
+            got: weights.len(),
+        });
+    }
+    validate_weight_values(weights)?;
+    Ok(())
 }
 
 fn validate_weight_values(weights: &[f64]) -> Result<(), MathError> {
@@ -972,3 +1039,173 @@ mod weight_cache_tests {
 
 #[cfg(test)]
 mod eval_stack_oracle_tests;
+
+#[cfg(test)]
+mod borrowed_validation_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use std::sync::{Arc, OnceLock};
+
+    fn raw() -> NurbsCurve {
+        NurbsCurve {
+            degree: 1,
+            knots: Arc::new(vec![0., 0., 1., 1.]),
+            control_points: Arc::new(vec![Point3::new(0., 0., 0.), Point3::new(1., 2., 3.)]),
+            weights: Arc::new(vec![1., 2.]),
+            max_weight: OnceLock::new(),
+        }
+    }
+
+    fn assert_error(curve: &NurbsCurve, expected: impl Fn(&MathError) -> bool) {
+        let borrowed = curve.validate().expect_err("malformed borrowed curve");
+        let owned = NurbsCurve::new(
+            curve.degree,
+            curve.knots.as_ref().clone(),
+            curve.control_points.as_ref().clone(),
+            curve.weights.as_ref().clone(),
+        )
+        .expect_err("malformed constructor input");
+        assert!(expected(&borrowed), "{borrowed:?}");
+        assert!(expected(&owned), "{owned:?}");
+    }
+
+    #[test]
+    fn malformed_curve_errors_keep_constructor_precedence_and_payloads() {
+        let mut curve = raw();
+        curve.degree = 0;
+        curve.knots = Arc::new(vec![]);
+        Arc::make_mut(&mut curve.control_points)[1] = Point3::new(f64::NAN, 0., 0.);
+        curve.weights = Arc::new(vec![]);
+        assert_error(&curve, |e| {
+            matches!(
+                e,
+                MathError::InvalidDegree {
+                    degree: 0,
+                    control_points: 2
+                }
+            )
+        });
+        curve.degree = 2;
+        assert_error(&curve, |e| {
+            matches!(
+                e,
+                MathError::InvalidDegree {
+                    degree: 2,
+                    control_points: 2
+                }
+            )
+        });
+        curve.degree = 1;
+        assert_error(&curve, |e| {
+            matches!(
+                e,
+                MathError::InvalidKnotVector {
+                    expected: 4,
+                    got: 0
+                }
+            )
+        });
+        curve.knots = Arc::new(vec![0., 0., f64::NAN, 1.]);
+        assert_error(
+            &curve,
+            |e| matches!(e, MathError::InvalidKnotValue { index: 2, value } if value.is_nan()),
+        );
+        curve.knots = Arc::new(vec![0.; 4]);
+        assert_error(
+            &curve,
+            |e| matches!(e, MathError::InvalidKnotValue { index: 2, value } if value.to_bits() == 0.0_f64.to_bits()),
+        );
+        curve.knots = Arc::new(vec![0., 0., 1., 0.5]);
+        assert_error(
+            &curve,
+            |e| matches!(e, MathError::InvalidKnotValue { index: 3, value } if value.to_bits() == 0.5_f64.to_bits()),
+        );
+        curve.knots = Arc::new(vec![0., 0., 1., 1.]);
+        assert_error(
+            &curve,
+            |e| matches!(e, MathError::InvalidControlPointValue { index: 1, x, .. } if x.is_nan()),
+        );
+        Arc::make_mut(&mut curve.control_points)[1] = Point3::new(1., 2., 3.);
+        assert_error(&curve, |e| {
+            matches!(
+                e,
+                MathError::InvalidWeights {
+                    expected: 2,
+                    got: 0
+                }
+            )
+        });
+        for value in [
+            0.,
+            -0.,
+            -1.,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::from_bits(0x7ff8_0000_0000_0042),
+        ] {
+            curve.weights = Arc::new(vec![1., value]);
+            assert_error(
+                &curve,
+                |e| matches!(e, MathError::InvalidWeightValue { index: 1, value: bad } if bad.to_bits() == value.to_bits()),
+            );
+        }
+        curve.control_points = Arc::new(vec![]);
+        assert_error(&curve, |e| {
+            matches!(
+                e,
+                MathError::InvalidDegree {
+                    degree: 1,
+                    control_points: 0
+                }
+            )
+        });
+    }
+
+    #[test]
+    fn borrowed_curve_validation_keeps_storage_caches_and_extreme_values() {
+        let mut curve = raw();
+        Arc::make_mut(&mut curve.control_points)[1] = Point3::new(f64::MAX, -f64::MAX, -0.);
+        curve.weights = Arc::new(vec![f64::from_bits(1), f64::from_bits(2)]);
+        let knots = Arc::clone(&curve.knots);
+        let points = Arc::clone(&curve.control_points);
+        let weights = Arc::clone(&curve.weights);
+        curve
+            .validate()
+            .expect("finite extreme input remains valid");
+        assert!(Arc::ptr_eq(&knots, &curve.knots));
+        assert!(Arc::ptr_eq(&points, &curve.control_points));
+        assert!(Arc::ptr_eq(&weights, &curve.weights));
+        assert!(curve.max_weight.get().is_none());
+        assert_eq!(curve.control_points[1].z().to_bits(), (-0.0_f64).to_bits());
+        let owned = NurbsCurve::new(
+            curve.degree,
+            knots.as_ref().clone(),
+            points.as_ref().clone(),
+            weights.as_ref().clone(),
+        )
+        .unwrap();
+        assert_eq!(owned.max_weight.get().copied(), Some(f64::from_bits(2)));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn deserialized_curve_validation_keeps_roundtrip_and_cache_behavior() {
+        let encoded = serde_json::to_string(&raw()).unwrap();
+        let curve: NurbsCurve = serde_json::from_str(&encoded).unwrap();
+        curve.validate().unwrap();
+        assert!(curve.max_weight.get().is_none());
+        assert_eq!(serde_json::to_string(&curve).unwrap(), encoded);
+        let mut malformed: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        malformed["degree"] = 0.into();
+        let curve: NurbsCurve = serde_json::from_value(malformed).unwrap();
+        assert_error(&curve, |e| {
+            matches!(
+                e,
+                MathError::InvalidDegree {
+                    degree: 0,
+                    control_points: 2
+                }
+            )
+        });
+    }
+}
