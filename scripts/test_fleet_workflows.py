@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Keep staged dependency updates and active immutable workflow calls exact."""
 
+import hashlib
 import json
 import re
 import subprocess
@@ -153,7 +154,49 @@ def main_workflow_manifest():
     return manifest
 
 
+# Exact main revision containing the reviewed guard and legacy auxiliary bytes.
+THREE_SLOT_GUARD_LANDED = "05fca2fc1029be782afe41ee6ebbeae812e5e40c"
+THREE_SLOT_AUXILIARIES = {
+    "fleet-benchmark-v3.yml": ("fleet-benchmark-v2.yml", 2),
+    "fleet-fuzz-v4.yml": ("fleet-fuzz-v3.yml", 2),
+    "fleet-gauntlet-v4.yml": ("fleet-gauntlet-v3.yml", 2),
+    "fleet-mutants-sharded-v4.yml": ("fleet-mutants-sharded-v3.yml", 2),
+    "fleet-mutation-scope-v3.yml": ("fleet-mutation-scope-v2.yml", 1),
+    "fleet-osv-v5.yml": ("fleet-osv-v4.yml", 1),
+    "fleet-wasm-candidate-v4.yml": ("fleet-wasm-candidate-v3.yml", 1),
+    "fleet-wasm-size-v5.yml": ("fleet-wasm-size-v4.yml", 1),
+}
+
+
 class FleetWorkflowTests(unittest.TestCase):
+    def test_three_slot_auxiliaries_only_change_guard_pin_and_profile_selector(self):
+        self.assertEqual(subprocess.run(
+            ["git", "merge-base", "--is-ancestor", THREE_SLOT_GUARD_LANDED, "origin/main"],
+            cwd=ROOT, capture_output=True,
+        ).returncode, 0)
+        old_guard = "esaueng/remus/.github/actions/fleet-guard@c1fe861d46b5e932cc69ccbcff6803cd1a38804b"
+        new_guard = "esaueng/remus/.github/actions/fleet-guard@" + THREE_SLOT_GUARD_LANDED
+        guard = subprocess.check_output(
+            ["git", "show", THREE_SLOT_GUARD_LANDED + ":.github/actions/fleet-guard/action.yml"], cwd=ROOT,
+        )
+        self.assertEqual(hashlib.sha256(guard).hexdigest(),
+                         "599087ce5da442d89e0805db24691a07b5badd6c76f52f56d8314a9fb60079b7")
+        for new, (old, guard_count) in THREE_SLOT_AUXILIARIES.items():
+            with self.subTest(workflow=new):
+                source = subprocess.check_output(
+                    ["git", "show", THREE_SLOT_GUARD_LANDED + ":.github/workflows/" + old], cwd=ROOT, text=True,
+                )
+                self.assertEqual(source.count(old_guard), guard_count)
+                self.assertEqual(source.count('"labels":"ci-server-jane"'), 1)
+                expected = source.replace(old_guard, new_guard).replace(
+                    '"labels":"ci-server-jane"', '"labels":"ci-server-jane-5gb"')
+                actual = (ROOT / ".github/workflows" / new).read_text()
+                self.assertEqual(actual, expected,
+                                 "Only the reviewed guard pin and Jane selector may change")
+                self.assertEqual(actual.count(new_guard), guard_count)
+                self.assertNotIn(old_guard, actual)
+                self.assertNotIn('"labels":"ci-server-jane"', actual)
+
     def test_all_active_callers_keep_exact_bytes_and_main_ancestry(self):
         self.assertGreater(validate_calls(), 0)
 
