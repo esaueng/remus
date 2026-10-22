@@ -20,3 +20,16 @@ Models: 42 passed / 50 total (84.00%).
 - `invalid_input`: 6
 - `invalid_topology`: 1
 - `tolerance_violation`: 1
+
+## First failure codes
+
+- `boolean` / `operation_invalid_topology`: 1
+- `read` / `step_parse_error`: 6
+- `tessellate` / `tessellation_not_watertight`: 1
+
+## Import failure families (heuristic)
+
+Triage hints only; these do not establish whether an input is valid.
+
+- `endpoint_authority`: 5
+- `face_boundary`: 1
