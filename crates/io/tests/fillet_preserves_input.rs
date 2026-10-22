@@ -7,14 +7,18 @@
 //! fillet on the original then hit a phantom cliff.
 //!
 //! The pocketed plate is round-tripped through an exact arena document first
-//! because that is the arena the WASM `fillet` binding sees and the one in
-//! which the cascade picks the walking engine for the corner selection.
+//! because that is the arena the WASM `fillet` binding sees. The cascade
+//! takes the rolling-ball rebuild for the corner selection since that engine
+//! keeps the pockets' reversed faces reversed; each contract is pinned for
+//! the cascade and for the walking builder on its own, which the cascade
+//! took before.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use remus_blend::fillet_builder::FilletBuilder;
 use remus_check::validate::{ValidateOptions, validate_solid};
 use remus_math::mat::Mat4;
-use remus_operations::blend_ops::{BlendEngine, fillet_cascade};
+use remus_operations::blend_ops::{BlendEngine, BlendResult, fillet_cascade};
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::measure::solid_volume;
 use remus_operations::primitives::make_box;
@@ -73,6 +77,26 @@ fn outer_corner_edges(topo: &Topology, solid: SolidId) -> Vec<EdgeId> {
     corners
 }
 
+/// Fillet through `engine`: the cascade, which must pick the rolling-ball
+/// rebuild here, or the walking builder called directly.
+fn fillet_with(
+    engine: BlendEngine,
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    radius: f64,
+) -> BlendResult {
+    let result = if engine == BlendEngine::Walking {
+        let mut builder = FilletBuilder::new(topo, solid);
+        builder.add_edges(edges, radius);
+        builder.build().unwrap()
+    } else {
+        fillet_cascade(topo, solid, edges, radius).unwrap()
+    };
+    assert_eq!(result.engine, engine);
+    result
+}
+
 struct Snapshot {
     counts: (usize, usize, usize),
     volume: f64,
@@ -87,7 +111,7 @@ fn snapshot(topo: &Topology, solid: SolidId) -> Snapshot {
     }
 }
 
-fn assert_fillet_leaves_input_untouched(cols: usize, rows: usize) {
+fn assert_fillet_leaves_input_untouched(engine: BlendEngine, cols: usize, rows: usize) {
     let mut history = Topology::new();
     let built = pocketed_plate(&mut history, cols, rows);
     let bytes = remus_io::arena_io::serialize_solid(&history, built).unwrap();
@@ -100,9 +124,8 @@ fn assert_fillet_leaves_input_untouched(cols: usize, rows: usize) {
     let corners = outer_corner_edges(&topo, input);
     let edges = filter_filletable_edges(&topo, input, &corners).unwrap();
     assert_eq!(edges.len(), 4);
-    let result = fillet_cascade(&mut topo, input, &edges, 6.0).unwrap();
+    let result = fillet_with(engine, &mut topo, input, &edges, 6.0);
     assert_ne!(result.solid, input, "fillet must return a new solid");
-    assert_eq!(result.engine, BlendEngine::Walking);
 
     let filleted = snapshot(&topo, result.solid);
     // Four r=6 corners each remove (1 - pi/4) r^2 over the plate height.
@@ -133,13 +156,14 @@ fn assert_fillet_leaves_input_untouched(cols: usize, rows: usize) {
     // The untouched input fillets again at a different radius: no phantom cliff
     // left behind by the first blend.
     let again = filter_filletable_edges(&topo, input, &corners).unwrap();
-    let second = fillet_cascade(&mut topo, input, &again, 6.01).unwrap();
+    let second = fillet_with(engine, &mut topo, input, &again, 6.01);
     snapshot(&topo, second.solid);
 }
 
 #[test]
 fn fillet_leaves_pocketed_plate_input_untouched() {
-    assert_fillet_leaves_input_untouched(4, 3);
+    assert_fillet_leaves_input_untouched(BlendEngine::RollingBall, 4, 3);
+    assert_fillet_leaves_input_untouched(BlendEngine::Walking, 4, 3);
 }
 
 /// Two blends of one input share only the input's own vertices: a contact
@@ -147,6 +171,12 @@ fn fillet_leaves_pocketed_plate_input_untouched() {
 /// would cross-link the two results.
 #[test]
 fn repeated_fillet_does_not_share_vertices_with_an_earlier_result() {
+    for engine in [BlendEngine::RollingBall, BlendEngine::Walking] {
+        assert_repeated_fillet_shares_only_input_vertices(engine);
+    }
+}
+
+fn assert_repeated_fillet_shares_only_input_vertices(engine: BlendEngine) {
     let mut history = Topology::new();
     let built = pocketed_plate(&mut history, 4, 3);
     let bytes = remus_io::arena_io::serialize_solid(&history, built).unwrap();
@@ -155,10 +185,8 @@ fn repeated_fillet_does_not_share_vertices_with_an_earlier_result() {
 
     let corners = outer_corner_edges(&topo, input);
     let edges = filter_filletable_edges(&topo, input, &corners).unwrap();
-    let first = fillet_cascade(&mut topo, input, &edges, 6.0).unwrap();
-    let second = fillet_cascade(&mut topo, input, &edges, 6.0).unwrap();
-    assert_eq!(first.engine, BlendEngine::Walking);
-    assert_eq!(second.engine, BlendEngine::Walking);
+    let first = fillet_with(engine, &mut topo, input, &edges, 6.0);
+    let second = fillet_with(engine, &mut topo, input, &edges, 6.0);
     snapshot(&topo, first.solid);
     snapshot(&topo, second.solid);
 
@@ -193,7 +221,7 @@ fn walking_fillet_output_is_identical_with_unrelated_arena_contents() {
         // A prior blend supplies coincident contact vertices and obsolete
         // face/wire history as well as an overlapping, independently owned body.
         let edges = outer_corner_edges(&topo, input);
-        let prior = fillet_cascade(&mut topo, input, &edges, 6.0).unwrap();
+        let prior = fillet_with(BlendEngine::Walking, &mut topo, input, &edges, 6.0);
         foreign.push(prior.solid);
         for _ in 0..padding {
             foreign.push(make_box(&mut topo, PLATE.0, PLATE.1, PLATE.2).unwrap());
@@ -207,8 +235,7 @@ fn walking_fillet_output_is_identical_with_unrelated_arena_contents() {
                 )
             })
             .collect();
-        let result = fillet_cascade(&mut topo, input, &edges, 6.0).unwrap();
-        assert_eq!(result.engine, BlendEngine::Walking);
+        let result = fillet_with(BlendEngine::Walking, &mut topo, input, &edges, 6.0);
         assert_eq!(result.succeeded, edges);
         assert!(result.failed.is_empty());
         assert!(!result.is_partial);

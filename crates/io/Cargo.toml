@@ -30,6 +30,7 @@ criterion.workspace = true
 log.workspace = true
 proptest.workspace = true
 remus-algo.workspace = true
+remus-blend.workspace = true
 remus-check.workspace = true
 remus-topology = {workspace = true, features = ["test-utils"]}
 
