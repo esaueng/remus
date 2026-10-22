@@ -38,6 +38,7 @@ Bench files (`crates/operations/benches/`), one line each:
 | `compound_cut_perf.rs` | `compound_cut` vs sequential cuts: cylinder grids and honeycomb grids |
 | `fuse_perf.rs` | `fuse_all` tree-reduce vs sequential left-fold (`fuse_balanced` has `balanced_N=` and `sequential_N=`; `fuse_touching` has only `balanced_N=`) |
 | `fillet_multipass.rs` | Sequential and many-edge fillets through the binding's cascade, plus a hole/countersink cut through a filleted body: `fillet_multipass/bracket/*` and `fillet_multipass/plate/*`, each pass alone and `full_sequence` |
+| `fillet_perf.rs` | Fillet cascade: `fillet/plate_top_loop_r1` (successful edit on a rounded plate, NURBS-band guards) and `fillet/bracket_refusal_r{0.5,1,2}` (whole-body typed refusal) |
 
 ## Method: the perf loop
 

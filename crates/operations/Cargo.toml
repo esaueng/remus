@@ -81,5 +81,9 @@ name = "perf_d01_quantity"
 harness = false
 name = "fillet_multipass"
 
+[[bench]]
+harness = false
+name = "fillet_perf"
+
 [lints]
 workspace = true

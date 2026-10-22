@@ -514,18 +514,21 @@ fn sequence_f4_after_f1_f2() {
     fillet(&mut m, body, Pass::F4, 2, -2.0 * 18.0 * spandrel(3.0), 1e-3);
 }
 
-/// F6 after F1 runs the 62 mm straight front edge plus the two F1 quarter
-/// arcs at z = 4. Pappus over each arc: the spandrel's centroid sits
-/// (10 − 3π)/(3(4 − π))·r from the corner, inside the R 6 arc.
+/// F6 after F1 selects the 62 mm straight front edge plus the two F1 quarter
+/// arcs at z = 4; G1 propagation carries the chain on along both 44 mm side
+/// edges until they run into the tabs at y = 10. Pappus over each arc: the
+/// spandrel's centroid sits (10 − 3π)/(3(4 − π))·r from the corner, inside
+/// the R 6 arc.
 fn f6_after_f1_removed() -> f64 {
     let r = Pass::F6.radius();
     let big_r = Pass::F1.radius();
     let centroid = (10.0 - 3.0 * PI) / (3.0 * (4.0 - PI)) * r;
-    spandrel(r) * (74.0 - 2.0 * big_r + 2.0 * FRAC_PI_2 * (big_r - centroid))
+    let sides = 2.0 * (60.0 - 10.0 - big_r);
+    spandrel(r) * (74.0 - 2.0 * big_r + sides + 2.0 * FRAC_PI_2 * (big_r - centroid))
 }
 
 #[test]
-#[ignore = "open: F6 across the F1 tangent seams builds, but its arc bands are lofted NURBS, not exact"]
+#[ignore = "open: F6 across the F1 tangent seams builds, but its bands around the F1 arcs are lofted NURBS, not exact tori"]
 fn sequence_f6_after_f1_f2_f5() {
     let mut m = Model::new();
     let body = f1_f2_f5(&mut m);
