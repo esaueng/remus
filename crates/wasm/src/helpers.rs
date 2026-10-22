@@ -21,8 +21,9 @@ use crate::shapes::JsMesh;
 pub const TOL: f64 = 1e-7;
 
 /// The JSON shape of `projectSilhouettes`, shared by its direct and batch
-/// forms: flat `[x, y, …]` polylines as `projectEdges` returns them, plus the
-/// faces left out by handle and surface tag.
+/// forms: flat `[x, y, …]` polylines as `projectEdges` returns them, the
+/// faces left out by handle and surface tag, and the handles of the NURBS
+/// faces whose silhouettes were traced.
 pub fn silhouettes_json(
     result: &remus_operations::projection::ProjectedSilhouettes,
 ) -> serde_json::Value {
@@ -37,10 +38,16 @@ pub fn silhouettes_json(
         .iter()
         .map(|u| serde_json::json!({ "face": face_id_to_u32(u.face), "surface": u.surface }))
         .collect();
+    let approximate: Vec<u32> = result
+        .approximate
+        .iter()
+        .map(|&face| face_id_to_u32(face))
+        .collect();
     serde_json::json!({
         "visible": flatten(&result.visible),
         "hidden": flatten(&result.hidden),
         "unsupported": unsupported,
+        "approximate": approximate,
     })
 }
 

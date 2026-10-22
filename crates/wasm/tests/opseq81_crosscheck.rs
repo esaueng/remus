@@ -7,12 +7,8 @@
 //! test appends read-only probes (`validateSolid`, `volume`, `meshQuality`)
 //! on the final produced solid and checks the pinned acceptance or defect signature:
 //!
-//! - fixed orientation findings F1/F2/F5/F11/F12/F16 must validate clean and mesh
+//! - fixed orientation findings F1/F2/F5/F10/F11/F12/F16 must validate clean and mesh
 //!   watertight with their closed-form volumes through batch.
-//! - open orientation finding F10 must show validation errors through
-//!   batch with matching volumes: an engine defect, not a binding one. A
-//!   batch-side refusal or a clean validation would mean the defect moved
-//!   or the binding diverges — either fails loudly here.
 //! - fixed material findings F3/F6/F8 must retain their independently derived
 //!   remainders and mesh watertight through batch.
 //!
@@ -64,8 +60,6 @@ fn produced_handle(result: &Value) -> Option<u32> {
 
 #[derive(Clone, Copy)]
 enum ValidateExpect {
-    /// The engine defect must be visible: nonzero error count.
-    Defect,
     /// The result must validate clean.
     Clean,
 }
@@ -181,11 +175,11 @@ fn cross_checks() -> Vec<CrossCheck> {
         CrossCheck {
             file: "opseq81-sphere-cyl-fuse-orientation.json",
             signature: Signature::Probes {
-                // Tessellated reading; the Gauss route splits 24% lower
-                // (4.18879) on the same body — see the finding doc.
-                volume_near: (5.218_487, 0.05),
-                validate: ValidateExpect::Defect,
-                watertight: None,
+                // Cylinder plus lower hemisphere: π + 2π/3. The batch
+                // preview request uses the measurement mesh's fine clamp.
+                volume_near: (5.0 * std::f64::consts::PI / 3.0, 0.001),
+                validate: ValidateExpect::Clean,
+                watertight: Some(true),
             },
         },
         CrossCheck {
@@ -405,23 +399,6 @@ fn opseq81_native_batch_crosscheck() {
         let mesh = ok_at(&results, base + 2);
 
         match validate {
-            ValidateExpect::Defect => {
-                let errors = validation
-                    .get("ok")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "{}: validateSolid must return a count, got {validation}",
-                            check.file
-                        )
-                    });
-                assert!(
-                    errors > 0,
-                    "{}: native reports misoriented edges but batch validates clean \
-                     (defect moved or binding diverges)",
-                    check.file
-                );
-            }
             ValidateExpect::Clean => {
                 assert_eq!(
                     validation.get("ok").and_then(Value::as_u64),

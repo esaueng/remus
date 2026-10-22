@@ -1098,9 +1098,10 @@ fn planar_fillet_result(
     solid: SolidId,
     edges: &[EdgeId],
     radius: f64,
+    close_runouts: bool,
 ) -> Result<BlendResult, OperationsError> {
     let (result_solid, face_origins) =
-        crate::fillet::fillet_rolling_ball_with_origins(topo, solid, edges, radius)?;
+        crate::fillet::fillet_rolling_ball_with_origins(topo, solid, edges, radius, close_runouts)?;
     // The fast path gets the same postconditions as the walking path — and
     // needs the volume guard more since it learned to rebuild holed caps: a
     // setback that crosses an inner loop folds the cap through itself and
@@ -1144,20 +1145,69 @@ fn edge_polyline(
     sample_edge(topo, edge, samples)
 }
 
-/// Shortest distance between two sampled polylines.
-fn polyline_distance(a: &[remus_math::vec::Point3], b: &[remus_math::vec::Point3]) -> f64 {
-    let mut best = f64::INFINITY;
+/// Axis-aligned box of a sampled polyline: `(min, max)` corners.
+fn polyline_box(points: &[remus_math::vec::Point3]) -> ([f64; 3], [f64; 3]) {
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for p in points {
+        for (axis, value) in [p.x(), p.y(), p.z()].into_iter().enumerate() {
+            lo[axis] = lo[axis].min(value);
+            hi[axis] = hi[axis].max(value);
+        }
+    }
+    (lo, hi)
+}
+
+/// Whether the shortest distance between two sampled polylines is at most
+/// `reach`: the verdict `polyline_distance(a, b) <= reach` would give, without
+/// computing the minimum.
+///
+/// Two exact shortcuts. A pair whose boxes are further apart than `reach`
+/// cannot have a point within it, since every point and segment lies in its
+/// polyline's box; the box gap must clear `reach` by a margin far above the
+/// rounding of `point_segment_distance` (a few ulps of the coordinates) so a
+/// tie is never decided differently. Otherwise the scan visits the terms of
+/// the same minimum in the same order and stops at the first one within
+/// `reach`, which the minimum would have been at or below.
+fn polylines_within(
+    a: &[remus_math::vec::Point3],
+    a_box: &([f64; 3], [f64; 3]),
+    b: &[remus_math::vec::Point3],
+    b_box: &([f64; 3], [f64; 3]),
+    reach: f64,
+) -> bool {
+    let mut gap_sq = 0.0;
+    let mut magnitude = 0.0f64;
+    for axis in 0..3 {
+        let gap = (a_box.0[axis] - b_box.1[axis]).max(b_box.0[axis] - a_box.1[axis]);
+        if gap > 0.0 {
+            gap_sq += gap * gap;
+        }
+        for bound in [a_box.0[axis], a_box.1[axis], b_box.0[axis], b_box.1[axis]] {
+            magnitude = magnitude.max(bound.abs());
+        }
+    }
+    let margin = 1e-9 * (magnitude + reach.abs()) + f64::MIN_POSITIVE;
+    if gap_sq.sqrt() > reach + margin {
+        return false;
+    }
+    #[cfg(test)]
+    grouping_oracle_tests::SCANNED_PAIRS.with(|n| n.set(n.get() + 1));
     for &p in a {
         for w in b.windows(2) {
-            best = best.min(point_segment_distance(p, w[0], w[1]));
+            if point_segment_distance(p, w[0], w[1]) <= reach {
+                return true;
+            }
         }
     }
     for &p in b {
         for w in a.windows(2) {
-            best = best.min(point_segment_distance(p, w[0], w[1]));
+            if point_segment_distance(p, w[0], w[1]) <= reach {
+                return true;
+            }
         }
     }
-    best
+    false
 }
 
 /// Union-find root of `i`, path-compressing on the way up.
@@ -1243,25 +1293,31 @@ fn independent_blend_groups(
 
     // Union-find over the seeds.
     let mut parent: Vec<usize> = (0..edges.len()).collect();
+    let boxes: Vec<_> = outlines.iter().map(|o| polyline_box(o)).collect();
     // A polyline chord may sit up to half its own length from the true curve,
     // so widen the reach test by that much rather than risk splitting a pair
     // that in fact touches.
     let slack = size * 0.25;
     for i in 0..edges.len() {
         for j in (i + 1)..edges.len() {
+            let (ri, rj) = (
+                union_find_root(&mut parent, i),
+                union_find_root(&mut parent, j),
+            );
+            // Joining a pair already in one group changes nothing, so its
+            // proximity is never needed. This is what keeps a whole-body
+            // selection (one group, reached through shared vertices) from
+            // paying for every pairwise distance.
+            if ri == rj {
+                continue;
+            }
             let shares_ridgeline = chains[i].iter().any(|e| chains[j].contains(e));
             let reach = bands[i] + bands[j] + slack;
             let touches = shares_ridgeline
                 || !reach.is_finite()
-                || polyline_distance(&outlines[i], &outlines[j]) <= reach;
+                || polylines_within(&outlines[i], &boxes[i], &outlines[j], &boxes[j], reach);
             if touches {
-                let (ri, rj) = (
-                    union_find_root(&mut parent, i),
-                    union_find_root(&mut parent, j),
-                );
-                if ri != rj {
-                    parent[ri] = rj;
-                }
+                parent[ri] = rj;
             }
         }
     }
@@ -1458,7 +1514,7 @@ fn fillet_group(
         // handles those shapes. Each attempt is transactional, so the
         // fall-through starts from a clean arena.
         match attempt_with_lazy_material_guard(topo, solid, edges, radius, |t| {
-            planar_fillet_result(t, solid, edges, radius)
+            planar_fillet_result(t, solid, edges, radius, false)
         }) {
             Ok(result) => return Ok(result),
             Err(
@@ -1765,6 +1821,15 @@ pub fn fillet_v2(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<BlendResult, OperationsError> {
+    crate::measure::volume_memo::scoped(|| fillet_v2_attempts(topo, solid, edges, radius))
+}
+
+fn fillet_v2_attempts(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    radius: f64,
+) -> Result<BlendResult, OperationsError> {
     if !radius.is_finite() || radius <= 0.0 {
         return Err(OperationsError::InvalidInput {
             reason: format!("radius must be finite and positive, got {radius}"),
@@ -1825,6 +1890,17 @@ pub fn fillet_cascade(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<BlendResult, OperationsError> {
+    // Every attempt's volume guard measures the same input, and a rolled-back
+    // attempt rebuilt under the material guard measures an identical result.
+    crate::measure::volume_memo::scoped(|| fillet_cascade_attempts(topo, solid, edges, radius))
+}
+
+fn fillet_cascade_attempts(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    radius: f64,
+) -> Result<BlendResult, OperationsError> {
     let walking_refusal = match transactional(topo, |t| {
         let result = fillet_v2(t, solid, edges, radius)?;
         reject_open_shell(t, result.solid)?;
@@ -1841,8 +1917,11 @@ pub fn fillet_cascade(
         // The same lazy B71 material guard `fillet_v2` gives its own
         // rolling-ball attempt, so the fallback cannot ship a wrong-side band
         // the walking engine's route would have refused.
+        // Only here may a straight stripe that runs into a step close with a
+        // section facet: the walking engine has already refused the
+        // selection, so no result it would have produced is replaced.
         let result = attempt_with_lazy_material_guard(t, solid, edges, radius, |t| {
-            planar_fillet_result(t, solid, edges, radius)
+            planar_fillet_result(t, solid, edges, radius, true)
         })?;
         reject_open_shell(t, result.solid)?;
         Ok(result)
@@ -2744,3 +2823,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod grouping_oracle_tests;
