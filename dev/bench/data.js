@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792655092054,
+  "lastUpdate": 1792660006948,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -124711,6 +124711,294 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 80528,
             "range": "± 526",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "1f44096d05fa6868a042cc844f279ea370aa3e81",
+          "message": "perf(operations): make fillet postconditions and refusals cheap without weakening them (#1246)\n\n## Change\n\nThis profiles the fillet cascade on one successful edit and one slow\ntyped refusal, then removes cost that was not the checks' own work.\nEvery postcondition still runs with the same inputs and thresholds. Each\nshortcut is exact, and each has a test comparing it against a verbatim\ncopy of the code it replaced.\n\n### Where the time went (callgrind, `profiling` build; `perf` is\nunavailable in the container)\n\n**Plate, top loop r1.** A 40×30×4 plate has its vertical corners\nfilleted at r5, then its 8-edge top loop at r1. The rolling-ball result\ncarries NURBS bands.\n- The B71 convex-material guard was about half the profiled run. It\nclassifies 6000 tube samples against the input and against the result,\nand each ray against the result's NURBS bands costs curve–surface\nintersections. This PR leaves it unchanged (see below).\n- `validate_blend_volume` was about 30%. It measures volume before and\nafter, both on the whole-solid mesh. The lazy material guard builds the\nresult, sees a new NURBS face, rolls back and rebuilds under the guard,\nso both readings ran **twice**.\n- `validate_solid` was under 1% and the rolling-ball build about 1%. On\nthis case the \"validation\" cost is the volume guard's meshes, not\n`validate_solid`.\n\n**Bracket, whole-body refusal** (`unsupported-vertex-blend: … 2 stripes\nmeet`).\n- `independent_blend_groups` was about 99.6%. After the whole selection\nrefuses, it decides whether the selection splits into separate features\nby computing every pairwise `polyline_distance`. Edges are sampled at\n`r/4`, so this grows as 1/r².\n- The engine's own refusal was about 0.04%. The walking builder already\nrefuses before building any stripe (the chains-at-vertex guard in\n`FilletBuilder::build`), so the refusal itself was already early. The\nslow part was the grouping analysis after it.\n\n### Fixes\n\n1. **Feature grouping** (`blend_ops::independent_blend_groups`):\n- Skip a pair already in one union-find component; joining it changes\nnothing.\n- Reject a pair whose polyline boxes are farther apart than the reach,\nwith a 1e-9 relative margin so a tie is never decided differently.\n   - Stop the distance scan at the first term within reach.\n\n   The resulting groups are identical.\n2. **Scoped volume memo** (`measure::volume_memo::scoped`, wrapping\n`fillet_cascade` and `fillet_v2`):\n- When the thread memo is off (the native default), a temporary memo\nkeyed by canonical (rank) content serves the readings the cascade\nrepeats: the unchanged input on every attempt, and the guarded rebuild's\nidentical result in fresh handle slots.\n   - Memo readings are bit-identical to fresh ones.\n- The disabled memo, counters included, is restored on exit and on\nunwind.\n- A memo the application already enabled (the WASM kernel) is used as it\nis.\n\nNot changed: the B71 guard. An earlier revision classified against the\nresult only the samples `Outside` the input. Successful verdicts were\nbit-identical, but the skipped samples' per-point classification errors\nno longer refused the fillet, so the fail-closed contract was weaker.\nReverted in a1ab147.\n\nUnchanged: what each guard checks, its thresholds, refusal codes, engine\norder and result geometry.\n\n## Verification\n\nCriterion, new `crates/operations/benches/fillet_perf.rs`, same machine.\nBEFORE is `main` at ed34a9a. AFTER is a1ab147, which also includes the\n`main` merged since then.\n\n```\nBEFORE (main)\nfillet/plate_top_loop_r1      time:   [152.90 ms 156.35 ms 160.57 ms]\nfillet/bracket_refusal_r0.5   time:   [377.58 ms 385.76 ms 394.20 ms]\nfillet/bracket_refusal_r1     time:   [110.34 ms 118.01 ms 131.62 ms]\nfillet/bracket_refusal_r2     time:   [29.269 ms 32.349 ms 34.824 ms]\n\nAFTER (a1ab147)\nfillet/plate_top_loop_r1      time:   [124.45 ms 127.51 ms 131.09 ms]\nfillet/bracket_refusal_r0.5   time:   [3.7860 ms 3.9233 ms 4.0652 ms]\nfillet/bracket_refusal_r1     time:   [1.4554 ms 1.4798 ms 1.5025 ms]\nfillet/bracket_refusal_r2     time:   [1.0711 ms 1.1120 ms 1.1524 ms]\n```\n\nThe plate is **1.23×** faster; the refusal is **98× / 80× / 29×** faster\nat r 0.5 / 1 / 2.\n\n- Every iteration includes one `Topology::clone`, on both sides.\n- The bracket is a holed L-bracket fixture with 14 faces and 32 edges,\nnot the 26-face/60-edge bracket from the report, which I didn't have. It\nrefuses with the same code and shows the same 1/r² scaling.\n- What is left on the plate (about 127 ms) is the guards doing their\nactual work: ray-casting all 6000 B71 samples against the input and\nagainst the NURBS-band result, plus two whole-solid meshes for the\nbefore/after volume. Making those proportional to the edit (per-face\nintegrals instead of the closed mesh) would change the measured value,\nso this PR leaves them alone.\n\nNew tests:\n- `blend_ops/grouping_oracle_tests.rs`: the pre-change grouping kept\nverbatim and compared with the new one on:\n- boxes at, just below and just above the split radius `10/2.25` (the\ntie case)\n  - the holed bracket\n  - a drilled plate whose groups split and join across the radius sweep\n  - deterministic edge subsets\n\nIt also holds a deterministic complexity guard: the whole-body bracket\nscans fewer than ¼ of its pairs.\n-\n`volume_memo::tests::scoped_memo_reuses_rebuilt_readings_and_restores_the_disabled_memo`:\na body rebuilt in shifted handle slots is a content hit returning the\nfresh reading's bits, and the disabled memo's stats are unchanged\nafterwards.\n\nChecks run:\n- `cargo clippy -p remus-operations --all-targets -D warnings`: clean.\n- `cargo fmt`: applied.\n- `check-boundaries.sh`, `check-det-hash.sh`, `check-doc-paths.sh`,\n`check-doc-module-map.py`: pass.\n- `cargo test -p remus-operations -p remus-blend` (local debug build,\nwith debuginfo off to fit the container's disk): 3437 passed, 0 failed,\nacross 257 test binaries. That run predates the `main` merge and the B71\nrevert; after both, the blend_ops, blend_material, volume_memo and\nfillet unit tests and `fillet_torture` pass.\n\nNot run locally:\n- `scripts/check-approx-census.py` (release build; the disk budget was\nexhausted).\n- WASM contract tests.\n\nCI covers both.\n\n## Compatibility and risks\n\n- No public API changes. `volume_memo::scoped` is crate-internal.\n- No changes to units, tolerances, formats or dependencies.\n- New bench target `fillet_perf` in `crates/operations/Cargo.toml`.\n- Risk: while the native thread memo is off, the cascade now runs with a\ntemporary memo. Readings are documented and tested as bit-identical, and\nthe off state is restored exactly afterwards.\n\n## WASM module tier\n\nNone. There is no new capability, and the change does not add kernel\ncode beyond the internal helper.\n\n---\n_Generated by [Claude\nCode](https://claude.ai/code/session_012e5aMWkkFSzVMkdpM1DFhP)_\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-10-21T22:55:45Z",
+          "tree_id": "cf2777378ffa488463e59ba6f46c3d459447c002",
+          "url": "https://github.com/esaueng/remus/commit/1f44096d05fa6868a042cc844f279ea370aa3e81"
+        },
+        "date": 1792660004377,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1186516,
+            "range": "± 3513",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1272222,
+            "range": "± 3683",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27202,
+            "range": "± 68",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7276243,
+            "range": "± 4633",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7253817,
+            "range": "± 4753",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7120640,
+            "range": "± 8297",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 28437,
+            "range": "± 129",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3444685,
+            "range": "± 6373",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 29575210,
+            "range": "± 732663",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 40,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 117,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 65,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 240,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 157,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 867,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 169,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 404,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 211,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 599,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 627,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3513,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 4025,
+            "range": "± 48",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 14951,
+            "range": "± 17",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 53060,
+            "range": "± 274",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5274,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 510943,
+            "range": "± 1488",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2481547,
+            "range": "± 5670",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 143975,
+            "range": "± 517",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 296230,
+            "range": "± 427",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 361808,
+            "range": "± 1787",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 66138,
+            "range": "± 3122",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 34689,
+            "range": "± 179",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 20897,
+            "range": "± 68",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 117728,
+            "range": "± 553",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 141051,
+            "range": "± 383",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 649732,
+            "range": "± 30384",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 7809534,
+            "range": "± 263267",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 551785,
+            "range": "± 2086",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1182570,
+            "range": "± 5744",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 85548,
+            "range": "± 441",
             "unit": "ns/iter"
           }
         ]
