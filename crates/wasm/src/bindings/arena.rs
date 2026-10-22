@@ -68,7 +68,9 @@ enum DocumentCopyError {
     #[error("a poisoned kernel cannot copy a document")]
     Poisoned,
     #[error("document copy entity limit {requested} exceeds the default maximum {maximum}")]
-    EntityLimit { requested: usize, maximum: usize },
+    EntityLimit { requested: f64, maximum: usize },
+    #[error("document copy entity limit must be a non-negative integer, got {requested}")]
+    InvalidEntityLimit { requested: f64 },
 }
 
 impl KernelDocumentCopy {
@@ -101,7 +103,7 @@ impl BrepKernel {
         solids: &[u32],
         sheets: &[u32],
         wires: &[u32],
-        max_entities: Option<u32>,
+        max_entities: Option<f64>,
     ) -> Result<KernelDocumentCopy, JsError> {
         Ok(self.copy_document_impl(solids, sheets, wires, max_entities)?)
     }
@@ -295,20 +297,27 @@ impl BrepKernel {
         solids: &[u32],
         sheets: &[u32],
         wires: &[u32],
-        max_entities: Option<u32>,
+        max_entities: Option<f64>,
     ) -> Result<KernelDocumentCopy, DocumentCopyError> {
         use remus_io::arena_io::{CompactionRoots, compact_document_with_limit};
         if self.poisoned {
             return Err(DocumentCopyError::Poisoned);
         }
         let maximum = remus_io::ImportLimits::default().max_model_entities;
-        let limit = max_entities.map_or(maximum, |limit| limit as usize);
-        if limit > maximum {
-            return Err(DocumentCopyError::EntityLimit {
-                requested: limit,
-                maximum,
-            });
-        }
+        // Taken as f64 and checked before conversion: a u32 parameter would
+        // let wasm-bindgen wrap 2^32 + n to n and truncate fractions.
+        let limit = match max_entities {
+            None => maximum,
+            Some(requested)
+                if !requested.is_finite() || requested < 0.0 || requested.fract() != 0.0 =>
+            {
+                return Err(DocumentCopyError::InvalidEntityLimit { requested });
+            }
+            Some(requested) if requested > maximum as f64 => {
+                return Err(DocumentCopyError::EntityLimit { requested, maximum });
+            }
+            Some(requested) => requested as usize,
+        };
         // Check before allocating resolved root lists. The native discovery
         // additionally accounts for every entity and reference it copies.
         if [solids.len(), sheets.len(), wires.len()]
@@ -501,21 +510,30 @@ mod tests {
             Err(DocumentCopyError::Handle(_))
         ));
         assert!(matches!(
-            source.copy_document_impl(&[solid], &[], &[], Some(1)),
+            source.copy_document_impl(&[solid], &[], &[], Some(1.0)),
             Err(DocumentCopyError::Document(
                 remus_io::IoError::LimitExceeded { .. }
             ))
         ));
         assert!(matches!(
-            source.copy_document_impl(&[solid, solid], &[], &[], Some(1)),
+            source.copy_document_impl(&[solid, solid], &[], &[], Some(1.0)),
             Err(DocumentCopyError::Document(
                 remus_io::IoError::LimitExceeded { .. }
             ))
         ));
-        assert!(matches!(
-            source.copy_document_impl(&[], &[], &[], Some(u32::MAX)),
-            Err(DocumentCopyError::EntityLimit { .. })
-        ));
+        // 2^32 + 3,000,000 would wrap to the default limit as a u32.
+        for over in [f64::from(u32::MAX), 4_297_967_296.0, f64::MAX] {
+            assert!(matches!(
+                source.copy_document_impl(&[], &[], &[], Some(over)),
+                Err(DocumentCopyError::EntityLimit { .. })
+            ));
+        }
+        for invalid in [f64::NAN, f64::INFINITY, -1.0, 1.5] {
+            assert!(matches!(
+                source.copy_document_impl(&[], &[], &[], Some(invalid)),
+                Err(DocumentCopyError::InvalidEntityLimit { .. })
+            ));
+        }
         let outer = source
             .topo()
             .solid(source.resolve_solid(solid).unwrap())
@@ -533,7 +551,7 @@ mod tests {
         source.poisoned = false;
         assert_eq!(source.serialize_solid(solid).unwrap(), bytes);
         assert_eq!(source.checkpoint_memory_stats().unwrap(), stats);
-        let mut empty = source.copy_document_impl(&[], &[], &[], Some(0)).unwrap();
+        let mut empty = source.copy_document_impl(&[], &[], &[], Some(0.0)).unwrap();
         let next = empty.take_kernel_impl().unwrap();
         assert_eq!(next.topo().num_solids(), 0);
         assert!(matches!(

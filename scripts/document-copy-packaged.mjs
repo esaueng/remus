@@ -28,6 +28,10 @@ export function runDocumentCopyPackaged({ BrepKernel, RemusIo }, { onObservation
         () => source.copyDocument([solid], [], [], 1),
         () => source.copyDocument([solid, solid], [], [], 1),
         () => source.copyDocument([], [], [], 0xffff_ffff),
+        // Out-of-range or non-integer budgets must not wrap or truncate.
+        ...[2 ** 32 + 3_000_000, Number.NaN, Infinity, -1, 1.5].map(
+          (limit) => () => source.copyDocument([], [], [], limit),
+        ),
       ]) assert.throws(action);
       assert.deepEqual(stats(source), sourceStats);
       assert.equal(source.journalSummary(), journal);
