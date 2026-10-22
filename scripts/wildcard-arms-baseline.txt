@@ -31,7 +31,7 @@
 1 crates/operations/src/draft.rs
 2 crates/operations/src/extrude.rs
 1 crates/operations/src/feature_recognition.rs
-2 crates/operations/src/fillet/mod.rs
+1 crates/operations/src/fillet/mod.rs
 1 crates/operations/src/fillet/rolling_ball.rs
 2 crates/operations/src/heal.rs
 3 crates/operations/src/loft.rs
