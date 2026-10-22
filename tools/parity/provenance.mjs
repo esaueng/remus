@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { resolve, sep } from 'node:path';
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 
 function runCapture(command, args, cwd) {
   try {
@@ -36,8 +36,13 @@ function validateSourceIdentity(source, requireWasmPack = false) {
 export function validateInstalledEntry(entry, installedDir) {
   assert.ok(entry, 'installed package entry is missing');
   assert.ok(installedDir, 'installed package dir is missing');
+  // Resolve filesystem spelling/case and symlinks before checking containment.
+  // path.relative also respects Windows drive and case semantics.
+  let within;
+  try { within = relative(realpathSync(installedDir), realpathSync(entry)); }
+  catch { assert.fail(`package resolved outside install or cannot be resolved: ${entry}`); }
   assert.ok(
-    entry.startsWith(`${installedDir}${sep}`),
+    within !== '' && within !== '..' && !within.startsWith(`..${sep}`) && !isAbsolute(within),
     `package resolved outside install: ${entry}`,
   );
   return true;

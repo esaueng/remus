@@ -103,6 +103,50 @@ The untrusted corpus job has read-only repository credentials. A separate
 main-only job receives the write token and publishes aggregate artifacts
 without checking out or executing repository code.
 
+### Import triage retained in aggregate artifacts
+
+New scoreboards and trend rows include optional `failure_details`:
+
+- `first_failure_codes` counts one primary error per failed model, grouped
+  by its first failing stage. Warnings and propagated prerequisite failures
+  do not multiply the count.
+- `import_families` counts one hint per failed import: input access, resource
+  limit, syntax, units/context, missing reference, endpoint authority, curve
+  domain, pcurve, face boundary, unsupported entity, no solids, or unknown.
+
+The family labels are conservative **heuristics**, not judgments that a file
+is malformed or valid. Parse-error prose has no stable subcode, so recognized
+reader templates supply hints; new or oversized messages remain `unknown`.
+Use the stable stage/code counts to preserve the error contract, then replay
+the pinned models before selecting an importer repair. No tolerance, resource
+limit, or acceptance policy is changed by these hints.
+
+The retained details contain only counts, fixed family labels and bounded
+ASCII diagnostic codes. They contain no model paths, entity labels, source
+text, or error prose. Aggregate details reconcile to the failed-model and
+failed-import denominators before a new trend row is accepted. Historical
+scoreboards/trends without this additive field remain readable, and existing
+stage regression ratchets keep their original behavior.
+
+Older runs cannot be classified retrospectively from their aggregate
+`invalid_input` count: per-model rows were discarded. In particular, the
+2026-10-18 ABC run's 193/1,000 imports and 801 `invalid_input` failures do not
+identify an importer family. A new pinned ABC run is required to establish
+that distribution and any later acceptance improvement; the source archive
+is 1,594,129,754 bytes, so the smoke tier is a separate, smaller diagnostic
+run rather than a substitute denominator.
+
+Local verification on 2026-10-20 used kernel `de6352906` plus this diagnostic
+change, the complete smoke manifest
+`779fcc7fc7488b9f1a05d0361aec94acc3c2d5cf44e81729e670b58bc24c3186`,
+the `ci-test` profile, default import limits, two workers, and a 120-second
+per-model budget. All 50 verified inputs stayed in the denominator: 44
+imported, 42 passed every stage, and the 6 import refusals yielded 5
+`endpoint_authority` hints and 1 `face_boundary` hint. The other first
+failures were 1 boolean topology error and 1 non-watertight tessellation.
+This measures the new diagnostics on smoke; it establishes no ABC acceptance
+improvement or timing comparison with the scheduled release-profile jobs.
+
 ## P-Class 8.5 operation/export slice
 
 `manifests/p85-slice.json` pins 11 MAMBO models (Apache-2.0, same pinned
