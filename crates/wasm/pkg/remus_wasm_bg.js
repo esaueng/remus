@@ -2363,6 +2363,8 @@ export class BrepKernel {
      *
      * Also accepts brepjs-style fields: `startRadius`/`endRadius` as aliases for `start`/`end`.
      * When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
+     * Missing or `null` numeric fields retain their defaults. Every other supplied
+     * numeric field must be a number, including aliases shadowed by `start`/`end`.
      * A supplied `law` must be `"constant"`, `"linear"`, or `"scurve"`.
      *
      * Returns a new solid handle.
@@ -6170,9 +6172,12 @@ export class BrepKernel {
      * The view arguments and `hidden_lines` match `projectEdges`, and the two
      * results together make the outline drawing. Returns a JSON string
      * `{"visible": [[x,y,…]], "hidden": [[…]], "unsupported": [{"face": id,
-     * "surface": "nurbs"}]}`: cylinder, cone, sphere and torus outlines are
-     * exact curves clipped to the face, and faces whose outline is not
-     * computed are named rather than approximated.
+     * "surface": tag}], "approximate": [id]}`: cylinder, cone, sphere and
+     * torus outlines are exact curves clipped to the face; NURBS outlines
+     * are traced on a grid of the face's parameters with every vertex on
+     * the silhouette, and every NURBS face but a certified flat one is
+     * listed in `approximate`, even where no contour was found.
+     * `unsupported` is empty today: every surface type is handled.
      *
      * # Errors
      *
