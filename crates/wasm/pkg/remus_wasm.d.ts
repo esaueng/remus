@@ -1309,6 +1309,25 @@ export class BrepKernel {
      */
     copyAndTransformSolidDetailed(solid: number, matrix: Float64Array, exact_only?: boolean | null): SolidOperationDetailedResult;
     /**
+     * Copy selected solid, sheet and wire roots into a fresh kernel.
+     *
+     * Retains exact document data and selected lineage without JSON transport,
+     * omitting unrelated live entities and retired slots. Root order and
+     * duplicate aliases are preserved. `maxEntities`, when supplied, can only
+     * lower the native default entity/reference budget; it is not a byte cap.
+     *
+     * The source and its checkpoints stay intact. The returned kernel has no
+     * checkpoints, sketches, assemblies or prepared moves. Rebuild selections
+     * in that owner from the returned roots. Numeric handles remain scoped to
+     * their kernel; equal numbers in two kernels do not imply equal identity.
+     * Release the old owner and its wrappers explicitly to reclaim its data.
+     * WASM linear memory need not shrink, and both documents coexist while
+     * copying. This does not validate geometric correctness.
+     *
+     * Direct-only: a JSON batch cannot return ownership of another kernel.
+     */
+    copyDocument(solids: Uint32Array, sheets: Uint32Array, wires: Uint32Array, max_entities?: number | null): KernelDocumentCopy;
+    /**
      * Deep copy a face, returning a new independent face handle.
      *
      * The copy shares no sub-entities with the original, so translating it
@@ -1859,6 +1878,8 @@ export class BrepKernel {
      *
      * Also accepts brepjs-style fields: `startRadius`/`endRadius` as aliases for `start`/`end`.
      * When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
+     * Missing or `null` numeric fields retain their defaults. Every other supplied
+     * numeric field must be a number, including aliases shadowed by `start`/`end`.
      * A supplied `law` must be `"constant"`, `"linear"`, or `"scurve"`.
      *
      * Returns a new solid handle.
@@ -3570,9 +3591,12 @@ export class BrepKernel {
      * The view arguments and `hidden_lines` match `projectEdges`, and the two
      * results together make the outline drawing. Returns a JSON string
      * `{"visible": [[x,y,…]], "hidden": [[…]], "unsupported": [{"face": id,
-     * "surface": "nurbs"}]}`: cylinder, cone, sphere and torus outlines are
-     * exact curves clipped to the face, and faces whose outline is not
-     * computed are named rather than approximated.
+     * "surface": tag}], "approximate": [id]}`: cylinder, cone, sphere and
+     * torus outlines are exact curves clipped to the face; NURBS outlines
+     * are traced on a grid of the face's parameters with every vertex on
+     * the silhouette, and every NURBS face but a certified flat one is
+     * listed in `approximate`, even where no contour was found.
+     * `unsupported` is empty today: every surface type is handled.
      *
      * # Errors
      *
@@ -4725,6 +4749,35 @@ export class JsVec3 {
      * Z component.
      */
     z: number;
+}
+
+/**
+ * A selected document copied into a fresh kernel, with ordered root remaps.
+ *
+ * Read the roots and call `takeKernel()` once. Each root belongs exclusively
+ * to that new owner. Freeing this object before taking the kernel drops the
+ * copied document; freeing it afterwards leaves the taken kernel intact.
+ */
+export class KernelDocumentCopy {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Transfer the new kernel to the caller. A second call throws.
+     */
+    takeKernel(): BrepKernel;
+    /**
+     * Sheet roots corresponding to the requested sheets, including aliases.
+     */
+    readonly sheets: Uint32Array;
+    /**
+     * Solid roots corresponding to the requested solids, including aliases.
+     */
+    readonly solids: Uint32Array;
+    /**
+     * Wire roots corresponding to the requested wires, including aliases.
+     */
+    readonly wires: Uint32Array;
 }
 
 /**
