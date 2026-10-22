@@ -373,8 +373,8 @@ fn get_u32(args: &Value, key: &str) -> Option<u32> {
 ///   prim or copy (`finding_pointed_cone_fuse_orientation`, F11: two
 ///   demonstrated instances with identical minimal signatures) — and ANY
 ///   boolean on a cone–cone pair (`finding_placed_frustum_pair_fuse_
-///   orientation`, F17: the pair's complementary fuse leg misorients 4
-///   edges). Other operators on mixed pairs stay in generation as
+///   orientation`, F17: the literal is repaired, but the general cone-pair
+///   family still has retained placement/scale limits). Other mixed pairs stay as
 ///   tripwires.
 /// - X11: a CUT of two prim cylinders with a translated-but-unrotated side
 ///   on either operand (`finding_translated_cyl_cut_orientation`, F12: 3
@@ -6243,21 +6243,22 @@ fn finding_mirrored_box_intersect_orientation() {
     );
 }
 
-/// 8.1 finding F17 (retained, kernel untouched): a fuse of a frustum cone
+/// 8.1 finding F17 regression: a fuse of a frustum cone
 /// (4.5, 2.5, 5.5) with its copy translated 7 along x carries 4 shared edges
 /// with inconsistent face orientations. Surfaced by the bounded campaign
 /// (seed `9220677054601863815`) as the complementary fuse leg of an exact
 /// intersect of the cone with its mirror across x = 3.5 — geometrically
 /// this same translated copy, since the cone is axisymmetric. Before B122 the
 /// mirrored cone was misoriented and the leg refused, masking the defect;
-/// the translated twin reproduces it on `main` without any mirror. X10
-/// family (fuse consuming a cone); widens X10 to every operator on a
-/// cone–cone pair.
+/// the translated twin reproduced it on the original base without a mirror. X10
+/// family (fuse consuming a cone). The bounded repair supplies the exact
+/// equal-cone conic, relocates a proved-clear artificial seam, and synchronizes
+/// its untouched rim with the cap. The broad X10 generator exclusion remains.
 ///
-/// Acceptance: the harness `ExactOk` verdict (valid topology with agreeing
-/// volumes). No geometry fix in this PR.
+/// Acceptance: the harness `ExactOk` verdict plus the independent quantity,
+/// material, raw-mesh and accepted/refused matrix in
+/// `regress_opseq_equal_frustum_fuse.rs`.
 #[test]
-#[ignore = "8.1 finding F17: fuse of two placed frustum cones misorients 4 shared edges; route to the B33 orientation family"]
 fn finding_placed_frustum_pair_fuse_orientation() {
     let ops: Vec<Value> = serde_json::from_str(
         r#"[{"args":{"bottomRadius":4.5,"height":5.5,"topRadius":2.5},"op":"makeCone"},{"args":{"bottomRadius":4.5,"height":5.5,"topRadius":2.5},"op":"makeCone"},{"args":{"matrix":[1.0,0.0,0.0,7.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0],"solid":1},"op":"transform"},{"args":{"exactOnly":true,"operation":"fuse","solidA":1,"solidB":0},"op":"booleanWithQuality"}]"#,

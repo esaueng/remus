@@ -7,7 +7,7 @@
 //! test appends read-only probes (`validateSolid`, `volume`, `meshQuality`)
 //! on the final produced solid and checks the pinned acceptance or defect signature:
 //!
-//! - fixed orientation findings F1/F2/F5/F10/F11/F12/F16 must validate clean and mesh
+//! - fixed orientation findings F1/F2/F5/F10/F11/F12/F16/F17 must validate clean and mesh
 //!   watertight with their closed-form volumes through batch.
 //! - fixed material findings F3/F6/F8 must retain their independently derived
 //!   remainders and mesh watertight through batch.
@@ -237,6 +237,16 @@ fn cross_checks() -> Vec<CrossCheck> {
             file: "opseq81-cylinder-offset-mesh.json",
             signature: Signature::Probes {
                 volume_near: (9.0 * std::f64::consts::PI / 32.0, 1e-9),
+                validate: ValidateExpect::Clean,
+                watertight: Some(true),
+            },
+        },
+        CrossCheck {
+            file: "opseq81-equal-frustum-fuse-orientation.json",
+            signature: Signature::Probes {
+                // Independent horizontal-disc overlap integral; the native
+                // and packaged matrices retain the tighter quantity gates.
+                volume_near: (426.554_124_672_275_07, 0.05),
                 validate: ValidateExpect::Clean,
                 watertight: Some(true),
             },
