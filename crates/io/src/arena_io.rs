@@ -758,6 +758,7 @@ struct Builder<'a> {
     solid_map: HashMap<usize, usize>,
     limits: Option<ImportLimits>,
     total_entities: usize,
+    reference_counts: HashMap<&'static str, usize>,
 }
 
 impl<'a> Builder<'a> {
@@ -783,6 +784,7 @@ impl<'a> Builder<'a> {
             solid_map: HashMap::new(),
             limits: None,
             total_entities: 0,
+            reference_counts: HashMap::new(),
         }
     }
 
@@ -801,6 +803,19 @@ impl<'a> Builder<'a> {
                 self.total_entities,
                 limits.max_model_entities,
             )?;
+        }
+        Ok(())
+    }
+
+    fn reserve_references(&mut self, resource: &'static str, count: usize) -> Result<(), IoError> {
+        if let Some(limits) = self.limits {
+            let total = self.reference_counts.entry(resource).or_default();
+            *total = total.checked_add(count).ok_or(IoError::LimitExceeded {
+                resource,
+                limit: limits.max_model_entities,
+                actual: usize::MAX,
+            })?;
+            ensure_limit(resource, *total, limits.max_model_entities)?;
         }
         Ok(())
     }
@@ -864,6 +879,7 @@ impl<'a> Builder<'a> {
         self.reserve_entity()?;
         let topo = self.topo;
         let w = topo.wire(id)?;
+        self.reserve_references("arena wire edge references", w.edges().len())?;
         let edge_uses = w.edges().to_vec();
         let closed = w.is_closed();
         let body_class = w.body_class();
@@ -892,12 +908,22 @@ impl<'a> Builder<'a> {
         }
         self.reserve_entity()?;
         let topo = self.topo;
+        let f = topo.face(id)?;
+        self.reserve_references("arena face inner wire references", f.inner_wires().len())?;
+        if let Some(limits) = self.limits {
+            for wire in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+                ensure_limit(
+                    "arena wire edge references",
+                    topo.wire(wire)?.edges().len(),
+                    limits.max_model_entities,
+                )?;
+            }
+        }
         remus_topology::validation::validate_face_loops(topo, id).map_err(|error| {
             IoError::InvalidTopology {
                 reason: format!("face {id:?} has inconsistent boundary authority: {error}"),
             }
         })?;
-        let f = topo.face(id)?;
         let outer_wire_id = f.outer_wire();
         let inner_wire_ids = f.inner_wires().to_vec();
         let surface = f.surface();
@@ -958,6 +984,10 @@ impl<'a> Builder<'a> {
         self.reserve_entity()?;
         let topo = self.topo;
         let boundary_loop = topo.face_loop(id)?;
+        self.reserve_references(
+            "arena loop coedge references",
+            boundary_loop.coedges().len(),
+        )?;
         let coedge_ids = boundary_loop.coedges().to_vec();
         let closed = boundary_loop.is_closed();
         let mut coedges = Vec::with_capacity(coedge_ids.len());
@@ -1015,6 +1045,7 @@ impl<'a> Builder<'a> {
         self.reserve_entity()?;
         let topo = self.topo;
         let s = topo.shell(id)?;
+        self.reserve_references("arena shell face references", s.faces().len())?;
         let face_ids = s.faces().to_vec();
         let body_class = s.body_class();
         let mut faces = Vec::with_capacity(face_ids.len());
@@ -1035,6 +1066,7 @@ impl<'a> Builder<'a> {
         self.reserve_entity()?;
         let topo = self.topo;
         let solid = topo.solid(id)?;
+        self.reserve_references("arena inner shell references", solid.inner_shells().len())?;
         let outer_shell_id = solid.outer_shell();
         let inner_shell_ids = solid.inner_shells().to_vec();
         let outer_shell = self.intern_shell(outer_shell_id)?;
@@ -1830,6 +1862,28 @@ fn parse_document(bytes: &[u8], limits: ImportLimits) -> Result<ParsedDocument, 
 }
 
 fn check_document_limits(document: &ParsedDocument, limits: ImportLimits) -> Result<(), IoError> {
+    let wire_edge_refs = checked_reference_count(
+        "arena wire edge references",
+        document.wires.iter().map(|wire| wire.edges.len()),
+        limits.max_model_entities,
+    )?;
+    let shell_face_refs = checked_reference_count(
+        "arena shell face references",
+        document.shells.iter().map(|shell| shell.faces.len()),
+        limits.max_model_entities,
+    )?;
+    let face_inner_wire_refs = checked_reference_count(
+        "arena face inner wire references",
+        document.faces.iter().map(|face| face.inner_wires.len()),
+        limits.max_model_entities,
+    )?;
+    for (resource, count) in [
+        ("arena wire edge references", wire_edge_refs),
+        ("arena shell face references", shell_face_refs),
+        ("arena face inner wire references", face_inner_wire_refs),
+    ] {
+        ensure_limit(resource, count, limits.max_model_entities)?;
+    }
     let (loop_count, coedge_count, face_authority_count) = document
         .boundary_authority
         .as_ref()
@@ -3366,6 +3420,240 @@ fn journal_from_snapshot(
 fn index_err(kind: &str, index: usize) -> IoError {
     IoError::ParseError {
         reason: format!("arena dump references out-of-range {kind} index {index}"),
+    }
+}
+
+/// Explicit roots retained by [`compact_document`].
+///
+/// Reachable entities are copied once, preserving shared subtrees. Unselected
+/// live entities and retirement tombstones are omitted. Assemblies, comp-solids,
+/// checkpoints, sketches and other kernel session state are outside this API.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CompactionRoots<'a> {
+    /// Ordered solid roots. Duplicate roots remain aliases.
+    pub solids: &'a [SolidId],
+    /// Ordered first-class sheet roots. Duplicate roots remain aliases.
+    pub sheets: &'a [ShellId],
+    /// Ordered first-class wire roots. Duplicate roots remain aliases.
+    pub wires: &'a [WireId],
+    /// Ordered compound roots. Duplicate roots remain aliases.
+    pub compounds: &'a [CompoundId],
+}
+
+/// A fresh topology containing only the selected document's reachable state.
+///
+/// `roots` corresponds element-for-element to the supplied root lists. All
+/// handles are scoped to their owning topology: use the returned roots with
+/// `topology`, and keep source handles with the original topology. There is no
+/// automatic rebinding of externally retained entity handles or references.
+pub struct CompactedDocument {
+    /// Independent dense topology; the source topology is never modified.
+    pub topology: Topology,
+    /// Roots remapped into `topology`, preserving input order and aliases.
+    pub roots: DeserializedDocument,
+}
+
+/// Copies selected roots into a fresh dense topology without JSON transport.
+///
+/// This is an explicit native memory-reclamation boundary. The source remains
+/// intact, including retired handles and any snapshots held by its caller. The
+/// caller can drop that source and its snapshots after migrating to the returned
+/// roots. Holding both topologies temporarily increases peak memory.
+///
+/// Geometry, trims, tolerances, per-use pcurves, supported face/solid attributes
+/// and the selected entities' journal lineage use the existing arena document
+/// contract. Carrier data is cloned directly, without float formatting/parsing,
+/// recognition, healing or tolerance changes. The same checked replay validates
+/// reconstruction; successful compaction does not certify geometric validity.
+///
+/// Uses the default import entity budget. No encoded-byte budget applies because
+/// this operation neither encodes nor parses a file. It does not expose a WASM
+/// session-compaction API or change allocation, retirement or restore semantics.
+///
+/// # Errors
+///
+/// Returns [`IoError`] on a missing root, inconsistent reachable topology,
+/// unsupported sheet/wire body class, invalid carrier or exceeded entity budget.
+pub fn compact_document(
+    source: &Topology,
+    roots: CompactionRoots<'_>,
+) -> Result<CompactedDocument, IoError> {
+    compact_document_with_limit(source, roots, ImportLimits::default().max_model_entities)
+}
+
+/// Copies selected document roots with an explicit maximum entity/reference count.
+///
+/// The budget is enforced during discovery and again over the document's
+/// topology and boundary-authority tables and reference lists, as for arena
+/// replay. It is not a total byte or retained-history memory cap. The source is
+/// unchanged on success and on every refusal.
+///
+/// # Errors
+///
+/// Returns the same errors as [`compact_document`], using `max_entities` instead
+/// of the default entity budget. Zero admits only an empty document.
+pub fn compact_document_with_limit(
+    source: &Topology,
+    roots: CompactionRoots<'_>,
+    max_entities: usize,
+) -> Result<CompactedDocument, IoError> {
+    let limits = ImportLimits {
+        max_model_entities: max_entities,
+        ..ImportLimits::default()
+    };
+    for (name, count) in [
+        ("compaction solid roots", roots.solids.len()),
+        ("compaction sheet roots", roots.sheets.len()),
+        ("compaction wire roots", roots.wires.len()),
+        ("compaction compound roots", roots.compounds.len()),
+    ] {
+        ensure_limit(name, count, max_entities)?;
+    }
+    let mut builder = Builder::new(source);
+    builder.limits = Some(limits);
+    let solid_roots = roots
+        .solids
+        .iter()
+        .map(|&id| builder.intern_solid(id))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut sheet_roots = Vec::with_capacity(roots.sheets.len());
+    for &id in roots.sheets {
+        let actual = source.shell(id)?.body_class();
+        if actual != BodyClass::Sheet {
+            return Err(remus_topology::TopologyError::BodyClassMismatch {
+                entity: "sheet root",
+                expected: BodyClass::Sheet.as_str(),
+                actual: actual.as_str(),
+            }
+            .into());
+        }
+        sheet_roots.push(builder.intern_shell(id)?);
+    }
+    let mut wire_roots = Vec::with_capacity(roots.wires.len());
+    for &id in roots.wires {
+        let actual = source.wire(id)?.body_class();
+        if actual != BodyClass::Wire {
+            return Err(remus_topology::TopologyError::BodyClassMismatch {
+                entity: "wire root",
+                expected: BodyClass::Wire.as_str(),
+                actual: actual.as_str(),
+            }
+            .into());
+        }
+        wire_roots.push(builder.intern_wire(id)?);
+    }
+
+    // Arena documents have one record per compound root. Intern roots here so
+    // repeating a compound preserves its identity as well as its members.
+    let mut compound_map = HashMap::new();
+    let mut compound_roots = Vec::with_capacity(roots.compounds.len());
+    let mut compounds = Vec::new();
+    for &id in roots.compounds {
+        if let Some(&index) = compound_map.get(&id) {
+            compound_roots.push(index);
+            continue;
+        }
+        builder.reserve_entity()?;
+        builder.reserve_references(
+            "arena compound solid references",
+            source.compound(id)?.solids().len(),
+        )?;
+        let members = source
+            .compound(id)?
+            .solids()
+            .iter()
+            .map(|&solid| builder.intern_solid(solid))
+            .collect::<Result<Vec<_>, _>>()?;
+        let index = compounds.len();
+        compounds.push(SerCompound { solids: members });
+        compound_map.insert(id, index);
+        compound_roots.push(index);
+    }
+    let journal = serialize_journal(source, &builder)?;
+    let attributes = serialize_attributes(source, &builder);
+    let document = ParsedDocument {
+        vertices: builder.vertices,
+        edges: builder
+            .edges
+            .into_iter()
+            .map(|edge| SerEdge {
+                start: edge.start,
+                end: edge.end,
+                curve: owned_curve(edge.curve),
+                tolerance: edge.tolerance,
+                trim: edge.trim,
+            })
+            .collect(),
+        wires: builder.wires,
+        faces: builder
+            .faces
+            .into_iter()
+            .map(|face| SerFace {
+                outer_wire: face.outer_wire,
+                inner_wires: face.inner_wires,
+                surface: owned_surface(face.surface),
+                reversed: face.reversed,
+            })
+            .collect(),
+        shells: builder.shells,
+        solids: builder.solids,
+        solid_roots,
+        sheet_roots,
+        wire_roots,
+        compounds,
+        pcurves: Vec::new(),
+        boundary_authority: Some(SerBoundaryAuthority {
+            loops: builder.loops,
+            coedges: builder
+                .coedges
+                .into_iter()
+                .map(|coedge| SerCoedgeAuthority {
+                    edge: coedge.edge,
+                    forward: coedge.forward,
+                    periodic_winding: coedge.periodic_winding,
+                    pcurve: coedge.pcurve.map(|pcurve| SerUsePCurve {
+                        curve: pcurve.curve.clone(),
+                        t_start: pcurve.t_start,
+                        t_end: pcurve.t_end,
+                    }),
+                })
+                .collect(),
+            faces: builder.face_loop_authority,
+        }),
+        journal,
+        attributes,
+    };
+    check_document_limits(&document, limits)?;
+    // The destination is local and empty, so failure discards it without a
+    // whole-source snapshot or a second copy of its retirement tombstones.
+    let mut topology = Topology::new();
+    let mut roots = replay_document_into(document, &mut topology, limits)?;
+    roots.compounds = compound_roots
+        .into_iter()
+        .map(|index| roots.compounds[index])
+        .collect();
+    Ok(CompactedDocument { topology, roots })
+}
+
+fn owned_curve(curve: SerEdgeCurveView<'_>) -> SerEdgeCurve {
+    match curve {
+        SerEdgeCurveView::Line => SerEdgeCurve::Line,
+        SerEdgeCurveView::NurbsCurve(curve) => SerEdgeCurve::NurbsCurve(curve.clone()),
+        SerEdgeCurveView::Circle(curve) => SerEdgeCurve::Circle(curve.clone()),
+        SerEdgeCurveView::Ellipse(curve) => SerEdgeCurve::Ellipse(curve.clone()),
+        SerEdgeCurveView::Hyperbola(curve) => SerEdgeCurve::Hyperbola(curve.clone()),
+        SerEdgeCurveView::Parabola(curve) => SerEdgeCurve::Parabola(curve.clone()),
+    }
+}
+
+fn owned_surface(surface: SerFaceSurfaceView<'_>) -> SerFaceSurface {
+    match surface {
+        SerFaceSurfaceView::Plane { normal, d } => SerFaceSurface::Plane { normal, d },
+        SerFaceSurfaceView::Nurbs(surface) => SerFaceSurface::Nurbs(surface.clone()),
+        SerFaceSurfaceView::Cylinder(surface) => SerFaceSurface::Cylinder(surface.clone()),
+        SerFaceSurfaceView::Cone(surface) => SerFaceSurface::Cone(surface.clone()),
+        SerFaceSurfaceView::Sphere(surface) => SerFaceSurface::Sphere(surface.clone()),
+        SerFaceSurfaceView::Torus(surface) => SerFaceSurface::Torus(surface.clone()),
     }
 }
 
