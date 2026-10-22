@@ -658,6 +658,335 @@ fn edge_tangency_splits(pos: Point3, far: Point3, qs: &[Point3], tol: Tolerance)
     hits.into_iter().map(|(_, q)| q).collect()
 }
 
+/// The planar ledge closing a two-stripe mixed corner (see [`ledge_corner`]).
+struct LedgeCorner {
+    /// The ledge's corner on the sharp third edge, one radius from the vertex.
+    p: Point3,
+    /// Outward normal of the ledge plane: against the sharp edge's direction.
+    outward: Vec3,
+}
+
+/// The run of boundary points a torus corner leaves on its cap plane in
+/// place of the vertex: `B1`, the tangency-split points, `B2`, and, at a
+/// ledge corner, the preserved point `P` on the sharp edge.
+///
+/// Every cap-plane face at the vertex takes the slice of this run between
+/// the points its two incident edges enter it at. A face bounded by both pair
+/// edges takes it whole; a coplanar split of the cap (a fused-flush tab)
+/// takes the sub-run between its seams' crossing points, so a face whose two
+/// edges at the vertex are both seams still closes.
+struct CapChain {
+    normal: Vec3,
+    d: f64,
+    /// Edge entering the run at `B1`.
+    pair_a: usize,
+    /// Edge entering the run at its last point (`B2`, or `P` at a ledge).
+    pair_b: usize,
+    points: Vec<Point3>,
+}
+
+impl CapChain {
+    fn on_plane(&self, normal: Vec3, d: f64, tol: Tolerance) -> bool {
+        let alignment = normal.dot(self.normal);
+        let offset_tol = tol.linear * 100.0;
+        ((alignment - 1.0).abs() <= 1e-9 && (d - self.d).abs() <= offset_tol)
+            || ((alignment + 1.0).abs() <= 1e-9 && (d + self.d).abs() <= offset_tol)
+    }
+
+    /// Index of the run point where the face boundary edge `edge`, leaving
+    /// the vertex at `pos` toward `other`, enters the run.
+    fn entry(&self, edge: usize, pos: Point3, other: Point3, tol: Tolerance) -> Option<usize> {
+        let last = self.points.len().checked_sub(1)?;
+        if edge == self.pair_a {
+            return Some(0);
+        }
+        if edge == self.pair_b {
+            return Some(last);
+        }
+        // A coplanar seam: the tangency split lying on it.
+        let dir = other - pos;
+        let len_sq = dir.dot(dir);
+        if len_sq <= tol.linear * tol.linear {
+            return None;
+        }
+        (1..last).find(|&k| {
+            let q = self.points[k];
+            let t = (q - pos).dot(dir) / len_sq;
+            t > 0.0 && t < 1.0 && ((pos + dir * t) - q).length() <= tol.linear
+        })
+    }
+
+    fn corner(
+        &self,
+        pos: Point3,
+        prev_pos: Point3,
+        next_pos: Point3,
+        prev_ei: usize,
+        ei: usize,
+        tol: Tolerance,
+    ) -> Result<Vec<Point3>, crate::OperationsError> {
+        let (Some(from), Some(to)) = (
+            self.entry(prev_ei, pos, prev_pos, tol),
+            self.entry(ei, pos, next_pos, tol),
+        ) else {
+            return Err(crate::OperationsError::Unsupported {
+                operation: "fillet",
+                reason: "torus corner cap face has an edge that does not enter its \
+                         tangency run"
+                    .to_owned(),
+            });
+        };
+        if from == to {
+            return Err(crate::OperationsError::Unsupported {
+                operation: "fillet",
+                reason: "torus corner cap face enters its tangency run twice at one point"
+                    .to_owned(),
+            });
+        }
+        Ok(if from < to {
+            self.points[from..=to].to_vec()
+        } else {
+            self.points[to..=from].iter().rev().copied().collect()
+        })
+    }
+}
+
+/// Qualify a vertex where exactly one concave and one convex straight
+/// stripe meet, and solve its corner.
+///
+/// The qualified cell is the 90-degree rectangular one: the stripes share one
+/// support plane `T`, the concave stripe's other support `W`, the convex
+/// stripe's other support `S`, and the vertex's one other non-flat edge — the
+/// sharp edge `Ev` along `S ∩ W`, convex and unselected — runs from the
+/// vertex along `T`'s outward normal. That is the notch of
+/// [`crate::fillet::notch_torus`] with `Ev` in place of its second convex
+/// stripe, and the corner is the same torus quarter: rolling the convex
+/// ball around the end of the concave stripe from `S ∩ T` toward `S ∩ W`.
+/// Without a stripe on `Ev` the quarter ends on the station plane one
+/// radius up `Ev`, where the material along the sharp edge resumes; the
+/// planar ledge `P → M2 → B2` (arc `M2 → B2` the torus's end section) closes
+/// it, `P` the point one radius up `Ev`.
+///
+/// Returns the torus, the edge directions from the vertex and the edges
+/// `[convex, Ev, concave]`, the support faces `[S, T, W]`, and the ledge;
+/// `None` (the caller keeps its typed refusal) outside the cell.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn ledge_corner(
+    topo: &Topology,
+    solid: SolidId,
+    vertex_index: usize,
+    incident_edges: &[EdgeId],
+    edge_to_faces: &HashMap<usize, Vec<FaceId>>,
+    vertex_faces: &HashMap<usize, Vec<FaceId>>,
+    planar_edge_sides: &HashMap<usize, f64>,
+    radius: f64,
+    tol: Tolerance,
+) -> Result<
+    Option<(
+        crate::fillet::notch_torus::NotchTorus,
+        [Vec3; 3],
+        [EdgeId; 3],
+        [usize; 3],
+        LedgeCorner,
+    )>,
+    crate::OperationsError,
+> {
+    use remus_math::det_hash::DetHashMap;
+    let [first, second] = incident_edges else {
+        return Ok(None);
+    };
+    let (Some(&side_first), Some(&side_second)) = (
+        planar_edge_sides.get(&first.index()),
+        planar_edge_sides.get(&second.index()),
+    ) else {
+        return Ok(None);
+    };
+    let (convex_edge, concave_edge) = match (side_first < 0.0, side_second < 0.0) {
+        (true, false) => (*first, *second),
+        (false, true) => (*second, *first),
+        _ => return Ok(None),
+    };
+    let convex_data = topo.edge(convex_edge)?;
+    let vertex_pos = if convex_data.start().index() == vertex_index {
+        topo.vertex(convex_data.start())?.point()
+    } else {
+        topo.vertex(convex_data.end())?.point()
+    };
+    // A face's outward plane through the vertex, which lies on every face
+    // considered here.
+    let plane_of = |face: FaceId| -> Option<(Vec3, f64)> {
+        let normal = topo
+            .face(face)
+            .ok()?
+            .effective_plane_normal()?
+            .normalize()
+            .ok()?;
+        Some((normal, dot_normal_point(normal, vertex_pos)))
+    };
+    let two_planar_faces = |edge: EdgeId| -> Option<[FaceId; 2]> {
+        let faces = edge_to_faces.get(&edge.index())?;
+        let [a, b] = faces.as_slice() else {
+            return None;
+        };
+        Some([*a, *b])
+    };
+    // The one other non-flat edge at the vertex. Flat seams between coplanar
+    // faces (a fused-flush tab splits a plane) carry no corner geometry.
+    let mut third: Option<EdgeId> = None;
+    let mut seen: Vec<usize> = Vec::new();
+    for &face in vertex_faces
+        .get(&vertex_index)
+        .map_or(&[][..], Vec::as_slice)
+    {
+        let face_data = topo.face(face)?;
+        for wire in
+            std::iter::once(face_data.outer_wire()).chain(face_data.inner_wires().iter().copied())
+        {
+            for oe in topo.wire(wire)?.edges() {
+                let edge_id = oe.edge();
+                let edge = topo.edge(edge_id)?;
+                if edge.start().index() != vertex_index && edge.end().index() != vertex_index {
+                    continue;
+                }
+                if edge_id == convex_edge
+                    || edge_id == concave_edge
+                    || seen.contains(&edge_id.index())
+                {
+                    continue;
+                }
+                seen.push(edge_id.index());
+                let Some([fa, fb]) = two_planar_faces(edge_id) else {
+                    return Ok(None);
+                };
+                let (Some((na, da)), Some((nb, db))) = (plane_of(fa), plane_of(fb)) else {
+                    return Ok(None);
+                };
+                let flat = (na.dot(nb) - 1.0).abs() <= tol.angular && (da - db).abs() <= tol.linear;
+                if flat {
+                    continue;
+                }
+                if third.replace(edge_id).is_some() {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+    let Some(third) = third else {
+        return Ok(None);
+    };
+    let third_edge = topo.edge(third)?;
+    if !matches!(third_edge.curve(), EdgeCurve::Line) {
+        return Ok(None);
+    }
+    let start = topo.vertex(third_edge.start())?.point();
+    let end = topo.vertex(third_edge.end())?.point();
+    let third_len = (end - start).length();
+    // `P` must sit strictly inside the sharp edge.
+    if third_len <= radius + tol.linear {
+        return Ok(None);
+    }
+    let Some([third_a, third_b]) = two_planar_faces(third) else {
+        return Ok(None);
+    };
+    let probe = radius.min(third_len * 0.1).max(tol.linear * 10.0);
+    let third_convex = matches!(
+        crate::query::ConcavityProbe::new(topo, solid).concavity(third, third_a, third_b, probe)?,
+        crate::query::EdgeConcavity::Convex
+    );
+
+    let edge_list = [convex_edge, third, concave_edge];
+    let mut face_pairs = [[0usize; 2]; 3];
+    let mut outward: DetHashMap<usize, Vec3> = DetHashMap::default();
+    let mut offsets: DetHashMap<usize, f64> = DetHashMap::default();
+    let mut dirs = [Vec3::new(0.0, 0.0, 0.0); 3];
+    for (i, edge_id) in edge_list.iter().enumerate() {
+        let Some(faces) = two_planar_faces(*edge_id) else {
+            return Ok(None);
+        };
+        face_pairs[i] = [faces[0].index(), faces[1].index()];
+        for face in faces {
+            let Some((normal, d)) = plane_of(face) else {
+                return Ok(None);
+            };
+            outward.insert(face.index(), normal);
+            offsets.insert(face.index(), d);
+        }
+        let edge = topo.edge(*edge_id)?;
+        let (s, e) = (
+            topo.vertex(edge.start())?.point(),
+            topo.vertex(edge.end())?.point(),
+        );
+        let away = if edge.start().index() == vertex_index {
+            e - s
+        } else {
+            s - e
+        };
+        let Ok(dir) = away.normalize() else {
+            return Ok(None);
+        };
+        dirs[i] = dir;
+    }
+    let Some((frame, 2)) = crate::fillet::notch_torus::qualify_notch(
+        &face_pairs,
+        &outward,
+        &offsets,
+        [true, third_convex, false],
+        tol,
+    ) else {
+        return Ok(None);
+    };
+    // The rectangular cell's orientation: the convex stripe runs along `W`'s
+    // normal, the sharp edge along `T`'s, the concave stripe against `S`'s.
+    let aligned = |a: Vec3, b: Vec3| (a.dot(b) - 1.0).abs() <= 1e-9;
+    if !aligned(dirs[0], frame.wall_b)
+        || !aligned(dirs[1], frame.wall_a)
+        || !aligned(dirs[2], -frame.cap_outward)
+    {
+        return Ok(None);
+    }
+    let Some(torus) = crate::fillet::notch_torus::notch_torus(
+        frame, vertex_pos, dirs[0], dirs[1], radius, false, tol,
+    ) else {
+        return Ok(None);
+    };
+    // Support faces by plane: `S` and `T` from the convex stripe, and the
+    // concave stripe must reach the same `T` face (its stations are shared
+    // bitwise through the contact map, which is keyed by face).
+    let pick = |pair: [usize; 2], target: Vec3| -> Option<usize> {
+        pair.into_iter()
+            .find(|f| outward.get(f).is_some_and(|n| aligned(*n, target)))
+    };
+    let (Some(cap), Some(wall_a), Some(concave_wall_a), Some(wall_b)) = (
+        pick(face_pairs[0], frame.cap_outward),
+        pick(face_pairs[0], frame.wall_a),
+        pick(face_pairs[2], frame.wall_a),
+        pick(face_pairs[2], frame.wall_b),
+    ) else {
+        return Ok(None);
+    };
+    if wall_a != concave_wall_a {
+        return Ok(None);
+    }
+    // The same expression the side-face trim preserves `P` with, so the
+    // two agree bitwise.
+    let far = if third_edge.start().index() == vertex_index {
+        end
+    } else {
+        start
+    };
+    let p = vertex_pos + (far - vertex_pos).normalize()? * radius;
+    Ok(Some((
+        torus,
+        dirs,
+        edge_list,
+        [cap, wall_a, wall_b],
+        LedgeCorner {
+            p,
+            outward: -frame.wall_a,
+        },
+    )))
+}
+
 /// The end of a straight stripe that no face closes (see the detection in
 /// `fillet_rolling_ball_with_origins`): the spine runs into a step, so the
 /// stripe's end section is new boundary, closed by the planar facet `c–ca–cb`.
@@ -738,7 +1067,7 @@ fn on_segment_past_start(p: Point3, a: Point3, b: Point3, tol: Tolerance) -> boo
 /// untouched corners pass through; fillet-adjacent corners resolve to
 /// Phase 4 contacts, setback preservations, and runout legs exactly as the
 /// Phase 3 outer loop always has.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn trim_support_corner(
     pos: Point3,
     prev_pos: Point3,
@@ -758,9 +1087,18 @@ fn trim_support_corner(
     straight_runout: &std::collections::BTreeMap<usize, StraightRunout>,
     corner_preserved: &mut HashMap<usize, Point3>,
     qs: &[Point3],
+    cap_chains: &remus_math::det_hash::DetHashMap<usize, CapChain>,
+    line_paired_runout: bool,
     radius: f64,
     tol: Tolerance,
 ) -> Result<Vec<Point3>, crate::OperationsError> {
+    // A torus corner owns the whole cap-plane neighbourhood of its vertex,
+    // however many coplanar faces split it.
+    if let Some(chain) = cap_chains.get(&vi)
+        && chain.on_plane(face_normal, face_d, tol)
+    {
+        return chain.corner(pos, prev_pos, next_pos, prev_ei, ei, tol);
+    }
     let mut out = Vec::new();
     match (before_filleted, after_filleted, at_fillet_endpoint) {
         (false, false, false) => {
@@ -825,17 +1163,22 @@ fn trim_support_corner(
             if unique_contacts.len() >= 2 {
                 let dir_prev = (prev_pos - pos).normalize()?;
                 let (c0, c1) = (unique_contacts[0], unique_contacts[1]);
-                // Each contact lies on the line this face shares with the
-                // contact's own support face — on the boundary edge, or past
-                // the corner on its extension where the strip runs out beyond
-                // a narrower face (a tab on a plate). Pair by that line first;
-                // proximity to the edge offsets only breaks a tie.
-                let by_line = (next_pos - pos).normalize().ok().and_then(|dir_next| {
-                    let off_line = |c: Point3, dir: Vec3| (c - pos).cross(dir).length();
-                    let keep = off_line(c0, dir_prev) + off_line(c1, dir_next);
-                    let swap = off_line(c1, dir_prev) + off_line(c0, dir_next);
-                    ((keep - swap).abs() > tol.linear).then_some(keep < swap)
-                });
+                // Pair each contact with its own support-edge line, including
+                // extensions past a narrower face. Only qualified planar or
+                // concave run-outs use this pairing. Convex run-outs next to
+                // curved stripes keep the old pairing: an unqualified G1
+                // corner wall must still refuse rather than cut material
+                // (`regress_g1_chain_corner_wall_dig.rs`).
+                let by_line = if line_paired_runout {
+                    (next_pos - pos).normalize().ok().and_then(|dir_next| {
+                        let off_line = |c: Point3, dir: Vec3| (c - pos).cross(dir).length();
+                        let keep = off_line(c0, dir_prev) + off_line(c1, dir_next);
+                        let swap = off_line(c1, dir_prev) + off_line(c0, dir_next);
+                        ((keep - swap).abs() > tol.linear).then_some(keep < swap)
+                    })
+                } else {
+                    None
+                };
                 let approx_prev = pos + dir_prev * radius;
                 let first_is_prev = by_line
                     .unwrap_or_else(|| (c0 - approx_prev).length() <= (c1 - approx_prev).length());
@@ -1492,6 +1835,38 @@ pub fn fillet_rolling_ball_with_origins(
             }
         }
 
+        // Two-stripe mixed corners: one concave and one convex stripe meet
+        // over a 90-degree rectangular corner whose third edge stays sharp.
+        // This is the notch above with its second convex stripe absent: the
+        // same torus quarter closes the corner, and the station plane that
+        // stripe would have started on carries a planar ledge back to `P`,
+        // one radius up the sharp edge (see `ledge_corner` below).
+        let mut ledge_corners: remus_math::det_hash::DetHashMap<usize, LedgeCorner> =
+            remus_math::det_hash::DetHashMap::default();
+        for (&vertex_index, incident_edges) in &vertex_fillet_edges {
+            if incident_edges.len() != 2 || exact_corner_balls.contains_key(&vertex_index) {
+                continue;
+            }
+            if let Some((torus, dirs, edge_list, faces, ledge)) = ledge_corner(
+                topo,
+                solid,
+                vertex_index,
+                incident_edges,
+                &edge_to_faces,
+                &vertex_faces,
+                &planar_edge_sides,
+                radius,
+                tol,
+            )? {
+                torus_corners.insert(vertex_index, (torus, dirs, 2));
+                torus_station_faces.insert(vertex_index, (edge_list, faces));
+                for edge_id in incident_edges {
+                    torus_setbacks.insert((edge_id.index(), vertex_index), radius);
+                }
+                ledge_corners.insert(vertex_index, ledge);
+            }
+        }
+
         // Cap-tangency split points per torus vertex, computed now so
         // Phase 3 inserts them into cap polygons (emission reuses the same
         // source; both are pure and deterministic).
@@ -1512,6 +1887,31 @@ pub fn fillet_rolling_ball_with_origins(
             );
         }
         let all_qs: Vec<Point3> = torus_qs.values().flatten().copied().collect();
+        // The cap-plane run each torus corner leaves in place of its vertex.
+        let mut cap_chains: remus_math::det_hash::DetHashMap<usize, CapChain> =
+            remus_math::det_hash::DetHashMap::default();
+        for (&vi, (torus, _, _)) in &torus_corners {
+            let Some(([pair_a, pair_b, _], _)) = torus_station_faces.get(&vi) else {
+                continue;
+            };
+            let mut points = vec![torus.b1];
+            points.extend(torus_qs.get(&vi).into_iter().flatten().copied());
+            points.push(torus.b2);
+            if let Some(ledge) = ledge_corners.get(&vi) {
+                points.push(ledge.p);
+            }
+            let normal = torus.frame.cap_outward;
+            cap_chains.insert(
+                vi,
+                CapChain {
+                    normal,
+                    d: dot_normal_point(normal, torus.b1),
+                    pair_a: pair_a.index(),
+                    pair_b: pair_b.index(),
+                    points,
+                },
+            );
+        }
 
         // A wholly planar N-way junction that did not qualify above must not
         // drift into the legacy normal-sum corner heuristic. That estimate is
@@ -2457,6 +2857,11 @@ pub fn fillet_rolling_ball_with_origins(
                 ((es.index(), wa), torus.m1),
                 ((es.index(), wb), torus.m2),
             ] {
+                // A ledge corner's pair-B edge stays sharp: it has no stripe
+                // and so no contacts.
+                if !target_set.contains(&ei) {
+                    continue;
+                }
                 fillet_contact_map.insert((vi, ei, fi), pt);
             }
         }
@@ -2703,6 +3108,44 @@ pub fn fillet_rolling_ball_with_origins(
             }
             (verbatim, untouched)
         };
+
+        // A curved stripe keeps the conservative pairing throughout its
+        // connected selected-stripe component, including planar endpoints
+        // reached through G1 propagation. Independent planar features retain
+        // line pairing even when the request also contains a curved feature.
+        let mut curved_components: HashSet<usize> = HashSet::default();
+        let mut pending: Vec<usize> = vertex_fillet_edges
+            .iter()
+            .filter(|(_, incident)| {
+                incident
+                    .iter()
+                    .any(|edge_id| !planar_edge_sides.contains_key(&edge_id.index()))
+            })
+            .map(|(&vi, _)| vi)
+            .collect();
+        while let Some(vi) = pending.pop() {
+            if !curved_components.insert(vi) {
+                continue;
+            }
+            if let Some(incident) = vertex_fillet_edges.get(&vi) {
+                for &edge_id in incident {
+                    let edge = topo.edge(edge_id)?;
+                    pending.extend([edge.start().index(), edge.end().index()]);
+                }
+            }
+        }
+        let line_paired_runouts: HashSet<usize> = vertex_fillet_edges
+            .iter()
+            .filter(|(vi, incident)| {
+                !curved_components.contains(vi)
+                    || incident.iter().all(|edge_id| {
+                        planar_edge_sides
+                            .get(&edge_id.index())
+                            .is_some_and(|side| *side > 0.0)
+                    })
+            })
+            .map(|(&vi, _)| vi)
+            .collect();
 
         // Phase 3: Build modified (trimmed) planar faces.
         let mut all_specs: Vec<FaceSpec> = Vec::new();
@@ -3144,6 +3587,8 @@ pub fn fillet_rolling_ball_with_origins(
                     &straight_runout,
                     &mut corner_preserved,
                     &all_qs,
+                    &cap_chains,
+                    line_paired_runouts.contains(&vi),
                     radius,
                     tol,
                 )?);
@@ -3208,6 +3653,8 @@ pub fn fillet_rolling_ball_with_origins(
                             &straight_runout,
                             &mut corner_preserved,
                             &all_qs,
+                            &cap_chains,
+                            line_paired_runouts.contains(&ids[j].index()),
                             radius,
                             tol,
                         )?);
@@ -3778,7 +4225,10 @@ pub fn fillet_rolling_ball_with_origins(
                 let unsupported = |vertex: Option<VertexId>| {
                     if let Some(vertex) = vertex {
                         crate::OperationsError::Blend(
-                            remus_blend::BlendError::UnsupportedVertexBlend { vertex, stripes: 3 },
+                            remus_blend::BlendError::UnsupportedVertexBlend {
+                                vertex,
+                                stripes: fillet_count,
+                            },
                         )
                     } else {
                         crate::OperationsError::Unsupported {
@@ -3895,6 +4345,28 @@ pub fn fillet_rolling_ball_with_origins(
                         });
                     }
                     if overrides_ok {
+                        // A ledge corner closes the torus's pair-B end section
+                        // (arc M2 -> B2, minted by the override above) with the
+                        // planar ledge back to P on the sharp edge.
+                        if let Some(ledge) = ledge_corners.get(&vi) {
+                            let (p, m2, b2) = (ledge.p, torus.m2, torus.b2);
+                            let vertices = if (m2 - p).cross(b2 - p).dot(ledge.outward) >= 0.0 {
+                                vec![p, m2, b2]
+                            } else {
+                                vec![p, b2, m2]
+                            };
+                            push_face_spec(
+                                &mut all_specs,
+                                &mut all_spec_origins,
+                                FaceSpec::Planar {
+                                    vertices,
+                                    normal: ledge.outward,
+                                    d: dot_normal_point(ledge.outward, p),
+                                    inner_wires: vec![],
+                                },
+                                corner_origin.clone(),
+                            );
+                        }
                         continue;
                     }
                     // Override failure: retract the spec and refuse. Falling
