@@ -3,9 +3,11 @@
 pub mod manifest;
 pub mod p85;
 pub mod trend;
+pub mod triage;
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -267,6 +269,9 @@ pub struct Scoreboard {
     pub stages: BTreeMap<String, StageSummary>,
     /// Primary failure count by stable taxonomy category.
     pub failure_categories: BTreeMap<String, usize>,
+    /// Privacy-safe first-failure details. Absent on historical scoreboards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_details: Option<triage::FailureDetails>,
     /// Probe booleans completed on the exact path.
     pub boolean_exact: usize,
     /// Probe booleans completed through disclosed approximation.
@@ -435,6 +440,7 @@ pub fn aggregate(results: &[ModelResult]) -> Scoreboard {
     }
 
     let mut failure_categories = BTreeMap::new();
+    let mut failure_details = triage::FailureDetails::default();
     let mut boolean_exact = 0;
     let mut boolean_approximate = 0;
     for result in results {
@@ -446,17 +452,12 @@ pub fn aggregate(results: &[ModelResult]) -> Scoreboard {
                 }
             }
         }
-        if !result.passed
-            && let Some(diagnostic) = result
-                .stages
-                .named()
-                .into_iter()
-                .flat_map(|(_, stage)| &stage.diagnostics)
-                .find(|diagnostic| diagnostic.severity == "error")
-        {
+        if !result.passed {
+            let (stage, diagnostic) = triage::first_failure(result);
             *failure_categories
-                .entry(diagnostic.category.clone())
+                .entry(category_from_str(&diagnostic.category).as_str().to_owned())
                 .or_insert(0) += 1;
+            failure_details.record(stage, &diagnostic);
         }
         boolean_exact += metric_usize(&result.stages.boolean, "exact_count");
         boolean_approximate += metric_usize(&result.stages.boolean, "approximate_count");
@@ -470,6 +471,7 @@ pub fn aggregate(results: &[ModelResult]) -> Scoreboard {
         failed: results.len().saturating_sub(passed),
         stages,
         failure_categories,
+        failure_details: Some(failure_details),
         boolean_exact,
         boolean_approximate,
     }
@@ -546,6 +548,19 @@ pub fn scoreboard_markdown(scoreboard: &Scoreboard) -> String {
             output.push_str("`: ");
             output.push_str(&count.to_string());
             output.push('\n');
+        }
+    }
+    if let Some(details) = &scoreboard.failure_details {
+        output.push_str("\n## First failure codes\n\n");
+        for (stage, codes) in &details.first_failure_codes {
+            for (code, count) in codes {
+                let _ = writeln!(output, "- `{stage}` / `{code}`: {count}");
+            }
+        }
+        output.push_str("\n## Import failure families (heuristic)\n\n");
+        output.push_str("Triage hints only; these do not establish whether an input is valid.\n\n");
+        for (family, count) in &details.import_families {
+            let _ = writeln!(output, "- `{}`: {count}", family.as_str());
         }
     }
     output

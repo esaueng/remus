@@ -374,7 +374,16 @@ fn torus_branches_satisfy_the_silhouette_condition() {
         (surface.x_axis() + z * 1e-6).normalize().unwrap(),
     ] {
         let d = direction.normalize().unwrap();
-        let curves = super::silhouette::carrier_silhouettes(&topo, &face, &[], d).unwrap();
+        let curves = super::silhouette::carrier_silhouettes(
+            &topo,
+            &face,
+            &[],
+            d,
+            DEFLECTION,
+            &mut { usize::MAX },
+            usize::MAX,
+        )
+        .unwrap();
         assert_eq!(curves.len(), 2, "{d:?}");
         let max_chord = 2.0 * (DEFLECTION * (3.0 - DEFLECTION)).sqrt();
         for curve in &curves {
@@ -585,21 +594,281 @@ fn notched_torus_equators_end_on_the_notch() {
     }
 }
 
-/// NURBS faces have no silhouette here: each is named, not approximated.
+/// A cylinder converted to NURBS has the exact cylinder's outline: the
+/// traced contour's vertices are on the rulings at x = ±5 and run rim to
+/// rim, and the face is reported as traced.
 #[test]
-fn nurbs_faces_are_reported_unsupported() {
+fn nurbs_cylinder_traces_the_analytic_rulings() {
     let mut topo = Topology::new();
     let cylinder = make_cylinder(&mut topo, 5.0, 10.0).unwrap();
     crate::heal::convert_to_bspline(&mut topo, cylinder).unwrap();
     let out = project(
         &topo,
         cylinder,
-        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(1.0, 1.0, 0.0),
+        Vec3::new(-1.0, 1.0, 0.0),
+    );
+    assert!(out.unsupported.is_empty());
+    assert!(!out.approximate.is_empty());
+    assert!(out.hidden.is_empty(), "{:?}", out.hidden);
+    let mut extent = [(f64::INFINITY, f64::NEG_INFINITY); 2];
+    for line in &out.visible {
+        for p in line {
+            let side = usize::from(p.x() > 0.0);
+            assert!((p.x().abs() - 5.0).abs() < 1e-8, "{p:?} is off the ruling");
+            extent[side] = (extent[side].0.min(p.y()), extent[side].1.max(p.y()));
+        }
+    }
+    // In-plane y is −z: each ruling spans the rims at y = −10 and 0.
+    for (lo, hi) in extent {
+        assert!((lo + 10.0).abs() < 1e-4 && hi.abs() < 1e-4, "{extent:?}");
+    }
+}
+
+/// The exact rational sphere's traced outline is the great circle: every
+/// vertex at the radius, its normal perpendicular to the view.
+/// (`convert_to_bspline` makes spheres and tori faceted degree-1 surfaces,
+/// whose silhouettes are their facet edges, so this traces the exact
+/// rational form instead.)
+#[test]
+fn traced_nurbs_sphere_vertices_are_on_its_great_circle() {
+    let sphere =
+        remus_math::surfaces::SphericalSurface::new(Point3::new(1.0, -2.0, 0.5), 4.0).unwrap();
+    let nurbs = remus_heal::construct::convert_surface::sphere_to_nurbs(&sphere).unwrap();
+    for direction in [Vec3::new(0.0, 1.0, 0.0), Vec3::new(1.0, 2.0, -0.5)] {
+        let d = direction.normalize().unwrap();
+        let contours = super::silhouette::nurbs::contours(
+            &nurbs,
+            d,
+            DEFLECTION,
+            &mut { usize::MAX },
+            usize::MAX,
+        )
+        .unwrap();
+        assert!(!contours.is_empty(), "{d:?}");
+        for contour in &contours {
+            for &(u, v) in &contour.uv {
+                let offset = nurbs.evaluate(u, v) - sphere.center();
+                assert!((offset.length() - 4.0).abs() < 1e-8, "{d:?}: {offset:?}");
+                assert!(
+                    offset.dot(d).abs() < 1e-7,
+                    "{d:?}: n·d = {}",
+                    offset.dot(d) / 4.0
+                );
+            }
+        }
+    }
+}
+
+/// The contours traced on the exact rational torus lie on the torus with
+/// its exact normal perpendicular to the view, and their chords stay
+/// within the deflection of it.
+#[test]
+fn traced_torus_contours_satisfy_the_silhouette_condition() {
+    let torus = remus_math::surfaces::ToroidalSurface::with_axis(
+        Point3::new(1.0, -2.0, 3.0),
+        6.0,
+        1.5,
+        Vec3::new(0.2, -0.3, 1.0),
+    )
+    .unwrap();
+    // The exact rational torus: `ToroidalSurface::to_nurbs` is a faceted
+    // degree-1 approximation, whose normal is constant on each facet.
+    let nurbs = remus_heal::construct::convert_surface::torus_to_nurbs(&torus).unwrap();
+    let z = torus.z_axis();
+    for direction in [Vec3::new(1.0, 2.0, -3.0), Vec3::new(0.3, -1.0, 0.7), -z] {
+        let d = direction.normalize().unwrap();
+        let contours = super::silhouette::nurbs::contours(
+            &nurbs,
+            d,
+            DEFLECTION,
+            &mut { usize::MAX },
+            usize::MAX,
+        )
+        .unwrap();
+        assert!(!contours.is_empty(), "{d:?}");
+        for contour in &contours {
+            for &(u, v) in &contour.uv {
+                let p = nurbs.evaluate(u, v);
+                let (distance, normal) = torus_tube(p, torus.center(), z, 6.0);
+                assert!(
+                    (distance - 1.5).abs() < 1e-8,
+                    "{d:?}: off the torus by {}",
+                    distance - 1.5
+                );
+                assert!(normal.dot(d).abs() < 1e-8, "{d:?}: n·d = {}", normal.dot(d));
+            }
+            // Refinement keeps each chord within the deflection of the
+            // silhouette, so its middle is within it of the torus too.
+            let n = contour.uv.len();
+            let segments = if contour.closed { n } else { n - 1 };
+            for k in 0..segments {
+                let (a, b) = (contour.uv[k], contour.uv[(k + 1) % n]);
+                let (pa, pb) = (nurbs.evaluate(a.0, a.1), nurbs.evaluate(b.0, b.1));
+                let (distance, _) = torus_tube(pa + (pb - pa) * 0.5, torus.center(), z, 6.0);
+                assert!(
+                    (distance - 1.5).abs() <= DEFLECTION,
+                    "{d:?}: chord {k} sags {}",
+                    distance - 1.5
+                );
+            }
+        }
+    }
+}
+
+/// A box converted to NURBS is all flat faces: each is either seen edge-on
+/// (n·d = 0 everywhere, outline already its edges) or face-on (no sign
+/// change), so there is no silhouette and nothing approximate.
+#[test]
+fn nurbs_planar_faces_have_no_silhouette() {
+    let mut topo = Topology::new();
+    let block = make_box(&mut topo, 3.0, 4.0, 5.0).unwrap();
+    crate::heal::convert_to_bspline(&mut topo, block).unwrap();
+    for direction in [Vec3::new(1.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 1.0)] {
+        let out = project(&topo, block, direction, Vec3::new(0.0, 0.0, 1.0));
+        assert!(
+            out.visible.is_empty() && out.hidden.is_empty(),
+            "{direction:?}"
+        );
+        assert!(out.approximate.is_empty(), "{direction:?}");
+    }
+}
+
+/// Faces split from one NURBS face carry clones of its surface: they are
+/// one carrier, traced once and trimmed together, as split analytic faces
+/// are. A different NURBS surface is not the same carrier.
+#[test]
+fn split_nurbs_faces_share_one_carrier() {
+    use remus_topology::face::FaceSurface;
+    let sphere = |r: f64| {
+        let s = remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), r).unwrap();
+        remus_heal::construct::convert_surface::sphere_to_nurbs(&s).unwrap()
+    };
+    let surface = sphere(4.0);
+    let (a, b) = (
+        FaceSurface::Nurbs(surface.clone()),
+        FaceSurface::Nurbs(surface),
+    );
+    assert!(super::silhouette::same_carrier(&a, &b));
+    assert!(!super::silhouette::same_carrier(
+        &a,
+        &FaceSurface::Nurbs(sphere(5.0))
+    ));
+}
+
+/// A trace whose grid holds more sign changes than the vertex budget is
+/// refused when they are counted, before any of them is bisected.
+#[test]
+fn nurbs_tracing_refuses_more_crossings_than_vertices() {
+    let sphere =
+        remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 4.0).unwrap();
+    let nurbs = remus_heal::construct::convert_surface::sphere_to_nurbs(&sphere).unwrap();
+    let view = Vec3::new(0.0, 1.0, 0.0);
+    let traced =
+        super::silhouette::nurbs::contours(&nurbs, view, 0.05, &mut { usize::MAX }, usize::MAX)
+            .unwrap();
+    assert!(traced.iter().map(|c| c.uv.len()).sum::<usize>() > 4);
+    assert!(
+        super::silhouette::nurbs::contours(&nurbs, view, 0.05, &mut { usize::MAX }, 4).is_none()
+    );
+}
+
+/// A closed traced contour is periodic like the circles: a run joined
+/// across its seam carries parameters past 1, which must land on the
+/// contour's start again rather than stick at its last point.
+#[test]
+fn closed_contour_parameters_wrap() {
+    let sphere =
+        remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 4.0).unwrap();
+    let nurbs = remus_heal::construct::convert_surface::sphere_to_nurbs(&sphere).unwrap();
+    let ((u0, u1), (v0, v1)) = (nurbs.domain_u(), nurbs.domain_v());
+    let at = |fu: f64, fv: f64| (u0 + (u1 - u0) * fu, v0 + (v1 - v0) * fv);
+    let curve = super::silhouette::Curve::Contour {
+        surface: &nurbs,
+        uv: vec![at(0.3, 0.3), at(0.6, 0.3), at(0.6, 0.6), at(0.3, 0.6)],
+        closed: true,
+    };
+    for t in [0.0, 0.1, 0.3, 0.55, 0.9] {
+        let (p, q) = (curve.at(t), curve.at(t + 1.0));
+        assert!((p - q).length() < 1e-9, "t = {t}: {p:?} vs {q:?}");
+    }
+}
+
+/// A traced face is disclosed even when tracing finds no contour: a
+/// NURBS cylinder seen down its axis is edge-on, so it draws nothing, but
+/// only a certified flat face is exempt, and the caps are the only ones.
+#[test]
+fn nurbs_faces_with_no_contour_are_still_approximate() {
+    let mut topo = Topology::new();
+    let cylinder = make_cylinder(&mut topo, 5.0, 10.0).unwrap();
+    crate::heal::convert_to_bspline(&mut topo, cylinder).unwrap();
+    let out = project(
+        &topo,
+        cylinder,
+        Vec3::new(0.0, 0.0, -1.0),
         Vec3::new(1.0, 0.0, 0.0),
     );
     assert!(out.visible.is_empty() && out.hidden.is_empty());
-    assert!(!out.unsupported.is_empty());
-    assert!(out.unsupported.iter().all(|u| u.surface == "nurbs"));
+    let faces = remus_topology::explorer::solid_faces(&topo, cylinder).unwrap();
+    let curved: Vec<_> = faces
+        .into_iter()
+        .filter(|&face| {
+            if let remus_topology::face::FaceSurface::Nurbs(n) = topo.face(face).unwrap().surface()
+            {
+                !super::silhouette::nurbs::is_certified_plane(n)
+            } else {
+                false
+            }
+        })
+        .collect();
+    assert!(!curved.is_empty());
+    let mut approximate = out.approximate;
+    approximate.sort_unstable_by_key(|face| face.index());
+    let mut expected = curved;
+    expected.sort_unstable_by_key(|face| face.index());
+    assert_eq!(approximate, expected);
+}
+
+/// The bored block converted to NURBS still hides its bore's outline, at
+/// the bore's walls.
+#[test]
+fn nurbs_bore_silhouettes_are_hidden() {
+    let (mut topo, solid) = bored_block(1.0);
+    crate::heal::convert_to_bspline(&mut topo, solid).unwrap();
+    let out = project(
+        &topo,
+        solid,
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.0),
+    );
+    assert!(out.visible.is_empty(), "{:?}", out.visible);
+    assert!(!out.hidden.is_empty());
+    for line in &out.hidden {
+        for p in line {
+            let wall = (p.x() - 7.0).abs().min((p.x() - 13.0).abs());
+            assert!(wall < 1e-8, "{p:?} is off the bore walls");
+            assert!(p.y() > -1e-4 && p.y() < 10.0 + 1e-4, "{p:?}");
+        }
+    }
+}
+
+/// Tracing is refused, not truncated, past its grid budget or its vertex
+/// budget.
+#[test]
+fn nurbs_tracing_refuses_past_its_budgets() {
+    let nurbs = remus_math::surfaces::SphericalSurface::new(Point3::new(0.0, 0.0, 0.0), 4.0)
+        .unwrap()
+        .to_nurbs()
+        .unwrap();
+    let d = Vec3::new(0.0, 1.0, 0.0);
+    let traced = |budget: &mut usize, vertices| {
+        super::silhouette::nurbs::contours(&nurbs, d, DEFLECTION, budget, vertices)
+    };
+    assert!(traced(&mut 10, usize::MAX).is_none());
+    assert!(traced(&mut { usize::MAX }, 3).is_none());
+    let mut budget = usize::MAX;
+    assert!(traced(&mut budget, usize::MAX).is_some());
+    assert!(budget < usize::MAX, "the grid was not charged");
 }
 
 /// A box has no curved faces and so no silhouettes; a rotated box too.

@@ -2,7 +2,7 @@
 //! exact cylinders where the swept geometry is one, NURBS elsewhere.
 
 use remus_math::compact_sort::CompactSort;
-use std::collections::{HashMap, HashSet};
+use remus_math::det_hash::{DetHashMap as HashMap, DetHashSet as HashSet};
 
 use remus_blend::BlendFaceOrigins;
 use remus_math::nurbs::fitting::interpolate_with_params;
@@ -50,10 +50,10 @@ fn origins_from_face_specs(
         .iter()
         .map(|&(assembled, final_face)| (assembled.index(), final_face))
         .collect();
-    let mut modified_by_result: HashMap<usize, (FaceId, Vec<FaceId>)> = HashMap::new();
-    let mut generated_by_result: HashMap<usize, (FaceId, Vec<FaceId>)> = HashMap::new();
-    let mut unattributed: HashMap<usize, FaceId> = HashMap::new();
-    let mut modified_presence: HashMap<usize, (FaceId, bool)> = HashMap::new();
+    let mut modified_by_result: HashMap<usize, (FaceId, Vec<FaceId>)> = HashMap::default();
+    let mut generated_by_result: HashMap<usize, (FaceId, Vec<FaceId>)> = HashMap::default();
+    let mut unattributed: HashMap<usize, FaceId> = HashMap::default();
+    let mut modified_presence: HashMap<usize, (FaceId, bool)> = HashMap::default();
 
     for (origin, assembled) in spec_origins.iter().zip(faces_by_spec) {
         if let FaceSpecOrigin::Modified(source) = origin {
@@ -658,6 +658,74 @@ fn edge_tangency_splits(pos: Point3, far: Point3, qs: &[Point3], tol: Tolerance)
     hits.into_iter().map(|(_, q)| q).collect()
 }
 
+/// The end of a straight stripe that no face closes (see the detection in
+/// `fillet_rolling_ball_with_origins`): the spine runs into a step, so the
+/// stripe's end section is new boundary, closed by the planar facet `c–ca–cb`.
+#[derive(Clone, Copy)]
+struct StraightRunout {
+    /// The spine-end vertex position.
+    c: Point3,
+    /// The two end contacts (one on each support plane).
+    contacts: [Point3; 2],
+    /// The side the closing facet faces: along the spine into the stripe
+    /// for a convex edge, out of it for a concave one.
+    normal: Vec3,
+    /// The two support faces, the facet's construction sources.
+    supports: [FaceId; 2],
+}
+
+/// Whether every edge of `wire` is a short great-circle arc of `sphere`: the
+/// only boundary `FaceSpec::SphereCapFace` reproduces.
+fn great_circle_loop(
+    topo: &Topology,
+    wire: &remus_topology::wire::Wire,
+    sphere: &remus_math::surfaces::SphericalSurface,
+    tol: Tolerance,
+) -> Result<bool, crate::OperationsError> {
+    let eps = tol.linear * 100.0;
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge())?;
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            return Ok(false);
+        };
+        if edge.start() == edge.end()
+            || (circle.center() - sphere.center()).length() > eps
+            || (circle.radius() - sphere.radius()).abs() > eps
+        {
+            return Ok(false);
+        }
+        let (start, end) = (
+            topo.vertex(edge.start())?.point(),
+            topo.vertex(edge.end())?.point(),
+        );
+        // The minted arc is the short one; a stored span past a half turn is
+        // a different curve.
+        let span = edge.trim().map_or(0.0, |(t0, t1)| (t1 - t0).abs());
+        if span >= std::f64::consts::PI - tol.angular
+            || (start - sphere.center())
+                .cross(end - sphere.center())
+                .length()
+                <= tol.linear * sphere.radius()
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether `p` lies on the segment `a`–`b`, away from `a`.
+fn on_segment_past_start(p: Point3, a: Point3, b: Point3, tol: Tolerance) -> bool {
+    let ab = b - a;
+    let len2 = ab.dot(ab);
+    if len2 <= tol.linear * tol.linear {
+        return false;
+    }
+    let t = (p - a).dot(ab) / len2;
+    let eps = tol.linear * 100.0;
+    let along = t * len2.sqrt();
+    along > eps && t <= 1.0 + eps / len2.sqrt() && (a + ab * t - p).length() <= eps
+}
+
 /// Trim one support-face polygon corner to its blend contacts.
 ///
 /// Shared by outer wires and blend-adjacent inner (hole) wires: returns the
@@ -687,6 +755,7 @@ fn trim_support_corner(
     fillet_contact_map: &HashMap<(usize, usize, usize), Point3>,
     setback_map: &HashMap<(usize, usize), f64>,
     arc_runout: &HashMap<usize, (Point3, Point3, usize, Point3, usize)>,
+    straight_runout: &std::collections::BTreeMap<usize, StraightRunout>,
     corner_preserved: &mut HashMap<usize, Point3>,
     qs: &[Point3],
     radius: f64,
@@ -700,6 +769,20 @@ fn trim_support_corner(
         // Side face: use the two unique Phase 4 fillet contacts,
         // paired by proximity to boundary offsets.
         (false, false, true) => {
+            // Straight runout: this face is no cap, only a neighbour of the
+            // step. It keeps the corner and takes any end contact lying on one
+            // of its own edges there, so the facet's legs are shared.
+            if let Some(run) = straight_runout.get(&vi) {
+                let on = |p: Point3, toward: Point3| on_segment_past_start(p, pos, toward, tol);
+                if let Some(&b) = run.contacts.iter().find(|&&p| on(p, prev_pos)) {
+                    out.push(b);
+                }
+                out.push(pos);
+                if let Some(&b) = run.contacts.iter().find(|&&p| on(p, next_pos)) {
+                    out.push(b);
+                }
+                return Ok(out);
+            }
             // Arc runout: this flat side face only touches the strip at
             // a single contact lying on its own plane (the tangent
             // point). Keep the corner and split the adjacent edge there
@@ -761,6 +844,14 @@ fn trim_support_corner(
         (true, false, _) => {
             if let Some(&pt) = fillet_contact_map.get(&(vi, prev_ei, fi)) {
                 out.push(pt);
+                // Straight runout: keep the corner unless the leg
+                // contact→corner already runs along this face's unfilleted
+                // edge (then the neighbour across that edge owns the leg).
+                if straight_runout.contains_key(&vi)
+                    && !on_segment_past_start(pt, pos, next_pos, tol)
+                {
+                    out.push(pos);
+                }
             } else {
                 let dir = (next_pos - pos).normalize()?;
                 out.push(pos + dir * radius);
@@ -813,6 +904,11 @@ fn trim_support_corner(
                 out.push(pos);
             }
             if let Some(&pt) = fillet_contact_map.get(&(vi, ei, fi)) {
+                if straight_runout.contains_key(&vi)
+                    && !on_segment_past_start(pt, pos, prev_pos, tol)
+                {
+                    out.push(pos);
+                }
                 out.push(pt);
             } else {
                 let dir = (prev_pos - pos).normalize()?;
@@ -887,7 +983,7 @@ pub fn fillet_rolling_ball(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<SolidId, crate::OperationsError> {
-    Ok(fillet_rolling_ball_with_origins(topo, solid, edges, radius)?.0)
+    Ok(fillet_rolling_ball_with_origins(topo, solid, edges, radius, false)?.0)
 }
 
 /// [`fillet_rolling_ball`] with construction-derived face provenance.
@@ -897,6 +993,12 @@ pub fn fillet_rolling_ball(
 /// and a requested edge that carries no blend is reported by name
 /// ([`remus_blend::BlendError::EdgesNotBlended`]) instead of disappearing
 /// from an otherwise plausible result.
+///
+/// `close_runouts` lets a straight stripe whose end meets no cap face close
+/// with a section facet (see the detection below). Callers that try this
+/// engine ahead of the walking builder pass `false`, so a selection the
+/// walking builder already handles keeps its result; the cascade's last
+/// attempt passes `true`.
 ///
 /// The body runs inside the closure so `run_transacted` sees every failure
 /// exit; keeping the function name (rather than extracting a `_transacted`
@@ -908,6 +1010,7 @@ pub fn fillet_rolling_ball_with_origins(
     solid: SolidId,
     edges: &[EdgeId],
     radius: f64,
+    close_runouts: bool,
 ) -> Result<(SolidId, BlendFaceOrigins), crate::OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
         let tol = Tolerance::new();
@@ -930,11 +1033,11 @@ pub fn fillet_rolling_ball_with_origins(
         let shell = topo.shell(solid_data.outer_shell())?;
         let shell_face_ids: Vec<FaceId> = shell.faces().to_vec();
 
-        let mut edge_to_faces: HashMap<usize, Vec<FaceId>> = HashMap::new();
-        let mut face_polygons: HashMap<usize, FacePolygon> = HashMap::new();
-        let mut face_surfaces: HashMap<usize, FaceSurface> = HashMap::new();
-        let mut face_reversed: HashMap<usize, bool> = HashMap::new();
-        let mut vertex_faces: HashMap<usize, Vec<FaceId>> = HashMap::new();
+        let mut edge_to_faces: HashMap<usize, Vec<FaceId>> = HashMap::default();
+        let mut face_polygons: HashMap<usize, FacePolygon> = HashMap::default();
+        let mut face_surfaces: HashMap<usize, FaceSurface> = HashMap::default();
+        let mut face_reversed: HashMap<usize, bool> = HashMap::default();
+        let mut vertex_faces: HashMap<usize, Vec<FaceId>> = HashMap::default();
 
         for &face_id in &shell_face_ids {
             let face = topo.face(face_id)?;
@@ -1004,7 +1107,7 @@ pub fn fillet_rolling_ball_with_origins(
 
         // Precompute edge → polygon entries for O(|filtered_edges|) Phase 2d lookup
         // instead of O(|filtered_edges| × |planar_faces|) nested iteration.
-        let mut edge_to_poly_pos: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+        let mut edge_to_poly_pos: HashMap<usize, Vec<(usize, usize)>> = HashMap::default();
         for (&face_key, poly) in &face_polygons {
             for (i, eid) in poly.wire_edge_ids.iter().enumerate() {
                 edge_to_poly_pos
@@ -1043,7 +1146,7 @@ pub fn fillet_rolling_ball_with_origins(
         }
 
         let target_set: HashSet<usize> = filtered_edges.iter().map(|e| e.index()).collect();
-        let mut vertex_fillet_edges: HashMap<usize, Vec<EdgeId>> = HashMap::new();
+        let mut vertex_fillet_edges: HashMap<usize, Vec<EdgeId>> = HashMap::default();
 
         for &edge_id in &filtered_edges {
             let edge = topo.edge(edge_id)?;
@@ -1061,7 +1164,7 @@ pub fn fillet_rolling_ball_with_origins(
         // The exact section and N-way corner solvers below use the same signed
         // plane constraints, so a stripe endpoint and its corner ball cannot
         // disagree about which side of a support face contains the result.
-        let mut planar_edge_sides: HashMap<usize, f64> = HashMap::new();
+        let mut planar_edge_sides: HashMap<usize, f64> = HashMap::default();
         let mut concavity = crate::query::ConcavityProbe::new(topo, solid);
         for &edge_id in &filtered_edges {
             let edge = topo.edge(edge_id)?;
@@ -1124,14 +1227,14 @@ pub fn fillet_rolling_ball_with_origins(
         let mut torus_corners: HashMap<
             usize,
             (crate::fillet::notch_torus::NotchTorus, [Vec3; 3], usize),
-        > = HashMap::new();
+        > = HashMap::default();
         // (edge index, vertex index) -> setback distance, merged into
         // `setback_map` with the ball stations below.
-        let mut torus_setbacks: HashMap<(usize, usize), f64> = HashMap::new();
+        let mut torus_setbacks: HashMap<(usize, usize), f64> = HashMap::default();
         // Per torus vertex: incident edges [pair_a, pair_b, singleton] and
         // support faces [cap, wall_a, wall_b], for the contact-map overwrite
         // below (exact stations must be bitwise identical everywhere).
-        let mut torus_station_faces: HashMap<usize, ([EdgeId; 3], [usize; 3])> = HashMap::new();
+        let mut torus_station_faces: HashMap<usize, ([EdgeId; 3], [usize; 3])> = HashMap::default();
         for (&vertex_index, incident_edges) in &vertex_fillet_edges {
             if incident_edges.len() != 3 || exact_corner_balls.contains_key(&vertex_index) {
                 continue;
@@ -1366,7 +1469,7 @@ pub fn fillet_rolling_ball_with_origins(
         // Cap-tangency split points per torus vertex, computed now so
         // Phase 3 inserts them into cap polygons (emission reuses the same
         // source; both are pure and deterministic).
-        let mut torus_qs: HashMap<usize, Vec<Point3>> = HashMap::new();
+        let mut torus_qs: HashMap<usize, Vec<Point3>> = HashMap::default();
         for (&vi, (torus, dirs, singleton_pos)) in &torus_corners {
             torus_qs.insert(
                 vi,
@@ -1886,7 +1989,7 @@ pub fn fillet_rolling_ball_with_origins(
         // the arc of an earlier fillet's band), they should share contact
         // points for G1 tangent continuity rather than get a corner patch.
         let mut vertex_fillet_adjacency: HashMap<usize, Vec<(EdgeId, usize, usize)>> =
-            HashMap::new();
+            HashMap::default();
         for &edge_id in &filtered_edges {
             let edge = topo.edge(edge_id)?;
             if let Some(faces) = edge_to_faces.get(&edge_id.index())
@@ -1917,7 +2020,7 @@ pub fn fillet_rolling_ball_with_origins(
                 };
                 Ok(t.normalize().ok())
             };
-        let mut g1_chain_vertices: HashSet<usize> = HashSet::new();
+        let mut g1_chain_vertices: HashSet<usize> = HashSet::default();
         for (vi, adj) in &vertex_fillet_adjacency {
             if adj.len() != 2 {
                 continue;
@@ -1942,7 +2045,7 @@ pub fn fillet_rolling_ball_with_origins(
         //
         // Key: (edge_index, vertex_index) → setback distance along the edge.
         let mut setback_map: HashMap<(usize, usize), f64> = {
-            let mut map = HashMap::new();
+            let mut map = HashMap::default();
             for &edge_id in &filtered_edges {
                 let edge = topo.edge(edge_id)?;
                 let start_vid = edge.start();
@@ -2121,7 +2224,7 @@ pub fn fillet_rolling_ball_with_origins(
             usize,
             Vec<remus_blend::fillet_builder::BlendCrossSection>,
         > = {
-            let mut cache = HashMap::new();
+            let mut cache = HashMap::default();
             for &edge_id in &filtered_edges {
                 let Ok(edge) = topo.edge(edge_id) else {
                     continue;
@@ -2173,7 +2276,7 @@ pub fn fillet_rolling_ball_with_origins(
         //
         // Key: (vertex_index, edge_index, face_index) → contact Point3
         let mut fillet_contact_map: HashMap<(usize, usize, usize), Point3> = {
-            let mut map = HashMap::new();
+            let mut map = HashMap::default();
             // For G1 junctions: keep the first edge's contacts (entry().or_insert).
             for &edge_id in &filtered_edges {
                 let edge = topo.edge(edge_id)?;
@@ -2343,7 +2446,7 @@ pub fn fillet_rolling_ball_with_origins(
         // Key: corner vertex index → (corner C, contact A on fa, fa, contact B on fb, fb).
         #[allow(clippy::type_complexity)]
         let arc_runout: HashMap<usize, (Point3, Point3, usize, Point3, usize)> = {
-            let mut map = HashMap::new();
+            let mut map = HashMap::default();
             for &edge_id in &filtered_edges {
                 // Only arcs run out tangent to a neighbour; straight fillets meet a
                 // perpendicular face whose plane already contains the strip end.
@@ -2394,6 +2497,134 @@ pub fn fillet_rolling_ball_with_origins(
             map
         };
 
+        // Straight-runout closure data. A straight stripe normally ends on a cap
+        // face: one face at the spine-end vertex C whose two edges there carry
+        // the two end contacts, so replacing its corner C by the contacts traces
+        // the end arc. When the spine runs into a step instead (a wall rising
+        // from one support, or a support continuing coplanar past C), no face
+        // holds both contacts and the end section is new boundary. It is closed
+        // by the planar facet C–A–B in the section plane (after Phase 5e), with each
+        // leg C→A, C→B shared by the face that keeps C beside it. Only
+        // all-planar corners qualify; anything else keeps the cap path.
+        let straight_runout: std::collections::BTreeMap<usize, StraightRunout> = if close_runouts {
+            let outward = |fi: usize| -> Option<Vec3> {
+                let poly = face_polygons.get(&fi)?;
+                Some(if face_reversed.get(&fi).copied().unwrap_or(false) {
+                    -poly.normal
+                } else {
+                    poly.normal
+                })
+            };
+            let mut map = std::collections::BTreeMap::new();
+            for &edge_id in &filtered_edges {
+                let Ok(edge) = topo.edge(edge_id) else {
+                    continue;
+                };
+                if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
+                    continue;
+                }
+                let Some(&[fa, fb]) = edge_to_faces.get(&edge_id.index()).map(Vec::as_slice) else {
+                    continue;
+                };
+                let (Some(na), Some(_)) = (outward(fa.index()), outward(fb.index())) else {
+                    continue;
+                };
+                for (vid, other) in [(edge.start(), edge.end()), (edge.end(), edge.start())] {
+                    let vi = vid.index();
+                    if vertex_fillet_edges.get(&vi).map_or(0, Vec::len) != 1
+                        || g1_chain_vertices.contains(&vi)
+                    {
+                        continue;
+                    }
+                    let (Some(&ca), Some(&cb)) = (
+                        fillet_contact_map.get(&(vi, edge_id.index(), fa.index())),
+                        fillet_contact_map.get(&(vi, edge_id.index(), fb.index())),
+                    ) else {
+                        continue;
+                    };
+                    let (Ok(cv), Ok(ov)) = (topo.vertex(vid), topo.vertex(other)) else {
+                        continue;
+                    };
+                    let c = cv.point();
+                    let Ok(inward) = (ov.point() - c).normalize() else {
+                        continue;
+                    };
+                    let Some(corner_faces) = vertex_faces.get(&vi) else {
+                        continue;
+                    };
+                    if corner_faces
+                        .iter()
+                        .any(|f| !face_polygons.contains_key(&f.index()))
+                    {
+                        continue;
+                    }
+                    // Every wire counts: a cap corner can sit on a hole loop.
+                    let mut capped = false;
+                    for &f in corner_faces {
+                        if f == fa || f == fb {
+                            continue;
+                        }
+                        let Ok(face) = topo.face(f) else {
+                            continue;
+                        };
+                        let mut legs = Vec::new();
+                        for wid in std::iter::once(face.outer_wire())
+                            .chain(face.inner_wires().iter().copied())
+                        {
+                            let Ok(wire) = topo.wire(wid) else {
+                                continue;
+                            };
+                            for oe in wire.edges() {
+                                let Ok(e) = topo.edge(oe.edge()) else {
+                                    continue;
+                                };
+                                let far = if e.start() == vid {
+                                    e.end()
+                                } else if e.end() == vid {
+                                    e.start()
+                                } else {
+                                    continue;
+                                };
+                                if let Ok(v) = topo.vertex(far) {
+                                    legs.push(v.point());
+                                }
+                            }
+                        }
+                        let on = |p: Point3| {
+                            legs.iter()
+                                .position(|&t| on_segment_past_start(p, c, t, tol))
+                        };
+                        if let (Some(i), Some(j)) = (on(ca), on(cb))
+                            && i != j
+                        {
+                            capped = true;
+                            break;
+                        }
+                    }
+                    if capped {
+                        continue;
+                    }
+                    // The section region is material beyond the end of a convex
+                    // stripe (the facet faces back along the spine) and air
+                    // beyond a concave one.
+                    let convex = (cb - c).dot(na) < 0.0;
+                    let normal = if convex { inward } else { -inward };
+                    map.insert(
+                        vi,
+                        StraightRunout {
+                            c,
+                            contacts: [ca, cb],
+                            normal,
+                            supports: [fa, fb],
+                        },
+                    );
+                }
+            }
+            map
+        } else {
+            std::collections::BTreeMap::new()
+        };
+
         // Classify faces the positional `FaceSpec` vocabulary cannot describe.
         //
         // Every spec except `FaceSpec::Existing` states a wire as a list of vertex
@@ -2408,8 +2639,8 @@ pub fn fillet_rolling_ball_with_origins(
         // loops must survive as topology; `untouched` marks the ones the blend does
         // not reach, whose outer wire can be copied as well instead of rebuilt.
         let (verbatim_faces, untouched_faces) = {
-            let mut verbatim: HashSet<usize> = HashSet::new();
-            let mut untouched: HashSet<usize> = HashSet::new();
+            let mut verbatim: HashSet<usize> = HashSet::default();
+            let mut untouched: HashSet<usize> = HashSet::default();
             for &face_id in &shell_face_ids {
                 let face = topo.face(face_id)?;
                 let has_holes = !face.inner_wires().is_empty();
@@ -2448,7 +2679,7 @@ pub fn fillet_rolling_ball_with_origins(
         // a fixed distance up the shared unfilleted edge), so the sub-edge survives
         // as a shared boundary. Phase 5b reads P to close the patch against it.
         // Key: corner vertex index → preserved trim point P.
-        let mut corner_preserved: HashMap<usize, Point3> = HashMap::new();
+        let mut corner_preserved: HashMap<usize, Point3> = HashMap::default();
         // Analytic seam overrides for the assembly: torus corner patches
         // (Phase 5b) and carried-through analytic faces (below) publish
         // their exact boundary circles here; neighbours pick them up by
@@ -2519,6 +2750,25 @@ pub fn fillet_rolling_ball_with_origins(
                             FaceSpec::CylindricalFace {
                                 vertices: verts,
                                 cylinder: cyl.clone(),
+                                reversed: pass_reversed,
+                                inner_wires: np_inner,
+                            },
+                            FaceSpecOrigin::Modified(face_id),
+                        );
+                    } else if let FaceSurface::Sphere(sphere) = &surface
+                        && np_inner.is_empty()
+                        && great_circle_loop(topo, wire, sphere, tol)?
+                    {
+                        // A corner ball patch from an earlier fillet, bounded
+                        // by great-circle arcs: the same rule. As a Surface its
+                        // arcs, and the planar spandrel sharing one, would
+                        // come back as chords.
+                        push_face_spec(
+                            &mut all_specs,
+                            &mut all_spec_origins,
+                            FaceSpec::SphereCapFace {
+                                vertices: verts,
+                                sphere: sphere.clone(),
                                 reversed: pass_reversed,
                                 inner_wires: np_inner,
                             },
@@ -2859,6 +3109,7 @@ pub fn fillet_rolling_ball_with_origins(
                     &fillet_contact_map,
                     &setback_map,
                     &arc_runout,
+                    &straight_runout,
                     &mut corner_preserved,
                     &all_qs,
                     radius,
@@ -2922,6 +3173,7 @@ pub fn fillet_rolling_ball_with_origins(
                             &fillet_contact_map,
                             &setback_map,
                             &arc_runout,
+                            &straight_runout,
                             &mut corner_preserved,
                             &all_qs,
                             radius,
@@ -2999,11 +3251,11 @@ pub fn fillet_rolling_ball_with_origins(
         // the blend the caller asked for. The guard after the loop turns that into
         // a typed error naming the edges, so a partial blend can never be mistaken
         // for a complete one.
-        let mut blended_edges: HashSet<usize> = HashSet::new();
-        let mut vertex_contacts: HashMap<usize, Vec<(usize, Point3)>> = HashMap::new();
+        let mut blended_edges: HashSet<usize> = HashSet::default();
+        let mut vertex_contacts: HashMap<usize, Vec<(usize, Point3)>> = HashMap::default();
         // For G1 chain junctions, store the contact points computed by the first
         // edge so the second edge can reuse them exactly.
-        let mut g1_contact_cache: HashMap<usize, (Point3, Point3)> = HashMap::new();
+        let mut g1_contact_cache: HashMap<usize, (Point3, Point3)> = HashMap::default();
 
         for &edge_id in &filtered_edges {
             let edge = topo.edge(edge_id)?;
@@ -4150,6 +4402,52 @@ pub fn fillet_rolling_ball_with_origins(
                     inner_wires: vec![],
                 },
                 origin,
+            );
+        }
+
+        // Close straight runouts with their section facet C–A–B. The plane
+        // comes from the facet itself (an oblique end plane moves the contacts
+        // onto it); `run.normal` only picks the side. The winding follows the
+        // neighbour that already runs along a leg: loops share each edge in
+        // opposite directions, and the winding convention relative to the
+        // normal is the body's, not fixed.
+        for run in straight_runout.values() {
+            let (c, [ca, cb]) = (run.c, run.contacts);
+            let Ok(mut normal) = (ca - c).cross(cb - c).normalize() else {
+                continue;
+            };
+            if normal.dot(run.normal) < 0.0 {
+                normal = -normal;
+            }
+            let same = |p: Point3, q: Point3| (p - q).length() <= tol.linear;
+            let runs_along = |from: Point3, to: Point3| {
+                all_specs.iter().any(|spec| {
+                    let v = spec.vertices();
+                    (0..v.len()).any(|k| same(v[k], from) && same(v[(k + 1) % v.len()], to))
+                })
+            };
+            let forward = if runs_along(c, ca) || runs_along(cb, c) {
+                false
+            } else if runs_along(ca, c) || runs_along(c, cb) {
+                true
+            } else {
+                (ca - c).cross(cb - c).dot(normal) >= 0.0
+            };
+            let verts = if forward {
+                vec![c, ca, cb]
+            } else {
+                vec![c, cb, ca]
+            };
+            push_face_spec(
+                &mut all_specs,
+                &mut all_spec_origins,
+                FaceSpec::Planar {
+                    vertices: verts,
+                    normal,
+                    d: dot_normal_point(normal, c),
+                    inner_wires: vec![],
+                },
+                FaceSpecOrigin::Generated(run.supports.to_vec()),
             );
         }
 

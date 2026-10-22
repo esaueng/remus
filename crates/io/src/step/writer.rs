@@ -3,6 +3,308 @@
 //! Exports B-Rep solids to ISO 10303-21 (STEP Part 21) format.
 //! Supports planar faces with line edges and NURBS curves/surfaces.
 
+pub mod assembly {
+    //! Opt-in AP203 occurrence export; the legacy body writer stays separate.
+
+    use std::{collections::BTreeMap, fmt::Write as _};
+
+    use remus_math::{mat::Mat4, tolerance::Tolerance};
+    use remus_operations::assembly::{Assembly, Component, ComponentId};
+    use remus_topology::{BodyClass, solid::SolidId, validation::validate_shell_closed};
+
+    use super::{
+        IoError, Point3, StepWriteContext, StepWriteOptions, Topology, Vec3, export_uncertainty,
+        step_string_literal,
+    };
+
+    /// Write a named assembly with rigid, orientation-preserving local placements.
+    ///
+    /// Every component, including a parent component, owns a solid. Shared solid
+    /// handles emit one B-Rep definition. The assembly itself is a geometry-free
+    /// root product. Lengths are millimetres, as in the legacy STEP writer.
+    ///
+    /// # Errors
+    /// Refuses empty or invalid assembly graphs, invalid topology and
+    /// non-rigid/non-finite matrices, including composed placement overflow.
+    #[allow(clippy::too_many_lines)]
+    pub fn write_step_assembly(topo: &Topology, assembly: &Assembly) -> Result<String, IoError> {
+        if assembly.component_count() == 0 {
+            return Err(IoError::InvalidTopology {
+                reason: "empty STEP assembly".into(),
+            });
+        }
+        let mut components = BTreeMap::new();
+        let mut pending: Vec<_> = assembly
+            .roots()
+            .iter()
+            .map(|&id| (id, None, Mat4::identity()))
+            .collect();
+        while let Some((id, expected_parent, parent_world)) = pending.pop() {
+            let component = assembly
+                .component(id)
+                .ok_or_else(|| IoError::InvalidTopology {
+                    reason: "assembly contains a missing component".into(),
+                })?;
+            if component.parent != expected_parent || components.insert(id, component).is_some() {
+                return Err(IoError::InvalidTopology {
+                    reason: "assembly components must form a tree with consistent parents".into(),
+                });
+            }
+            validate_rigid(component.transform)?;
+            let world = parent_world * component.transform;
+            if world.0.iter().flatten().any(|value| !value.is_finite()) {
+                return Err(IoError::InvalidTopology {
+                    reason: "non-finite composed assembly placement".into(),
+                });
+            }
+            let remaining = assembly.component_count().saturating_sub(components.len());
+            if pending
+                .len()
+                .checked_add(component.children.len())
+                .is_none_or(|count| count > remaining)
+            {
+                return Err(IoError::InvalidTopology {
+                    reason: "assembly traversal exceeds its component count".into(),
+                });
+            }
+            pending.extend(
+                component
+                    .children
+                    .iter()
+                    .map(|&child| (child, Some(id), world)),
+            );
+        }
+        if components.len() != assembly.component_count() {
+            return Err(IoError::InvalidTopology {
+                reason: "assembly contains unreachable components".into(),
+            });
+        }
+        let mut solids: Vec<_> = components
+            .values()
+            .map(|component| component.solid)
+            .collect();
+        solids.sort_unstable();
+        solids.dedup();
+        for &solid in &solids {
+            validate_component_solid(topo, solid)?;
+        }
+        let uncertainty = export_uncertainty(topo, &solids, &[])?;
+        let mut context = StepWriteContext::new(StepWriteOptions {
+            product_name: assembly.name().into(),
+            ..StepWriteOptions::default()
+        });
+        context.prepare_boundary_authority(topo, &solids, &[])?;
+        let mut breps = BTreeMap::new();
+        for solid in solids {
+            breps.insert(solid, context.write_solid(topo, solid)?);
+        }
+        let root = product(&mut context, assembly.name(), None, uncertainty)?;
+        let mut products = BTreeMap::new();
+        for (&id, component) in &components {
+            products.insert(
+                id,
+                product(
+                    &mut context,
+                    &component.name,
+                    Some(breps[&component.solid]),
+                    uncertainty,
+                )?,
+            );
+        }
+        let mut items: BTreeMap<Option<ComponentId>, Vec<u64>> = products
+            .iter()
+            .map(|(&id, product)| (Some(id), product.items.clone()))
+            .collect();
+        items.insert(None, root.items.clone());
+        for (&id, component) in &components {
+            let child = &products[&id];
+            let parent = component.parent.map_or(&root, |id| &products[&id]);
+            let placement = write_placement(&mut context, component.transform);
+            items.entry(component.parent).or_default().push(placement);
+            write_occurrence(&mut context, id, component, parent, child, placement);
+        }
+        write_representation(&mut context, &root, &items[&None]);
+        for (&id, product) in &products {
+            write_representation(&mut context, product, &items[&Some(id)]);
+        }
+        Ok(context.finish())
+    }
+
+    fn validate_component_solid(topo: &Topology, solid_id: SolidId) -> Result<(), IoError> {
+        let solid = topo.solid(solid_id)?;
+        for shell_id in
+            std::iter::once(solid.outer_shell()).chain(solid.inner_shells().iter().copied())
+        {
+            let shell = topo.shell(shell_id)?;
+            if shell.body_class() != BodyClass::Solid {
+                return Err(remus_topology::TopologyError::BodyClassMismatch {
+                    entity: "STEP assembly component shell",
+                    expected: BodyClass::Solid.as_str(),
+                    actual: shell.body_class().as_str(),
+                }
+                .into());
+            }
+            if shell.is_empty() {
+                return Err(IoError::InvalidTopology {
+                    reason: "STEP assembly components require nonempty shells".into(),
+                });
+            }
+            validate_shell_closed(shell, topo)?;
+        }
+        Ok(())
+    }
+
+    fn validate_rigid(matrix: Mat4) -> Result<(), IoError> {
+        let invalid = || IoError::InvalidTopology {
+            reason: "STEP assembly placement must be a finite, proper rigid affine transform"
+                .into(),
+        };
+        let tolerance = Tolerance::new().angular;
+        // This row is structural: even a sub-tolerance projective coefficient
+        // would be discarded by STEP's affine placement encoding.
+        #[allow(clippy::float_cmp)]
+        let affine = matrix.0[3] == [0., 0., 0., 1.];
+        if matrix.0.iter().flatten().any(|value| !value.is_finite()) || !affine {
+            return Err(invalid());
+        }
+        let axes: [Vec3; 3] = std::array::from_fn(|column| {
+            Vec3::new(
+                matrix.0[0][column],
+                matrix.0[1][column],
+                matrix.0[2][column],
+            )
+        });
+        for (i, axis) in axes.iter().enumerate() {
+            for (j, other) in axes.iter().enumerate() {
+                let expected = if i == j { 1. } else { 0. };
+                if (axis.dot(*other) - expected).abs() > tolerance {
+                    return Err(invalid());
+                }
+            }
+        }
+        if (axes[0].cross(axes[1]).dot(axes[2]) - 1.).abs() > tolerance {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
+    struct Product {
+        definition: u64,
+        representation: u64,
+        context: u64,
+        origin: u64,
+        items: Vec<u64>,
+        has_solid: bool,
+    }
+
+    fn product(
+        context: &mut StepWriteContext,
+        name: &str,
+        brep: Option<u64>,
+        uncertainty: f64,
+    ) -> Result<Product, IoError> {
+        context.options.product_name = name.into();
+        let definition = context.write_product_structure().definition;
+        let representation = context.next_id();
+        let geometric = context
+            .write_geometric_context(uncertainty, false)?
+            .representation;
+        let origin = write_placement(context, Mat4::identity());
+        let mut items = vec![origin];
+        items.extend(brep);
+        let shape = context.next_id();
+        context.write_entity(
+            shape,
+            "PRODUCT_DEFINITION_SHAPE",
+            &format!("'','',#{definition})"),
+        );
+        let link = context.next_id();
+        context.write_entity(
+            link,
+            "SHAPE_DEFINITION_REPRESENTATION",
+            &format!("#{shape},#{representation})"),
+        );
+        Ok(Product {
+            definition,
+            representation,
+            context: geometric,
+            origin,
+            items,
+            has_solid: brep.is_some(),
+        })
+    }
+
+    fn write_placement(context: &mut StepWriteContext, matrix: Mat4) -> u64 {
+        context.write_axis2_placement(
+            Point3::new(matrix.0[0][3], matrix.0[1][3], matrix.0[2][3]),
+            Vec3::new(matrix.0[0][2], matrix.0[1][2], matrix.0[2][2]),
+            Vec3::new(matrix.0[0][0], matrix.0[1][0], matrix.0[2][0]),
+        )
+    }
+
+    fn write_representation(context: &mut StepWriteContext, product: &Product, items: &[u64]) {
+        let items = items
+            .iter()
+            .map(|id| format!("#{id}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        context.write_entity(
+            product.representation,
+            if product.has_solid {
+                "ADVANCED_BREP_SHAPE_REPRESENTATION"
+            } else {
+                "SHAPE_REPRESENTATION"
+            },
+            &format!("'',({items}),#{})", product.context),
+        );
+    }
+
+    fn write_occurrence(
+        context: &mut StepWriteContext,
+        id: ComponentId,
+        component: &Component,
+        parent: &Product,
+        child: &Product,
+        placement: u64,
+    ) {
+        let occurrence = context.next_id();
+        context.write_entity(
+            occurrence,
+            "NEXT_ASSEMBLY_USAGE_OCCURRENCE",
+            &format!(
+                "'{id}',{},'',#{},#{},'{id}')",
+                step_string_literal(&component.name),
+                parent.definition,
+                child.definition
+            ),
+        );
+        let shape = context.next_id();
+        context.write_entity(
+            shape,
+            "PRODUCT_DEFINITION_SHAPE",
+            &format!("'','',#{occurrence})"),
+        );
+        let transform = context.next_id();
+        context.write_entity(
+            transform,
+            "ITEM_DEFINED_TRANSFORMATION",
+            &format!("'','',#{},#{placement})", child.origin),
+        );
+        let relation = context.next_id();
+        let _ = writeln!(
+            context.entities,
+            "#{relation} = (REPRESENTATION_RELATIONSHIP('','',#{},#{}) REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#{transform}) SHAPE_REPRESENTATION_RELATIONSHIP());",
+            child.representation, parent.representation
+        );
+        let link = context.next_id();
+        context.write_entity(
+            link,
+            "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION",
+            &format!("#{relation},#{shape})"),
+        );
+    }
+}
+
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
@@ -148,72 +450,7 @@ pub fn write_step_bodies_with_options(
         });
     }
 
-    let mut uncertainty = 1e-7_f64;
-    for &solid_id in solids {
-        for face_id in remus_topology::explorer::solid_faces(topo, solid_id)? {
-            uncertainty = uncertainty.max(planar_face_vertex_residual(topo, face_id)?);
-        }
-        for vertex_id in solid_vertices(topo, solid_id)? {
-            let vertex_tolerance = topo.vertex(vertex_id)?.tolerance();
-            if !vertex_tolerance.is_finite() || vertex_tolerance < 0.0 {
-                return Err(IoError::InvalidTopology {
-                    reason: format!(
-                        "exported vertex {vertex_id:?} has invalid tolerance {vertex_tolerance}"
-                    ),
-                });
-            }
-            uncertainty = uncertainty.max(vertex_tolerance);
-        }
-        for edge_id in solid_edges(topo, solid_id)? {
-            if let Some(edge_tolerance) = topo.edge(edge_id)?.tolerance() {
-                if !edge_tolerance.is_finite() || edge_tolerance < 0.0 {
-                    return Err(IoError::InvalidTopology {
-                        reason: format!(
-                            "exported edge {edge_id:?} has invalid tolerance {edge_tolerance}"
-                        ),
-                    });
-                }
-                uncertainty = uncertainty.max(edge_tolerance);
-            }
-        }
-    }
-    for &sheet_id in sheets {
-        let actual = topo.body_class_of(BodyId::Shell(sheet_id))?;
-        if actual != BodyClass::Sheet {
-            return Err(remus_topology::TopologyError::BodyClassMismatch {
-                entity: "STEP sheet root",
-                expected: BodyClass::Sheet.as_str(),
-                actual: actual.as_str(),
-            }
-            .into());
-        }
-        for &face_id in topo.shell(sheet_id)?.faces() {
-            uncertainty = uncertainty.max(planar_face_vertex_residual(topo, face_id)?);
-            for vertex_id in face_vertices(topo, face_id)? {
-                let vertex_tolerance = topo.vertex(vertex_id)?.tolerance();
-                if !vertex_tolerance.is_finite() || vertex_tolerance < 0.0 {
-                    return Err(IoError::InvalidTopology {
-                        reason: format!(
-                            "exported vertex {vertex_id:?} has invalid tolerance {vertex_tolerance}"
-                        ),
-                    });
-                }
-                uncertainty = uncertainty.max(vertex_tolerance);
-            }
-            for edge_id in face_edges(topo, face_id)? {
-                if let Some(edge_tolerance) = topo.edge(edge_id)?.tolerance() {
-                    if !edge_tolerance.is_finite() || edge_tolerance < 0.0 {
-                        return Err(IoError::InvalidTopology {
-                            reason: format!(
-                                "exported edge {edge_id:?} has invalid tolerance {edge_tolerance}"
-                            ),
-                        });
-                    }
-                    uncertainty = uncertainty.max(edge_tolerance);
-                }
-            }
-        }
-    }
+    let uncertainty = export_uncertainty(topo, solids, sheets)?;
 
     let mut ctx = StepWriteContext::new(options.clone());
 
@@ -307,6 +544,81 @@ pub fn write_step_bodies_with_options(
     }
 
     Ok(ctx.finish())
+}
+
+fn export_uncertainty(
+    topo: &Topology,
+    solids: &[SolidId],
+    sheets: &[remus_topology::shell::ShellId],
+) -> Result<f64, IoError> {
+    let mut uncertainty = 1e-7_f64;
+    for &solid_id in solids {
+        for face_id in remus_topology::explorer::solid_faces(topo, solid_id)? {
+            uncertainty = uncertainty.max(planar_face_vertex_residual(topo, face_id)?);
+        }
+        for vertex_id in solid_vertices(topo, solid_id)? {
+            let vertex_tolerance = topo.vertex(vertex_id)?.tolerance();
+            if !vertex_tolerance.is_finite() || vertex_tolerance < 0.0 {
+                return Err(IoError::InvalidTopology {
+                    reason: format!(
+                        "exported vertex {vertex_id:?} has invalid tolerance {vertex_tolerance}"
+                    ),
+                });
+            }
+            uncertainty = uncertainty.max(vertex_tolerance);
+        }
+        for edge_id in solid_edges(topo, solid_id)? {
+            if let Some(edge_tolerance) = topo.edge(edge_id)?.tolerance() {
+                if !edge_tolerance.is_finite() || edge_tolerance < 0.0 {
+                    return Err(IoError::InvalidTopology {
+                        reason: format!(
+                            "exported edge {edge_id:?} has invalid tolerance {edge_tolerance}"
+                        ),
+                    });
+                }
+                uncertainty = uncertainty.max(edge_tolerance);
+            }
+        }
+    }
+    for &sheet_id in sheets {
+        let actual = topo.body_class_of(BodyId::Shell(sheet_id))?;
+        if actual != BodyClass::Sheet {
+            return Err(remus_topology::TopologyError::BodyClassMismatch {
+                entity: "STEP sheet root",
+                expected: BodyClass::Sheet.as_str(),
+                actual: actual.as_str(),
+            }
+            .into());
+        }
+        for &face_id in topo.shell(sheet_id)?.faces() {
+            uncertainty = uncertainty.max(planar_face_vertex_residual(topo, face_id)?);
+            for vertex_id in face_vertices(topo, face_id)? {
+                let vertex_tolerance = topo.vertex(vertex_id)?.tolerance();
+                if !vertex_tolerance.is_finite() || vertex_tolerance < 0.0 {
+                    return Err(IoError::InvalidTopology {
+                        reason: format!(
+                            "exported vertex {vertex_id:?} has invalid tolerance {vertex_tolerance}"
+                        ),
+                    });
+                }
+                uncertainty = uncertainty.max(vertex_tolerance);
+            }
+            for edge_id in face_edges(topo, face_id)? {
+                if let Some(edge_tolerance) = topo.edge(edge_id)?.tolerance() {
+                    if !edge_tolerance.is_finite() || edge_tolerance < 0.0 {
+                        return Err(IoError::InvalidTopology {
+                            reason: format!(
+                                "exported edge {edge_id:?} has invalid tolerance {edge_tolerance}"
+                            ),
+                        });
+                    }
+                    uncertainty = uncertainty.max(edge_tolerance);
+                }
+            }
+        }
+    }
+
+    Ok(uncertainty)
 }
 
 /// Maximum distance of a planar face's boundary vertices from its carrier.
@@ -1660,8 +1972,55 @@ impl StepWriteContext {
 }
 
 /// Quote a string for a STEP Part 21 string literal.
+///
+/// The header declares edition 2 (`'2;1'`), whose strings hold only printable
+/// ASCII. An apostrophe doubles and a backslash becomes `\\`; any other
+/// character goes in a `\X2\`…`\X0\` run of UTF-16 code units, or a
+/// `\X4\`…`\X0\` run of code points outside the Basic Multilingual Plane.
 fn step_string_literal(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Run {
+        Ascii,
+        X2,
+        X4,
+    }
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('\'');
+    let mut run = Run::Ascii;
+    for ch in value.chars() {
+        let wanted = match ch {
+            ' '..='~' => Run::Ascii,
+            '\u{0}'..='\u{ffff}' => Run::X2,
+            _ => Run::X4,
+        };
+        if wanted != run {
+            if run != Run::Ascii {
+                out.push_str("\\X0\\");
+            }
+            match wanted {
+                Run::Ascii => {}
+                Run::X2 => out.push_str("\\X2\\"),
+                Run::X4 => out.push_str("\\X4\\"),
+            }
+            run = wanted;
+        }
+        match (run, ch) {
+            (Run::Ascii, '\'') => out.push_str("''"),
+            (Run::Ascii, '\\') => out.push_str("\\\\"),
+            (Run::Ascii, _) => out.push(ch),
+            (Run::X2, _) => {
+                let _ = write!(out, "{:04X}", u32::from(ch));
+            }
+            (Run::X4, _) => {
+                let _ = write!(out, "{:08X}", u32::from(ch));
+            }
+        }
+    }
+    if run != Run::Ascii {
+        out.push_str("\\X0\\");
+    }
+    out.push('\'');
+    out
 }
 
 /// Format a finite float for exact STEP round-trip.

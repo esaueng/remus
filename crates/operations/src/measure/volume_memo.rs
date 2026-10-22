@@ -157,6 +157,10 @@ struct VolumeMemo {
     hits: u64,
     content_hits: u64,
     misses: u64,
+    /// A [`scoped`] stand-in: canonical (rank) content keys, so a result an
+    /// operation rebuilt in fresh handle slots after a rollback is found, and
+    /// no hits reported to the measurement-reuse counters.
+    scoped: bool,
 }
 
 /// Which entry answered, and how it was found.
@@ -189,7 +193,9 @@ impl VolumeMemo {
         self.hits += 1;
         self.content_hits += u64::from(by_content);
         let volume = entry.volume;
-        super::reuse::record_volume_hit(by_content);
+        if !self.scoped {
+            super::reuse::record_volume_hit(by_content);
+        }
         if super::reuse::is_enabled()
             && let Some(entry) = self.entries.remove(index)
         {
@@ -325,6 +331,50 @@ pub fn clear_thread_volume_memo() {
     });
 }
 
+/// Readings a [`scoped`] memo retains: one operation's inputs and results.
+const SCOPED_CAPACITY: usize = 16;
+
+/// Run `f` with this thread's memo enabled when it is not, for an operation
+/// that reads the same bodies more than once (the blend cascade measures its
+/// unchanged input on every engine attempt, and a rolled-back attempt rebuilt
+/// under a guard measures an identical result again).
+///
+/// Every reading is the value a fresh call returns, bit for bit (see the
+/// module docs; the stand-in keys content by canonical rank, as measurement
+/// reuse does), so this changes no result. A memo the application already
+/// enabled is used as it is. Otherwise a fresh one stands in for the
+/// duration and the disabled memo — contents, bounds and counters — is put
+/// back afterwards, also on unwind, so nothing outside `f` can observe it.
+pub fn scoped<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<VolumeMemo>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if let Some(saved) = self.0.take() {
+                MEMO.with(|memo| {
+                    if let Ok(mut memo) = memo.try_borrow_mut() {
+                        *memo = saved;
+                    }
+                });
+            }
+        }
+    }
+    let saved = MEMO.with(|memo| {
+        let mut memo = memo.try_borrow_mut().ok()?;
+        if memo.enabled() {
+            return None;
+        }
+        let local = VolumeMemo {
+            capacity: SCOPED_CAPACITY,
+            byte_budget: DEFAULT_VOLUME_MEMO_BYTE_BUDGET,
+            scoped: true,
+            ..VolumeMemo::default()
+        };
+        Some(std::mem::replace(&mut *memo, local))
+    });
+    let _restore = Restore(saved);
+    f()
+}
+
 fn memo_enabled() -> bool {
     MEMO.with(|memo| memo.try_borrow().is_ok_and(|memo| memo.enabled()))
 }
@@ -364,7 +414,9 @@ pub(super) fn memoized(
         return Ok(volume);
     }
     // 2. The same content under another identity, at this request.
-    let content = if super::reuse::is_enabled() {
+    let canonical = super::reuse::is_enabled()
+        || MEMO.with(|memo| memo.try_borrow().is_ok_and(|memo| memo.scoped));
+    let content = if canonical {
         solid_content_key_with_mode(topo, solid, true)
     } else {
         solid_content_key(topo, solid)
@@ -873,5 +925,47 @@ mod tests {
             size_of::<usize>() + 3 * size_of::<Vec<f64>>()
         );
         assert_eq!(size_of::<PCurve>(), size_of::<Curve2D>() + 2 * F);
+    }
+
+    /// The scoped stand-in finds a body rebuilt in other handle slots by its
+    /// canonical content, answers with the fresh reading's bits, and leaves
+    /// the disabled memo exactly as it found it.
+    #[test]
+    fn scoped_memo_reuses_rebuilt_readings_and_restores_the_disabled_memo() {
+        let rounded = |topo: &mut Topology| {
+            let plate = crate::primitives::make_box(topo, 40.0, 30.0, 4.0).unwrap();
+            let verticals: Vec<_> = remus_topology::explorer::solid_edges(topo, plate)
+                .unwrap()
+                .into_iter()
+                .filter(|&e| {
+                    let edge = topo.edge(e).unwrap();
+                    let a = topo.vertex(edge.start()).unwrap().point();
+                    let b = topo.vertex(edge.end()).unwrap().point();
+                    (a.x() - b.x()).abs() < 1e-9 && (a.y() - b.y()).abs() < 1e-9
+                })
+                .collect();
+            crate::blend_ops::fillet_cascade(topo, plate, &verticals, 5.0)
+                .unwrap()
+                .solid
+        };
+        let mut first = Topology::new();
+        let a = rounded(&mut first);
+        let mut second = Topology::new();
+        // Shift every handle the rebuild allocates.
+        crate::primitives::make_box(&mut second, 1.0, 1.0, 1.0).unwrap();
+        let b = rounded(&mut second);
+        assert_ne!(a.index(), b.index());
+        let fresh = crate::measure::solid_volume(&second, b, 0.1).unwrap();
+
+        let before = thread_volume_memo_stats();
+        assert_eq!(before.capacity, 0, "the memo is off by default");
+        let (stats, reading) = scoped(|| {
+            crate::measure::solid_volume(&first, a, 0.1).unwrap();
+            let reading = crate::measure::solid_volume(&second, b, 0.1).unwrap();
+            (thread_volume_memo_stats(), reading)
+        });
+        assert_eq!(stats.content_hits, 1, "{stats:?}");
+        assert_eq!(reading.to_bits(), fresh.to_bits());
+        assert_eq!(thread_volume_memo_stats(), before);
     }
 }
