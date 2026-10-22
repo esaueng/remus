@@ -27,6 +27,10 @@ approved repository Git identity.
 - A merge request authorizes the identified pull request’s merge and its
   existing automatic deployment. Mention that consequence and proceed
   without another confirmation.
+- The owner standing-authorizes an agent session to arm auto-merge on a pull
+  request it opened once that PR is done (green on its exact head, no
+  conflict, every review thread answered and resolved), unless the PR carries
+  the `hold` label. See the merge gate in `.claude/skills/pr-workflow/SKILL.md`.
 - Before merging, verify the current head, mergeability, reviews, and required
   checks. Wait for pending checks. Existing approval remains valid for the
   authorized change.
@@ -546,13 +550,15 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Result-aware edge/vertex evolution induced from an exact face map (typed unresolved reasons, F/E/V completeness) | `boundary_evolution.rs` |
 | Compound operations | `compound_ops.rs` |
 | Blend v2 wrappers (fillet/chamfer) | `blend_ops.rs` |
+| Differential oracle for the fillet feature grouping: the pairwise polyline grouping before its connected-pair skip, box prefilter and early-exit scan, kept verbatim (tests) | `blend_ops/grouping_oracle_tests.rs` |
 | Convex blend material-side acceptance | `blend_material.rs` |
 | Exact standalone face-face blend sheets | `face_face_blend.rs` |
 | Offset v2 (delegates to remus-offset) | `offset_v2.rs` |
 | Shared winding utilities | `winding.rs` |
 | Edge projection with hidden-line removal | `projection.rs` |
-| Exact silhouettes of cylinder, cone, sphere and torus faces (torus branches sampled adaptively), trimmed and split by the same occlusion probe (NURBS reported unsupported) | `projection/silhouette.rs` |
-| Closed-form oracles for silhouettes: side, axial and oblique views, seam rulings, bores across scales, notch trims, the torus condition and torus views (tests) | `projection/silhouette_tests.rs` |
+| Exact silhouettes of cylinder, cone, sphere and torus faces (torus branches sampled adaptively), trimmed and split by the same occlusion probe; NURBS faces' traced ones, reported approximate | `projection/silhouette.rs` |
+| NURBS silhouette tracing: `n·d` sampled on a knot-aligned grid, marching squares, crossings bisected onto `n·d = 0`, refined to the deflection | `projection/silhouette/nurbs.rs` |
+| Closed-form oracles for silhouettes: side, axial and oblique views, seam rulings, bores across scales, notch trims, the torus condition and torus views, and traced NURBS cylinders, spheres and tori against their exact outlines (tests) | `projection/silhouette_tests.rs` |
 | Shared loft/sweep/pipe/revolve end caps | `cap.rs` |
 | Journal ingestion for modeling operations | `journal_ops.rs` |
 | Direct push/pull face editing | `push_pull.rs` |

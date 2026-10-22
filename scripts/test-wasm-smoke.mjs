@@ -19,8 +19,11 @@ import { runProjectCurvePackaged } from './project-curve-packaged.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
 import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
 import { runWasmParserReferencesPackaged } from './wasm-parser-refs-packaged.mjs';
+import { runVariableFilletInputPackaged } from './variable-fillet-input-packaged.mjs';
 import { runOpseqF5Packaged } from './opseq-f5-packaged.mjs';
 import { runOpseqF6Packaged } from './opseq-f6-packaged.mjs';
+import { runOpseqF10Packaged } from './opseq-f10-packaged.mjs';
+import { runOpseqF13Packaged } from './opseq-f13-packaged.mjs';
 import { runWasmRayTorusPackaged } from './wasm-ray-torus-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
 import { runPackageQueueWitness } from './queue-contracts-packaged.mjs';
@@ -28,6 +31,7 @@ import { runPointedConeCutPackaged } from './pointed-cone-cut-packaged.mjs';
 import { runTruckNurbsReusePackaged } from './truck-nurbs-reuse-packaged.mjs';
 import { runWasmRayNurbsPackaged } from './wasm-ray-nurbs-packaged.mjs';
 import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
+import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
@@ -75,7 +79,9 @@ runPointedConeCutPackaged({ BrepKernel });
 runTruckNurbsReusePackaged({ BrepKernel });
 runWasmRayNurbsPackaged({ BrepKernel });
 runWasmParserReferencesPackaged({ BrepKernel });
+runVariableFilletInputPackaged({ BrepKernel });
 runOpseqF3Packaged({ BrepKernel });
+runDocumentCopyPackaged({ BrepKernel, RemusIo });
 
 const DEFLECTION = 0.1;
 
@@ -1733,6 +1739,8 @@ runNextKernelCorrectnessPackaged({ BrepKernel });
 runKernelCorrectnessPackaged({ BrepKernel });
 runOpseqF5Packaged({ BrepKernel });
 runOpseqF6Packaged({ BrepKernel });
+runOpseqF10Packaged({ BrepKernel });
+runOpseqF13Packaged({ BrepKernel });
 
 runWasmRayTorusPackaged({ BrepKernel });
 

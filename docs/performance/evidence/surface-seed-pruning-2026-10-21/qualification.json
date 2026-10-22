@@ -1,0 +1,32 @@
+[
+  {
+    "pair": [
+      0,
+      1
+    ],
+    "qualified": true,
+    "records": 10,
+    "exactArenaMeshQuantitiesAndFeatures": true,
+    "timingsComparedAsSpeedup": false
+  },
+  {
+    "pair": [
+      0,
+      2
+    ],
+    "qualified": true,
+    "records": 10,
+    "exactArenaMeshQuantitiesAndFeatures": true,
+    "timingsComparedAsSpeedup": false
+  },
+  {
+    "pair": [
+      0,
+      3
+    ],
+    "qualified": true,
+    "records": 10,
+    "exactArenaMeshQuantitiesAndFeatures": true,
+    "timingsComparedAsSpeedup": false
+  }
+]

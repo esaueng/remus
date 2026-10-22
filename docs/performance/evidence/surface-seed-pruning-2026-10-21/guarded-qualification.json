@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "revalidatedAtUtc": "2026-10-22T05:18:35.674Z",
+  "scope": "Recheck existing captured semantic outputs with distinct kernel WASM identities; no new runtime or timing capture.",
+  "comparator": {
+    "path": "scripts/perf/parameter-rebuild/compare_variants.cjs",
+    "sha256": "816ab9df5257318f53a2a1311b4b68da0556588756fdeaf785ac6508a3bc80c5"
+  },
+  "validationDependency": {
+    "path": "scripts/perf/parameter-rebuild/compare_runs.cjs",
+    "sha256": "af99568e614caa9d8ecb13b5e45cd789e70e3e9a1b3b1af54242ef32322c38c7"
+  },
+  "inputs": [
+    {
+      "path": "docs/performance/evidence/surface-seed-pruning-2026-10-21/runs.json",
+      "sha256": "976b7c12074d11672a4694c4fff9643f8d32d4605953f4bef24e05496ed7a5c4"
+    },
+    {
+      "path": "docs/performance/evidence/surface-seed-pruning-2026-10-21/capture.json",
+      "sha256": "5a9af50a5d83226659d9381f325ec63d5d5684e8aa895dbe07a9cc6c17a19920"
+    }
+  ],
+  "historicalQualification": {
+    "path": "docs/performance/evidence/surface-seed-pruning-2026-10-21/qualification.json",
+    "sha256": "fd7511f487a4bd123f77dbac79f0bf39b442c1db0ef63a35e966935d5d0a71f5",
+    "comparatorSha256": "9952a2c448485e12568239ceedb55cac518e46d8f85f7d990cb78b342cbf207b",
+    "sameVariantDriftPair": [
+      0,
+      3
+    ]
+  },
+  "capturedRuns": [
+    {
+      "index": 0,
+      "variant": "A",
+      "records": 10,
+      "kernelWasmSha256": "badcb15af1397e92e84a66a6931a66d41fee6c9e8d40b197324cfa16091683e1"
+    },
+    {
+      "index": 1,
+      "variant": "B",
+      "records": 10,
+      "kernelWasmSha256": "57cfd2a79abdac944d5c7c01478662042b1e84479a7f36a807d409a04ae4e5f8"
+    },
+    {
+      "index": 2,
+      "variant": "B",
+      "records": 10,
+      "kernelWasmSha256": "57cfd2a79abdac944d5c7c01478662042b1e84479a7f36a807d409a04ae4e5f8"
+    },
+    {
+      "index": 3,
+      "variant": "A",
+      "records": 10,
+      "kernelWasmSha256": "badcb15af1397e92e84a66a6931a66d41fee6c9e8d40b197324cfa16091683e1"
+    }
+  ],
+  "comparisons": [
+    {
+      "pair": [
+        0,
+        1
+      ],
+      "qualified": true,
+      "records": 10,
+      "exactArenaMeshQuantitiesAndFeatures": true,
+      "timingsComparedAsSpeedup": false
+    },
+    {
+      "pair": [
+        0,
+        2
+      ],
+      "qualified": true,
+      "records": 10,
+      "exactArenaMeshQuantitiesAndFeatures": true,
+      "timingsComparedAsSpeedup": false
+    },
+    {
+      "pair": [
+        3,
+        1
+      ],
+      "qualified": true,
+      "records": 10,
+      "exactArenaMeshQuantitiesAndFeatures": true,
+      "timingsComparedAsSpeedup": false
+    }
+  ],
+  "rejectedSameVariantPairs": [
+    {
+      "pair": [
+        0,
+        3
+      ],
+      "rejected": true,
+      "reason": "Expected different kernel WASM hashes for cross-variant comparison"
+    },
+    {
+      "pair": [
+        1,
+        2
+      ],
+      "rejected": true,
+      "reason": "Expected different kernel WASM hashes for cross-variant comparison"
+    }
+  ],
+  "coverage": {
+    "runIndices": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "capturedRecords": 40,
+    "recordsPerRun": [
+      10,
+      10,
+      10,
+      10
+    ]
+  },
+  "newTimingsCollected": false
+}

@@ -11,6 +11,7 @@ use std::time::Duration;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use remus_math::nurbs::basis::{basis_funs_into, ders_basis_funs_into, find_span};
 use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::nurbs::projection::{SurfaceSeedGrid, project_point_to_surface_with_grid};
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::predicates::{point_in_polygon, winding_number};
 use remus_math::surfaces::CylindricalSurface;
@@ -174,6 +175,40 @@ fn bench_flamegraph_hot_paths(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_surface_projection(c: &mut Criterion) {
+    let mut group = c.benchmark_group("surface_projection");
+    group.throughput(Throughput::Elements(16));
+    for degree in [3, 9] {
+        let surface = surface(degree);
+        let grid = SurfaceSeedGrid::for_surface(&surface);
+        let points: Vec<_> = (0..16)
+            .map(|i| {
+                let u = (i as f64 + 0.25) / 16.0;
+                let v = ((i * 7 % 16) as f64 + 0.75) / 16.0;
+                surface.evaluate(u, v) + Vec3::new(0.01, -0.02, 0.04)
+            })
+            .collect();
+        group.bench_with_input(
+            BenchmarkId::new("cached_grid", degree),
+            &degree,
+            |bencher, _| {
+                bencher.iter(|| {
+                    for &point in &points {
+                        black_box(project_point_to_surface_with_grid(
+                            black_box(&surface),
+                            black_box(point),
+                            1e-7,
+                            black_box(&grid),
+                        ))
+                        .expect("projection benchmark converges");
+                    }
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 fn criterion_config() -> Criterion {
     Criterion::default()
         .sample_size(20)
@@ -184,6 +219,6 @@ fn criterion_config() -> Criterion {
 criterion_group! {
     name = benches;
     config = criterion_config();
-    targets = bench_nurbs, bench_flamegraph_hot_paths
+    targets = bench_nurbs, bench_flamegraph_hot_paths, bench_surface_projection
 }
 criterion_main!(benches);

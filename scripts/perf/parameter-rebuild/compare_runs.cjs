@@ -62,7 +62,7 @@ function compare(preview, completion) {
     pattern: preview.metadata.pattern,
     arenaAndMeshBytesMatch: true, timingsComparedAsSpeedup: false };
 }
-module.exports = { compare };
+module.exports = { checkRun, compare };
 if (require.main === module) {
   try {
     assert.equal(process.argv.length, 4, 'Expected preview.json completion.json');

@@ -6,6 +6,7 @@ import importlib.util
 import re
 import subprocess
 import unittest
+from test_jane_helper_workflows import STAGE
 from pathlib import Path
 from fleet_workflows import workflow_path, is_ci_workflow, validate_calls
 
@@ -15,12 +16,21 @@ SPEC = importlib.util.spec_from_file_location("direct", ROOT / "scripts/test-dir
 DIRECT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(DIRECT)
 FILES = sorted(p for p in WORKFLOWS.glob("fleet-*.yml") if not is_ci_workflow(p))
+PROFILE_FILES = {entry['staged'] for entry in STAGE['workflows'].values()}
 GUARD_PATH = ".github/actions/fleet-guard/action.yml"
 GUARD = (ROOT / GUARD_PATH).read_text()
 # Hosted jobs name an exact image: `ubuntu-latest` moves to a new Ubuntu
 # release on GitHub's schedule and would silently change the toolchain,
 # cargo-mutants and cargo-fuzz installs and the timings in .cargo/mutants.toml.
 HOSTED = "ubuntu-24.04"
+
+
+def legacy_jane_profile(text):
+    """Normalize only the reviewed three-slot resource delta during rollout."""
+    return (text.replace('ci-server-jane-1|ci-server-jane-2|ci-server-jane-3)',
+                         'ci-server-jane-1|ci-server-jane-2)')
+            .replace('CI_MEMORY=5000000000', 'CI_MEMORY=6442450944')
+            .replace('        CI_MEMORY=$((CI_MEMORY / $(getconf PAGESIZE) * $(getconf PAGESIZE)))\n', ''))
 
 
 def jobs(text):
@@ -50,7 +60,8 @@ class UbuntuRoutingTests(unittest.TestCase):
                     github["ref"] = "refs/heads/main"
                 with self.subTest(file=filename, event=event):
                     self.assertEqual(DIRECT.evaluate(expression, github, self.variables),
-                                     {"group": "ci-trusted-main", "labels": "ci-server-jane"})
+                                     {"group": "ci-trusted-main", "labels":
+                                      "ci-server-jane-5gb" if filename in PROFILE_FILES else "ci-server-jane"})
 
     def test_forks_other_actors_and_unprotected_refs_remain_hosted(self):
         cases = []
@@ -114,8 +125,16 @@ class UbuntuRoutingTests(unittest.TestCase):
                 with self.subTest(file=path.name, job=name):
                     reference = re.search(r"uses: esaueng/remus/\.github/actions/fleet-guard@([a-f0-9]{40})", block)
                     self.assertIsNotNone(reference)
-                    self.assertEqual(subprocess.check_output(
-                        ["git", "show", f"{reference[1]}:{GUARD_PATH}"], cwd=ROOT, text=True), GUARD)
+                    self.assertEqual(subprocess.run(
+                        ["git", "merge-base", "--is-ancestor", reference[1], "origin/main"],
+                        cwd=ROOT).returncode, 0)
+                    pinned = subprocess.check_output(
+                        ["git", "show", f"{reference[1]}:{GUARD_PATH}"], cwd=ROOT, text=True)
+                    self.assertEqual(legacy_jane_profile(pinned), legacy_jane_profile(GUARD))
+                    if workflow_path("ci").name == "fleet-ci-v6.yml":
+                        self.assertIn('ci-server-jane-1|ci-server-jane-2|ci-server-jane-3)', pinned)
+                        self.assertIn('CI_MEMORY=5000000000', pinned)
+                        self.assertIn('CI_MEMORY=$((CI_MEMORY / $(getconf PAGESIZE)', pinned)
                     if "actions/checkout@" in block:
                         self.assertLess(block.index("fleet-guard@"), block.index("actions/checkout@"))
                         self.assertIn("persist-credentials: false", block)
@@ -131,7 +150,7 @@ class UbuntuRoutingTests(unittest.TestCase):
             block = re.search(r"      - &" + anchor + r"\n(.*?)(?=^      - )", original, re.M | re.S)[1]
             script = block.split("        run: |\n", 1)[1]
             normalized = "\n".join(line[2:] if line.startswith("  ") else line for line in script.splitlines())
-            self.assertIn(normalized, GUARD)
+            self.assertIn(legacy_jane_profile(normalized), legacy_jane_profile(GUARD))
 
     def test_osv_keeps_base_comparison_and_blocking_reports(self):
         text = workflow_path("osv").read_text()
@@ -193,6 +212,26 @@ class UbuntuRoutingTests(unittest.TestCase):
             self.assertIn("contents: read", blocks[run])
             self.assertNotIn("contents: write", blocks[run])
             self.assertIn("contents: write", blocks["publish"])
+
+    def test_main_probe_maps_jane_preference_to_profile_selector(self):
+        text = (WORKFLOWS / "trusted-vps.yml").read_text()
+        source = re.search(r"^      labels: \$\{\{ (.+) \}\}$", text, re.M)[1]
+        source = source.replace("&&", " and ").replace("||", " or ")
+        for runner, target, expected in (
+            ("auto", "ci-server-jane", "ci-server-jane-5gb"),
+            ("ci-server-jane", "github-hosted", "ci-server-jane-5gb"),
+            ("ci-server-jane-1", "ci-server-jane", "ci-server-jane-1"),
+            ("ci-server-jane-2", "ci-server-jane", "ci-server-jane-2"),
+            ("ci-server-jane-3", "ci-server-jane", "ci-server-jane-3"),
+            ("auto", "ci-server-john", "ci-server-john"),
+            ("ci-server-john", "ci-server-jane", "ci-server-john"),
+        ):
+            with self.subTest(runner=runner, target=target):
+                self.assertEqual(eval(source, {"__builtins__": {}}, {
+                    "vars": DIRECT.Context({"CI_FLEET_TARGET": target}),
+                    "inputs": DIRECT.Context({"runner": runner}),
+                    "fromJSON": DIRECT.json.loads, "contains": lambda values, item: item in values,
+                }), expected)
 
     def test_main_probe_has_no_hosted_bootstrap(self):
         text = (WORKFLOWS / "trusted-vps.yml").read_text()

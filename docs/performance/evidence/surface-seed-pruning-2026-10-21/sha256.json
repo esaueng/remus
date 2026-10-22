@@ -1,0 +1,15 @@
+{
+  "files": {
+    "baseline-proof-overlay.patch.gz": "75d6d32670ed376d9879a09ad17ab76f24127492c806637dba903e0a57dfa188",
+    "baseline-quality.json": "c5c603bd64c6d0f7b61c79f689d9479f74f60b0503d04f230e20482a0c8d6bbf",
+    "build.json": "81bd68b848ab68f64e943986a7ab451472467242828a7234a5d24ef2b2381510",
+    "candidate-quality.json": "c5c603bd64c6d0f7b61c79f689d9479f74f60b0503d04f230e20482a0c8d6bbf",
+    "capture.json": "5a9af50a5d83226659d9381f325ec63d5d5684e8aa895dbe07a9cc6c17a19920",
+    "native.json": "bce0cd09f14f9f23de52f68946346fd5c7dfbfb236bb3c6bd8260b87ac56e47b",
+    "profile.json": "ff880dc7b48bb5969776027c1742ee45a913c27f2dbe041cb7b38c1f2b2c5f73",
+    "qualification.json": "fd7511f487a4bd123f77dbac79f0bf39b442c1db0ef63a35e966935d5d0a71f5",
+    "quality-summary.json": "2a7c6b1c4a358cc48ab1e800555a4468574f6d725b4de00222703b2a2be46e7e",
+    "recovery.json": "901fd1b299a9078224810b7f341d91253d33a4859612579f0561b7ac805187e6",
+    "runs.json": "976b7c12074d11672a4694c4fff9643f8d32d4605953f4bef24e05496ed7a5c4"
+  }
+}

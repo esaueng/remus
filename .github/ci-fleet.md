@@ -1,5 +1,17 @@
 # Trusted CI fleet
 
+## Three-slot profile cutover
+
+The staged v6 workflow combines trusted queue authorization with three slots
+at nominal 5 GB each. Its scheduling selector is `ci-server-jane-5gb`; the
+controller preference stays `ci-server-jane`. The controller mapping and exact
+main workflow revisions must be deployed/approved before adding the profile
+label to the verified slots. Keep the old shared label withheld so legacy
+6 GiB callers cannot match them. Preserve runner names, selected repositories
+and exact workflow restrictions. Compatible auxiliary guard versions must be
+staged at actual main commits before the coherent caller/manifest activation.
+The routing below describes the earlier active workflow contract.
+
 Fleet jobs choose their runner from repository variables, evaluated in each
 job's `runs-on` expression: an owner PR or a protected-main push runs on the
 runner named by `CI_FLEET_TARGET` (`ci-server-jane` or `ci-server-john`) when
@@ -19,7 +31,7 @@ revisions; labels alone grant no access.
 
 `trusted-vps.yml` retains its filename for the existing main-only group entry.
 Its default (`auto`) uses the `CI_FLEET_TARGET` runner. Explicit manual
-diagnostics may target Jane, one of its two slots, or John. Old VPS labels and
+diagnostics may target Jane, one of its three slots, or John. Old VPS labels and
 arbitrary inputs are rejected; main pushes never override the configured target. Protected main and the trusted-pilot
 activation switch remain required.
 

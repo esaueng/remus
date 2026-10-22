@@ -21,7 +21,7 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_BUILD_JOBS: "2"
   RUST_MIN_STACK: "33554432"
-  O15_PROOF_OUT: ${{ github.workspace }}/target/o15-proof
+  O15_PROOF_OUT: target/o15-proof
 
 jobs:
   proof:
@@ -48,45 +48,74 @@ jobs:
             platform: darwin
             arch: arm64
             rust_host: aarch64-apple-darwin
+          - os: windows-2025
+            platform: win32
+            arch: x64
+            rust_host: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            platform: win32
+            arch: arm64
+            rust_host: aarch64-pc-windows-msvc
     env:
       O15_EXPECT_RUNNER: ${{ matrix.os }}
       O15_EXPECT_PLATFORM: ${{ matrix.platform }}
       O15_EXPECT_ARCH: ${{ matrix.arch }}
       O15_EXPECT_RUST_HOST: ${{ matrix.rust_host }}
+      O15_PYTHON: ${{ matrix.platform == 'win32' && 'python' || 'python3' }}
+      CARGO_BUILD_JOBS: ${{ matrix.os == 'windows-11-arm' && '1' || '2' }}
     defaults:
       run:
         shell: bash
     steps:
+      - name: Preserve canonical package bytes on Windows
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: ${{ matrix.os == 'windows-11-arm' && '1.96.0-aarch64-pc-windows-msvc' || '1.96.0' }}
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          architecture: ${{ matrix.arch }}
+      - name: Select the native Windows ARM toolchain
+        if: matrix.os == 'windows-11-arm'
+        run: echo 'RUSTUP_TOOLCHAIN=1.96.0-aarch64-pc-windows-msvc' >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        if: matrix.os != 'windows-11-arm'
+        with:
+          tool: wasm-pack
+      # These two Windows build helpers are x64-emulated; the compiler, Cargo,
+      # Node process and both executed Remus geometry programs must be ARM64.
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        if: matrix.os == 'windows-11-arm'
+        with:
+          tool: wasm-pack@0.15.0,wasm-bindgen@0.2.126
+          checksum: true
+          fallback: none
+      - name: Check workflow policy
+        run: |
+          "$O15_PYTHON" scripts/test-o15-workflow.py
+          "$O15_PYTHON" scripts/test-o15-proof.py
       - name: Initialize proof artifacts
         run: |
           mkdir -p "$O15_PROOF_OUT"
           printf 'runner_os=%s\nrunner_arch=%s\ncheckout_sha=%s\nrust_min_stack=%s\n' \
             "$RUNNER_OS" "$RUNNER_ARCH" "$GITHUB_SHA" "$RUST_MIN_STACK" > "$O15_PROOF_OUT/workflow.txt"
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
-        with:
-          toolchain: "1.96.0"
-          targets: wasm32-unknown-unknown
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
-        with:
-          tool: wasm-pack
-      - name: Check workflow policy
-        run: |
-          python3 scripts/test-o15-workflow.py
-          python3 scripts/test-o15-proof.py
       - name: Run contract and split-translator proof
         timeout-minutes: 75
         run: |
           set -o pipefail
-          bash scripts/test-o15-proof.sh 2>&1 | tee "$O15_PROOF_OUT/run.log"
+          node scripts/test-o15-proof.mjs 2>&1 | tee "$O15_PROOF_OUT/run.log"
+      - name: Require retained workflow receipt
+        if: success()
+        run: test -s "$O15_PROOF_OUT/workflow.txt"
       - name: Retain parity reports and failure logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

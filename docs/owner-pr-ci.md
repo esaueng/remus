@@ -22,7 +22,7 @@ a label or repository variable does not grant execution authority.
 can publish this variable after checking fresh collector health and GitHub runner connectivity. A manually selected target stays fixed
 until an administrator or controller updates it; GitHub does not automatically
 switch hosts when that server goes offline. The preferred order is Jane, then
-John, then GitHub-hosted. Busy Jane remains available; jobs queue for either of her two slots.
+John, then GitHub-hosted. Busy Jane remains available; jobs queue for any of her three slots.
 Missing/invalid configuration selects hosted. Hosted fallback still depends on
 GitHub billing and capacity.
 
@@ -31,10 +31,12 @@ GitHub billing and capacity.
 `CI_FLEET_LIGHT_POOL_ENABLED=true` lets Classify Changes, Repository Policy,
 Secrets Scan, Documentation, Cargo Deny, Security Audit and CI Pass
 use any free runner carrying `ci-remus-light` in `ci-trusted-main`. Provision
-that label only on `ci-vm-1441561` (John), `ci-server-jane-1` and
-`ci-server-jane-2`; keep their existing labels. Do not label the retired
-`ci-server-jane` registration or any additional runner. No new runner process
-or extra machine capacity is created.
+that label only on explicitly selected, independently validated runners;
+keep their existing labels. The three-slot migration does not enable this
+optional pool or add `ci-remus-light` to slot 3. Keep the pool disabled until
+its membership and workflow pins are separately validated. Do not label the
+retired `ci-server-jane` registration. No new runner process or extra machine
+capacity is created by adding a pool label.
 
 The pool is opt-in. Missing/false pool configuration preserves the selected-host
 routing above. All existing owner, repository, event and protected-ref checks
@@ -52,7 +54,7 @@ membership. Removing a label prevents new matching assignments; allow active
 jobs to finish. GitHub chooses any available matching runner, without a Jane
 preference inside the pool.
 
-Activation order: add the label to the three verified runner IDs in the
+Activation order: add the label only to the selected verified runner IDs in the
 restricted group; append the exact new callee SHA to the existing workflow
 allowlist; enable the pool variable; then validate the PR's immutable caller.
 Preserve every existing runner-group permission and workflow entry. Confirm
@@ -62,7 +64,14 @@ merging. Roll back subsequent scheduling with
 
 Before checkout, self-hosted jobs verify the non-root identity, protected runner
 files, NoNewPrivileges, fresh storage, empty rootless Docker state, mount options
-and exact cgroup limits. Jane slots each have six CPU equivalents and 6 GiB RAM;
+and exact cgroup limits. The staged `fleet-ci-v6.yml` profile recognizes
+`ci-server-jane-1`, `ci-server-jane-2` and `ci-server-jane-3`, each with six CPU
+equivalents and a 5,000,000,000-byte RAM setting. systemd aligns the enforced
+limit to whole host pages: 4,999,999,488 bytes on a 4 KiB-page host. Each slot
+has a separate 150 GiB image. The v4 caller retains its legacy 6 GiB contract
+until a second PR activates the v6 file at its landed main commit; keep new
+local assignments paused during this transition.
+
 John has one CPU equivalent and 3 GiB. Guard failure fails the job.
 Rust build and registry caches are restored from GitHub after the isolation
 check; only main saves them. Runner homes and workspaces are still erased
@@ -119,6 +128,77 @@ Policy verification: `python3 scripts/test-direct-fleet.py`,
 2026-10-19; callers use the active `fleet-ci` callee named in
 `.github/fleet-workflows.json`.
 
+## Combined three-slot and queue staging
+
+`fleet-ci-v6.yml` combines the owner-only queue authorization staged in v5
+with Jane's three-slot, nominal 5 GB profile. Its queue policy and every
+existing command, gate, timeout and permission match the reviewed v5 bytes;
+only the runner-name table, memory value, page alignment and profile selector differ. The
+canonical policy is embedded in the immutable callee before candidate checkout.
+The required direct-fleet suite executes the combined queue policy, scheduling
+and optional-probe failure-gate regressions.
+
+The combined workflow selects `ci-server-jane-5gb` while the controller
+preference remains `CI_FLEET_TARGET=ci-server-jane`. Deploy the reviewed
+controller profile mapping before adding that label to verified slots and
+approving the exact compatible main revisions. Keep the old shared
+`ci-server-jane` label withheld, so historical 6 GiB callers remain quarantined.
+The profile label is a selector, not a runner identity or permission grant.
+
+Keep the active caller unchanged while staging. Once v6 and the shared guard
+land on main, stage replacement auxiliary callees pinned to that actual guard
+commit. Activate v6, the compatible auxiliary manifest and every caller together
+only after those stages pass normal checks and land. Preserve exact runner-group
+restrictions and keep Jane's shared scheduling label withheld during the
+transition. The combined workflow must retain both queue authorization and the
+new memory contract; activating either legacy profile alone is insufficient.
+
+### Auxiliary profile stage
+
+The next auxiliary versions replace only the shared guard pin and the Jane
+runner selector. `.github/fleet-profile-stage.json` records their immutable
+source, landed guard commit and filenames. Required Repository Policy runs
+the complete delta, main-ancestry and active-byte regressions through
+`scripts/test-fleet-runner-policy.py`; every existing command, permission,
+publisher boundary, toolchain and hosted fallback remains unchanged.
+
+| Family | Compatible helper |
+| --- | --- |
+| Benchmark | `fleet-benchmark-v3.yml` |
+| Fuzz | `fleet-fuzz-v4.yml` |
+| Gauntlet | `fleet-gauntlet-v4.yml` |
+| Sharded mutants | `fleet-mutants-sharded-v4.yml` |
+| Mutation scope | `fleet-mutation-scope-v3.yml` |
+| OSV | `fleet-osv-v5.yml` |
+| WASM candidate | `fleet-wasm-candidate-v4.yml` |
+| WASM size report | `fleet-wasm-size-v5.yml` |
+
+This stage leaves the manifest, active files and callers unchanged. Once it
+lands, the combined activation pins all eight helpers to its actual squash
+commit and v6 to #1260's actual squash commit, switches the manifest and
+retires the previous files. Append each exact filename and landed SHA to the
+existing `ci-trusted-main` allowlist before Jane execution. Composite-action
+pins need no separate runner-group entry. Preserve the existing
+`trusted-vps.yml@refs/heads/main` diagnostic entry and every repository and
+workflow restriction.
+
+After the controller mapping, exact allowlist and per-slot guards are verified,
+add `ci-server-jane-5gb` to `ci-server-jane-1`, `ci-server-jane-2` and
+`ci-server-jane-3`, retaining their individual slot labels and default platform
+labels. Keep shared `ci-server-jane` and `ci-remus-light` labels absent from
+Jane's slots, and keep `CI_FLEET_LIGHT_POOL_ENABLED=false` during this rollout.
+The controller target remains `ci-server-jane`; the profile label does not
+replace the target. New queue candidates use v6 only after the activation
+caller reaches main. Existing PRs must pick up that caller, and jobs already
+assigned retain their runner.
+
+The profile label is shared with OpenZCAD. If it is added for OpenZCAD before
+this combined activation reaches Remus main, keep Remus
+`CI_FLEET_ENABLED=false` so legacy callers remain hosted. The simplest
+coordinated order is to merge both compatible activations with hosted CI,
+then add the shared profile label and enable fleet routing. Do not let the
+controller select Jane for the old Remus manifest during the transition.
+
 ## Updating immutable workflow dependencies
 
 `.github/fleet-workflows.json` names the active file for each workflow family.
@@ -148,9 +228,9 @@ merging these files does not change repository variables or runner permissions.
 The caller cancels superseded runs only for the same ref. There is no global
 suite concurrency group: separate PR suites can make progress at the same time,
 and one suite's slow coverage job cannot prevent another suite from starting.
-Jane's two registered slots bound actual server execution to two jobs across
+Jane's three registered slots bound actual server execution to three jobs across
 all workflows and repositories. Jobs wait for a free slot without oversubscribing
-the host. Two coverage jobs may run together when both slots are available.
+the host. Coverage jobs may run together when separate slots are available.
 
 The WASM size report comment runs in its own immutable callee after the
 suite, because it needs a write token that the suite never receives. The size
