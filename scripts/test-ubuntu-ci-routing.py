@@ -21,6 +21,12 @@ GUARD = (ROOT / GUARD_PATH).read_text()
 # release on GitHub's schedule and would silently change the toolchain,
 # cargo-mutants and cargo-fuzz installs and the timings in .cargo/mutants.toml.
 HOSTED = "ubuntu-24.04"
+# These exact staged versions use the reviewed 5 GB guard and profile selector.
+THREE_SLOT_AUXILIARIES = frozenset({
+    "fleet-benchmark-v3.yml", "fleet-fuzz-v4.yml", "fleet-gauntlet-v4.yml",
+    "fleet-mutants-sharded-v4.yml", "fleet-mutation-scope-v3.yml", "fleet-osv-v5.yml",
+    "fleet-wasm-candidate-v4.yml", "fleet-wasm-size-v5.yml",
+})
 
 
 def legacy_jane_profile(text):
@@ -51,6 +57,8 @@ class UbuntuRoutingTests(unittest.TestCase):
 
     def test_owner_pr_and_protected_main_use_the_selected_server(self):
         for filename, expression in self.expressions():
+            expected_label = ("ci-server-jane-5gb" if filename in THREE_SLOT_AUXILIARIES
+                              else "ci-server-jane")
             for event in ("pull_request", "push", "workflow_dispatch", "schedule"):
                 github = copy.deepcopy(self.github)
                 github["event_name"] = event
@@ -58,7 +66,7 @@ class UbuntuRoutingTests(unittest.TestCase):
                     github["ref"] = "refs/heads/main"
                 with self.subTest(file=filename, event=event):
                     self.assertEqual(DIRECT.evaluate(expression, github, self.variables),
-                                     {"group": "ci-trusted-main", "labels": "ci-server-jane"})
+                                     {"group": "ci-trusted-main", "labels": expected_label})
 
     def test_forks_other_actors_and_unprotected_refs_remain_hosted(self):
         cases = []
@@ -128,7 +136,8 @@ class UbuntuRoutingTests(unittest.TestCase):
                     pinned = subprocess.check_output(
                         ["git", "show", f"{reference[1]}:{GUARD_PATH}"], cwd=ROOT, text=True)
                     self.assertEqual(legacy_jane_profile(pinned), legacy_jane_profile(GUARD))
-                    if workflow_path("ci").name == "fleet-ci-v6.yml":
+                    if (path.name in THREE_SLOT_AUXILIARIES
+                            or workflow_path("ci").name == "fleet-ci-v6.yml"):
                         self.assertIn('ci-server-jane-1|ci-server-jane-2|ci-server-jane-3)', pinned)
                         self.assertIn('CI_MEMORY=5000000000', pinned)
                         self.assertIn('CI_MEMORY=$((CI_MEMORY / $(getconf PAGESIZE)', pinned)
