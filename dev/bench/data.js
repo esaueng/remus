@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792652242572,
+  "lastUpdate": 1792655092054,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -124423,6 +124423,294 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 86608,
             "range": "± 2836",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "628e86bfa04030a57998b8492bd4090e674ffe70",
+          "message": "feat(operations): traced silhouettes of NURBS faces (#1213)\n\n## Change\n\nRoadmap [7.5 Interrogation](docs/kernel-maturity/roadmap.md#p-7-5),\nNURBS slice of the silhouettes from #1199 and #1206. NURBS faces were\nthe last surface type reported `unsupported`. They now get traced\nsilhouettes, and those faces are listed in a new `approximate` field.\n\n- **Tracing.** A NURBS face has no closed-form silhouette, so it is\ntraced:\n- `g = n·d` is sampled on a grid built span by span. Each nonzero knot\nspan gets 8 intervals: fewer past 50 spans per direction, but never\nfewer than one, and more when there are too few spans for 16. The knots\nare themselves grid values, so a narrow span is sampled as finely as a\nwide one.\n- Marching squares pairs the sign changes on cell edges into segments. A\nsaddle cell is resolved by its centre value.\n  - Each crossing is bisected along its cell edge onto `g = 0`.\n- A segment is split at a point bisected across it onto `g = 0` while\nits middle strays more than the deflection from the chord.\n- **What is exact and what is not.** Every vertex lies on the\nsilhouette. A contour smaller than a grid cell can be missed. So every\nNURBS face is listed in `approximate`, also a new JSON key, even when\ntracing finds no contour. The only exception is a face certified flat by\n`certify_affine_nurbs_plane`: its normal is constant, so it provably has\nno silhouette, and it is not traced. `unsupported` is now empty for\nevery surface type.\n- **Degenerate edges.** The grid's end values are inset 1e-6 of an\ninterval from the domain edges. On a collapsed edge, such as a sphere's\npole or a cone's apex, the normal is undefined. Its fallback varies\nalong the edge, which would read as false sign changes.\n- **Edge-on faces.** A face with `|n·d| ≤ 1e-9` over the whole grid\ndraws no silhouette: its edges are its outline. It is still listed as\napproximate unless certified flat.\n- **Budgets.** Grid evaluations have their own budget (1 000 000\npoints). Contour vertices count toward the 100 000-point limit as they\nare made: refinement stops as soon as the limit is used up, so the limit\nbounds the work as well as the output. Past either budget, tracing is\nrefused, never truncated.\n- The torus coarse-deflection fix from #1206 is unchanged.\n\n## Verification\n\nOn `main` at `3fd064e`:\n\n- `cargo test -p remus-operations --lib projection`: 36 passed. New\noracles:\n- A cylinder converted to NURBS traces the exact rulings at x = ±5, rim\nto rim, and the face is reported as traced.\n- The exact rational sphere (`sphere_to_nurbs`): every traced vertex is\nat the radius, with its normal perpendicular to the view.\n- The exact rational torus (`torus_to_nurbs`): traced contours lie on\nthe torus, with the exact normal perpendicular to the view, and their\nchords stay within the deflection.\n- `convert_to_bspline` makes spheres and tori faceted degree-1 surfaces,\nwhose silhouettes are their facet edges, so these two tests use the\nexact rational forms.\n- A box converted to NURBS: every face certifies flat, so there is no\nsilhouette and nothing approximate.\n  - The bored block converted to NURBS still hides its bore's outline.\n  - Tracing is refused past its grid budget and past its vertex budget.\n  - Review follow-ups:\n- `grid_samples_every_knot_span`: a span 1/1000 of the domain gets its\nown samples.\n- `nurbs_faces_with_no_contour_are_still_approximate`: a NURBS cylinder\nseen down its axis draws nothing, yet exactly its curved faces are\nlisted.\n    - Both fail on the first revision of this PR.\n- `refinement_stops_at_the_vertex_budget`: refinement stops at the\nbudget instead of running to depth 16.\n- `cargo test -p remus-wasm --lib silhouette`: passed.\n- `cargo clippy -p remus-operations -p remus-wasm --all-targets -- -D\nwarnings`, `cargo fmt --all -- --check`: clean.\n- `./scripts/check-boundaries.sh`, `check-doc-paths.sh`,\n`check-doc-module-map.py`, `check-wildcard-arms.sh`: OK.\n- Release `wasm32-unknown-unknown` build of `remus-wasm`: builds. Size\nbelow, measured on the first revision.\n\n## Compatibility and risks\n\n- Behaviour change in the API from #1199: a NURBS face now returns\ntraced silhouettes instead of an `unsupported` entry with `surface:\n\"nurbs\"`.\n- New field `approximate` on the silhouette result, and a new\n`\"approximate\"` key in the WASM JSON. This is additive: existing keys\nare unchanged. Every NURBS face not certified flat is listed, including\nwhere nothing was drawn.\n- No change to units, tolerances or other outputs.\n- Performance: the grid costs about 8 surface evaluations per knot span\nper direction, squared over the face, bounded by the 1 000 000-point\ngrid budget. Certified flat faces skip the grid.\n\n## WASM module tier\n\nTier: core, unchanged from #1199. It reads live session solid handles,\nlike `projectEdges`.\n\nWASM-Size: about +13.9 KiB raw from this PR (release\n`wasm32-unknown-unknown` build of `remus-wasm`: 15,610,843 B →\n15,625,095 B, before wasm-bindgen and wasm-opt), NURBS silhouette\ntracing (P-Class 7.5), Tier: core (reads live session solid handles).\nAny growth the gate reports beyond that is earlier merged kernel changes\nwhose package refresh has not landed.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01VXvSKFD2N6st6TR2NgK8rM\n\n---------\n\nSigned-off-by: Peter <171875562+petertoday@users.noreply.github.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-10-21T21:24:59Z",
+          "tree_id": "01d3b2036200c651ac5350a4e3e76efa0e20716f",
+          "url": "https://github.com/esaueng/remus/commit/628e86bfa04030a57998b8492bd4090e674ffe70"
+        },
+        "date": 1792655088385,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 931408,
+            "range": "± 1735",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1006029,
+            "range": "± 1218",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 22404,
+            "range": "± 353",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 6045357,
+            "range": "± 12856",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 6027967,
+            "range": "± 169873",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 5890640,
+            "range": "± 26179",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 22380,
+            "range": "± 30",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 2901737,
+            "range": "± 72365",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 24154355,
+            "range": "± 553523",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 89,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 51,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 184,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 128,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 672,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 145,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 297,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 171,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 453,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 547,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2731,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 26,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 74,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 74,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 3151,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 12536,
+            "range": "± 300",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 49546,
+            "range": "± 2805",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 4163,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 395288,
+            "range": "± 786",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2052753,
+            "range": "± 4796",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 113964,
+            "range": "± 186",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 244541,
+            "range": "± 172",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 286185,
+            "range": "± 377",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 48086,
+            "range": "± 356",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 27612,
+            "range": "± 40",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 16723,
+            "range": "± 30",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 88946,
+            "range": "± 195",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 112070,
+            "range": "± 203",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 524651,
+            "range": "± 42621",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 6764195,
+            "range": "± 117090",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 447656,
+            "range": "± 1260",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 952137,
+            "range": "± 8243",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 80528,
+            "range": "± 526",
             "unit": "ns/iter"
           }
         ]
