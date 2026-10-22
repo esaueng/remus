@@ -19,13 +19,13 @@ function fixture(t, failure = '') {
     const output = (value) => {
       if (Number.isInteger(options.stdio?.[1])) writeFileSync(options.stdio[1], JSON.stringify(value));
     };
-    if (command === 'cargo' && args[0] === 'metadata') {
+    if ((command === 'cargo' || command.endsWith('cargo.exe')) && args[0] === 'metadata') {
       return { status: 0, stdout: JSON.stringify(failure === 'metadata' ? {} : { target_directory: resolve(root, 'build with spaces') }) };
     }
-    if (command === 'cargo' && args[0] === 'build' && failure === 'real-child') {
+    if ((command === 'cargo' || command.endsWith('cargo.exe')) && args[0] === 'build' && failure === 'real-child') {
       return spawnSync(process.execPath, ['-e', 'process.exit(7)'], options);
     }
-    if (command === 'cargo' && args[0] === 'build' && failure === 'launch') {
+    if ((command === 'cargo' || command.endsWith('cargo.exe')) && args[0] === 'build' && failure === 'launch') {
       return spawnSync(resolve(root, 'missing executable'), [], options);
     }
     if (args[0] === 'tools/parity/host-proof.mjs') {
@@ -42,7 +42,7 @@ function fixture(t, failure = '') {
       });
       return { status: failure === 'checkout' ? 6 : 0 };
     }
-    if (command === 'wasm-pack') {
+    if (command === 'wasm-pack' || command.endsWith('wasm-pack.exe')) {
       mkdirSync(args[args.indexOf('--out-dir') + 1], { recursive: true });
       return { status: failure === 'build' ? 3 : 0 };
     }
@@ -61,7 +61,20 @@ function fixture(t, failure = '') {
   };
   return {
     root, calls, env,
-    run: (overrides) => runProof({ repoRoot: root, env, temporaryRoot: root, execute, ...overrides }),
+    run: (overrides) => runProof({ repoRoot: root, env, temporaryRoot: root, execute, arch: 'x64', ...overrides }),
+    prepareArm: ({ env: before, temporary, receipt }) => {
+      if (failure === 'arm-preflight') { writeFileSync(receipt, JSON.stringify({ passed: false, state: 'failed' })); throw new Error('refused ARM preflight'); }
+      const child = { ...before, RUSTC: 'C:\\actual native ü\\rustc.exe', RUSTC_WRAPPER: '', RUSTC_WORKSPACE_WRAPPER: '', RUSTUP_TOOLCHAIN: '1.96.0-aarch64-pc-windows-msvc', CARGO_BUILD_JOBS: '1', CARGO_HOME: resolve(temporary, 'cargo-home'), PATH: 'C:\\actual native ü;C:\\x64 helpers', O15_WINDOWS_ARM_BUILD: receipt };
+      delete child.CARGO_BUILD_TARGET;
+      const proof = { passed: true, state: 'prepared', cargo: { path: 'C:\\actual native ü\\cargo.exe' }, helpers: { wasmPack: { path: 'C:\\x64 helpers\\wasm-pack.exe' } }, environment: { RUSTC: child.RUSTC, PATH: child.PATH, CARGO_HOME: child.CARGO_HOME }, buildCommands: [] };
+      return { env: child, proof };
+    },
+    finishArm: ({ proof, env: child, receipt }) => {
+      assert.equal(child.RUSTC, proof.environment.RUSTC); assert.equal(proof.buildCommands.length, 4);
+      proof.state = failure === 'arm-finish' ? 'failed' : 'completed';
+      writeFileSync(receipt, JSON.stringify(proof));
+      if (failure === 'arm-finish') throw new Error('changed ARM helper after build');
+    },
     status: (result) => readFileSync(resolve(result.proofDir, 'status.tsv'), 'utf8'),
     freshDirectories: () => readdirSync(root).filter((name) => name.startsWith('remus-o15-proof.')),
   };
@@ -187,4 +200,33 @@ test('CLI rejects unexpected arguments before building or creating reusable evid
   assert.equal(child.status, 2);
   assert.match(child.stderr, /usage/);
   assert.ok(!existsSync(f.env.O15_PROOF_OUT));
+});
+
+test('ARM geometry builds and scorers receive the verified native toolchain environment', (t) => {
+  const f = fixture(t, 'tools/parity/contract-matrix.mjs');
+  const result = f.run({ platform: 'win32', arch: 'arm64', prepareArm: f.prepareArm, finishArm: f.finishArm });
+  assert.equal(result.status, 1); assert.equal(f.status(result), 'contract\t1\nsplit-io\t0\n');
+  assert.ok(f.calls.every(({ options }) => options.env.RUSTC === 'C:\\actual native ü\\rustc.exe'));
+  assert.ok(f.calls.every(({ options }) => options.env.RUSTC_WRAPPER === '' && options.env.RUSTC_WORKSPACE_WRAPPER === '' && !Object.hasOwn(options.env, 'CARGO_BUILD_TARGET')));
+  assert.ok(f.calls.filter(({ command, args }) => args[0] === 'test' || args[0] === 'metadata' || args[0] === 'build' && !args.includes('nodejs')).every(({ command }) => command === 'C:\\actual native ü\\cargo.exe'));
+  assert.equal(f.calls.filter(({ command }) => command === 'C:\\x64 helpers\\wasm-pack.exe').length, 2);
+  const hosts = f.calls.filter(({ args }) => args[0] === 'tools/parity/host-proof.mjs'); assert.equal(hosts.length, 2);
+  const builds = f.calls.filter(({ command }) => command.endsWith('wasm-pack.exe'));
+  assert.ok(f.calls.indexOf(hosts[0]) < f.calls.indexOf(builds[0]));
+  assert.ok(f.calls.indexOf(hosts[1]) > f.calls.indexOf(builds[1]));
+  const proof = JSON.parse(readFileSync(resolve(result.proofDir, 'windows-arm-build.json')));
+  assert.equal(proof.state, 'completed'); assert.equal(proof.buildCommands.length, 4);
+  assert.ok(proof.buildCommands.every((row) => row.status === 0 && row.environment.RUSTC === 'C:\\actual native ü\\rustc.exe'));
+  assert.deepEqual(f.freshDirectories(), []);
+});
+
+test('ARM preflight and changed-helper refusal retain evidence and never run geometric slices', (t) => {
+  for (const failure of ['arm-preflight', 'arm-finish']) {
+    const f = fixture(t, failure), result = f.run({ platform: 'win32', arch: 'arm64', prepareArm: f.prepareArm, finishArm: f.finishArm });
+    assert.equal(result.status, 1); assert.equal(f.status(result), 'contract\tnot_run\nsplit-io\tnot_run\n');
+    assert.ok(!f.calls.some(({ args }) => args[0]?.endsWith('-matrix.mjs')));
+    if (failure === 'arm-preflight') assert.equal(f.calls.length, 0);
+    assert.equal(JSON.parse(readFileSync(resolve(result.proofDir, 'windows-arm-build.json'))).state, 'failed');
+    assert.deepEqual(f.freshDirectories(), []);
+  }
 });

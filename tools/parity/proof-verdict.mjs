@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { directConsistent, expandContractMatrix, scoreContractCase } from './contract-matrix.mjs';
 import { expandSplitMatrix, scoreSplitCase } from './split-io-matrix.mjs';
 import { validateProvenance } from './provenance.mjs';
-import { validateHostProof } from './host-proof.mjs';
+import { validateHostProof, validateWindowsArmBuild } from './host-proof.mjs';
 
 function object(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -158,6 +158,15 @@ export function validateProofReports(contract, split, hostProof) {
   assert.equal(fresh.buildOptions.profile, splitFresh.buildOptions.profile, 'proof slices disagree on kernel build profile');
   if (hostProof !== undefined) {
     summary.host = validateHostProof(hostProof);
+    if (summary.host.platform === 'win32' && summary.host.arch === 'arm64') {
+      const build = hostProof.windowsArmBuild; validateWindowsArmBuild(build, { completed: true });
+      for (const fresh of [contract.provenance.fresh, split.provenance.freshKernel, split.provenance.freshIo]) {
+        assert.equal(fresh.toolchain.node, build.node.version);
+        assert.equal(fresh.toolchain.rustc, build.rustc.verbose.split(/\r?\n/)[0]);
+        assert.equal(fresh.toolchain.cargo, build.cargo.version);
+        assert.equal(fresh.toolchain.wasmPack, build.helpers.wasmPack.version);
+      }
+    }
     for (const report of [contract, split]) {
       assert.equal(report.provenance.native.sourceRevision, hostProof.sourceRevision, 'host proof source differs from matrix source');
       const fresh = report === contract ? report.provenance.fresh : report.provenance.freshKernel;
