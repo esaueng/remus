@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792714391431,
+  "lastUpdate": 1792761399964,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -129439,6 +129439,306 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 63121,
             "range": "± 2531",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4389bde3e253ae797657645eba9f8b39c2ac68a7",
+          "message": "fix(operations): carry endpoint certificates through blend-translation moves (#1284)\n\n## Change\n\nThe blend-aware planar face move (`move_faces` →\n`resize_blend::execute_translation`) translates its region by writing a\ncopy of the solid with translated vertices and edge curves\n(`copy_solid_replacing_with_entity_map`). That re-rounds each edge's\nvertices and control points independently. An imported edge whose\ntolerance the STEP reader stamped at exactly its measured endpoint\nresidual can therefore come out a few ulps over its own stamp. The\nstrict arena I/O gate then refuses the whole body: `io.exportStep` fails\nwith `parse error: arena edge N: end residual … exceeds effective\ntolerance …`.\n\nThis is the same failure class #382 and #483 fixed for rigid transforms\nand copies (the \"Tiny-Fox\" case). The blend-translation path never got\nthat carry. It now reads `transform::translation_edge_certificates` for\nthe translated edges before the copy and applies\n`restore_translation_certificates` to their copies through the copy's\n`edge_map`. Budget and headroom are unchanged: at most `min(64·ε·scale,\n1e-8·tolerance)` excess is carried, and anything larger is still refused\nby the gate.\n\nProduction case (an OpenZCAD model): a 10 mm offset of a planar face\nnext to an imported NURBS blend boundary. Stamp `1.1450987948266277e-5`,\nrecomputed residual `1.145098794962767e-5`, and STEP export refused for\nevery later state of the model.\n\n## Verification\n\n- New regression test `resize_blend::endpoint_certificate_tests`. It\nrebuilds the production edge's end on a side-blended box: the production\nend vertex, the production last control point and the production stamp\n(asserted bit-exact), moved −10 in x like the production move. Without\nthe fix it fails with the production message, byte for byte (`end\nresidual 0.00001145098794962767 exceeds effective tolerance\n0.000011450987948266277`). With the fix the moved body round-trips\nthrough `serialize_solids`/`deserialize_solids`, and the carried\ntolerance stays within twice the 1e-8 relative budget of the stamp.\n- `cargo test -p remus-operations --lib`: 1639 passed, 7 ignored. This\nincludes the blend-translation differential oracle\n(`translation_oracle_tests`), which still matches the scratch-document\npath.\n- `cargo test -p remus-io --test rigid_transform_endpoint_certificate`:\npasses.\n- `cargo clippy -p remus-operations --all-targets --all-features -- -D\nwarnings`, `RUSTDOCFLAGS=\"-D warnings\" cargo doc -p remus-operations\n--no-deps --all-features`, `check-boundaries.sh`, `check-det-hash.sh`,\n`check-doc-paths.sh`: all clean.\n- Not run locally: the full workspace suite, MSRV and the WASM build; CI\ncovers them.\n\n## Compatibility and risks\n\nNone to APIs or formats. Edge tolerances on blend-translated edges can\ngrow by at most the existing coordinate-scale budget (~1e-8 relative),\nand only when the translation's own rounding pushed the residual over\nthe stamp.\n\n## WASM module tier\n\nNone\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-23T12:36:24Z",
+          "tree_id": "489912eafc48d714bd8a7e661a7148db2d7a5428",
+          "url": "https://github.com/esaueng/remus/commit/4389bde3e253ae797657645eba9f8b39c2ac68a7"
+        },
+        "date": 1792761395965,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1110558,
+            "range": "± 3950",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1205423,
+            "range": "± 1958",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 24755,
+            "range": "± 22",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7426423,
+            "range": "± 20638",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7429767,
+            "range": "± 89357",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7288086,
+            "range": "± 18236",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 26061,
+            "range": "± 30",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3700331,
+            "range": "± 6141",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 28197105,
+            "range": "± 362652",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 118,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 66,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 227,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 187,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 866,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 127,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 399,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 205,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 551,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 929,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3126,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 12,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 30,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 22644,
+            "range": "± 106",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 141329,
+            "range": "± 318",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 3583,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 14367,
+            "range": "± 15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 54664,
+            "range": "± 46",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5045,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 584076,
+            "range": "± 955",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2560383,
+            "range": "± 2320",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 164953,
+            "range": "± 5332",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 302593,
+            "range": "± 355",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 342522,
+            "range": "± 903",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 60906,
+            "range": "± 126",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 34616,
+            "range": "± 54",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 21479,
+            "range": "± 15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 120469,
+            "range": "± 2940",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 161739,
+            "range": "± 367",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 679475,
+            "range": "± 24339",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 8470561,
+            "range": "± 102717",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 523420,
+            "range": "± 1401",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1116937,
+            "range": "± 2748",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 75101,
+            "range": "± 157",
             "unit": "ns/iter"
           }
         ]
