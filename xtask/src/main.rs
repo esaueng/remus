@@ -47,8 +47,7 @@ fn build_packages(simd: bool, kernel_io: bool) -> anyhow::Result<()> {
         wasm::validate_output(&spec)?;
     }
     wasm::version_packages()?;
-    wasm::run_smoke_test()?;
-    wasm::run_installed_tarball_test()
+    wasm::run_package_tests()
 }
 
 fn main() -> anyhow::Result<()> {

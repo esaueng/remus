@@ -187,17 +187,69 @@ class ClassifyCiChangesTests(unittest.TestCase):
         self.assertEqual(outputs["wasm"], "false")
         self.assertEqual(outputs["mode"], "docs")
 
-    def test_committed_package_paths_cannot_bypass_validation(self) -> None:
+    def test_package_refresh_leaves_validation_to_the_integrity_job(self) -> None:
+        # The refresh PR's own diff (#1248): both packages, nothing else.
+        refresh = ["crates/wasm-io/pkg/package.json", "crates/wasm-io/pkg/remus_wasm_io_bg.wasm",
+                   "crates/wasm/pkg/package.json", "crates/wasm/pkg/remus_wasm.d.ts",
+                   "crates/wasm/pkg/remus_wasm_bg.wasm", "crates/wasm/pkg/remus_wasm_node.cjs"]
         for force_full in (False, True):
-            result = MODULE.classify_paths(
-                ["crates/wasm/pkg/remus_wasm_bg.wasm", "crates/wasm-io/pkg/package.json"],
-                force_full=force_full,
-            )
-            self.assertTrue(result.heavy)
-            self.assertTrue(result.docs)
-            self.assertTrue(result.full)
-            self.assertTrue(result.wasm)
-            self.assertEqual(result.mode, "full")
+            for merge_group in (False, True):
+                with self.subTest(force_full=force_full, merge_group=merge_group):
+                    result = MODULE.classify_paths(
+                        refresh, force_full=force_full, merge_group=merge_group
+                    )
+                    self.assertFalse(result.heavy)
+                    self.assertFalse(result.docs)
+                    self.assertFalse(result.full)
+                    self.assertFalse(result.wasm)
+                    self.assertEqual(result.mode, "package")
+
+    def test_package_with_any_other_path_keeps_the_suite(self) -> None:
+        # The light mode trusts the base commit's checker; a diff that also
+        # touches the checker, its workflow or any source is not a refresh.
+        for other in ("scripts/check-wasm-package-integrity.py",
+                      ".github/workflows/wasm-version.yml", "xtask/src/wasm.rs",
+                      "crates/math/src/lib.rs", "Cargo.lock"):
+            with self.subTest(other=other):
+                result = MODULE.classify_paths(["crates/wasm/pkg/remus_wasm_bg.wasm", other])
+                self.assertTrue(result.heavy)
+                self.assertTrue(result.wasm)
+                self.assertNotEqual(result.mode, "package")
+        result = MODULE.classify_paths(
+            ["crates/wasm/pkg/remus_wasm_bg.wasm", "docs/kernel-maturity/roadmap.md"]
+        )
+        self.assertTrue(result.heavy)
+
+    def test_integrity_job_rebuilds_and_compares_committed_packages(self) -> None:
+        # The package mode is safe only while this required job rebuilds both
+        # packages from source and compares every committed file, on PRs and
+        # merge groups alike.
+        text = (ROOT / ".github/workflows/wasm-version.yml").read_text()
+        triggers = text.split("\njobs:\n", 1)[0]
+        self.assertRegex(triggers, r"(?m)^  pull_request:$")
+        self.assertRegex(triggers, r"(?m)^  merge_group:$")
+        self.assertNotIn("paths", triggers)
+        jobs = text.split("\njobs:\n", 1)[1]
+        integrity, version = re.split(r"(?m)^  version:\n", jobs, maxsplit=1)
+        self.assertIn("git diff --quiet \"$BASE_SHA\" HEAD -- crates/wasm/pkg crates/wasm-io/pkg",
+                      integrity)
+        rebuild = integrity.split("name: Rebuild both packages and compare every committed file", 1)[1]
+        self.assertIn("if: steps.packages.outputs.changed == 'true'", rebuild)
+        self.assertIn("rm -rf -- crates/wasm/pkg crates/wasm-io/pkg", rebuild)
+        self.assertIn("cargo xtask wasm-build", rebuild)
+        self.assertIn("python3 scripts/check-wasm-package-integrity.py --revision HEAD", rebuild)
+        # CI's WASM Size Gate skips a package-only PR, so this job applies it,
+        # with the base commit's scripts, to the modules it just verified.
+        gate = rebuild.split("name: Enforce the kernel size policy and growth review", 1)[1]
+        self.assertIn("if: steps.packages.outputs.changed == 'true' && "
+                      "github.event_name == 'pull_request'", gate)
+        self.assertIn('git worktree add --detach "$base" "$BASE_SHA"', gate)
+        self.assertIn('node "$base/scripts/wasm-size-gate.mjs" --github-pr-body --base-dir "$base"',
+                      gate)
+        self.assertIn('exit "$status"', gate)
+        self.assertIn("name: Changed kernel requires a new version", version)
+        self.assertIn("needs: integrity", version)
+        self.assertIn('if [[ "$INTEGRITY_RESULT" != "success" ]]; then', version)
 
     def test_package_refresh_with_source_change_is_heavy(self) -> None:
         result = MODULE.classify_paths(
@@ -315,11 +367,9 @@ class ClassifyCiChangesTests(unittest.TestCase):
                 self.assertEqual(result.mode, "full")
 
     def test_merge_group_never_relaxes_what_fails_closed(self) -> None:
-        for paths in ([], ["crates/wasm/pkg/remus_wasm_bg.wasm"]):
-            with self.subTest(paths=paths):
-                result = MODULE.classify_paths(paths, force_full=True, merge_group=True)
-                self.assertTrue(result.full)
-                self.assertEqual(result.mode, "full")
+        result = MODULE.classify_paths([], force_full=True, merge_group=True)
+        self.assertTrue(result.full)
+        self.assertEqual(result.mode, "full")
         # A queue batch that pairs a package refresh with a source PR.
         result = MODULE.classify_paths(
             ["crates/wasm/pkg/remus_wasm_bg.wasm", "crates/wasm-io/pkg/package.json",
@@ -348,6 +398,19 @@ class ClassifyCiChangesTests(unittest.TestCase):
         self.assertEqual(pushed["mode"], "full")
         locked = self.run_cli({**files, "Cargo.lock": "# lock\n"}, "--full", event="merge_group")
         self.assertEqual(locked["full"], "true")
+
+    def test_cli_runs_no_heavy_tier_for_a_package_refresh(self) -> None:
+        files = {"crates/wasm/pkg/remus_wasm_bg.wasm": "wasm\n",
+                 "crates/wasm-io/pkg/package.json": "{}\n"}
+        for event, args in (("pull_request", ()), ("merge_group", ("--full",)),
+                            ("push", ("--full",))):
+            with self.subTest(event=event):
+                outputs = self.run_cli(files, *args, event=event)
+                self.assertEqual(outputs["heavy"], "false")
+                self.assertEqual(outputs["full"], "false")
+                self.assertEqual(outputs["wasm"], "false")
+                self.assertEqual(outputs["docs"], "false")
+                self.assertEqual(outputs["mode"], "package")
 
 if __name__ == "__main__":
     unittest.main()

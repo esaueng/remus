@@ -12,6 +12,9 @@ jobs:
     name: Committed packages match source
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -50,6 +53,38 @@ jobs:
           rm -rf -- crates/wasm/pkg crates/wasm-io/pkg
           cargo xtask wasm-build
           python3 scripts/check-wasm-package-integrity.py --revision HEAD
+      # A package-only diff (a refresh PR) runs no heavy CI tier
+      # (scripts/classify-ci-changes.py), so CI's WASM Size Gate skips it. Apply
+      # the same gate here to the modules just proven to match a source build,
+      # with the BASE commit's scripts and committed packages, as CI does.
+      - name: Enforce the kernel size policy and growth review
+        if: steps.packages.outputs.changed == 'true' && github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          base="$RUNNER_TEMP/size-base"
+          built="$RUNNER_TEMP/size-pr"
+          git worktree add --detach "$base" "$BASE_SHA"
+          # Bootstrap: a base from before the gate has no script to trust yet.
+          if [ ! -f "$base/scripts/wasm-size-gate.mjs" ]; then
+            echo "::notice::The base commit predates scripts/wasm-size-gate.mjs; the size gate applies from the next base."
+            exit 0
+          fi
+          mkdir -p "$built"
+          cp crates/wasm/pkg/remus_wasm_bg.wasm "$built/pr-remus_wasm.wasm"
+          cp crates/wasm-io/pkg/remus_wasm_io_bg.wasm "$built/pr-remus_wasm_io.wasm"
+          report="$RUNNER_TEMP/wasm-size-report.md"
+          status=0
+          node "$base/scripts/wasm-size-gate.mjs" --github-pr-body --base-dir "$base" \
+            --pr-dir "$built" --markdown "$report" || status=$?
+          if [ -f "$report" ]; then
+            cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # 0 pass, 1 policy or growth failure, anything else a measurement error.
+          exit "$status"
 
   version:
     name: Changed kernel requires a new version
