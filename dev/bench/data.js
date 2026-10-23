@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792761399964,
+  "lastUpdate": 1792766937953,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -129739,6 +129739,306 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 75101,
             "range": "± 157",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d7fe2cc57790850d162d1cd44f0954f32153cc7a",
+          "message": "ci: skip the heavy tier for package refreshes and parallelize package tests (#1286)\n\n## Why\n\nA review of 24 hours of CI (2026-10-22/23, every job on hosted\n`ubuntu-24.04`) found that queue wait, not job runtime, sets how long a\nPR takes to merge. The esaueng org is on the Free plan: 20 concurrent\njobs for the whole org, shared with OpenZCAD. Remus alone reached 19 at\nonce, and each job waited a median of 5–13 minutes for a runner (90th\npercentile ~30). Unloaded, PR CI finishes in 27–35 minutes; loaded, it\ntakes 130–197. Median time from enqueue to merge was 151 minutes.\n\nWhere the 8,524 runner-minutes went:\n\n| Consumer | Runner-min | Share |\n|---|---|---|\n| CI on push to main | 1,907 | 22% |\n| CI on package-refresh PRs (`codex/wasm-refresh-*`) | 1,363 (+269\nversion guard) | ~19% |\n| CI on merge groups (refresh entries included) | 1,313 | 15% |\n| CI on feature PRs | 876 | 10% |\n\nThis PR takes on the two items that need no `fleet-*.yml` edit.\n\n## Change\n\n**1. Package-only diffs run no heavy tier\n(`scripts/classify-ci-changes.py`).**\nA diff confined to `crates/wasm/pkg/` and `crates/wasm-io/pkg/` (every\nrefresh PR) now classifies as mode `package`: `heavy`, `full`, `wasm`\nand `docs` are all false, on every event and regardless of `--full`.\nBefore this, each refresh ran the full suite three times (PR, merge\ngroup, main push), each with the ~38-minute Coverage job, against a\nsource tree identical to a base that had already passed it.\n\nProvenance stays checked. The required \"Committed packages match source\"\njob (`wasm-version.yml`, which \"Changed kernel requires a new version\"\ndepends on) already deletes both package trees, rebuilds them with\n`cargo xtask wasm-build` (smoke and installed-tarball consumer tests\nincluded) and compares every committed file, on PRs and merge groups. A\ndiff that touches anything else, including the checker's own scripts or\nworkflow, stays heavy. A merge group that pairs a refresh with source\nPRs still runs tier 2. `CI Pass` already accepts this selection (`heavy\n== false` with `full`/`wasm` false), so the fleet workflow is unchanged.\n\n**2. The size gate moves into the integrity job for those PRs\n(`wasm-version.yml`).**\nWith no package build, CI's WASM Size Gate would skip refresh PRs, and\nthat gate is where undeclared cumulative growth gets caught (see the\npr-workflow reference). The integrity job now runs the same gate on PRs\nwhose packages changed. It uses the base commit's\n`scripts/wasm-size-gate.mjs` from a `git worktree` of `BASE_SHA` and the\nbase's committed modules, against the modules it has just proven match a\nsource build, and writes the report to the step summary. It has the same\nbootstrap notice and exit-status contract as the fleet job. The job\ngains `pull-requests: read` so `--github-pr-body` can read the current\ndescription. The PR body is passed only through `env`. The size-report\nPR comment (ci.yml's `wasm-size` job) no longer posts on refresh PRs.\n\n**3. `cargo xtask wasm-build` runs the smoke and installed-tarball\nconsumer tests at the same time.**\nEach takes ~7 minutes on a hosted runner, and run one after the other\nthey were a third of WASM Build & Validate, the slowest PR and\nmerge-queue job (~23 min). Both only read the built packages: the\nconsumer test packs and installs copies under its own temporary\ndirectory. The smoke test streams its output. The consumer test writes\nstdout and stderr to one temporary log, printed whole when it exits, so\nthe two never interleave. Both always run to completion, and a failure\nin either (or both) is reported. This also shortens `publish.yml` and\nthe integrity job, which run the same build.\n\n## Expected effect\n\n- About 1,600 runner-minutes a day less (~19%) from refresh PRs. Refresh\nPR CI drops from 42–148 min to the integrity job (~25 min), and refresh\nqueue entries no longer run Coverage.\n- About 7 minutes off WASM Build & Validate on every kernel PR and merge\ngroup.\n- Less contention for the 20-slot pool, which shortens queue waits for\nevery other run.\n\n## Verification\n\n- `python3 scripts/test-classify-ci-changes.py`: 33 tests pass. New\ntests pin the refresh diff (#1248's file list) to mode `package` on PR,\nmerge-group and `--full` events through both `classify_paths` and the\nCLI on a real two-commit repository. They also check that a package diff\nwith any other path stays heavy, and pin the integrity job's\nrebuild/compare/size-gate contract in `wasm-version.yml`. That contract\ntest fails on each of three mutations (dropping one package from the `rm\n-rf`, removing the `merge_group` trigger, unlinking `needs: integrity`).\n- The Repository Policy Python and shell checks pass locally, as do\n`test-wasm-package-integrity.py`, `test-wasm-version-guard.py`,\n`test-package-refresh-pr.py`, and `actionlint` on `wasm-version.yml`.\n- `cargo clippy --all-targets -- -D warnings` in `xtask/` is clean.\n- `cargo xtask wasm-build` passed end to end on macOS (346 s total). The\nnew step prints the consumer log as one block after the smoke output.\nStandalone, the smoke test takes 189 s (peak RSS 1.3 GB) and the\nconsumer test 180 s (1.4 GB); run together they take 191 s. Together\nthey peak at about 2.8 GB, which fits a hosted runner (16 GB) and a 5 GB\nJane slot once cargo has exited.\n- I extracted the new size-gate step from `wasm-version.yml` and ran it\nwith `BASE_SHA=origin/main` against the local build. It created the base\nworktree, measured kernel +1.0 KiB raw (the known macOS-vs-Linux libm\ndifference), passed, and wrote the WASM Binary Size table to the step\nsummary.\n- Not verified locally: the step on a real runner and a real refresh PR.\nThe next refresh PR after this merges is the first live test, and its\n\"Committed packages match source\" job should show the size report in its\nsummary.\n\n## Not in this PR\n\nChanges that need a `fleet-ci-v7` edit (owner CI bypass, merge-commit\nlanding): heavy jobs depending only on `changes`, skipping the PR tier\non main pushes already verified as a merge group (9 of the last 10),\nkeeping Coverage out of merge groups, and merging the small jobs. The\norg plan and the queue's `max_entries_to_build` are settings.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-23T13:40:15Z",
+          "tree_id": "7ad5576b07ea99dfab2f1f9738f3aadbf553802f",
+          "url": "https://github.com/esaueng/remus/commit/d7fe2cc57790850d162d1cd44f0954f32153cc7a"
+        },
+        "date": 1792766934996,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1168694,
+            "range": "± 1613",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1254372,
+            "range": "± 4555",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27294,
+            "range": "± 41",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7757878,
+            "range": "± 168386",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7745907,
+            "range": "± 11465",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7591763,
+            "range": "± 28966",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 28891,
+            "range": "± 103",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3561670,
+            "range": "± 8441",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 29743211,
+            "range": "± 429104",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 40,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 116,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 80,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 228,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 194,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 870,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 160,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 391,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 236,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 562,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 906,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3427,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 24812,
+            "range": "± 135",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 146092,
+            "range": "± 1343",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 4055,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 15246,
+            "range": "± 87",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 55997,
+            "range": "± 182",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5347,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 512340,
+            "range": "± 3903",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2649543,
+            "range": "± 12481",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 146001,
+            "range": "± 237",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 297166,
+            "range": "± 560",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 364314,
+            "range": "± 2268",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 64908,
+            "range": "± 480",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 34646,
+            "range": "± 34",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 21078,
+            "range": "± 176",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 123578,
+            "range": "± 294",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 148409,
+            "range": "± 569",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 650854,
+            "range": "± 31471",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 7889750,
+            "range": "± 169279",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 546624,
+            "range": "± 1358",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1181784,
+            "range": "± 3778",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 86806,
+            "range": "± 315",
             "unit": "ns/iter"
           }
         ]
