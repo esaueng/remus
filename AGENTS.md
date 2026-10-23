@@ -567,6 +567,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Exact support-surface replacement with topology-preserving re-limitation | `replace_surface.rs` |
 | Exact constant-radius blend-band resizing | `resize_blend.rs` |
 | Differential oracle for the blend move's translation path: the whole-document scratch-copy version kept verbatim, also with its copy-validation refusal forced through a test hook (tests) | `resize_blend/translation_oracle_tests.rs` |
+| Blend-translation move carrying an imported edge's stamped endpoint certificate through the strict arena I/O gate (tests) | `resize_blend/endpoint_certificate_tests.rs` |
 | Exact local reconstruction of analytic wounds | `local_wound.rs` |
 | Cylindrical blend removal with certified affine NURBS caps | `affine_blend_caps.rs` |
 | Atomic removal of explicitly selected connected blend groups | `remove_blends.rs` |
