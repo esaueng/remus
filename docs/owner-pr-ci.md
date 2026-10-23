@@ -336,7 +336,10 @@ kernel PR waits only for the checks that can fail on its diff:
   packages match source" job (`wasm-version.yml`) deletes both package
   trees, rebuilds them with `cargo xtask wasm-build` (smoke and
   installed-tarball consumer tests included) and compares every file, on
-  PRs and merge groups. On a PR it also applies the WASM Size Gate, with the
+  PRs and merge groups. It is outside CI Pass, but the required "Changed
+  kernel requires a new version" check needs it and fails unless it
+  succeeded, so a failed rebuild, comparison or size gate blocks the PR and
+  its merge-queue entry. On a PR it also applies the WASM Size Gate, with the
   base commit's scripts, to the verified modules. Any other path in the diff,
   the checker's own scripts and workflow included, makes it heavy again; a
   merge group that pairs a refresh with source PRs runs tier 2. When `publish.yml` opens a

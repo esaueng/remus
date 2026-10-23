@@ -42,11 +42,14 @@ AGENT_DIRECTORIES = (".claude/",)
 # The committed distributable packages. A diff confined to them (a refresh
 # PR from publish.yml) leaves every source, script and workflow at the base
 # commit, which already passed the full suite on its main push. Paths alone
-# do not prove the committed bytes came from that source; the required
-# "Committed packages match source" job in wasm-version.yml does, by
-# deleting both package trees, rebuilding them with `cargo xtask wasm-build`
-# (which also runs the package smoke and installed-tarball consumer tests)
-# and comparing every file. So a package-only diff runs no heavy tier here:
+# do not prove the committed bytes came from that source; the "Committed
+# packages match source" job in wasm-version.yml does, by deleting both
+# package trees, rebuilding them with `cargo xtask wasm-build` (which also
+# runs the package smoke and installed-tarball consumer tests) and comparing
+# every file. That job sits outside CI Pass but still gates merging: the
+# "Changed kernel requires a new version" job needs it and fails unless it
+# succeeded, and that check is a required branch-protection context, so the
+# merge queue waits for it too. So a package-only diff runs no heavy tier here:
 # re-running the suites on an unchanged source tree proves nothing new, and
 # did cost three full runs (PR, merge group, main push) per refresh. Any
 # other path in the diff, including the checker's own scripts and
