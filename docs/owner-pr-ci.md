@@ -325,10 +325,21 @@ kernel PR waits only for the checks that can fail on its diff:
   skipped and then failed `scripts/test-wasm-smoke.mjs` on main. The job runs
   beside Test (median 13.6 vs 20.6 minutes), so it adds runner time, not PR
   latency. Docs-only and CI-metadata-only PRs still skip it.
-- **Package refresh**: a diff confined to `crates/wasm/pkg` and
-  `crates/wasm-io/pkg` runs the full suite, merge groups included. Paths
-  alone do not prove that the committed bytes came from a trusted build; no
-  package-only validation bypass is enabled. When `publish.yml` opens a
+- **Package refresh** (mode `package`): a diff confined to `crates/wasm/pkg`
+  and `crates/wasm-io/pkg` runs no heavy tier, on any event and whatever
+  `--full` says. Every source, script and workflow is then the base
+  commit's, which already passed the full suite on its main push, so
+  re-running the suites proves nothing new; until 2026-10-23 it cost three
+  full runs (PR, merge group, main push, each with Coverage) per refresh,
+  about a fifth of the repository's runner time. Paths alone still do not
+  prove the committed bytes came from that source: the required "Committed
+  packages match source" job (`wasm-version.yml`) deletes both package
+  trees, rebuilds them with `cargo xtask wasm-build` (smoke and
+  installed-tarball consumer tests included) and compares every file, on
+  PRs and merge groups. On a PR it also applies the WASM Size Gate, with the
+  base commit's scripts, to the verified modules. Any other path in the diff,
+  the checker's own scripts and workflow included, makes it heavy again; a
+  merge group that pairs a refresh with source PRs runs tier 2. When `publish.yml` opens a
   refresh PR, `scripts/publish-wasm-package-pr.py` closes the open refresh
   PRs built from an ancestor of its source commit, so only the newest refresh
   runs CI and the version guard never sees two refreshes claim one version.
@@ -340,7 +351,9 @@ runs the full suite (the backstop for merge groups that ran tier 1 only), and th
 profile for running and reporting, with coverage artifacts cleaned first; it retains the entire workspace,
 test assertions and the 60% line threshold. WASM optional-I/O clippy and native
 tests run as a separate required job. Package validation, optimization, tarball
-consumers and W9 preflight remain in the main WASM job.
+consumers and W9 preflight remain in the main WASM job; `cargo xtask wasm-build`
+runs the smoke and installed-tarball consumer tests at the same time (about seven
+minutes each on a hosted runner), printing the consumer test's log once it exits.
 
 PR benchmarks run only with the `ci:benchmark` label. Adding the label starts
 a run; subsequent pushes keep benchmarking while the label remains. Main

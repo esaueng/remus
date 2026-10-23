@@ -12,7 +12,8 @@ Outputs (all lowercase booleans except ``mode``):
 * ``wasm`` — build and validate the distributable WASM packages. True for
   heavy changes when ``full`` is set or the diff touches a WASM-affecting
   path, which includes every crate under ``crates/``.
-* ``mode`` — ``full``, ``pr``, ``queue``, ``docs``, or ``ci-only``.
+* ``mode`` — ``full``, ``pr``, ``queue``, ``package``, ``docs``, or
+  ``ci-only``.
 """
 
 from __future__ import annotations
@@ -38,9 +39,18 @@ DOC_FILENAMES = {
 }
 # Agent instructions and skills: text read by tooling, never compiled.
 AGENT_DIRECTORIES = (".claude/",)
-# The committed distributable packages. A diff confined to them is the
-# package paths alone do not establish trusted build provenance. Always run
-# the full suite, including when --full was explicitly requested.
+# The committed distributable packages. A diff confined to them (a refresh
+# PR from publish.yml) leaves every source, script and workflow at the base
+# commit, which already passed the full suite on its main push. Paths alone
+# do not prove the committed bytes came from that source; the required
+# "Committed packages match source" job in wasm-version.yml does, by
+# deleting both package trees, rebuilding them with `cargo xtask wasm-build`
+# (which also runs the package smoke and installed-tarball consumer tests)
+# and comparing every file. So a package-only diff runs no heavy tier here:
+# re-running the suites on an unchanged source tree proves nothing new, and
+# did cost three full runs (PR, merge group, main push) per refresh. Any
+# other path in the diff, including the checker's own scripts and
+# workflows, makes it heavy again.
 PACKAGE_DIRECTORIES = ("crates/wasm/pkg/", "crates/wasm-io/pkg/")
 # Paths whose change can alter the distributable WASM binaries or their
 # packaging in a way the native suite does not exercise.
@@ -132,8 +142,10 @@ def classify_paths(
     if not paths:
         return Classification(heavy=True, docs=True, full=True, wasm=True, mode="full")
 
+    # A package refresh: wasm-version.yml rebuilds and compares the packages,
+    # whatever the event or --full asks for (see PACKAGE_DIRECTORIES).
     if all(is_committed_package(path) for path in paths):
-        return Classification(heavy=True, docs=True, full=True, wasm=True, mode="full")
+        return Classification(heavy=False, docs=False, full=False, wasm=False, mode="package")
 
     has_docs = any(is_documentation(path) for path in paths)
     lightweight = all(

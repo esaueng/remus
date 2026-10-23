@@ -106,7 +106,9 @@ are inert). What actually runs, verified against `publish.yml` and
   `main` and never merges. The version is assigned by `cargo xtask wasm-build`
   (changed bytes advance the patch from the committed packages) and checked by
   `scripts/check-wasm-version.py`, not taken from PR titles.
-- The refresh PR runs the full suite and goes through the merge queue like any
+- The refresh PR runs no heavy CI tier (mode `package`: the required
+  "Committed packages match source" job rebuilds both packages, compares every
+  file and applies the size gate) and goes through the merge queue like any
   other PR, landing as `chore(wasm): refresh committed packages to vX.Y.Z (#N)`.
   Merging it IS the release: consumers install by git path
   (`github:esaueng/remus#main&path:/crates/wasm/pkg`), so whatever is

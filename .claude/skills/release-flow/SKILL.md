@@ -98,9 +98,11 @@ Notes that matter:
 
 - It force-stages (`git add --force`) because wasm-pack writes a `*`
   `.gitignore` into its own output directory.
-- The refresh PR runs the full suite (a diff confined to the two `pkg`
-  directories always does, see `docs/owner-pr-ci.md`, "Tiers") and goes
-  through the merge queue like any other PR. It does not merge on its own.
+- The refresh PR runs no heavy CI tier (a diff confined to the two `pkg`
+  directories is mode `package`, see `docs/owner-pr-ci.md`, "Tiers"): the
+  required "Committed packages match source" job rebuilds both packages,
+  compares every file and applies the WASM Size Gate. It goes through the
+  merge queue like any other PR. It does not merge on its own.
 - The script tries to carry the `WASM-Size:` lines of the source PRs merged
   since the previous refresh into its description. A commit subject ending in
   a `(#N)` the pulls API cannot resolve no longer aborts collection

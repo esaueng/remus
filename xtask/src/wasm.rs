@@ -1,5 +1,6 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -733,37 +734,71 @@ pub fn version_packages() -> Result<()> {
         .context("versioning WASM packages")
 }
 
-/// Run the Node.js smoke test.
-pub fn run_smoke_test() -> Result<()> {
-    println!("\nRunning smoke test...");
-
-    let script = project_root()?.join("scripts/test-wasm-smoke.mjs");
-    if !script.exists() {
-        bail!("Smoke test script not found: {}", script.display());
+/// Run the Node.js smoke test and the installed-tarball consumer test, which
+/// packs, installs, and tests the npm artifact through normal Node resolution.
+///
+/// Both suites only read the built packages (the consumer test packs and
+/// installs copies under its own temporary directory), so they run at the
+/// same time: each takes about seven minutes on a hosted runner, and run one
+/// after the other they were a third of the WASM Build & Validate job. The
+/// smoke test streams its output; the consumer test writes stdout and stderr
+/// to one log, printed whole once it exits, so the two never interleave.
+/// Both always run to completion and every failure is reported.
+pub fn run_package_tests() -> Result<()> {
+    let root = project_root()?;
+    let smoke = root.join("scripts/test-wasm-smoke.mjs");
+    let consumer = root.join("scripts/test-wasm-tarball-consumer.mjs");
+    for script in [&smoke, &consumer] {
+        if !script.exists() {
+            bail!("Package test script not found: {}", script.display());
+        }
     }
 
-    run_cmd(Command::new("node").arg(&script)).context("smoke test failed")?;
+    println!("\nRunning smoke and installed-tarball consumer tests in parallel...");
+    let log_path =
+        std::env::temp_dir().join(format!("remus-tarball-consumer-{}.log", std::process::id()));
+    let log =
+        fs::File::create(&log_path).with_context(|| format!("creating {}", log_path.display()))?;
+    let mut consumer_cmd = Command::new("node");
+    consumer_cmd
+        .arg(&consumer)
+        .stdout(log.try_clone()?)
+        .stderr(log);
+    let mut consumer_child = consumer_cmd
+        .spawn()
+        .with_context(|| format!("failed to run: {consumer_cmd:?}"))?;
 
-    println!("  Smoke test passed");
-    Ok(())
-}
+    let smoke_result = run_cmd(Command::new("node").arg(&smoke)).context("smoke test failed");
+    let consumer_status = consumer_child
+        .wait()
+        .context("waiting for the installed-tarball consumer test")?;
 
-/// Pack, install, and test the npm artifact through normal Node resolution.
-pub fn run_installed_tarball_test() -> Result<()> {
-    println!("\nRunning installed-tarball consumer test...");
+    println!("\nInstalled-tarball consumer test output:");
+    let consumer_log =
+        fs::read(&log_path).with_context(|| format!("reading {}", log_path.display()))?;
+    // Best effort: the log lives in the system temporary directory.
+    let _ = fs::remove_file(&log_path);
+    std::io::stdout()
+        .write_all(&consumer_log)
+        .context("printing the installed-tarball consumer test output")?;
+    let consumer_result = if consumer_status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "installed-tarball consumer test failed with {consumer_status}"
+        ))
+    };
 
-    let script = project_root()?.join("scripts/test-wasm-tarball-consumer.mjs");
-    if !script.exists() {
-        bail!(
-            "Tarball consumer test script not found: {}",
-            script.display()
-        );
+    match (smoke_result, consumer_result) {
+        (Ok(()), Ok(())) => {
+            println!("  Smoke and installed-tarball consumer tests passed");
+            Ok(())
+        }
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(smoke_error), Err(consumer_error)) => {
+            bail!("both package tests failed:\n  {smoke_error:#}\n  {consumer_error:#}")
+        }
     }
-
-    run_cmd(Command::new("node").arg(&script)).context("installed-tarball consumer test failed")?;
-
-    println!("  Installed-tarball consumer test passed");
-    Ok(())
 }
 
 /// Publish the kernel WASM package to npm.
