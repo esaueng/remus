@@ -2365,6 +2365,18 @@ fn execute_translation(
     // document-sized scratch copy, the same entities allocated in the same
     // order, and the same mutations of `topo` as copying a translated
     // scratch document.
+    //
+    // Translating an edge re-rounds its vertices and curve independently, so
+    // an imported edge whose tolerance is stamped at exactly its measured
+    // endpoint residual can come out a few ulps over it, and the strict arena
+    // I/O gate then refuses the whole document on export. Carry those
+    // certificates forward within the same coordinate-scale budget the rigid
+    // transform and copy paths use.
+    let certificates = crate::transform::translation_edge_certificates(
+        topo,
+        &translation.edges,
+        &translation.matrix(),
+    )?;
     let copied = crate::performance::timed("move_faces.blend.translation_copy", || {
         crate::copy::copy_solid_replacing_with_entity_map(
             topo,
@@ -2372,6 +2384,21 @@ fn execute_translation(
             translation.replacements(topo)?,
         )
     })?;
+    crate::transform::restore_translation_certificates(
+        topo,
+        certificates
+            .into_iter()
+            .map(|(edge, tolerance, budget)| {
+                let copied_edge = copied.edge_map.get(&edge.index()).copied().ok_or_else(|| {
+                    reconstruction(format!(
+                        "blend translation copy has no image of edge {}",
+                        edge.index()
+                    ))
+                })?;
+                Ok((copied_edge, tolerance, budget))
+            })
+            .collect::<Result<_, OperationsError>>()?,
+    )?;
     let result = copied.solid;
     // Validate the deliverable: the copy is entity-for-entity, so one strict
     // pass serves both it and the translated input, and running it here
@@ -5645,6 +5672,9 @@ pub fn resize_blend_failure_code(error: &OperationsError) -> &'static str {
 
 #[cfg(test)]
 mod translation_oracle_tests;
+
+#[cfg(test)]
+mod endpoint_certificate_tests;
 
 #[cfg(test)]
 mod tests {
