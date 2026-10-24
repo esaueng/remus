@@ -11,7 +11,8 @@ use remus_operations::validate::validate_solid;
 use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::explorer::{solid_edges, solid_faces};
-use remus_topology::validation::validate_shell_closed;
+use remus_topology::journal::{EntityEvent, EntityKey};
+use remus_topology::validation::{validate_shell_closed, validate_vertex_ball};
 
 const BOX: &str = include_str!("data/scale_platform_v1_linear_spline_edge.step");
 
@@ -110,10 +111,31 @@ fn displaced_natural_endpoints_import_with_local_diagnostics_and_unchanged_carri
             );
 
             for vertex in [edge.start(), edge.end()] {
+                validate_vertex_ball(&topo, vertex).expect("recovered endpoint inside vertex ball");
+                let parameter = if vertex == edge.start() {
+                    expected.0
+                } else {
+                    expected.1
+                };
+                let point = topo.vertex(vertex).expect("vertex").point();
+                let residual = (curve.evaluate(parameter) - point).length();
                 assert_eq!(
                     topo.vertex(vertex).expect("vertex").tolerance().to_bits(),
-                    1.0e-7_f64.to_bits()
+                    residual.to_bits()
                 );
+                let ordinal = topo
+                    .journal()
+                    .ordinal_of(EntityKey::vertex(vertex.index()))
+                    .expect("raised vertex has a journal ordinal");
+                assert!(topo.journal().events_for(ordinal).iter().any(|(_, event)| {
+                    matches!(event, EntityEvent::Modified { from } if *from == ordinal)
+                }));
+            }
+            for (vertex_id, vertex) in topo.vertices().iter() {
+                validate_vertex_ball(&topo, vertex_id).expect("all imported vertex balls");
+                if vertex_id != edge.start() && vertex_id != edge.end() {
+                    assert_eq!(vertex.tolerance().to_bits(), 1.0e-7_f64.to_bits());
+                }
             }
 
             let shell = topo
@@ -133,6 +155,9 @@ fn displaced_natural_endpoints_import_with_local_diagnostics_and_unchanged_carri
             let imported = read_step_with_report(&exported, &mut round).expect("round trip");
             assert_eq!(imported.solids().len(), 1);
             assert!(imported.diagnostics().is_empty());
+            for (vertex, _) in round.vertices().iter() {
+                validate_vertex_ball(&round, vertex).expect("round-trip vertex containment");
+            }
             assert!(
                 validate_solid(&round, imported.solids()[0])
                     .expect("round validation")
@@ -147,12 +172,64 @@ fn displaced_natural_endpoints_import_with_local_diagnostics_and_unchanged_carri
 
 #[test]
 fn single_displaced_natural_endpoint_imports() {
-    for miss in [3.227_018e-5, 1.0e-4] {
+    for miss in [3.0e-7, 3.227_018e-5, 1.0e-4] {
         let mut topo = Topology::new();
-        let report = read_step_with_report(&cubic_box(miss, 320.0, false), &mut topo)
+        let step = cubic_box(miss, 320.0, false)
+            .replace("LENGTH_MEASURE(1.E-05)", "LENGTH_MEASURE(1.E-07)");
+        let report = read_step_with_report(&step, &mut topo)
             .expect("one displaced endpoint, including the inclusive cap");
         assert_eq!(report.diagnostics().len(), 1);
+        let raised = topo
+            .edges()
+            .iter()
+            .find_map(|(_, edge)| {
+                matches!(edge.curve(), EdgeCurve::NurbsCurve(_)).then_some(edge.start())
+            })
+            .expect("spline start vertex");
+        for (vertex_id, vertex) in topo.vertices().iter() {
+            validate_vertex_ball(&topo, vertex_id).expect("single recovered endpoint containment");
+            if vertex_id == raised {
+                assert_eq!(vertex.tolerance().to_bits(), miss.to_bits());
+            } else {
+                assert_eq!(vertex.tolerance().to_bits(), 1.0e-7_f64.to_bits());
+            }
+        }
     }
+}
+
+#[test]
+fn failed_import_rolls_back_recovered_vertex_balls_and_journal() {
+    let mut topo = Topology::new();
+    let seed = remus_operations::primitives::make_box(&mut topo, 1.0, 2.0, 3.0)
+        .expect("existing document");
+    let pending = topo.journal_begin("seed");
+    topo.journal_record_barrier(pending, vec![]);
+    let vertices_before = format!("{:?}", topo.vertices().iter().collect::<Vec<_>>());
+    let journal_before = topo.journal().snapshot();
+    let malformed = cubic_box(8.928e-5, 320.0, false).replace(
+        "#160 = ADVANCED_FACE('', (#159), #42, .T.);",
+        "#160 = ADVANCED_FACE('', (#159), #999999, .T.);",
+    );
+    let error = read_step_with_report(&malformed, &mut topo).expect_err("later invalid surface");
+    assert!(error.to_string().contains("999999"), "{error}");
+    assert_eq!(topo.num_solids(), 1);
+    assert_eq!(
+        format!("{:?}", topo.vertices().iter().collect::<Vec<_>>()),
+        vertices_before
+    );
+    let journal_after = topo.journal().snapshot();
+    assert_eq!(journal_after.entries, journal_before.entries);
+    assert_eq!(journal_after.index, journal_before.index);
+    // Abandoned operation/ordinal IDs remain retired; the increase proves
+    // the failed import reached its tolerance-journaling path.
+    assert!(journal_after.next_op > journal_before.next_op);
+    assert!(journal_after.next_ordinal > journal_before.next_ordinal);
+    assert_eq!(
+        solid_volume(&topo, seed, 0.01)
+            .expect("seed volume")
+            .to_bits(),
+        6.0_f64.to_bits()
+    );
 }
 
 #[test]
