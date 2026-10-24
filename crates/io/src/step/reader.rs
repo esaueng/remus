@@ -6451,11 +6451,12 @@ impl<'a> StepBuilder<'a> {
             .tolerance()
             .max(end_vertex.tolerance())
             .max(self.model_tolerance_cap);
+        let mut endpoint_tolerance_cap = tolerance_cap;
+        let mut record_nurbs_balls = declared_curve_trim.is_some();
         let mut measured_tolerance = start_vertex
             .tolerance()
             .max(end_vertex.tolerance())
             .max(Tolerance::new().linear);
-        let mut endpoint_tolerance_cap = tolerance_cap;
 
         let endpoint_error = |label: &str, distance: f64| IoError::ParseError {
             reason: format!(
@@ -6630,49 +6631,62 @@ impl<'a> StepBuilder<'a> {
                             .max(forward_residuals[0])
                             .max(forward_residuals[1]);
                         (domain_start, domain_end)
-                    } else if declared_curve_trim.is_none()
-                        && forward_residuals.iter().all(|residual| {
-                            residual.is_finite()
-                                && *residual <= MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM
-                        })
-                        && reverse_residuals.iter().all(|residual| {
-                            residual.is_finite()
-                                && *residual
-                                    > 1_000.0 * forward_residuals[0].max(forward_residuals[1])
-                        })
-                        && Self::natural_nurbs_domain_has_endpoint_feet(
+                    } else {
+                        let natural_domain = if declared_curve_trim.is_none() {
+                            let certified = Self::recover_natural_nurbs_domain(
+                                nurbs,
+                                start,
+                                end,
+                                &self.limits,
+                            )?;
+                            if certified.is_some() {
+                                certified
+                            } else if forward_residuals.iter().all(|residual| {
+                                residual.is_finite()
+                                    && *residual <= MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM
+                            }) && reverse_residuals.iter().all(|residual| {
+                                residual.is_finite()
+                                    && *residual
+                                        > 1_000.0 * forward_residuals[0].max(forward_residuals[1])
+                            }) && Self::natural_nurbs_domain_has_endpoint_feet(
+                                nurbs,
+                                start,
+                                end,
+                                &self.limits,
+                            )? {
+                                Some((domain_start, domain_end))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        let (t0, t1, recovery_tolerance_cap) = if let Some((t0, t1)) =
+                            natural_domain
+                        {
+                            record_nurbs_balls = true;
+                            (t0, t1, MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM)
+                        } else if let Some((t0, t1)) = Self::projected_nurbs_domain(
+                            ec_ref,
+                            &self.limits,
                             nurbs,
                             start,
                             end,
-                            &self.limits,
-                        )?
-                    {
-                        // The carrier's own ends establish authority. This
-                        // separate, absolute cap never widens projected recovery.
-                        endpoint_tolerance_cap = MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM;
-                        let endpoint_residual = forward_residuals[0].max(forward_residuals[1]);
-                        measured_tolerance = measured_tolerance.max(endpoint_residual);
-                        self.diagnostics.push(
-                            StepImportDiagnostic::UntrimmedNurbsDomainRecovered {
-                                edge_curve_entity: ec_ref,
-                                start_parameter: domain_start,
-                                end_parameter: domain_end,
-                                endpoint_residual_mm: endpoint_residual,
-                                stored_edge_tolerance_mm: measured_tolerance,
-                                recovery_tolerance_cap_mm: endpoint_tolerance_cap,
-                            },
-                        );
-                        (domain_start, domain_end)
-                    } else if let Some((t0, t1)) = Self::projected_nurbs_domain(
-                        ec_ref,
-                        &self.limits,
-                        nurbs,
-                        start,
-                        end,
-                        tolerance_cap.min(MAX_PROJECTED_NURBS_RECOVERY_TOLERANCE_MM),
-                    )? {
-                        let recovery_tolerance_cap =
-                            tolerance_cap.min(MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM);
+                            tolerance_cap.min(MAX_PROJECTED_NURBS_RECOVERY_TOLERANCE_MM),
+                        )? {
+                            (
+                                t0,
+                                t1,
+                                tolerance_cap.min(MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM),
+                            )
+                        } else {
+                            return Err(IoError::ParseError {
+                                reason: format!(
+                                    "EDGE_CURVE #{ec_ref} NURBS endpoints do not uniquely establish \
+                                     the stored curve domain; use a parameter-trimmed carrier"
+                                ),
+                            });
+                        };
                         let mut endpoint_residual = 0.0_f64;
                         for (label, point, parameter) in [("start", start, t0), ("end", end, t1)] {
                             let residual = (nurbs.evaluate(parameter) - point).length();
@@ -6698,14 +6712,10 @@ impl<'a> StepBuilder<'a> {
                                 recovery_tolerance_cap_mm: recovery_tolerance_cap,
                             },
                         );
+                        // Only natural-end recovery may exceed the
+                        // declared cap, and only by its measured residual.
+                        endpoint_tolerance_cap = endpoint_tolerance_cap.max(endpoint_residual);
                         (t0, t1)
-                    } else {
-                        return Err(IoError::ParseError {
-                            reason: format!(
-                                "EDGE_CURVE #{ec_ref} NURBS endpoints do not uniquely establish \
-                                 the stored curve domain; use a parameter-trimmed carrier"
-                            ),
-                        });
                     }
                 }
             }
@@ -6724,7 +6734,137 @@ impl<'a> StepBuilder<'a> {
         let _ = edge.strict_domain().map_err(|error| IoError::ParseError {
             reason: format!("EDGE_CURVE #{ec_ref} has an invalid curve range: {error}"),
         })?;
+        if record_nurbs_balls && matches!(edge.curve(), EdgeCurve::NurbsCurve(_)) {
+            self.record_nurbs_endpoint_balls(&edge, range)?;
+        }
         Ok(edge)
+    }
+
+    /// Cover validated spline endpoint gaps with measured vertex balls.
+    /// This also covers declared domains on reimport of a recovered edge.
+    fn record_nurbs_endpoint_balls(
+        &mut self,
+        edge: &Edge,
+        (t0, t1): (f64, f64),
+    ) -> Result<(), IoError> {
+        use remus_topology::journal::{EntityKey, EventDraft, EvolutionDraft};
+
+        let start = self.topo.vertex(edge.start())?.point();
+        let end = self.topo.vertex(edge.end())?.point();
+        for (vertex, parameter, point) in [(edge.start(), t0, start), (edge.end(), t1, end)] {
+            let residual =
+                (edge.curve().evaluate_with_endpoints(parameter, start, end) - point).length();
+            if residual > self.topo.vertex(vertex)?.tolerance() {
+                let pending = self.topo.journal_begin("step_nurbs_endpoint_tolerance");
+                self.topo.vertex_mut(vertex)?.set_tolerance(residual)?;
+                let key = EntityKey::vertex(vertex.index());
+                let mut draft = EvolutionDraft::construction();
+                draft.push(key, EventDraft::Modified { from: key });
+                self.topo.journal_record_evolution(pending, draft)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Recover the whole natural domain without projecting or changing geometry.
+    ///
+    /// A clamped polynomial B-spline lies in its control hull. For an end
+    /// control P and vertex V, (C - P) dot (P - V) >= 0 throughout that hull
+    /// proves |C - V|^2 >= |P - V|^2 + |C - P|^2: P is the closest foot.
+    /// Strict separation of every other control along the endpoint chord
+    /// makes P attainable only at the natural end parameter. These are
+    /// sufficient whole-domain certificates; an inconclusive hull keeps the
+    /// existing bounded recovery paths.
+    fn recover_natural_nurbs_domain(
+        curve: &remus_math::nurbs::NurbsCurve,
+        start: Point3,
+        end: Point3,
+        limits: &ImportLimits,
+    ) -> Result<Option<(f64, f64)>, IoError> {
+        let controls = curve.control_points();
+        ensure_limit(
+            "control points per untrimmed NURBS domain recovery",
+            controls.len(),
+            MAX_UNTRIMMED_NURBS_RECOVERY_CONTROL_POINTS,
+        )?;
+        Self::ensure_projected_nurbs_recovery_budget(curve, limits)?;
+        let degree = curve.degree();
+        let (lo, hi) = curve.domain();
+        let Some(&weight) = curve.weights().first() else {
+            return Ok(None);
+        };
+        if degree == 0
+            || !lo.is_finite()
+            || !hi.is_finite()
+            || hi <= lo
+            || !weight.is_finite()
+            || weight <= 0.0
+            // Equal bits certify a polynomial, even for non-unit weights.
+            || curve.weights().iter().any(|w| w.to_bits() != weight.to_bits())
+            || curve.knots()[..=degree].iter().any(|k| k.to_bits() != lo.to_bits())
+            || curve.knots()[curve.knots().len() - degree - 1..].iter().any(|k| k.to_bits() != hi.to_bits())
+        {
+            return Ok(None);
+        }
+        let first = controls[0];
+        let last = controls[controls.len() - 1];
+        let forward = [(first - start).length(), (last - end).length()];
+        let reverse = [(last - start).length(), (first - end).length()];
+        let qualifies = |near: [f64; 2], far: [f64; 2]| {
+            near.iter()
+                .all(|r| r.is_finite() && *r <= MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM)
+                && far
+                    .iter()
+                    .all(|r| r.is_finite() && *r > 1_000.0 * near[0].max(near[1]))
+        };
+        let (vertices, range) = if qualifies(forward, reverse) {
+            ([start, end], (lo, hi))
+        } else if qualifies(reverse, forward) {
+            ([end, start], (hi, lo))
+        } else {
+            return Ok(None);
+        };
+        let chord = last - first;
+        for (index, vertex, inward) in [
+            (0, vertices[0], chord),
+            (controls.len() - 1, vertices[1], -chord),
+        ] {
+            let endpoint = controls[index];
+            let normal = endpoint - vertex;
+            for (other_index, &other) in controls.iter().enumerate() {
+                if other_index == index {
+                    continue;
+                }
+                let delta = other - endpoint;
+                if !Self::certified_positive_dot(delta, inward) {
+                    return Ok(None);
+                }
+                // Component signs also certify zero dot products, including
+                // exact endpoints and a perpendicular displacement, without
+                // admitting cancellation or underflow as a sign proof.
+                let same_signs = [
+                    (delta.x(), normal.x()),
+                    (delta.y(), normal.y()),
+                    (delta.z(), normal.z()),
+                ]
+                .iter()
+                .all(|&(a, b)| {
+                    a == 0.0 || b == 0.0 || a.is_sign_positive() == b.is_sign_positive()
+                });
+                if !same_signs && !Self::certified_positive_dot(delta, normal) {
+                    return Ok(None);
+                }
+            }
+        }
+        Ok(Some(range))
+    }
+
+    /// Conservative sign filter, including subtraction and dot-product roundoff.
+    /// Uncertain and non-finite results decline the hull certificate.
+    fn certified_positive_dot(a: Vec3, b: Vec3) -> bool {
+        let magnitude = (a.x() * b.x()).abs() + (a.y() * b.y()).abs() + (a.z() * b.z()).abs();
+        let dot = a.dot(b);
+        dot.is_finite() && dot > (128.0 * f64::EPSILON * magnitude).max(f64::MIN_POSITIVE)
     }
 
     /// Qualify bounded healing at a polynomial carrier's natural ends only.
@@ -14123,6 +14263,153 @@ mod tests {
         assert!(
             (edge.curve().evaluate_with_endpoints(0.5, start, end) - curve.evaluate(0.5)).length()
                 < 1e-12
+        );
+    }
+
+    #[test]
+    fn natural_endpoint_hull_certificate_covers_curved_and_multispan_carriers() {
+        let curved = remus_math::nurbs::NurbsCurve::new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(-1.0, 2.0, 1.0),
+                Point3::new(3.0, 1.0, 2.0),
+                Point3::new(4.0, 3.0, 3.0),
+            ],
+            vec![2.0; 4],
+        )
+        .unwrap();
+        // Independent closed-form endpoint feet: every control lies strictly
+        // between the endpoint planes perpendicular to (4, 3, 3), and both
+        // vertices lie outside those planes along the same normal.
+        let outward = Vec3::new(4.0, 3.0, 3.0) * 1.0e-6;
+        let start = curved.control_points()[0] - outward;
+        let end = curved.control_points()[3] + outward;
+        for (start, end, expected) in [(start, end, (0.0, 1.0)), (end, start, (1.0, 0.0))] {
+            assert_eq!(
+                StepBuilder::recover_natural_nurbs_domain(
+                    &curved,
+                    start,
+                    end,
+                    &ImportLimits::default()
+                )
+                .unwrap(),
+                Some(expected)
+            );
+        }
+
+        // Same degree, control count, knot structure and endpoint errors as
+        // the reported four-span cubic; the authored middle controls curve
+        // away from the chord while remaining inside the endpoint slab.
+        let mut controls: Vec<_> = (0..13)
+            .map(|i| Point3::new(f64::from(i), if i == 0 || i == 12 { 0.0 } else { 2.0 }, 0.0))
+            .collect();
+        let knots = vec![
+            0.0, 0.0, 0.0, 0.0, 0.25, 0.25, 0.25, 0.5, 0.5, 0.5, 0.75, 0.75, 0.75, 1.0, 1.0, 1.0,
+            1.0,
+        ];
+        for miss in [3.227_018e-5, 8.928e-5] {
+            let curve = remus_math::nurbs::NurbsCurve::new(
+                3,
+                knots.clone(),
+                controls.clone(),
+                vec![1.0; 13],
+            )
+            .unwrap();
+            let start = Point3::new(-miss, 0.0, 0.0);
+            let end = Point3::new(12.0 + miss, 0.0, 0.0);
+            assert_eq!(
+                StepBuilder::recover_natural_nurbs_domain(
+                    &curve,
+                    start,
+                    end,
+                    &ImportLimits::default()
+                )
+                .unwrap(),
+                Some((0.0, 1.0))
+            );
+        }
+        // A repeated end control makes the strict hull certificate inconclusive.
+        controls[6] = controls[0];
+        let folded = remus_math::nurbs::NurbsCurve::new(3, knots, controls, vec![1.0; 13]).unwrap();
+        assert!(
+            StepBuilder::recover_natural_nurbs_domain(
+                &folded,
+                Point3::new(-8.928e-5, 0.0, 0.0),
+                Point3::new(12.0, 0.0, 0.0),
+                &ImportLimits::default()
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn natural_endpoint_hull_certificate_declines_unqualified_carriers() {
+        let controls = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(3.0, 0.0, 0.0),
+        ];
+        let clamped = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        let start = Point3::new(-8.928e-5, 0.0, 0.0);
+        let end = Point3::new(3.0, 0.0, 0.0);
+        for (knots, weights) in [
+            (clamped.clone(), vec![1.0, 1.0, 1.01, 1.0]),
+            (
+                vec![-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0],
+                vec![1.0; 4],
+            ),
+        ] {
+            let curve =
+                remus_math::nurbs::NurbsCurve::new(3, knots, controls.clone(), weights).unwrap();
+            assert!(
+                StepBuilder::recover_natural_nurbs_domain(
+                    &curve,
+                    start,
+                    end,
+                    &ImportLimits::default()
+                )
+                .unwrap()
+                .is_none()
+            );
+        }
+        let curve =
+            remus_math::nurbs::NurbsCurve::new(3, clamped.clone(), controls.clone(), vec![1.0; 4])
+                .unwrap();
+        // An interior foot cannot inherit the natural-end recovery cap.
+        assert!(
+            StepBuilder::recover_natural_nurbs_domain(
+                &curve,
+                Point3::new(8.928e-5, 0.0, 0.0),
+                end,
+                &ImportLimits::default()
+            )
+            .unwrap()
+            .is_none()
+        );
+        // A short edge does not establish orientation by the 1000x margin.
+        let short = remus_math::nurbs::NurbsCurve::new(
+            3,
+            clamped,
+            controls
+                .into_iter()
+                .map(|p| Point3::new(p.x() * 1.0e-3, 0.0, 0.0))
+                .collect(),
+            vec![1.0; 4],
+        )
+        .unwrap();
+        assert!(
+            StepBuilder::recover_natural_nurbs_domain(
+                &short,
+                start,
+                Point3::new(0.003, 0.0, 0.0),
+                &ImportLimits::default()
+            )
+            .unwrap()
+            .is_none()
         );
     }
 

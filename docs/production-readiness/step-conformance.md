@@ -28,6 +28,31 @@ CAx-IF geometric validation properties below are volume-bearing solid
 contracts. Requesting them for a document containing sheets is a typed writer
 refusal rather than a misleading partial declaration.
 
+## Bare spline endpoint recovery
+
+Bare polynomial NURBS edges normally use the owning representation's declared
+uncertainty to match their natural endpoints. Projection of an interior
+sub-domain remains capped at `1e-6` mm, even for a coarser model uncertainty.
+
+A separate natural-domain recovery admits at most `1e-4` mm of endpoint
+residual when the weights are exactly uniform and the opposite endpoint
+pairing is more than 1000 times worse. For clamped splines, control-hull
+half-spaces certify both natural ends as unique closest feet over the whole
+carrier. An inconclusive certificate retains the existing bounded
+natural-end projection check before falling back to the smaller interior
+projection cap. Declared trims do not use this recovery.
+
+Recovery retains the carrier, vertices and natural parameters, stores the
+measured residual as an edge-local tolerance (floored at the existing vertex
+and kernel tolerances), and emits `UntrimmedNurbsDomainRecovered` through
+`read_step_with_report`. Recovered natural domains and declared spline domains
+also raise only the affected vertex balls to their validated measured residuals,
+recording each raise as a journal `Modified` event. This covers reimport,
+so exported recovered edges retain vertex-ball containment. Control
+points, vertex positions and model uncertainty stay unchanged. The absolute
+recovery ceiling is in millimetres after unit conversion. Existing
+declared-uncertainty matching is unchanged.
+
 ## Geometric validation properties
 
 Validation properties are an explicit writer opt-in with
