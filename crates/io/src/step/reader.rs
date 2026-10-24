@@ -675,7 +675,7 @@ const NURBS_DOMAIN_BISECTION_STEPS: usize = 96;
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum StepImportDiagnostic {
-    /// A bare polynomial NURBS carrier had a uniquely provable sub-domain,
+    /// A bare polynomial NURBS carrier had a uniquely provable domain,
     /// but its topological endpoints required bounded local healing.
     UntrimmedNurbsDomainRecovered {
         /// STEP `EDGE_CURVE` entity number.
@@ -6455,6 +6455,7 @@ impl<'a> StepBuilder<'a> {
             .tolerance()
             .max(end_vertex.tolerance())
             .max(Tolerance::new().linear);
+        let mut endpoint_tolerance_cap = tolerance_cap;
 
         let endpoint_error = |label: &str, distance: f64| IoError::ParseError {
             reason: format!(
@@ -6629,6 +6630,39 @@ impl<'a> StepBuilder<'a> {
                             .max(forward_residuals[0])
                             .max(forward_residuals[1]);
                         (domain_start, domain_end)
+                    } else if declared_curve_trim.is_none()
+                        && forward_residuals.iter().all(|residual| {
+                            residual.is_finite()
+                                && *residual <= MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM
+                        })
+                        && reverse_residuals.iter().all(|residual| {
+                            residual.is_finite()
+                                && *residual
+                                    > 1_000.0 * forward_residuals[0].max(forward_residuals[1])
+                        })
+                        && Self::natural_nurbs_domain_has_endpoint_feet(
+                            nurbs,
+                            start,
+                            end,
+                            &self.limits,
+                        )?
+                    {
+                        // The carrier's own ends establish authority. This
+                        // separate, absolute cap never widens projected recovery.
+                        endpoint_tolerance_cap = MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM;
+                        let endpoint_residual = forward_residuals[0].max(forward_residuals[1]);
+                        measured_tolerance = measured_tolerance.max(endpoint_residual);
+                        self.diagnostics.push(
+                            StepImportDiagnostic::UntrimmedNurbsDomainRecovered {
+                                edge_curve_entity: ec_ref,
+                                start_parameter: domain_start,
+                                end_parameter: domain_end,
+                                endpoint_residual_mm: endpoint_residual,
+                                stored_edge_tolerance_mm: measured_tolerance,
+                                recovery_tolerance_cap_mm: endpoint_tolerance_cap,
+                            },
+                        );
+                        (domain_start, domain_end)
                     } else if let Some((t0, t1)) = Self::projected_nurbs_domain(
                         ec_ref,
                         &self.limits,
@@ -6679,7 +6713,7 @@ impl<'a> StepBuilder<'a> {
 
         for (label, point, parameter) in [("start", start, range.0), ("end", end, range.1)] {
             let residual = (curve.evaluate_with_endpoints(parameter, start, end) - point).length();
-            if !residual.is_finite() || residual > tolerance_cap {
+            if !residual.is_finite() || residual > endpoint_tolerance_cap {
                 return Err(endpoint_error(label, residual));
             }
             measured_tolerance = measured_tolerance.max(residual);
@@ -6691,6 +6725,85 @@ impl<'a> StepBuilder<'a> {
             reason: format!("EDGE_CURVE #{ec_ref} has an invalid curve range: {error}"),
         })?;
         Ok(edge)
+    }
+
+    /// Qualify bounded healing at a polynomial carrier's natural ends only.
+    /// Refine to roundoff rather than the healing radius: an interior foot
+    /// arbitrarily near an end must still go through the smaller projected cap.
+    /// A second foot anywhere within the natural-end recovery cap is ambiguous.
+    fn natural_nurbs_domain_has_endpoint_feet(
+        curve: &remus_math::nurbs::NurbsCurve,
+        start: Point3,
+        end: Point3,
+        limits: &ImportLimits,
+    ) -> Result<bool, IoError> {
+        ensure_limit(
+            "control points per untrimmed NURBS domain recovery",
+            curve.control_points().len(),
+            MAX_UNTRIMMED_NURBS_RECOVERY_CONTROL_POINTS,
+        )?;
+        let (domain_start, domain_end) = curve.domain();
+        if curve.degree() == 0
+            || !(domain_start.is_finite() && domain_end.is_finite() && domain_end > domain_start)
+        {
+            return Ok(false);
+        }
+        // Polynomial recovery requires weights that cancel exactly.
+        let Some(first_weight) = curve.weights().first().copied() else {
+            return Ok(false);
+        };
+        if !first_weight.is_finite()
+            || first_weight <= 0.0
+            || curve
+                .weights()
+                .iter()
+                .any(|weight| weight.to_bits() != first_weight.to_bits())
+        {
+            return Ok(false);
+        }
+        Self::ensure_projected_nurbs_recovery_budget(curve, limits)?;
+        for (point, parameter) in [(start, domain_start), (end, domain_end)] {
+            let derivatives = curve.derivatives(parameter, 1);
+            let slope = derivatives[1].dot(curve.evaluate(parameter) - point);
+            let inward_slope = if parameter.to_bits() == domain_start.to_bits() {
+                slope
+            } else {
+                -slope
+            };
+            if !inward_slope.is_finite() || inward_slope < 0.0 {
+                return Ok(false);
+            }
+            let projected = remus_math::nurbs::project_point_to_curve(curve, point, f64::EPSILON)
+                .map_err(|error| IoError::ParseError {
+                reason: format!("untrimmed NURBS endpoint projection failed: {error}"),
+            })?;
+            // Bit identity deliberately excludes even a nearby interior foot.
+            if !projected.distance.is_finite()
+                || projected.distance > MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM
+                || projected.parameter.to_bits() != parameter.to_bits()
+            {
+                return Ok(false);
+            }
+            for seed in remus_math::nurbs::curve_coarse_seeds_public(curve, point) {
+                let (refined, _) = remus_math::nurbs::curve_newton_refine_public(
+                    curve,
+                    point,
+                    seed,
+                    domain_start,
+                    domain_end,
+                    f64::EPSILON,
+                );
+                let distance = (curve.evaluate(refined) - point).length();
+                if !refined.is_finite()
+                    || !distance.is_finite()
+                    || (refined.to_bits() != parameter.to_bits()
+                        && distance <= MAX_UNTRIMMED_NURBS_RECOVERY_TOLERANCE_MM)
+                {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
     }
 
     /// Recover a unique NURBS sub-domain from the topological endpoints'
