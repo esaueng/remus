@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792813220948,
+  "lastUpdate": 1792816313070,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -130639,6 +130639,306 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 86414,
             "range": "± 550",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "f3cafb8867d869f0278aadcd247f29da5b7d00ed",
+          "message": "fix(io): recover bounded natural NURBS endpoint domains (#1291)\n\nSTEP import refuses the issue's clamped cubic when its natural endpoint\nmisses the shared vertex by 3.227018e-5 or 8.928e-5 mm, despite an\nunambiguous natural domain.\n\nRecover that domain only for untrimmed polynomial NURBS when both\nforward residuals are at most 1e-4 mm, each reverse residual is more\nthan 1000 times the forward maximum, and roundoff-level projection plus\na bounded span sweep identifies only the corresponding natural endpoint\nfeet. Record the measured gap on the edge and emit\n`UntrimmedNurbsDomainRecovered`; preserve the carrier and vertices. The\nexisting 1e-6 mm projected-recovery gate is unchanged.\n\nThe authored cubic-box repro covers both reported misses, the absolute\nboundary, either endpoint exceeding it, nearby interior feet,\ninsufficient orientation separation, a second foot, rational carriers,\nexplicit trims, and export/reimport. Existing MAMBO B1 and Scale\nPlatform refusals remain covered.\n\nValidation on Rust 1.96.0 / Windows GNU:\n- 534 tests passed: all 498 remus-io unit tests and 36 selected STEP\nintegration tests. One pre-existing MAMBO round-trip success test\nremains ignored; active MAMBO refusal tests passed.\n- `cargo clippy --offline --no-deps -p remus-io --lib --test\nstep_natural_nurbs_endpoint_recovery --all-features -- -D warnings`\npassed.\n- `cargo fmt -p remus-io -- --check`, boundary, deterministic-hash,\ndocumentation-path, public commit metadata, and outgoing privacy checks\npassed.\n- Broader all-targets Clippy is blocked by pre-existing Windows\n`missing_const_for_thread_local` errors in unchanged operations code and\nexisting I/O test helpers. Full workspace tests and WASM builds were not\nrun locally.\n\nFixes #1285.",
+          "timestamp": "2026-10-24T03:52:04Z",
+          "tree_id": "0cd96379760127e42a75d950120d65cbc6a3dfd2",
+          "url": "https://github.com/esaueng/remus/commit/f3cafb8867d869f0278aadcd247f29da5b7d00ed"
+        },
+        "date": 1792816308796,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1166497,
+            "range": "± 19076",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1258744,
+            "range": "± 3294",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27633,
+            "range": "± 91",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7735182,
+            "range": "± 26010",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7713850,
+            "range": "± 7087",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7574455,
+            "range": "± 6840",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 28580,
+            "range": "± 38",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3554257,
+            "range": "± 11210",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 29377498,
+            "range": "± 346069",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 40,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 115,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 79,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 227,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 195,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 865,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 157,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 389,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 233,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 559,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 908,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3438,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 24531,
+            "range": "± 192",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 146954,
+            "range": "± 318",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 4033,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 15278,
+            "range": "± 446",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 56158,
+            "range": "± 95",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5418,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 509792,
+            "range": "± 1066",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2660381,
+            "range": "± 9620",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 147265,
+            "range": "± 248",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 296986,
+            "range": "± 995",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 364718,
+            "range": "± 777",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 65889,
+            "range": "± 2008",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 34683,
+            "range": "± 47",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 21158,
+            "range": "± 250",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 123900,
+            "range": "± 637",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 146342,
+            "range": "± 1141",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 648427,
+            "range": "± 30373",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 7887331,
+            "range": "± 255591",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 546121,
+            "range": "± 2234",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1174559,
+            "range": "± 1459",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 87498,
+            "range": "± 645",
             "unit": "ns/iter"
           }
         ]
