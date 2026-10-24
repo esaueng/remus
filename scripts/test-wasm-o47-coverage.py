@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -145,6 +147,86 @@ def run_gate(directory: Path, baseline_rows: list[dict]):
 
 
 class O47CoverageFixtures(unittest.TestCase):
+    def scan_gap_with_timeout(self, gap: str, declaration: str) -> dict:
+        """Bound adversarial discovery so a regex regression cannot hang CI."""
+        with tempfile.TemporaryDirectory(prefix="o47-gap-") as directory:
+            root = Path(directory)
+            (root / "lib.rs").write_text(
+                '#[wasm_bindgen]\nimpl BrepKernel {\n'
+                '#[wasm_bindgen(js_name = "doThing")]\n'
+                + gap + declaration + '\n}\n',
+                encoding="utf-8",
+            )
+            worker = """import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("o47_gate", sys.argv[1])
+gate = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gate)
+root = Path(sys.argv[2])
+cache = {}
+exports = gate.discover_from_files(root, cache)
+print(json.dumps({"exports": exports,
+                  "unknown": gate.find_unknown_syntax(root, exports, cache)}))
+"""
+            result = subprocess.run(
+                [sys.executable, "-B", "-c", worker, str(GATE_PATH), str(root)],
+                capture_output=True, text=True, timeout=5, check=True,
+            )
+            return json.loads(result.stdout)
+
+    def test_repeated_gap_lines_without_function_finish(self):
+        for line in ("    /// doc\n", "    A\n", "    A\n\n", "    A\n    , B\n"):
+            with self.subTest(line=line):
+                result = self.scan_gap_with_timeout(line * 4096, "")
+                self.assertEqual(result, {"exports": [], "unknown": []})
+
+    def test_repeated_gap_lines_preserve_unknown_syntax(self):
+        for line in ("    /// doc\n", "    A\n"):
+            with self.subTest(line=line):
+                result = self.scan_gap_with_timeout(
+                    line * 4096,
+                    '    /* unsupported gap */\n'
+                    '    pub fn do_thing(&mut self) {}',
+                )
+                self.assertEqual(result["exports"], [])
+                self.assertEqual(len(result["unknown"]), 1)
+                self.assertIn("do_thing", result["unknown"][0])
+
+    def test_mixed_export_gap_preserves_declaration(self):
+        gap = (
+            '\n    // ordinary comment\n    /// documentation\n'
+            '    #[allow(\n        clippy::too_many_arguments,\n'
+            '        clippy::too_many_lines\n    )]\n\n'
+        )
+        for qualifier in ("", "async ", "unsafe "):
+            with self.subTest(qualifier=qualifier):
+                result = self.scan_gap_with_timeout(
+                    gap,
+                    f'    pub {qualifier}fn do_thing(&mut self, solid: u32) '
+                    '-> Result<u32, JsError> { Ok(solid) }',
+                )
+                self.assertEqual(result["unknown"], [])
+                self.assertEqual(result["exports"], [{
+                    "js": "doThing", "rust": "do_thing", "file": "lib.rs",
+                    "recv": "mut", "ret": "Result<u32, JsError>",
+                    "gate": "shipped",
+                }])
+
+    def test_wrapped_attribute_tokens_preserve_export(self):
+        for arguments in (
+            '        unused\n        , dead_code\n',
+            '        clippy\n        ::too_many_arguments\n',
+            '        unused\n\u2003\n\u2003, dead_code\n',
+        ):
+            with self.subTest(arguments=arguments):
+                result = self.scan_gap_with_timeout(
+                    '    #[allow(\n' + arguments + '    )]\n',
+                    '    pub fn do_thing(&mut self) {}',
+                )
+                self.assertEqual(result["unknown"], [])
+                self.assertEqual(len(result["exports"]), 1)
+                self.assertEqual(result["exports"][0]["rust"], "do_thing")
+
     def test_unknown_syntax_reuses_discovery(self):
         directory = make_tree(
             {"bindings/operations.rs": MUT_EXPORT.format(js="doThing", rust="do_thing")}
