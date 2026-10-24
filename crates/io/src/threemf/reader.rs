@@ -410,6 +410,24 @@ fn resolve_objects(
         flattened_extent(index, &objects, &children, &mut extents, 0)?;
     }
 
+    // Validate the complete graph above before pruning evaluation work. A
+    // geometry-empty DAG can have exponentially many paths even though its
+    // flattened vertex and triangle counts are zero. Such paths contribute
+    // no output, so discard their edges without changing `referenced`: root
+    // selection must still use the original component relationships.
+    for child_list in &mut children {
+        child_list.retain(|&(child, _)| {
+            !matches!(
+                extents[child],
+                Extent::Done(FlatSize {
+                    vertices: 0,
+                    triangles: 0,
+                    ..
+                })
+            )
+        });
+    }
+
     // `None` leaves the root unplaced.
     let roots: Vec<(usize, Option<Affine>)> = if items.is_empty() {
         (0..objects.len())
