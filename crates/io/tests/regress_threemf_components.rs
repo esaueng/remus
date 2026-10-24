@@ -321,6 +321,54 @@ fn flattened_output_is_bounded_by_import_limits() {
     ));
 }
 
+/// Empty component subtrees carry no output, even when many paths share them.
+/// Their multiplicity must not make the reader walk every path to nothing.
+#[test]
+fn empty_component_subtrees_do_not_expand() {
+    let mut objects = vec![component_object(1, &[])];
+    for id in 2..=33 {
+        objects.push(component_object(id, &[(id - 1, None); 3]));
+    }
+    let data = model("millimeter", &objects, &[33, 33]);
+    let meshes = read_threemf(&data).unwrap();
+    assert_eq!(meshes.len(), 2, "retain the build item multiplicity");
+    for mesh in meshes {
+        assert!(mesh.positions.is_empty());
+        assert!(mesh.indices.is_empty());
+        assert!(mesh.normals.is_empty());
+    }
+}
+
+#[test]
+fn empty_component_subtrees_preserve_other_placements_and_validation() {
+    let mut objects = vec![component_object(1, &[])];
+    for id in 2..=32 {
+        objects.push(component_object(id, &[(id - 1, None); 3]));
+    }
+    objects.push(cube_object(100));
+    objects.push(component_object(
+        101,
+        &[(32, None), (100, Some("1 0 0 0 1 0 0 0 1 10 0 0"))],
+    ));
+    let data = model("millimeter", &objects, &[101]);
+    let meshes = read_threemf(&data).unwrap();
+    assert_eq!(meshes.len(), 1);
+    assert_eq!(meshes[0].indices.len(), 12 * 3);
+    assert_positions(
+        &meshes[0].positions,
+        &cube_corners(|p| Point3::new(p.x() + 10.0, p.y(), p.z())),
+    );
+
+    // No geometry does not excuse a cycle, missing reference, or excess depth.
+    objects[0] = component_object(1, &[(32, None)]);
+    assert!(parse_error(&model("millimeter", &objects, &[101])).contains("cycle"));
+    objects[0] = component_object(1, &[(999, None)]);
+    assert!(parse_error(&model("millimeter", &objects, &[101])).contains("unknown object id"));
+    objects[0] = component_object(1, &[]);
+    objects.push(component_object(102, &[(101, None)]));
+    assert!(parse_error(&model("millimeter", &objects, &[102])).contains("deeper than 32"));
+}
+
 /// Attributes of unsupported extensions are ignored by namespace, not by
 /// local name: `v:transform` does not move the part and `v:path` does not
 /// read as the production extension's `p:path`.
