@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792825565708,
+  "lastUpdate": 1792827473096,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -131539,6 +131539,306 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 71098,
             "range": "± 370",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "5ff8eed378b1dcfdbbcfc7f2fa57c78271eb5e36",
+          "message": "chore(deps): bump fast-uri to 3.1.9 for four security advisories (#1293)\n\n## Summary\n\nBumps the `fast-uri` lockfile entry from 3.1.8 to 3.1.9. The only\ndependency path is the dev tooling chain `@commitlint/cli ->\n@commitlint/load -> @commitlint/config-validator -> ajv -> fast-uri`.\nFixes code-scanning alerts #1139\\u20131142 (one entry per advisory, all\nin `package-lock.json`):\n\n- [GHSA-333x-w4r6-6crp](https://osv.dev/GHSA-333x-w4r6-6crp): scheme\ninjection via an unescaped first-segment colon in suffix references\n- [GHSA-w74x-v6f9-j3xg](https://osv.dev/GHSA-w74x-v6f9-j3xg): scheme\nspoofing via percent-encoded scheme decoding\n- [GHSA-wjr9-j795-jxcr](https://osv.dev/GHSA-wjr9-j795-jxcr): host\nconfusion via unchecked WHATWG host canonicalization\n- [GHSA-xhq7-xmqj-769h](https://osv.dev/GHSA-xhq7-xmqj-769h): improper\npath equivalence in relative reference normalization\n\n## Change scope\n\nThe diff is exactly three lines in `package-lock.json` (version,\nresolved URL, integrity) for `fast-uri`; no other package is touched. No\ncommitted WASM packages are affected, so the version gate should be a\nno-op.\n\n## Verification (local)\n\n- `npm ci` succeeds; `npm audit --audit-level=low`: 0 vulnerabilities\n- `npm ls` confirms `@commitlint/cli@21.2.3 -> ajv@8.20.0 ->\nfast-uri@3.1.9`\n- Explicit `commitlint` execution succeeds with the repository config\n- `npx prettier --check package-lock.json` passes\n- Regression assertions over all four advisory API classes plus ordinary\nHTTPS resolution:\n- suffix-reference serialization of the schemeless path component cannot\nreparse as a live scheme (`serialize(..., {reference: 'suffix'})` drops\nthe scheme; `resolve(..., {reference: 'suffix'})` emits `./` so the\noutput reparses scheme-free); `normalize(..., {reference: 'suffix'})`\npasses an explicitly supplied `javascript:` URI through unchanged rather\nthan silently defusing it\n- percent-encoded schemes stay inert:\n`parse('%6Aavascript:alert(1)').scheme` is `'%6Aavascript'`, `resolve`\nrejects it, `equal('%68ttp://a/', 'http://a/')` is false\n- host confusion: `http://a@b@evil.example/` and whitespace-carrying\nhosts parse with `error: \"URI host is malformed.\"` and keep the raw host\nverbatim; `equal` no longer conflates the rewritten host\n- relative-reference normalization never becomes root-relative:\n`normalize('a/../b') = 'b'`, `normalize('../x') = '../x'`\n\n## Hosted checks\n\nThe repository `osv-scan` workflow should go green on this head; hosted\nOSV results are verified before this PR is marked ready.",
+          "timestamp": "2026-10-24T07:08:32Z",
+          "tree_id": "5ba1a16e61f1ee7c8318245054ed1286a1752061",
+          "url": "https://github.com/esaueng/remus/commit/5ff8eed378b1dcfdbbcfc7f2fa57c78271eb5e36"
+        },
+        "date": 1792827469087,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 961453,
+            "range": "± 1920",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1010363,
+            "range": "± 2622",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 21864,
+            "range": "± 36",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 6427967,
+            "range": "± 11639",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 6407341,
+            "range": "± 6900",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 6290537,
+            "range": "± 6257",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 22129,
+            "range": "± 29",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3048634,
+            "range": "± 65621",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 23154358,
+            "range": "± 598539",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 89,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 66,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 190,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 167,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 690,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 126,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 296,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 184,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 442,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 821,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2760,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 26,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 73,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 74,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 18462,
+            "range": "± 22",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 114823,
+            "range": "± 380",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 3205,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 12094,
+            "range": "± 150",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 45449,
+            "range": "± 1222",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 4263,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 392635,
+            "range": "± 644",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2163688,
+            "range": "± 2339",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 115117,
+            "range": "± 63",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 243360,
+            "range": "± 325",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 291969,
+            "range": "± 1645",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 49108,
+            "range": "± 278",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 26591,
+            "range": "± 29",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 16307,
+            "range": "± 27",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 90282,
+            "range": "± 506",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 112698,
+            "range": "± 65",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 546240,
+            "range": "± 32934",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 6972092,
+            "range": "± 348666",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 444263,
+            "range": "± 4626",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 937580,
+            "range": "± 1037",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 79793,
+            "range": "± 792",
             "unit": "ns/iter"
           }
         ]
