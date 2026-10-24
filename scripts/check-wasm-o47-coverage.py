@@ -59,9 +59,13 @@ BASELINE = Path(__file__).with_name("wasm-o47-coverage-baseline.json")
 # parens), `//` comments, and `///` doc lines may sit between the export
 # attribute and the function; anything else is unknown syntax and must
 # fail loudly (see `find_unknown_syntax`).
+# Keep gap alternatives disjoint and confined to one line: `//` already
+# includes `///`, and whitespace in bare attribute arguments must not
+# consume newlines. Otherwise a missing function can backtrack exponentially.
 EXPORT_RE = re.compile(
     r'#\[wasm_bindgen\((?P<attr>[^\)]*js_name\s*=\s*"(?P<js>[^"]+)"[^\)]*)\)\]'
-    r'(?P<gap>(?:[ \t]*\n|[ \t]*#[^\n]*\n|[ \t]*//[^\n]*\n|[ \t]*///[^\n]*\n|[ \t]*[\)\]][^\n]*\n|[ \t]*[A-Za-z_][A-Za-z0-9_:,\s]*\n)*[ \t]*)'
+    r'(?P<gap>(?:[^\S\n]*\n|[ \t]*#[^\n]*\n|[ \t]*//[^\n]*\n'
+    r'|[ \t]*[\)\]][^\n]*\n|[^\S\n]*[A-Za-z0-9_:,](?:[A-Za-z0-9_:,]|[^\S\n])*\n)*[ \t]*)'
     r'pub\s+(?:(?:async|unsafe)\s+)*fn\s+(?P<rust>\w+)\s*\((?P<params>[^)]*)\)'
     r'\s*(?:->\s*(?P<ret>[^\{;]+))?',
 )
