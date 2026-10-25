@@ -44,6 +44,13 @@ def evaluate(expression, github, variables, needs=None):
 
 
 class DirectFleetTests(unittest.TestCase):
+    def test_staged_ci_v7_job_splits(self):
+        result = subprocess.run(
+            ["python3", str(ROOT / "scripts/test-ci-v7-stage.py")],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_staged_three_slot_merge_queue_routing(self):
         result = subprocess.run(
             ["python3", str(ROOT / "scripts/test-three-slot-queue-routing.py")],
