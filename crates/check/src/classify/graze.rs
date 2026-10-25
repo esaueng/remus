@@ -279,13 +279,20 @@ impl BoundarySkeleton {
                 1.0 / direction.y(),
                 1.0 / direction.z(),
             );
+            let reciprocal_overflow =
+                (0..3).any(|axis| direction.0[axis].abs() > 0.0 && inv.0[axis].is_infinite());
             for edge in &self.edges {
                 let padded = if widen > 0.0 {
                     edge.padded.expanded(widen)
                 } else {
                     edge.padded
                 };
-                if padded.ray_intersects(origin, inv) && near(edge)? {
+                let intersects = if reciprocal_overflow {
+                    padded.ray_intersects_direction(origin, direction)
+                } else {
+                    padded.ray_intersects(origin, inv)
+                };
+                if intersects && near(edge)? {
                     return Ok(true);
                 }
             }

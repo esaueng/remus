@@ -221,8 +221,8 @@ impl Aabb3 {
     ///
     /// Uses the slab method. Returns `true` if the ray hits the box at any
     /// `t >= 0`. In this inverse-direction API, an infinite component denotes
-    /// a parallel axis; callers retaining a nonzero direction whose reciprocal
-    /// overflows must test that axis using the original direction instead.
+    /// a parallel axis. Use [`Self::ray_intersects_direction`] when a nonzero
+    /// direction component can have an overflowing reciprocal.
     #[must_use]
     pub fn ray_intersects(self, origin: Point3, inv_dir: Vec3) -> bool {
         let mut tmin = 0.0_f64;
@@ -249,8 +249,13 @@ impl Aabb3 {
         tmax >= tmin
     }
 
-    /// Slab test retaining the original direction when reciprocals overflow.
-    pub(crate) fn ray_intersects_direction(self, origin: Point3, direction: Vec3) -> bool {
+    /// Test a forward ray using its original direction, which need not be normalized.
+    ///
+    /// Divides slab displacements directly so a nonzero subnormal component
+    /// is not mistaken for a parallel axis when its reciprocal overflows.
+    /// A hit at `t = 0` is included, as in [`Self::ray_intersects`].
+    #[must_use]
+    pub fn ray_intersects_direction(self, origin: Point3, direction: Vec3) -> bool {
         let mut tmin = 0.0_f64;
         let mut tmax = f64::INFINITY;
         for axis in 0..3 {

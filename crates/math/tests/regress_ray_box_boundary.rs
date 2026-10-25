@@ -87,6 +87,11 @@ fn slab_queries_match_finite_direction_oracle() {
                                 leave >= enter,
                                 "{origin:?} {direction:?}"
                             );
+                            assert_eq!(
+                                bounds.ray_intersects_direction(origin, direction),
+                                leave >= enter,
+                                "{origin:?} {direction:?}"
+                            );
                         }
                     }
                 }
@@ -131,12 +136,15 @@ fn bvh_preserves_nonzero_directions_whose_reciprocals_overflow() {
                 };
                 let origin = Point3::new(origin[0], origin[1], origin[2]);
                 let direction = Vec3::new(direction[0], direction[1], direction[2]);
+                assert!(bounds.ray_intersects_direction(origin, direction));
+                assert!(!bounds.ray_intersects_direction(origin, -direction));
                 let bvh = Bvh::build(&[(17, bounds)]);
                 assert_eq!(bvh.query_ray(origin, direction), vec![17]);
                 assert!(bvh.query_ray(origin, -direction).is_empty());
                 if transverse > 0.0 {
                     let mut distant = origin;
                     distant.0[axis] = -sign;
+                    assert!(!bounds.ray_intersects_direction(distant, direction));
                     assert!(bvh.query_ray(distant, direction).is_empty());
                 }
             }
