@@ -223,17 +223,28 @@ impl Aabb3 {
     /// `t >= 0`.
     #[must_use]
     pub fn ray_intersects(self, origin: Point3, inv_dir: Vec3) -> bool {
-        let t1x = (self.min.x() - origin.x()) * inv_dir.x();
-        let t2x = (self.max.x() - origin.x()) * inv_dir.x();
-        let t1y = (self.min.y() - origin.y()) * inv_dir.y();
-        let t2y = (self.max.y() - origin.y()) * inv_dir.y();
-        let t1z = (self.min.z() - origin.z()) * inv_dir.z();
-        let t2z = (self.max.z() - origin.z()) * inv_dir.z();
-
-        let tmin = t1x.min(t2x).max(t1y.min(t2y)).max(t1z.min(t2z));
-        let tmax = t1x.max(t2x).min(t1y.max(t2y)).min(t1z.max(t2z));
-
-        tmax >= tmin.max(0.0)
+        let mut tmin = 0.0_f64;
+        let mut tmax = f64::INFINITY;
+        for axis in 0..3 {
+            let inverse = inv_dir.0[axis];
+            if inverse.is_infinite() {
+                // A parallel ray on either closed slab boundary belongs
+                // to the slab. Multiplication would form 0 * infinity,
+                // whose NaN can erase the finite interval on another axis.
+                if origin.0[axis] < self.min.0[axis] || origin.0[axis] > self.max.0[axis] {
+                    return false;
+                }
+                continue;
+            }
+            let t1 = (self.min.0[axis] - origin.0[axis]) * inverse;
+            let t2 = (self.max.0[axis] - origin.0[axis]) * inverse;
+            tmin = tmin.max(t1.min(t2));
+            tmax = tmax.min(t1.max(t2));
+            if tmax < tmin {
+                return false;
+            }
+        }
+        tmax >= tmin
     }
 
     /// Squared distance from a point to the closest point on the box.

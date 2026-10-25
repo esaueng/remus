@@ -144,14 +144,14 @@ fn shift_inertia(
     let dx = old_center.x() - new_center.x();
     let dy = old_center.y() - new_center.y();
     let dz = old_center.z() - new_center.z();
-    let d_sq = dx * dx + dy * dy + dz * dz;
-
     [
-        inertia[0] + mass * (d_sq - dx * dx), // Ixx + m*(dy^2+dz^2)
-        inertia[1] + mass * (d_sq - dy * dy), // Iyy + m*(dx^2+dz^2)
-        inertia[2] + mass * (d_sq - dz * dz), // Izz + m*(dx^2+dy^2)
-        inertia[3] + mass * dx * dy,          // Ixy + m*dx*dy
-        inertia[4] + mass * dx * dz,          // Ixz + m*dx*dz
-        inertia[5] + mass * dy * dz,          // Iyz + m*dy*dz
+        // Sum only the transverse squares: subtracting dx² from |d|²
+        // loses dy² + dz² when the shift is predominantly along x.
+        inertia[0] + mass * (dy * dy + dz * dz),
+        inertia[1] + mass * (dx * dx + dz * dz),
+        inertia[2] + mass * (dx * dx + dy * dy),
+        inertia[3] + mass * dx * dy,
+        inertia[4] + mass * dx * dz,
+        inertia[5] + mass * dy * dz,
     ]
 }

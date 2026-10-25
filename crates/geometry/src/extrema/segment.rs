@@ -3,7 +3,86 @@
 //! Provides [`segment_segment_distance`] using the standard closed-form
 //! algorithm (Shoemake / Ericson "Real-Time Collision Detection" §5.1).
 
-use remus_math::vec::Point3;
+use remus_math::fma::fma;
+use remus_math::vec::{Point3, Vec3};
+
+/// Bounded closest approach for `r + s*d1 - t*d2`, shared by the segment
+/// and native line-parameter APIs. Only a zero direction collapses to a point.
+pub(super) fn bounded_line_parameters(
+    d1: Vec3,
+    s_range: (f64, f64),
+    d2: Vec3,
+    t_range: (f64, f64),
+    r: Vec3,
+) -> (f64, f64) {
+    let scale1 = direction_scale(d1);
+    let scale2 = direction_scale(d2);
+    let u = scaled_direction(d1, scale1);
+    let v = scaled_direction(d2, scale2);
+    let normal = cross_difference(u, v);
+    let normal_scale = direction_scale(normal);
+
+    // |d1 x d2|² equals the Gram determinant, but does not subtract two
+    // nearly equal squared dot products. Normalize each direction first:
+    // a length^4 cutoff must not turn a small crossing into parallel lines.
+    // Scaling the normal also avoids squaring a very small crossing angle.
+    let s = if normal_scale > 0.0 {
+        let scaled_normal = scaled_direction(normal, normal_scale);
+        let numerator = cross_difference(v, r).dot(scaled_normal);
+        ((numerator / normal.dot(scaled_normal)) / scale1).clamp(s_range.0, s_range.1)
+    } else {
+        s_range.0
+    };
+
+    let t = if scale2 > 0.0 {
+        ((v.dot(r + d1 * s) / v.length_squared()) / scale2).clamp(t_range.0, t_range.1)
+    } else {
+        t_range.0
+    };
+    // If t hit an endpoint, the closest point on the other line changes.
+    let s = if scale1 > 0.0 {
+        ((u.dot(d2 * t - r) / u.length_squared()) / scale1).clamp(s_range.0, s_range.1)
+    } else {
+        s_range.0
+    };
+    (s, t)
+}
+
+fn direction_scale(v: Vec3) -> f64 {
+    let largest = v.x().abs().max(v.y().abs()).max(v.z().abs());
+    if largest > 0.0 && largest.is_finite() {
+        // A power of two changes only the exponent. Dividing by the largest
+        // component itself perturbs the directions and can move the foot
+        // substantially when two oblique lines are nearly parallel.
+        f64::from_bits(largest.to_bits() & 0x7ff0_0000_0000_0000).max(f64::MIN_POSITIVE)
+    } else {
+        largest
+    }
+}
+
+fn scaled_direction(v: Vec3, scale: f64) -> Vec3 {
+    if scale > 0.0 {
+        // Divide components directly so subnormal lengths do not need an
+        // overflowing reciprocal.
+        Vec3::new(v.x() / scale, v.y() / scale, v.z() / scale)
+    } else {
+        v
+    }
+}
+
+fn cross_difference(a: Vec3, b: Vec3) -> Vec3 {
+    // Recover the rounding error of the subtracted product as well. A
+    // one-sided FMA leaves a nonzero residual even for cross(a, a).
+    let difference = |a: f64, b: f64, c: f64, d: f64| {
+        let cd = c * d;
+        fma(a, b, -cd) + fma(-c, d, cd)
+    };
+    Vec3::new(
+        difference(a.y(), b.z(), a.z(), b.y()),
+        difference(a.z(), b.x(), a.x(), b.z()),
+        difference(a.x(), b.y(), a.y(), b.x()),
+    )
+}
 
 /// Compute the minimum distance between two line segments `(a0, a1)` and
 /// `(b0, b1)`.
@@ -37,59 +116,12 @@ pub fn segment_segment_distance(
     let d2 = b1 - b0; // Direction of segment B
     let r = a0 - b0;
 
-    let a = d1.dot(d1); // Squared length of A
-    let e = d2.dot(d2); // Squared length of B
-    let f = d2.dot(r);
-
-    // Both segments degenerate to points.
-    if a <= 1e-30 && e <= 1e-30 {
-        let diff = a0 - b0;
-        let dist = (diff.x() * diff.x() + diff.y() * diff.y() + diff.z() * diff.z()).sqrt();
-        return (dist, a0, b0);
-    }
-
-    let (s, t);
-    if a <= 1e-30 {
-        // Segment A degenerates to a point; project onto B.
-        s = 0.0;
-        t = (f / e).clamp(0.0, 1.0);
-    } else {
-        let c = d1.dot(r);
-        if e <= 1e-30 {
-            // Segment B degenerates to a point; project onto A.
-            t = 0.0;
-            s = (-c / a).clamp(0.0, 1.0);
-        } else {
-            // General non-degenerate case.
-            let b = d1.dot(d2);
-            let denom = a * e - b * b;
-
-            // If segments are parallel (`denom ≈ 0`), pick `s = 0` arbitrarily.
-            s = if denom.abs() > 1e-30 {
-                ((b * f - c * e) / denom).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-
-            // Compute t for the closest point on segment B given s.
-            let t_raw = (b * s + f) / e;
-            t = t_raw.clamp(0.0, 1.0);
-        }
-    }
-
-    // Recompute s if t was clamped (to handle the endpoint boundary cases).
-    let s = if a > 1e-30 {
-        let b = d1.dot(d2);
-        let c = d1.dot(r);
-        ((b * t - c) / a).clamp(0.0, 1.0)
-    } else {
-        s
-    };
+    let (s, t) = bounded_line_parameters(d1, (0.0, 1.0), d2, (0.0, 1.0), r);
 
     let closest_a = a0 + d1 * s;
     let closest_b = b0 + d2 * t;
     let diff = closest_a - closest_b;
-    let dist = (diff.x() * diff.x() + diff.y() * diff.y() + diff.z() * diff.z()).sqrt();
+    let dist = diff.x().hypot(diff.y()).hypot(diff.z());
     (dist, closest_a, closest_b)
 }
 

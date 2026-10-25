@@ -53,57 +53,13 @@ pub fn line_to_line(
     let d1 = l1.direction();
     let d2 = l2.direction();
 
-    // Vector between origins.
     let r = l1.origin() - l2.origin();
-
-    let a = d1.dot(d1); // |d1|² (= 1 for unit directions)
-    let e = d2.dot(d2); // |d2|²
-    let f = d2.dot(r);
-
-    let (s, t);
-    if a < 1e-30 && e < 1e-30 {
-        // Both degenerate to points.
-        s = t1_range.0;
-        t = t2_range.0;
-    } else if a < 1e-30 {
-        s = t1_range.0;
-        t = (f / e).clamp(t2_range.0, t2_range.1);
-    } else {
-        let c = d1.dot(r);
-        if e < 1e-30 {
-            t = t2_range.0;
-            s = (-c / a).clamp(t1_range.0, t1_range.1);
-        } else {
-            let b = d1.dot(d2);
-            let denom = a * e - b * b;
-
-            // If lines are parallel (denom ≈ 0), pick s = t1_start.
-            let s_raw = if denom.abs() > 1e-30 {
-                (b * f - c * e) / denom
-            } else {
-                t1_range.0
-            };
-            s = s_raw.clamp(t1_range.0, t1_range.1);
-
-            // Compute t for s, then clamp.
-            let t_raw = (b * s + f) / e;
-            t = t_raw.clamp(t2_range.0, t2_range.1);
-        }
-    }
-
-    // Recompute s if t was clamped.
-    let s = if a > 1e-30 {
-        let b = d1.dot(d2);
-        let c = d1.dot(r);
-        ((b * t - c) / a).clamp(t1_range.0, t1_range.1)
-    } else {
-        s
-    };
+    let (s, t) = super::segment::bounded_line_parameters(d1, t1_range, d2, t2_range, r);
 
     let pa = l1.evaluate(s);
     let pb = l2.evaluate(t);
     let diff = pa - pb;
-    let distance = (diff.x() * diff.x() + diff.y() * diff.y() + diff.z() * diff.z()).sqrt();
+    let distance = diff.x().hypot(diff.y()).hypot(diff.z());
 
     ExtremaSolution {
         distance,
