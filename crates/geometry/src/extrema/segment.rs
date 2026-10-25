@@ -28,8 +28,24 @@ pub(super) fn bounded_line_parameters(
     // Scaling the normal also avoids squaring a very small crossing angle.
     let s = if normal_scale > 0.0 {
         let scaled_normal = scaled_direction(normal, normal_scale);
-        let numerator = cross_difference(v, r).dot(scaled_normal);
-        ((numerator / normal.dot(scaled_normal)) / scale1).clamp(s_range.0, s_range.1)
+        let r_scale = direction_scale(r);
+        let numerator = cross_difference(v, scaled_direction(r, r_scale)).dot(scaled_normal);
+        let parameter = if r_scale > 0.0 {
+            // Form both dot products in normalized coordinates. Multiplying
+            // the subnormal normal back in would discard its significant bits
+            // (or underflow to zero) before taking the quotient. The remaining
+            // scale factors are exact powers of two; combine their exponents
+            // before applying them so cancelling large/small factors stay finite.
+            scale_by_power_of_two(
+                numerator / scaled_normal.length_squared(),
+                power_of_two_exponent(r_scale)
+                    - power_of_two_exponent(normal_scale)
+                    - power_of_two_exponent(scale1),
+            )
+        } else {
+            0.0
+        };
+        parameter.clamp(s_range.0, s_range.1)
     } else {
         s_range.0
     };
@@ -48,13 +64,47 @@ pub(super) fn bounded_line_parameters(
     (s, t)
 }
 
+fn power_of_two_exponent(scale: f64) -> i32 {
+    let bits = scale.to_bits();
+    let exponent = ((bits >> 52) & 0x7ff) as i32;
+    if exponent == 0 {
+        i32::from(bits.ilog2() as u8) - 1074
+    } else {
+        exponent - 1023
+    }
+}
+
+fn scale_by_power_of_two(mut value: f64, mut exponent: i32) -> f64 {
+    // Every factor is normal and finite. Applying same-sign exponent chunks
+    // cannot underflow or overflow before the final value would do so.
+    while exponent > 512 {
+        value *= f64::from_bits((1023 + 512) << 52);
+        exponent -= 512;
+    }
+    while exponent < -512 {
+        value *= f64::from_bits((1023 - 512) << 52);
+        exponent += 512;
+    }
+    value * f64::from_bits(((exponent + 1023) as u64) << 52)
+}
+
 fn direction_scale(v: Vec3) -> f64 {
     let largest = v.x().abs().max(v.y().abs()).max(v.z().abs());
     if largest > 0.0 && largest.is_finite() {
         // A power of two changes only the exponent. Dividing by the largest
         // component itself perturbs the directions and can move the foot
         // substantially when two oblique lines are nearly parallel.
-        f64::from_bits(largest.to_bits() & 0x7ff0_0000_0000_0000).max(f64::MIN_POSITIVE)
+        let bits = largest.to_bits();
+        let exponent = bits & 0x7ff0_0000_0000_0000;
+        if exponent == 0 {
+            // Subnormals have no stored exponent. Their highest mantissa
+            // bit still names an exact power of two. Flooring at MIN_POSITIVE
+            // would leave a subnormal normal tiny after scaling, allowing
+            // normal.dot(scaled_normal) to underflow back to zero.
+            f64::from_bits(1_u64 << bits.ilog2())
+        } else {
+            f64::from_bits(exponent)
+        }
     } else {
         largest
     }

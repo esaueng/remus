@@ -75,6 +75,58 @@ fn nearly_parallel_oblique_segments_keep_the_exact_crossing_witness() {
     }
 }
 
+#[test]
+fn subnormal_angles_keep_finite_crossing_witnesses() {
+    for delta in (0..52).map(|bit| f64::from_bits(1 << bit)).chain([1e-310]) {
+        let a0 = Point3::new(0.0, 0.0, 0.0);
+        let a1 = Point3::new(1.0, 0.0, 0.0);
+        let b0 = Point3::new(0.0, -delta, 0.0);
+        let b1 = Point3::new(1.0, delta, 0.0);
+        let expected = Point3::new(0.5, 0.0, 0.0);
+        for (a0, a1, b0, b1) in [(a0, a1, b0, b1), (b1, b0, a1, a0)] {
+            let (distance, pa, pb) = segment_segment_distance(a0, a1, b0, b1);
+            assert!(distance.is_finite() && distance < 1e-15, "{distance}");
+            assert!((pa - expected).length() < 1e-14, "{pa:?}");
+            assert!((pb - expected).length() < 1e-14, "{pb:?}");
+        }
+        let a = Line3D::new(a0, a1 - a0).unwrap();
+        let b = Line3D::new(b0, b1 - b0).unwrap();
+        let result = line_to_line(&a, (0.0, 1.0), &b, (0.0, 1.0));
+        assert!(
+            result.distance.is_finite() && result.distance < 1e-15,
+            "{result:?}"
+        );
+        assert!((result.point_a - expected).length() < 1e-14, "{result:?}");
+        assert!((result.point_b - expected).length() < 1e-14, "{result:?}");
+    }
+}
+
+#[test]
+fn dyadic_crossings_keep_their_witnesses_at_extreme_model_scales() {
+    for scale in [f64::from_bits(16), 2.0_f64.powi(-1022), 2.0_f64.powi(1000)] {
+        let (distance, pa, pb) = segment_segment_distance(
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(scale, 0.5 * scale, 0.0),
+            Point3::new(0.25 * scale, -0.25 * scale, 0.0),
+            Point3::new(0.75 * scale, 0.75 * scale, 0.0),
+        );
+        let expected = Point3::new(0.5 * scale, 0.25 * scale, 0.0);
+        assert!(distance.is_finite() && distance.abs() <= f64::from_bits(1));
+        assert_eq!(pa, expected);
+        assert_eq!(pb, expected);
+    }
+    // Native line parameters retain physical units, exercising the exponent
+    // chunks when the foot itself is extremely far from (or close to) zero.
+    for length in [2.0_f64.powi(-1000), 2.0_f64.powi(1000)] {
+        let a = Line3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)).unwrap();
+        let b = Line3D::new(Point3::new(length, -length, 0.0), Vec3::new(0.0, 1.0, 0.0)).unwrap();
+        let result = line_to_line(&a, (0.0, 2.0 * length), &b, (0.0, 2.0 * length));
+        assert!(result.distance.is_finite() && result.distance.abs() <= f64::from_bits(1));
+        assert_eq!(result.point_a, Point3::new(length, 0.0, 0.0));
+        assert_eq!(result.point_b, result.point_a);
+    }
+}
+
 /// Enumerate the active sets of the convex squared-distance problem.
 /// Small integer coordinates keep the oracle's Gram determinant exact;
 /// it uses neither direction normalization nor cross products.
