@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792914270887,
+  "lastUpdate": 1792918972973,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -133939,6 +133939,306 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 78207,
             "range": "± 1591",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "53407e1d39bd9b7b270dc9cbd60544159d621fe5",
+          "message": "feat(operations): fillet order independence and mixed-radius notch corners (#1303)\n\n## Change\n\nFillet order no longer decides whether a fillet builds. Two parts.\n\n### 1. Rebuilding earlier bands (`resize_blend/fillet_reorder.rs`)\n\nA fillet whose tangent chain runs onto an earlier, *smaller* band was\nrefused (`unsupported-seam-crossing`). The rolling-ball curvature guard\ncorrectly rejects it, because no ball larger than a convex band can\nfollow that band's arc. Making the same fillets largest first always\nbuilds, so the refusal depended only on order. Example: filleting a\nbox's vertical edge at 3 mm after its top and bottom edges were filleted\nat 1 and 1.7 mm.\n\n`fillet_cascade` gets a last fallback,\n`resize_blend::fillet_across_earlier_blends`. It runs only after both\nengines refuse and only when the selection's G1 chain runs onto earlier\nbands:\n\n1. Remove the bands with the existing exact `remove_blend_region`, the\nsame removal the blend-aware face move uses. Adjacent bands of one\nradius come off together as one wound.\n2. Fillet the selection on the sharp body through the existing engines.\n3. Rebuild each removed band group, one call per group, largest first.\nGroups are tracked by support-face pairs, remapped through each stage's\nconstruction `face_origins`.\n\nThe first pass takes only smaller bands, so nothing that pass builds\nrebuilds a band it didn't have to. If that pass doesn't apply or doesn't\nbuild, a second pass takes every band the chain runs onto (see the notch\nbelow). A support pair that an earlier stage's chain has already rounded\nis skipped, accepted only when a band at least as large now joins the\npair. When the fallback fails, the original refusal is returned\nunchanged and the arena is restored.\n\n### 2. Mixed-radius notch corner (`fillet/arc_torus.rs`,\n`fillet/mitre.rs`, `rolling_ball.rs`)\n\nAn L-bracket notch: a concave wall/base edge meets the two convex\nend-face edges at different radii. This used to build only all at once\nat one radius. Now it builds in either order at any radii, with exact\ngeometry:\n\n- **Concave edge first, then the convex edges.** The convex chain rides\nthe concave band's end arc as an exact torus about the band's axis, ring\n`Rc + Re`, tube `Re`. Three rolling-ball fixes:\n- A trimmed curved neighbour now keeps its source face's reversal. It\nwas always emitted unreversed, which turned a concave band inside-out (4\ninconsistent shared edges).\n- The Phase 2c curvature guard no longer applies to a convex edge on a\nreversed (concave) cylinder. There the ball rides the cylinder's outside\nat `R + r` from the axis, so nothing degenerates.\n- Phase 2d measured corner angles with polygon chords, so an arc\ncontinuing a line smoothly read as a 135° corner. It now uses the\ncurve's tangent for curved edges; line edges are unchanged.\n- **Exact torus arc stripes** (`arc_torus.rs`). An arc stripe between a\nplane and a coaxial cylinder is emitted as `FaceSurface::Torus` with\nfour exact seam circles, instead of a NURBS loft whose plane-side\nboundary was a chord. Ring tori only; a spindle configuration keeps the\nloft.\n- **Convex edges first** (`mitre.rs`). Two convex straight stripes over\na reflex 90° vertex whose concave edge stays sharp mitre on the\nbisecting plane. This is two oblique runouts (the existing planar-runout\nmachinery) sharing one exact ellipse, with no setback and no corner\npatch. `rolling_ball_cylinder` now reads the axis from whichever station\nisn't oblique.\n- **Then the concave edge.** The fallback's second pass removes the\nmitred pair as one group, fillets the concave edge and rebuilds the\npair: the same body the concave-first order gives. `heal_planar_band`\nnow counts only sharp edges the heal restored. The walls' existing\nconcave edge used to be counted too, which refused the group.\n\nKnown limits, still refused with the original error:\n- Bands ending on a NURBS corner patch, which `remove_blend_region`\ncannot remove.\n- Bodies with cavity shells: the band-removal healers refuse inner\nshells today, for face moves too.\n- Notch corners whose supports aren't mutually perpendicular.\n\n## Verification\n\n- `notch_concave_then_convex_rounds_corner_as_exact_torus`: (Rc, Re) =\n(3, 1), (1, 1), (1, 3). The body is all exact surfaces (3 cylinders, 8\nplanes, 1 torus), every torus seam is a circle, and volume matches the\nhand-derived Pappus closed form within 0.01.\n- `notch_convex_first_mitres_then_matches_concave_first`: the mitre is\nvalid with one ellipse and a closed-form volume. The concave fillet\nafterwards gives the same counts and closed-form volume as the\nconcave-first order.\n- `mitre` unit tests: the notch vertex mitres on `x = y`, a convex box\ncorner is not a mitre, oblique supports are refused.\n- From the first commit:\n`sequential_fillet_larger_radius_rebuilds_earlier_band` (closed form\nplus equality with the largest-first order),\n`fillet_between_two_smaller_bands_rebuilds_both`, and WASM\n`fillet_vertical_edge_larger_than_earlier_top_fillet`.\n- `cargo test -p remus-operations --lib`: 1646 passed, 7 ignored.\n- Fillet, blend, chamfer, notch, rim and face-move integration tests:\nall 69 test binaries pass.\n- WASM fillet, sequential, mixed-notch, gridfinity and modifier tests:\n82 passed.\n- `cargo clippy -p remus-operations -p remus-wasm --all-targets -D\nwarnings` and `cargo fmt` are clean. The repository policy scripts pass\non the staged tree: det-hash, wildcard-arm, module map, doc paths,\nboundaries and edge-domain authority. The first commit's Repository\nPolicy failure was the det-hash ratchet, fixed here.\n- Not run locally: the full workspace test and the WASM package build\nand size check. CI covers these.\n\n## Compatibility and risks\n\n- Behaviour change: refused fillet sequences now build. Existing\nsuccessful results change in two places:\n- A rolling-ball arc stripe between a plane and a coaxial cylinder is\nnow an exact torus face where it used to be a NURBS loft. Face counts\nare unchanged; the surface type changes.\n- A trimmed curved neighbour keeps its source reversal. Results that\npassed validation could not have relied on the old flag, because a\nreversed source emitted unreversed fails orientation.\n- `heal_planar_band` (shared with the blend-aware face move) now accepts\ngroups whose supports already met at a sharp edge. It only relaxes a\nrefusal, and results are still validated.\n- A healed result reports `face_origins: None`. Callers already handle\nthat by matching geometry; `filletDetailed` doesn't read it.\n- No public API, units, tolerances or file formats change. Error codes\nare unchanged.\n\n## WASM module tier\n\nNone: no new binding. This extends the existing core `fillet` path.\nKernel growth is expected to be small (one module of arc/mitre\ngeometry).\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01SD4dLsGCzoXMd3hKiHc3ZE\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-10-25T08:44:24Z",
+          "tree_id": "ae7e3469b4952a63b401645b0616e96a22ed3cb7",
+          "url": "https://github.com/esaueng/remus/commit/53407e1d39bd9b7b270dc9cbd60544159d621fe5"
+        },
+        "date": 1792918968493,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1184363,
+            "range": "± 14916",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1271572,
+            "range": "± 24907",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27310,
+            "range": "± 35",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7749243,
+            "range": "± 7683",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7726513,
+            "range": "± 13600",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7577999,
+            "range": "± 6927",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 28827,
+            "range": "± 30",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3581806,
+            "range": "± 3563",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 28790356,
+            "range": "± 1139606",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 40,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 114,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 80,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 224,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 195,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 867,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 169,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 389,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 247,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 564,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 932,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3449,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 37,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 24645,
+            "range": "± 75",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 145881,
+            "range": "± 2246",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 4018,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 15246,
+            "range": "± 19",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 56305,
+            "range": "± 115",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5273,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 513718,
+            "range": "± 714",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2640503,
+            "range": "± 2767",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 147742,
+            "range": "± 317",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 297900,
+            "range": "± 1119",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 362950,
+            "range": "± 4829",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 67129,
+            "range": "± 1558",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 35101,
+            "range": "± 35",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 21244,
+            "range": "± 19",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 127498,
+            "range": "± 302",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 146773,
+            "range": "± 2346",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 649973,
+            "range": "± 43353",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 7878632,
+            "range": "± 171305",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 549066,
+            "range": "± 1133",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1190225,
+            "range": "± 2177",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 86730,
+            "range": "± 464",
             "unit": "ns/iter"
           }
         ]
