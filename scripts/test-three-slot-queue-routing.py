@@ -22,7 +22,18 @@ spec.loader.exec_module(POLICY)
 REMUS = POLICY.REPOSITORY == "esaueng/remus"
 STAGED = ROOT / (".github/workflows/fleet-ci-v6.yml" if REMUS
                  else ".github/workflows/fleet-ci-v2.yml")
-TEXT = STAGED.read_text()
+
+
+def staged_workflow():
+    if STAGED.exists():
+        return STAGED.read_text()
+    # fleet-ci-v7.yml retired v6; scripts/test-ci-v7-stage.py proves v7 is
+    # these immutable main bytes plus its reviewed job splits.
+    command = ["git", "show", f"05fca2fc1029be782afe41ee6ebbeae812e5e40c:{STAGED.relative_to(ROOT)}"]
+    return subprocess.check_output(command, cwd=ROOT, text=True)
+
+
+TEXT = staged_workflow()
 def previous_workflow():
     path = ".github/workflows/fleet-ci-v4.yml" if REMUS else ".github/workflows/fleet-ci.yml"
     previous = ROOT / path

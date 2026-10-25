@@ -35,8 +35,8 @@ class OwnerRoutingTests(unittest.TestCase):
         self.assertNotIn("select-runner.yml", CI)
 
     def test_native_checks_keep_hosted_fallback(self):
-        for name, flag in (("test", "heavy"), ("msrv", "full"), ("fuzz-check", "heavy"),
-                           ("docs", "docs")):
+        for name, flag in (("test", "heavy"), ("complexity-guards", "heavy"), ("msrv", "full"),
+                           ("fuzz-check", "heavy"), ("w9-preflight", "wasm"), ("docs", "docs")):
             with self.subTest(name=name):
                 block = job(name)
                 self.assertIn("needs: [queue-trust, changes, repo-policy, secrets-scan]", block)

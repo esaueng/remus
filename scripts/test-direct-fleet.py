@@ -207,8 +207,8 @@ class DirectFleetTests(unittest.TestCase):
         pooled = {name for name, block in jobs.items() if "fleet-light-runner" in block}
         self.assertEqual(pooled, {"changes", "repo-policy", "secrets-scan",
                                   "docs", "deny", "audit", "wasm-size-gate", "ci-pass"})
-        for name in ("coverage", "wasm", "test", "wasm-no-io", "approx-census",
-                     "msrv", "fuzz-check", "render"):
+        for name in ("coverage", "wasm", "w9-preflight", "test", "complexity-guards",
+                     "wasm-no-io", "approx-census", "msrv", "fuzz-check", "render"):
             self.assertRegex(jobs[name], r"runs-on: [*&]fleet-runner")
         # Both schedules enforce the identical owner/event predicate before selecting a host.
         self.assertEqual(EXPRESSIONS[0].split(" && (vars.CI_FLEET_LIGHT_POOL_ENABLED", 1)[0],

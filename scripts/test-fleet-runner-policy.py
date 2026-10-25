@@ -13,7 +13,8 @@ import test_jane_helper_workflows
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ('.github/actions/fleet-guard/action.yml', '.github/workflows/trusted-vps.yml',
-           '.github/workflows/fleet-ci-v6.yml')
+           '.github/workflows/fleet-ci-v7.yml')
+V6_LANDED = '05fca2fc1029be782afe41ee6ebbeae812e5e40c'
 
 
 class FleetRunnerPolicy(unittest.TestCase):
@@ -74,7 +75,9 @@ class FleetRunnerPolicy(unittest.TestCase):
     def test_staging_preserves_every_other_workflow_byte(self):
         # fleet-ci-v5.yml at reviewed routing stage ea5480872be1cda9ccd0410e6b11c4f901dae45f.
         # A committed digest keeps this check independent of peer branch reachability.
-        staged = (ROOT / '.github/workflows/fleet-ci-v6.yml').read_text()
+        # fleet-ci-v7.yml retired v6; read its immutable landed bytes.
+        staged = subprocess.check_output(
+            ['git', 'show', f'{V6_LANDED}:.github/workflows/fleet-ci-v6.yml'], cwd=ROOT, text=True)
         baseline = staged.replace('ci-server-jane-1|ci-server-jane-2|ci-server-jane-3)',
                                   'ci-server-jane-1|ci-server-jane-2)')
         baseline = baseline.replace('CI_MEMORY=5000000000', 'CI_MEMORY=6442450944')
@@ -87,7 +90,7 @@ class FleetRunnerPolicy(unittest.TestCase):
 
     def test_activated_profile_cannot_restore_the_retired_budget(self):
         active = workflow_path('ci')
-        if active.name != 'fleet-ci-v6.yml':
+        if active.name not in ('fleet-ci-v6.yml', 'fleet-ci-v7.yml'):
             return  # Other independently staged workflow versions keep their own contract.
         guard = re.search(r'case "\$RUNNER_NAME" in\n.*?\besac', active.read_text(), re.S).group()
         self.assertIn('ci-server-jane-1|ci-server-jane-2|ci-server-jane-3)', guard)
