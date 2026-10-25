@@ -7,7 +7,7 @@ description: Use when committing, pushing, opening, reviewing, or merging a pull
 
 End-to-end change flow for this repo: branch, commit, push, PR, merge gate, squash-merge, release. Every change lands as a squash-merged PR.
 
-**CI and open threads block a merge here, never a reviewer's approval.** `main` requires the `checks / CI Pass` status and every review conversation resolved, and merges go through the live merge queue, which re-runs CI on the PR combined with current `main` (`docs/owner-pr-ci.md`, "Convergence and merge queues", is the authoritative description of the tiers and the queue). Zero required approvals, admins not enforced. No human reviews PRs, but the `chatgpt-codex-connector` bot posts inline P1/P2 review threads on many PRs, and each unresolved one blocks the merge. Everything in the gate below beyond a green `CI Pass` and resolved threads is self-imposed.
+**CI and open threads block a merge here, never a reviewer's approval.** `main` requires the `checks / CI Pass` status and every review conversation resolved, and merges go through the live merge queue, which runs CI on the PR combined with current `main` (for an ordinary source PR only the light gates while the classifier's queue fast path is on; `docs/owner-pr-ci.md`, "Convergence and merge queues", is the authoritative description of the tiers and the queue). Zero required approvals, admins not enforced. No human reviews PRs, but the `chatgpt-codex-connector` bot posts inline P1/P2 review threads on many PRs, and each unresolved one blocks the merge. Everything in the gate below beyond a green `CI Pass` and resolved threads is self-imposed.
 
 ## Quick reference
 

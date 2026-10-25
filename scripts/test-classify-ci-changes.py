@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from fleet_workflows import workflow_path
 
 
@@ -46,6 +47,11 @@ PR_618_PATHS = [
     "docs/kernel-maturity/b39-bisect-2026-09.md",
     "docs/kernel-maturity/roadmap.md",
 ]
+
+
+def queue_reruns_pr_tier(value: bool):
+    """Classify with the merge-queue switch set either way, whatever ships."""
+    return mock.patch.object(MODULE, "QUEUE_RERUNS_PR_TIER", value)
 
 
 def fleet_jobs() -> dict[str, str]:
@@ -323,31 +329,69 @@ class ClassifyCiChangesTests(unittest.TestCase):
         self.assertTrue(result.heavy)
 
 
-    def test_merge_group_source_change_runs_the_pr_tier(self) -> None:
-        # The main push of the same tree runs the second tier after the merge.
+    def test_merge_group_source_change_leaves_the_pr_tier_to_pr_and_main(self) -> None:
+        # The PR ran tier 1 and the package build; the main push of the same
+        # tree runs every tier after the merge.
+        self.assertFalse(MODULE.QUEUE_RERUNS_PR_TIER)
+        for paths in (PR_618_PATHS, ["fuzz/fuzz_targets/nurbs_surface.rs"],
+                      ["crates/render/src/lib.rs"], ["scripts/check-boundaries.sh"]):
+            with self.subTest(paths=paths):
+                result = MODULE.classify_paths(paths, force_full=True, merge_group=True)
+                self.assertFalse(result.heavy)
+                self.assertTrue(result.docs)
+                self.assertFalse(result.full)
+                self.assertFalse(result.wasm)
+                self.assertEqual(result.mode, "queue")
+
+    def test_merge_group_skip_needs_the_queue_event_and_its_full_flag(self) -> None:
+        # A PR or labelled PR never takes the queue shortcut.
+        for force_full in (False, True):
+            with self.subTest(force_full=force_full):
+                result = MODULE.classify_paths(PR_618_PATHS, force_full=force_full)
+                self.assertTrue(result.heavy)
+                self.assertTrue(result.wasm)
+        result = MODULE.classify_paths(PR_618_PATHS, merge_group=True)
+        self.assertTrue(result.heavy)
+        self.assertEqual(result.mode, "pr")
+
+    def test_merge_group_pairing_a_refresh_with_source_skips_the_pr_tier(self) -> None:
+        # wasm-version.yml's integrity job rebuilds and compares the packages.
         result = MODULE.classify_paths(
-            PR_618_PATHS, force_full=True, merge_group=True
+            ["crates/wasm/pkg/remus_wasm_bg.wasm", "crates/wasm-io/pkg/package.json",
+             "crates/math/src/lib.rs", "docs/kernel-maturity/roadmap.md"],
+            force_full=True, merge_group=True,
         )
+        self.assertFalse(result.heavy)
+        self.assertFalse(result.full)
+        self.assertEqual(result.mode, "queue")
+
+    def test_restored_merge_group_source_change_runs_the_pr_tier(self) -> None:
+        # The main push of the same tree runs the second tier after the merge.
+        with queue_reruns_pr_tier(True):
+            result = MODULE.classify_paths(
+                PR_618_PATHS, force_full=True, merge_group=True
+            )
         self.assertTrue(result.heavy)
         self.assertTrue(result.docs)
         self.assertFalse(result.full)
         self.assertTrue(result.wasm)
         self.assertEqual(result.mode, "queue")
 
-    def test_merge_group_leaves_fuzz_and_render_to_the_first_tier(self) -> None:
+    def test_restored_merge_group_leaves_fuzz_and_render_to_the_first_tier(self) -> None:
         # Both jobs run with tier 1 (fleet-ci-v4.yml), so their sources alone
         # do not select tier 2.
         for path in ("fuzz/fuzz_targets/nurbs_surface.rs", "crates/render/src/lib.rs"):
-            with self.subTest(path=path):
+            with self.subTest(path=path), queue_reruns_pr_tier(True):
                 result = MODULE.classify_paths([path], force_full=True, merge_group=True)
                 self.assertTrue(result.heavy)
                 self.assertFalse(result.full)
                 self.assertEqual(result.mode, "queue")
 
-    def test_merge_group_without_wasm_paths_skips_the_package_build(self) -> None:
-        result = MODULE.classify_paths(
-            ["scripts/check-boundaries.sh"], force_full=True, merge_group=True
-        )
+    def test_restored_merge_group_without_wasm_paths_skips_the_package_build(self) -> None:
+        with queue_reruns_pr_tier(True):
+            result = MODULE.classify_paths(
+                ["scripts/check-boundaries.sh"], force_full=True, merge_group=True
+            )
         self.assertTrue(result.heavy)
         self.assertFalse(result.full)
         self.assertFalse(result.wasm)
@@ -358,24 +402,30 @@ class ClassifyCiChangesTests(unittest.TestCase):
             "rust-toolchain.toml", "clippy.toml", ".cargo/config.toml",
             ".config/nextest.toml", ".github/workflows/ci.yml",
         ):
-            with self.subTest(path=path):
-                result = MODULE.classify_paths(
-                    ["crates/math/src/lib.rs", path], force_full=True, merge_group=True
-                )
-                self.assertTrue(result.full)
-                self.assertTrue(result.wasm)
-                self.assertEqual(result.mode, "full")
+            for restored in (False, True):
+                with self.subTest(path=path, restored=restored), queue_reruns_pr_tier(restored):
+                    result = MODULE.classify_paths(
+                        ["crates/math/src/lib.rs", path], force_full=True, merge_group=True
+                    )
+                    self.assertTrue(result.heavy)
+                    self.assertTrue(result.full)
+                    self.assertTrue(result.wasm)
+                    self.assertEqual(result.mode, "full")
 
     def test_merge_group_never_relaxes_what_fails_closed(self) -> None:
-        result = MODULE.classify_paths([], force_full=True, merge_group=True)
-        self.assertTrue(result.full)
-        self.assertEqual(result.mode, "full")
+        for restored in (False, True):
+            with self.subTest(restored=restored), queue_reruns_pr_tier(restored):
+                result = MODULE.classify_paths([], force_full=True, merge_group=True)
+                self.assertTrue(result.heavy)
+                self.assertTrue(result.full)
+                self.assertEqual(result.mode, "full")
         # A queue batch that pairs a package refresh with a source PR.
-        result = MODULE.classify_paths(
-            ["crates/wasm/pkg/remus_wasm_bg.wasm", "crates/wasm-io/pkg/package.json",
-             "crates/math/src/lib.rs", "docs/kernel-maturity/roadmap.md"],
-            force_full=True, merge_group=True,
-        )
+        with queue_reruns_pr_tier(True):
+            result = MODULE.classify_paths(
+                ["crates/wasm/pkg/remus_wasm_bg.wasm", "crates/wasm-io/pkg/package.json",
+                 "crates/math/src/lib.rs", "docs/kernel-maturity/roadmap.md"],
+                force_full=True, merge_group=True,
+            )
         self.assertTrue(result.full)
         self.assertEqual(result.mode, "full")
         # A merge group never selects more than the event's own tier.
@@ -390,13 +440,16 @@ class ClassifyCiChangesTests(unittest.TestCase):
     def test_cli_reads_the_merge_group_event_from_the_runner(self) -> None:
         files = {"crates/algo/src/pave_filler/phase_ff.rs": "// change\n"}
         queued = self.run_cli(files, "--full", event="merge_group")
+        self.assertEqual(queued["heavy"], "false")
+        self.assertEqual(queued["docs"], "true")
         self.assertEqual(queued["full"], "false")
-        self.assertEqual(queued["wasm"], "true")
+        self.assertEqual(queued["wasm"], "false")
         self.assertEqual(queued["mode"], "queue")
         pushed = self.run_cli(files, "--full", event="push")
         self.assertEqual(pushed["full"], "true")
         self.assertEqual(pushed["mode"], "full")
         locked = self.run_cli({**files, "Cargo.lock": "# lock\n"}, "--full", event="merge_group")
+        self.assertEqual(locked["heavy"], "true")
         self.assertEqual(locked["full"], "true")
 
     def test_cli_runs_no_heavy_tier_for_a_package_refresh(self) -> None:
