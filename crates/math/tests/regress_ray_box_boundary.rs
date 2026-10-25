@@ -110,3 +110,36 @@ fn bvh_traversal_keeps_boundary_hits_in_multiple_leaves() {
     hits.sort_unstable();
     assert_eq!(hits, vec![17, 23]);
 }
+
+#[test]
+fn bvh_preserves_nonzero_directions_whose_reciprocals_overflow() {
+    for axis in 0..3 {
+        for sign in [-1.0, 1.0] {
+            for transverse in [0.0, 1.0] {
+                let mut min = [0.0; 3];
+                let mut max = [1.0; 3];
+                let mut origin = [0.5; 3];
+                let mut direction = [0.0; 3];
+                min[axis] = if sign > 0.0 { 0.0 } else { -1.0 };
+                max[axis] = if sign > 0.0 { 1.0 } else { 0.0 };
+                origin[axis] = -sign * f64::from_bits(1);
+                direction[axis] = sign * 5e-309;
+                direction[(axis + 1) % 3] = transverse;
+                let bounds = Aabb3 {
+                    min: Point3::new(min[0], min[1], min[2]),
+                    max: Point3::new(max[0], max[1], max[2]),
+                };
+                let origin = Point3::new(origin[0], origin[1], origin[2]);
+                let direction = Vec3::new(direction[0], direction[1], direction[2]);
+                let bvh = Bvh::build(&[(17, bounds)]);
+                assert_eq!(bvh.query_ray(origin, direction), vec![17]);
+                assert!(bvh.query_ray(origin, -direction).is_empty());
+                if transverse > 0.0 {
+                    let mut distant = origin;
+                    distant.0[axis] = -sign;
+                    assert!(bvh.query_ray(distant, direction).is_empty());
+                }
+            }
+        }
+    }
+}
