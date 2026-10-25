@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792906436919,
+  "lastUpdate": 1792910010637,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -133039,6 +133039,306 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 65695,
             "range": "± 3296",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3d648c419a95680ff5d6c9f46cb749b6a8fe0e5a",
+          "message": "ci: stage fleet-ci-v7 with parallel complexity guards and W9 preflight (#1301)\n\n## Change\n\nStage `fleet-ci-v7.yml`. It is the landed `fleet-ci-v6.yml` (`05fca2fc`,\n#1260) with two job splits that shorten the PR critical path:\n\n- **Complexity Guards** (new tier-1 job, `heavy`): the `perf-counters`\n`scaling_` guards leave Test. In hosted run\n[40112934568](https://github.com/esaueng/remus/actions/runs/40112934568)\nthat step took 3m59s at the end of Test, rebuilding remus-operations to\nrun 18 tests. It stays a PR gate and now runs beside Test.\n- **W9 Preflight** (new job, `wasm` selector): the W9 native/WASM\npreflight leaves WASM Build & Validate (2m35s in the same run).\n`scripts/test-w9-preflight.sh` builds its own native example and dev\n`wasm-pack` package with `workflow-probes`, and reads nothing `cargo\nxtask wasm-build` writes, so it can run in parallel. Its `w9-preflight`\nartifact is still uploaded with `if: always()`.\n- **CI Pass** needs both jobs. Complexity Guards can skip only when\n`heavy` is false. W9 Preflight can skip only when `wasm` is false, the\nsame as the package build.\n\nEverything else is byte-identical to v6: guards, permissions, runner\nexpressions, commands and timeouts. Callers and\n`.github/fleet-workflows.json` stay on v6. A separate activation PR\nre-pins them to this PR's landed squash commit, retires v6, updates the\nactive-suite expectations and documents the tiers in\n`docs/owner-pr-ci.md`.\n\n## Expected effect (from run 40112934568 step timings)\n\n| | Before (v6) | After (v7, projected) |\n|---|---|---|\n| Test | 23m00s (ends with 3m59s guards) | ~19m00s |\n| WASM Build & Validate | 18m42s (ends with 2m35s W9) | ~16m05s |\n| PR critical path (start → CI Pass) | 25m07s | ~21m |\n\nOnce Test is shorter, WASM Build & Validate plus the size gate (~17m)\nsits just under it, so moving W9 keeps WASM off the critical path. Each\nnew job does its own cold build (the rust-cache key includes the job\nID). That build should finish well inside Test's time. The activation PR\nwill report measured numbers.\n\nRunner note: fleet routing is disabled today (`CI_FLEET_ENABLED=false`),\nso the two extra jobs use hosted runners and run fully in parallel. With\nJane enabled, a PR fans out two more jobs across its three slots.\n\n## Verification\n\n- `scripts/test-ci-v7-stage.py` (10 tests): v7 equals the landed v6 with\nexactly the reviewed `(old, new)` edits, each matching once. A drifted\nor intervening change fails it. It also checks the new jobs' admission,\nrunner and isolation-before-checkout, that every job is in CI Pass, the\nCI Pass skip rules for both jobs (success, failure, cancelled and\nskipped, across events), and queue-timeout headroom. It runs from the\nrequired direct-fleet entrypoint (`scripts/test-direct-fleet.py`, the\nClassify Changes job). A mutated v7 makes that entrypoint fail.\n- Passing locally: direct fleet, Ubuntu routing (which checks guard pins\nin every workflow, v7 included), fleet workflows, convergence, runner\npolicy, owner routing/policy, classifier, selector, three-slot queue\nrouting, Jane helpers and gauntlet suites. `actionlint` on v7,\n`check-doc-paths.sh` and `git diff --check` also pass.\n- v7 itself first runs in the activation PR.\n\n## WASM module tier\n\nNone.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-25T05:15:51Z",
+          "tree_id": "abb30c1d3a59cfa2c8185c1fefc028471931f6fc",
+          "url": "https://github.com/esaueng/remus/commit/3d648c419a95680ff5d6c9f46cb749b6a8fe0e5a"
+        },
+        "date": 1792910006486,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1179092,
+            "range": "± 2680",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1265503,
+            "range": "± 3240",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26993,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7747830,
+            "range": "± 35252",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7724102,
+            "range": "± 19208",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7609221,
+            "range": "± 24370",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 28430,
+            "range": "± 76",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3562814,
+            "range": "± 7685",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 29660045,
+            "range": "± 601696",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 40,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 114,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 80,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 225,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 196,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 871,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 169,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 390,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 247,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 559,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 932,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3448,
+            "range": "± 35",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 38,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 24117,
+            "range": "± 63",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 145812,
+            "range": "± 348",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 4031,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 15485,
+            "range": "± 40",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 57516,
+            "range": "± 122",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5379,
+            "range": "± 50",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 510235,
+            "range": "± 1985",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2641691,
+            "range": "± 29426",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 148439,
+            "range": "± 659",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 298940,
+            "range": "± 911",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 362198,
+            "range": "± 502",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 64441,
+            "range": "± 1190",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 35014,
+            "range": "± 101",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 21276,
+            "range": "± 386",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 128071,
+            "range": "± 168",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 146465,
+            "range": "± 1065",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 650297,
+            "range": "± 31367",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 7786736,
+            "range": "± 75099",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 546410,
+            "range": "± 655",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1180353,
+            "range": "± 2655",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 85550,
+            "range": "± 345",
             "unit": "ns/iter"
           }
         ]
