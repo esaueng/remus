@@ -27,6 +27,8 @@ There are three fillet code paths and two chamfer paths. "v1 vs v2" is a simplif
 
 A band's reach on a planar face is the setback `fillet_contact_setback` computes (r·tan(θ/2) between planes, θ the angle between outward normals). The hole guard (B87) never takes it below r, since it runs before the rolling ball classifies the edge; the rolling-ball adjacent-extent guard (Phase 2b, B253) keeps that floor only for stripes it could not classify, whose contacts then land one radius out.
 
+3. `resize_blend::fillet_across_smaller_blends`, only when both refused and the selection's G1 chain runs onto earlier bands of a smaller radius (no larger rolling ball can follow their arcs). It removes those bands (`remove_blend_region`), fillets the selection on the sharp body, then rebuilds each band one call at a time, largest first, through steps 1–2: the body filleting largest first would give, so the result does not depend on fillet order. A rebuilt band follows its own tangent chain and may round an edge the larger fillet left beside it, as that order would. Its `face_origins` is `None`. Bands ending on a NURBS corner patch cannot be removed, so those stay refused.
+
 The flat bevel `fillet::fillet` is not consulted for a fillet request. When both fail, the walking engine's typed error is returned and the input is untouched. `BlendResult::engine` discloses the engine that produced the result. The wasm helper `try_fillet` (`crates/wasm/src/helpers.rs`) only drops tangent/degenerate edges via `filter_filletable_edges` and calls the cascade.
 
 ### Public wasm bindings (`crates/wasm/src/bindings/operations.rs`)

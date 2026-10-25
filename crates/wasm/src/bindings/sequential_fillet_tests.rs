@@ -119,3 +119,62 @@ fn fillet_top_edge_after_vertical_edge_fillet() {
         "volume {vol} should match the closed form {expected}"
     );
 }
+
+/// The opposite order with a larger second radius: the vertical edge runs
+/// into the top fillet's band, which no 2 mm ball can follow. The batch op
+/// rebuilds the 1 mm band after the 2 mm fillet, as filleting the vertical
+/// edge first would, instead of refusing.
+#[test]
+fn fillet_vertical_edge_larger_than_earlier_top_fillet() {
+    let (dx, dy, dz) = (9.5, 12.5, 8.5);
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    let mut kernel = BrepKernel::new();
+    let out = run(
+        &mut kernel,
+        &[op(
+            "makeBox",
+            serde_json::json!({"width": dx, "height": dy, "depth": dz}),
+        )],
+    );
+    let solid = ok_handle(&out[0]);
+
+    let top = edge_where(&mut kernel, solid, |x, _, z| near(x, dx) && near(z, dz));
+    let out = run(
+        &mut kernel,
+        &[op(
+            "fillet",
+            serde_json::json!({"solid": solid, "radius": 1.0, "edges": [top]}),
+        )],
+    );
+    let first = ok_handle(&out[0]);
+
+    let vertical = edge_where(&mut kernel, first, |x, y, _| near(x, dx) && near(y, 0.0));
+    let out = run(
+        &mut kernel,
+        &[op(
+            "fillet",
+            serde_json::json!({"solid": first, "radius": 2.0, "edges": [vertical]}),
+        )],
+    );
+    let second = ok_handle(&out[0]);
+    assert_ne!(second, first);
+    assert_eq!(
+        kernel.validate_solid(second).unwrap(),
+        0,
+        "no validation errors"
+    );
+
+    let volume = |kernel: &mut BrepKernel, solid: u32| {
+        let out = run(
+            kernel,
+            &[op(
+                "volume",
+                serde_json::json!({"solid": solid, "deflection": 0.01}),
+            )],
+        );
+        out[0]["ok"].as_f64().unwrap()
+    };
+    let before = volume(&mut kernel, first);
+    let after = volume(&mut kernel, second);
+    assert!(after < before, "a convex fillet removes material");
+}

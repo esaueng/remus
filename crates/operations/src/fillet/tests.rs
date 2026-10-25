@@ -1934,6 +1934,140 @@ fn sequential_fillet_equal_radius_rounds_corner_as_sphere() {
     assert!(worst < 1e-3, "corner cap strays {worst} from the ball");
 }
 
+/// The removed area and its centroid's inset from the corner, per unit length,
+/// of a radius-`r` fillet on a right-angle edge.
+fn quarter_fillet_section(r: f64) -> (f64, f64) {
+    let section = (1.0 - std::f64::consts::FRAC_PI_4) * r * r;
+    let square = r * r * r / 2.0;
+    let quarter_disc =
+        std::f64::consts::FRAC_PI_4 * r * r * (r - 4.0 * r / (3.0 * std::f64::consts::PI));
+    (section, (square - quarter_disc) / section)
+}
+
+/// The same sequence with a larger second radius. No rolling ball of the
+/// larger radius can follow the earlier band's arc, so the earlier band is
+/// rebuilt after the new fillet: the result is the one filleting the larger
+/// edge first gives, whose closed form is the smaller-radius corner below with
+/// the roles of the two edges swapped.
+#[test]
+fn sequential_fillet_larger_radius_rebuilds_earlier_band() {
+    let dims = (9.5, 12.5, 8.5);
+    let (dx, dy, dz) = dims;
+    let (small, big) = (1.0, 2.0);
+    let mut topo = Topology::new();
+    let (_, healed) = sequential_top_fillet(&mut topo, dims, small, big);
+    assert_fully_valid(&topo, healed, "larger fillet after a smaller one");
+
+    // Largest first: the top edge at `big`, then the vertical edge at `small`,
+    // which runs across the top band's arc onto the front top edge.
+    let mut direct_topo = Topology::new();
+    let solid = crate::primitives::make_box(&mut direct_topo, dx, dy, dz).unwrap();
+    let top = box_top_edge(&direct_topo, solid, dx, dz);
+    let first = crate::blend_ops::fillet_cascade(&mut direct_topo, solid, &[top], big)
+        .unwrap()
+        .solid;
+    let vertical = box_vertical_edge(&direct_topo, first, dx);
+    let direct = crate::blend_ops::fillet_cascade(&mut direct_topo, first, &[vertical], small)
+        .unwrap()
+        .solid;
+
+    let counts = remus_topology::explorer::solid_entity_counts(&topo, healed).unwrap();
+    assert_eq!(
+        counts,
+        remus_topology::explorer::solid_entity_counts(&direct_topo, direct).unwrap(),
+        "same topology as filleting the larger edge first"
+    );
+    let census = |topo: &Topology, solid: SolidId| {
+        let mut tags: Vec<_> = remus_topology::explorer::solid_faces(topo, solid)
+            .unwrap()
+            .into_iter()
+            .map(|f| topo.face(f).unwrap().surface().type_tag())
+            .collect();
+        tags.sort_unstable();
+        tags
+    };
+    assert_eq!(census(&topo, healed), census(&direct_topo, direct));
+
+    let (big_section, _) = quarter_fillet_section(big);
+    let (section, inset) = quarter_fillet_section(small);
+    let corner = section * std::f64::consts::FRAC_PI_2 * (big - inset);
+    let expected = dx * dy * dz - big_section * dy - section * ((dz - big) + (dx - big)) - corner;
+    let vol = crate::measure::solid_volume(&topo, healed, 0.01).unwrap();
+    assert!(
+        (vol - expected).abs() < 0.05,
+        "healed volume {vol} should match closed form {expected}"
+    );
+    let direct_vol = crate::measure::solid_volume(&direct_topo, direct, 0.01).unwrap();
+    assert!(
+        (vol - direct_vol).abs() < 0.01,
+        "healed volume {vol} should match the larger-first volume {direct_vol}"
+    );
+}
+
+/// A shortened edge between two earlier, different, smaller fillets (top at
+/// 1, bottom at 1.7) takes a 3 mm fillet: both bands are rebuilt after it,
+/// largest first.
+#[test]
+fn fillet_between_two_smaller_bands_rebuilds_both() {
+    let (dx, dy, dz) = (40.0, 20.0, 8.0);
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    let front_line = |topo: &Topology, solid: SolidId, z: f64| {
+        solid_edge_ids(topo, solid)
+            .into_iter()
+            .find(|&e| {
+                let (a, b) = edge_endpoints(topo, e);
+                matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Line)
+                    && near(a.y(), 0.0)
+                    && near(b.y(), 0.0)
+                    && near(a.z(), z)
+                    && near(b.z(), z)
+            })
+            .expect("front box edge")
+    };
+    let mut topo = Topology::new();
+    let solid = crate::primitives::make_box(&mut topo, dx, dy, dz).unwrap();
+    let top = front_line(&topo, solid, dz);
+    let solid = crate::blend_ops::fillet_cascade(&mut topo, solid, &[top], 1.0)
+        .unwrap()
+        .solid;
+    let bottom = front_line(&topo, solid, 0.0);
+    let input = crate::blend_ops::fillet_cascade(&mut topo, solid, &[bottom], 1.7)
+        .unwrap()
+        .solid;
+    let vertical = box_vertical_edge(&topo, input, dx);
+    let input_vol = crate::measure::solid_volume(&topo, input, 0.01).unwrap();
+
+    let healed = crate::blend_ops::fillet_cascade(&mut topo, input, &[vertical], 3.0)
+        .expect("a larger fillet between smaller bands must build")
+        .solid;
+    assert_fully_valid(&topo, healed, "fillet between two smaller bands");
+    let vol = crate::measure::solid_volume(&topo, healed, 0.01).unwrap();
+    assert!(vol < input_vol, "a convex fillet removes material");
+
+    // Largest first reaches the same body.
+    let mut direct_topo = Topology::new();
+    let solid = crate::primitives::make_box(&mut direct_topo, dx, dy, dz).unwrap();
+    let vertical = box_vertical_edge(&direct_topo, solid, dx);
+    let mut solid = crate::blend_ops::fillet_cascade(&mut direct_topo, solid, &[vertical], 3.0)
+        .unwrap()
+        .solid;
+    for (z, radius) in [(0.0, 1.7), (dz, 1.0)] {
+        let edge = front_line(&direct_topo, solid, z);
+        solid = crate::blend_ops::fillet_cascade(&mut direct_topo, solid, &[edge], radius)
+            .unwrap()
+            .solid;
+    }
+    assert_eq!(
+        remus_topology::explorer::solid_entity_counts(&topo, healed).unwrap(),
+        remus_topology::explorer::solid_entity_counts(&direct_topo, solid).unwrap()
+    );
+    let direct_vol = crate::measure::solid_volume(&direct_topo, solid, 0.01).unwrap();
+    assert!(
+        (vol - direct_vol).abs() < 0.01,
+        "healed volume {vol} should match the larger-first volume {direct_vol}"
+    );
+}
+
 /// The same sequence with a smaller second radius: the corner is a torus
 /// band around the earlier fillet's axis, whose material follows Pappus.
 #[test]

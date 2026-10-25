@@ -5670,6 +5670,9 @@ pub fn resize_blend_failure_code(error: &OperationsError) -> &'static str {
     }
 }
 
+mod fillet_reorder;
+pub(crate) use fillet_reorder::fillet_across_smaller_blends;
+
 #[cfg(test)]
 mod translation_oracle_tests;
 

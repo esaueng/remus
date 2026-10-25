@@ -1901,6 +1901,34 @@ fn fillet_cascade_attempts(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<BlendResult, OperationsError> {
+    let refusal = match fillet_cascade_engines(topo, solid, edges, radius) {
+        Ok(result) => return Ok(result),
+        Err(error) => error,
+    };
+    // A chain that runs onto an earlier, smaller band is refused only because
+    // of the order the fillets were made in: rebuild those bands after this
+    // one, as filleting largest first would have. The original refusal stays
+    // the answer when that does not apply or does not build.
+    match transactional(topo, |t| {
+        crate::resize_blend::fillet_across_smaller_blends(
+            t,
+            solid,
+            edges,
+            radius,
+            fillet_cascade_engines,
+        )
+    }) {
+        Ok(Some(result)) => Ok(result),
+        Ok(None) | Err(_) => Err(refusal),
+    }
+}
+
+fn fillet_cascade_engines(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    radius: f64,
+) -> Result<BlendResult, OperationsError> {
     let walking_refusal = match transactional(topo, |t| {
         let result = fillet_v2(t, solid, edges, radius)?;
         reject_open_shell(t, result.solid)?;
