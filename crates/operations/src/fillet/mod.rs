@@ -26,8 +26,10 @@
 //! representation (3 control points, weights [1, cos(α/2), 1]),
 //! giving mathematically exact G1 continuity with both adjacent faces.
 
+pub(crate) mod arc_torus;
 mod geometry;
 mod helpers;
+mod mitre;
 pub(crate) mod notch_torus;
 mod rolling_ball;
 #[cfg(test)]

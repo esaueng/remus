@@ -1,6 +1,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
+    clippy::panic,
     clippy::print_stderr,
     deprecated
 )]
@@ -2066,6 +2067,194 @@ fn fillet_between_two_smaller_bands_rebuilds_both() {
         (vol - direct_vol).abs() < 0.01,
         "healed volume {vol} should match the larger-first volume {direct_vol}"
     );
+}
+
+/// The concave L-bracket (XY `[(0,0),(40,0),(40,8),(8,8),(8,50),(0,50)]`,
+/// 20 mm along +Z) shared with `regress_notch_torus_whole_edge`.
+fn l_bracket(topo: &mut Topology) -> SolidId {
+    let profile = remus_topology::builder::make_polygon_wire(
+        topo,
+        &[
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(40.0, 0.0, 0.0),
+            Point3::new(40.0, 8.0, 0.0),
+            Point3::new(8.0, 8.0, 0.0),
+            Point3::new(8.0, 50.0, 0.0),
+            Point3::new(0.0, 50.0, 0.0),
+        ],
+        1e-7,
+    )
+    .unwrap();
+    let face = topo.add_face(remus_topology::face::Face::new(
+        profile,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ));
+    crate::extrude::extrude(topo, face, Vec3::new(0.0, 0.0, 1.0), 20.0).unwrap()
+}
+
+/// The straight edges of `solid` with both endpoints satisfying `at`.
+fn lines_where(topo: &Topology, solid: SolidId, at: impl Fn(Point3) -> bool) -> Vec<EdgeId> {
+    solid_edge_ids(topo, solid)
+        .into_iter()
+        .filter(|&e| {
+            let (a, b) = edge_endpoints(topo, e);
+            matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Line) && at(a) && at(b)
+        })
+        .collect()
+}
+
+/// The concave wall/base edge at the bracket's top notch, `(8, 8, z)`.
+fn notch_concave_edge(topo: &Topology, solid: SolidId) -> Vec<EdgeId> {
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    lines_where(topo, solid, |p| near(p.x(), 8.0) && near(p.y(), 8.0))
+}
+
+/// The two convex end-face edges meeting at the top notch: the base top
+/// (`y = 8`) and the wall (`x = 8`), both on `z = 20`.
+fn notch_end_edges(topo: &Topology, solid: SolidId) -> Vec<EdgeId> {
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    let mut edges = lines_where(topo, solid, |p| {
+        near(p.z(), 20.0) && near(p.y(), 8.0) && p.x() > 8.0 - 1e-9
+    });
+    edges.extend(lines_where(topo, solid, |p| {
+        near(p.z(), 20.0) && near(p.x(), 8.0) && p.y() > 8.0 - 1e-9
+    }));
+    edges
+}
+
+/// Closed-form volume of the bracket with its top notch's concave edge at
+/// `concave` and both end-face edges at `convex`, the corner an exact torus
+/// about the concave band's axis (ring `concave + convex`, tube `convex`).
+fn notch_volume(concave: f64, convex: f64) -> f64 {
+    let (concave_section, _) = quarter_fillet_section(concave);
+    let (section, inset) = quarter_fillet_section(convex);
+    // The concave band adds material along the whole 20 mm edge; each end
+    // stripe removes it from the band's end (`concave` from the notch) to the
+    // far face; the torus sweeps the convex section a quarter turn at the
+    // section centroid's distance from the axis (Pappus).
+    let corner = section * std::f64::consts::FRAC_PI_2 * (concave + inset);
+    13_120.0 + concave_section * 20.0 - section * ((32.0 - concave) + (42.0 - concave)) - corner
+}
+
+/// The faces of `solid` by surface type, sorted.
+fn surface_census(topo: &Topology, solid: SolidId) -> Vec<&'static str> {
+    let mut tags: Vec<_> = remus_topology::explorer::solid_faces(topo, solid)
+        .unwrap()
+        .into_iter()
+        .map(|f| topo.face(f).unwrap().surface().type_tag())
+        .collect();
+    tags.sort_unstable();
+    tags
+}
+
+/// A mixed-radius notch corner, concave edge first: the convex end-face
+/// stripes run across the concave band's end arc as one exact torus about the
+/// band's axis, for a convex radius below, at and above the concave one. The
+/// rolling ball rides the band's outside there, so the band's radius does not
+/// bound it.
+#[test]
+fn notch_concave_then_convex_rounds_corner_as_exact_torus() {
+    for (concave, convex) in [(3.0, 1.0), (1.0, 1.0), (1.0, 3.0)] {
+        let what = format!("notch concave {concave} then convex {convex}");
+        let mut topo = Topology::new();
+        let bracket = l_bracket(&mut topo);
+        let edges = notch_concave_edge(&topo, bracket);
+        let first = crate::blend_ops::fillet_cascade(&mut topo, bracket, &edges, concave)
+            .unwrap()
+            .solid;
+        let edges = notch_end_edges(&topo, first);
+        let second = crate::blend_ops::fillet_cascade(&mut topo, first, &edges, convex)
+            .unwrap_or_else(|e| panic!("{what}: {e}"))
+            .solid;
+        assert_fully_valid(&topo, second, &what);
+        assert_eq!(
+            surface_census(&topo, second),
+            [
+                "cylinder", "cylinder", "cylinder", "plane", "plane", "plane", "plane", "plane",
+                "plane", "plane", "plane", "torus"
+            ],
+            "{what}: every face exact"
+        );
+        // No chord anywhere: the torus's four seams are circles.
+        let adjacency = topo.build_adjacency(second).unwrap();
+        for edge in remus_topology::explorer::solid_edges(&topo, second).unwrap() {
+            let on_torus = adjacency
+                .faces_for_edge(edge)
+                .iter()
+                .any(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Torus(_)));
+            if on_torus {
+                assert!(
+                    matches!(topo.edge(edge).unwrap().curve(), EdgeCurve::Circle(_)),
+                    "{what}: torus seam {edge:?} must be a circle"
+                );
+            }
+        }
+        let vol = crate::measure::solid_volume(&topo, second, 0.01).unwrap();
+        let expected = notch_volume(concave, convex);
+        assert!(
+            (vol - expected).abs() < 0.01,
+            "{what}: volume {vol} should match closed form {expected}"
+        );
+    }
+}
+
+/// The other order. The convex end-face edges alone mitre over the reflex
+/// corner: each stripe runs past the vertex to the bisecting plane, where
+/// the two cylinders meet in one exact ellipse. Filleting the concave edge
+/// afterwards takes that mitred pair off, rounds the concave edge, and puts
+/// the pair back: the same body the concave-first order gives.
+#[test]
+fn notch_convex_first_mitres_then_matches_concave_first() {
+    for (concave, convex) in [(3.0, 1.0), (1.0, 1.0), (1.0, 3.0)] {
+        let what = format!("notch convex {convex} then concave {concave}");
+        let mut topo = Topology::new();
+        let bracket = l_bracket(&mut topo);
+        let edges = notch_end_edges(&topo, bracket);
+        let mitred = crate::blend_ops::fillet_cascade(&mut topo, bracket, &edges, convex)
+            .unwrap_or_else(|e| panic!("{what}, mitre: {e}"))
+            .solid;
+        assert_fully_valid(&topo, mitred, &format!("{what}, mitre"));
+        assert_eq!(
+            remus_topology::explorer::solid_entity_counts(&topo, mitred).unwrap(),
+            (10, 23, 15)
+        );
+        let ellipses = remus_topology::explorer::solid_edges(&topo, mitred)
+            .unwrap()
+            .into_iter()
+            .filter(|&e| matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Ellipse(_)))
+            .count();
+        assert_eq!(ellipses, 1, "{what}: the stripes meet in one ellipse");
+        // Each stripe's removed section runs from the mitre plane `x = y` to
+        // the far face, so its mean length is measured at the section centroid.
+        let (section, inset) = quarter_fillet_section(convex);
+        let expected = 13_120.0 - section * (74.0 + 2.0 * inset);
+        let vol = crate::measure::solid_volume(&topo, mitred, 0.01).unwrap();
+        assert!(
+            (vol - expected).abs() < 0.01,
+            "{what}: mitre volume {vol} should match closed form {expected}"
+        );
+
+        let edges = notch_concave_edge(&topo, mitred);
+        let healed = crate::blend_ops::fillet_cascade(&mut topo, mitred, &edges, concave)
+            .unwrap_or_else(|e| panic!("{what}: {e}"))
+            .solid;
+        assert_fully_valid(&topo, healed, &what);
+        assert_eq!(
+            remus_topology::explorer::solid_entity_counts(&topo, healed).unwrap(),
+            (12, 28, 18)
+        );
+        assert!(surface_census(&topo, healed).contains(&"torus"));
+        let vol = crate::measure::solid_volume(&topo, healed, 0.01).unwrap();
+        let expected = notch_volume(concave, convex);
+        assert!(
+            (vol - expected).abs() < 0.01,
+            "{what}: volume {vol} should match the concave-first closed form {expected}"
+        );
+    }
 }
 
 /// The same sequence with a smaller second radius: the corner is a torus

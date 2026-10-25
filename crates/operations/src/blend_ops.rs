@@ -1905,12 +1905,12 @@ fn fillet_cascade_attempts(
         Ok(result) => return Ok(result),
         Err(error) => error,
     };
-    // A chain that runs onto an earlier, smaller band is refused only because
-    // of the order the fillets were made in: rebuild those bands after this
-    // one, as filleting largest first would have. The original refusal stays
-    // the answer when that does not apply or does not build.
+    // A chain that runs onto an earlier band can be refused only because of
+    // the order the fillets were made in: rebuild those bands after this one,
+    // as the order that builds would have. The original refusal stays the
+    // answer when that does not apply or does not build.
     match transactional(topo, |t| {
-        crate::resize_blend::fillet_across_smaller_blends(
+        crate::resize_blend::fillet_across_earlier_blends(
             t,
             solid,
             edges,

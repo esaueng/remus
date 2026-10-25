@@ -491,6 +491,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
 | Helical sweep | `helix.rs` |
 | Chamfer, Fillet | `chamfer.rs`, `fillet/` (mod, rolling_ball, g1_chain, geometry, radius_law, helpers, notch_torus, tests) |
+| Rolling-ball arc stripe between a plane and a coaxial cylinder as an exact torus (a fillet riding an earlier band's end) | `fillet/arc_torus.rs` |
+| Two convex stripes mitred over a reflex corner whose concave edge stays sharp | `fillet/mitre.rs` |
 | Spatial grid behind the rolling-ball Phase 5d vertex dedup and snap (the linear scans' winners and ties), with its oracle tests | `fillet/vertex_snap.rs` |
 | Shell (hollow solid) | `shell_op.rs` |
 | Draft (taper faces) | `draft.rs` |
@@ -566,7 +568,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Work-count guards for interactive face moves: writes independent of unrelated bodies, constant slots per drag tick (tests) | `prepared_move/tests/scaling.rs` |
 | Exact support-surface replacement with topology-preserving re-limitation | `replace_surface.rs` |
 | Exact constant-radius blend-band resizing | `resize_blend.rs` |
-| Fillets onto earlier smaller bands: remove them, fillet, rebuild largest first (the cascade's last fallback) | `resize_blend/fillet_reorder.rs` |
+| Fillets onto earlier bands: remove them, fillet, rebuild largest first, so fillet order does not matter (the cascade's last fallback) | `resize_blend/fillet_reorder.rs` |
 | Differential oracle for the blend move's translation path: the whole-document scratch-copy version kept verbatim, also with its copy-validation refusal forced through a test hook (tests) | `resize_blend/translation_oracle_tests.rs` |
 | Blend-translation move carrying an imported edge's stamped endpoint certificate through the strict arena I/O gate (tests) | `resize_blend/endpoint_certificate_tests.rs` |
 | Exact local reconstruction of analytic wounds | `local_wound.rs` |
