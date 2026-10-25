@@ -220,20 +220,61 @@ impl Aabb3 {
     /// Test whether a ray (origin + positive-t direction) intersects this box.
     ///
     /// Uses the slab method. Returns `true` if the ray hits the box at any
-    /// `t >= 0`.
+    /// `t >= 0`. In this inverse-direction API, an infinite component denotes
+    /// a parallel axis. Use [`Self::ray_intersects_direction`] when a nonzero
+    /// direction component can have an overflowing reciprocal.
     #[must_use]
     pub fn ray_intersects(self, origin: Point3, inv_dir: Vec3) -> bool {
-        let t1x = (self.min.x() - origin.x()) * inv_dir.x();
-        let t2x = (self.max.x() - origin.x()) * inv_dir.x();
-        let t1y = (self.min.y() - origin.y()) * inv_dir.y();
-        let t2y = (self.max.y() - origin.y()) * inv_dir.y();
-        let t1z = (self.min.z() - origin.z()) * inv_dir.z();
-        let t2z = (self.max.z() - origin.z()) * inv_dir.z();
+        let mut tmin = 0.0_f64;
+        let mut tmax = f64::INFINITY;
+        for axis in 0..3 {
+            let inverse = inv_dir.0[axis];
+            if inverse.is_infinite() {
+                // A parallel ray on either closed slab boundary belongs
+                // to the slab. Multiplication would form 0 * infinity,
+                // whose NaN can erase the finite interval on another axis.
+                if origin.0[axis] < self.min.0[axis] || origin.0[axis] > self.max.0[axis] {
+                    return false;
+                }
+                continue;
+            }
+            let t1 = (self.min.0[axis] - origin.0[axis]) * inverse;
+            let t2 = (self.max.0[axis] - origin.0[axis]) * inverse;
+            tmin = tmin.max(t1.min(t2));
+            tmax = tmax.min(t1.max(t2));
+            if tmax < tmin {
+                return false;
+            }
+        }
+        tmax >= tmin
+    }
 
-        let tmin = t1x.min(t2x).max(t1y.min(t2y)).max(t1z.min(t2z));
-        let tmax = t1x.max(t2x).min(t1y.max(t2y)).min(t1z.max(t2z));
-
-        tmax >= tmin.max(0.0)
+    /// Test a forward ray using its original direction, which need not be normalized.
+    ///
+    /// Divides slab displacements directly so a nonzero subnormal component
+    /// is not mistaken for a parallel axis when its reciprocal overflows.
+    /// A hit at `t = 0` is included, as in [`Self::ray_intersects`].
+    #[must_use]
+    pub fn ray_intersects_direction(self, origin: Point3, direction: Vec3) -> bool {
+        let mut tmin = 0.0_f64;
+        let mut tmax = f64::INFINITY;
+        for axis in 0..3 {
+            let component = direction.0[axis];
+            if component.abs() > 0.0 {
+                // Divide the displacement directly: for subnormal directions
+                // a finite entry parameter can exist even when 1 / d is infinite.
+                let t1 = (self.min.0[axis] - origin.0[axis]) / component;
+                let t2 = (self.max.0[axis] - origin.0[axis]) / component;
+                tmin = tmin.max(t1.min(t2));
+                tmax = tmax.min(t1.max(t2));
+                if tmax < tmin {
+                    return false;
+                }
+            } else if origin.0[axis] < self.min.0[axis] || origin.0[axis] > self.max.0[axis] {
+                return false;
+            }
+        }
+        tmax >= tmin
     }
 
     /// Squared distance from a point to the closest point on the box.

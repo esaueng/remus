@@ -96,10 +96,20 @@ impl Bvh {
         }
         // Pre-compute inverse direction for slab tests.
         let inv_dir = crate::vec::Vec3::new(1.0 / dir.x(), 1.0 / dir.y(), 1.0 / dir.z());
+        // An infinite reciprocal can also come from a nonzero subnormal.
+        // Keep the cached-inverse path for ordinary rays, but retain the
+        // original components when zero and reciprocal overflow differ.
+        let reciprocal_overflow =
+            (0..3).any(|axis| dir.0[axis].abs() > 0.0 && inv_dir.0[axis].is_infinite());
         let mut stack = vec![0usize];
         while let Some(idx) = stack.pop() {
             let node = &self.nodes[idx];
-            if !node.aabb.ray_intersects(origin, inv_dir) {
+            let intersects = if reciprocal_overflow {
+                node.aabb.ray_intersects_direction(origin, dir)
+            } else {
+                node.aabb.ray_intersects(origin, inv_dir)
+            };
+            if !intersects {
                 continue;
             }
             if node.primitive == usize::MAX {
