@@ -4532,6 +4532,22 @@ fn heal_planar_band(
                 .is_some_and(|(kind, _)| kind != BlendKind::Sphere)
         })
         .count();
+    // Support pairs already meeting at a sharp edge before the heal: the
+    // edge between two walls a mitred band group stands on is no edge the
+    // heal restored, and must not count as one.
+    let support_set: HashSet<usize> = band.supports.iter().map(|face| face.index()).collect();
+    let mut already_sharp: HashSet<(usize, usize)> = HashSet::new();
+    {
+        let adjacency = solid_adjacency(topo, solid)?;
+        for edge in remus_topology::explorer::solid_edges(topo, solid)? {
+            if let [first, second] = distinct_faces(adjacency.faces_for_edge(edge)).as_slice()
+                && support_set.contains(&first.index())
+                && support_set.contains(&second.index())
+            {
+                already_sharp.insert((first.index(), second.index()));
+            }
+        }
+    }
     // Prefer the surgical healer: it edits wound wires in place and carries
     // every surviving edge, wire, face, and pcurve untouched. Multi-face
     // bands and non-cylindrical carriers decline (`Ok(None)`) and fall back
@@ -4558,11 +4574,26 @@ fn heal_planar_band(
                 })
         })
         .collect::<Result<_, _>>()?;
+    let was_sharp: HashSet<(FaceId, FaceId)> = already_sharp
+        .iter()
+        .filter_map(|(first, second)| {
+            let (first, second) = (outcome.face_map.get(first)?, outcome.face_map.get(second)?);
+            Some(if first.index() <= second.index() {
+                (*first, *second)
+            } else {
+                (*second, *first)
+            })
+        })
+        .collect();
     let adjacency = solid_adjacency(topo, outcome.solid)?;
     let mut edges = Vec::new();
     for edge in remus_topology::explorer::solid_edges(topo, outcome.solid)? {
         let adjacent = distinct_faces(adjacency.faces_for_edge(edge));
-        if adjacent.len() == 2 && adjacent.iter().all(|face| supports.contains(face)) {
+        if let [first, second] = adjacent.as_slice()
+            && supports.contains(first)
+            && supports.contains(second)
+            && !was_sharp.contains(&(*first, *second))
+        {
             edges.push(edge);
         }
     }
@@ -5669,6 +5700,9 @@ pub fn resize_blend_failure_code(error: &OperationsError) -> &'static str {
         | OperationsError::PartialResult { .. } => "resize-blend-failed",
     }
 }
+
+mod fillet_reorder;
+pub(crate) use fillet_reorder::fillet_across_earlier_blends;
 
 #[cfg(test)]
 mod translation_oracle_tests;

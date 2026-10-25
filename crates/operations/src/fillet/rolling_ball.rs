@@ -226,10 +226,16 @@ fn rolling_ball_cylinder(
     tol: Tolerance,
 ) -> Option<CylindricalSurface> {
     let n1 = face1_normal.normalize().ok()?;
-    let centre = [radius, -radius]
+    // An oblique runout (a mitre) moves one station's contacts off a common
+    // section, so read the centre from whichever station still has one.
+    let centre = [(corners[0], corners[1]), (corners[3], corners[2])]
         .into_iter()
-        .map(|signed| corners[0] + n1 * signed)
-        .find(|c| ((corners[1] - *c).length() - radius).abs() <= tol.linear)?;
+        .find_map(|(on_plane1, on_plane2)| {
+            [radius, -radius]
+                .into_iter()
+                .map(|signed| on_plane1 + n1 * signed)
+                .find(|c| ((on_plane2 - *c).length() - radius).abs() <= tol.linear)
+        })?;
 
     let cylinder = CylindricalSurface::new(centre, axis_dir, radius).ok()?;
     let axis = cylinder.axis();
@@ -767,6 +773,95 @@ impl CapChain {
 /// planar ledge `P → M2 → B2` (arc `M2 → B2` the torus's end section) closes
 /// it, `P` the point one radius up `Ev`.
 ///
+/// The mitre plane of a two-stripe reflex corner (see
+/// [`crate::fillet::mitre`]): both selected edges straight, convex and
+/// two-plane, sharing one cap face, and the vertex bounded by exactly the cap
+/// and the two walls. `None` outside that cell.
+fn mitre_corner(
+    topo: &Topology,
+    vertex_index: usize,
+    incident_edges: &[EdgeId],
+    edge_to_faces: &HashMap<usize, Vec<FaceId>>,
+    vertex_faces: &HashMap<usize, Vec<FaceId>>,
+    planar_edge_sides: &HashMap<usize, f64>,
+    tol: Tolerance,
+) -> Result<Option<(Vec3, f64)>, crate::OperationsError> {
+    let [first, second] = incident_edges else {
+        return Ok(None);
+    };
+    let convex = |edge: &EdgeId| {
+        planar_edge_sides
+            .get(&edge.index())
+            .is_some_and(|s| *s < 0.0)
+    };
+    if !convex(first) || !convex(second) {
+        return Ok(None);
+    }
+    let (Some(faces_a), Some(faces_b)) = (
+        edge_to_faces.get(&first.index()),
+        edge_to_faces.get(&second.index()),
+    ) else {
+        return Ok(None);
+    };
+    let ([a0, a1], [b0, b1]) = (faces_a.as_slice(), faces_b.as_slice()) else {
+        return Ok(None);
+    };
+    let (cap, wall_a, wall_b) = if a0 == b0 {
+        (*a0, *a1, *b1)
+    } else if a0 == b1 {
+        (*a0, *a1, *b0)
+    } else if a1 == b0 {
+        (*a1, *a0, *b1)
+    } else if a1 == b1 {
+        (*a1, *a0, *b0)
+    } else {
+        return Ok(None);
+    };
+    let mut at_vertex: Vec<usize> = vertex_faces
+        .get(&vertex_index)
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .map(|face| face.index())
+        .collect();
+    at_vertex.compact_sort_by_key(|face| *face);
+    at_vertex.dedup();
+    let mut expected = vec![cap.index(), wall_a.index(), wall_b.index()];
+    expected.compact_sort_by_key(|face| *face);
+    if wall_a == wall_b || at_vertex != expected {
+        return Ok(None);
+    }
+    let normal = |face: FaceId| -> Result<Option<Vec3>, crate::OperationsError> {
+        Ok(topo
+            .face(face)?
+            .effective_plane_normal()
+            .and_then(|n| n.normalize().ok()))
+    };
+    let away = |edge: EdgeId| -> Result<Option<(Point3, Vec3)>, crate::OperationsError> {
+        let data = topo.edge(edge)?;
+        let (start, end) = (
+            topo.vertex(data.start())?.point(),
+            topo.vertex(data.end())?.point(),
+        );
+        Ok(if data.start().index() == vertex_index {
+            (end - start).normalize().ok().map(|dir| (start, dir))
+        } else {
+            (start - end).normalize().ok().map(|dir| (end, dir))
+        })
+    };
+    let (Some(cap_n), Some(wall_a_n), Some(wall_b_n), Some((vertex, dir_a)), Some((_, dir_b))) = (
+        normal(cap)?,
+        normal(wall_a)?,
+        normal(wall_b)?,
+        away(*first)?,
+        away(*second)?,
+    ) else {
+        return Ok(None);
+    };
+    Ok(crate::fillet::mitre::mitre_plane(
+        cap_n, wall_a_n, wall_b_n, vertex, dir_a, dir_b, tol,
+    ))
+}
+
 /// Returns the torus, the edge directions from the vertex and the edges
 /// `[convex, Ev, concave]`, the support faces `[S, T, W]`, and the ledge;
 /// `None` (the caller keeps its typed refusal) outside the cell.
@@ -1960,7 +2055,7 @@ pub fn fillet_rolling_ball_with_origins(
         // axial parameters, making the end boundary an ellipse rather than a
         // circular section. Remember the unique transverse plane now; the
         // contact pre-pass and analytic boundary construction consume it.
-        let planar_runout_planes: HashMap<(usize, usize), (Vec3, f64)> = vertex_fillet_edges
+        let mut planar_runout_planes: HashMap<(usize, usize), (Vec3, f64)> = vertex_fillet_edges
             .iter()
             .filter(|(_, incident)| incident.len() == 1)
             .filter_map(|(&vertex_index, incident)| {
@@ -1998,6 +2093,35 @@ pub fn fillet_rolling_ball_with_origins(
                 plane.map(|plane| ((edge_id.index(), vertex_index), plane))
             })
             .collect();
+
+        // Two convex stripes over a reflex corner whose third edge stays sharp
+        // run past the vertex to their shared mitre plane: the same oblique
+        // runout, with no setback and no corner patch. Their contacts cross
+        // that plane beyond the vertex, which an ordinary runout never does.
+        let mut mitre_runouts: HashSet<(usize, usize)> = HashSet::default();
+        for (&vertex_index, incident_edges) in &vertex_fillet_edges {
+            if exact_corner_balls.contains_key(&vertex_index)
+                || torus_corners.contains_key(&vertex_index)
+            {
+                continue;
+            }
+            let Some(plane) = mitre_corner(
+                topo,
+                vertex_index,
+                incident_edges,
+                &edge_to_faces,
+                &vertex_faces,
+                &planar_edge_sides,
+                tol,
+            )?
+            else {
+                continue;
+            };
+            for edge_id in incident_edges {
+                planar_runout_planes.insert((edge_id.index(), vertex_index), plane);
+                mitre_runouts.insert((edge_id.index(), vertex_index));
+            }
+        }
 
         // Phase 2b: Validate that the fillet band fits within adjacent face geometry.
         // On each planar support face the band's contact line runs one setback
@@ -2181,6 +2305,25 @@ pub fn fillet_rolling_ball_with_origins(
                     if is_sphere_cap {
                         continue;
                     }
+                    // A reversed cylinder (an earlier concave fillet's band) keeps
+                    // its material outside: across a convex edge the ball rolls on
+                    // that outside, its centre `R + r` from the axis, so the offset
+                    // never collapses whatever the two radii.
+                    if matches!(surf, FaceSurface::Cylinder(_))
+                        && face_reversed.get(&fid.index()).copied().unwrap_or(false)
+                        && let Some(other_fid) = other
+                    {
+                        let probe = radius
+                            .min((p_end - p_start).length() * 0.1)
+                            .max(tol.linear * 10.0);
+                        if matches!(
+                            crate::query::ConcavityProbe::new(topo, solid)
+                                .concavity(edge_id, fid, other_fid, probe)?,
+                            crate::query::EdgeConcavity::Convex
+                        ) {
+                            continue;
+                        }
+                    }
                     return Err(crate::OperationsError::InvalidInput {
                         reason: format!(
                             "fillet radius {radius:.6} meets or exceeds minimum surface \
@@ -2225,6 +2368,33 @@ pub fn fillet_rolling_ball_with_origins(
             };
             for &(face_key, i_e) in poly_entries {
                 let poly = &face_polygons[&face_key];
+                // Unit direction of polygon edge `k` leaving `at` towards `other`.
+                // A curved edge leaves along its tangent, not its chord: an arc
+                // continuing a line smoothly (an earlier band's end meeting its
+                // neighbour) is no corner, and its chord would read as one.
+                let leaving = |k: usize, at: Point3, other: Point3| -> Vec3 {
+                    let chord = other - at;
+                    let tangent = topo.edge(poly.wire_edge_ids[k]).ok().and_then(|edge| {
+                        if matches!(edge.curve(), EdgeCurve::Line) {
+                            return None;
+                        }
+                        let start = topo.vertex(edge.start()).ok()?.point();
+                        let end = topo.vertex(edge.end()).ok()?.point();
+                        let t = if (start - at).length() <= (end - at).length() {
+                            0.0
+                        } else {
+                            1.0
+                        };
+                        let tangent = sample_edge_tangent(edge.curve(), start, end, t);
+                        let tangent = if tangent.dot(chord) < 0.0 {
+                            -tangent
+                        } else {
+                            tangent
+                        };
+                        tangent.normalize().ok()
+                    });
+                    tangent.unwrap_or_else(|| chord * (1.0 / chord.length()))
+                };
                 let n = poly.positions.len();
                 let next_i = (i_e + 1) % n;
                 let prev_i = (i_e + n - 1) % n;
@@ -2241,13 +2411,13 @@ pub fn fillet_rolling_ball_with_origins(
                     let prev_target = target_set.contains(&poly.wire_edge_ids[prev_i].index());
                     if prev_target {
                         // Interior angle at start: between (E forward) and (prev backward from start).
-                        let d_e = e_vec * (1.0 / e_len);
+                        let d_e = leaving(i_e, poly.positions[i_e], poly.positions[next_i]);
                         let d_prev_raw = poly.positions[prev_i] - poly.positions[i_e];
                         let prev_len = d_prev_raw.length();
                         if prev_len < tol.linear {
                             break 'start 0.0;
                         }
-                        let d_prev = d_prev_raw * (1.0 / prev_len);
+                        let d_prev = leaving(prev_i, poly.positions[i_e], poly.positions[prev_i]);
                         let cos_t = d_e.dot(d_prev).clamp(-1.0, 1.0);
                         let theta = cos_t.acos();
                         let half_tan = (theta / 2.0).tan();
@@ -2265,15 +2435,14 @@ pub fn fillet_rolling_ball_with_origins(
                     let next_target = target_set.contains(&poly.wire_edge_ids[next_i].index());
                     if next_target {
                         // Interior angle at end: between (E backward from end) and (next forward).
-                        let d_e_bwd = poly.positions[i_e] - poly.positions[next_i];
                         let d_next_raw = poly.positions[next_next_i] - poly.positions[next_i];
-                        let bwd_len = e_len; // same magnitude as e_len
                         let next_len = d_next_raw.length();
                         if next_len < tol.linear {
                             break 'end 0.0;
                         }
-                        let d_e_bwd_n = d_e_bwd * (1.0 / bwd_len);
-                        let d_next_n = d_next_raw * (1.0 / next_len);
+                        let d_e_bwd_n = leaving(i_e, poly.positions[next_i], poly.positions[i_e]);
+                        let d_next_n =
+                            leaving(next_i, poly.positions[next_i], poly.positions[next_next_i]);
                         let cos_t = d_e_bwd_n.dot(d_next_n).clamp(-1.0, 1.0);
                         let theta = cos_t.acos();
                         let half_tan = (theta / 2.0).tan();
@@ -2571,6 +2740,10 @@ pub fn fillet_rolling_ball_with_origins(
                 *entry = *setback;
             }
         }
+        // A mitred stripe runs to its vertex and on to the mitre plane.
+        for key in &mitre_runouts {
+            setback_map.remove(key);
+        }
 
         for &edge_id in &filtered_edges {
             let edge = topo.edge(edge_id)?;
@@ -2816,8 +2989,9 @@ pub fn fillet_rolling_ball_with_origins(
                                 tol,
                             ),
                         )
-                        && (0.0..=1.0).contains(&(t + delta1))
-                        && (0.0..=1.0).contains(&(t + delta2))
+                        && (mitre_runouts.contains(&(edge_id.index(), vid.index()))
+                            || ((0.0..=1.0).contains(&(t + delta1))
+                                && (0.0..=1.0).contains(&(t + delta2))))
                     {
                         contact1 = runout1;
                         contact2 = runout2;
@@ -3481,6 +3655,10 @@ pub fn fillet_rolling_ball_with_origins(
                 }
 
                 let np_inner = extract_inner_wire_positions(topo, face)?;
+                // The trimmed loop keeps the source wire's order, so it keeps the
+                // source's reversal too: a concave band from an earlier fillet
+                // emitted unreversed comes out inside-out.
+                let trimmed_reversed = face.is_reversed();
                 // As in the pass-through branch above, a trimmed cylindrical face
                 // keeps its non-target (constant-v) boundary as a true arc only if
                 // emitted as a CylindricalFace; otherwise the untouched far edge
@@ -3499,7 +3677,7 @@ pub fn fillet_rolling_ball_with_origins(
                         FaceSpec::CylindricalFace {
                             vertices: trimmed_verts,
                             cylinder: cyl.clone(),
-                            reversed: false,
+                            reversed: trimmed_reversed,
                             inner_wires: np_inner,
                         },
                         FaceSpecOrigin::Modified(face_id),
@@ -3511,7 +3689,7 @@ pub fn fillet_rolling_ball_with_origins(
                         FaceSpec::Surface {
                             vertices: trimmed_verts,
                             surface,
-                            reversed: false,
+                            reversed: trimmed_reversed,
                             inner_wires: np_inner,
                         },
                         FaceSpecOrigin::Modified(face_id),
@@ -4072,6 +4250,80 @@ pub fn fillet_rolling_ball_with_origins(
                 );
                 blended_edges.insert(edge_id.index());
                 continue;
+            }
+
+            // An arc between a plane and a coaxial cylinder sweeps an exact
+            // torus: emit it with its four seam circles rather than a loft,
+            // which would leave the plane's contact arc a chord.
+            if !both_planar
+                && let Some(arc) = crate::fillet::arc_torus::arc_stripe_torus(
+                    &edge_curve,
+                    surf1,
+                    surf2,
+                    [contact1_start, contact2_start, contact2_end, contact1_end],
+                    radius,
+                    tol,
+                )
+            {
+                let pushed = analytic_boundary_curves.len();
+                let mut seams_ok = true;
+                for (circle, start, end) in &arc.seams {
+                    let Some((circle, trim)) =
+                        crate::fillet::notch_torus::oriented_seam(circle, *start, *end)
+                    else {
+                        seams_ok = false;
+                        break;
+                    };
+                    analytic_boundary_curves.push(crate::boolean::BoundaryCurveOverride {
+                        start: *start,
+                        end: *end,
+                        curve: EdgeCurve::Circle(circle),
+                        trim,
+                    });
+                }
+                if seams_ok {
+                    // Probe the normal mid-section: both start contacts lie on
+                    // one section arc, so their midpoint projects onto the
+                    // stripe. The four corners' centroid does not: across a
+                    // quarter turn the chord pulls it to the far side of the
+                    // tube.
+                    let probe = Point3::new(
+                        (contact1_start.x() + contact2_start.x()) * 0.5,
+                        (contact1_start.y() + contact2_start.y()) * 0.5,
+                        (contact1_start.z() + contact2_start.z()) * 0.5,
+                    );
+                    let (u, v) = arc.torus.project_point(probe);
+                    let parametric_normal = arc.torus.normal(u, v);
+                    // Wound counter-clockwise about the torus's own normal, as
+                    // the cylinder branch above does for its radial normal.
+                    let grid_normal =
+                        (contact2_start - contact1_start).cross(contact1_end - contact1_start);
+                    let vertices = if grid_normal.dot(parametric_normal) >= 0.0 {
+                        strip_wire
+                    } else {
+                        vec![contact2_start, contact1_start, contact1_end, contact2_end]
+                    };
+                    push_face_spec(
+                        &mut all_specs,
+                        &mut all_spec_origins,
+                        FaceSpec::Surface {
+                            vertices,
+                            surface: FaceSurface::Torus(arc.torus),
+                            reversed: parametric_normal.dot(bisector_ref) > 0.0,
+                            inner_wires: vec![],
+                        },
+                        FaceSpecOrigin::Generated(vec![f1, f2]),
+                    );
+                    record_strip_contacts(
+                        &mut vertex_contacts,
+                        (edge.start().index(), edge.end().index()),
+                        (f1.index(), f2.index()),
+                        [contact1_start, contact2_start, contact1_end, contact2_end],
+                    );
+                    blended_edges.insert(edge_id.index());
+                    continue;
+                }
+                analytic_boundary_curves.truncate(pushed);
             }
 
             let fillet_surface = if n_v == 2 {
