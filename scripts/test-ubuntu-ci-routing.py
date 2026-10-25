@@ -131,7 +131,7 @@ class UbuntuRoutingTests(unittest.TestCase):
                     pinned = subprocess.check_output(
                         ["git", "show", f"{reference[1]}:{GUARD_PATH}"], cwd=ROOT, text=True)
                     self.assertEqual(legacy_jane_profile(pinned), legacy_jane_profile(GUARD))
-                    if path.name in PROFILE_FILES or workflow_path("ci").name == "fleet-ci-v6.yml":
+                    if path.name in PROFILE_FILES or workflow_path("ci").name in ("fleet-ci-v6.yml", "fleet-ci-v7.yml"):
                         self.assertIn('ci-server-jane-1|ci-server-jane-2|ci-server-jane-3)', pinned)
                         self.assertIn('CI_MEMORY=5000000000', pinned)
                         self.assertIn('CI_MEMORY=$((CI_MEMORY / $(getconf PAGESIZE)', pinned)

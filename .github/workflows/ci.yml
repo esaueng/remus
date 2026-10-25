@@ -78,11 +78,11 @@ jobs:
       id-token: write
       contents: read
       pull-requests: read
-    uses: esaueng/remus/.github/workflows/fleet-ci-v6.yml@05fca2fc1029be782afe41ee6ebbeae812e5e40c
+    uses: esaueng/remus/.github/workflows/fleet-ci-v7.yml@3d648c419a95680ff5d6c9f46cb749b6a8fe0e5a
 
   # Posts the WASM size report as a PR comment. It needs a write token, so it
   # stays outside `checks`; the same policy gates CI Pass through
-  # fleet-ci-v6.yml's read-only wasm-size-gate job. It also runs when CI failed
+  # fleet-ci-v7.yml's read-only wasm-size-gate job. It also runs when CI failed
   # (a size failure fails CI Pass), so the comment never goes stale.
   wasm-size:
     needs: checks

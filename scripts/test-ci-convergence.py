@@ -29,10 +29,12 @@ JOBS = jobs(FLEET)
 # Tier 1 runs for every heavy change; tier 2 for main pushes, dispatches,
 # merge groups whose diff touches its inputs, and PRs labelled `ci:full`; the
 # package build when the diff touches WASM-affecting paths or tier 2 is
-# selected. Fuzz compile and render joined tier 1 in fleet-ci-v4.yml.
-TIER1 = {"test", "approx-census", "wasm-no-io", "fuzz-check", "render"}
+# selected. Fuzz compile and render joined tier 1 in fleet-ci-v4.yml. In
+# fleet-ci-v7.yml the complexity guards left Test for a tier-1 job of their own,
+# and the W9 preflight left the package build for a job under its selector.
+TIER1 = {"test", "complexity-guards", "approx-census", "wasm-no-io", "fuzz-check", "render"}
 TIER2 = {"coverage", "msrv", "deny", "audit"}
-PACKAGE = {"wasm"}
+PACKAGE = {"wasm", "w9-preflight"}
 HEAVY = TIER1 | TIER2 | PACKAGE
 ALWAYS = {"changes", "repo-policy", "secrets-scan"}
 # W1: the read-only size gate runs after the package build on wasm-affecting PRs.
@@ -171,8 +173,9 @@ class ConvergenceTests(unittest.TestCase):
             altered[name]["result"] = "skipped"
             with self.subTest(job=name):
                 self.assertNotEqual(self.complete(altered, full="false", wasm="false"), 0)
-        # A wasm-affecting PR runs the package build and the size gate without tier 2.
-        results["wasm"]["result"] = "success"
+        # A wasm-affecting PR runs the package jobs and the size gate without tier 2.
+        for name in PACKAGE:
+            results[name]["result"] = "success"
         self.assertNotEqual(self.complete(results, full="false", wasm="true"), 0)
         results[SIZE_GATE]["result"] = "success"
         self.assertEqual(self.complete(results, full="false", wasm="true"), 0)
@@ -226,7 +229,7 @@ class ConvergenceTests(unittest.TestCase):
     def test_optional_io_is_independent_and_still_required(self):
         self.assertNotIn("--no-default-features", JOBS["wasm"])
         self.assertIn("cargo xtask wasm-build", JOBS["wasm"])
-        self.assertIn("test-w9-preflight.sh", JOBS["wasm"])
+        self.assertIn("test-w9-preflight.sh", JOBS["w9-preflight"])
         self.assertIn("--target wasm32-unknown-unknown --no-default-features -- -D warnings",
                       JOBS["wasm-no-io"])
         self.assertIn("cargo test -p remus-wasm --no-default-features --profile ci-test",
@@ -238,7 +241,7 @@ class ConvergenceTests(unittest.TestCase):
         self.assertIn("contains(github.event.pull_request.labels.*.name, 'ci:benchmark')", bench)
         self.assertIn("github.event.label.name == 'ci:benchmark'", bench)
         self.assertIn("workflow_dispatch:", BENCH_CALLER)
-        self.assertIn("test(scaling_)", JOBS["test"])
+        self.assertIn("test(scaling_)", JOBS["complexity-guards"])
 
     def test_size_gate_is_required_only_where_it_can_run(self):
         # The gate compares a PR's build with its base: it is required on a

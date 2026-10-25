@@ -1,6 +1,6 @@
 # Trusted owner CI fleet
 
-Required Linux CI jobs and their completion gate live in `fleet-ci-v6.yml`, called
+Required Linux CI jobs and their completion gate live in `fleet-ci-v7.yml`, called
 at an immutable commit from `ci.yml`. Benchmarks, corpus gauntlets, fuzzing,
 mutation checks, OSV scans, WASM candidates and size reports each have their
 own immutable `fleet-*.yml` callee. Their shared pre-checkout guard is a pinned
@@ -65,7 +65,7 @@ merging. Roll back subsequent scheduling with
 
 Before checkout, self-hosted jobs verify the non-root identity, protected runner
 files, NoNewPrivileges, fresh storage, empty rootless Docker state, mount options
-and exact cgroup limits. The active `fleet-ci-v6.yml` profile recognizes
+and exact cgroup limits. The active `fleet-ci-v7.yml` profile (unchanged from v6) recognizes
 `ci-server-jane-1`, `ci-server-jane-2` and `ci-server-jane-3`, each with six CPU
 equivalents and a 5,000,000,000-byte RAM setting. systemd aligns the enforced
 limit to whole host pages: 4,999,999,488 bytes on a 4 KiB-page host. Each slot
@@ -225,6 +225,34 @@ coordinated order is to merge both compatible activations with hosted CI,
 then add the shared profile label and enable fleet routing. Do not let the
 controller select Jane for the old Remus manifest during the transition.
 
+## Parallel guard and W9 jobs
+
+`fleet-ci-v7.yml` is the landed v6 callee with two job splits; every guard,
+permission, runner expression and other command is unchanged.
+`scripts/test-ci-v7-stage.py`, run by the required direct-fleet entrypoint,
+pins it to v6's immutable bytes plus exactly those edits.
+
+- **Complexity Guards** runs the `perf-counters` `scaling_` tests that used
+  to end Test. They need their own build of remus-operations (about four
+  minutes on a hosted runner after the workspace suite), so as a separate
+  tier-1 job that build runs beside Test instead of after it.
+- **W9 Preflight** runs `scripts/test-w9-preflight.sh`, which used to end
+  WASM Build & Validate. It builds its own native example and dev package and
+  reads nothing the package build writes, so it runs beside that job under the
+  same `wasm` selection.
+
+CI Pass needs both jobs. Complexity Guards may skip only when `heavy` is
+false, and W9 Preflight only when `wasm` is false. Before enabling Jane
+execution, append the exact v7 entry to `ci-trusted-main`, keeping v6 and every
+other entry:
+
+```text
+esaueng/remus/.github/workflows/fleet-ci-v7.yml@3d648c419a95680ff5d6c9f46cb749b6a8fe0e5a
+```
+
+With Jane enabled, a PR fans out these two extra jobs across the same three
+slots. Hosted runs pick them up in parallel.
+
 ## Updating immutable workflow dependencies
 
 `.github/fleet-workflows.json` names the active file for each workflow family.
@@ -297,11 +325,12 @@ discovery regression test keeps this suite in the required entrypoint.
 The classifier (`scripts/classify-ci-changes.py`) selects jobs in tiers so a
 kernel PR waits only for the checks that can fail on its diff:
 
-- **Tier 1** (`heavy`, every source change): Test (clippy, nextest, doc
-  tests, complexity guards in one job), Approximation Census, WASM without
-  optional I/O, Fuzz Targets Compile and Software Rendering. The last two
-  joined in `fleet-ci-v4.yml`: both build against most kernel crates, so a
-  queue entry that skips tier 2 must still run them.
+- **Tier 1** (`heavy`, every source change): Test (clippy, nextest and doc
+  tests), Complexity Guards, Approximation Census, WASM without optional
+  I/O, Fuzz Targets Compile and Software Rendering. Fuzz compile and
+  rendering joined in `fleet-ci-v4.yml`: both build against most kernel
+  crates, so a queue entry that skips tier 2 must still run them. The
+  complexity guards left Test for their own job in `fleet-ci-v7.yml`.
 - **Tier 2** (`full`): Coverage, MSRV, Cargo Deny, Security Audit. Selected for every main
   push and dispatch, and for a PR only while it carries the `ci:full` label
   (label it, then re-run or push). A merge group selects it only when its
@@ -328,9 +357,10 @@ kernel PR waits only for the checks that can fail on its diff:
   PR whose CI ran against an old `main`, turn `main` red after the merge
   instead of blocking the entry. Set the constant to `True` to restore the
   pre-merge tier-1 run.
-- **Package build** (`wasm`): WASM Build & Validate and the advisory size
-  report. Selected with tier 2, and on any PR whose diff touches any crate
-  under `crates/`, `xtask`, `tools/vs-bench`, the WASM scripts,
+- **Package build** (`wasm`): WASM Build & Validate, W9 Preflight (its
+  own job since `fleet-ci-v7.yml`) and the size gate and report. Selected
+  with tier 2, and on any PR whose diff touches any crate under `crates/`,
+  `xtask`, `tools/vs-bench`, the WASM scripts,
   `Cargo.lock`, `Cargo.toml`, `rust-toolchain.toml`, or `.cargo/config.toml`.
   Every crate sits below the wasm bindings, so an engine change must pass the
   package smoke before merge. Until 2026-09-24 only `crates/wasm*` selected

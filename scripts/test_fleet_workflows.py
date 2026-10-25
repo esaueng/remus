@@ -340,7 +340,8 @@ class FleetWorkflowTests(unittest.TestCase):
                                                carries_reviewed_updates(active.name))
                 main_file = main_manifest[family]
                 allowed = {f"fleet-{family}{suffix}.yml" for suffix in ("", "-v2", "-v3", "-v4")}
-                allowed.add('fleet-ci-v6.yml' if family == 'ci' else STAGE['workflows'][family]['staged'])
+                allowed.update({'fleet-ci-v6.yml', 'fleet-ci-v7.yml'} if family == 'ci'
+                               else {STAGE['workflows'][family]['staged']})
                 self.assertIn(main_file, allowed)
                 main_active = subprocess.check_output(
                     ["git", "show", f"origin/main:.github/workflows/{main_file}"], cwd=ROOT, text=True,
