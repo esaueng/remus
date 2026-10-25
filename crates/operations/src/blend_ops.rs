@@ -1909,7 +1909,7 @@ fn fillet_cascade_attempts(
     // the order the fillets were made in: rebuild those bands after this one,
     // as the order that builds would have. The original refusal stays the
     // answer when that does not apply or does not build.
-    match transactional(topo, |t| {
+    if let Ok(Some(result)) = transactional(topo, |t| {
         crate::resize_blend::fillet_across_earlier_blends(
             t,
             solid,
@@ -1918,9 +1918,119 @@ fn fillet_cascade_attempts(
             fillet_cascade_engines,
         )
     }) {
+        return Ok(result);
+    }
+    match transactional(topo, |t| fillet_carrying_cavities(t, solid, edges, radius)) {
         Ok(Some(result)) => Ok(result),
         Ok(None) | Err(_) => Err(refusal),
     }
+}
+
+/// The cascade on a hollow body's outer shell alone, with its cavity shells
+/// carried through, or `None` when the body has no cavity.
+///
+/// The rolling-ball engine and the band-removal heal refuse cavity shells,
+/// and the walking builder carries them only when it can certify its own
+/// reach. A cavity shell shares no edge with the outer shell, so the outer
+/// shell can be filleted on its own. Everything the fillet changed is
+/// enclosed by the faces it removed and the faces it built, so a cavity clear
+/// of all their bounds is untouched and still enclosed by the result.
+fn fillet_carrying_cavities(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    radius: f64,
+) -> Result<Option<BlendResult>, OperationsError> {
+    use remus_topology::solid::Solid;
+    let source = topo.solid(solid)?;
+    let cavities = source.inner_shells().to_vec();
+    if cavities.is_empty() {
+        return Ok(None);
+    }
+    let outer = source.outer_shell();
+    let input_faces: DetHashSet<FaceId> = topo.shell(outer)?.faces().iter().copied().collect();
+    let outer_only = topo.add_solid(Solid::new(outer, Vec::new()));
+    let mut result = fillet_cascade_attempts(topo, outer_only, edges, radius)?;
+
+    let refusal = || OperationsError::Unsupported {
+        operation: "fillet",
+        reason: "the fillet reaches a cavity shell".into(),
+    };
+    let built = topo.solid(result.solid)?;
+    if !built.inner_shells().is_empty() {
+        return Err(refusal());
+    }
+    let result_outer = built.outer_shell();
+    let result_faces: DetHashSet<FaceId> =
+        topo.shell(result_outer)?.faces().iter().copied().collect();
+    let mut changed = Vec::new();
+    for &face in input_faces.symmetric_difference(&result_faces) {
+        changed.push(face_containment_box(topo, face)?.ok_or_else(refusal)?);
+    }
+    for &shell in &cavities {
+        for &face in topo.shell(shell)?.faces() {
+            let cavity = face_containment_box(topo, face)?.ok_or_else(refusal)?;
+            if changed.iter().any(|aabb| aabb.intersects(cavity)) {
+                return Err(refusal());
+            }
+        }
+    }
+
+    let carried = topo.add_solid(Solid::new(result_outer, cavities.clone()));
+    reject_open_shell(topo, carried)?;
+    if let Some(origins) = result.face_origins.as_mut() {
+        for &shell in &cavities {
+            origins
+                .survived
+                .extend(topo.shell(shell)?.faces().iter().map(|&face| (face, face)));
+        }
+    }
+    result.solid = carried;
+    Ok(Some(result))
+}
+
+/// A box containing every point of `face`, or `None` where none is
+/// certified.
+///
+/// The distance bounds certify planes, spheres, tori and NURBS faces. They
+/// leave a cylinder patch to their exhaustive path, but its axial coordinate
+/// peaks on its wire, which their fallback box covers, and the patch never
+/// leaves its carrier: the box around the carrier's discs at those axial
+/// extremes contains it.
+fn face_containment_box(
+    topo: &Topology,
+    face: FaceId,
+) -> Result<Option<remus_math::aabb::Aabb3>, OperationsError> {
+    let bound = remus_check::distance::face_bounds::face_bound(topo, face)?;
+    if bound.prunable {
+        return Ok(Some(bound.aabb));
+    }
+    let FaceSurface::Cylinder(cylinder) = topo.face(face)?.surface() else {
+        return Ok(None);
+    };
+    // Any other reason means a wire bound was not established either.
+    if bound.unprunable_reason != Some("cylinder_projection_outside_edge_bounds") {
+        return Ok(None);
+    }
+    let (origin, axis, radius) = (cylinder.origin(), cylinder.axis(), cylinder.radius());
+    let (min, max) = (bound.aabb.min, bound.aabb.max);
+    let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
+    for x in [min.x(), max.x()] {
+        for y in [min.y(), max.y()] {
+            for z in [min.z(), max.z()] {
+                let along = (remus_math::vec::Point3::new(x, y, z) - origin).dot(axis);
+                low = low.min(along);
+                high = high.max(along);
+            }
+        }
+    }
+    let reach = remus_math::vec::Vec3::new(radius, radius, radius);
+    Ok(Some(remus_math::aabb::Aabb3::from_points(
+        [low, high].into_iter().flat_map(|along| {
+            let centre = origin + axis * along;
+            [centre + reach, centre - reach]
+        }),
+    )))
 }
 
 fn fillet_cascade_engines(

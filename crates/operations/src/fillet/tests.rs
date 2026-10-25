@@ -2257,6 +2257,112 @@ fn notch_convex_first_mitres_then_matches_concave_first() {
     }
 }
 
+/// A 20 mm box with an enclosed cavity box at `min .. min + size`, or a plain
+/// box when `cavity` is `None`.
+fn box_with_cavity(topo: &mut Topology, cavity: Option<(Point3, Vec3)>) -> SolidId {
+    let outer = crate::primitives::make_box(topo, 20.0, 20.0, 20.0).unwrap();
+    let Some((min, size)) = cavity else {
+        return outer;
+    };
+    let inner = crate::primitives::make_box(topo, size.x(), size.y(), size.z()).unwrap();
+    crate::transform::transform_solid(
+        topo,
+        inner,
+        &remus_math::mat::Mat4::translation(min.x(), min.y(), min.z()),
+    )
+    .unwrap();
+    let hollow =
+        crate::boolean::boolean(topo, crate::boolean::BooleanOp::Cut, outer, inner).unwrap();
+    assert_eq!(topo.solid(hollow).unwrap().inner_shells().len(), 1);
+    hollow
+}
+
+/// Fillet the box's vertical edge at `(20, 0)` at `first`, then its top edge
+/// at `x = 20, z = 20` at `second`.
+fn vertical_then_top(
+    topo: &mut Topology,
+    solid: SolidId,
+    first: f64,
+    second: f64,
+) -> Result<SolidId, crate::OperationsError> {
+    let vertical = box_vertical_edge(topo, solid, 20.0);
+    let first = crate::blend_ops::fillet_cascade(topo, solid, &[vertical], first)?.solid;
+    let top = box_top_edge(topo, first, 20.0, 20.0);
+    Ok(crate::blend_ops::fillet_cascade(topo, first, &[top], second)?.solid)
+}
+
+/// A hollow body takes the same sequential fillets as a solid one: the
+/// cascade fillets the outer shell on its own and carries the cavity shell
+/// through untouched. The result is the solid body's, less the cavity.
+#[test]
+fn sequential_fillets_on_a_hollow_body_carry_the_cavity() {
+    let cavity = (Point3::new(5.0, 5.0, 5.0), Vec3::new(10.0, 10.0, 10.0));
+    for (first, second) in [(1.0, 1.0), (1.0, 0.5), (1.0, 2.0)] {
+        let what = format!("hollow box, vertical {first} then top {second}");
+        let mut solid_topo = Topology::new();
+        let plain = box_with_cavity(&mut solid_topo, None);
+        let plain = vertical_then_top(&mut solid_topo, plain, first, second).unwrap();
+
+        let mut topo = Topology::new();
+        let hollow = box_with_cavity(&mut topo, Some(cavity));
+        let cavity_faces: Vec<FaceId> = topo
+            .shell(topo.solid(hollow).unwrap().inner_shells()[0])
+            .unwrap()
+            .faces()
+            .to_vec();
+        let result = vertical_then_top(&mut topo, hollow, first, second)
+            .unwrap_or_else(|e| panic!("{what}: {e}"));
+        assert_fully_valid(&topo, result, &what);
+
+        let inner = topo.solid(result).unwrap().inner_shells().to_vec();
+        assert_eq!(inner.len(), 1, "{what}: one cavity shell");
+        assert_eq!(
+            topo.shell(inner[0]).unwrap().faces(),
+            cavity_faces.as_slice(),
+            "{what}: the cavity is carried through untouched"
+        );
+        let (f, e, v) = remus_topology::explorer::solid_entity_counts(&solid_topo, plain).unwrap();
+        assert_eq!(
+            remus_topology::explorer::solid_entity_counts(&topo, result).unwrap(),
+            (f + 6, e + 12, v + 8),
+            "{what}: the solid body's topology plus the cavity box"
+        );
+        let expected = crate::measure::solid_volume(&solid_topo, plain, 0.01).unwrap() - 1000.0;
+        let vol = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+        assert!(
+            (vol - expected).abs() < 0.01,
+            "{what}: volume {vol} should be the solid body's less the cavity, {expected}"
+        );
+    }
+}
+
+/// A fillet whose band would cut into the cavity is still refused, and the
+/// input is left as it was: the cavity sits under the top edge, inside the
+/// material a 2 mm fillet there removes.
+#[test]
+fn hollow_body_fillet_reaching_the_cavity_is_refused() {
+    let mut topo = Topology::new();
+    let hollow = box_with_cavity(
+        &mut topo,
+        Some((Point3::new(18.5, 5.0, 18.5), Vec3::new(1.0, 10.0, 1.0))),
+    );
+    let vertical = box_vertical_edge(&topo, hollow, 20.0);
+    let first = crate::blend_ops::fillet_cascade(&mut topo, hollow, &[vertical], 1.0)
+        .unwrap()
+        .solid;
+    let before = remus_topology::explorer::solid_entity_counts(&topo, first).unwrap();
+    let top = box_top_edge(&topo, first, 20.0, 20.0);
+    assert!(
+        crate::blend_ops::fillet_cascade(&mut topo, first, &[top], 2.0).is_err(),
+        "a band through the cavity must be refused"
+    );
+    assert_eq!(
+        remus_topology::explorer::solid_entity_counts(&topo, first).unwrap(),
+        before
+    );
+    assert_eq!(topo.solid(first).unwrap().inner_shells().len(), 1);
+}
+
 /// The same sequence with a smaller second radius: the corner is a torus
 /// band around the earlier fillet's axis, whose material follows Pappus.
 #[test]
