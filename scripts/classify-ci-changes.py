@@ -3,7 +3,9 @@
 
 Outputs (all lowercase booleans except ``mode``):
 
-* ``heavy`` — source changed: build, lint, and test the workspace.
+* ``heavy`` — source changed: build, lint, and test the workspace. A merge
+  group that touches no second-tier path leaves it to the PR and the main
+  push while ``QUEUE_RERUNS_PR_TIER`` is off.
 * ``docs`` — documentation changed: build rustdoc and the book.
 * ``full`` — run the second tier (coverage, MSRV, deny, audit). True only
   for heavy changes on non-PR events or PRs carrying the ``ci:full`` label
@@ -71,13 +73,25 @@ WASM_FILENAMES = {"Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/con
 # Paths whose effect a merge group cannot leave to the main push: dependency
 # and toolchain inputs (Cargo Deny, Security Audit, MSRV) and the CI
 # definitions. Fuzz compile and render run in the first tier. Any other
-# heavy merge group runs the PR tier. The main push of the same squashed tree
+# heavy merge group runs the PR tier, or nothing heavy while
+# QUEUE_RERUNS_PR_TIER is off. The main push of the same squashed tree
 # still runs the second tier, so Coverage (about 40 of a queue entry's 60-70
 # minutes, 2026-10) reports after the merge instead of before it.
 SECOND_TIER_DIRECTORIES = (".cargo/", ".config/", ".github/workflows/")
 SECOND_TIER_FILENAMES = {
     "Cargo.lock", "Cargo.toml", "clippy.toml", "deny.toml", "rust-toolchain.toml",
 }
+# Speed over depth while development runs fast (2026-10-25). A source merge
+# group re-ran tier 1 and the package build on a tree whose PR had just passed
+# them: about 20-25 of the 45 minutes from a green PR to a merge (Test 14-16,
+# WASM Build & Validate 15-19, 2026-10). While this is False, such a merge
+# group runs only the light gates (Repository Policy, Secrets Scan,
+# Documentation, and the separate privacy, dependency-review and WASM version
+# workflows), and the main push of the squashed tree still runs every tier.
+# Two PRs that pass alone but break together turn `main` red after the merge
+# instead of blocking the entry. A merge group touching a second-tier input
+# keeps the full suite either way. Set True to restore the pre-merge run.
+QUEUE_RERUNS_PR_TIER = False
 
 
 @dataclass(frozen=True)
@@ -130,8 +144,10 @@ def needs_second_tier(path: str) -> bool:
     normalized = PurePosixPath(path).as_posix()
     return (
         # A queue batch can pair a package refresh with source PRs, so its diff
-        # is not package-only; the refresh still needs the full suite.
-        is_committed_package(normalized)
+        # is not package-only; the refresh still needs the full suite. Unless
+        # the queue skips the PR tier: the integrity job in wasm-version.yml
+        # then verifies the refresh, as it does for a package-only diff.
+        (QUEUE_RERUNS_PR_TIER and is_committed_package(normalized))
         or normalized.startswith(SECOND_TIER_DIRECTORIES)
         or normalized in SECOND_TIER_FILENAMES
         or PurePosixPath(normalized).name == "Cargo.toml"
@@ -161,6 +177,10 @@ def classify_paths(
         full = force_full and (
             not merge_group or any(needs_second_tier(path) for path in paths)
         )
+        if force_full and not full and not QUEUE_RERUNS_PR_TIER:
+            # CI Pass accepts every heavy-tier skip once heavy, full and wasm
+            # are all false; docs still builds rustdoc for the combined tree.
+            return Classification(heavy=False, docs=True, full=False, wasm=False, mode="queue")
         wasm = full or any(affects_wasm(path) for path in paths)
         if full:
             mode = "full"

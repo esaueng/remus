@@ -315,6 +315,19 @@ kernel PR waits only for the checks that can fail on its diff:
   spends in the queue; a coverage or source-level MSRV regression now turns
   `main` red instead of blocking the entry. The pinned callee still passes
   `--full` for merge groups; the classifier reads `GITHUB_EVENT_NAME` itself.
+- **Queue fast path** (since 2026-10-25, while `QUEUE_RERUNS_PR_TIER` in the
+  classifier is `False`): a `queue`-mode merge group also skips tier 1 and the
+  package build, which its PR already passed. It runs Repository Policy,
+  Secrets Scan and Documentation, beside the unchanged commit-privacy,
+  history-privacy, dependency-review and WASM version workflows, so an entry
+  takes a few minutes instead of 20-25. A committed package no longer selects
+  tier 2 in a merge group, because the integrity job in `wasm-version.yml`
+  verifies a refresh there as it does for a package-only diff. Every tier-2
+  input still runs the full suite in the queue, and every main push still
+  runs every tier. The cost: two PRs that pass alone but break together, or a
+  PR whose CI ran against an old `main`, turn `main` red after the merge
+  instead of blocking the entry. Set the constant to `True` to restore the
+  pre-merge tier-1 run.
 - **Package build** (`wasm`): WASM Build & Validate and the advisory size
   report. Selected with tier 2, and on any PR whose diff touches any crate
   under `crates/`, `xtask`, `tools/vs-bench`, the WASM scripts,
