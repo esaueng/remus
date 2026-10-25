@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792861976275,
+  "lastUpdate": 1792898568646,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -132439,6 +132439,306 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 87021,
             "range": "± 650",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "998f028fdcb0af0878c869697952b1e768dbaa7b",
+          "message": "build(deps): bump the minor-and-patch group with 4 updates (#1296)\n\nBumps the minor-and-patch group with 4 updates:\n[serde_json](https://github.com/serde-rs/json),\n[sha2](https://github.com/RustCrypto/hashes),\n[proptest](https://github.com/proptest-rs/proptest) and\n[zip](https://github.com/zip-rs/zip2).\n\nUpdates `serde_json` from 1.0.151 to 1.0.154\n<details>\n<summary>Release notes</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/serde-rs/json/releases\">serde_json's\nreleases</a>.</em></p>\n<blockquote>\n<h2>v1.0.154</h2>\n<ul>\n<li>Support preserve_order in no_std builds (<a\nhref=\"https://redirect.github.com/serde-rs/json/issues/1333\">#1333</a>,\nthanks <a\nhref=\"https://github.com/razmser\"><code>@​razmser</code></a>)</li>\n</ul>\n<h2>v1.0.153</h2>\n<ul>\n<li>Report invalid UTF-8 at the first bad byte (<a\nhref=\"https://redirect.github.com/serde-rs/json/issues/1345\">#1345</a>,\nthanks <a\nhref=\"https://github.com/00200200\"><code>@​00200200</code></a>)</li>\n</ul>\n<h2>v1.0.152</h2>\n<ul>\n<li>Preserve sign of <code>-0</code> in arbitrary_precision mode (<a\nhref=\"https://redirect.github.com/serde-rs/json/issues/1346\">#1346</a>,\nthanks <a\nhref=\"https://github.com/yuxi-liu-wired\"><code>@​yuxi-liu-wired</code></a>)</li>\n<li>Fix comparison of large non-integer values with f32::INFINITY (<a\nhref=\"https://redirect.github.com/serde-rs/json/issues/1347\">#1347</a>,\nthanks <a\nhref=\"https://github.com/yuxi-liu-wired\"><code>@​yuxi-liu-wired</code></a>)</li>\n</ul>\n</blockquote>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/serde-rs/json/commit/20572a6d066958542d79cdd6cf1a7cd9f0c8e1f8\"><code>20572a6</code></a>\nRelease 1.0.154</li>\n<li><a\nhref=\"https://github.com/serde-rs/json/commit/a91bfaf539aa7927ab88086d7a9ff522cb090f7a\"><code>a91bfaf</code></a>\nFix RandomState links in map documentation</li>\n<li><a\nhref=\"https://github.com/serde-rs/json/commit/3c932c05f73bcbc7626db4e1959cbce075d7106e\"><code>3c932c0</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/serde-rs/json/issues/1333\">#1333</a>\nfrom razmser/no-std-preserve-order</li>\n<li><a\nhref=\"https://github.com/serde-rs/json/commit/4b2d7264cef72ef297058ef7d731e7d77574cf3e\"><code>4b2d726</code></a>\nRelease 1.0.153</li>\n<li><a\nhref=\"https://github.com/serde-rs/json/commit/83335eed01fcfe5f3cfb8064938df935e99e3d61\"><code>83335ee</code></a>\nTouch up PR 1345</li>\n<li><a\nhref=\"https://github.com/serde-rs/json/commit/4b4810a451a3095c7bcce792782e460cf1105d8d\"><code>4b4810a</code></a>\nResolve range_plus_one pedantic clippy lint</li>\n<li><a\nhref=\"https://github.com/serde-rs/json/commit/8af71cc0d7ceecd53b9c9b5a9ac512e98d1c78e7\"><code>8af71cc</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/serde-rs/json/issues/1345\">#1345</a>\nfrom 00200200/fix-invalid-utf8-error-column</li>\n<li><a\nhref=\"https://github.com/serde-rs/json/commit/452afa2630f1d568ba06a5f43ad2e2f5303ac000\"><code>452afa2</code></a>\nCorrect multiline raw UTF-8 error positions and simplify indexing</li>\n<li><a\nhref=\"https://github.com/serde-rs/json/commit/c9f1e3b0216328591262889d9a1c2771f3dd5fff\"><code>c9f1e3b</code></a>\nRelease 1.0.152</li>\n<li><a\nhref=\"https://github.com/serde-rs/json/commit/854fc70fa3449c302265b75e750401b009b85cd1\"><code>854fc70</code></a>\nTouch up PR 1347</li>\n<li>Additional commits viewable in <a\nhref=\"https://github.com/serde-rs/json/compare/v1.0.151...v1.0.154\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\nUpdates `sha2` from 0.11.0 to 0.11.1\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/RustCrypto/hashes/commit/138dc5a05b93f8e49cda177fc6cfd7cc43673e5d\"><code>138dc5a</code></a>\nRelease sha2 v0.11.1 (<a\nhref=\"https://redirect.github.com/RustCrypto/hashes/issues/927\">#927</a>)</li>\n<li><a\nhref=\"https://github.com/RustCrypto/hashes/commit/cf0105661369ca12811082b4fb0904231173c9b6\"><code>cf01056</code></a>\nsha2: fix <code>unsafe_op_in_unsafe_fn</code> lint, bump MSRV to 1.88\n(<a\nhref=\"https://redirect.github.com/RustCrypto/hashes/issues/926\">#926</a>)</li>\n<li><a\nhref=\"https://github.com/RustCrypto/hashes/commit/7c59cadcfb4cb503fa165e7d43171a61b1378281\"><code>7c59cad</code></a>\nUpdate Cargo.lock (<a\nhref=\"https://redirect.github.com/RustCrypto/hashes/issues/921\">#921</a>)</li>\n<li><a\nhref=\"https://github.com/RustCrypto/hashes/commit/f57b947f978f7ba522df7209a958ba11c426b0d5\"><code>f57b947</code></a>\nstreebog: tweak internal implementation (<a\nhref=\"https://redirect.github.com/RustCrypto/hashes/issues/925\">#925</a>)</li>\n<li><a\nhref=\"https://github.com/RustCrypto/hashes/commit/336611ffbed10eddafa5f1b9e976120e56a6091d\"><code>336611f</code></a>\nFix <code>cargo::manual_readme</code> lint (<a\nhref=\"https://redirect.github.com/RustCrypto/hashes/issues/924\">#924</a>)</li>\n<li><a\nhref=\"https://github.com/RustCrypto/hashes/commit/1df8877ae0adc264ac561a5a32d6022343d9ceed\"><code>1df8877</code></a>\nmd2: fix <code>clippy::needless_range_loop</code> lint (<a\nhref=\"https://redirect.github.com/RustCrypto/hashes/issues/923\">#923</a>)</li>\n<li><a\nhref=\"https://github.com/RustCrypto/hashes/commit/6075989cbbd822dbab3ede104c33fcc03645f964\"><code>6075989</code></a>\nsha2: fix loading of round constants on AArch64 backends (<a\nhref=\"https://redirect.github.com/RustCrypto/hashes/issues/922\">#922</a>)</li>\n<li><a\nhref=\"https://github.com/RustCrypto/hashes/commit/eadfd90f0dd6272d20530a2cdb69d96319e4a85f\"><code>eadfd90</code></a>\nUpdate Cargo.lock (<a\nhref=\"https://redirect.github.com/RustCrypto/hashes/issues/913\">#913</a>)</li>\n<li><a\nhref=\"https://github.com/RustCrypto/hashes/commit/fa3084083d946ac12436567d5a59c0935d5db1fa\"><code>fa30840</code></a>\nblake2 v0.11.0 (<a\nhref=\"https://redirect.github.com/RustCrypto/hashes/issues/911\">#911</a>)</li>\n<li><a\nhref=\"https://github.com/RustCrypto/hashes/commit/f6c786d72ed4d37a32dcd32daa2e7277dd4683e1\"><code>f6c786d</code></a>\nci: bump the all-deps group across 1 directory with 3 updates (<a\nhref=\"https://redirect.github.com/RustCrypto/hashes/issues/896\">#896</a>)</li>\n<li>Additional commits viewable in <a\nhref=\"https://github.com/RustCrypto/hashes/compare/sha2-v0.11.0...sha2-v0.11.1\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\nUpdates `proptest` from 1.11.0 to 1.12.0\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/proptest-rs/proptest/commit/70cf37d46b7d83393b6ed94c611f8c52209f585d\"><code>70cf37d</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/proptest-rs/proptest/issues/675\">#675</a>\nfrom proptest-rs/prep-1.12</li>\n<li><a\nhref=\"https://github.com/proptest-rs/proptest/commit/729e0ffa5d0d9574c2a0b49ab34c9d9b726dadc0\"><code>729e0ff</code></a>\nprepare next releases and fix panic handling</li>\n<li><a\nhref=\"https://github.com/proptest-rs/proptest/commit/28c1fade6db79d3404949e59a931bd71dc25c9b6\"><code>28c1fad</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/proptest-rs/proptest/issues/664\">#664</a>\nfrom Expyron/main</li>\n<li><a\nhref=\"https://github.com/proptest-rs/proptest/commit/5ddd9a4b67e6983a1172b4d6b578b455a138b995\"><code>5ddd9a4</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/proptest-rs/proptest/issues/668\">#668</a>\nfrom toddATavail/fix-fork-persisted-failure</li>\n<li><a\nhref=\"https://github.com/proptest-rs/proptest/commit/a6a9ac703f7091a653b03bba68279be5419d6c42\"><code>a6a9ac7</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/proptest-rs/proptest/issues/673\">#673</a>\nfrom glaziermag/fix-book-deploy</li>\n<li><a\nhref=\"https://github.com/proptest-rs/proptest/commit/d57d88b6221f1313c4bb27f83941d4c53ca07c50\"><code>d57d88b</code></a>\nReplace <code>rand_chacha</code> with <code>chacha20</code></li>\n<li><a\nhref=\"https://github.com/proptest-rs/proptest/commit/9411213ce80add5bd59d92dfcf3b04cff17b6848\"><code>9411213</code></a>\nDeploy the book on pushes to main</li>\n<li><a\nhref=\"https://github.com/proptest-rs/proptest/commit/171974566466656059fbc16cb4c80a9f6f18aaf4\"><code>1719745</code></a>\nfix: terminate the fork replay when a persisted failure fails</li>\n<li><a\nhref=\"https://github.com/proptest-rs/proptest/commit/0f55b7a3e8dd92406915ef7452cd8152cf185757\"><code>0f55b7a</code></a>\ntest: a persisted failure in a forked test must be reported</li>\n<li><a\nhref=\"https://github.com/proptest-rs/proptest/commit/4b0594eb07c53695dc3c24d3fa06bdceb98540e9\"><code>4b0594e</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/proptest-rs/proptest/issues/669\">#669</a>\nfrom proptest-rs/no-fail-fast</li>\n<li>Additional commits viewable in <a\nhref=\"https://github.com/proptest-rs/proptest/compare/v1.11.0...v1.12.0\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\nUpdates `zip` from 9.0.3 to 9.0.4\n<details>\n<summary>Release notes</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/zip-rs/zip2/releases\">zip's\nreleases</a>.</em></p>\n<blockquote>\n<h2>v9.0.4</h2>\n<h3><!-- raw HTML omitted -->🐛 Bug Fixes</h3>\n<ul>\n<li>enclosed_name rejects a separator inside one verbatim path component\n(<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1066\">#1066</a>)</li>\n<li>return <code>Ok(None)</code> when read_zipfile_from_stream is called\non an empty archive (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1063\">#1063</a>)</li>\n</ul>\n<h3><!-- raw HTML omitted -->⚙️ Miscellaneous Tasks</h3>\n<ul>\n<li>Revert impl Copy for Zip64CentralDirectoryEndLocator due to failing\nsemver check, fix CI where most Miri tests weren't running, and other\nfixes so other PRs can pass CI (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1065\">#1065</a>)</li>\n<li>update lzma-rust2 and ppmd-rust dependencies (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1060\">#1060</a>)</li>\n</ul>\n</blockquote>\n</details>\n<details>\n<summary>Changelog</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/zip-rs/zip2/blob/master/CHANGELOG.md\">zip's\nchangelog</a>.</em></p>\n<blockquote>\n<h2><a\nhref=\"https://github.com/zip-rs/zip2/compare/v9.0.3...v9.0.4\">9.0.4</a>\n- 2026-10-16</h2>\n<h3><!-- raw HTML omitted -->🐛 Bug Fixes</h3>\n<ul>\n<li>enclosed_name rejects a separator inside one verbatim path component\n(<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1066\">#1066</a>)</li>\n<li>return <code>Ok(None)</code> when read_zipfile_from_stream is called\non an empty archive (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1063\">#1063</a>)</li>\n</ul>\n<h3><!-- raw HTML omitted -->⚙️ Miscellaneous Tasks</h3>\n<ul>\n<li>Revert impl Copy for Zip64CentralDirectoryEndLocator due to failing\nsemver check, fix CI where most Miri tests weren't running, and other\nfixes so other PRs can pass CI (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1065\">#1065</a>)</li>\n<li>update lzma-rust2 and ppmd-rust dependencies (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1060\">#1060</a>)</li>\n</ul>\n</blockquote>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/7d9988688723f1136966e0e97200f41356dc57eb\"><code>7d99886</code></a>\nchore: release v9.0.4 (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/issues/1071\">#1071</a>)</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/f61665ee0a61b1eb10cd99a224890ea54ebf5ca9\"><code>f61665e</code></a>\nci(deps): bump the codeql group with 2 updates (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/issues/1072\">#1072</a>)</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/3f4f58c17fd51df93a1b5cdf6c668cc69dbf69ca\"><code>3f4f58c</code></a>\nci(deps): bump release-plz/action from 0.5.139 to 0.5.140 (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/issues/1069\">#1069</a>)</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/8853a03262e809051e37cc027bbb404900a06f85\"><code>8853a03</code></a>\nci(deps): bump step-security/harden-runner from 2.22.0 to 2.22.1 (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/issues/1070\">#1070</a>)</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/3ea38eb8ac287e8e99e4ec9121141ba927cd857b\"><code>3ea38eb</code></a>\nci(fuzz): Write errors to stderr rather than stdout (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/issues/1064\">#1064</a>)</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/a5a1a669ee418c178d0788ca19a9db15597db1fb\"><code>a5a1a66</code></a>\nci(deps): bump github/codeql-action/upload-sarif from 4.38.2 to 4.38.3\n(<a\nhref=\"https://redirect.github.com/zip-rs/zip2/issues/1073\">#1073</a>)</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/ca70ca9debcff67312a3d1a96d034ad268fed28e\"><code>ca70ca9</code></a>\nci(deps): bump actions/upload-artifact from 7.0.1 to 7.0.2 (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/issues/1068\">#1068</a>)</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/9d76832a37c9170612f0f96a14e1ec747a0da415\"><code>9d76832</code></a>\nfix: enclosed_name rejects a separator inside one verbatim path\ncomponent (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/issues/1\">#1</a>...</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/0ebefb80c3955729e85ce362ecdc873c7d4448b8\"><code>0ebefb8</code></a>\nfix: return <code>Ok(None)</code> when read_zipfile_from_stream is\ncalled on an empty ar...</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/b7c1a5b343550744b8afc23181c0401a0e88f386\"><code>b7c1a5b</code></a>\nci: Exit read fuzzing early if a crash occurs (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/issues/1062\">#1062</a>)</li>\n<li>Additional commits viewable in <a\nhref=\"https://github.com/zip-rs/zip2/compare/v9.0.3...v9.0.4\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\n\nDependabot will resolve any conflicts with this PR as long as you don't\nalter it yourself. You can also trigger a rebase manually by commenting\n`@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits\nthat have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all\nof the ignore conditions of the specified dependency\n- `@dependabot ignore <dependency name> major version` will close this\ngroup update PR and stop Dependabot creating any more for the specific\ndependency's major version (unless you unignore this specific\ndependency's major version or upgrade to it yourself)\n- `@dependabot ignore <dependency name> minor version` will close this\ngroup update PR and stop Dependabot creating any more for the specific\ndependency's minor version (unless you unignore this specific\ndependency's minor version or upgrade to it yourself)\n- `@dependabot ignore <dependency name>` will close this group update PR\nand stop Dependabot creating any more for the specific dependency\n(unless you unignore this specific dependency or upgrade to it yourself)\n- `@dependabot unignore <dependency name>` will remove all of the ignore\nconditions of the specified dependency\n- `@dependabot unignore <dependency name> <ignore condition>` will\nremove the ignore condition of the specified dependency and ignore\nconditions\n\n\n</details>\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-25T02:28:09Z",
+          "tree_id": "b99bb0f8884847fd47eb999f38239a3963f205ab",
+          "url": "https://github.com/esaueng/remus/commit/998f028fdcb0af0878c869697952b1e768dbaa7b"
+        },
+        "date": 1792898564489,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1151025,
+            "range": "± 4046",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1243352,
+            "range": "± 6082",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 25191,
+            "range": "± 215",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7272420,
+            "range": "± 26364",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7279385,
+            "range": "± 33843",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7118682,
+            "range": "± 19238",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 25383,
+            "range": "± 732",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3620234,
+            "range": "± 35848",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 27740700,
+            "range": "± 713668",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 97,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 55,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 199,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 178,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 731,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 150,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 343,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 211,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 484,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 987,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2808,
+            "range": "± 19",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 11,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 33,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 79,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 79,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 21789,
+            "range": "± 149",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 122090,
+            "range": "± 745",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 3388,
+            "range": "± 43",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 13866,
+            "range": "± 68",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 53998,
+            "range": "± 339",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 4801,
+            "range": "± 35",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 561184,
+            "range": "± 2913",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2533802,
+            "range": "± 18834",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 159878,
+            "range": "± 714",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 294898,
+            "range": "± 2123",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 354416,
+            "range": "± 2317",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 62922,
+            "range": "± 241",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 32850,
+            "range": "± 172",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 20693,
+            "range": "± 72",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 121116,
+            "range": "± 538",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 145353,
+            "range": "± 689",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 712151,
+            "range": "± 22444",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 8465457,
+            "range": "± 98405",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 530348,
+            "range": "± 2350",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1156801,
+            "range": "± 7498",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 74810,
+            "range": "± 689",
             "unit": "ns/iter"
           }
         ]
