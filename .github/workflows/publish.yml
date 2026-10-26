@@ -76,7 +76,7 @@ jobs:
       # rust-toolchain.toml provides the pinned Rust version + wasm32 target
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
-      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: wasm-pack
 
@@ -157,7 +157,7 @@ jobs:
           REMUS_BOT_PRIVATE_KEY: ${{ secrets.REMUS_BOT_PRIVATE_KEY }}
         run: ./scripts/require-publish-credentials.sh
 
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: app-token
         if: ${{ steps.package-diff.outputs.needs_publish == 'true' }}
         with:

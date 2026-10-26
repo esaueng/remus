@@ -14,6 +14,7 @@ from fleet_workflows import (
     workflow_calls, workflow_manifest, workflow_path,
 )
 from test_jane_helper_workflows import STAGE
+from test_fleet_actions_stage import FleetActionsStageTests
 
 CI_V4_LANDED = '9e5b65b9e00f004d83eb583ab3934c863ad7956d'
 

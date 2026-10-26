@@ -191,6 +191,7 @@ test('Windows ARM binds arm64 OS evidence, native ARM PE files and emulated help
   for (const mutate of [
     (p) => { p.state = 'preparing'; }, (p) => { p.sourceDirty = true; }, (p) => { p.checkoutSha = 'cd'.repeat(20); },
     (p) => { p.installation.checksum = false; }, (p) => { p.installation.fallback = 'cargo-install'; },
+    (p) => { p.installation.action = 'taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe'; },
     (p) => { p.installation.assetId++; }, (p) => { p.installation.archiveSha256 = '00'.repeat(32); },
     (p) => { p.helpers.wasmBindgen.sha256 = '00'.repeat(32); }, (p) => { p.helpers.wasmPack.bytes--; },
     (p) => { p.helpers.wasmBindgen.emulated = false; }, (p) => { p.helpers.wasmBindgen.version = 'wasm-bindgen 0.2.100'; },

@@ -7,6 +7,7 @@ import re
 import subprocess
 import unittest
 from test_jane_helper_workflows import STAGE
+from test_fleet_actions_stage import WORKFLOWS as ACTION_STAGES
 from pathlib import Path
 from fleet_workflows import workflow_path, is_ci_workflow, validate_calls
 
@@ -17,6 +18,7 @@ DIRECT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(DIRECT)
 FILES = sorted(p for p in WORKFLOWS.glob("fleet-*.yml") if not is_ci_workflow(p))
 PROFILE_FILES = {entry['staged'] for entry in STAGE['workflows'].values()}
+PROFILE_FILES.update(staged for family, (_previous, staged) in ACTION_STAGES.items() if family != 'ci')
 GUARD_PATH = ".github/actions/fleet-guard/action.yml"
 GUARD = (ROOT / GUARD_PATH).read_text()
 # Hosted jobs name an exact image: `ubuntu-latest` moves to a new Ubuntu

@@ -150,6 +150,7 @@ test('wasm-bindgen binds the pinned official x64 asset, standard PATH lookup and
     (x) => { x.bindgenInstallation.checksum = false; },
     (x) => { x.bindgenInstallation.fallback = 'cargo-install'; },
     (x) => { x.bindgenInstallation.action = 'taiki-e/install-action@v2'; },
+    (x) => { x.bindgenInstallation.action = 'taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe'; },
     (x) => { x.bindgenInstallation.archiveRetainedInProbe = true; },
     (x) => { x.helpers.wasmBindgen.sha256 = '00'.repeat(32); },
     (x) => { x.helpers.wasmBindgen.bytes++; },
@@ -253,6 +254,6 @@ test('workflow stays isolated, native ARM, pinned, bounded and read-only', () =>
     (s) => s.replace('persist-credentials: false', 'persist-credentials: true'),
     (s) => s.replace(',wasm-bindgen@0.2.126', ''), (s) => s.replace('wasm-bindgen@0.2.126', 'wasm-bindgen@0.2.100'),
     (s) => s.replace('checksum: true', 'checksum: false'), (s) => s.replace('fallback: none', 'fallback: cargo-install'),
-    (s) => s.replace('ab6895351a88b908e96a4697860d4ffea5e57dbe', '0'.repeat(40)),
+    (s) => s.replace('8cca0918f8471c33515202b73f56ab27f2bed283', '0'.repeat(40)),
   ]) assert.throws(() => validateWorkflowPolicy(mutate(text)));
 });
