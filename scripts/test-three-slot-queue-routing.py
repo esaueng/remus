@@ -29,7 +29,7 @@ def staged_workflow():
         return STAGED.read_text()
     # fleet-ci-v7.yml retired v6; scripts/test-ci-v7-stage.py proves v7 is
     # these immutable main bytes plus its reviewed job splits.
-    command = ["git", "show", f"05fca2fc1029be782afe41ee6ebbeae812e5e40c:{STAGED.relative_to(ROOT)}"]
+    command = ["git", "show", f"05fca2fc1029be782afe41ee6ebbeae812e5e40c:{STAGED.relative_to(ROOT).as_posix()}"]
     return subprocess.check_output(command, cwd=ROOT, text=True)
 
 

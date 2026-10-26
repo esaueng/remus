@@ -255,6 +255,15 @@ slots. Hosted runs pick them up in parallel.
 
 ## Updating immutable workflow dependencies
 
+PR #1297 stages the installer v2.87.29 and SARIF uploader v4.39.0 updates in
+`fleet-ci-v8.yml`, `fleet-mutants-sharded-v5.yml`,
+`fleet-mutation-scope-v4.yml`, `fleet-osv-v6.yml`, and
+`fleet-wasm-candidate-v5.yml`. `scripts/test_fleet_actions_stage.py` checks
+their exact dependency-only delta against the prior main commit, preserves
+active and current-main callee bytes, and binds the Windows ARM installer
+receipts to the workflow pin. Activate these files together at the actual
+landed main commit after the staging PR passes all required checks.
+
 `.github/fleet-workflows.json` names the active file for each workflow family.
 Routing and policy tests read those selected files and require every caller to
 use a full commit SHA reachable from `origin/main`, with exactly the same bytes
