@@ -104,8 +104,8 @@ node scripts/perf/recognition-graph/compare_runs.test.cjs
 ```
 
 Matched source comparisons run through `.github/workflows/preview-performance.yml`.
-Add the existing `ci:benchmark` label to a PR, or dispatch the workflow with a
-base ref. It builds and tests both canonical WASM packages at the PR head and
+Add the existing `ci:benchmark` label to a PR. It builds and tests both
+canonical WASM packages at the PR head and
 its common ancestor with the base, then runs the same candidate driver against
 each. The `preview-performance-<head>` artifact retains package hashes, raw
 captures, process logs and `comparison.json`.

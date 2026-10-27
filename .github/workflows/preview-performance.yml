@@ -3,26 +3,19 @@ name: Preview Performance
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
-  workflow_dispatch:
-    inputs:
-      base_ref:
-        description: Base history used to select the common-ancestor baseline
-        default: origin/main
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
   group: preview-performance-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event.action != 'labeled' || github.event.label.name == 'ci:benchmark' }}
 
 jobs:
   matched-preview:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (contains(github.event.pull_request.labels.*.name, 'ci:benchmark') &&
-       (github.event.action != 'labeled' || github.event.label.name == 'ci:benchmark'))
+      contains(github.event.pull_request.labels.*.name, 'ci:benchmark') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ci:benchmark')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -34,14 +27,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
           path: candidate
       - name: Select the common-ancestor baseline
         id: baseline
         env:
-          BASE_REF: ${{ github.event.pull_request.base.sha || inputs.base_ref || 'origin/main' }}
+          BASE_REF: ${{ github.event.pull_request.base.sha }}
         run: |
           tip=$(git -C candidate rev-parse --verify --end-of-options "${BASE_REF}^{commit}")
           baseline=$(git -C candidate merge-base HEAD "$tip")
