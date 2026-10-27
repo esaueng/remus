@@ -66,9 +66,57 @@ def validate_capture(run, ticks, warmup, kernel_sha, io_sha, harness_sha):
     if (summary["warmedSamples"] != ticks - warmup
             or summary["warmed"]["tick"]["n"] != ticks - warmup):
         raise ValueError("Retained sample count differs")
+    work = validate_work_contract(run)
     return {"samples": summary["warmedSamples"], "stagesMs": summary["warmed"],
             "coldMs": summary["cold"]["stagesMs"],
-            "memoryBefore": summary["memoryBefore"], "memoryAfter": summary["memoryLast"]}
+            "memoryBefore": summary["memoryBefore"], "memoryAfter": summary["memoryLast"],
+            "workContract": work}
+
+
+def validate_work_contract(run):
+    """Rescore raw slot snapshots; a claimed passing summary is not proof."""
+    def slots(snapshot):
+        try:
+            values = tuple(snapshot[key] for key in ["allocatedSlots", "retiredSlots"])
+        except (KeyError, TypeError) as error:
+            raise ValueError("Missing topology-slot snapshot") from error
+        if any(type(value) is not int or value < 0 or value > 2**53 - 1 for value in values):
+            raise ValueError("Invalid topology-slot snapshot")
+        if values[1] > values[0]:
+            raise ValueError("Retired topology exceeds allocated slots")
+        return values
+
+    source = run["metadata"].get("sourceTopologySlots")
+    previous = slots(run["summary"]["memoryBefore"])
+    if type(source) is not int or not 0 < source <= previous[0] or len(run["records"]) < 2:
+        raise ValueError("Invalid source topology inventory or missing recurring work")
+    initial = previous[0]
+    maximum = 0
+    for index, row in enumerate(run["records"]):
+        stages = row.get("memoryStages", {})
+        prior = slots(stages.get("before"))
+        if prior != previous:
+            raise ValueError("Untimed diagnostics changed topology slots")
+        for stage in ["restore", "move", "validate", "mesh", "transfer"]:
+            current = slots(stages.get(stage))
+            allocated, retired = (current[i] - prior[i] for i in range(2))
+            budget = source + (initial if index == 0 else 0) if stage == "move" else 0
+            if not 0 <= allocated <= budget or not 0 <= retired <= (source if stage == "restore" else 0):
+                raise ValueError(f"Preview topology work budget exceeded at tick {index}, {stage}")
+            if index > 0 and stage == "move":
+                maximum = max(maximum, allocated)
+            prior = current
+        previous = slots(row.get("memoryAfter"))
+        if previous != prior:
+            raise ValueError("Untimed quality checks changed topology slots")
+        if previous[0] - previous[1] > 2 * initial + source:
+            raise ValueError("Live topology exceeds the checkpoint, its copy and one edited body")
+    if slots(run["summary"]["memoryLast"]) != previous:
+        raise ValueError("Final topology inventory differs from raw records")
+    return {"sourceSlots": source, "firstMoveSlotBudget": initial + source,
+            "recurringMoveSlotBudget": source, "maximumRecurringSlots": maximum,
+            "liveSlotBudget": 2 * initial + source,
+            "readStageSlotBudget": 0}
 
 
 def main():

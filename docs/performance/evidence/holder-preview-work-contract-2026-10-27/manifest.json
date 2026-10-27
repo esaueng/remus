@@ -1,0 +1,46 @@
+{
+  "date": "2026-10-27",
+  "distributionCommit": "831741cc35c95acd58481ae7943003b97b67ed18",
+  "attributedBuildSource": "1853ad33cee018b01dfe135ccb3415e9503ceb62",
+  "kernelVersion": "2026.1.81",
+  "translatorVersion": "2026.1.81",
+  "portableCaptureEdits": "Absolute package and fixture paths omitted; completion generated-payload filenames omitted while hashes are retained. All other captured observations retained.",
+  "files": {
+    "completion-smoke.json": {
+      "bytes": 63141,
+      "sha256": "7ca075f8b224ccb43a5caf2a198e16d568121280bbe3c47c9b73d02e03c75da7"
+    },
+    "long-session-bg200.json": {
+      "bytes": 865374,
+      "sha256": "7fdf2679954cecb801363d809d8918f917f34cc1bc353f54f7e53145b39100ee"
+    },
+    "package-verification.json": {
+      "bytes": 3559,
+      "sha256": "8ee8347861646cf1b72d1ca71d35cdb04883a4d55d918dc8c0802983d2895dd9"
+    },
+    "parameter-completion.json": {
+      "bytes": 165472,
+      "sha256": "5cd68d7c7c41364fbf8b24bf764d979fb04b3926cb2c952dc5dc5039cef36ea8"
+    },
+    "parameter-preview.json": {
+      "bytes": 114086,
+      "sha256": "2ca007cf28b369de3350b8ddb40d62105f60bf5610c22c9ca82d80364a1f67ee"
+    },
+    "repeated-bg0.json": {
+      "bytes": 121074,
+      "sha256": "0ba11b1b3ca8ec1f721b0629f1b1c80ee357c343b11eaee897f69acc91cc882a"
+    },
+    "rescored-work.json": {
+      "bytes": 1179,
+      "sha256": "3612b11b94ae37c50736c038fe97437cbb56f1da007a12826bc2167a389e24b3"
+    },
+    "unique-bg0.json": {
+      "bytes": 120088,
+      "sha256": "f5fc24d7168437f4e9076993858f44f1d9ce8e06e520368ee734ee8904202f8e"
+    },
+    "unique-bg200.json": {
+      "bytes": 120158,
+      "sha256": "15e6ca4b6e16e56a98e57f9a9d77d85b87c08a6dd0b30a043981fa1036a7348f"
+    }
+  }
+}
