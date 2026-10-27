@@ -1,0 +1,3333 @@
+{
+  "label": "variant",
+  "workflow": "geometry-first",
+  "warmup": 1,
+  "samples": 2,
+  "metadata": {
+    "kernel": {
+      "name": "remus-wasm",
+      "version": "2026.1.81",
+      "wasmBytes": 10666310,
+      "wasmSha256": "02a394340b129b903eef0ef7af49e369950074fe109f8853fdd8ddf00a790df3",
+      "wrapperSha256": "5fa6c40940b66fe52a4a49d291720bc088ff54d4994324986e5bdfdb26c0150e"
+    },
+    "io": {
+      "name": "remus-wasm-io",
+      "version": "2026.1.81",
+      "wasmBytes": 3188493,
+      "wasmSha256": "6bf976b88a98c8ea1ad3da7535f0b5de110a5393c27c06365fa45b893f8cf22a",
+      "wrapperSha256": "fb134e228bb2e5566f9b84dbb290ae602fd896b2b19cceed9f671e3170018469"
+    },
+    "fixture": {
+      "sha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8"
+    },
+    "node": "v24.22.1",
+    "versions": {
+      "node": "24.22.1",
+      "acorn": "8.18.0",
+      "ada": "4.0.0",
+      "amaro": "1.1.11",
+      "ares": "1.34.9",
+      "brotli": "1.2.0",
+      "cldr": "48.0",
+      "icu": "78.3",
+      "llhttp": "9.4.3",
+      "merve": "1.2.2",
+      "modules": "137",
+      "napi": "10",
+      "nbytes": "0.1.4",
+      "ncrypto": "0.0.1",
+      "nghttp2": "1.70.0",
+      "nghttp3": "",
+      "ngtcp2": "",
+      "openssl": "3.5.9",
+      "simdjson": "4.6.11",
+      "simdutf": "6.4.0",
+      "sqlite": "3.53.4",
+      "tz": "2026e",
+      "undici": "7.30.1",
+      "unicode": "17.0",
+      "uv": "1.52.1",
+      "uvwasi": "0.0.23",
+      "v8": "13.6.233.17-node.58",
+      "zlib": "1.3.2.1-motley-285e94b",
+      "zstd": "1.5.7"
+    },
+    "platform": "linux",
+    "architecture": "x64",
+    "cpu": "AMD Ryzen 9 5900XT 16-Core Processor",
+    "affinity": "31",
+    "timing": "performance.now; synchronous public Node WASM API calls; diagnostics and file writes excluded",
+    "timingStatus": "contended-smoke-excluded",
+    "timingsExcluded": true,
+    "policy": {
+      "displayDeflection": 0.02,
+      "displayAngle": 0.35,
+      "measureDeflection": 0.08,
+      "distance": "5 + iteration * 0.02",
+      "selectionAreaTolerance": 0.0001,
+      "sampleKernel": "new BrepKernel + deserializeSolids(source serializeSolids document)",
+      "workflow": "geometry-first",
+      "order": [
+        "move",
+        "validate",
+        "bbox",
+        "meshKernel",
+        "meshTransfer",
+        "volume",
+        "recognize"
+      ],
+      "cacheLimits": "production defaults; face display mesh cache 32 MiB; no benchmark override"
+    },
+    "importMs": 157.86883699999998
+  },
+  "source": {
+    "faces": 160,
+    "surfaceCounts": {
+      "cylinder": 42,
+      "sphere": 8,
+      "plane": 52,
+      "torus": 14,
+      "cone": 2,
+      "nurbs": 42
+    },
+    "analyticRadii": [
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "sphere",
+        3
+      ],
+      [
+        "sphere",
+        3
+      ],
+      [
+        "sphere",
+        3
+      ],
+      [
+        "sphere",
+        3
+      ],
+      [
+        "cylinder",
+        15
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "torus",
+        6,
+        3
+      ],
+      [
+        "torus",
+        6,
+        3
+      ],
+      [
+        "torus",
+        12,
+        3
+      ],
+      [
+        "torus",
+        12,
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "sphere",
+        3
+      ],
+      [
+        "sphere",
+        3
+      ],
+      [
+        "sphere",
+        3
+      ],
+      [
+        "sphere",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "torus",
+        6,
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "torus",
+        12,
+        3
+      ],
+      [
+        "cylinder",
+        15
+      ],
+      [
+        "torus",
+        12,
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "torus",
+        6,
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "torus",
+        11,
+        3
+      ],
+      [
+        "torus",
+        8,
+        3
+      ],
+      [
+        "torus",
+        11,
+        3
+      ],
+      [
+        "torus",
+        8,
+        3
+      ],
+      [
+        "cylinder",
+        2.5
+      ],
+      [
+        "cylinder",
+        2.5
+      ],
+      [
+        "cylinder",
+        8
+      ],
+      [
+        "torus",
+        11,
+        8
+      ],
+      [
+        "cylinder",
+        14
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        5
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "cylinder",
+        14
+      ],
+      [
+        "cylinder",
+        8
+      ],
+      [
+        "cylinder",
+        5
+      ],
+      [
+        "cylinder",
+        3
+      ],
+      [
+        "torus",
+        11,
+        8
+      ]
+    ],
+    "planesAtExpectedX": [
+      {
+        "parameters": {
+          "d": -48,
+          "normal": [
+            -1,
+            0,
+            0
+          ],
+          "type": "plane"
+        },
+        "xValues": [
+          48,
+          48,
+          48,
+          48,
+          48,
+          48,
+          48,
+          48,
+          48,
+          48
+        ],
+        "area": 1045.930732416709
+      }
+    ],
+    "bbox": [
+      -26,
+      6.5,
+      4.5,
+      48,
+      59.5,
+      62.5
+    ],
+    "volume": 50245.21946863582,
+    "volumeBits": "ab16e305a788e840",
+    "features": [
+      {
+        "area": 18.849555915881922,
+        "face": 0,
+        "type": "filletLike"
+      },
+      {
+        "area": 14.137166941154057,
+        "face": 2,
+        "type": "filletLike"
+      },
+      {
+        "area": 7.06858346586463,
+        "face": 3,
+        "type": "filletLike"
+      },
+      {
+        "area": 7.068583473301002,
+        "face": 5,
+        "type": "filletLike"
+      },
+      {
+        "area": 14.13716694115407,
+        "face": 7,
+        "type": "filletLike"
+      },
+      {
+        "area": 8.281360661157617,
+        "face": 11,
+        "type": "filletLike"
+      },
+      {
+        "area": 18.849555915881908,
+        "face": 13,
+        "type": "filletLike"
+      },
+      {
+        "area": 8.281360661157619,
+        "face": 15,
+        "type": "filletLike"
+      },
+      {
+        "area": 15.138026431873964,
+        "face": 17,
+        "type": "filletLike"
+      },
+      {
+        "area": 15.138026435206129,
+        "face": 18,
+        "type": "filletLike"
+      },
+      {
+        "area": 18.849555915881922,
+        "face": 30,
+        "type": "filletLike"
+      },
+      {
+        "area": 7.068583473301002,
+        "face": 31,
+        "type": "filletLike"
+      },
+      {
+        "area": 14.137166941154069,
+        "face": 32,
+        "type": "filletLike"
+      },
+      {
+        "area": 14.13716694115407,
+        "face": 34,
+        "type": "filletLike"
+      },
+      {
+        "area": 7.0685834658646325,
+        "face": 36,
+        "type": "filletLike"
+      },
+      {
+        "area": 18.8495559158819,
+        "face": 38,
+        "type": "filletLike"
+      },
+      {
+        "area": 15.138026428541863,
+        "face": 40,
+        "type": "filletLike"
+      },
+      {
+        "area": 8.281360661157617,
+        "face": 42,
+        "type": "filletLike"
+      },
+      {
+        "area": 8.281360661157617,
+        "face": 49,
+        "type": "filletLike"
+      },
+      {
+        "area": 15.138026435206122,
+        "face": 51,
+        "type": "filletLike"
+      },
+      {
+        "area": 3.900082876279176,
+        "face": 74,
+        "type": "filletLike"
+      },
+      {
+        "area": 9.19405645306772,
+        "face": 79,
+        "type": "filletLike"
+      },
+      {
+        "area": 9.194056453067706,
+        "face": 85,
+        "type": "filletLike"
+      },
+      {
+        "area": 3.9000828291804015,
+        "face": 88,
+        "type": "filletLike"
+      },
+      {
+        "area": 0.16674962607460192,
+        "face": 92,
+        "type": "filletLike"
+      },
+      {
+        "area": 0.6853396181210575,
+        "face": 94,
+        "type": "filletLike"
+      },
+      {
+        "area": 2.5198492413312192,
+        "face": 96,
+        "type": "filletLike"
+      },
+      {
+        "area": 1.0151263088727296,
+        "face": 98,
+        "type": "filletLike"
+      },
+      {
+        "area": 0.5390421966966628,
+        "face": 100,
+        "type": "filletLike"
+      },
+      {
+        "area": 2.7968199860395453,
+        "face": 101,
+        "type": "filletLike"
+      },
+      {
+        "area": 0.9754904064310961,
+        "face": 102,
+        "type": "filletLike"
+      },
+      {
+        "area": 0.30822924497374155,
+        "face": 103,
+        "type": "filletLike"
+      },
+      {
+        "area": 0.33693413140495426,
+        "face": 104,
+        "type": "filletLike"
+      },
+      {
+        "area": 0.26320697527080045,
+        "face": 106,
+        "type": "filletLike"
+      },
+      {
+        "area": 0.22289290011677612,
+        "face": 107,
+        "type": "filletLike"
+      },
+      {
+        "area": 0.06587002792775029,
+        "face": 108,
+        "type": "filletLike"
+      },
+      {
+        "area": 3.619307037078444,
+        "face": 111,
+        "type": "filletLike"
+      },
+      {
+        "area": 1.7896433376802232,
+        "face": 112,
+        "type": "filletLike"
+      },
+      {
+        "area": 1.787261643357663,
+        "face": 113,
+        "type": "filletLike"
+      },
+      {
+        "area": 3.068667318183586,
+        "face": 114,
+        "type": "filletLike"
+      },
+      {
+        "area": 0.8671181414056107,
+        "face": 117,
+        "type": "filletLike"
+      },
+      {
+        "area": 0.19453181447799398,
+        "face": 118,
+        "type": "filletLike"
+      },
+      {
+        "area": 0.2763729779999218,
+        "face": 119,
+        "type": "filletLike"
+      },
+      {
+        "area": 0.9189435757743141,
+        "face": 120,
+        "type": "filletLike"
+      },
+      {
+        "area": 2.986319081258222,
+        "face": 122,
+        "type": "filletLike"
+      },
+      {
+        "area": 1.175069189288641,
+        "face": 123,
+        "type": "filletLike"
+      },
+      {
+        "area": 0.24521799764884347,
+        "face": 124,
+        "type": "filletLike"
+      },
+      {
+        "area": 0.806796386588049,
+        "face": 125,
+        "type": "filletLike"
+      },
+      {
+        "area": 2.868920472990396,
+        "face": 127,
+        "type": "filletLike"
+      },
+      {
+        "area": 2.89333360278964,
+        "face": 130,
+        "type": "filletLike"
+      },
+      {
+        "area": 5.785646454311896,
+        "face": 132,
+        "type": "filletLike"
+      },
+      {
+        "area": 1.9807375672692245,
+        "face": 142,
+        "type": "filletLike"
+      },
+      {
+        "area": 1.977906987009492,
+        "face": 146,
+        "type": "filletLike"
+      },
+      {
+        "area": 2.0397247870029998,
+        "face": 150,
+        "type": "filletLike"
+      },
+      {
+        "area": 1.2365404718363096,
+        "face": 152,
+        "type": "filletLike"
+      },
+      {
+        "area": 1.013752229174976,
+        "face": 154,
+        "type": "filletLike"
+      },
+      {
+        "area": 0.38250505817791497,
+        "face": 155,
+        "type": "filletLike"
+      },
+      {
+        "area": 4.1096392912825905,
+        "face": 157,
+        "type": "filletLike"
+      },
+      {
+        "diameter": 6,
+        "faces": [
+          13
+        ],
+        "through": false,
+        "type": "hole"
+      },
+      {
+        "diameter": 6,
+        "faces": [
+          38
+        ],
+        "through": false,
+        "type": "hole"
+      },
+      {
+        "diameter": 5,
+        "faces": [
+          67
+        ],
+        "through": false,
+        "type": "hole"
+      },
+      {
+        "diameter": 5,
+        "faces": [
+          70
+        ],
+        "through": false,
+        "type": "hole"
+      },
+      {
+        "diameter": 10,
+        "faces": [
+          80
+        ],
+        "through": false,
+        "type": "hole"
+      },
+      {
+        "diameter": 16,
+        "faces": [
+          71,
+          83
+        ],
+        "through": false,
+        "type": "hole"
+      },
+      {
+        "diameter": 10,
+        "faces": [
+          84
+        ],
+        "through": false,
+        "type": "hole"
+      },
+      {
+        "floor": 57,
+        "type": "pocket",
+        "walls": [
+          92,
+          93,
+          94,
+          95,
+          96,
+          97,
+          98,
+          99,
+          100,
+          101,
+          108,
+          111,
+          114,
+          117,
+          118,
+          119,
+          120,
+          121,
+          122,
+          123,
+          124,
+          125,
+          126,
+          127,
+          129,
+          130,
+          131,
+          132,
+          134,
+          135,
+          136,
+          137,
+          139,
+          140,
+          141,
+          142,
+          143,
+          144,
+          145,
+          146,
+          147,
+          148,
+          150,
+          151,
+          152,
+          153,
+          157
+        ]
+      },
+      {
+        "floor": 110,
+        "type": "pocket",
+        "walls": [
+          102,
+          103,
+          104,
+          105,
+          106,
+          107
+        ]
+      },
+      {
+        "floor": 116,
+        "type": "pocket",
+        "walls": [
+          112,
+          113
+        ]
+      },
+      {
+        "floor": 156,
+        "type": "pocket",
+        "walls": [
+          154,
+          155,
+          159
+        ]
+      }
+    ],
+    "featuresJsonSha256": "8b30f6133af581d9550f2b9f6018e2c7c3134d3291bb73d1b9c62962344aff4a",
+    "mesh": {
+      "vertices": 29141,
+      "triangles": 58286,
+      "boundaryEdges": 0,
+      "nonManifoldEdges": 0,
+      "watertight": true,
+      "signedVolumeFromFloat32": 50231.470870012105
+    },
+    "arenaSha256": "cad2ca1bf3e70b9d8c86952c09f1f0457b2f12efe3098acd0eb7fa7e024e2cf4",
+    "artifacts": {
+      "positions": {
+        "elements": 87423,
+        "sha256": "c395ff3810537c5b6b4870a66f8a6a2fb099e87355862d75c0005207633503ef"
+      },
+      "normals": {
+        "elements": 87423,
+        "sha256": "be9d64d922dfed263f9afd3a96092f853980582b8997b75a259c99a565b27a2d"
+      },
+      "indices": {
+        "elements": 174858,
+        "sha256": "b389e76531cee94c5ee7e4dfe3298304c490dcb0ee2295f751f7baf675660901"
+      },
+      "faceOffsets": {
+        "elements": 161,
+        "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+      },
+      "arena": {
+        "sha256": "cad2ca1bf3e70b9d8c86952c09f1f0457b2f12efe3098acd0eb7fa7e024e2cf4"
+      }
+    },
+    "selectedFace": {
+      "face": 27,
+      "index": 27,
+      "area": 1045.930732416709,
+      "positions": [
+        [
+          48,
+          21.5,
+          59.5
+        ],
+        [
+          48,
+          9.5,
+          47.5
+        ],
+        [
+          48,
+          34.5,
+          59.5
+        ],
+        [
+          48,
+          34.5,
+          57.742640687
+        ],
+        [
+          48,
+          28.257359313,
+          51.5
+        ],
+        [
+          48,
+          26.5,
+          47.257359313
+        ],
+        [
+          48,
+          26.50000002,
+          9.500000074
+        ],
+        [
+          48,
+          45.5,
+          9.5
+        ],
+        [
+          48,
+          45.5,
+          4.5
+        ],
+        [
+          48,
+          9.5,
+          4.5
+        ]
+      ],
+      "score": 1.1740119134628912e-06
+    },
+    "stagesMs": {
+      "volume": 1243.0944089999998,
+      "validate": 7.135276000000204,
+      "meshKernel": 335.444939,
+      "meshTransfer": 0.4013689999999315,
+      "recognize": 513.2815229999999
+    }
+  },
+  "records": [
+    {
+      "iteration": 0,
+      "warmup": true,
+      "distance": 5,
+      "valid": true,
+      "constructorMs": 0.02620999999999185,
+      "restoreMs": 10.046983000000182,
+      "stagesMs": {
+        "move": 99.60323100000005,
+        "validate": 2.797762000000148,
+        "bbox": 0.8635329999997339,
+        "meshKernel": 32.368633000000045,
+        "meshTransfer": 0.1664650000002439,
+        "volume": 19.764102000000094,
+        "recognize": 46.396725999999944,
+        "mesh": 32.53509800000029,
+        "kernelPipeline": 201.79398700000002,
+        "pipelineWithTransfer": 201.96045200000026,
+        "restoredPipeline": 212.03364500000043
+      },
+      "faces": 160,
+      "surfaceCounts": {
+        "cylinder": 42,
+        "sphere": 8,
+        "plane": 52,
+        "torus": 14,
+        "cone": 2,
+        "nurbs": 42
+      },
+      "analyticRadii": [
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "cylinder",
+          15
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          6,
+          3
+        ],
+        [
+          "torus",
+          6,
+          3
+        ],
+        [
+          "torus",
+          12,
+          3
+        ],
+        [
+          "torus",
+          12,
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          6,
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          12,
+          3
+        ],
+        [
+          "cylinder",
+          15
+        ],
+        [
+          "torus",
+          12,
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          6,
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          11,
+          3
+        ],
+        [
+          "torus",
+          8,
+          3
+        ],
+        [
+          "torus",
+          11,
+          3
+        ],
+        [
+          "torus",
+          8,
+          3
+        ],
+        [
+          "cylinder",
+          2.5
+        ],
+        [
+          "cylinder",
+          2.5
+        ],
+        [
+          "cylinder",
+          8
+        ],
+        [
+          "torus",
+          11,
+          8
+        ],
+        [
+          "cylinder",
+          14
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          5
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          14
+        ],
+        [
+          "cylinder",
+          8
+        ],
+        [
+          "cylinder",
+          5
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          11,
+          8
+        ]
+      ],
+      "planesAtExpectedX": [
+        {
+          "parameters": {
+            "d": -53,
+            "normal": [
+              -1,
+              0,
+              0
+            ],
+            "type": "plane"
+          },
+          "xValues": [
+            53,
+            53,
+            53,
+            53,
+            53,
+            53,
+            53,
+            53,
+            53,
+            53
+          ],
+          "area": 1045.930732416709
+        }
+      ],
+      "bbox": [
+        -26,
+        6.5,
+        4.5,
+        53,
+        59.5,
+        62.5
+      ],
+      "volume": 58323.15310241499,
+      "volumeBits": "2a0937e6647aec40",
+      "features": [
+        {
+          "area": 14.137166941154057,
+          "face": 162,
+          "type": "filletLike"
+        },
+        {
+          "area": 7.068583465864631,
+          "face": 163,
+          "type": "filletLike"
+        },
+        {
+          "area": 7.068583473301002,
+          "face": 165,
+          "type": "filletLike"
+        },
+        {
+          "area": 14.13716694115407,
+          "face": 167,
+          "type": "filletLike"
+        },
+        {
+          "area": 8.281360661157617,
+          "face": 171,
+          "type": "filletLike"
+        },
+        {
+          "area": 8.281360661157619,
+          "face": 175,
+          "type": "filletLike"
+        },
+        {
+          "area": 15.138026431873964,
+          "face": 177,
+          "type": "filletLike"
+        },
+        {
+          "area": 15.138026435206129,
+          "face": 178,
+          "type": "filletLike"
+        },
+        {
+          "area": 18.849555915881922,
+          "face": 190,
+          "type": "filletLike"
+        },
+        {
+          "area": 7.068583473301002,
+          "face": 191,
+          "type": "filletLike"
+        },
+        {
+          "area": 14.137166941154069,
+          "face": 192,
+          "type": "filletLike"
+        },
+        {
+          "area": 14.13716694115407,
+          "face": 194,
+          "type": "filletLike"
+        },
+        {
+          "area": 7.0685834658646325,
+          "face": 196,
+          "type": "filletLike"
+        },
+        {
+          "area": 18.8495559158819,
+          "face": 198,
+          "type": "filletLike"
+        },
+        {
+          "area": 15.138026428541863,
+          "face": 200,
+          "type": "filletLike"
+        },
+        {
+          "area": 8.281360661157617,
+          "face": 202,
+          "type": "filletLike"
+        },
+        {
+          "area": 8.281360661157617,
+          "face": 209,
+          "type": "filletLike"
+        },
+        {
+          "area": 15.138026435206122,
+          "face": 211,
+          "type": "filletLike"
+        },
+        {
+          "area": 3.900082876279176,
+          "face": 234,
+          "type": "filletLike"
+        },
+        {
+          "area": 23.46685037215317,
+          "face": 235,
+          "type": "filletLike"
+        },
+        {
+          "area": 9.19405645306772,
+          "face": 239,
+          "type": "filletLike"
+        },
+        {
+          "area": 9.194056453067706,
+          "face": 245,
+          "type": "filletLike"
+        },
+        {
+          "area": 23.471018628098346,
+          "face": 247,
+          "type": "filletLike"
+        },
+        {
+          "area": 3.9000828291804015,
+          "face": 248,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.16674962607460192,
+          "face": 252,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.6853396181210575,
+          "face": 254,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.5198492413312192,
+          "face": 256,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.0151263088727296,
+          "face": 258,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.5390421966966628,
+          "face": 260,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.7968199860395453,
+          "face": 261,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.9754904064310961,
+          "face": 262,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.30822924497374155,
+          "face": 263,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.33693413140495426,
+          "face": 264,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.26320697527080045,
+          "face": 266,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.22289290011677612,
+          "face": 267,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.06587002792775029,
+          "face": 268,
+          "type": "filletLike"
+        },
+        {
+          "area": 3.619307037078444,
+          "face": 271,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.7896433376802232,
+          "face": 272,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.787261643357663,
+          "face": 273,
+          "type": "filletLike"
+        },
+        {
+          "area": 3.068667318183586,
+          "face": 274,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.8671181414056107,
+          "face": 277,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.19453181447799398,
+          "face": 278,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.2763729779999218,
+          "face": 279,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.9189435757743141,
+          "face": 280,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.986319081258222,
+          "face": 282,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.175069189288641,
+          "face": 283,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.24521799764884347,
+          "face": 284,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.806796386588049,
+          "face": 285,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.868920472990396,
+          "face": 287,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.89333360278964,
+          "face": 290,
+          "type": "filletLike"
+        },
+        {
+          "area": 5.785646454311896,
+          "face": 292,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.9807375672692245,
+          "face": 302,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.977906987009492,
+          "face": 306,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.0397247870029998,
+          "face": 310,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.2365404718363096,
+          "face": 312,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.013752229174976,
+          "face": 314,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.38250505817791497,
+          "face": 315,
+          "type": "filletLike"
+        },
+        {
+          "area": 4.1096392912825905,
+          "face": 317,
+          "type": "filletLike"
+        },
+        {
+          "diameter": 6,
+          "faces": [
+            173
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 6,
+          "faces": [
+            198
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 5,
+          "faces": [
+            227
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 5,
+          "faces": [
+            230
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 10,
+          "faces": [
+            240
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 16,
+          "faces": [
+            231,
+            243
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 10,
+          "faces": [
+            244
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "floor": 217,
+          "type": "pocket",
+          "walls": [
+            252,
+            253,
+            254,
+            255,
+            256,
+            257,
+            258,
+            259,
+            260,
+            261,
+            268,
+            271,
+            274,
+            277,
+            278,
+            279,
+            280,
+            281,
+            282,
+            283,
+            284,
+            285,
+            286,
+            287,
+            289,
+            290,
+            291,
+            292,
+            294,
+            295,
+            296,
+            297,
+            299,
+            300,
+            301,
+            302,
+            303,
+            304,
+            305,
+            306,
+            307,
+            308,
+            310,
+            311,
+            312,
+            313,
+            317
+          ]
+        },
+        {
+          "floor": 270,
+          "type": "pocket",
+          "walls": [
+            262,
+            263,
+            264,
+            265,
+            266,
+            267
+          ]
+        },
+        {
+          "floor": 276,
+          "type": "pocket",
+          "walls": [
+            272,
+            273
+          ]
+        },
+        {
+          "floor": 316,
+          "type": "pocket",
+          "walls": [
+            314,
+            315,
+            319
+          ]
+        }
+      ],
+      "featuresJsonSha256": "963a2750ec1b769e3b4128fe1803dc32c0dd7d381c0ad5f96d933570ee671603",
+      "mesh": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58308.79702072338
+      },
+      "arenaSha256": "0c1a7f57aa96a6c23c720a8d366bcb52a35d11733083da2d56676b78b054633d",
+      "artifacts": {
+        "positions": {
+          "elements": 87423,
+          "sha256": "2677d580aacfff555025b8421722ed7ae0566a2b13ff97888c9a52ad4446ccfa"
+        },
+        "normals": {
+          "elements": 87423,
+          "sha256": "6679c47353f52210f7d116450389bda15d1f5e7c6218671be6bd1df2273ac2b9"
+        },
+        "indices": {
+          "elements": 174858,
+          "sha256": "8f259340bfbfe5c798cca7027181671c39a082f8cea6f5dd0b413dd8b75413d8"
+        },
+        "faceOffsets": {
+          "elements": 161,
+          "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+        },
+        "arena": {
+          "sha256": "0c1a7f57aa96a6c23c720a8d366bcb52a35d11733083da2d56676b78b054633d"
+        }
+      }
+    },
+    {
+      "iteration": 1,
+      "warmup": false,
+      "distance": 5.02,
+      "valid": true,
+      "constructorMs": 0.007945000000290747,
+      "restoreMs": 6.919718000000103,
+      "stagesMs": {
+        "move": 29.884634000000005,
+        "validate": 1.5698489999999765,
+        "bbox": 0.8143599999998514,
+        "meshKernel": 31.371446000000105,
+        "meshTransfer": 0.14006500000004962,
+        "volume": 21.663825999999972,
+        "recognize": 51.273119999999835,
+        "mesh": 31.511511000000155,
+        "kernelPipeline": 136.57723499999975,
+        "pipelineWithTransfer": 136.7172999999998,
+        "restoredPipeline": 143.6449630000002
+      },
+      "faces": 160,
+      "surfaceCounts": {
+        "cylinder": 42,
+        "sphere": 8,
+        "plane": 52,
+        "torus": 14,
+        "cone": 2,
+        "nurbs": 42
+      },
+      "analyticRadii": [
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "cylinder",
+          15
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          6,
+          3
+        ],
+        [
+          "torus",
+          6,
+          3
+        ],
+        [
+          "torus",
+          12,
+          3
+        ],
+        [
+          "torus",
+          12,
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          6,
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          12,
+          3
+        ],
+        [
+          "cylinder",
+          15
+        ],
+        [
+          "torus",
+          12,
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          6,
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          11,
+          3
+        ],
+        [
+          "torus",
+          8,
+          3
+        ],
+        [
+          "torus",
+          11,
+          3
+        ],
+        [
+          "torus",
+          8,
+          3
+        ],
+        [
+          "cylinder",
+          2.5
+        ],
+        [
+          "cylinder",
+          2.5
+        ],
+        [
+          "cylinder",
+          8
+        ],
+        [
+          "torus",
+          11,
+          8
+        ],
+        [
+          "cylinder",
+          14
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          5
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          14
+        ],
+        [
+          "cylinder",
+          8
+        ],
+        [
+          "cylinder",
+          5
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          11,
+          8
+        ]
+      ],
+      "planesAtExpectedX": [
+        {
+          "parameters": {
+            "d": -53.019999999999996,
+            "normal": [
+              -1,
+              0,
+              0
+            ],
+            "type": "plane"
+          },
+          "xValues": [
+            53.019999999999996,
+            53.019999999999996,
+            53.019999999999996,
+            53.019999999999996,
+            53.019999999999996,
+            53.019999999999996,
+            53.019999999999996,
+            53.019999999999996,
+            53.019999999999996,
+            53.019999999999996
+          ],
+          "area": 1045.930732416709
+        }
+      ],
+      "bbox": [
+        -26,
+        6.5,
+        4.5,
+        53.019999999999996,
+        59.5,
+        62.5
+      ],
+      "volume": 58355.4648369503,
+      "volumeBits": "70bdf1df6e7eec40",
+      "features": [
+        {
+          "area": 14.137166941154057,
+          "face": 162,
+          "type": "filletLike"
+        },
+        {
+          "area": 7.068583465864631,
+          "face": 163,
+          "type": "filletLike"
+        },
+        {
+          "area": 7.068583473301002,
+          "face": 165,
+          "type": "filletLike"
+        },
+        {
+          "area": 14.13716694115407,
+          "face": 167,
+          "type": "filletLike"
+        },
+        {
+          "area": 8.281360661157617,
+          "face": 171,
+          "type": "filletLike"
+        },
+        {
+          "area": 8.281360661157619,
+          "face": 175,
+          "type": "filletLike"
+        },
+        {
+          "area": 15.138026431873964,
+          "face": 177,
+          "type": "filletLike"
+        },
+        {
+          "area": 15.138026435206129,
+          "face": 178,
+          "type": "filletLike"
+        },
+        {
+          "area": 18.849555915881922,
+          "face": 190,
+          "type": "filletLike"
+        },
+        {
+          "area": 7.068583473301002,
+          "face": 191,
+          "type": "filletLike"
+        },
+        {
+          "area": 14.137166941154069,
+          "face": 192,
+          "type": "filletLike"
+        },
+        {
+          "area": 14.13716694115407,
+          "face": 194,
+          "type": "filletLike"
+        },
+        {
+          "area": 7.0685834658646325,
+          "face": 196,
+          "type": "filletLike"
+        },
+        {
+          "area": 18.8495559158819,
+          "face": 198,
+          "type": "filletLike"
+        },
+        {
+          "area": 15.138026428541863,
+          "face": 200,
+          "type": "filletLike"
+        },
+        {
+          "area": 8.281360661157617,
+          "face": 202,
+          "type": "filletLike"
+        },
+        {
+          "area": 8.281360661157617,
+          "face": 209,
+          "type": "filletLike"
+        },
+        {
+          "area": 15.138026435206122,
+          "face": 211,
+          "type": "filletLike"
+        },
+        {
+          "area": 3.900082876279176,
+          "face": 234,
+          "type": "filletLike"
+        },
+        {
+          "area": 23.46685037215317,
+          "face": 235,
+          "type": "filletLike"
+        },
+        {
+          "area": 9.19405645306772,
+          "face": 239,
+          "type": "filletLike"
+        },
+        {
+          "area": 9.194056453067706,
+          "face": 245,
+          "type": "filletLike"
+        },
+        {
+          "area": 23.471018628098346,
+          "face": 247,
+          "type": "filletLike"
+        },
+        {
+          "area": 3.9000828291804015,
+          "face": 248,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.16674962607460192,
+          "face": 252,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.6853396181210575,
+          "face": 254,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.5198492413312192,
+          "face": 256,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.0151263088727296,
+          "face": 258,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.5390421966966628,
+          "face": 260,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.7968199860395453,
+          "face": 261,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.9754904064310961,
+          "face": 262,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.30822924497374155,
+          "face": 263,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.33693413140495426,
+          "face": 264,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.26320697527080045,
+          "face": 266,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.22289290011677612,
+          "face": 267,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.06587002792775029,
+          "face": 268,
+          "type": "filletLike"
+        },
+        {
+          "area": 3.619307037078444,
+          "face": 271,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.7896433376802232,
+          "face": 272,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.787261643357663,
+          "face": 273,
+          "type": "filletLike"
+        },
+        {
+          "area": 3.068667318183586,
+          "face": 274,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.8671181414056107,
+          "face": 277,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.19453181447799398,
+          "face": 278,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.2763729779999218,
+          "face": 279,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.9189435757743141,
+          "face": 280,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.986319081258222,
+          "face": 282,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.175069189288641,
+          "face": 283,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.24521799764884347,
+          "face": 284,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.806796386588049,
+          "face": 285,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.868920472990396,
+          "face": 287,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.89333360278964,
+          "face": 290,
+          "type": "filletLike"
+        },
+        {
+          "area": 5.785646454311896,
+          "face": 292,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.9807375672692245,
+          "face": 302,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.977906987009492,
+          "face": 306,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.0397247870029998,
+          "face": 310,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.2365404718363096,
+          "face": 312,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.013752229174976,
+          "face": 314,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.38250505817791497,
+          "face": 315,
+          "type": "filletLike"
+        },
+        {
+          "area": 4.1096392912825905,
+          "face": 317,
+          "type": "filletLike"
+        },
+        {
+          "diameter": 6,
+          "faces": [
+            173
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 6,
+          "faces": [
+            198
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 5,
+          "faces": [
+            227
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 5,
+          "faces": [
+            230
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 10,
+          "faces": [
+            240
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 16,
+          "faces": [
+            231,
+            243
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 10,
+          "faces": [
+            244
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "floor": 217,
+          "type": "pocket",
+          "walls": [
+            252,
+            253,
+            254,
+            255,
+            256,
+            257,
+            258,
+            259,
+            260,
+            261,
+            268,
+            271,
+            274,
+            277,
+            278,
+            279,
+            280,
+            281,
+            282,
+            283,
+            284,
+            285,
+            286,
+            287,
+            289,
+            290,
+            291,
+            292,
+            294,
+            295,
+            296,
+            297,
+            299,
+            300,
+            301,
+            302,
+            303,
+            304,
+            305,
+            306,
+            307,
+            308,
+            310,
+            311,
+            312,
+            313,
+            317
+          ]
+        },
+        {
+          "floor": 270,
+          "type": "pocket",
+          "walls": [
+            262,
+            263,
+            264,
+            265,
+            266,
+            267
+          ]
+        },
+        {
+          "floor": 276,
+          "type": "pocket",
+          "walls": [
+            272,
+            273
+          ]
+        },
+        {
+          "floor": 316,
+          "type": "pocket",
+          "walls": [
+            314,
+            315,
+            319
+          ]
+        }
+      ],
+      "featuresJsonSha256": "963a2750ec1b769e3b4128fe1803dc32c0dd7d381c0ad5f96d933570ee671603",
+      "mesh": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58341.10668256667
+      },
+      "arenaSha256": "b9eef59bb849bb0ad0923e4d3aaba84d0bc21ff68da460c9ae4620e3ca295f71",
+      "artifacts": {
+        "positions": {
+          "elements": 87423,
+          "sha256": "2cf2a06615d1f3a7e63d8bbc66679ae8fe7cf1bc2e3ae6dd293230af588ddcf2"
+        },
+        "normals": {
+          "elements": 87423,
+          "sha256": "13f147147e65bdff2855fac6c0d2708ebe7de44899f13c5d90a27dbfcb97d189"
+        },
+        "indices": {
+          "elements": 174858,
+          "sha256": "e1491ab9562bff2f5eae80668e8c874d6f4662bb699166168480c801c9ad80a1"
+        },
+        "faceOffsets": {
+          "elements": 161,
+          "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+        },
+        "arena": {
+          "sha256": "b9eef59bb849bb0ad0923e4d3aaba84d0bc21ff68da460c9ae4620e3ca295f71"
+        }
+      }
+    },
+    {
+      "iteration": 2,
+      "warmup": false,
+      "distance": 5.04,
+      "valid": true,
+      "constructorMs": 0.009308000000146421,
+      "restoreMs": 7.096271999999772,
+      "stagesMs": {
+        "move": 27.88556299999982,
+        "validate": 3.7402640000000247,
+        "bbox": 0.8019169999997757,
+        "meshKernel": 31.037014,
+        "meshTransfer": 0.13774999999986903,
+        "volume": 20.87043500000027,
+        "recognize": 45.18523400000004,
+        "mesh": 31.17476399999987,
+        "kernelPipeline": 129.52042699999993,
+        "pipelineWithTransfer": 129.6581769999998,
+        "restoredPipeline": 136.7637569999997
+      },
+      "faces": 160,
+      "surfaceCounts": {
+        "cylinder": 42,
+        "sphere": 8,
+        "plane": 52,
+        "torus": 14,
+        "cone": 2,
+        "nurbs": 42
+      },
+      "analyticRadii": [
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "cylinder",
+          15
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          6,
+          3
+        ],
+        [
+          "torus",
+          6,
+          3
+        ],
+        [
+          "torus",
+          12,
+          3
+        ],
+        [
+          "torus",
+          12,
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "sphere",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          6,
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          12,
+          3
+        ],
+        [
+          "cylinder",
+          15
+        ],
+        [
+          "torus",
+          12,
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          6,
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          11,
+          3
+        ],
+        [
+          "torus",
+          8,
+          3
+        ],
+        [
+          "torus",
+          11,
+          3
+        ],
+        [
+          "torus",
+          8,
+          3
+        ],
+        [
+          "cylinder",
+          2.5
+        ],
+        [
+          "cylinder",
+          2.5
+        ],
+        [
+          "cylinder",
+          8
+        ],
+        [
+          "torus",
+          11,
+          8
+        ],
+        [
+          "cylinder",
+          14
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          5
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "cylinder",
+          14
+        ],
+        [
+          "cylinder",
+          8
+        ],
+        [
+          "cylinder",
+          5
+        ],
+        [
+          "cylinder",
+          3
+        ],
+        [
+          "torus",
+          11,
+          8
+        ]
+      ],
+      "planesAtExpectedX": [
+        {
+          "parameters": {
+            "d": -53.04,
+            "normal": [
+              -1,
+              0,
+              0
+            ],
+            "type": "plane"
+          },
+          "xValues": [
+            53.04,
+            53.04,
+            53.04,
+            53.04,
+            53.04,
+            53.04,
+            53.04,
+            53.04,
+            53.04,
+            53.04
+          ],
+          "area": 1045.930732416709
+        }
+      ],
+      "bbox": [
+        -26,
+        6.5,
+        4.5,
+        53.04,
+        59.5,
+        62.5
+      ],
+      "volume": 58387.776571485425,
+      "volumeBits": "9d71acd97882ec40",
+      "features": [
+        {
+          "area": 14.137166941154064,
+          "face": 162,
+          "type": "filletLike"
+        },
+        {
+          "area": 7.068583465864631,
+          "face": 163,
+          "type": "filletLike"
+        },
+        {
+          "area": 7.068583473301002,
+          "face": 165,
+          "type": "filletLike"
+        },
+        {
+          "area": 14.13716694115407,
+          "face": 167,
+          "type": "filletLike"
+        },
+        {
+          "area": 8.28136066115762,
+          "face": 171,
+          "type": "filletLike"
+        },
+        {
+          "area": 8.281360661157619,
+          "face": 175,
+          "type": "filletLike"
+        },
+        {
+          "area": 15.138026431873964,
+          "face": 177,
+          "type": "filletLike"
+        },
+        {
+          "area": 15.138026435206129,
+          "face": 178,
+          "type": "filletLike"
+        },
+        {
+          "area": 18.849555915881922,
+          "face": 190,
+          "type": "filletLike"
+        },
+        {
+          "area": 7.068583473301002,
+          "face": 191,
+          "type": "filletLike"
+        },
+        {
+          "area": 14.137166941154069,
+          "face": 192,
+          "type": "filletLike"
+        },
+        {
+          "area": 14.13716694115407,
+          "face": 194,
+          "type": "filletLike"
+        },
+        {
+          "area": 7.0685834658646325,
+          "face": 196,
+          "type": "filletLike"
+        },
+        {
+          "area": 18.8495559158819,
+          "face": 198,
+          "type": "filletLike"
+        },
+        {
+          "area": 15.138026428541863,
+          "face": 200,
+          "type": "filletLike"
+        },
+        {
+          "area": 8.281360661157617,
+          "face": 202,
+          "type": "filletLike"
+        },
+        {
+          "area": 8.281360661157617,
+          "face": 209,
+          "type": "filletLike"
+        },
+        {
+          "area": 15.138026435206122,
+          "face": 211,
+          "type": "filletLike"
+        },
+        {
+          "area": 3.900082876279176,
+          "face": 234,
+          "type": "filletLike"
+        },
+        {
+          "area": 23.46685037215317,
+          "face": 235,
+          "type": "filletLike"
+        },
+        {
+          "area": 9.19405645306772,
+          "face": 239,
+          "type": "filletLike"
+        },
+        {
+          "area": 9.194056453067706,
+          "face": 245,
+          "type": "filletLike"
+        },
+        {
+          "area": 23.471018628098346,
+          "face": 247,
+          "type": "filletLike"
+        },
+        {
+          "area": 3.9000828291804015,
+          "face": 248,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.16674962607460192,
+          "face": 252,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.6853396181210575,
+          "face": 254,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.5198492413312192,
+          "face": 256,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.0151263088727296,
+          "face": 258,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.5390421966966628,
+          "face": 260,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.7968199860395453,
+          "face": 261,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.9754904064310961,
+          "face": 262,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.30822924497374155,
+          "face": 263,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.33693413140495426,
+          "face": 264,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.26320697527080045,
+          "face": 266,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.22289290011677612,
+          "face": 267,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.06587002792775029,
+          "face": 268,
+          "type": "filletLike"
+        },
+        {
+          "area": 3.619307037078444,
+          "face": 271,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.7896433376802232,
+          "face": 272,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.787261643357663,
+          "face": 273,
+          "type": "filletLike"
+        },
+        {
+          "area": 3.068667318183586,
+          "face": 274,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.8671181414056107,
+          "face": 277,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.19453181447799398,
+          "face": 278,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.2763729779999218,
+          "face": 279,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.9189435757743141,
+          "face": 280,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.986319081258222,
+          "face": 282,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.175069189288641,
+          "face": 283,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.24521799764884347,
+          "face": 284,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.806796386588049,
+          "face": 285,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.868920472990396,
+          "face": 287,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.89333360278964,
+          "face": 290,
+          "type": "filletLike"
+        },
+        {
+          "area": 5.785646454311896,
+          "face": 292,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.9807375672692245,
+          "face": 302,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.977906987009492,
+          "face": 306,
+          "type": "filletLike"
+        },
+        {
+          "area": 2.0397247870029998,
+          "face": 310,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.2365404718363096,
+          "face": 312,
+          "type": "filletLike"
+        },
+        {
+          "area": 1.013752229174976,
+          "face": 314,
+          "type": "filletLike"
+        },
+        {
+          "area": 0.38250505817791497,
+          "face": 315,
+          "type": "filletLike"
+        },
+        {
+          "area": 4.1096392912825905,
+          "face": 317,
+          "type": "filletLike"
+        },
+        {
+          "diameter": 6,
+          "faces": [
+            173
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 6,
+          "faces": [
+            198
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 5,
+          "faces": [
+            227
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 5,
+          "faces": [
+            230
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 10,
+          "faces": [
+            240
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 16,
+          "faces": [
+            231,
+            243
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "diameter": 10,
+          "faces": [
+            244
+          ],
+          "through": false,
+          "type": "hole"
+        },
+        {
+          "floor": 217,
+          "type": "pocket",
+          "walls": [
+            252,
+            253,
+            254,
+            255,
+            256,
+            257,
+            258,
+            259,
+            260,
+            261,
+            268,
+            271,
+            274,
+            277,
+            278,
+            279,
+            280,
+            281,
+            282,
+            283,
+            284,
+            285,
+            286,
+            287,
+            289,
+            290,
+            291,
+            292,
+            294,
+            295,
+            296,
+            297,
+            299,
+            300,
+            301,
+            302,
+            303,
+            304,
+            305,
+            306,
+            307,
+            308,
+            310,
+            311,
+            312,
+            313,
+            317
+          ]
+        },
+        {
+          "floor": 270,
+          "type": "pocket",
+          "walls": [
+            262,
+            263,
+            264,
+            265,
+            266,
+            267
+          ]
+        },
+        {
+          "floor": 276,
+          "type": "pocket",
+          "walls": [
+            272,
+            273
+          ]
+        },
+        {
+          "floor": 316,
+          "type": "pocket",
+          "walls": [
+            314,
+            315,
+            319
+          ]
+        }
+      ],
+      "featuresJsonSha256": "5bb57a9f42f0e20c15b2b11c00ebee942484984a7a8abe1d264565b57c2f095f",
+      "mesh": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58373.416364995464
+      },
+      "arenaSha256": "c646b287340d52e99d3069ff04edfe6de760d7af890331c86a1b01b4b8e4f4db",
+      "artifacts": {
+        "positions": {
+          "elements": 87423,
+          "sha256": "467c7ebf497a4e2925d74f380801891347babae98c45e7d2311e063613814fb8"
+        },
+        "normals": {
+          "elements": 87423,
+          "sha256": "455a74b659a3e4752b8b2c400b74b7fd13ca43bc133806eede85309387e94cc9"
+        },
+        "indices": {
+          "elements": 174858,
+          "sha256": "0304c091ab32cc3a38d35dc230f03cb271ea184b8e1b0784675100592ebc7fec"
+        },
+        "faceOffsets": {
+          "elements": 161,
+          "sha256": "ec197475e345c1583a7a04c07660eca036b20a54ed0ba54c7dee1b3c4c3f59d3"
+        },
+        "arena": {
+          "sha256": "c646b287340d52e99d3069ff04edfe6de760d7af890331c86a1b01b4b8e4f4db"
+        }
+      }
+    }
+  ],
+  "artifactPayloads": "Not committed; per-buffer and arena hashes retained. Recreate with the maintained completion driver."
+}
