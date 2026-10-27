@@ -456,7 +456,6 @@ fn both<const AREA_ONLY: bool>(
             volume_only,
             flux: Some(&flux),
             cone_apex: None,
-            cylinder_rows: false,
         };
         let result = if reference_path {
             integrate_parametric_reference::<_, AREA_ONLY>(

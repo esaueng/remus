@@ -12,6 +12,7 @@ import platform
 import statistics
 import subprocess
 import sys
+import tempfile
 
 
 def sha256(path):
@@ -22,6 +23,25 @@ def package_hashes(root):
     return {str(p.relative_to(root)): sha256(p)
             for package in [root / "crates/wasm/pkg", root / "crates/wasm-io/pkg"]
             for p in sorted(package.rglob("*")) if p.is_file()}
+
+
+def native_binary(root):
+    binaries = [p for p in (root / "target/profiling/deps").glob("nurbs_properties-*")
+                if p.is_file() and os.access(p, os.X_OK)]
+    if len(binaries) != 1:
+        raise ValueError("Expected exactly one compiled native benchmark")
+    return binaries[0]
+
+
+def executable_text_sha256(binary):
+    # Ignore source-location/debug metadata when checking whether executable
+    # instructions changed. Keep the original input binary untouched.
+    with tempfile.TemporaryDirectory(prefix="preview-native-") as temporary:
+        section = Path(temporary) / "text"
+        subprocess.run(["objcopy", "--dump-section", f".text={section}",
+                        str(binary), str(Path(temporary) / "copy")],
+                       check=True, capture_output=True)
+        return sha256(section)
 
 
 def validate_capture(run, ticks, warmup, kernel_sha, io_sha, harness_sha):
@@ -66,6 +86,10 @@ def main():
     if cpu not in affinity:
         raise ValueError("Requested CPU is outside the process affinity")
     env = {**os.environ, "RAYON_NUM_THREADS": "1"}
+    # Balance each variant's outer/inner positions across two fresh-process
+    # blocks. Retain the original ABBA block and add its inverse BAAB.
+    order = ["baseline", "candidate", "candidate", "baseline",
+             "candidate", "baseline", "baseline", "candidate"]
     driver = roots["candidate"] / "scripts/perf/face-drag-session/drag_session_bench.cjs"
     fixture = roots["candidate"] / "crates/io/tests/data/shapr3d_hammer_holder.step"
     native_drivers = {v: sha256(root / "crates/io/benches/nurbs_properties.rs") for v, root in roots.items()}
@@ -81,7 +105,7 @@ def main():
                 "harnessSha256": harness_sha, "fixtureSha256": sha256(fixture),
                 "source": {v: subprocess.check_output(["git", "-C", str(r), "rev-parse", "HEAD"],
                                                      text=True).strip() for v, r in roots.items()},
-                "packages": hashes, "cases": [], "native": [],
+                "packages": hashes, "processOrder": order, "cases": [], "native": [],
                 "limits": "Descriptive single-host process observations; no browser presentation or tail-confidence claim."}
 
     def save():
@@ -94,13 +118,20 @@ def main():
 
     save()
     try:
+        native_binaries = {v: native_binary(r) for v, r in roots.items()}
+        native_hashes = {v: sha256(p) for v, p in native_binaries.items()}
+        native_text = {v: executable_text_sha256(p) for v, p in native_binaries.items()}
+        metadata.update(nativeBinarySha256=native_hashes,
+                        nativeExecutableTextSha256=native_text,
+                        nativeExecutableTextIdentical=len(set(native_text.values())) == 1)
+        save()
         kernels = {v: sha256(r / "crates/wasm/pkg/remus_wasm_bg.wasm") for v, r in roots.items()}
         translators = {v: sha256(r / "crates/wasm-io/pkg/remus_wasm_io_bg.wasm") for v, r in roots.items()}
         if len(set(kernels.values())) != 2:
             raise ValueError("Comparison requires two different kernel binaries")
         for pattern, background, ticks in [("unique", 0, 60), ("repeated", 0, 60), ("unique", 200, 40)]:
             case = {"pattern": pattern, "background": background, "runs": []}
-            for index, variant in enumerate(["baseline", "candidate", "candidate", "baseline"]):
+            for index, variant in enumerate(order):
                 label = f"{pattern}-bg{background}-{index}-{variant}"
                 root = roots[variant]
                 output = out / f"{label}.json"
@@ -137,20 +168,19 @@ def main():
                  "--fixture", str(fixture), "--out", str(out / "completion"),
                  "--warmup", "2", "--samples", "4", "--rounds", "2", "--cpu", str(cpu)], "completion")
 
-        for index, variant in enumerate(["baseline", "candidate", "candidate", "baseline"]):
+        for index, variant in enumerate(order):
             label = f"native-{index}-{variant}"
-            binaries = [p for p in (roots[variant] / "target/profiling/deps").glob("nurbs_properties-*")
-                        if p.is_file() and os.access(p, os.X_OK)]
-            if len(binaries) != 1:
-                raise ValueError("Expected exactly one compiled native benchmark")
+            binary = native_binaries[variant]
+            if sha256(binary) != native_hashes[variant]:
+                raise ValueError("Native benchmark binary changed during the comparison")
             criterion = out / label
-            execute(["taskset", "-c", str(cpu), str(binaries[0]), "new_edit_orientation",
+            execute(["taskset", "-c", str(cpu), str(binary), "new_edit_orientation",
                      "--bench", "--noplot", "--save-baseline", label], label,
                     {**env, "CRITERION_HOME": str(criterion)})
             estimates = list(criterion.rglob("estimates.json"))
             if not estimates:
                 raise ValueError("Criterion did not retain its estimator")
-            metadata["native"].append({"variant": variant, "binarySha256": sha256(binaries[0]),
+            metadata["native"].append({"variant": variant, "binarySha256": native_hashes[variant],
                                        "estimates": {str(p.relative_to(out)): json.loads(p.read_text()) for p in estimates}})
             save()
         if hashes != {v: package_hashes(r) for v, r in roots.items()}:
@@ -159,6 +189,8 @@ def main():
             raise ValueError("Preview driver or fixture changed during the comparison")
         if native_drivers != {v: sha256(r / "crates/io/benches/nurbs_properties.rs") for v, r in roots.items()}:
             raise ValueError("Native benchmark driver changed during the comparison")
+        if native_hashes != {v: sha256(p) for v, p in native_binaries.items()}:
+            raise ValueError("Native benchmark binary changed during the comparison")
         metadata["status"] = "passed"
     except Exception as error:
         metadata.update(status="failed", error=str(error))

@@ -110,14 +110,17 @@ its common ancestor with the base, then runs the same candidate driver against
 each. The `preview-performance-<head>` artifact retains package hashes, raw
 captures, process logs and `comparison.json`.
 
-The comparison uses serial A–B–B–A processes pinned to one CPU for unique
-offsets, revisited offsets and 200 background bodies. It retains every stage,
+The comparison uses serial A–B–B–A / B–A–A–B blocks pinned to one CPU for
+unique offsets, revisited offsets and 200 background bodies: four fresh
+processes per variant, with outer/inner positions balanced. It retains every stage,
 cold and warmed observations, memory snapshots and geometry gates. The
 existing full-edit comparison separately checks output artifacts, quantities,
 features and transactional edit outcomes in both caller orders. An identical
 native Criterion driver measures the orientation integrals missed by a new
 edit after priming only source-face contributions. Cache cloning and teardown
 stay outside that native timer; content lookups and integrations stay inside.
+Native executable and `.text` hashes are recorded separately, so unchanged
+machine instructions can be distinguished from source-location metadata.
 This isolates integral work, while the preview captures measure the full
 kernel preview call sequence. Neither boundary measures browser presentation.
 Ratios are descriptive observations on one host, without a tail-confidence
