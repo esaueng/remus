@@ -496,6 +496,19 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 false,
                 true,
             )?;
+            #[cfg(target_arch = "wasm32")]
+            if !AREA_ONLY && rule.volume_only {
+                return integrate_cylinder_with_trimming::<_, AREA_ONLY>(
+                    s,
+                    u_range,
+                    v_range,
+                    rule,
+                    sign,
+                    &uv,
+                    PatchScale::ANGULAR,
+                    None,
+                );
+            }
             integrate_with_trimming::<_, AREA_ONLY>(
                 s,
                 u_range,
@@ -3480,6 +3493,109 @@ fn integrate_planar_face_exact(
     }))
 }
 
+/// Exact normal of the latest fixed-u run in one cylindrical integration.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Default)]
+struct CylinderRowNormal {
+    cached: Option<(u64, Vec3, f64)>,
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl CylinderRowNormal {
+    #[inline]
+    fn normal(&mut self, u: f64, du: Vec3, dv: Vec3) -> (Vec3, f64) {
+        if let Some((bits, normal, length)) = self.cached
+            && bits == u.to_bits()
+            && u.is_finite()
+        {
+            return (normal, length);
+        }
+        let (normal, length) = sample_normal(du, dv);
+        self.cached = Some((u.to_bits(), normal, length));
+        (normal, length)
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl CylinderRowNormal {
+    #[inline]
+    fn add<S: ParametricSurface + ?Sized, const AREA_ONLY: bool>(
+        &mut self,
+        acc: &mut Accumulator,
+        surface: &S,
+        (u, v, w): (f64, f64, f64),
+        reference: Point3,
+        scratch: &mut DerivativeScratch,
+    ) {
+        let (p, du, dv, _, _) = surface.span_hinted_point_and_partials_with_scratch(u, v, scratch);
+        let (normal, length) = self.normal(u, du, dv);
+        acc.add_normal_sample::<AREA_ONLY>(p, normal, length, w, reference);
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static NORMAL_EVALUATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Original unnormalized cross product and Jacobian length, without regrouping.
+#[cfg(any(target_arch = "wasm32", test))]
+#[inline]
+fn sample_normal(du: Vec3, dv: Vec3) -> (Vec3, f64) {
+    #[cfg(test)]
+    NORMAL_EVALUATIONS.with(|count| count.set(count.get() + 1));
+    let normal = Vec3::new(
+        du.y() * dv.z() - du.z() * dv.y(),
+        du.z() * dv.x() - du.x() * dv.z(),
+        du.x() * dv.y() - du.y() * dv.x(),
+    );
+    (normal, normal.length())
+}
+
+/// Expand identical contribution arithmetic into both sample paths, keeping
+/// the ordinary native sample's original inlining boundary.
+macro_rules! accumulate_normal {
+    ($acc:ident, $point:ident, $n:ident, $n_len:ident, $w:ident, $reference:ident, $area_only:ident) => {
+        $acc.area += $w * $n_len;
+
+        if $area_only {
+            return;
+        }
+        let p = $point - $reference;
+
+        // Volume: (1/3) P dot N (unnormalized N includes Jacobian)
+        $acc.vol += $w * p.dot($n) / 3.0;
+        $acc.nx += $w * $n.x();
+        $acc.ny += $w * $n.y();
+        $acc.nz += $w * $n.z();
+
+        // A strict orientation probe needs no centroid or inertia moments.
+        // Keep area, volume and flux arithmetic above identical to the full
+        // fixed rule so cold readings and reference/translation reuse agree.
+        if $acc.volume_only {
+            return;
+        }
+
+        // Volume moments via divergence theorem:
+        // CoM_x = (1/2V) surface_integral(x^2 * n_x dA)
+        // n already includes Jacobian, so n.x() = N_x * |J|
+        $acc.mx += $w * 0.5 * p.x() * p.x() * $n.x();
+        $acc.my += $w * 0.5 * p.y() * p.y() * $n.y();
+        $acc.mz += $w * 0.5 * p.z() * p.z() * $n.z();
+
+        $acc.qxx += $w * p.x().powi(3) * $n.x() / 3.0;
+        $acc.qyy += $w * p.y().powi(3) * $n.y() / 3.0;
+        $acc.qzz += $w * p.z().powi(3) * $n.z() / 3.0;
+        $acc.qxy += $w * 0.5 * p.x().powi(2) * p.y() * $n.x();
+        $acc.qxz += $w * 0.5 * p.x().powi(2) * p.z() * $n.x();
+        $acc.qyz += $w * 0.5 * p.y().powi(2) * p.z() * $n.y();
+
+        $acc.cx += $w * p.x() * $n_len;
+        $acc.cy += $w * p.y() * $n_len;
+        $acc.cz += $w * p.z() * $n_len;
+    };
+}
+
 /// Running totals of a face's contribution over quadrature abscissae.
 #[derive(Default)]
 struct Accumulator {
@@ -3545,51 +3661,29 @@ impl Accumulator {
         w: f64,
         reference: Point3,
     ) {
-        // Normal = du x dv (unnormalized, includes Jacobian)
+        #[cfg(test)]
+        NORMAL_EVALUATIONS.with(|count| count.set(count.get() + 1));
         let n = Vec3::new(
             du.y() * dv.z() - du.z() * dv.y(),
             du.z() * dv.x() - du.x() * dv.z(),
             du.x() * dv.y() - du.y() * dv.x(),
         );
         let n_len = n.length();
+        accumulate_normal!(self, p, n, n_len, w, reference, AREA_ONLY);
+    }
 
-        self.area += w * n_len;
-
-        if AREA_ONLY {
-            return;
-        }
-        let p = p - reference;
-
-        // Volume: (1/3) P dot N (unnormalized N includes Jacobian)
-        self.vol += w * p.dot(n) / 3.0;
-        self.nx += w * n.x();
-        self.ny += w * n.y();
-        self.nz += w * n.z();
-
-        // A strict orientation probe needs no centroid or inertia moments.
-        // Keep area, volume and flux arithmetic above identical to the full
-        // fixed rule so cold readings and reference/translation reuse agree.
-        if self.volume_only {
-            return;
-        }
-
-        // Volume moments via divergence theorem:
-        // CoM_x = (1/2V) surface_integral(x^2 * n_x dA)
-        // n already includes Jacobian, so n.x() = N_x * |J|
-        self.mx += w * 0.5 * p.x() * p.x() * n.x();
-        self.my += w * 0.5 * p.y() * p.y() * n.y();
-        self.mz += w * 0.5 * p.z() * p.z() * n.z();
-
-        self.qxx += w * p.x().powi(3) * n.x() / 3.0;
-        self.qyy += w * p.y().powi(3) * n.y() / 3.0;
-        self.qzz += w * p.z().powi(3) * n.z() / 3.0;
-        self.qxy += w * 0.5 * p.x().powi(2) * p.y() * n.x();
-        self.qxz += w * 0.5 * p.x().powi(2) * p.z() * n.x();
-        self.qyz += w * 0.5 * p.y().powi(2) * p.z() * n.y();
-
-        self.cx += w * p.x() * n_len;
-        self.cy += w * p.y() * n_len;
-        self.cz += w * p.z() * n_len;
+    /// Same accumulation expressions and order, with an already solved normal.
+    #[cfg(any(target_arch = "wasm32", test))]
+    #[inline]
+    fn add_normal_sample<const AREA_ONLY: bool>(
+        &mut self,
+        p: Point3,
+        n: Vec3,
+        n_len: f64,
+        w: f64,
+        reference: Point3,
+    ) {
+        accumulate_normal!(self, p, n, n_len, w, reference, AREA_ONLY);
     }
 
     /// The vector area accumulated so far, with the face's orientation sign
@@ -3720,6 +3814,28 @@ fn interior_knots(knots: &[f64], range: (f64, f64)) -> Vec<f64> {
     inside
 }
 
+/// Static sample expansion keeps the ordinary loop's original direct call.
+macro_rules! quadrature_sample {
+    (fresh; init $normals:ident) => {};
+    (cylinder; init $normals:ident) => {
+        let mut $normals = CylinderRowNormal::default();
+    };
+    (fresh; $normals:ident, $acc:ident, $surface:ident, $u:ident, $v:ident,
+        $weight:expr, $reference:expr, $scratch:ident, $area_only:ident) => {
+        $acc.add::<_, $area_only>($surface, $u, $v, $weight, $reference, &mut $scratch);
+    };
+    (cylinder; $normals:ident, $acc:ident, $surface:ident, $u:ident, $v:ident,
+        $weight:expr, $reference:expr, $scratch:ident, $area_only:ident) => {
+        $normals.add::<_, $area_only>(
+            &mut $acc,
+            $surface,
+            ($u, $v, $weight),
+            $reference,
+            &mut $scratch,
+        );
+    };
+}
+
 /// Integrate a parametric surface over a UV domain by Gauss quadrature,
 /// keeping only what `trim` accepts.
 ///
@@ -3732,8 +3848,10 @@ fn interior_knots(knots: &[f64], range: (f64, f64)) -> Vec<f64> {
 /// polylines the loops are, instead of leaving them to whichever abscissae
 /// happen to land inside: masking alone left the two lobes of a cross-drilled
 /// bore wall 0.16 % short of their closed form.
+macro_rules! define_parametric_integrator {
+    ($name:ident, $sampler:ident) => {
 #[allow(clippy::cast_precision_loss)]
-fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
+fn $name<S: ParametricSurface, const AREA_ONLY: bool>(
     surface: &S,
     u_range: (f64, f64),
     v_range: (f64, f64),
@@ -3829,6 +3947,7 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
     // these buffers instead of allocating a derivative table each time.
     // Integration is single-threaded within a face, so one scratch suffices.
     let mut scratch = DerivativeScratch::new();
+    quadrature_sample!($sampler; init normals);
 
     if trim.splits_domain() {
         let breaks = trim.u_breaks(u_range);
@@ -3876,14 +3995,8 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
                             let v_mid = dv_patch.fma(iv as f64, a) + v_scale;
                             for gpv in gauss_pts {
                                 let v = v_scale.fma(gpv.x, v_mid);
-                                acc.add::<_, AREA_ONLY>(
-                                    surface,
-                                    u,
-                                    v,
-                                    gpu.w * gpv.w * u_scale * v_scale,
-                                    rule.reference,
-                                    &mut scratch,
-                                );
+                                quadrature_sample!($sampler; normals, acc, surface, u, v,
+                                    gpu.w * gpv.w * u_scale * v_scale, rule.reference, scratch, AREA_ONLY);
                             }
                         }
                     }
@@ -3931,14 +4044,8 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
                     if !trim.accepts(u, v) {
                         continue;
                     }
-                    acc.add::<_, AREA_ONLY>(
-                        surface,
-                        u,
-                        v,
-                        gpu.w * gpv.w * u_scale * v_scale,
-                        rule.reference,
-                        &mut scratch,
-                    );
+                    quadrature_sample!($sampler; normals, acc, surface, u, v,
+                        gpu.w * gpv.w * u_scale * v_scale, rule.reference, scratch, AREA_ONLY);
                 }
             }
         }
@@ -3948,6 +4055,13 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
     }
     Ok(acc.finish(sign))
 }
+
+    };
+}
+
+define_parametric_integrator!(integrate_parametric, fresh);
+#[cfg(any(target_arch = "wasm32", test))]
+define_parametric_integrator!(integrate_cylinder_parametric, cylinder);
 
 /// How many distinct v windows [`NurbsRows`] keeps tables for.
 const NURBS_ROW_WINDOWS: usize = 4;
@@ -4327,119 +4441,132 @@ fn integrate_with_trimming<S: ParametricSurface, const AREA_ONLY: bool>(
 /// (polar cap) case. A sphere has two poles and the rim's winding picks the
 /// interior side; a cone has one apex, at `apex_v`, and a single-rim cone
 /// face always closes on it regardless of how the rim is wound.
-#[allow(clippy::too_many_arguments)]
-fn integrate_with_trimming_to_pole<S: ParametricSurface, const AREA_ONLY: bool>(
-    surface: &S,
-    u_range: (f64, f64),
-    v_range: (f64, f64),
-    rule: IntegrationRule<'_>,
-    sign: f64,
-    uv: &FaceUv,
-    scale: PatchScale,
-    apex_v: Option<f64>,
-) -> Result<FaceContribution, CheckError> {
-    if uv.boundary.points.len() < 3 {
-        return integrate_parametric::<_, AREA_ONLY>(
-            surface,
-            u_range,
-            v_range,
-            rule,
-            sign,
-            &UvTrim::holes_of(uv),
-            scale,
-        );
-    }
+macro_rules! define_trimmed_integrator {
+    ($name:ident, $integrate:ident) => {
+        #[allow(clippy::too_many_arguments)]
+        fn $name<S: ParametricSurface, const AREA_ONLY: bool>(
+            surface: &S,
+            u_range: (f64, f64),
+            v_range: (f64, f64),
+            rule: IntegrationRule<'_>,
+            sign: f64,
+            uv: &FaceUv,
+            scale: PatchScale,
+            apex_v: Option<f64>,
+        ) -> Result<FaceContribution, CheckError> {
+            if uv.boundary.points.len() < 3 {
+                return $integrate::<_, AREA_ONLY>(
+                    surface,
+                    u_range,
+                    v_range,
+                    rule,
+                    sign,
+                    &UvTrim::holes_of(uv),
+                    scale,
+                );
+            }
 
-    let u_min = uv
-        .boundary
-        .points
-        .iter()
-        .map(|p| p.x())
-        .fold(f64::INFINITY, f64::min);
-    let v_min = uv
-        .boundary
-        .points
-        .iter()
-        .map(|p| p.y())
-        .fold(f64::INFINITY, f64::min);
-    let v_max = uv
-        .boundary
-        .points
-        .iter()
-        .map(|p| p.y())
-        .fold(f64::NEG_INFINITY, f64::max);
+            let u_min = uv
+                .boundary
+                .points
+                .iter()
+                .map(|p| p.x())
+                .fold(f64::INFINITY, f64::min);
+            let v_min = uv
+                .boundary
+                .points
+                .iter()
+                .map(|p| p.y())
+                .fold(f64::INFINITY, f64::min);
+            let v_max = uv
+                .boundary
+                .points
+                .iter()
+                .map(|p| p.y())
+                .fold(f64::NEG_INFINITY, f64::max);
 
-    // Winding number of the boundary around the periodic u-axis: ±TAU for a
-    // face that wraps a full revolution, ~0 for a partially-trimmed face.
-    let tau = std::f64::consts::TAU;
-    let winding = uv.boundary.u_winding();
-    let full_revolution = uv.u_periodic && winding.abs() >= tau - WRAP_EPS;
-    let v_degenerate = (v_max - v_min) <= 1e-9;
+            // Winding number of the boundary around the periodic u-axis: ±TAU for a
+            // face that wraps a full revolution, ~0 for a partially-trimmed face.
+            let tau = std::f64::consts::TAU;
+            let winding = uv.boundary.u_winding();
+            let full_revolution = uv.u_periodic && winding.abs() >= tau - WRAP_EPS;
+            let v_degenerate = (v_max - v_min) <= 1e-9;
 
-    if full_revolution && v_degenerate {
-        // Polar cap (e.g. a sphere hemisphere bounded only by one latitude
-        // circle): the cap runs from that latitude to a pole. The winding sign
-        // (CCW vs CW boundary) selects which pole — the boundary's interior
-        // side — so the two hemispheres do not both integrate the whole sphere.
-        let v_pole = apex_v.unwrap_or(if winding >= 0.0 { v_range.1 } else { v_range.0 });
-        // A full-revolution hole at a latitude between the outer circle and the
-        // pole (the drilled-tunnel rim) clips the cap into a band: integrate
-        // only from the outer latitude to the hole, not on to the pole.
-        let v_far = uv
-            .hole_vs
-            .iter()
-            .copied()
-            // Same side of v_min as the pole (strict same sign → positive
-            // product), and not coincident with v_min.
-            .filter(|&hv| (hv - v_min) * (v_pole - v_min) > 0.0 && (hv - v_min).abs() > 1e-9)
-            .min_by(|a, b| (a - v_min).abs().total_cmp(&(b - v_min).abs()))
-            .unwrap_or(v_pole);
-        let v_dom = (v_min.min(v_far), v_min.max(v_far));
-        integrate_parametric::<_, AREA_ONLY>(
-            surface,
-            (u_min, u_min + tau),
-            v_dom,
-            rule,
-            sign,
-            &UvTrim::pockets_of(uv),
-            scale,
-        )
-    } else if full_revolution {
-        // Full-revolution band (cone/cylinder): integrate the whole revolution
-        // over the band's v-extent.
-        integrate_parametric::<_, AREA_ONLY>(
-            surface,
-            (u_min, u_min + tau),
-            (v_min, v_max),
-            rule,
-            sign,
-            &UvTrim::holes_of(uv),
-            scale,
-        )
-    } else if uv.boundary.area() <= DEGENERATE_UV_AREA {
-        // Collapsed polygon (e.g. a closed torus whose seam projects to a
-        // point): trust the analytic full-domain range from `face_uv_bounds`.
-        integrate_parametric::<_, AREA_ONLY>(
-            surface,
-            u_range,
-            v_range,
-            rule,
-            sign,
-            &UvTrim::holes_of(uv),
-            scale,
-        )
-    } else {
-        integrate_parametric::<_, AREA_ONLY>(
-            surface,
-            u_range,
-            v_range,
-            rule,
-            sign,
-            &UvTrim::boundary_of(uv),
-            scale,
-        )
-    }
+            if full_revolution && v_degenerate {
+                // Polar cap (e.g. a sphere hemisphere bounded only by one latitude
+                // circle): the cap runs from that latitude to a pole. The winding sign
+                // (CCW vs CW boundary) selects which pole — the boundary's interior
+                // side — so the two hemispheres do not both integrate the whole sphere.
+                let v_pole = apex_v.unwrap_or(if winding >= 0.0 { v_range.1 } else { v_range.0 });
+                // A full-revolution hole at a latitude between the outer circle and the
+                // pole (the drilled-tunnel rim) clips the cap into a band: integrate
+                // only from the outer latitude to the hole, not on to the pole.
+                let v_far = uv
+                    .hole_vs
+                    .iter()
+                    .copied()
+                    // Same side of v_min as the pole (strict same sign → positive
+                    // product), and not coincident with v_min.
+                    .filter(|&hv| {
+                        (hv - v_min) * (v_pole - v_min) > 0.0 && (hv - v_min).abs() > 1e-9
+                    })
+                    .min_by(|a, b| (a - v_min).abs().total_cmp(&(b - v_min).abs()))
+                    .unwrap_or(v_pole);
+                let v_dom = (v_min.min(v_far), v_min.max(v_far));
+                $integrate::<_, AREA_ONLY>(
+                    surface,
+                    (u_min, u_min + tau),
+                    v_dom,
+                    rule,
+                    sign,
+                    &UvTrim::pockets_of(uv),
+                    scale,
+                )
+            } else if full_revolution {
+                // Full-revolution band (cone/cylinder): integrate the whole revolution
+                // over the band's v-extent.
+                $integrate::<_, AREA_ONLY>(
+                    surface,
+                    (u_min, u_min + tau),
+                    (v_min, v_max),
+                    rule,
+                    sign,
+                    &UvTrim::holes_of(uv),
+                    scale,
+                )
+            } else if uv.boundary.area() <= DEGENERATE_UV_AREA {
+                // Collapsed polygon (e.g. a closed torus whose seam projects to a
+                // point): trust the analytic full-domain range from `face_uv_bounds`.
+                $integrate::<_, AREA_ONLY>(
+                    surface,
+                    u_range,
+                    v_range,
+                    rule,
+                    sign,
+                    &UvTrim::holes_of(uv),
+                    scale,
+                )
+            } else {
+                $integrate::<_, AREA_ONLY>(
+                    surface,
+                    u_range,
+                    v_range,
+                    rule,
+                    sign,
+                    &UvTrim::boundary_of(uv),
+                    scale,
+                )
+            }
+        }
+    };
 }
+
+define_trimmed_integrator!(integrate_with_trimming_to_pole, integrate_parametric);
+#[cfg(target_arch = "wasm32")]
+define_trimmed_integrator!(
+    integrate_cylinder_with_trimming,
+    integrate_cylinder_parametric
+);
 
 #[cfg(test)]
 mod polynomial_boundary_tests;
@@ -4902,16 +5029,33 @@ mod tests {
                 topo.face_mut(face).unwrap().set_reversed(reversed);
                 for order in [1, 5, 8] {
                     for reference in [origin, Point3::new(-5.0, 7.0, 13.0)] {
+                        NORMAL_EVALUATIONS.with(|count| count.set(0));
                         let (full, full_flux) =
                             integrate_face_fixed_flux_about(&topo, face, order, reference).unwrap();
+                        let full_normals = NORMAL_EVALUATIONS.with(Cell::get);
+                        NORMAL_EVALUATIONS.with(|count| count.set(0));
                         let (probe, probe_flux) =
                             integrate_face_fixed_volume_flux_about(&topo, face, order, reference)
                                 .unwrap();
+                        let probe_normals = NORMAL_EVALUATIONS.with(Cell::get);
                         assert_eq!(probe.area.to_bits(), full.area.to_bits());
                         assert_eq!(probe.volume.to_bits(), full.volume.to_bits());
                         let flux_bits =
                             |n: Option<Vec3>| n.map(|v| [v.x(), v.y(), v.z()].map(f64::to_bits));
                         assert_eq!(flux_bits(probe_flux), flux_bits(full_flux));
+                        if face == cylinder {
+                            assert!(full_normals > 0);
+                            #[cfg(not(target_arch = "wasm32"))]
+                            assert_eq!(probe_normals, full_normals);
+                            #[cfg(target_arch = "wasm32")]
+                            if order > 1 {
+                                assert!(probe_normals < full_normals);
+                            }
+                            NORMAL_EVALUATIONS.with(|count| count.set(0));
+                            let area = integrate_face_area(&topo, face, order).unwrap();
+                            assert_eq!(area.to_bits(), full.area.to_bits());
+                            assert_eq!(NORMAL_EVALUATIONS.with(Cell::get), full_normals);
+                        }
                     }
                 }
             }
@@ -5637,5 +5781,203 @@ mod tests {
         let width = steep_end - 0.5;
         let expected = 1.0 - width + width * NarrowSpan::STEEP;
         assert!((area - expected).abs() <= 1e-12, "{area} vs {expected}");
+    }
+}
+
+#[cfg(test)]
+mod cylinder_row_tests {
+    //! Keep every original quadrature sample, contribution bit and flux bit.
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use remus_math::surfaces::CylindricalSurface;
+
+    fn bits(c: &FaceContribution) -> [u64; 14] {
+        [
+            c.area,
+            c.volume,
+            c.volume_moment_x,
+            c.volume_moment_y,
+            c.volume_moment_z,
+            c.volume_second_x,
+            c.volume_second_y,
+            c.volume_second_z,
+            c.volume_product_xy,
+            c.volume_product_xz,
+            c.volume_product_yz,
+            c.centroid_x,
+            c.centroid_y,
+            c.centroid_z,
+        ]
+        .map(f64::to_bits)
+    }
+
+    fn integrate<const AREA_ONLY: bool>(
+        surface: &CylindricalSurface,
+        order: usize,
+        volume_only: bool,
+        reuse: bool,
+        trim: &UvTrim<'_>,
+        sign: f64,
+    ) -> (FaceContribution, Vec3, usize) {
+        let flux = Cell::new(None);
+        NORMAL_EVALUATIONS.with(|count| count.set(0));
+        let result = if reuse {
+            integrate_cylinder_parametric::<_, AREA_ONLY>(
+                surface,
+                (0.0, 1.0),
+                (-1.0, 8.0),
+                IntegrationRule {
+                    order,
+                    adaptive: None,
+                    knots: None,
+                    reference: Point3::new(0.2, -0.3, 0.4),
+                    volume_only,
+                    flux: Some(&flux),
+                    cone_apex: None,
+                },
+                sign,
+                trim,
+                PatchScale::ANGULAR,
+            )
+        } else {
+            integrate_parametric::<_, AREA_ONLY>(
+                surface,
+                (0.0, 1.0),
+                (-1.0, 8.0),
+                IntegrationRule {
+                    order,
+                    adaptive: None,
+                    knots: None,
+                    reference: Point3::new(0.2, -0.3, 0.4),
+                    volume_only,
+                    flux: Some(&flux),
+                    cone_apex: None,
+                },
+                sign,
+                trim,
+                PatchScale::ANGULAR,
+            )
+        }
+        .unwrap();
+        (
+            result,
+            flux.get().unwrap_or(Vec3::new(0.0, 0.0, 0.0)),
+            NORMAL_EVALUATIONS.with(Cell::get),
+        )
+    }
+
+    #[test]
+    fn cylinder_rows_preserve_full_area_volume_and_flux_bits() {
+        let hole = UvLoop::new(
+            vec![
+                Point2::new(0.2, 0.5),
+                Point2::new(0.8, 1.0),
+                Point2::new(0.7, 3.0),
+                Point2::new(0.3, 2.0),
+            ],
+            false,
+            false,
+        );
+        let outer = UvLoop::new(
+            vec![
+                Point2::new(0.0, -1.0),
+                Point2::new(1.0, -0.8),
+                Point2::new(1.0, 8.0),
+                Point2::new(0.0, 7.7),
+            ],
+            false,
+            false,
+        );
+        let holes = [hole];
+        for scale in [1e-3, 1.0, 1e3] {
+            for axis in [Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.3, -0.4, 0.8)] {
+                let surface = CylindricalSurface::new(
+                    Point3::new(13.0 * scale, -7.0 * scale, 5.0 * scale),
+                    axis,
+                    3.0 * scale,
+                )
+                .unwrap();
+                for order in [1, 3, 5, 8, 12] {
+                    for sign in [-1.0, 1.0] {
+                        for trim in [
+                            UvTrim::new(None, &[], &[], false),
+                            UvTrim::new(Some(&outer), &holes, &[], false),
+                        ] {
+                            for volume_only in [false, true] {
+                                let fresh = integrate::<false>(
+                                    &surface,
+                                    order,
+                                    volume_only,
+                                    false,
+                                    &trim,
+                                    sign,
+                                );
+                                let reused = integrate::<false>(
+                                    &surface,
+                                    order,
+                                    volume_only,
+                                    true,
+                                    &trim,
+                                    sign,
+                                );
+                                assert_eq!(bits(&fresh.0), bits(&reused.0));
+                                assert_eq!(
+                                    fresh.1.0.map(f64::to_bits),
+                                    reused.1.0.map(f64::to_bits)
+                                );
+                                assert!(reused.2 <= fresh.2);
+                            }
+                            let fresh =
+                                integrate::<true>(&surface, order, false, false, &trim, sign);
+                            let reused =
+                                integrate::<true>(&surface, order, false, true, &trim, sign);
+                            assert_eq!(bits(&fresh.0), bits(&reused.0));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn normal_work_follows_fixed_u_runs_instead_of_all_abscissae() {
+        let surface =
+            CylindricalSurface::new(Point3::new(1.0, 2.0, 3.0), Vec3::new(0.3, -0.4, 0.8), 3.0)
+                .unwrap();
+        let trim = UvTrim::new(None, &[], &[], false);
+        let fresh = integrate::<false>(&surface, 5, true, false, &trim, 1.0);
+        let reused = integrate::<false>(&surface, 5, true, true, &trim, 1.0);
+        let u_rows = patch_count(1.0, PatchScale::ANGULAR.u) * 5;
+        let v_samples = patch_count(9.0, PatchScale::ANGULAR.v) * 5;
+        assert_eq!(fresh.2, u_rows * v_samples);
+        // Untrimmed traversal remains (iu, iv, gpu, gpv): each v patch repeats
+        // the u rows; sliced domains keep u outside all of their v patches.
+        assert_eq!(reused.2, u_rows * v_samples / 5);
+        assert_eq!(bits(&fresh.0), bits(&reused.0));
+    }
+
+    #[test]
+    fn row_key_keeps_signed_zero_and_nonfinite_parameters_distinct() {
+        let surface =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.3, -0.4, 0.8), 3.0)
+                .unwrap();
+        let mut row = CylinderRowNormal::default();
+        for u in [
+            0.0,
+            -0.0,
+            0.7,
+            0.7,
+            -0.2,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ] {
+            let (_, du, dv) = surface.point_and_partials(u, 1.0);
+            let expected = sample_normal(du, dv);
+            let actual = row.normal(u, du, dv);
+            assert_eq!(expected.0.0.map(f64::to_bits), actual.0.0.map(f64::to_bits));
+            assert_eq!(expected.1.to_bits(), actual.1.to_bits());
+        }
     }
 }

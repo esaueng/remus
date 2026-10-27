@@ -1,0 +1,86 @@
+name: Preview Performance
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-performance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event.action != 'labeled' || github.event.label.name == 'ci:benchmark' }}
+
+jobs:
+  matched-preview:
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'ci:benchmark') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ci:benchmark')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: 1
+      CARGO_INCREMENTAL: 0
+      RUST_MIN_STACK: 536870912
+      RAYON_NUM_THREADS: 1
+      BINARYEN_CORES: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: candidate
+      - name: Select the common-ancestor baseline
+        id: baseline
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha }}
+        run: |
+          tip=$(git -C candidate rev-parse --verify --end-of-options "${BASE_REF}^{commit}")
+          baseline=$(git -C candidate merge-base HEAD "$tip")
+          echo "sha=$baseline" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.baseline.outputs.sha }}
+          persist-credentials: false
+          path: baseline
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Check comparison capture gates
+        working-directory: candidate
+        run: |
+          python3 -m unittest discover -s scripts/perf/face-drag-session -p 'test_compare_preview.py'
+          node scripts/perf/face-drag-session/drag_session_bench.test.cjs
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: wasm-pack
+      - name: Build and qualify baseline packages
+        working-directory: baseline
+        run: cargo xtask wasm-build
+      - name: Build and qualify candidate packages
+        working-directory: candidate
+        run: cargo xtask wasm-build
+      - name: Copy the identical benchmark driver to the baseline
+        run: cp candidate/crates/io/benches/nurbs_properties.rs baseline/crates/io/benches/nurbs_properties.rs
+      - name: Build the baseline native benchmark
+        working-directory: baseline
+        env:
+          CARGO_PROFILE_PROFILING_DEBUG: 0
+        run: cargo bench --locked --profile profiling -p remus-io --bench nurbs_properties --no-run
+      - name: Build the candidate native benchmark
+        working-directory: candidate
+        env:
+          CARGO_PROFILE_PROFILING_DEBUG: 0
+        run: cargo bench --locked --profile profiling -p remus-io --bench nurbs_properties --no-run
+      - name: Compare complete preview workflows and output contracts
+        run: >-
+          python3 candidate/scripts/perf/face-drag-session/compare_preview.py
+          --baseline-root baseline --candidate-root candidate --out results
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: preview-performance-${{ github.event.pull_request.head.sha || github.sha }}
+          path: results/
+          if-no-files-found: warn
+          retention-days: 14
