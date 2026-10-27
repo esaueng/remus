@@ -1957,95 +1957,116 @@ fn si_prefix_factor(token: &str) -> Option<f64> {
 /// Validation properties also use the CAx-IF area/volume form:
 /// `AREA_UNIT((#element))` / `VOLUME_UNIT((#element))`, where the
 /// `DERIVED_UNIT_ELEMENT` raises a length unit to exponent 2 or 3.
-fn unit_si_factor(
-    entities: &HashMap<u64, StepEntity<'_>>,
-    unit_ref: u64,
-    depth: u32,
-) -> Result<(f64, String), IoError> {
-    if depth > MAX_UNIT_INDIRECTION {
-        return Err(IoError::ParseError {
-            reason: format!(
-                "unit definition at #{unit_ref} nests deeper than \
-                 {MAX_UNIT_INDIRECTION} levels (cyclic unit reference?)"
-            ),
-        });
-    }
-    let entity = entities.get(&unit_ref).ok_or_else(|| IoError::ParseError {
-        reason: format!("unit entity #{unit_ref} not found"),
-    })?;
-    let text = entity_text(entity);
+#[derive(Clone)]
+struct ResolvedUnit {
+    factor: f64,
+    base: String,
+    indirections: u32,
+}
 
-    let kind = unit_kind(&text);
-    let derived = match kind {
-        UnitKind::Area => Some(("AREA_UNIT", 2)),
-        UnitKind::Volume => Some(("VOLUME_UNIT", 3)),
-        UnitKind::Length | UnitKind::PlaneAngle | UnitKind::Other => None,
-    };
-    if let Some((marker, expected_exponent)) = derived
-        && let Some(group) = balanced_group_after(&text, marker)
-        && !group.trim().is_empty()
-    {
-        let elements = exact_reference_list(group).map_err(|reason| IoError::ParseError {
-            reason: format!("{marker} #{unit_ref} has invalid elements: {reason}"),
-        })?;
-        let [element_ref] = elements.as_slice() else {
+/// Resolve shared unit definitions once per import phase. Retain each result's
+/// remaining depth so a cached definition cannot bypass the indirection limit.
+struct UnitResolver<'map, 'input> {
+    entities: &'map HashMap<u64, StepEntity<'input>>,
+    kinds: HashMap<u64, UnitKind>,
+    factors: HashMap<u64, ResolvedUnit>,
+    conversion_measures: HashMap<u64, (f64, u64)>,
+    derived_elements: HashMap<u64, (u64, f64)>,
+    context_tolerances: HashMap<u64, f64>,
+    uncertainty_mm: HashMap<u64, f64>,
+    #[cfg(test)]
+    scanned_unit_bytes: usize,
+}
+
+impl<'map, 'input> UnitResolver<'map, 'input> {
+    fn new(entities: &'map HashMap<u64, StepEntity<'input>>) -> Self {
+        Self {
+            entities,
+            kinds: HashMap::new(),
+            factors: HashMap::new(),
+            conversion_measures: HashMap::new(),
+            derived_elements: HashMap::new(),
+            context_tolerances: HashMap::new(),
+            uncertainty_mm: HashMap::new(),
+            #[cfg(test)]
+            scanned_unit_bytes: 0,
+        }
+    }
+
+    fn kind(&mut self, unit_ref: u64, entity: &StepEntity<'_>) -> UnitKind {
+        if let Some(kind) = self.kinds.get(&unit_ref) {
+            return *kind;
+        }
+        let text = entity_text(entity);
+        #[cfg(test)]
+        {
+            self.scanned_unit_bytes += text.len();
+        }
+        let kind = unit_kind(&text);
+        self.kinds.insert(unit_ref, kind);
+        kind
+    }
+
+    fn factor(&mut self, unit_ref: u64, depth: u32) -> Result<(f64, String), IoError> {
+        self.resolve(unit_ref, depth)
+            .map(|resolved| (resolved.factor, resolved.base))
+    }
+
+    fn resolve(&mut self, unit_ref: u64, depth: u32) -> Result<ResolvedUnit, IoError> {
+        if depth > MAX_UNIT_INDIRECTION {
             return Err(IoError::ParseError {
                 reason: format!(
-                    "{marker} #{unit_ref} must contain exactly one derived unit element"
+                    "unit definition at #{unit_ref} nests deeper than \
+                 {MAX_UNIT_INDIRECTION} levels (cyclic unit reference?)"
                 ),
             });
-        };
-        let element = entities
-            .get(element_ref)
-            .ok_or_else(|| IoError::ParseError {
-                reason: format!("derived unit element #{element_ref} not found"),
-            })?;
-        if element.kind.as_str() != "DERIVED_UNIT_ELEMENT" {
-            return Err(IoError::ParseError {
-                reason: format!(
-                    "{marker} #{unit_ref} references #{element_ref}, which is not a DERIVED_UNIT_ELEMENT"
-                ),
-            });
+        }
+        if let Some(cached) = self.factors.get(&unit_ref)
+            && depth + cached.indirections <= MAX_UNIT_INDIRECTION
+        {
+            return Ok(cached.clone());
+        }
+        let resolved = self.compute(unit_ref, depth)?;
+        self.factors.insert(unit_ref, resolved.clone());
+        Ok(resolved)
+    }
+
+    fn derived_element(
+        &mut self,
+        element_ref: u64,
+        element: &StepEntity<'_>,
+    ) -> Result<(u64, f64), IoError> {
+        if let Some(parsed) = self.derived_elements.get(&element_ref) {
+            return Ok(*parsed);
+        }
+        #[cfg(test)]
+        {
+            self.scanned_unit_bytes += element.attrs.len();
         }
         let slots = split_attr_slots(&element.attrs);
         let base_ref =
-            required_reference_attribute("DERIVED_UNIT_ELEMENT", *element_ref, &slots, 0, "unit")?;
+            required_reference_attribute("DERIVED_UNIT_ELEMENT", element_ref, &slots, 0, "unit")?;
         let exponent =
-            required_real_attribute("DERIVED_UNIT_ELEMENT", *element_ref, &slots, 1, "exponent")?;
-        if (exponent - f64::from(expected_exponent)).abs() > f64::EPSILON {
-            return Err(IoError::ParseError {
-                reason: format!(
-                    "{marker} #{unit_ref} requires exponent {expected_exponent}, got {exponent}"
-                ),
-            });
-        }
-        let base = entities.get(&base_ref).ok_or_else(|| IoError::ParseError {
-            reason: format!("derived base unit #{base_ref} not found"),
-        })?;
-        if unit_kind(&entity_text(base)) != UnitKind::Length {
-            return Err(IoError::ParseError {
-                reason: format!("{marker} #{unit_ref} derives from non-length unit #{base_ref}"),
-            });
-        }
-        let (base_factor, base_name) = unit_si_factor(entities, base_ref, depth + 1)?;
-        return Ok((base_factor.powi(expected_exponent), base_name));
+            required_real_attribute("DERIVED_UNIT_ELEMENT", element_ref, &slots, 1, "exponent")?;
+        self.derived_elements
+            .insert(element_ref, (base_ref, exponent));
+        Ok((base_ref, exponent))
     }
 
-    if let Some(group) = balanced_group_after(&text, "CONVERSION_BASED_UNIT") {
-        // CONVERSION_BASED_UNIT(<name>, #measure)
-        let slots = split_attr_slots(group);
-        let measure_ref = required_reference_attribute(
-            "CONVERSION_BASED_UNIT",
-            unit_ref,
-            &slots,
-            1,
-            "conversion_factor",
-        )?;
+    fn conversion_measure(&mut self, measure_ref: u64) -> Result<(f64, u64), IoError> {
+        if let Some(parsed) = self.conversion_measures.get(&measure_ref) {
+            return Ok(*parsed);
+        }
+        let entities = self.entities;
         let measure = entities
             .get(&measure_ref)
             .ok_or_else(|| IoError::ParseError {
                 reason: format!("conversion factor entity #{measure_ref} not found"),
             })?;
+        #[cfg(test)]
+        {
+            self.scanned_unit_bytes += measure.attrs.len();
+        }
         let measure_attrs = measure.attrs.clone();
         let measure_slots = split_attr_slots(&measure_attrs);
         let value = required_typed_measure_attribute(
@@ -2062,36 +2083,134 @@ fn unit_si_factor(
             1,
             "unit_component",
         )?;
-        let (base_factor, base_name) = unit_si_factor(entities, base_ref, depth + 1)?;
-        return Ok((value * base_factor, base_name));
+        self.conversion_measures
+            .insert(measure_ref, (value, base_ref));
+        Ok((value, base_ref))
     }
 
-    if let Some(group) = balanced_group_after(&text, "SI_UNIT") {
-        let mut parts = group.split(',');
-        let prefix = parts.next().unwrap_or("").trim();
-        let name = parts.next().unwrap_or("").trim();
-        let prefix_factor = si_prefix_factor(prefix).ok_or_else(|| IoError::ParseError {
-            reason: format!("SI_UNIT #{unit_ref} has unrecognised prefix `{prefix}`"),
+    fn compute(&mut self, unit_ref: u64, depth: u32) -> Result<ResolvedUnit, IoError> {
+        let entities = self.entities;
+        let entity = entities.get(&unit_ref).ok_or_else(|| IoError::ParseError {
+            reason: format!("unit entity #{unit_ref} not found"),
         })?;
-        if name.is_empty() {
-            return Err(IoError::ParseError {
-                reason: format!("SI_UNIT #{unit_ref} has no unit name"),
+        let text = entity_text(entity);
+        #[cfg(test)]
+        {
+            self.scanned_unit_bytes += text.len();
+        }
+
+        let kind = unit_kind(&text);
+        let derived = match kind {
+            UnitKind::Area => Some(("AREA_UNIT", 2)),
+            UnitKind::Volume => Some(("VOLUME_UNIT", 3)),
+            UnitKind::Length | UnitKind::PlaneAngle | UnitKind::Other => None,
+        };
+        if let Some((marker, expected_exponent)) = derived
+            && let Some(group) = balanced_group_after(&text, marker)
+            && !group.trim().is_empty()
+        {
+            let elements = exact_reference_list(group).map_err(|reason| IoError::ParseError {
+                reason: format!("{marker} #{unit_ref} has invalid elements: {reason}"),
+            })?;
+            let [element_ref] = elements.as_slice() else {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "{marker} #{unit_ref} must contain exactly one derived unit element"
+                    ),
+                });
+            };
+            let element = entities
+                .get(element_ref)
+                .ok_or_else(|| IoError::ParseError {
+                    reason: format!("derived unit element #{element_ref} not found"),
+                })?;
+            if element.kind.as_str() != "DERIVED_UNIT_ELEMENT" {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "{marker} #{unit_ref} references #{element_ref}, which is not a DERIVED_UNIT_ELEMENT"
+                    ),
+                });
+            }
+            let (base_ref, exponent) = self.derived_element(*element_ref, element)?;
+            if (exponent - f64::from(expected_exponent)).abs() > f64::EPSILON {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "{marker} #{unit_ref} requires exponent {expected_exponent}, got {exponent}"
+                    ),
+                });
+            }
+            let base = entities.get(&base_ref).ok_or_else(|| IoError::ParseError {
+                reason: format!("derived base unit #{base_ref} not found"),
+            })?;
+            if self.kind(base_ref, base) != UnitKind::Length {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "{marker} #{unit_ref} derives from non-length unit #{base_ref}"
+                    ),
+                });
+            }
+            let resolved = self.resolve(base_ref, depth + 1)?;
+            let base_factor = resolved.factor;
+            let base_name = resolved.base;
+            return Ok(ResolvedUnit {
+                factor: base_factor.powi(expected_exponent),
+                base: base_name,
+                indirections: resolved.indirections + 1,
             });
         }
-        let factor = match unit_kind(&text) {
-            UnitKind::Area => prefix_factor.powi(2),
-            UnitKind::Volume => prefix_factor.powi(3),
-            UnitKind::Length | UnitKind::PlaneAngle | UnitKind::Other => prefix_factor,
-        };
-        return Ok((factor, name.to_string()));
-    }
 
-    Err(IoError::ParseError {
-        reason: format!(
-            "unit #{unit_ref} is neither an SI_UNIT nor a CONVERSION_BASED_UNIT \
+        if let Some(group) = balanced_group_after(&text, "CONVERSION_BASED_UNIT") {
+            // CONVERSION_BASED_UNIT(<name>, #measure)
+            let slots = split_attr_slots(group);
+            let measure_ref = required_reference_attribute(
+                "CONVERSION_BASED_UNIT",
+                unit_ref,
+                &slots,
+                1,
+                "conversion_factor",
+            )?;
+            let (value, base_ref) = self.conversion_measure(measure_ref)?;
+            let resolved = self.resolve(base_ref, depth + 1)?;
+            let base_factor = resolved.factor;
+            let base_name = resolved.base;
+            return Ok(ResolvedUnit {
+                factor: value * base_factor,
+                base: base_name,
+                indirections: resolved.indirections + 1,
+            });
+        }
+
+        if let Some(group) = balanced_group_after(&text, "SI_UNIT") {
+            let mut parts = group.split(',');
+            let prefix = parts.next().unwrap_or("").trim();
+            let name = parts.next().unwrap_or("").trim();
+            let prefix_factor = si_prefix_factor(prefix).ok_or_else(|| IoError::ParseError {
+                reason: format!("SI_UNIT #{unit_ref} has unrecognised prefix `{prefix}`"),
+            })?;
+            if name.is_empty() {
+                return Err(IoError::ParseError {
+                    reason: format!("SI_UNIT #{unit_ref} has no unit name"),
+                });
+            }
+            let factor = match unit_kind(&text) {
+                UnitKind::Area => prefix_factor.powi(2),
+                UnitKind::Volume => prefix_factor.powi(3),
+                UnitKind::Length | UnitKind::PlaneAngle | UnitKind::Other => prefix_factor,
+            };
+            return Ok(ResolvedUnit {
+                factor,
+                base: name.to_string(),
+                indirections: 0,
+            });
+        }
+
+        Err(IoError::ParseError {
+            reason: format!(
+                "unit #{unit_ref} is neither an SI_UNIT nor a CONVERSION_BASED_UNIT \
              and cannot be interpreted"
-        ),
-    })
+            ),
+        })
+    }
 }
 
 /// Resolve the file's length and plane-angle units from its
@@ -2121,6 +2240,7 @@ fn resolve_unit_scale(
     require_length: bool,
 ) -> Result<Option<UnitScale>, IoError> {
     const MARKER: &str = "GLOBAL_UNIT_ASSIGNED_CONTEXT";
+    let mut unit_resolver = UnitResolver::new(entities);
 
     let mut context_ids: Vec<u64> = entities
         .iter()
@@ -2148,11 +2268,11 @@ fn resolve_unit_scale(
             let unit_entity = entities.get(&unit_ref).ok_or_else(|| IoError::ParseError {
                 reason: format!("unit entity #{unit_ref} not found"),
             })?;
-            let kind = unit_kind(&entity_text(unit_entity));
+            let kind = unit_resolver.kind(unit_ref, unit_entity);
             if matches!(kind, UnitKind::Area | UnitKind::Volume | UnitKind::Other) {
                 continue;
             }
-            let (factor, base) = unit_si_factor(entities, unit_ref, 0)?;
+            let (factor, base) = unit_resolver.factor(unit_ref, 0)?;
             let (expected_base, to_working, slot, label) = match kind {
                 // SI base for length is the metre; remus works in mm.
                 UnitKind::Length => (".METRE.", factor * 1e3, &mut length, "length"),
@@ -2287,6 +2407,7 @@ fn parse_validation_properties(
     // Resolve the two validation-link entity types once. Looking them up by
     // rescanning `entities` for every property makes hostile, otherwise
     // size-compliant files quadratic in their declaration count.
+    let mut unit_resolver = UnitResolver::new(entities);
     let links = ValidationLinkIndex::build(entities);
     let mut assignment_ids: Vec<u64> = entities
         .iter()
@@ -2412,7 +2533,8 @@ fn parse_validation_properties(
             property_id,
             "step_validation_broken_property_chain",
         )?;
-        let declaration = parse_validation_representation(entities, representation, units)?;
+        let declaration =
+            parse_validation_representation(entities, &mut unit_resolver, representation, units)?;
         if !declaration.is_empty() {
             partial_declarations
                 .entry(brep)
@@ -2562,6 +2684,7 @@ impl ValidationLinkIndex {
 
 fn parse_validation_representation(
     entities: &HashMap<u64, StepEntity<'_>>,
+    unit_resolver: &mut UnitResolver<'_, '_>,
     representation: u64,
     units: UnitScale,
 ) -> Result<PartialValidationProperties, IoError> {
@@ -2619,8 +2742,13 @@ fn parse_validation_representation(
                         .map_err(|error| {
                             invalid_validation("step_validation_invalid_measure", error.to_string())
                         })?;
-                        let value =
-                            raw * validation_unit_scale(entities, unit_ref, UnitKind::Volume)?;
+                        let value = raw
+                            * validation_unit_scale(
+                                entities,
+                                unit_resolver,
+                                unit_ref,
+                                UnitKind::Volume,
+                            )?;
                         set_validation_value(&mut volume, value, item_ref, "volume")?;
                     }
                     "surface area measure" => {
@@ -2635,8 +2763,13 @@ fn parse_validation_representation(
                         .map_err(|error| {
                             invalid_validation("step_validation_invalid_measure", error.to_string())
                         })?;
-                        let value =
-                            raw * validation_unit_scale(entities, unit_ref, UnitKind::Area)?;
+                        let value = raw
+                            * validation_unit_scale(
+                                entities,
+                                unit_resolver,
+                                unit_ref,
+                                UnitKind::Area,
+                            )?;
                         set_validation_value(&mut surface_area, value, item_ref, "surface area")?;
                     }
                     _ => {}
@@ -2765,6 +2898,7 @@ fn ensure_validation_measure_type(
 
 fn validation_unit_scale(
     entities: &HashMap<u64, StepEntity<'_>>,
+    unit_resolver: &mut UnitResolver<'_, '_>,
     unit_ref: u64,
     expected: UnitKind,
 ) -> Result<f64, IoError> {
@@ -2774,14 +2908,15 @@ fn validation_unit_scale(
             format!("validation unit #{unit_ref} not found"),
         )
     })?;
-    let actual = unit_kind(&entity_text(entity));
+    let actual = unit_resolver.kind(unit_ref, entity);
     if actual != expected {
         return Err(invalid_validation(
             "step_validation_invalid_unit",
             format!("validation unit #{unit_ref} has kind {actual:?}, expected {expected:?}"),
         ));
     }
-    let (factor, base) = unit_si_factor(entities, unit_ref, 0)
+    let (factor, base) = unit_resolver
+        .factor(unit_ref, 0)
         .map_err(|error| invalid_validation("step_validation_invalid_unit", error.to_string()))?;
     if base != ".METRE." {
         return Err(invalid_validation(
@@ -10690,6 +10825,7 @@ fn representation_model_tolerances(
     entities: &HashMap<u64, StepEntity<'_>>,
     include_sheets: bool,
 ) -> Result<HashMap<u64, f64>, IoError> {
+    let mut unit_resolver = UnitResolver::new(entities);
     let body_refs: HashSet<u64> = entities
         .iter()
         .filter(|(_, entity)| is_solid_brep(entity) || (include_sheets && is_sheet_model(entity)))
@@ -10757,7 +10893,13 @@ fn representation_model_tolerances(
                         describe_slot(slots.get(2))
                     ),
                 })?;
-        let tolerance = context_model_tolerance(entities, context_ref)?;
+        let tolerance = if let Some(cached) = unit_resolver.context_tolerances.get(&context_ref) {
+            *cached
+        } else {
+            let value = context_model_tolerance(entities, &mut unit_resolver, context_ref)?;
+            unit_resolver.context_tolerances.insert(context_ref, value);
+            value
+        };
         representation_tolerances.insert(representation_ref, tolerance);
         representation_contexts.insert(representation_ref, context_ref);
         representation_items.insert(representation_ref, item_refs.into_iter().collect());
@@ -11015,6 +11157,7 @@ fn representation_model_tolerances(
 
 fn context_model_tolerance(
     entities: &HashMap<u64, StepEntity<'_>>,
+    unit_resolver: &mut UnitResolver<'_, '_>,
     context_ref: u64,
 ) -> Result<f64, IoError> {
     const MARKER: &str = "GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT";
@@ -11060,74 +11203,87 @@ fn context_model_tolerance(
 
     let mut declared = None;
     for uncertainty_ref in uncertainty_refs {
-        let uncertainty = entities
-            .get(&uncertainty_ref)
-            .ok_or_else(|| IoError::ParseError {
-                reason: format!("uncertainty entity #{uncertainty_ref} not found"),
-            })?;
-        if uncertainty.kind.as_str() != "UNCERTAINTY_MEASURE_WITH_UNIT" {
-            return Err(IoError::ParseError {
-                reason: format!(
-                    "GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT in representation context #{context_ref} references \
+        let millimetres = if let Some(cached) = unit_resolver.uncertainty_mm.get(&uncertainty_ref) {
+            *cached
+        } else {
+            let uncertainty =
+                entities
+                    .get(&uncertainty_ref)
+                    .ok_or_else(|| IoError::ParseError {
+                        reason: format!("uncertainty entity #{uncertainty_ref} not found"),
+                    })?;
+            if uncertainty.kind.as_str() != "UNCERTAINTY_MEASURE_WITH_UNIT" {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT in representation context #{context_ref} references \
                          non-uncertainty entity #{uncertainty_ref}"
-                ),
-            });
-        }
-        let uncertainty_slots = split_attr_slots(&uncertainty.attrs);
-        let value = required_typed_measure_attribute(
-            "UNCERTAINTY_MEASURE_WITH_UNIT",
-            uncertainty_ref,
-            &uncertainty_slots,
-            0,
-            "value_component",
-        )?;
-        if value < 0.0 {
-            return Err(IoError::ParseError {
-                reason: format!(
-                    "UNCERTAINTY_MEASURE_WITH_UNIT #{uncertainty_ref} has negative value {value}"
-                ),
-            });
-        }
-        let unit_ref = required_reference_attribute(
-            "UNCERTAINTY_MEASURE_WITH_UNIT",
-            uncertainty_ref,
-            &uncertainty_slots,
-            1,
-            "unit_component",
-        )?;
-        let unit = entities.get(&unit_ref).ok_or_else(|| IoError::ParseError {
-            reason: format!("uncertainty unit entity #{unit_ref} not found"),
-        })?;
-        if unit_kind(&entity_text(unit)) != UnitKind::Length {
-            return Err(IoError::ParseError {
-                reason: format!(
-                    "UNCERTAINTY_MEASURE_WITH_UNIT #{uncertainty_ref} does not reference a length unit"
-                ),
-            });
-        }
-        let (factor, base) = unit_si_factor(entities, unit_ref, 0)?;
-        if base != ".METRE." {
-            return Err(IoError::ParseError {
-                reason: format!(
-                    "uncertainty unit #{unit_ref} resolves to base `{base}`, expected `.METRE.`"
-                ),
-            });
-        }
-        if !factor.is_finite() || factor <= 0.0 {
-            return Err(IoError::ParseError {
-                reason: format!(
-                    "uncertainty unit #{unit_ref} has a non-positive conversion factor {factor}"
-                ),
-            });
-        }
-        let millimetres = value * factor * 1e3;
-        if !millimetres.is_finite() {
-            return Err(IoError::ParseError {
-                reason: format!(
-                    "UNCERTAINTY_MEASURE_WITH_UNIT #{uncertainty_ref} overflows in millimetres"
-                ),
-            });
-        }
+                    ),
+                });
+            }
+            #[cfg(test)]
+            {
+                unit_resolver.scanned_unit_bytes += uncertainty.attrs.len();
+            }
+            let uncertainty_slots = split_attr_slots(&uncertainty.attrs);
+            let value = required_typed_measure_attribute(
+                "UNCERTAINTY_MEASURE_WITH_UNIT",
+                uncertainty_ref,
+                &uncertainty_slots,
+                0,
+                "value_component",
+            )?;
+            if value < 0.0 {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "UNCERTAINTY_MEASURE_WITH_UNIT #{uncertainty_ref} has negative value {value}"
+                    ),
+                });
+            }
+            let unit_ref = required_reference_attribute(
+                "UNCERTAINTY_MEASURE_WITH_UNIT",
+                uncertainty_ref,
+                &uncertainty_slots,
+                1,
+                "unit_component",
+            )?;
+            let unit = entities.get(&unit_ref).ok_or_else(|| IoError::ParseError {
+                reason: format!("uncertainty unit entity #{unit_ref} not found"),
+            })?;
+            if unit_resolver.kind(unit_ref, unit) != UnitKind::Length {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "UNCERTAINTY_MEASURE_WITH_UNIT #{uncertainty_ref} does not reference a length unit"
+                    ),
+                });
+            }
+            let (factor, base) = unit_resolver.factor(unit_ref, 0)?;
+            if base != ".METRE." {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "uncertainty unit #{unit_ref} resolves to base `{base}`, expected `.METRE.`"
+                    ),
+                });
+            }
+            if !factor.is_finite() || factor <= 0.0 {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "uncertainty unit #{unit_ref} has a non-positive conversion factor {factor}"
+                    ),
+                });
+            }
+            let millimetres = value * factor * 1e3;
+            if !millimetres.is_finite() {
+                return Err(IoError::ParseError {
+                    reason: format!(
+                        "UNCERTAINTY_MEASURE_WITH_UNIT #{uncertainty_ref} overflows in millimetres"
+                    ),
+                });
+            }
+            unit_resolver
+                .uncertainty_mm
+                .insert(uncertainty_ref, millimetres);
+            millimetres
+        };
         match declared {
             None => declared = Some(millimetres),
             Some(existing) if !approx_same_factor(existing, millimetres) => {
@@ -19171,6 +19327,136 @@ REPRESENTATION_CONTEXT('Context3D','3D Context with UNIT and UNCERTAINTY') );\n"
         let cone = cone_geometry(body);
 
         assert_apex_bits(&cone, [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn shared_unit_text_is_scanned_proportionally_to_unique_definitions() {
+        let name = "shared definition ".repeat(64);
+        let mut body = format!(
+            "#1=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.));\n\
+             #2=LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(25.4),#1);\n\
+             #3=(CONVERSION_BASED_UNIT('{name}',#2) LENGTH_UNIT() NAMED_UNIT(#1));\n\
+             #4=LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.),#3);\n"
+        );
+        for id in 10..266 {
+            use std::fmt::Write as _;
+            writeln!(
+                body,
+                "#{id}=(CONVERSION_BASED_UNIT('alias',#4) LENGTH_UNIT() NAMED_UNIT(#3));"
+            )
+            .unwrap();
+        }
+        let step = step_file(&body);
+        let entities = parse_step_entities(&step, ImportLimits::default()).unwrap();
+        let mut resolver = UnitResolver::new(&entities);
+        for _ in 0..16 {
+            for id in 10..266 {
+                assert_eq!(resolver.kind(id, &entities[&id]), UnitKind::Length);
+                let (factor, base) = resolver.factor(id, 0).unwrap();
+                assert!((factor - 0.0254).abs() < 1e-15);
+                assert_eq!(base, ".METRE.");
+            }
+        }
+        // Count the actual textual copies/scans, without a wall-clock threshold.
+        assert!(resolver.scanned_unit_bytes <= 3 * step.len());
+    }
+
+    #[test]
+    fn shared_conversion_measures_and_derived_elements_are_scanned_once() {
+        use std::fmt::Write as _;
+        for derived in [false, true] {
+            let zeros = "0".repeat(2048);
+            let mut body = format!(
+                "#1=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.));\n\
+                 #2=DERIVED_UNIT_ELEMENT(#1,2.{zeros});\n\
+                 #3=LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.{zeros}),#1);\n"
+            );
+            for id in 10..266 {
+                if derived {
+                    writeln!(body, "#{id}=AREA_UNIT((#2));").unwrap();
+                } else {
+                    writeln!(
+                        body,
+                        "#{id}=(CONVERSION_BASED_UNIT('alias',#3) LENGTH_UNIT() NAMED_UNIT(*));"
+                    )
+                    .unwrap();
+                }
+            }
+            body.push_str("#300=VOLUME_UNIT((#2));\n");
+            let step = step_file(&body);
+            let entities = parse_step_entities(&step, ImportLimits::default()).unwrap();
+            let mut resolver = UnitResolver::new(&entities);
+            for id in 10..266 {
+                let (factor, base) = resolver.factor(id, 0).unwrap();
+                let expected = if derived { 1e-6 } else { 1e-3 };
+                assert!((factor - expected).abs() < 1e-15);
+                assert_eq!(base, ".METRE.");
+            }
+            assert!(resolver.scanned_unit_bytes <= 3 * step.len());
+            if derived {
+                // The same parsed element remains subject to each quantity's
+                // required exponent; the area result cannot authorize volume.
+                assert!(
+                    resolver
+                        .factor(300, 0)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("requires exponent 3")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cached_uncertainties_preserve_raw_conflicts_before_flooring() {
+        let step = step_file(
+            "#1=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT($,.METRE.));\n\
+             #2=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(0.),#1,'','');\n\
+             #3=UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(5.E-11),#1,'','');\n\
+             #4=GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#2));\n\
+             #5=GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#2,#3));",
+        );
+        let entities = parse_step_entities(&step, ImportLimits::default()).unwrap();
+        let mut resolver = UnitResolver::new(&entities);
+        let first = context_model_tolerance(&entities, &mut resolver, 4).unwrap();
+        assert_eq!(first.to_bits(), Tolerance::new().linear.to_bits());
+        let error = context_model_tolerance(&entities, &mut resolver, 5).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("conflicting length uncertainties")
+        );
+    }
+
+    #[test]
+    fn cached_unit_keeps_depth_and_cycle_refusals() {
+        let step = step_file(
+            "#1=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.));\n\
+             #2=LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(25.4),#1);\n\
+             #3=(CONVERSION_BASED_UNIT('INCH',#2) LENGTH_UNIT() NAMED_UNIT(#1));\n\
+             #4=LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.),#5);\n\
+             #5=(CONVERSION_BASED_UNIT('CYCLE',#4) LENGTH_UNIT() NAMED_UNIT(*));",
+        );
+        let entities = parse_step_entities(&step, ImportLimits::default()).unwrap();
+        let mut resolver = UnitResolver::new(&entities);
+        let expected = resolver.factor(3, 0).unwrap();
+        assert_eq!(
+            resolver.factor(3, MAX_UNIT_INDIRECTION - 1).unwrap(),
+            expected
+        );
+        let depth_error = resolver.factor(3, MAX_UNIT_INDIRECTION).unwrap_err();
+        assert!(
+            depth_error
+                .to_string()
+                .contains("unit definition at #1 nests deeper")
+        );
+        assert!(
+            resolver
+                .factor(5, 0)
+                .unwrap_err()
+                .to_string()
+                .contains("cyclic unit reference")
+        );
     }
 
     #[test]
