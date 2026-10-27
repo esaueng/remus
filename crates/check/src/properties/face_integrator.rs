@@ -21,6 +21,8 @@ use crate::CheckError;
 
 mod adaptive;
 mod boundary_area;
+#[cfg(test)]
+mod cylinder_row_tests;
 mod loop_index;
 #[cfg(test)]
 mod nurbs_rows_oracle_tests;
@@ -49,6 +51,9 @@ struct IntegrationRule<'a> {
     /// Analytic cone apex used only for stable adaptive volume density:
     /// `(P - R)·N = (apex - R)·N` on every cone generator.
     cone_apex: Option<Point3>,
+    /// Only cylinders have both partials independent of v. Reuse their
+    /// identical normal within a fixed-u run of the unchanged sample order.
+    cylinder_rows: bool,
 }
 
 impl<'a> IntegrationRule<'a> {
@@ -78,6 +83,7 @@ impl<'a> IntegrationRule<'a> {
             volume_only: self.volume_only,
             flux: self.flux,
             cone_apex: self.cone_apex,
+            cylinder_rows: self.cylinder_rows,
         }
     }
 
@@ -219,6 +225,7 @@ pub fn integrate_face_fixed_about(
             volume_only: false,
             flux: None,
             cone_apex: None,
+            cylinder_rows: false,
         },
     )
 }
@@ -290,6 +297,7 @@ fn integrate_face_fixed_flux_impl(
             volume_only,
             flux: Some(&flux),
             cone_apex: None,
+            cylinder_rows: false,
         },
     )?;
     Ok((contribution, flux.get()))
@@ -319,6 +327,7 @@ pub fn integrate_face_area(
             volume_only: false,
             flux: None,
             cone_apex: None,
+            cylinder_rows: false,
         },
     )?
     .area)
@@ -427,6 +436,7 @@ pub fn integrate_face_about(
             volume_only: false,
             flux: None,
             cone_apex: None,
+            cylinder_rows: false,
         },
     )
 }
@@ -481,6 +491,10 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
             Ok(contribution)
         }
         FaceSurface::Cylinder(s) => {
+            let rule = IntegrationRule {
+                cylinder_rows: true,
+                ..rule
+            };
             let full = (
                 (0.0, std::f64::consts::TAU),
                 face_boundary_v_extent(topo, face_id, s)?,
@@ -1066,6 +1080,7 @@ pub fn integrate_torus_band_face_about(
             volume_only: false,
             flux: None,
             cone_apex: None,
+            cylinder_rows: false,
         },
         if face.is_reversed() { -1.0 } else { 1.0 },
     )
@@ -1204,6 +1219,7 @@ fn integrate_torus_tube_band<const AREA_ONLY: bool>(
     let gauss = gauss_legendre_points(order);
     let mut acc = Accumulator {
         volume_only: rule.volume_only,
+        cylinder_normal: rule.cylinder_rows.then(CylinderRowNormal::default),
         ..Accumulator::default()
     };
     let mut scratch = DerivativeScratch::new();
@@ -3480,11 +3496,52 @@ fn integrate_planar_face_exact(
     }))
 }
 
+/// Exact normal of the latest fixed-u run in one cylindrical integration.
+#[derive(Default)]
+struct CylinderRowNormal {
+    cached: Option<(u64, Vec3, f64)>,
+}
+
+impl CylinderRowNormal {
+    #[inline]
+    fn normal(&mut self, u: f64, du: Vec3, dv: Vec3) -> (Vec3, f64) {
+        if let Some((bits, normal, length)) = self.cached
+            && bits == u.to_bits()
+            && u.is_finite()
+        {
+            return (normal, length);
+        }
+        let (normal, length) = sample_normal(du, dv);
+        self.cached = Some((u.to_bits(), normal, length));
+        (normal, length)
+    }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static NORMAL_EVALUATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Original unnormalized cross product and Jacobian length, without regrouping.
+#[inline]
+fn sample_normal(du: Vec3, dv: Vec3) -> (Vec3, f64) {
+    #[cfg(test)]
+    NORMAL_EVALUATIONS.with(|count| count.set(count.get() + 1));
+    let normal = Vec3::new(
+        du.y() * dv.z() - du.z() * dv.y(),
+        du.z() * dv.x() - du.x() * dv.z(),
+        du.x() * dv.y() - du.y() * dv.x(),
+    );
+    (normal, normal.length())
+}
+
 /// Running totals of a face's contribution over quadrature abscissae.
 #[derive(Default)]
 struct Accumulator {
     /// Runtime fixed-rule policy; adaptive/full accumulation leaves it false.
     volume_only: bool,
+    /// One face integration only; never retained across faces or mutations.
+    cylinder_normal: Option<CylinderRowNormal>,
     area: f64,
     vol: f64,
     mx: f64,
@@ -3531,7 +3588,11 @@ impl Accumulator {
         // before trusting them, so analytic surfaces (whose default ignores
         // the hint) and NURBS faces alike get exactly the unhinted answer.
         let (p, du, dv, _, _) = surface.span_hinted_point_and_partials_with_scratch(u, v, scratch);
-        self.add_sample::<AREA_ONLY>(p, du, dv, w, reference);
+        let (normal, length) = match self.cylinder_normal.as_mut() {
+            Some(row) => row.normal(u, du, dv),
+            None => sample_normal(du, dv),
+        };
+        self.add_normal_sample::<AREA_ONLY>(p, normal, length, w, reference);
     }
 
     /// [`Self::add`] for an abscissa whose position and partials are already
@@ -3545,14 +3606,20 @@ impl Accumulator {
         w: f64,
         reference: Point3,
     ) {
-        // Normal = du x dv (unnormalized, includes Jacobian)
-        let n = Vec3::new(
-            du.y() * dv.z() - du.z() * dv.y(),
-            du.z() * dv.x() - du.x() * dv.z(),
-            du.x() * dv.y() - du.y() * dv.x(),
-        );
-        let n_len = n.length();
+        let (normal, length) = sample_normal(du, dv);
+        self.add_normal_sample::<AREA_ONLY>(p, normal, length, w, reference);
+    }
 
+    /// Same accumulation expressions and order, with an already solved normal.
+    #[inline]
+    fn add_normal_sample<const AREA_ONLY: bool>(
+        &mut self,
+        p: Point3,
+        n: Vec3,
+        n_len: f64,
+        w: f64,
+        reference: Point3,
+    ) {
         self.area += w * n_len;
 
         if AREA_ONLY {
@@ -3823,6 +3890,7 @@ fn integrate_parametric<S: ParametricSurface, const AREA_ONLY: bool>(
     let u_scale = du_patch / 2.0;
     let mut acc = Accumulator {
         volume_only: rule.volume_only,
+        cylinder_normal: rule.cylinder_rows.then(CylinderRowNormal::default),
         ..Accumulator::default()
     };
     // One scratch per face integration: every NURBS abscissa below reuses
@@ -4232,6 +4300,7 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
     let budget = MAX_KNOT_ALIGNED_CELLS.saturating_mul(gauss_pts.len());
     let mut acc = Accumulator {
         volume_only: rule.volume_only,
+        cylinder_normal: rule.cylinder_rows.then(CylinderRowNormal::default),
         ..Accumulator::default()
     };
     let mut scratch = DerivativeScratch::new();
@@ -5353,6 +5422,7 @@ mod tests {
                 volume_only: false,
                 flux: None,
                 cone_apex: None,
+                cylinder_rows: false,
             };
             integrate_knot_aligned::<_, false>(
                 &cylinder,
@@ -5412,6 +5482,7 @@ mod tests {
             volume_only: false,
             flux: None,
             cone_apex: None,
+            cylinder_rows: false,
         };
         assert!(matches!(
             integrate_knot_aligned::<_, false>(
@@ -5485,6 +5556,7 @@ mod tests {
             volume_only: false,
             flux: None,
             cone_apex: None,
+            cylinder_rows: false,
         };
         let trim = UvTrim::new(None, &[], &[], false);
         let area = integrate_knot_aligned::<_, true>(
@@ -5528,6 +5600,7 @@ mod tests {
             volume_only: false,
             flux: None,
             cone_apex: None,
+            cylinder_rows: false,
         };
         let area = integrate_knot_aligned::<_, true>(
             &cylinder,
@@ -5572,6 +5645,7 @@ mod tests {
             volume_only: false,
             flux: None,
             cone_apex: None,
+            cylinder_rows: false,
         };
         let area = integrate_knot_aligned::<_, true>(
             &NarrowSpan,
@@ -5620,6 +5694,7 @@ mod tests {
             volume_only: false,
             flux: None,
             cone_apex: None,
+            cylinder_rows: false,
         };
         let area = integrate_knot_aligned::<_, true>(
             &NarrowSpan,

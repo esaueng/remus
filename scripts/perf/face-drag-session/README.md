@@ -102,3 +102,32 @@ node scripts/perf/face-drag-session/drag_session_bench.test.cjs
 node scripts/perf/recognition-graph/profile_recognition.test.cjs
 node scripts/perf/recognition-graph/compare_runs.test.cjs
 ```
+
+Matched source comparisons run through `.github/workflows/preview-performance.yml`.
+Add the existing `ci:benchmark` label to a PR, or dispatch the workflow with a
+base ref. It builds and tests both canonical WASM packages at the PR head and
+its common ancestor with the base, then runs the same candidate driver against
+each. The `preview-performance-<head>` artifact retains package hashes, raw
+captures, process logs and `comparison.json`.
+
+The comparison uses serial A–B–B–A processes pinned to one CPU for unique
+offsets, revisited offsets and 200 background bodies. It retains every stage,
+cold and warmed observations, memory snapshots and geometry gates. The
+existing full-edit comparison separately checks output artifacts, quantities,
+features and transactional edit outcomes in both caller orders. An identical
+native Criterion driver measures the orientation integrals missed by a new
+edit after priming only source-face contributions. Cache cloning and teardown
+stay outside that native timer; content lookups and integrations stay inside.
+This isolates integral work, while the preview captures measure the full
+kernel preview call sequence. Neither boundary measures browser presentation.
+Ratios are descriptive observations on one host, without a tail-confidence
+claim. Failed builds or output checks do not qualify a performance result.
+
+To repeat the comparison after building both package pairs and native benches:
+
+```sh
+python3 scripts/perf/face-drag-session/compare_preview.py \
+  --baseline-root /path/to/baseline --candidate-root /path/to/candidate \
+  --out /path/to/new-comparison-directory
+python3 -m unittest discover -s scripts/perf/face-drag-session -p 'test_compare_preview.py'
+```
