@@ -7,6 +7,12 @@ name: Refresh Apache Staging Package
 # A stale snapshot silently serves old kernel behavior while the Rust source
 # looks current, so every package-affecting push runs this automatically.
 on:
+  workflow_call:
+    inputs:
+      reuse_artifact:
+        description: Consume this CI run's qualified package artifact on protected main
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -35,8 +41,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: apache-package-refresh-${{ github.ref }}
-  cancel-in-progress: true
+  group: apache-package-refresh-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   # The committed package directories are a real distribution channel, not a
@@ -48,17 +54,19 @@ jobs:
   # main's Rust source appears current.
   build-committed-package:
     name: Build committed WASM package
+    env:
+      RUSTFLAGS: -Dwarnings
     runs-on: ubuntu-24.04
     # A warm build takes about 20 minutes.
     timeout-minutes: 60
     # Package-only PR merges are excluded by the path filter above.
     # A manual run is restricted to main; both jobs check out its exact event SHA.
     if: >-
-      ${{ (github.event_name == 'push'
+      ${{ !inputs.reuse_artifact && ((github.event_name == 'push'
            && !contains(github.event.head_commit.message, '[skip ci]'))
           || (github.event_name == 'workflow_dispatch'
               && inputs.sync_package
-              && github.ref == 'refs/heads/main') }}
+              && github.ref == 'refs/heads/main')) }}
     permissions:
       contents: read
     steps:
@@ -75,10 +83,13 @@ jobs:
 
       # rust-toolchain.toml provides the pinned Rust version + wasm32 target
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: wasm-package
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
-          tool: wasm-pack
+          tool: wasm-pack@0.15.0
 
       # Keep the staging package on the same reproducible build path that the
       # standalone project will use after it adopts its final package name.
@@ -107,12 +118,20 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: committed-wasm-package
+          compression-level: 0
           path: committed-wasm-package.tar.gz
           if-no-files-found: error
 
   sync-committed-package:
     name: Propose refreshed WASM package
     needs: [build-committed-package]
+    # Only the CI caller uses reuse_artifact, after its required completion gate
+    # has accepted both runtime suites. Artifacts stay inside the same run/SHA.
+    if: >-
+      ${{ !cancelled() && github.repository == 'esaueng/remus'
+          && github.ref == 'refs/heads/main' && github.ref_protected
+          && (needs.build-committed-package.result == 'success'
+              || (inputs.reuse_artifact && github.event_name == 'push')) }}
     environment: remus-bot
     runs-on: ubuntu-24.04
     timeout-minutes: 15

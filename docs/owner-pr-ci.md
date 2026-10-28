@@ -472,3 +472,54 @@ unprotected-main contexts, verifies immutable pins and guard ordering, and
 retains OSV comparison and publisher permission contracts. Convergence tests
 exercise full-suite completion, cancellation, unexpected skips and independent
 PR scheduling.
+## Staged CI speed workflow
+
+`fleet-ci-v9.yml` and `fleet-benchmark-v4.yml` are staged definitions. They are
+not active until their caller pins and `.github/fleet-workflows.json` select
+the landed main commit. The immutable-main-ancestor check remains required.
+
+V9 builds the complete native test archive once, then runs two hash partitions
+with the same pinned Nextest version. Documentation tests and the separate
+complexity guards remain required. Its native producer alone opts into workspace
+crate caching in a new cache namespace; only main writes that cache. The shards
+consume the exact archive and do not restore or rebuild Cargo targets.
+Both native jobs stay on `ubuntu-24.04`, even when other fleet jobs are opted in.
+A receipt checks the exact source SHA and checkout root before executing an
+archive: nextest cannot rewrite fixture paths embedded by `CARGO_MANIFEST_DIR`.
+Package producers share a compatible `wasm-package` dependency cache with the
+integrity consumer after activation; PR and merge-group integrity runs only
+restore it. The package tool version and warning flags match between producers.
+
+The WASM producer builds and validates both packages with
+`cargo xtask wasm-build --defer-package-tests`. It uploads one package archive.
+Two required jobs install that archive through the existing restrictive installer
+and run the complete smoke and installed-tarball suites on separate runners.
+`CI Pass` rejects a failed, cancelled or unexpectedly skipped runtime job. The
+default local and package-integrity builds still run both suites themselves.
+
+The reusable publisher can consume this same run's artifact only on protected
+main pushes. Its CI caller must wait for `CI Pass`; the publishing runner never
+executes the build or runtime tests with the App credential. Refresh branches remain immutable and bound to their build source; a newer
+lightweight main commit does not discard a pending artifact. The standalone manual
+refresh still builds and tests its own packages.
+
+`coverage.yml` runs the complete workspace nightly and on an explicit protected
+main dispatch, with the same `ci-test` profile and 60-percent line threshold.
+V9 retains coverage for full PR, merge-group and manual CI runs. Main pushes
+defer coverage to the nightly workflow; dependency audits and MSRV still run.
+The staged benchmark publisher records baselines on nightly/main dispatch runs;
+labelled PR comparisons keep their existing threshold and read-only build job.
+
+New fleet revisions require their own runner-group registration. V9 additionally
+requires `CI_FLEET_CI_V9_ENABLED=true` before it can select a self-hosted runner.
+The benchmark revision similarly requires `CI_FLEET_BENCHMARK_V4_ENABLED=true`.
+Existing fleet variables alone therefore keep this revision hosted. This change
+does not activate runners, edit their group allowlist, or change branch protection.
+
+Privacy activation keeps every branch/tag push and merge-group request, including
+queue-prefixed branches. The protected pinned History workflow continues auditing
+all advertised owner refs for push requests and publishing both App-bound privacy
+verdicts. Only the redundant unprivileged identity workflow and the PR request
+round-trip are retired; PRs retain direct `pull_request_target` audits. Synthetic
+privacy regressions move into V9's required Repository Policy job. Scanner code,
+fingerprints, credentials, policy pin and App bindings remain unchanged.

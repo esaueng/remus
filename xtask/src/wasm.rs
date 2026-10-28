@@ -976,10 +976,9 @@ mod tests {
         fs::write(&wasm, &bytes).unwrap();
         let findings = size_policy_findings(&run_size_policy(&wasm).unwrap()).unwrap();
         assert_eq!(findings.failures.len(), 1);
-        assert!(
-            findings.failures[0]
-                .starts_with(&format!("kernel-raw-hard: raw bytes {over} (budget 12582912)"))
-        );
+        assert!(findings.failures[0].starts_with(&format!(
+            "kernel-raw-hard: raw bytes {over} (budget 12582912)"
+        )));
 
         fs::write(&wasm, b"not wasm").unwrap();
         assert!(run_size_policy(&wasm).is_err());
@@ -1020,25 +1019,27 @@ mod tests {
     #[test]
     fn consumer_workflows_cannot_skip_wasm_optimization() {
         let root = project_root().unwrap();
-        for (relative, delegated) in [
-            (
-                ".github/workflows/ci.yml",
-                Some(".github/workflows/fleet-ci.yml"),
-            ),
+        let manifest: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(root.join(".github/fleet-workflows.json")).unwrap(),
+        )
+        .unwrap();
+        for (relative, family) in [
+            (".github/workflows/ci.yml", Some("ci")),
             (".github/workflows/publish.yml", None),
             (
                 ".github/workflows/openzcad-wasm-release.yml",
-                Some(".github/workflows/fleet-wasm-candidate.yml"),
+                Some("wasm-candidate"),
             ),
         ] {
             let caller = fs::read_to_string(root.join(relative)).unwrap();
-            let workflow = if let Some(target) = delegated {
+            let workflow = if let Some(family) = family {
+                let target = format!(".github/workflows/{}", manifest[family].as_str().unwrap());
                 assert!(
                     caller.contains(&format!("uses: esaueng/remus/{target}@")),
                     "{relative} must delegate to {target}"
                 );
                 assert!(!caller.contains("wasm-build --skip-opt"));
-                fs::read_to_string(root.join(target)).unwrap()
+                fs::read_to_string(root.join(&target)).unwrap()
             } else {
                 caller
             };

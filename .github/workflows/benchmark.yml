@@ -13,6 +13,8 @@ name: Benchmark
 # token — a PR build script can never reach it.
 
 on:
+  schedule:
+    - cron: "29 6 * * *"
   push:
     branches: [main]
   pull_request:
