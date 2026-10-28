@@ -562,6 +562,18 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
             remus_operations::OperationsError::InvalidInput { .. } => {
                 Self::invalid_argument(message, None)
             }
+            remus_operations::OperationsError::Unsupported {
+                operation: "revolve_with_entity_evolution",
+                ..
+            } => {
+                let mut structured = Self::operation_failed(message);
+                structured.category = FailureCategory::Unsupported.as_str();
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("revolve_history_unsupported"),
+                );
+                structured
+            }
             remus_operations::OperationsError::Topology(error) => Self::from(error),
             remus_operations::OperationsError::Heal(error) => {
                 let mut structured = Self::from(error);

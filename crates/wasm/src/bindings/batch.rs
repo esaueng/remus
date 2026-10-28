@@ -289,6 +289,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "moveFacesJournaled"
         | "offsetJournaled"
         | "extrudeJournaled"
+        | "revolveJournaled"
         | "makeCylinder"
         | "makeSphere"
         | "makeCone"

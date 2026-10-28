@@ -2101,6 +2101,16 @@
       "reason": "O4.7 twin; the typed surface itself, no further twin required"
     },
     {
+      "js": "revolveJournaled",
+      "rust": "revolve_journaled_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
       "js": "runHealPipeline",
       "rust": "run_heal_pipeline",
       "file": "bindings/heal.rs",

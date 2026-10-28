@@ -644,6 +644,14 @@ struct AnalyticFullRevolutionPlan {
     profile: Vec<ProfileEdge>,
 }
 
+#[derive(Default)]
+struct RevolveConstruction {
+    rims: Vec<remus_topology::edge::EdgeId>,
+    seams: Vec<remus_topology::edge::EdgeId>,
+    vertices: std::collections::BTreeSet<VertexId>,
+    faces: Vec<FaceId>,
+}
+
 /// Classify one profile edge for the analytic full-revolution path, or `None`
 /// when the edge has no unambiguous closed-form revolution face (spline,
 /// axis-touching arc, sphere/spindle arc, degenerate cone angle).
@@ -916,6 +924,19 @@ fn build_analytic_revolution(
     ccw: bool,
     profile: &[ProfileEdge],
 ) -> Result<SolidId, crate::OperationsError> {
+    build_analytic_revolution_recorded(topo, axis_origin, axis, e_r, ccw, profile, None)
+}
+
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+fn build_analytic_revolution_recorded(
+    topo: &mut Topology,
+    axis_origin: Point3,
+    axis: Vec3,
+    e_r: Vec3,
+    ccw: bool,
+    profile: &[ProfileEdge],
+    mut construction: Option<&mut RevolveConstruction>,
+) -> Result<SolidId, crate::OperationsError> {
     use remus_topology::edge::EdgeId;
     let lin = Tolerance::new().linear;
     let n = profile.len();
@@ -946,6 +967,10 @@ fn build_analytic_revolution(
             circle,
             "analytic revolution rim",
         )?);
+        if let Some(record) = construction.as_deref_mut() {
+            record.rims.extend(rim_circle[i]);
+            record.vertices.insert(pe.sv);
+        }
     }
 
     let mut faces: Vec<FaceId> = Vec::with_capacity(n);
@@ -994,6 +1019,11 @@ fn build_analytic_revolution(
                 )));
             }
             RevEdge::Cylinder { .. } | RevEdge::Cone { .. } | RevEdge::Torus { .. } => {
+                if let Some(record) = construction.as_deref_mut() {
+                    record.seams.push(pe.edge);
+                    let edge = topo.edge(pe.edge)?;
+                    record.vertices.extend([edge.start(), edge.end()]);
+                }
                 // A periodic wall seamed by the ORIGINAL profile edge. The
                 // orientation probe is a point ON the wall surface mid-edge plus
                 // the material-outward direction there (for an arc, the local
@@ -1085,6 +1115,9 @@ fn build_analytic_revolution(
         return Err(crate::OperationsError::InvalidInput {
             reason: "analytic revolution produced no faces".into(),
         });
+    }
+    if let Some(record) = construction {
+        record.faces.clone_from(&faces);
     }
     let shell = Shell::new(faces).map_err(crate::OperationsError::Topology)?;
     let shell_id = topo.add_shell(shell);
@@ -1442,6 +1475,134 @@ pub fn revolve(
 ) -> Result<SolidId, crate::OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
         revolve_impl(topo, face, axis_origin, axis_direction, angle_radians)
+    })
+}
+
+/// A full-turn analytic revolution with construction-derived result history.
+#[derive(Debug, Clone)]
+pub struct RevolveEntityEvolution {
+    /// The constructed solid.
+    pub solid: SolidId,
+    /// Every revolved face is generated from the profile face.
+    pub faces: crate::evolution::EvolutionMap,
+    /// Reused profile seams/vertices and newly generated circular rims.
+    pub boundary: crate::boundary_evolution::BoundaryEvolution,
+    /// Claims checked against the actual result face, edge and vertex sets.
+    pub completeness: crate::boundary_evolution::EntityCompletenessReport,
+}
+
+/// Revolve a planar, hole-free straight-edge radial profile through a full turn
+/// and retain its exact construction identities.
+///
+/// This additive history path shares the analytic builder and allocation order
+/// with [`revolve`]. Existing profile seam edges and vertices are modified into
+/// themselves; the new circular rims and faces are generated from the profile
+/// face. No geometric matching or output ordering supplies an identity. Partial
+/// turns, curved or holed profiles, and profiles outside the analytic radial
+/// construction refuse transactionally. The legacy operation keeps its broader
+/// geometry domain.
+///
+/// # Errors
+///
+/// Returns an input error for invalid axis/angle, a typed unsupported error
+/// outside the declared history domain, or the construction/validation error.
+pub fn revolve_with_entity_evolution(
+    topo: &mut Topology,
+    face: FaceId,
+    axis_origin: Point3,
+    axis_direction: Vec3,
+    angle_radians: f64,
+) -> Result<RevolveEntityEvolution, crate::OperationsError> {
+    use crate::boundary_evolution::{
+        BoundaryEvent, BoundaryEvolution, completeness_for_result_solids, require_accounted,
+    };
+    use crate::evolution::EvolutionMap;
+
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let tolerance = Tolerance::new();
+        if !angle_radians.is_finite()
+            || angle_radians <= 0.0
+            || angle_radians > 2.0f64.mul_add(PI, tolerance.angular)
+            || !axis_direction.length_squared().is_finite()
+            || tolerance.approx_eq(axis_direction.length_squared(), 0.0)
+            || ![axis_origin.x(), axis_origin.y(), axis_origin.z()]
+                .iter()
+                .all(|value| value.is_finite())
+        {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "journaled revolve requires a finite axis and an angle in (0, 2π]".into(),
+            });
+        }
+        let axis = axis_direction.normalize()?;
+        let unsupported = || crate::OperationsError::Unsupported {
+            operation: "revolve_with_entity_evolution",
+            reason: "history requires a full-turn planar hole-free straight-edge radial profile"
+                .into(),
+        };
+        let full = angle_radians >= 2.0f64.mul_add(PI, -tolerance.angular);
+        let Some(plan) = analytic_full_revolution_plan(topo, face, axis_origin, axis, full)? else {
+            return Err(unsupported());
+        };
+        if plan.profile.iter().any(|edge| {
+            topo.edge(edge.edge)
+                .is_ok_and(|data| !matches!(data.curve(), EdgeCurve::Line))
+        }) {
+            return Err(unsupported());
+        }
+        for edge in &plan.profile {
+            crate::normalize_legacy_edge_domain(topo, edge.edge, "revolve raw profile edge")?;
+        }
+        let mut record = RevolveConstruction::default();
+        let solid = build_analytic_revolution_recorded(
+            topo,
+            axis_origin,
+            axis,
+            plan.radial,
+            plan.ccw,
+            &plan.profile,
+            Some(&mut record),
+        )?;
+        let report = crate::validate::validate_solid(topo, solid)?;
+        if !report.is_valid() {
+            return Err(crate::OperationsError::BodyValidationFailed {
+                body_class: "solid",
+                error_count: report.error_count(),
+            });
+        }
+        let mut faces = EvolutionMap::exact();
+        for result in record.faces {
+            faces.add_generated(face.index(), result.index());
+        }
+        let mut boundary = BoundaryEvolution::default();
+        for edge in record.rims {
+            boundary.edges.insert(
+                edge.index(),
+                BoundaryEvent::Generated {
+                    faces: vec![face.index()],
+                },
+            );
+        }
+        for edge in record.seams {
+            boundary
+                .edges
+                .insert(edge.index(), BoundaryEvent::Modified { from: edge.index() });
+        }
+        for vertex in record.vertices {
+            boundary.vertices.insert(
+                vertex.index(),
+                BoundaryEvent::Modified {
+                    from: vertex.index(),
+                },
+            );
+        }
+        let completeness = completeness_for_result_solids(topo, &faces, &boundary, &[solid])?;
+        require_accounted("revolve", &completeness)?;
+        Ok(RevolveEntityEvolution {
+            solid,
+            faces,
+            boundary,
+            completeness,
+        })
     })
 }
 

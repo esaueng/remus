@@ -36,6 +36,7 @@ import { runOpseqF17Packaged } from './opseq-f17-packaged.mjs';
 import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
 import { runPackagedPreviewWorkContract } from './perf/face-drag-session/packaged_contract.cjs';
 import { runGridPatternPackaged } from './grid-pattern-packaged.mjs';
+import { runRevolveHistoryPackaged } from './revolve-history-packaged.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptDir, '..');
@@ -112,6 +113,7 @@ try {
   });
   runOpenZcadConsumerRegressions({ ...packageExports, ...ioExports });
   runGridPatternPackaged(packageExports);
+  runRevolveHistoryPackaged(packageExports);
   runProjectCurvePackaged(packageExports);
   runKernelCorrectnessPackaged(packageExports);
   runNextKernelCorrectnessPackaged(packageExports);
