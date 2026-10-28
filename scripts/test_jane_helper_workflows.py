@@ -7,7 +7,7 @@ import re
 import subprocess
 import unittest
 
-from fleet_workflows import FAMILIES, workflow_manifest
+from fleet_workflows import FAMILIES, validate_reference, workflow_calls, workflow_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 STAGE = json.loads((ROOT / '.github/fleet-profile-stage.json').read_text())
@@ -47,6 +47,18 @@ class JaneHelperWorkflowTests(unittest.TestCase):
         manifest = workflow_manifest()
         for family, entry in STAGE['workflows'].items():
             with self.subTest(family=family):
+                if family == 'benchmark' and manifest[family] == 'fleet-benchmark-v4.yml':
+                    # Preserve the complete original helper-stage proof. V4's
+                    # separately reviewed speed changes must match its landed pin.
+                    self.assertEqual((WORKFLOWS / entry['staged']).read_text(),
+                                     expected_stage(original(entry['previous'])))
+                    self.assertFalse((WORKFLOWS / entry['previous']).exists(),
+                                     'Activation retires the previous helper file')
+                    path = '.github/workflows/' + manifest[family]
+                    matching = [(p, sha) for _caller, p, sha in workflow_calls() if p == path]
+                    self.assertEqual(len(matching), 1)
+                    validate_reference(*matching[0], (ROOT / path).read_bytes())
+                    continue
                 self.assertIn(manifest[family], entry.values())
                 active = (WORKFLOWS / manifest[family]).read_text()
                 expected = original(entry['previous'])
