@@ -5544,9 +5544,31 @@ fn fill_sphere_hemisphere_patch_impl(
     let angular_segments =
         segments_for_chord_deviation_a(radius, std::f64::consts::PI, deflection, angular_tol, true)
             .max(2);
-    let n_x = angular_segments.saturating_mul(2);
-    let n_y = angular_segments.saturating_mul(2);
-    validate_interior_grid_size(n_x, n_y)?;
+    // Size the interior grid on the sphere, not in the chart. Along a chart
+    // axis a stereographic coordinate is `tan(alpha / 2)` of the arc angle
+    // `alpha` from the chart pole, so uniform `alpha` steps of
+    // `pi / angular_segments` give exactly the deflection step on the axes
+    // and never a coarser one off them (the chart's scale factor
+    // `2 / (1 + x^2 + y^2)` is at most `2 / (1 + x^2)`). Only the patch's own
+    // angular extent is covered. A fixed `2 * angular_segments` uniform grid
+    // over the chart bounding box oversampled a full hemisphere about
+    // fivefold and a narrower patch further still.
+    let step = std::f64::consts::PI / angular_segments as f64;
+    let axis_span = |lo: f64, hi: f64| {
+        let (alpha_lo, alpha_hi) = (2.0 * lo.atan(), 2.0 * hi.atan());
+        let count = ((alpha_hi - alpha_lo) / step).ceil().max(2.0) as usize;
+        (alpha_lo, alpha_hi, count)
+    };
+    let x_span = axis_span(x_min, x_max);
+    let y_span = axis_span(y_min, y_max);
+    validate_interior_grid_size(x_span.2, y_span.2)?;
+    let axis_samples = |(alpha_lo, alpha_hi, count): (f64, f64, usize)| {
+        (1..count)
+            .map(|i| (0.5 * (alpha_lo + (alpha_hi - alpha_lo) * (i as f64 / count as f64))).tan())
+            .collect::<Vec<f64>>()
+    };
+    let xs = axis_samples(x_span);
+    let ys = axis_samples(y_span);
 
     let polygons: Vec<Vec<(f64, f64)>> = loop_ranges
         .iter()
@@ -5572,13 +5594,15 @@ fn fill_sphere_hemisphere_patch_impl(
     // The chart chord is an approximation to a native small-circle arc.
     // A grid point almost on its retained side can still inverse-project
     // into the removed patch and fold the boundary stitch. Leave one quarter
-    // of a grid cell clear, as in the pole chart, without adding samples.
-    // A hole-free patch can have the same small-circle trim. Apply the same
-    // clearance to every loop; the complete run must still pass the strict
-    // radial-orientation and incidence guards below.
-    let clearance_sq =
-        (0.25 * ((x_max - x_min) / n_x as f64).min((y_max - y_min) / n_y as f64)).powi(2);
+    // of the grid cell around the point clear, as in the pole chart, without
+    // adding samples. A hole-free patch can have the same small-circle trim.
+    // Apply the same clearance to every loop; the complete run must still
+    // pass the strict radial-orientation and incidence guards below.
     let on_boundary_chord = |point: Point2| {
+        // Chart cell widths at this point: `d tan(alpha / 2)` for one step.
+        let cell_x = 0.5 * step * point.x().mul_add(point.x(), 1.0);
+        let cell_y = 0.5 * step * point.y().mul_add(point.y(), 1.0);
+        let clearance_sq = (0.25 * cell_x.min(cell_y)).powi(2);
         loop_ranges.iter().any(|&(first, last)| {
             (first..last).any(|index| {
                 let start = projected[index];
@@ -5595,10 +5619,8 @@ fn fill_sphere_hemisphere_patch_impl(
         })
     };
     let mut interior = Vec::new();
-    for ix in 1..n_x {
-        let x = x_min + (x_max - x_min) * (ix as f64 / n_x as f64);
-        for iy in 1..n_y {
-            let y = y_min + (y_max - y_min) * (iy as f64 / n_y as f64);
+    for &x in &xs {
+        for &y in &ys {
             if x.mul_add(x, y * y) >= 1.0 - 1e-12 {
                 continue;
             }
