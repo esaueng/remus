@@ -840,7 +840,10 @@ mod variable_pcurves {
                         };
                         Curve2D::Line(Line2D::new(origin, direction)?)
                     }
-                    _ => return Err(unavailable()),
+                    FaceSurface::Cylinder(_)
+                    | FaceSurface::Cone(_)
+                    | FaceSurface::Sphere(_)
+                    | FaceSurface::Torus(_) => return Err(unavailable()),
                 };
                 uses.push((
                     usage.edge(),

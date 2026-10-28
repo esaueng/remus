@@ -1036,31 +1036,37 @@ fn check_same_parameter_strict_with_tolerance(
             | crate::face::FaceSurface::Torus(_) => None,
         },
         crate::edge::EdgeCurve::NurbsCurve(curve) => {
+            use crate::face::FaceSurface;
+            use remus_math::curves2d::Curve2D;
+
             let usage = same_parameter_proof::CurveUse {
                 p0,
                 p1,
                 edge_domain: domain,
                 forward,
             };
-            match (&surface, pcurve.curve()) {
-                (
-                    crate::face::FaceSurface::Plane { normal, d },
-                    remus_math::curves2d::Curve2D::Nurbs(pc),
-                ) => Some(same_parameter_proof::plane_nurbs(
-                    *normal,
-                    *d,
-                    pc,
-                    curve,
-                    usage,
-                    tolerance_hint,
-                )),
-                (
-                    crate::face::FaceSurface::Nurbs(surface),
-                    remus_math::curves2d::Curve2D::Line(pc),
-                ) => Some(same_parameter_proof::nurbs_isocurve(
-                    surface, pc, curve, usage,
-                )),
-                _ => None,
+            match &surface {
+                FaceSurface::Plane { normal, d } => match pcurve.curve() {
+                    Curve2D::Nurbs(pc) => Some(same_parameter_proof::plane_nurbs(
+                        *normal,
+                        *d,
+                        pc,
+                        curve,
+                        usage,
+                        tolerance_hint,
+                    )),
+                    Curve2D::Line(_) | Curve2D::Circle(_) | Curve2D::Ellipse(_) => None,
+                },
+                FaceSurface::Nurbs(surface) => match pcurve.curve() {
+                    Curve2D::Line(pc) => Some(same_parameter_proof::nurbs_isocurve(
+                        surface, pc, curve, usage,
+                    )),
+                    Curve2D::Circle(_) | Curve2D::Ellipse(_) | Curve2D::Nurbs(_) => None,
+                },
+                FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_) => None,
             }
         }
         crate::edge::EdgeCurve::Ellipse(_)

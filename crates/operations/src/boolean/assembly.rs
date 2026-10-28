@@ -1221,7 +1221,11 @@ fn assemble_solid_mixed_traced(
                                         let (lower, upper) = curve.domain();
                                         t0 >= lower && t0 <= upper && t1 >= lower && t1 <= upper
                                     }
-                                    _ => true,
+                                    EdgeCurve::Line
+                                    | EdgeCurve::Circle(_)
+                                    | EdgeCurve::Ellipse(_)
+                                    | EdgeCurve::Hyperbola(_)
+                                    | EdgeCurve::Parabola(_) => true,
                                 }
                                 && [(t0, a), (t1, b)].into_iter().all(|(t, point)| {
                                     let error = (candidate.curve.evaluate_with_endpoints(t, a, b)
