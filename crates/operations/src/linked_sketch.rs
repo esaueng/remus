@@ -41,6 +41,9 @@ pub enum LinkedSketchError {
     /// Vertex lineage does not describe the resolved edge endpoints.
     #[error("linked sketch endpoint references do not match the resolved edge")]
     EndpointMismatch,
+    /// Linked fixed input coordinates can only change through reference refresh.
+    #[error("linked sketch external points are read-only")]
+    ReadOnlyExternalPoint,
     /// Existing topology validation error.
     #[error(transparent)]
     Topology(#[from] remus_topology::TopologyError),
@@ -59,6 +62,7 @@ impl LinkedSketchError {
             Self::UnsupportedCurve => "unsupported_curve",
             Self::Topology(_) => "invalid_topology",
             Self::EndpointMismatch => "endpoint_mismatch",
+            Self::ReadOnlyExternalPoint => "read_only_external_point",
         }
     }
 }
@@ -153,16 +157,28 @@ impl PlanarSketchAttachment {
         }
         let origin = self.frame.origin
             + normal * (*d / length - normal.dot(self.frame.origin - Point3::new(0.0, 0.0, 0.0)));
-        if !frame_valid(&Frame3 {
+        // Normalize accepted angular roundoff onto the actual support. Keeping
+        // a slightly tilted requested normal would lift long external edges
+        // farther off the plane than the unchanged linear tolerance.
+        let z = normal
+            * if normal.dot(self.frame.z) >= 0.0 {
+                1.0
+            } else {
+                -1.0
+            };
+        let x = (self.frame.x - z * self.frame.x.dot(z))
+            .normalize()
+            .map_err(|_| LinkedSketchError::InvalidFrame)?;
+        let frame = Frame3 {
             origin,
-            ..self.frame
-        }) {
+            x,
+            y: z.cross(x),
+            z,
+        };
+        if !frame_valid(&frame) {
             return Err(LinkedSketchError::InvalidFrame);
         }
-        Ok(Frame3 {
-            origin,
-            ..self.frame
-        })
+        Ok(frame)
     }
 
     /// Project a construction-resolved line orthogonally into the current plane.

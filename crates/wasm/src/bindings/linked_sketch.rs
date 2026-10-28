@@ -43,7 +43,8 @@ pub struct LinkedSketchResolution {
 }
 
 fn linked_error(error: LinkedSketchError) -> StructuredWasmError {
-    let mut result = StructuredWasmError::operation_failed(error.to_string());
+    let mut result =
+        StructuredWasmError::operation_failed(format!("linked-sketch:{}: {error}", error.code()));
     result.details_mut().insert(
         "kernelCode".into(),
         format!("linked-sketch:{}", error.code()).into(),
@@ -58,6 +59,12 @@ fn linked_error(error: LinkedSketchError) -> StructuredWasmError {
         );
     }
     result
+}
+
+impl From<LinkedSketchError> for StructuredWasmError {
+    fn from(error: LinkedSketchError) -> Self {
+        linked_error(error)
+    }
 }
 
 fn invalid(message: impl Into<String>) -> StructuredWasmError {
@@ -200,24 +207,42 @@ impl BrepKernel {
         &mut self,
         sketch: u32,
     ) -> Result<LinkedSketchResolution, StructuredWasmError> {
-        let state = self.linked_state(sketch)?;
+        self.resolve_sketch_refs_native(sketch)
+            .map_err(StructuredWasmError::from)
+    }
+
+    fn resolve_sketch_refs_native(
+        &mut self,
+        sketch: u32,
+    ) -> Result<LinkedSketchResolution, WasmError> {
+        let state = self
+            .gcs_sketches
+            .get(sketch as usize)
+            .ok_or(WasmError::InvalidHandle {
+                entity: "gcs sketch",
+                index: sketch as usize,
+            })?;
         let attachment = state
             .attachment
             .as_ref()
-            .ok_or_else(|| invalid("sketch has no linked attachment"))?;
+            .ok_or_else(|| WasmError::InvalidInput {
+                reason: "sketch has no linked attachment".into(),
+            })?;
         let frame = attachment
             .resolve_frame(self.topo())
-            .map_err(linked_error)?;
+            .map_err(WasmError::from)?;
         let mut next = state.clone();
         for external in &state.external_lines {
             let image = attachment
                 .resolve_line(self.topo(), &external.reference)
-                .map_err(linked_error)?;
+                .map_err(WasmError::from)?;
             for (id, point) in [(external.start, image.start), (external.end, image.end)] {
                 let data = next
                     .sys
                     .point_mut(id)
-                    .ok_or_else(|| invalid("external sketch point was removed"))?;
+                    .ok_or_else(|| WasmError::InvalidInput {
+                        reason: "external sketch point was removed".into(),
+                    })?;
                 data.x = point.x();
                 data.y = point.y();
                 data.fixed = true;
@@ -227,7 +252,10 @@ impl BrepKernel {
         *self
             .gcs_sketches
             .get_mut(sketch as usize)
-            .ok_or_else(|| invalid("invalid gcs sketch handle"))? = next;
+            .ok_or(WasmError::InvalidHandle {
+                entity: "gcs sketch",
+                index: sketch as usize,
+            })? = next;
         Ok(LinkedSketchResolution {
             frame: frame_json(frame),
             external_lines,
@@ -265,10 +293,7 @@ impl BrepKernel {
             .get(sketch as usize)
             .is_some_and(|state| state.attachment.is_some())
         {
-            self.resolve_sketch_refs_impl(sketch)
-                .map_err(|error| WasmError::InvalidInput {
-                    reason: direct_message(error),
-                })?;
+            self.resolve_sketch_refs_native(sketch)?;
         }
         Ok(())
     }
@@ -320,7 +345,11 @@ impl BrepKernel {
 fn direct_message(error: StructuredWasmError) -> String {
     let message = error.message().to_owned();
     let (code, _, _) = error.into_direct_parts();
-    format!("{code}: {message}")
+    if message.starts_with(&format!("{code}:")) {
+        message
+    } else {
+        format!("{code}: {message}")
+    }
 }
 
 fn js_error(error: StructuredWasmError) -> JsError {
@@ -527,14 +556,47 @@ mod tests {
                 .unwrap();
             let out:serde_json::Value=serde_json::from_str(&k.execute_batch_v2(&serde_json::json!([
                 {"op":"gcsResolveRefs","args":{"sketch":sketch}},
-                {"op":"gcsSolve","args":{"sketch":sketch,"maxIterations":100,"tolerance":1e-10}}
+                {"op":"gcsSolve","args":{"sketch":sketch,"maxIterations":100,"tolerance":1e-10}},
+                {"op":"gcsSolveDetailed","args":{"sketch":sketch,"maxIterations":100,"tolerance":1e-10}},
+                {"op":"gcsDof","args":{"sketch":sketch}}
             ]).to_string())).unwrap();
-            let text = out.to_string();
-            assert!(
-                text.contains(if split { "boundMany" } else { "dangling" }),
-                "{text}"
+            for item in out.as_array().unwrap() {
+                let details = &item["error"]["details"];
+                assert_eq!(
+                    details["kernelCode"], "linked-sketch:reference_unbound",
+                    "{item}"
+                );
+                assert_eq!(details["referenceRole"], "edge", "{item}");
+                assert_eq!(
+                    details["resolution"]["status"],
+                    if split { "boundMany" } else { "dangling" },
+                    "{item}"
+                );
+            }
+            let legacy = batch(
+                &mut k,
+                serde_json::json!([
+                    {"op":"gcsResolveRefs","args":{"sketch":sketch}},
+                    {"op":"gcsSolve","args":{"sketch":sketch,"maxIterations":100,"tolerance":1e-10}},
+                    {"op":"gcsSolveDetailed","args":{"sketch":sketch,"maxIterations":100,"tolerance":1e-10}},
+                    {"op":"gcsDof","args":{"sketch":sketch}}
+                ]),
             );
-            assert!(text.contains("linked-sketch:reference_unbound"), "{text}");
+            for item in legacy {
+                assert!(
+                    item["error"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("linked-sketch:reference_unbound:"),
+                    "{item}"
+                );
+            }
+            let direct_error = k.gcs_solve_impl(sketch, 100, 1e-10).unwrap_err();
+            assert!(
+                direct_error
+                    .to_string()
+                    .starts_with("linked-sketch:reference_unbound:")
+            );
             assert_eq!(
                 k.gcs_point_position_impl(sketch, external.end)
                     .unwrap()

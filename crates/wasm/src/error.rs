@@ -53,6 +53,10 @@ pub enum WasmError {
     #[error(transparent)]
     Sketch(#[from] remus_sketch::SketchError),
 
+    /// A persistent linked-sketch input cannot be resolved or projected.
+    #[error("linked-sketch:{code}: {0}", code = .0.code())]
+    LinkedSketch(#[from] remus_operations::linked_sketch::LinkedSketchError),
+
     /// An error from a modeling operation.
     #[error(transparent)]
     Operations(#[from] remus_operations::OperationsError),
@@ -419,6 +423,7 @@ impl From<WasmError> for StructuredWasmError {
                     .insert("problem".to_string(), Value::from(problem.as_str()));
                 structured
             }
+            WasmError::LinkedSketch(error) => Self::from(error),
             WasmError::Operations(error) => Self::from(error),
             WasmError::Topology(error) => Self::from(error),
             WasmError::Math(error) => Self::from(error),

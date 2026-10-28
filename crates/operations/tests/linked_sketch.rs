@@ -287,3 +287,24 @@ fn endpoint_identity_survives_reversed_edge_storage_and_mismatch_refuses() {
         Err(LinkedSketchError::EndpointMismatch)
     ));
 }
+
+#[test]
+fn accepted_frame_roundoff_is_aligned_to_the_face_at_large_scale() {
+    let (topo, _, attachment, source) = fixture(1000.0);
+    let theta = 5e-10_f64;
+    let frame = Frame3 {
+        origin: Point3::new(0.0, 0.0, 4000.0),
+        x: Vec3::new(theta.cos(), 0.0, -theta.sin()),
+        y: Vec3::new(0.0, 1.0, 0.0),
+        z: Vec3::new(theta.sin(), 0.0, theta.cos()),
+    };
+    let attached =
+        PlanarSketchAttachment::new(&topo, attachment.reference().clone(), frame).unwrap();
+    let resolved = attached.resolve_frame(&topo).unwrap();
+    let image = attached.resolve_line(&topo, &source).unwrap();
+    for point in [image.start, image.end] {
+        let lifted = resolved.origin + resolved.x * point.x() + resolved.y * point.y();
+        assert!((lifted.z() - 4000.0).abs() <= remus_math::tolerance::Tolerance::default().linear);
+    }
+    assert!((image.end.x() - 10000.0).abs() <= 1e-7);
+}

@@ -451,9 +451,9 @@ impl BrepKernel {
             .iter()
             .any(|line| line.start == id || line.end == id)
         {
-            return Err(WasmError::InvalidInput {
-                reason: "linked-sketch:read_only_external_point".into(),
-            });
+            return Err(
+                remus_operations::linked_sketch::LinkedSketchError::ReadOnlyExternalPoint.into(),
+            );
         }
         let data = sk
             .sys
@@ -561,9 +561,9 @@ impl BrepKernel {
             .iter()
             .any(|line| line.start == center_id || line.end == center_id)
         {
-            return Err(WasmError::InvalidInput {
-                reason: "linked-sketch:read_only_external_point".into(),
-            });
+            return Err(
+                remus_operations::linked_sketch::LinkedSketchError::ReadOnlyExternalPoint.into(),
+            );
         }
         let center = sk
             .sys

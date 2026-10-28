@@ -8,7 +8,8 @@ construction-resolved planar face and projects construction-resolved line edges
 into fixed external GCS lines. Explicit start/end vertex construction references
 preserve endpoint constraints across reversed edge storage; endpoint mismatch
 refuses. Refresh is atomic and read-only on topology;
-parallel plane moves retain the original in-plane frame. The explicit sketch frame is independent of the face normal sense.
+parallel plane moves retain the declared in-plane frame orientation, with
+accepted angular roundoff normalized onto the exact current face support. The explicit sketch frame is independent of the face normal sense.
 Rotation, split face
 or edge references, inferred/ambiguous/deleted references and other curve types
 refuse explicitly. Existing GCS constraints consume the returned line and point
