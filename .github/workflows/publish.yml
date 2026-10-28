@@ -158,14 +158,6 @@ jobs:
       - name: Check whether the package needs publishing
         id: package-diff
         run: |
-          # A newer main commit owns its own qualified artifact. Do not open a
-          # refresh for a superseded source while another CI run is finishing.
-          current_main=$(git ls-remote --exit-code origin refs/heads/main | cut -f1)
-          if [ "$current_main" != "$GITHUB_SHA" ]; then
-            echo "needs_publish=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::A newer source owns the next package refresh."
-            exit 0
-          fi
           # wasm-pack places a `*` .gitignore in its output directory, so force
           # staging is required for newly generated package files.
           git add --force crates/wasm/pkg crates/wasm-io/pkg

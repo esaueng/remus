@@ -481,7 +481,8 @@ jobs:
     name: Test
     needs: [queue-trust, changes, repo-policy, secrets-scan]
     if: ${{ !cancelled() && needs.changes.result == 'success' && needs.repo-policy.result == 'success' && needs.secrets-scan.result == 'success' && (needs.changes.outputs.heavy == 'true') }}
-    runs-on: &fleet-runner ${{ fromJSON(vars.CI_FLEET_CI_V9_ENABLED == 'true' && ((github.event_name == 'merge_group' && needs.queue-trust.result == 'success' && needs.queue-trust.outputs.sha == github.sha && vars.CI_FLEET_ENABLED == 'true' && vars.CI_FLEET_TARGET == 'ci-server-jane') && '{"group":"ci-trusted-main","labels":"ci-server-jane-5gb"}' || ((vars.CI_FLEET_ENABLED == 'true' || (vars.CI_FLEET_VALIDATION_REF != '' && vars.CI_FLEET_VALIDATION_REF == github.ref)) && (github.repository == 'esaueng/remus' && github.repository_id == '1334765869' && github.actor == 'petertoday' && github.actor_id == '171875562' && github.triggering_actor == 'petertoday' && ((github.event_name == 'pull_request' && github.event.pull_request.state == 'open' && github.event.pull_request.user.login == 'petertoday' && github.event.pull_request.user.id == 171875562 && github.event.pull_request.head.repo.id == 1334765869 && github.event.pull_request.base.repo.id == 1334765869 && github.event.pull_request.head.repo.fork == false && github.event.pull_request.base.repo.fork == false && github.event.pull_request.base.ref == 'main' && github.ref == format('refs/pull/{0}/merge', github.event.pull_request.number)) || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && github.ref_protected == true))) && (vars.CI_FLEET_TARGET == 'ci-server-jane' && '{"group":"ci-trusted-main","labels":"ci-server-jane-5gb"}' || vars.CI_FLEET_TARGET == 'ci-server-john' && '{"group":"ci-trusted-main","labels":"ci-server-john"}') || '"ubuntu-24.04"')) || '"ubuntu-24.04"') }}
+    # Compiled CARGO_MANIFEST_DIR fixture paths must match on every worker.
+    runs-on: &native-runner ubuntu-24.04
     timeout-minutes: 30
     steps:
       - *fleet-source
@@ -501,13 +502,17 @@ jobs:
       # Lint first: a clippy failure is cheaper to report than a test run,
       # and both share the restored target directory on one runner slot.
       - run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Record compiled fixture workspace and source
+        run: python3 scripts/check-native-test-workspace.py --record "$RUNNER_TEMP/native-test-workspace.json"
       - name: Build the native test archive once
         run: cargo nextest archive --workspace --cargo-profile ci-test --archive-file "$RUNNER_TEMP/native-tests.tar.zst"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-tests
           compression-level: 0
-          path: ${{ runner.temp }}/native-tests.tar.zst
+          path: |
+            ${{ runner.temp }}/native-tests.tar.zst
+            ${{ runner.temp }}/native-test-workspace.json
           if-no-files-found: error
           retention-days: 1
       # nextest doesn't run doc tests, so run them separately
@@ -516,7 +521,7 @@ jobs:
     name: Native tests (${{ matrix.shard }}/2)
     needs: [queue-trust, changes, repo-policy, secrets-scan, test]
     if: ${{ !cancelled() && needs.changes.result == 'success' && needs.repo-policy.result == 'success' && needs.secrets-scan.result == 'success' && needs.test.result == 'success' && needs.changes.outputs.heavy == 'true' }}
-    runs-on: *fleet-runner
+    runs-on: *native-runner
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -535,6 +540,8 @@ jobs:
         with:
           name: native-tests
           path: ${{ runner.temp }}
+      - name: Verify the compiled fixture workspace and source
+        run: python3 scripts/check-native-test-workspace.py "$RUNNER_TEMP/native-test-workspace.json"
       - name: Run this partition of the complete native suite
         env:
           SHARD: ${{ matrix.shard }}
@@ -547,7 +554,7 @@ jobs:
     name: Complexity Guards
     needs: [queue-trust, changes, repo-policy, secrets-scan]
     if: ${{ !cancelled() && needs.changes.result == 'success' && needs.repo-policy.result == 'success' && needs.secrets-scan.result == 'success' && (needs.changes.outputs.heavy == 'true') }}
-    runs-on: *fleet-runner
+    runs-on: &fleet-runner ${{ fromJSON(vars.CI_FLEET_CI_V9_ENABLED == 'true' && ((github.event_name == 'merge_group' && needs.queue-trust.result == 'success' && needs.queue-trust.outputs.sha == github.sha && vars.CI_FLEET_ENABLED == 'true' && vars.CI_FLEET_TARGET == 'ci-server-jane') && '{"group":"ci-trusted-main","labels":"ci-server-jane-5gb"}' || ((vars.CI_FLEET_ENABLED == 'true' || (vars.CI_FLEET_VALIDATION_REF != '' && vars.CI_FLEET_VALIDATION_REF == github.ref)) && (github.repository == 'esaueng/remus' && github.repository_id == '1334765869' && github.actor == 'petertoday' && github.actor_id == '171875562' && github.triggering_actor == 'petertoday' && ((github.event_name == 'pull_request' && github.event.pull_request.state == 'open' && github.event.pull_request.user.login == 'petertoday' && github.event.pull_request.user.id == 171875562 && github.event.pull_request.head.repo.id == 1334765869 && github.event.pull_request.base.repo.id == 1334765869 && github.event.pull_request.head.repo.fork == false && github.event.pull_request.base.repo.fork == false && github.event.pull_request.base.ref == 'main' && github.ref == format('refs/pull/{0}/merge', github.event.pull_request.number)) || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && github.ref_protected == true))) && (vars.CI_FLEET_TARGET == 'ci-server-jane' && '{"group":"ci-trusted-main","labels":"ci-server-jane-5gb"}' || vars.CI_FLEET_TARGET == 'ci-server-john' && '{"group":"ci-trusted-main","labels":"ci-server-john"}') || '"ubuntu-24.04"')) || '"ubuntu-24.04"') }}
     timeout-minutes: 30
     steps:
       - *fleet-source

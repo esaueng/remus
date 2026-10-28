@@ -483,6 +483,9 @@ with the same pinned Nextest version. Documentation tests and the separate
 complexity guards remain required. Its native producer alone opts into workspace
 crate caching in a new cache namespace; only main writes that cache. The shards
 consume the exact archive and do not restore or rebuild Cargo targets.
+Both native jobs stay on `ubuntu-24.04`, even when other fleet jobs are opted in.
+A receipt checks the exact source SHA and checkout root before executing an
+archive: nextest cannot rewrite fixture paths embedded by `CARGO_MANIFEST_DIR`.
 Package producers share a compatible `wasm-package` dependency cache with the
 integrity consumer after activation; PR and merge-group integrity runs only
 restore it. The package tool version and warning flags match between producers.
@@ -496,8 +499,8 @@ default local and package-integrity builds still run both suites themselves.
 
 The reusable publisher can consume this same run's artifact only on protected
 main pushes. Its CI caller must wait for `CI Pass`; the publishing runner never
-executes the build or runtime tests with the App credential. A newer main commit
-supersedes an older artifact before credential creation. The standalone manual
+executes the build or runtime tests with the App credential. Refresh branches remain immutable and bound to their build source; a newer
+lightweight main commit does not discard a pending artifact. The standalone manual
 refresh still builds and tests its own packages.
 
 `coverage.yml` runs the complete workspace nightly and on an explicit protected

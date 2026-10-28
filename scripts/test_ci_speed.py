@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import textwrap
 import unittest
 
@@ -57,7 +58,7 @@ class SpeedContractTests(unittest.TestCase):
         for name in ("test-shards", "wasm-runtime"):
             job = JOBS[name]
             self.assertIn("      fail-fast: false", job)
-            self.assertIn("runs-on: *fleet-runner", job)
+            self.assertIn("runs-on: *native-runner" if name == "test-shards" else "runs-on: *fleet-runner", job)
             self.assertLess(job.index("*fleet-source"), job.index("actions/checkout@"))
             self.assertLess(job.index("*fleet-isolation"), job.index("actions/checkout@"))
             self.assertIn("persist-credentials: false", job)
@@ -85,6 +86,56 @@ class SpeedContractTests(unittest.TestCase):
         self.assertNotIn("--no-tests", shards)
         for job in (build, shards):
             self.assertIn("tool: nextest@0.9.150", job)
+
+    def test_native_archives_require_the_same_source_and_compiled_fixture_root(self):
+        self.assertIn("runs-on: &native-runner ubuntu-24.04", JOBS["test"])
+        self.assertIn("runs-on: *native-runner", JOBS["test-shards"])
+        self.assertIn("check-native-test-workspace.py --record", JOBS["test"])
+        consumer = JOBS["test-shards"]
+        self.assertLess(consumer.index("check-native-test-workspace.py"),
+                        consumer.index("cargo-nextest nextest run"))
+        spec = importlib.util.spec_from_file_location(
+            "native_workspace", ROOT / "scripts/check-native-test-workspace.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        source = "a" * 40
+        workspace = "/srv/ci-slot1/work/remus/remus"
+        receipt = {"schema": 1, "workspace": workspace, "source_sha": source}
+        module.validate(receipt, source, workspace)
+        for sha, directory in (("b" * 40, workspace), ("", workspace),
+                               (source, "/srv/ci-slot2/work/remus/remus")):
+            with self.subTest(source=sha, workspace=directory), self.assertRaises(ValueError):
+                module.validate(receipt, sha, directory)
+        for changes in ({"schema": True}, {"schema": 2}, {"extra": "unexpected"}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                module.validate(dict(receipt, **changes), source, workspace)
+
+    def test_lightweight_newer_main_does_not_discard_a_pending_package(self):
+        publisher = jobs((WORKFLOWS / "publish.yml").read_text())["sync-committed-package"]
+        step = publisher.split("        id: package-diff\n", 1)[1].split(
+            "      - name: Require publish credentials", 1)[0]
+        command = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, script in {
+                "git": '#!/bin/sh\ncase "$1" in\nls-remote) echo "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/heads/main";;\nadd) exit 0;;\ndiff) exit "$DIFF_STATUS";;\n*) exit 93;;\nesac\n',
+                "python3": '#!/bin/sh\ntest "$1" = scripts/check-wasm-version.py && test "$2" = --base && test "$3" = "$GITHUB_SHA" || exit 94\ntouch "$VALIDATED"\n',
+            }.items():
+                path = root / name
+                path.write_text(script)
+                path.chmod(0o755)
+            for different in (False, True):
+                output, validated = root / "output", root / "validated"
+                output.unlink(missing_ok=True)
+                validated.unlink(missing_ok=True)
+                result = subprocess.run(["bash", "-euo", "pipefail", "-c", command],
+                    capture_output=True, text=True, env=dict(os.environ,
+                    PATH=str(root) + os.pathsep + os.environ["PATH"],
+                    GITHUB_SHA="a" * 40, GITHUB_OUTPUT=str(output),
+                    DIFF_STATUS="1" if different else "0", VALIDATED=str(validated)))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("needs_publish=" + str(different).lower(), output.read_text())
+                self.assertEqual(validated.exists(), different)
 
     def test_both_complete_runtime_suites_consume_the_same_artifact(self):
         producer, consumer = JOBS["wasm"], JOBS["wasm-runtime"]
@@ -204,9 +255,7 @@ class SpeedContractTests(unittest.TestCase):
         self.assertNotIn("cargo ", write)
         self.assertNotIn("run-id:", write)
         self.assertIn("name: committed-wasm-package", write)
-        self.assertIn('if [ "$current_main" != "$GITHUB_SHA" ]', write)
-        self.assertLess(write.index('if [ "$current_main"'),
-                        write.index("secrets.REMUS_BOT_PRIVATE_KEY"))
+        self.assertNotIn("current_main", write)
 
     def test_benchmark_baseline_updates_only_on_nightly_or_main_dispatch(self):
         benchmark = (WORKFLOWS / "fleet-benchmark-v4.yml").read_text()
@@ -215,6 +264,8 @@ class SpeedContractTests(unittest.TestCase):
         self.assertIn("github.event_name == 'schedule'", push)
         self.assertIn("github.event_name == 'workflow_dispatch'", push)
         self.assertNotIn("github.event_name == 'pull_request'", push)
+        caller = (WORKFLOWS / "benchmark.yml").read_text()
+        self.assertIn('  schedule:\n    - cron: "29 6 * * *"', caller)
         self.assertIn("alert-threshold: '200%'", benchmark)
         self.assertIn("fail-on-alert: false", benchmark)
 
