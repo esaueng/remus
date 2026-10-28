@@ -228,6 +228,18 @@ mod nurbs_boundary {
         let Some(condition) = weight_condition(edge.weights().iter().copied()) else {
             return ProofResult::Unavailable;
         };
+        // The UV evaluator uses unscaled weights and falls back to its first
+        // control point when the denominator is below EPSILON. Unlike the
+        // normalized 3D evaluator, a tiny common weight scale can therefore
+        // change its actual curve. Positive Bezier bases and this margin keep
+        // the complete UV denominator above that fallback threshold.
+        if pcurve
+            .weights()
+            .iter()
+            .any(|&weight| weight < 2.0 * f64::EPSILON)
+        {
+            return ProofResult::Unavailable;
+        }
         let lifted: Vec<Point3> = pcurve
             .control_points()
             .iter()
@@ -459,6 +471,61 @@ mod nurbs_boundary {
                 nurbs_isocurve(&surface, &line, &edge, wrong_use),
                 ProofResult::Unavailable
             ));
+        }
+
+        #[test]
+        fn plane_certificate_respects_the_actual_uv_weight_fallback() {
+            for weight in [1e-30, f64::EPSILON, 2.0 * f64::EPSILON, 1.0] {
+                let knots = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+                let edge = NurbsCurve::new(
+                    2,
+                    knots.clone(),
+                    vec![
+                        Point3::new(0.0, 0.0, 0.0),
+                        Point3::new(0.5, 0.0, 0.0),
+                        Point3::new(1.0, 0.0, 0.0),
+                    ],
+                    vec![weight; 3],
+                )
+                .unwrap();
+                let pc = NurbsCurve2D::new(
+                    2,
+                    knots,
+                    vec![
+                        Point2::new(0.0, 0.0),
+                        Point2::new(0.0, -0.5),
+                        Point2::new(0.0, -1.0),
+                    ],
+                    vec![weight; 3],
+                )
+                .unwrap();
+                let uv = pc.evaluate(0.5);
+                // The canonical PlaneZ chart is u=(0,1,0), v=(-1,0,0).
+                // Inspect actual evaluators independently of the proof hull.
+                let actual = (edge.evaluate(0.5) - Point3::new(-uv.y(), uv.x(), 0.0)).length();
+                if weight < f64::EPSILON {
+                    assert!(actual > 0.49, "tiny common weights trigger the UV fallback");
+                } else {
+                    assert!(actual < 1e-12);
+                }
+                for forward in [true, false] {
+                    let usage = CurveUse {
+                        p0: if forward { 0.0 } else { 1.0 },
+                        p1: if forward { 1.0 } else { 0.0 },
+                        edge_domain: (0.0, 1.0),
+                        forward,
+                    };
+                    let result =
+                        plane_nurbs(Vec3::new(0.0, 0.0, 1.0), 0.0, &pc, &edge, usage, Some(1e-7));
+                    if weight < 2.0 * f64::EPSILON {
+                        assert!(matches!(result, ProofResult::Unavailable));
+                    } else {
+                        assert!(
+                            matches!(result, ProofResult::Certified(bound) if bound.max_deviation < 1e-7)
+                        );
+                    }
+                }
+            }
         }
 
         #[test]

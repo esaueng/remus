@@ -15,6 +15,9 @@ certificates admit positive, bounded-weight clamped Bezier isocurves and their
 planar projections: native domains and basis/weights must match, and the
 control-net residual bounds the entire interval. Unsupported definitions remain
 unproved; interior changes that preserve endpoints do not pass by sampling.
+Planar UV weights also stay above the existing evaluator's denominator-fallback
+floor; a common tiny-weight scale that changes its actual evaluated curve is
+explicitly unproved, with independent geometric and cutoff controls.
 Bounded homogeneous subdivision tightens loose residual hulls against the
 effective entity tolerance; unresolved boundary cases stay typed unproved.
 An emitter boundary outside this proof's precision range refuses atomically.
