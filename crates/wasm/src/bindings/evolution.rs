@@ -796,6 +796,39 @@ impl BrepKernel {
         }))
     }
 
+    fn revolve_journaled_json(
+        &mut self,
+        face: u32,
+        origin: [f64; 3],
+        direction: [f64; 3],
+        angle_degrees: f64,
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        for (value, name) in origin
+            .into_iter()
+            .zip(["origin_x", "origin_y", "origin_z"])
+            .chain(direction.into_iter().zip(["axis_x", "axis_y", "axis_z"]))
+        {
+            validate_finite(value, name).map_err(StructuredWasmError::from)?;
+        }
+        validate_finite(angle_degrees, "angle").map_err(StructuredWasmError::from)?;
+        let face = self.resolve_face(face).map_err(StructuredWasmError::from)?;
+        let journaled = journal_ops::revolve_journaled(
+            self.topo_mut(),
+            face,
+            remus_math::vec::Point3::new(origin[0], origin[1], origin[2]),
+            remus_math::vec::Vec3::new(direction[0], direction[1], direction[2]),
+            angle_degrees.to_radians(),
+        )
+        .map_err(StructuredWasmError::from)?;
+        Ok(serde_json::json!({
+            "solid": crate::handles::solid_id_to_u32(journaled.solid),
+            "op": u32::try_from(journaled.op.value()).unwrap_or(u32::MAX),
+            "evolution": entity_history_json(
+                &journaled.map, &journaled.boundary, &journaled.completeness,
+            ),
+        }))
+    }
+
     fn journal_summary_json(&self) -> serde_json::Value {
         let entries: Vec<serde_json::Value> = self
             .topo()
@@ -988,10 +1021,110 @@ impl BrepKernel {
                 let distance = get_optional_f64(args, "distance")?.unwrap_or(1.0);
                 self.extrude_journaled_json(face, direction, distance)
             })(),
+            "revolveJournaled" => (|| {
+                let face = get_u32(args, "face")?;
+                let angle = get_f64(args, "angle")?;
+                let origin = [
+                    get_optional_f64(args, "originX")?.unwrap_or(0.0),
+                    get_optional_f64(args, "originY")?.unwrap_or(0.0),
+                    get_optional_f64(args, "originZ")?.unwrap_or(0.0),
+                ];
+                let direction = [
+                    get_optional_f64(args, "axisX")?.unwrap_or(0.0),
+                    get_optional_f64(args, "axisY")?.unwrap_or(0.0),
+                    get_optional_f64(args, "axisZ")?.unwrap_or(1.0),
+                ];
+                self.revolve_journaled_json(face, origin, direction, angle)
+            })(),
             "journalSummary" => Ok(self.journal_summary_json()),
             _ => return None,
         };
         Some(result)
+    }
+}
+
+#[cfg(test)]
+mod revolve_history_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use crate::kernel::BrepKernel;
+
+    fn cylinder_profile(kernel: &mut BrepKernel) -> u32 {
+        let points = [[0.0, 0.0], [3.0, 0.0], [3.0, 2.0], [0.0, 2.0]];
+        let edges = (0..4)
+            .map(|index| {
+                let a = points[index];
+                let b = points[(index + 1) % 4];
+                kernel
+                    .make_line_edge(a[0], 0.0, a[1], b[0], 0.0, b[1])
+                    .unwrap()
+            })
+            .collect();
+        let wire = kernel.make_wire(edges, true).unwrap();
+        kernel.make_planar_face_from_wire(wire).unwrap()
+    }
+
+    #[test]
+    fn revolve_journaled_direct_batch_history_and_refusal_parity() {
+        let mut direct = BrepKernel::new();
+        let face = cylinder_profile(&mut direct);
+        let payload: serde_json::Value = serde_json::from_str(
+            &direct
+                .revolve_journaled_js(face, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 360.0)
+                .unwrap(),
+        )
+        .unwrap();
+        let solid = u32::try_from(payload["solid"].as_u64().unwrap()).unwrap();
+        assert!((direct.volume(solid, 0.01).unwrap() - 18.0 * std::f64::consts::PI).abs() < 1e-8);
+        let history = &payload["evolution"];
+        assert_eq!(history["origin"], "construction");
+        assert_eq!(history["completeness"]["accounted"], true);
+        assert_eq!(history["completeness"]["resolved"], true);
+        assert_eq!(
+            history["faces"].as_array().unwrap().len(),
+            direct.get_solid_faces(solid).unwrap().len()
+        );
+        assert_eq!(
+            history["edges"].as_array().unwrap().len(),
+            direct.get_solid_edges(solid).unwrap().len()
+        );
+        assert_eq!(
+            history["vertices"].as_array().unwrap().len(),
+            direct.get_solid_vertices(solid).unwrap().len()
+        );
+        for v2 in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let face = cylinder_profile(&mut kernel);
+            let ops =
+                serde_json::json!([{"op":"revolveJournaled", "args":{"face":face,"angle":360.0}}]);
+            let response = if v2 {
+                kernel.execute_batch_v2(&ops.to_string())
+            } else {
+                kernel.execute_batch(&ops.to_string())
+            };
+            let rows: serde_json::Value = serde_json::from_str(&response).unwrap();
+            assert_eq!(rows[0]["ok"], payload);
+            let before = kernel.journal_summary();
+            let direct_error = kernel
+                .revolve_journaled_json(face, [0.0; 3], [0.0, 0.0, 1.0], 180.0)
+                .unwrap_err();
+            assert_eq!(kernel.journal_summary(), before);
+            let ops =
+                serde_json::json!([{"op":"revolveJournaled", "args":{"face":face,"angle":180.0}}]);
+            let response = if v2 {
+                kernel.execute_batch_v2(&ops.to_string())
+            } else {
+                kernel.execute_batch(&ops.to_string())
+            };
+            let rows: serde_json::Value = serde_json::from_str(&response).unwrap();
+            assert!(rows[0].get("error").is_some());
+            if v2 {
+                let expected = serde_json::to_value(direct_error).unwrap();
+                assert_eq!(rows[0]["error"]["code"], expected["code"]);
+                assert_eq!(rows[0]["error"]["category"], expected["category"]);
+            }
+            assert_eq!(kernel.journal_summary(), before);
+        }
     }
 }
 
@@ -1338,6 +1471,37 @@ impl BrepKernel {
         self.extrude_journaled_json(face, [dir_x, dir_y, dir_z], distance)
             .map(|v| v.to_string())
             .map_err(structured_to_js)
+    }
+
+    /// Full-turn analytic radial-profile revolution with complete construction
+    /// history. Angles are degrees, as in `revolve`.
+    ///
+    /// Returns JSON `{"solid", "op", "evolution"}`. Faces and circular rims
+    /// are generated from the profile face; reused profile seams and vertices
+    /// are modified into themselves. Completeness is checked against every
+    /// result entity. Only planar hole-free straight-edge radial profiles have
+    /// qualified history; other profiles and partial turns refuse atomically.
+    #[wasm_bindgen(js_name = "revolveJournaled")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn revolve_journaled_js(
+        &mut self,
+        face: u32,
+        origin_x: f64,
+        origin_y: f64,
+        origin_z: f64,
+        axis_x: f64,
+        axis_y: f64,
+        axis_z: f64,
+        angle_degrees: f64,
+    ) -> Result<String, JsError> {
+        self.revolve_journaled_json(
+            face,
+            [origin_x, origin_y, origin_z],
+            [axis_x, axis_y, axis_z],
+            angle_degrees,
+        )
+        .map(|value| value.to_string())
+        .map_err(structured_to_js)
     }
 
     /// A read-only summary of the evolution journal: JSON array of

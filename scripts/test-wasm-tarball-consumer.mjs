@@ -35,6 +35,7 @@ import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
 import { runOpseqF17Packaged } from './opseq-f17-packaged.mjs';
 import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
 import { runGridPatternPackaged } from './grid-pattern-packaged.mjs';
+import { runRevolveHistoryPackaged } from './revolve-history-packaged.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptDir, '..');
@@ -107,6 +108,7 @@ try {
   runDocumentCopyPackaged({ ...packageExports, ...ioExports });
   runOpenZcadConsumerRegressions({ ...packageExports, ...ioExports });
   runGridPatternPackaged(packageExports);
+  runRevolveHistoryPackaged(packageExports);
   runProjectCurvePackaged(packageExports);
   runKernelCorrectnessPackaged(packageExports);
   runNextKernelCorrectnessPackaged(packageExports);

@@ -45,7 +45,7 @@ pub use remus_operations::extrude::extrude;
 pub use remus_operations::journal_ops::{
     JournaledBlend, JournaledBoolean, JournaledEntityOp,
     boolean_journaled_with_operation as boolean_journaled, chamfer_journaled, extrude_journaled,
-    fillet_journaled,
+    fillet_journaled, revolve_journaled,
 };
 pub use remus_operations::loft::loft;
 pub use remus_operations::measure::{
@@ -108,10 +108,10 @@ pub mod prelude {
         make_cylinder, make_sphere, make_torus, mass_properties, mass_properties_with_options,
         non_manifold_edge_count, pipe, read_step, read_step_with_limits,
         read_step_with_limits_and_report, read_step_with_report, read_step_with_validation,
-        resolve, revolve, solid_bounding_box, solid_center_of_mass, solid_surface_area,
-        solid_volume, sweep, tessellate, tessellate_solid, tessellate_solid_with_tolerance,
-        tessellate_with_tolerance, tessellate_with_uvs, validate_solid,
-        validate_solid_with_options, welded_mesh_quality, wire_length, write_step,
+        resolve, revolve, revolve_journaled, solid_bounding_box, solid_center_of_mass,
+        solid_surface_area, solid_volume, sweep, tessellate, tessellate_solid,
+        tessellate_solid_with_tolerance, tessellate_with_tolerance, tessellate_with_uvs,
+        validate_solid, validate_solid_with_options, welded_mesh_quality, wire_length, write_step,
         write_step_with_options,
     };
     pub use crate::{

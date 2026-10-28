@@ -889,6 +889,52 @@ pub fn extrude_journaled(
     })
 }
 
+/// Revolve a qualified full-turn analytic radial profile and journal every
+/// result face, edge and vertex from the builder's construction record.
+///
+/// The scope includes the source profile and every output entity. Refusal
+/// restores topology and unpublished journal state atomically. See
+/// [`crate::revolve::revolve_with_entity_evolution`] for the bounded domain.
+///
+/// # Errors
+///
+/// Returns the qualified revolution, validation, completeness or journal error.
+pub fn revolve_journaled(
+    topo: &mut Topology,
+    face: FaceId,
+    axis_origin: remus_math::vec::Point3,
+    axis_direction: remus_math::vec::Vec3,
+    angle_radians: f64,
+) -> Result<JournaledEntityOp, OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let scope = profile_entity_keys(topo, face)?;
+        let mut pending = topo.journal_begin("revolve");
+        pending.add_scope(scope);
+        let result = crate::revolve::revolve_with_entity_evolution(
+            topo,
+            face,
+            axis_origin,
+            axis_direction,
+            angle_radians,
+        )?;
+        let op = record_entity_evolution_with_outputs(
+            topo,
+            pending,
+            &result.faces,
+            &[result.solid],
+            &[],
+            &result.boundary.journal_events(),
+        )?;
+        Ok(JournaledEntityOp {
+            solid: result.solid,
+            op,
+            map: result.faces,
+            boundary: result.boundary,
+            completeness: result.completeness,
+        })
+    })
+}
+
 /// Moves a supported face selection and journals its construction-derived
 /// face evolution as one entry (kind `move_faces`).
 ///

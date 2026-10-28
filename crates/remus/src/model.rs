@@ -496,6 +496,29 @@ impl Model {
         )
     }
 
+    /// Revolves a qualified full-turn radial profile and journals every result
+    /// face, edge and vertex from its construction identities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperationsError`] for invalid geometry, unsupported history
+    /// domains or incomplete attribution. Refusal restores topology and journal.
+    pub fn revolve_journaled(
+        &mut self,
+        face: FaceId,
+        axis_origin: Point3,
+        axis_direction: Vec3,
+        angle_radians: f64,
+    ) -> Result<JournaledEntityOp, OperationsError> {
+        remus_operations::journal_ops::revolve_journaled(
+            &mut self.topology,
+            face,
+            axis_origin,
+            axis_direction,
+            angle_radians,
+        )
+    }
+
     /// Sweeps a profile face along a NURBS path.
     ///
     /// # Errors
