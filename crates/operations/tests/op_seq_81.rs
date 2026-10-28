@@ -168,6 +168,8 @@ const MAX_SEQ_OPS: usize = 8;
 /// Triage override: `OPSEQ81_SEQ_TIMEOUT_MS` replaces the default when set
 /// (diagnosing slow-vs-hung witnesses). Gates always run the default.
 const DEFAULT_SEQ_TIMEOUT_MS: u64 = 120_000;
+/// Default budget for pinned correctness replays; see [`replay_limits`].
+const REPLAY_SEQ_TIMEOUT_MS: u64 = 600_000;
 /// Face-count budget: results above this skip the mesh oracle (a timeout
 /// report teaches nothing) but every other oracle still judges them.
 const FACE_BUDGET: usize = 240;
@@ -938,6 +940,21 @@ struct SeqLimits {
     timeout_ms: u64,
     face_budget: usize,
     source: &'static str,
+}
+
+/// Budget for a pinned correctness replay that keeps the full battery.
+///
+/// The two-minute default sizes generated campaigns. A replay whose
+/// diagonal-derived mesh dominates its run time gets a bounded ten-minute
+/// default instead, so a slow profile (unoptimized or coverage-instrumented)
+/// cannot turn the correctness check into a `Timeout`. An explicit
+/// `OPSEQ81_SEQ_TIMEOUT_MS` still wins.
+fn replay_limits() -> SeqLimits {
+    let mut limits = SeqLimits::default();
+    if std::env::var_os("OPSEQ81_SEQ_TIMEOUT_MS").is_none() {
+        limits.timeout_ms = REPLAY_SEQ_TIMEOUT_MS;
+    }
+    limits
 }
 
 impl Default for SeqLimits {
@@ -4672,7 +4689,10 @@ fn finding_closed_sphere_cap_uses_a_contained_interior_witness() {
     ))
     .unwrap();
     let operations = bundle["operations"].as_array().unwrap();
-    let report = execute_sequence(operations, &SeqLimits::default(), Fault::None);
+    // The full battery meshes the fused spheres at the diagonal-derived
+    // deflection: about 2.7M triangles, 13 s in the CI test profile and
+    // 83–208 s under coverage instrumentation, past the campaign default.
+    let report = execute_sequence(operations, &replay_limits(), Fault::None);
     assert_eq!(
         report.kind,
         SeqKind::ExactOk,
@@ -5757,16 +5777,9 @@ fn finding_rotated_cyl_cut_material() {
         r#"[{"args":{"height":1.5,"radius":5.5},"op":"makeCylinder"},{"args":{"height":3.5,"radius":2.0},"op":"makeCylinder"},{"args":{"matrix":[1.0,0.0,0.0,4.0,0.0,0.8660254037844386,-0.5,-2.0,0.0,0.5,0.8660254037844386,-0.5,0.0,0.0,0.0,1.0],"solid":0},"op":"transform"},{"args":{"exactOnly":true,"operation":"cut","solidA":1,"solidB":0},"op":"booleanWithQuality"}]"#,
     )
     .expect("finding bundle parses");
-    let mut limits = SeqLimits::default();
-    // This regression retains the full diagonal-derived mesh and translated
-    // volume battery. Its unoptimized replay takes several minutes; CI uses
-    // the optimized test profile. Give this correctness replay
-    // a bounded ten-minute default while preserving an explicit caller budget
-    // and the two-minute default for generated campaigns.
-    if std::env::var_os("OPSEQ81_SEQ_TIMEOUT_MS").is_none() {
-        limits.timeout_ms = 600_000;
-    }
-    let report = execute_sequence(&ops, &limits, Fault::None);
+    // Its unoptimized replay takes several minutes; CI uses the optimized
+    // test profile.
+    let report = execute_sequence(&ops, &replay_limits(), Fault::None);
     for n in &report.notes {
         println!(
             "B81FINDING op {} {}: {}: {}",
