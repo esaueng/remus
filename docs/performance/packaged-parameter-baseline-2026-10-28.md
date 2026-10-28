@@ -24,8 +24,9 @@ hashes. The driver's source-SHA argument remains explicitly externally
 supplied; it is not the provenance proof on its own.
 
 The candidate measurement binds source `a82e1a27749c8ddf29c94797f6ad4ef9a0baceda`,
-before the delivery PR's later test-only proof adjustment. These timings are
-attributed to that immutable source and its installed package.
+before later changes to test configuration, qualification tooling and workflow
+triggers. These timings remain attributed to that immutable source and its
+installed package; the timing driver is unchanged.
 
 All 31 geometry features run on every tick: restore one empty checkpoint,
 recreate the 17 fixed features and rebuild all 14 dependent features. The

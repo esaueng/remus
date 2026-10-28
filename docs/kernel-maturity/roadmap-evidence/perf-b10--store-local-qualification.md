@@ -23,7 +23,8 @@ and index/position-welded closure. It refuses existing outputs. The supplied
 source SHA, if present, is labeled externally supplied. The boundary comparator
 permits renumbering, face/inner-loop order and cyclic loop start but preserves
 numeric bits, support/curve/trim, vertex and edge tolerances, winding and per-use
-pcurves. Six adversarial comparator tests pin these allowances and refusals.
+pcurves. Eight adversarial comparator tests pin these allowances and refusals,
+including repeated minimum coedges whose complete rotations must be compared.
 This is boundary-use content plus entity counts; it is not a complete
 alias/incidence-preserving graph-isomorphism proof for coincident distinct
 entities and does not authorize topology/naming adoption generally.
@@ -49,9 +50,14 @@ native route counters, not by enabling the JS switch. Module setting and
 entity-evolution/journal/reference cases agree with the switch off/on.
 Candidate and fresh-main observations agree across all 24 synthetic cells and
 four recipe runs, including canonical/raw arena hashes, mesh observations and
-setting/lineage results (`candidate-vs-fresh-main.json`). The final follow-up
-adds evidence and enables existing phase-helper tests in ordinary unit-test
-builds; the package receipt remains bound to production source `a82e1a277`.
+setting/lineage results (`candidate-vs-fresh-main.json`). Following changes
+adjust test configuration, qualification tooling and workflow triggers, and
+add evidence; the package receipt remains bound to production source
+`a82e1a277`. Original receipts retain their captured harness hashes.
+The complete-rotation correction reruns both installed packages' full and
+positive matrices with unchanged outcomes. All four new attestations differ
+only in the qualifier hash; `cyclic-normalization-requalification.json`
+records their exact reconstruction from the preserved public attestations.
 
 The full 24-cell matrix preserves two failed adoption gates: the enabled
 cross-drilled shaft, direct and batch, changes a seam line's stored tolerance

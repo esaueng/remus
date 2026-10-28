@@ -21,6 +21,14 @@ function document() {
 }
 const canonical = doc => canonicalArena(Buffer.from(JSON.stringify(doc)));
 
+function repeatedUseDocument(sequence) {
+  const doc = document();
+  doc.wires[0].edges = sequence.map(edge => ({ edge, forward: true }));
+  doc.boundary_authority.coedges = sequence.map(edge => ({ edge, forward: true, periodic_winding: [0, 0] }));
+  doc.boundary_authority.loops[0].coedges = sequence.map((_, index) => index);
+  return doc;
+}
+
 test('renumbering and loop start do not change exact boundary content', () => {
   const original = document(), changed = document();
   changed.vertices.reverse();
@@ -28,6 +36,30 @@ test('renumbering and loop start do not change exact boundary content', () => {
   changed.boundary_authority.coedges = changed.boundary_authority.coedges.map(use => ({ ...use, edge: 2 - use.edge }));
   changed.boundary_authority.loops[0].coedges = [1, 2, 0];
   assert.deepEqual(canonical(changed), canonical(original));
+});
+
+test('complete rotations resolve repeated minimum coedge tokens without changing cyclic content', () => {
+  for (const sequence of [[0, 1, 0, 2], [0, 2, 0, 1], [0, 1, 0, 1], [0, 0, 0, 0], [2, 0, 1, 0, 0, 1]]) {
+    const expected = canonical(repeatedUseDocument(sequence));
+    for (let shift = 1; shift < sequence.length; shift++) {
+      const rotated = sequence.slice(shift).concat(sequence.slice(0, shift));
+      assert.deepEqual(canonical(repeatedUseDocument(rotated)), expected, `sequence ${sequence}, shift ${shift}`);
+    }
+  }
+});
+
+test('repeated minimum normalization still refuses changed order, traversal and periodic winding', () => {
+  const original = repeatedUseDocument([0, 1, 0, 2]);
+  // The same token multiset in a non-cyclic order must remain different.
+  assert.notDeepEqual(canonical(repeatedUseDocument([0, 0, 1, 2])), canonical(original));
+  for (const mutate of [
+    doc => { doc.boundary_authority.coedges[2].forward = false; },
+    doc => { doc.boundary_authority.coedges[2].periodic_winding = [1, 0]; },
+    doc => { doc.boundary_authority.coedges[2].periodic_winding = [-1, 0]; },
+  ]) {
+    const changed = repeatedUseDocument([0, 1, 0, 2]); mutate(changed);
+    assert.notDeepEqual(canonical(changed), canonical(original));
+  }
 });
 
 test('reversing both a line carrier and its directed use preserves traversal', () => {

@@ -57,9 +57,23 @@ function canonicalArena(bytes) {
       else Object.assign(shape, { start, end, forward: use.forward });
       return JSON.stringify(exact({ ...shape, winding: use.periodic_winding, pcurve: use.pcurve ?? null }));
     });
-    let first = 0;
-    for (let index = 1; index < uses.length; index++) if (uses[index] < uses[first]) first = index;
-    return JSON.stringify({ closed: data.closed, uses: uses.slice(first).concat(uses.slice(0, first)) });
+    // Compare complete rotations: identical minimum tokens can have different
+    // continuations. Skip losing prefixes without rewriting or sorting uses.
+    let first = 0, other = 1, offset = 0;
+    while (first < uses.length && other < uses.length && offset < uses.length) {
+      const left = uses[(first + offset) % uses.length], right = uses[(other + offset) % uses.length];
+      if (left === right) { offset++; continue; }
+      if (left > right) {
+        first += offset + 1;
+        if (first === other) first++;
+      } else {
+        other += offset + 1;
+        if (other === first) other++;
+      }
+      offset = 0;
+    }
+    const start = Math.min(first, other);
+    return JSON.stringify({ closed: data.closed, uses: uses.slice(start).concat(uses.slice(0, start)) });
   };
   const face = id => {
     const data = doc.faces[id], loops = authority.faces[id];
