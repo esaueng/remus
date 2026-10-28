@@ -721,7 +721,7 @@ fn periodic_outer_rims_are_full_turns(
 /// boundaries. Unproved curve/surface combinations retain their prior
 /// validation behavior; a stored, admitted certificate must satisfy the
 /// existing entity tolerance rather than silently being ignored.
-fn native_pcurve_certificate_issues(
+fn native_pcurve_use_issues(
     topo: &Topology,
     faces: &[remus_topology::face::FaceId],
     tolerance: f64,
@@ -1265,7 +1265,7 @@ fn validate_solid_observed(
         }
     }
 
-    issues.extend(native_pcurve_certificate_issues(topo, &faces, tol.linear)?);
+    issues.extend(native_pcurve_use_issues(topo, &faces, tol.linear)?);
     Ok(ValidationReport { issues })
 }
 
