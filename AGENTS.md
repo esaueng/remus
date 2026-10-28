@@ -432,6 +432,7 @@ Quick reference — find the right file for any task:
 | Operation-local prepared context for repeated point-to-solid distance (`PreparedDistanceSolid`, `DistanceScratch`, `DistanceOptions`) | `distance/prepared.rs` |
 | Non-finite geometry detection | `validate/finite.rs` |
 | Surface curvature interrogation (pointwise + min radius) | `analyze/curvature.rs` |
+| Signed draft-angle samples and constant-angle reports for planar solids (native) | `analyze/draft.rs` |
 | Deterministic work counters for the point-classification hot path (`perf-counters` feature) | `perf.rs` |
 
 ### L2: offset (`crates/offset/src/`)
