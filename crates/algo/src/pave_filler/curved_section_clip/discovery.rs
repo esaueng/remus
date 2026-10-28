@@ -11,7 +11,10 @@ use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::face::{FaceId, FaceSurface};
 
-use super::{ClipError, ClippedSection, FaceTrace, I, Result, budget, clip_section, patch};
+use super::{
+    ClipError, ClippedSection, FaceTrace, I, Result, bernstein, budget, clip_section, curve_h,
+    patch,
+};
 
 /// An affine native trace of the discovered source on an original face.
 #[derive(Debug, Clone, Copy)]
@@ -110,6 +113,153 @@ fn propose(first: &[Point3], second: &[Point3]) -> Option<[f64; 2]> {
         .then_some(fractions)
 }
 
+/// A full ULP safely bounds correctly rounded arithmetic, including
+/// subnormals and binade boundaries. Infinite radii deliberately refuse.
+fn roundoff_radius(value: f64) -> f64 {
+    let value = value.abs();
+    (value.next_up() - value).max(value - value.next_down())
+}
+
+/// Roundoff in f = fl(fl(parameter - lo) / fl(hi - lo)), uniformly for
+/// stored parameters in the domain. Both subtraction results are bounded by
+/// one ULP of the positive rounded span; the exact fraction lies in [0,1].
+/// Thus the two subtraction errors contribute at most 2*ulp(span)/span,
+/// and the final division contributes at most ulp(1). All bounds round out.
+fn fraction_roundoff(domain: (f64, f64)) -> I {
+    let span = domain.1 - domain.0;
+    if !span.is_finite() || span <= 0.0 {
+        return I::exact(f64::INFINITY);
+    }
+    I::exact(roundoff_radius(span))
+        .mul(I::exact(2.0))
+        .div(I::exact(span))
+        .add(I::exact(roundoff_radius(1.0)))
+}
+
+/// Normalized target-u error in the caller's native affine trace map:
+/// f=(parameter-source_lo)/(source_hi-source_lo);
+/// u=target_lo+(target_hi-target_lo)*f. The allowance includes source
+/// normalization, target span subtraction/multiplication/addition, and the
+/// surface evaluator's final normalization of that stored native u. Its
+/// native-domain clamp cannot increase distance from the exact in-domain u.
+fn affine_trace_roundoff(source: (f64, f64), target: (f64, f64)) -> I {
+    let span = target.1 - target.0;
+    let exact_span = I::exact(target.1).sub(I::exact(target.0));
+    if !span.is_finite() || span <= 0.0 || exact_span.lo <= 0.0 {
+        return I::exact(f64::INFINITY);
+    }
+    let end = I::exact(target.0).add(I::exact(span));
+    let largest_sum = target.0.abs().max(end.abs_max());
+    let native_roundoff = I::exact(roundoff_radius(span))
+        .mul(I::exact(2.0))
+        .add(I::exact(roundoff_radius(largest_sum)));
+    fraction_roundoff(source)
+        .add(native_roundoff.div(I::exact(exact_span.lo)))
+        .add(fraction_roundoff(target))
+}
+
+/// Absolute error of the existing degree<=3 curve / degree<=3-by-1 surface
+/// position evaluators, including their exponent-scaled tiny-term branch.
+/// Per coordinate the ordinary surface path has <=43 basis operations,
+/// 16 scale products and 41 contraction/division operations. The exceptional
+/// path has <=43 basis +75 mantissa/scale/sum operations. Counting an FMA as
+/// two operations, gamma_128 bounds either path (curve paths are shorter).
+/// Positive weights bound quotient conditioning by kappa; kappa^2 also
+/// covers absolute basis perturbations. The numerator and denominator each
+/// contribute gamma_128*kappa^2, hence 2*c/(1-c) times the absolute control
+/// magnitude. A separate subnormal floor covers coordinate underflow.
+fn evaluator_roundoff(
+    points: impl Iterator<Item = Point3>,
+    weights: impl Iterator<Item = f64>,
+    domains: &[(f64, f64)],
+) -> f64 {
+    // Keep recurrence divisors, raw weight products and ordinary contraction
+    // intermediates inside the bounded arithmetic regime. Uniform extreme
+    // weights can be evaluated by the math crate but are not all qualified
+    // by this component's operational certificate.
+    let safe_range = 64.0 * f64::MIN_POSITIVE..=f64::MAX / 64.0;
+    if domains.iter().any(|d| !safe_range.contains(&(d.1 - d.0))) {
+        return f64::INFINITY;
+    }
+    let (mut minimum, mut maximum) = (f64::INFINITY, 0.0_f64);
+    for weight in weights {
+        if !safe_range.contains(&weight) {
+            return f64::INFINITY;
+        }
+        minimum = minimum.min(weight);
+        maximum = maximum.max(weight);
+    }
+    let kappa = I::exact(maximum).div(I::exact(minimum));
+    let kappa_squared = kappa.mul(kappa);
+    let operation_error = I::exact(128.0).mul(I::exact(f64::EPSILON / 2.0));
+    let gamma = operation_error.div(I::exact(1.0).sub(operation_error));
+    let condition = gamma.mul(kappa_squared);
+    if !condition.hi.is_finite() || condition.hi >= 0.25 {
+        return f64::INFINITY;
+    }
+    let factor = I::exact(2.0)
+        .mul(condition)
+        .div(I::exact(1.0).sub(condition));
+    let mut magnitudes = [0.0_f64; 3];
+    for point in points {
+        for (magnitude, value) in magnitudes.iter_mut().zip(point.0) {
+            if !value.is_finite() {
+                return f64::INFINITY;
+            }
+            *magnitude = magnitude.max(value.abs());
+        }
+    }
+    let floor = I::exact(128.0 * f64::from_bits(1)).mul(kappa_squared);
+    let mut squared = I::exact(0.0);
+    for magnitude in magnitudes {
+        if I::exact(128.0).mul(kappa).mul(I::exact(magnitude)).hi > f64::MAX / 4.0 {
+            return f64::INFINITY;
+        }
+        let coordinate = factor.mul(I::exact(magnitude)).add(floor);
+        squared = squared.add(coordinate.mul(coordinate));
+    }
+    squared.hi.sqrt().next_up()
+}
+
+fn qualify_native_traces(
+    topo: &Topology,
+    traces: [FaceTrace; 2],
+    curve: &NurbsCurve,
+    evaluation_bounds: [f64; 2],
+    clipping: &mut ClippedSection,
+    context: &OperationContext,
+) -> Result<()> {
+    let origin = curve.control_points()[0];
+    let source = curve_h(curve, origin)?;
+    let source_error =
+        I::exact(bernstein::derivative_bound(&source)).mul(fraction_roundoff(curve.domain()));
+    for (index, trace) in traces.into_iter().enumerate() {
+        budget(context, 1)?;
+        let patch = patch(topo, trace, origin)?;
+        let u_error = I::exact(bernstein::derivative_bound(&patch.section)).mul(
+            affine_trace_roundoff(curve.domain(), patch.surface.domain_u()),
+        );
+        // The proposed v was rounded before construction. Existing residual
+        // proofs already use that actual stored v, not the proposal. Only
+        // its evaluator normalization remains to be accounted for here.
+        // Equal ruling weights make the normalized-v derivative exactly the
+        // difference of the two rational end curves over the entire u span.
+        let v_error = I::exact(bernstein::residual(&patch.ends[0], &patch.ends[1]))
+            .mul(fraction_roundoff(patch.surface.domain_v()));
+        let bound = I::exact(clipping.surface_residual_bounds[index])
+            .add(I::exact(evaluation_bounds[index]))
+            .add(source_error)
+            .add(u_error)
+            .add(v_error)
+            .hi;
+        if !bound.is_finite() || bound > context.tolerance.linear {
+            return Err(ClipError::Residual { bound });
+        }
+        clipping.surface_residual_bounds[index] = bound;
+    }
+    Ok(())
+}
+
 /// Discover and clip one shared constant-v rational ruled-Bezier section.
 ///
 /// Both faces must be nonperiodic positive-weight single-span ruled patches
@@ -118,7 +268,12 @@ fn propose(first: &[Point3], second: &[Point3]) -> Option<[f64; 2]> {
 /// finite in-chart v coordinates. The resulting rational section must pass
 /// the original whole-span residual, regularity and transversality proofs
 /// and rectangular physical outer/hole trim checks. Native u domains may
-/// differ; they map affinely in increasing order without refitting.
+/// differ; they map affinely in increasing order without refitting. Native
+/// map and normalization roundoff are propagated through whole-section
+/// derivative bounds; insufficient chart precision refuses at the unchanged
+/// linear tolerance rather than publishing an understated residual bound.
+/// Absolute coordinate magnitude and positive-weight conditioning also bound
+/// the original position evaluators; unsafe arithmetic regimes refuse.
 ///
 /// This read-only prerequisite returns no partial record on refusal and
 /// never mutates topology, history, budgets or public Boolean dispatch.
@@ -137,6 +292,9 @@ pub fn discover_ruled_face_section(
     context: &OperationContext,
 ) -> Result<RuledFaceSection> {
     budget(context, 1)?;
+    if !context.tolerance.linear.is_finite() || context.tolerance.linear <= 0.0 {
+        return Err(ClipError::InvalidInput);
+    }
     let surfaces = [surface(topo, faces[0])?, surface(topo, faces[1])?];
     if surfaces[0].degree_u() != surfaces[1].degree_u()
         || surfaces[0].control_points().len() != surfaces[1].control_points().len()
@@ -173,7 +331,36 @@ pub fn discover_ruled_face_section(
         surfaces[0].weights().iter().map(|row| row[0]).collect(),
     )
     .map_err(|_| ClipError::InvalidInput)?;
-    let clipping = clip_section(topo, traces, &curve, context)?;
+    let source_evaluation = evaluator_roundoff(
+        curve.control_points().iter().copied(),
+        curve.weights().iter().copied(),
+        &[curve.domain()],
+    );
+    let evaluation_bounds = surfaces.map(|s| {
+        I::exact(source_evaluation)
+            .add(I::exact(evaluator_roundoff(
+                s.control_points().iter().flatten().copied(),
+                s.weights().iter().flatten().copied(),
+                &[s.domain_u(), s.domain_v()],
+            )))
+            .hi
+    });
+    // Refuse unsafe evaluator regimes before the clipper evaluates physical
+    // boundary events. The final certificate also includes the native maps.
+    for bound in evaluation_bounds {
+        if !bound.is_finite() || bound > context.tolerance.linear {
+            return Err(ClipError::Residual { bound });
+        }
+    }
+    let mut clipping = clip_section(topo, traces, &curve, context)?;
+    qualify_native_traces(
+        topo,
+        traces,
+        &curve,
+        evaluation_bounds,
+        &mut clipping,
+        context,
+    )?;
     let (lo, hi) = curve.domain();
     Ok(RuledFaceSection {
         curve,

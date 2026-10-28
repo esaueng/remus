@@ -505,6 +505,19 @@ fn inside(loops: &[Rectangle], u: I, v: f64) -> Result<bool> {
     Ok(material)
 }
 
+/// Retain the authoritative stored endpoints instead of recomposing them
+/// through a rounded span. Clamping an interior map into its native domain
+/// cannot increase its distance from the exact in-domain affine image.
+fn source_parameter(domain: (f64, f64), fraction: f64) -> f64 {
+    if same(fraction, 0.0) {
+        domain.0
+    } else if same(fraction, 1.0) {
+        domain.1
+    } else {
+        (domain.0 + (domain.1 - domain.0) * fraction).clamp(domain.0, domain.1)
+    }
+}
+
 /// Read-only and atomic: a refusal cannot expose intervals or mutate topology.
 #[allow(clippy::too_many_lines)]
 pub(super) fn clip_section(
@@ -559,7 +572,7 @@ pub(super) fn clip_section(
                 let f = fraction(b.uv[0].x(), s.domain_u())?;
                 let fb = fraction_bound(b.uv[0].x(), s.domain_u());
                 let g = (traces[face].v - b.uv[0].y()) / (b.uv[1].y() - b.uv[0].y());
-                let t = t0 + (t1 - t0) * f;
+                let t = source_parameter((t0, t1), f);
                 let tb = I::exact(t0).add(I::exact(t1).sub(I::exact(t0)).mul(fb));
                 let point = section.evaluate(t);
                 let residuals = std::array::from_fn(|j| {
@@ -617,6 +630,13 @@ pub(super) fn clip_section(
     }
     events.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
     for pair in events.windows(2) {
+        // Different normalized crossings must remain different ordered
+        // native source parameters, including crossings later discarded as
+        // outside material. Multiple original uses at one cut stay valid.
+        if !same(pair[0].0, pair[1].0) && pair[0].2.section_parameter >= pair[1].2.section_parameter
+        {
+            return Err(ClipError::AmbiguousBoundary);
+        }
         if pair[0].1.hi >= pair[1].1.lo {
             let (a, b) = (&pair[0], &pair[1]);
             let same_chart_coordinate = same(a.2.chart_u, b.2.chart_u)
@@ -650,7 +670,7 @@ pub(super) fn clip_section(
             material &= inside(&loops[j], u, traces[j].v)?;
         }
         if material {
-            let range = [t0 + (t1 - t0) * w[0], t0 + (t1 - t0) * w[1]];
+            let range = [w[0], w[1]].map(|f| source_parameter((t0, t1), f));
             if range[0] >= range[1] {
                 return Err(ClipError::AmbiguousBoundary);
             }

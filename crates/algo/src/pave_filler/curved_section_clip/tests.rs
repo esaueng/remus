@@ -159,7 +159,7 @@ pub(in crate::pave_filler) fn face(
 }
 /// `face` with rectangle corners in the surface's native u chart; `closed`
 /// is the wire's closure flag, which the loop inherits.
-fn face_in_chart(
+pub(in crate::pave_filler) fn face_in_chart(
     topo: &mut Topology,
     s: NurbsSurface,
     rects: &[[f64; 4]],
