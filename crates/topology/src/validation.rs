@@ -901,13 +901,25 @@ pub fn check_same_parameter_strict(
     edge_id: crate::edge::EdgeId,
     face_id: crate::face::FaceId,
     forward: bool,
-    _samples: usize,
+    samples: usize,
 ) -> Result<Option<SameParameterReport>, CurveUseValidationError> {
-    let surface = topo.face(face_id)?.surface().clone();
+    check_same_parameter_strict_with_tolerance(topo, edge_id, face_id, forward, samples, None)
+}
+
+fn check_same_parameter_strict_with_tolerance(
+    topo: &Topology,
+    edge_id: crate::edge::EdgeId,
+    face_id: crate::face::FaceId,
+    forward: bool,
+    _samples: usize,
+    tolerance_hint: Option<f64>,
+) -> Result<Option<SameParameterReport>, CurveUseValidationError> {
+    let face = topo.face(face_id)?;
     let edge = topo.edge(edge_id)?;
     let Some(pcurve) = topo.pcurve_oriented(edge_id, face_id, forward) else {
         return Ok(None);
     };
+    let surface = face.surface().clone();
     let start = topo.vertex(edge.start())?.point();
     let end = topo.vertex(edge.end())?.point();
     let domain = edge.strict_domain()?;
@@ -1023,8 +1035,35 @@ pub fn check_same_parameter_strict(
             | crate::face::FaceSurface::Cone(_)
             | crate::face::FaceSurface::Torus(_) => None,
         },
-        crate::edge::EdgeCurve::NurbsCurve(_)
-        | crate::edge::EdgeCurve::Ellipse(_)
+        crate::edge::EdgeCurve::NurbsCurve(curve) => {
+            let usage = same_parameter_proof::CurveUse {
+                p0,
+                p1,
+                edge_domain: domain,
+                forward,
+            };
+            match (&surface, pcurve.curve()) {
+                (
+                    crate::face::FaceSurface::Plane { normal, d },
+                    remus_math::curves2d::Curve2D::Nurbs(pc),
+                ) => Some(same_parameter_proof::plane_nurbs(
+                    *normal,
+                    *d,
+                    pc,
+                    curve,
+                    usage,
+                    tolerance_hint,
+                )),
+                (
+                    crate::face::FaceSurface::Nurbs(surface),
+                    remus_math::curves2d::Curve2D::Line(pc),
+                ) => Some(same_parameter_proof::nurbs_isocurve(
+                    surface, pc, curve, usage,
+                )),
+                _ => None,
+            }
+        }
+        crate::edge::EdgeCurve::Ellipse(_)
         | crate::edge::EdgeCurve::Hyperbola(_)
         | crate::edge::EdgeCurve::Parabola(_) => None,
     };
@@ -1150,8 +1189,14 @@ pub fn validate_same_parameter_strict(
         return Err(CurveUseValidationError::InvalidTolerance { tolerance });
     }
     let effective_tolerance = effective_edge_validation_tolerance(topo, edge_id, tolerance)?;
-    if let Some(report) = check_same_parameter_strict(topo, edge_id, face_id, forward, samples)?
-        && report.max_deviation > effective_tolerance
+    if let Some(report) = check_same_parameter_strict_with_tolerance(
+        topo,
+        edge_id,
+        face_id,
+        forward,
+        samples,
+        Some(effective_tolerance),
+    )? && report.max_deviation > effective_tolerance
     {
         return Err(TopologyError::SameParameterExceeded {
             edge: edge_id,
@@ -1317,16 +1362,41 @@ pub fn check_same_range_strict(
         ));
     }
     if let crate::face::FaceSurface::Plane { normal, d } = &surface {
-        let supported = matches!(
+        let supported = if matches!(
             (pcurve.curve(), edge.curve()),
             (
-                remus_math::curves2d::Curve2D::Line(_),
-                crate::edge::EdgeCurve::Line
-            ) | (
-                remus_math::curves2d::Curve2D::Circle(_),
-                crate::edge::EdgeCurve::Circle(_)
+                remus_math::curves2d::Curve2D::Nurbs(_),
+                crate::edge::EdgeCurve::NurbsCurve(_)
             )
-        );
+        ) {
+            // This new endpoint family is admitted only after its complete
+            // native parameterization has a control-net certificate.
+            check_same_parameter_strict(topo, edge_id, face_id, forward, 0).map_err(|error| {
+                match error {
+                    CurveUseValidationError::SameParameterProofUnavailable { .. } => {
+                        CurveUseValidationError::SameRangeProofUnavailable {
+                            edge: edge_id,
+                            face: face_id,
+                            orientation: orientation_label(forward),
+                            surface_type: surface.type_tag(),
+                        }
+                    }
+                    other => other,
+                }
+            })?;
+            true
+        } else {
+            matches!(
+                (pcurve.curve(), edge.curve()),
+                (
+                    remus_math::curves2d::Curve2D::Line(_),
+                    crate::edge::EdgeCurve::Line
+                ) | (
+                    remus_math::curves2d::Curve2D::Circle(_),
+                    crate::edge::EdgeCurve::Circle(_)
+                )
+            )
+        };
         let proof = if supported {
             same_parameter_proof::plane_range(
                 *normal,
@@ -1479,11 +1549,20 @@ pub fn validate_solid_pcurve_contracts(
                     continue;
                 }
                 summary.stored_pcurves += 1;
-                let parameter =
-                    check_same_parameter_strict(topo, edge_id, face_id, forward, samples)?;
-                let range = check_same_range_strict(topo, edge_id, face_id, forward)?;
                 let effective_tolerance =
-                    effective_edge_validation_tolerance(topo, edge_id, tolerance)?;
+                    effective_edge_validation_tolerance(topo, edge_id, tolerance);
+                let parameter = check_same_parameter_strict_with_tolerance(
+                    topo,
+                    edge_id,
+                    face_id,
+                    forward,
+                    samples,
+                    effective_tolerance.as_ref().ok().copied(),
+                )?;
+                let range = check_same_range_strict(topo, edge_id, face_id, forward)?;
+                // Preserve the existing parameter/range diagnostic priority
+                // when an entity tolerance is itself malformed.
+                let effective_tolerance = effective_tolerance?;
                 if let Some(report) = parameter
                     && report.max_deviation > effective_tolerance
                 {

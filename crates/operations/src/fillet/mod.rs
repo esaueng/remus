@@ -702,6 +702,171 @@ fn support_ray_exit(
     exit
 }
 
+/// Extract the complete native boundary of a clamped variable-fillet stripe.
+fn variable_stripe_boundaries(
+    surface: &remus_math::nurbs::surface::NurbsSurface,
+) -> Result<Vec<crate::boolean::BoundaryCurveOverride>, crate::OperationsError> {
+    use remus_math::nurbs::curve::NurbsCurve;
+
+    // Every stripe is a clamped tensor-product patch. Its four boundary
+    // curves are therefore the corresponding control-net rows/columns,
+    // retaining their native knots and rational weights, not chords between
+    // the corner positions. The same curves must bound the support/cap faces.
+    let points = surface.control_points();
+    let weights = surface.weights();
+    let last_u = points.len() - 1;
+    let last_v = points[0].len() - 1;
+    let curves = [
+        NurbsCurve::new(
+            surface.degree_u(),
+            surface.knots_u().to_vec(),
+            points.iter().map(|row| row[0]).collect(),
+            weights.iter().map(|row| row[0]).collect(),
+        )?,
+        NurbsCurve::new(
+            surface.degree_v(),
+            surface.knots_v().to_vec(),
+            points[last_u].clone(),
+            weights[last_u].clone(),
+        )?,
+        NurbsCurve::new(
+            surface.degree_u(),
+            surface.knots_u().to_vec(),
+            points.iter().map(|row| row[last_v]).collect(),
+            weights.iter().map(|row| row[last_v]).collect(),
+        )?,
+        NurbsCurve::new(
+            surface.degree_v(),
+            surface.knots_v().to_vec(),
+            points[0].clone(),
+            weights[0].clone(),
+        )?,
+    ];
+    Ok(curves
+        .into_iter()
+        .map(|curve| {
+            let trim = curve.domain();
+            crate::boolean::BoundaryCurveOverride {
+                start: curve.evaluate(trim.0),
+                end: curve.evaluate(trim.1),
+                curve: EdgeCurve::NurbsCurve(curve),
+                trim,
+            }
+        })
+        .collect())
+}
+
+mod variable_pcurves {
+    //! Exact pcurves for straight variable stripes with planar neighboring faces.
+
+    use remus_math::curves2d::{Curve2D, Line2D, NurbsCurve2D};
+    use remus_math::tolerance::Tolerance;
+    use remus_math::vec::{Point2, Point3, Vec2, Vec3};
+    use remus_topology::Topology;
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::explorer::solid_faces;
+    use remus_topology::face::FaceSurface;
+    use remus_topology::pcurve::PCurve;
+    use remus_topology::solid::SolidId;
+
+    fn unavailable() -> crate::OperationsError {
+        crate::OperationsError::Unsupported {
+            operation: "fillet_variable",
+            reason: "native stripe boundary lacks a certified pcurve on both incident faces".into(),
+        }
+    }
+
+    pub(super) fn register(
+        topo: &mut Topology,
+        solid: SolidId,
+        tol: Tolerance,
+    ) -> Result<(), crate::OperationsError> {
+        let mut uses = Vec::new();
+        for face in solid_faces(topo, solid)? {
+            let data = topo.face(face)?;
+            let surface = data.surface().clone();
+            let boundaries = topo.wire(data.outer_wire())?.edges().to_vec();
+            for usage in boundaries {
+                let edge = topo.edge(usage.edge())?;
+                let EdgeCurve::NurbsCurve(curve) = edge.curve() else {
+                    continue;
+                };
+                let (t0, t1) = edge.strict_domain().map_err(|_| unavailable())?;
+                let (p0, p1) = if usage.is_forward() {
+                    (t0, t1)
+                } else {
+                    (t1, t0)
+                };
+                let pc = match &surface {
+                    FaceSurface::Plane { normal, d } => {
+                        let denominator = normal.dot(*normal);
+                        let origin = Point3::new(
+                            normal.x() * d / denominator,
+                            normal.y() * d / denominator,
+                            normal.z() * d / denominator,
+                        );
+                        let n = normal.normalize().map_err(|_| unavailable())?;
+                        let seed = if n.x().abs() < 0.9 {
+                            Vec3::new(1.0, 0.0, 0.0)
+                        } else {
+                            Vec3::new(0.0, 1.0, 0.0)
+                        };
+                        let u = n.cross(seed).normalize().map_err(|_| unavailable())?;
+                        let v = n.cross(u);
+                        let points = curve
+                            .control_points()
+                            .iter()
+                            .map(|p| {
+                                let delta = *p - origin;
+                                Point2::new(delta.dot(u), delta.dot(v))
+                            })
+                            .collect();
+                        Curve2D::Nurbs(NurbsCurve2D::new(
+                            curve.degree(),
+                            curve.knots().to_vec(),
+                            points,
+                            curve.weights().to_vec(),
+                        )?)
+                    }
+                    FaceSurface::Nurbs(surface) => {
+                        let index = super::variable_stripe_boundaries(surface)?.iter().position(|b| matches!(&b.curve, EdgeCurve::NurbsCurve(candidate) if candidate == curve)).ok_or_else(unavailable)?;
+                        let (u0, u1) = surface.domain_u();
+                        let (v0, v1) = surface.domain_v();
+                        let (origin, direction) = match index {
+                            0 => (Point2::new(0.0, v0), Vec2::new(1.0, 0.0)),
+                            1 => (Point2::new(u1, 0.0), Vec2::new(0.0, 1.0)),
+                            2 => (Point2::new(0.0, v1), Vec2::new(1.0, 0.0)),
+                            _ => (Point2::new(u0, 0.0), Vec2::new(0.0, 1.0)),
+                        };
+                        Curve2D::Line(Line2D::new(origin, direction)?)
+                    }
+                    _ => return Err(unavailable()),
+                };
+                uses.push((
+                    usage.edge(),
+                    face,
+                    usage.is_forward(),
+                    PCurve::new(pc, p0, p1),
+                ));
+            }
+        }
+        for (edge, face, forward, pc) in &uses {
+            topo.set_pcurve_oriented(*edge, *face, *forward, pc.clone())?;
+        }
+        for (edge, face, forward, _) in uses {
+            remus_topology::validation::validate_same_parameter_strict(
+                topo, edge, face, forward, tol.linear, 0,
+            )
+            .map_err(|_| unavailable())?;
+            remus_topology::validation::validate_same_range_strict(
+                topo, edge, face, forward, tol.linear,
+            )
+            .map_err(|_| unavailable())?;
+        }
+        Ok(())
+    }
+}
+
 /// Transaction body of [`fillet_variable`]: builds the canal surfaces, then
 /// proves coverage and result validity before committing.
 #[allow(clippy::too_many_lines)]
@@ -1192,6 +1357,7 @@ fn fillet_variable_transacted(
     // Trim planar faces by replacing each filleted-edge boundary vertex with
     // the shared contact point. The NURBS canal surface replaces the fillet face.
     let mut all_specs: Vec<FaceSpec> = Vec::new();
+    let mut boundary_curves = Vec::new();
 
     for &face_id in &shell_face_ids {
         let Some(poly) = face_polygons.get(&face_id.index()) else {
@@ -1507,6 +1673,7 @@ fn fillet_variable_transacted(
         // when analytic cap specs are assembled ahead of ordinary surfaces.
         let srf_mid_normal = surface.normal(0.5, 0.5).unwrap_or(cs_ref.bisector);
         let reversed = srf_mid_normal.dot(cs_ref.bisector) > 0.0;
+        boundary_curves.extend(variable_stripe_boundaries(&surface)?);
         all_specs.push(FaceSpec::Surface {
             vertices: vec![c1s, c2s, c2e, c1e],
             surface: FaceSurface::Nurbs(surface),
@@ -1607,7 +1774,33 @@ fn fillet_variable_transacted(
         ));
     }
 
-    let solid_id = crate::boolean::assemble_solid_mixed(topo, &all_specs, tol)?;
+    let solid_id = crate::boolean::assemble_solid_mixed_with_history_and_curves(
+        topo,
+        &all_specs,
+        &boundary_curves,
+        tol,
+    )?
+    .solid;
+
+    // This certificate family covers the straight-spine, planar-neighbor
+    // construction without spherical setback corners. Other existing
+    // variable-blend families retain their previous pcurve behavior.
+    let planar_boundary_family = qualified_setback_corners.is_empty()
+        && shell_face_ids.iter().all(|&face| {
+            matches!(
+                topo.face(face).map(remus_topology::face::Face::surface),
+                Ok(FaceSurface::Plane { .. })
+            )
+        })
+        && edge_laws.iter().all(|(edge, _)| {
+            matches!(
+                topo.edge(*edge).map(remus_topology::edge::Edge::curve),
+                Ok(EdgeCurve::Line)
+            )
+        });
+    if planar_boundary_family {
+        variable_pcurves::register(topo, solid_id, tol)?;
+    }
 
     // Fail closed on a plausible-but-wrong result: no new validation errors
     // against the input baseline, and the volume change must be one a blend

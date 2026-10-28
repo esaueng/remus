@@ -206,8 +206,13 @@ impl StructuredWasmError {
     /// cause without matching prose.
     pub(crate) fn blend_failure(error: remus_operations::OperationsError) -> Self {
         let code = remus_operations::blend_ops::blend_failure_code(&error);
-        let unsupported = code == "unsupported-face-face-blend";
-        let mut structured = Self::from(error);
+        let boundary_unproved = code == "unsupported-variable-boundary";
+        let unsupported = code == "unsupported-face-face-blend" || boundary_unproved;
+        let mut structured = if boundary_unproved {
+            Self::operation_failed(error.to_string())
+        } else {
+            Self::from(error)
+        };
         if unsupported {
             structured.category = FailureCategory::Unsupported.as_str();
         }
@@ -1155,6 +1160,31 @@ mod work_limit_tests {
         ));
         assert_eq!(wrapped.code, WasmErrorCode::InvalidArgument);
         assert_eq!(wrapped.details["index"], 7);
+    }
+
+    #[test]
+    fn unproved_variable_boundary_is_unsupported_without_changing_other_errors() {
+        let boundary = super::StructuredWasmError::blend_failure(
+            remus_operations::OperationsError::Unsupported {
+                operation: "fillet_variable",
+                reason: "boundary certificate unavailable".into(),
+            },
+        );
+        assert_eq!(boundary.code, WasmErrorCode::OperationFailed);
+        assert_eq!(boundary.category, "unsupported");
+        assert_eq!(
+            boundary.details["kernelCode"],
+            "unsupported-variable-boundary"
+        );
+        let existing = super::StructuredWasmError::blend_failure(
+            remus_operations::OperationsError::Unsupported {
+                operation: "another_operation",
+                reason: "existing generic contract".into(),
+            },
+        );
+        assert_eq!(existing.code, WasmErrorCode::OperationFailed);
+        assert_eq!(existing.category, "internal");
+        assert_eq!(existing.details["kernelCode"], "fillet-failed");
     }
 
     #[test]

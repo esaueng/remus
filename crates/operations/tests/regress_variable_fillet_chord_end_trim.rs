@@ -19,16 +19,20 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use remus_math::mat::Mat4;
 use remus_math::vec::Point3;
+use remus_operations::classify::{PointClassification, classify_points};
 use remus_operations::fillet::{FilletEdgeSetback, FilletRadiusLaw, fillet_variable_with_setbacks};
 use remus_operations::measure::{mass_properties, solid_volume};
 use remus_operations::primitives::make_box;
+use remus_operations::tessellate::{
+    boundary_edge_count, non_manifold_edge_count, tessellate_solid_with_tolerance,
+};
 use remus_topology::Topology;
 use remus_topology::explorer::{solid_edges, solid_faces};
 use remus_topology::face::FaceSurface;
 
 #[test]
-#[ignore = "open: B61 variable fillet trims its stripe ends with straight chords"]
 fn variable_fillet_end_boundaries_lie_on_the_blend_wall() {
     let radius = 9.0;
     let mut topo = Topology::new();
@@ -96,4 +100,225 @@ fn variable_fillet_end_boundaries_lie_on_the_blend_wall() {
         (mesh - exact).abs() < 1e-3 * exact,
         "mesh {mesh:.6} against the closed form {exact:.6}"
     );
+}
+
+#[test]
+fn variable_fillet_shared_boundaries_and_quantities_survive_scale_and_placement() {
+    for scale in [0.001, 1.0, 1000.0] {
+        for radius_ratio in [1.0, 9.0] {
+            for placed in [false, true] {
+                let size = 10.0 * scale;
+                let radius = radius_ratio * scale;
+                let mut topo = Topology::new();
+                let input = make_box(&mut topo, size, size, size).unwrap();
+                let edge = solid_edges(&topo, input)
+                    .unwrap()
+                    .into_iter()
+                    .find(|&id| {
+                        let edge = topo.edge(id).unwrap();
+                        let a = topo.vertex(edge.start()).unwrap().point();
+                        let b = topo.vertex(edge.end()).unwrap().point();
+                        a.x() == 0.0 && a.y() == 0.0 && b.x() == 0.0 && b.y() == 0.0
+                    })
+                    .unwrap();
+                let placement = if placed {
+                    Mat4::translation(37.0 * scale, -19.0 * scale, 11.0 * scale)
+                        * Mat4::rotation_y(0.31)
+                        * Mat4::rotation_z(-0.47)
+                } else {
+                    Mat4::identity()
+                };
+                remus_operations::transform::transform_solid(&mut topo, input, &placement).unwrap();
+                let before = remus_io::arena_io::serialize_solids(&topo, &[input]).unwrap();
+                let result = fillet_variable_with_setbacks(
+                    &mut topo,
+                    input,
+                    &[FilletEdgeSetback {
+                        edge,
+                        law: FilletRadiusLaw::Constant(radius),
+                        start_setback: 0.0,
+                        end_setback: 0.0,
+                    }],
+                )
+                .unwrap();
+                assert_eq!(
+                    remus_io::arena_io::serialize_solids(&topo, &[input]).unwrap(),
+                    before,
+                    "the original operand must be unchanged"
+                );
+                assert!(
+                    remus_operations::validate::validate_solid(&topo, result)
+                        .unwrap()
+                        .is_valid()
+                );
+                let expected =
+                    size.powi(3) - (1.0 - std::f64::consts::FRAC_PI_4) * radius * radius * size;
+                let gauss = mass_properties(&topo, result).unwrap().mass;
+                assert!(
+                    (gauss - expected).abs() / expected < 1e-6,
+                    "scale={scale}, r={radius_ratio}, placed={placed}: {gauss} vs {expected}"
+                );
+                let adjacency = topo.build_adjacency(result).unwrap();
+                let walls: Vec<_> = solid_faces(&topo, result)
+                    .unwrap()
+                    .into_iter()
+                    .filter(|&face| {
+                        matches!(topo.face(face).unwrap().surface(), FaceSurface::Nurbs(_))
+                    })
+                    .collect();
+                assert_eq!(walls.len(), 1);
+                let certificates = remus_topology::validation::validate_solid_pcurve_contracts(
+                    &topo, result, 1e-7, 0,
+                )
+                .unwrap();
+                assert_eq!(certificates.stored_pcurves, 8);
+                assert_eq!(certificates.validated_uses, 8);
+                let wall = topo.face(walls[0]).unwrap();
+                let axis_origin = placement.mul_point(Point3::new(radius, radius, 0.0));
+                let axis = (placement.mul_point(Point3::new(radius, radius, size)) - axis_origin)
+                    .normalize()
+                    .unwrap();
+                for use_ in topo.wire(wall.outer_wire()).unwrap().edges() {
+                    let edge = topo.edge(use_.edge()).unwrap();
+                    assert_eq!(adjacency.faces_for_edge(use_.edge()).len(), 2);
+                    for &incident in adjacency.faces_for_edge(use_.edge()) {
+                        let data = topo.face(incident).unwrap();
+                        let usage = topo
+                            .wire(data.outer_wire())
+                            .unwrap()
+                            .edges()
+                            .iter()
+                            .find(|usage| usage.edge() == use_.edge())
+                            .unwrap();
+                        let pc = topo
+                            .pcurve_oriented(use_.edge(), incident, usage.is_forward())
+                            .unwrap();
+                        // Independently lift the per-use curve, including its
+                        // orientation, rather than treating the certificate
+                        // implementation as the geometric oracle.
+                        for step in 0..=16 {
+                            let fraction = f64::from(step) / 16.0;
+                            let pt = pc.t_start() + (pc.t_end() - pc.t_start()) * fraction;
+                            let uv = pc.evaluate(pt);
+                            let lifted = match data.surface() {
+                                FaceSurface::Plane { normal, d } => {
+                                    let origin = Point3::new(
+                                        normal.x() * d / normal.dot(*normal),
+                                        normal.y() * d / normal.dot(*normal),
+                                        normal.z() * d / normal.dot(*normal),
+                                    );
+                                    let n = normal.normalize().unwrap();
+                                    let seed = if n.x().abs() < 0.9 {
+                                        remus_math::vec::Vec3::new(1.0, 0.0, 0.0)
+                                    } else {
+                                        remus_math::vec::Vec3::new(0.0, 1.0, 0.0)
+                                    };
+                                    let u = n.cross(seed).normalize().unwrap();
+                                    origin + u * uv.x() + n.cross(u) * uv.y()
+                                }
+                                surface => surface.evaluate(uv.x(), uv.y()).unwrap(),
+                            };
+                            let (a, b) = edge.strict_domain().unwrap();
+                            let native = if usage.is_forward() {
+                                a + (b - a) * fraction
+                            } else {
+                                b + (a - b) * fraction
+                            };
+                            let p = edge.curve().evaluate_with_endpoints(
+                                native,
+                                topo.vertex(edge.start()).unwrap().point(),
+                                topo.vertex(edge.end()).unwrap().point(),
+                            );
+                            assert!((lifted - p).length() < 1e-7);
+                        }
+                    }
+                    let a = topo.vertex(edge.start()).unwrap().point();
+                    let b = topo.vertex(edge.end()).unwrap().point();
+                    let (start, end) = edge.strict_domain().unwrap();
+                    for step in 0..=16 {
+                        let t = (end - start).mul_add(f64::from(step) / 16.0, start);
+                        let p = edge.curve().evaluate_with_endpoints(t, a, b);
+                        let delta = p - axis_origin;
+                        let radial = (delta - axis * delta.dot(axis)).length();
+                        assert!((radial - radius).abs() < 1e-7);
+                    }
+                }
+                for deflection in [0.01 * scale, 0.001 * scale] {
+                    let mesh =
+                        tessellate_solid_with_tolerance(&topo, result, deflection, 0.1).unwrap();
+                    assert_eq!(boundary_edge_count(&mesh), 0);
+                    assert_eq!(non_manifold_edge_count(&mesh), 0);
+                    let mesh_volume = solid_volume(&topo, result, deflection).unwrap();
+                    assert!((mesh_volume - expected).abs() / expected < 1e-3);
+                }
+                let probes = [
+                    Point3::new(0.15 * radius, 0.15 * radius, size / 2.0),
+                    Point3::new(0.8 * radius, 0.8 * radius, size / 2.0),
+                    Point3::new(0.95 * size, 0.95 * size, size / 2.0),
+                ]
+                .map(|p| placement.mul_point(p));
+                assert_eq!(
+                    classify_points(&topo, result, &probes, 0.01 * scale, 1e-7).unwrap(),
+                    [
+                        PointClassification::Outside,
+                        PointClassification::Inside,
+                        PointClassification::Inside
+                    ]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn variable_laws_keep_curved_support_contacts_and_match_integrated_radius_oracles() {
+    for (law, mean_square_radius) in [
+        (
+            FilletRadiusLaw::Linear {
+                start: 1.0,
+                end: 3.0,
+            },
+            13.0 / 3.0,
+        ),
+        (
+            FilletRadiusLaw::SCurve {
+                start: 1.0,
+                end: 3.0,
+            },
+            3.0 + 52.0 / 35.0,
+        ),
+    ] {
+        let mut topo = Topology::new();
+        let input = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let edge = solid_edges(&topo, input)
+            .unwrap()
+            .into_iter()
+            .find(|&id| {
+                let edge = topo.edge(id).unwrap();
+                let a = topo.vertex(edge.start()).unwrap().point();
+                let b = topo.vertex(edge.end()).unwrap().point();
+                a.x() == 0.0 && a.y() == 0.0 && b.x() == 0.0 && b.y() == 0.0
+            })
+            .unwrap();
+        let result = fillet_variable_with_setbacks(
+            &mut topo,
+            input,
+            &[FilletEdgeSetback {
+                edge,
+                law,
+                start_setback: 0.0,
+                end_setback: 0.0,
+            }],
+        )
+        .unwrap();
+        // Integrate r(z)^2 independently: linear's mean is
+        // (a²+ab+b²)/3; smoothstep's is a²+a(b-a)+13(b-a)²/35.
+        let expected = 1000.0 - (1.0 - std::f64::consts::FRAC_PI_4) * 10.0 * mean_square_radius;
+        let gauss = mass_properties(&topo, result).unwrap().mass;
+        assert!(
+            (gauss - expected).abs() < 1e-6 * expected,
+            "{gauss} vs {expected}"
+        );
+        assert!((solid_volume(&topo, result, 0.001).unwrap() - expected).abs() < 1e-3 * expected);
+    }
 }

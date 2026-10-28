@@ -12,6 +12,7 @@ use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::explorer::{solid_edges, solid_entity_counts, solid_faces};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 use remus_topology::test_utils::make_unit_cube_manifold;
@@ -2453,4 +2454,444 @@ fn equal_radius_full_rim_is_still_refused() {
         .expect("a closed rim edge");
     let err = fillet_rolling_ball(&mut topo, solid, &[rim], 1.0).unwrap_err();
     assert!(format!("{err}").contains("curvature"), "{err}");
+}
+
+fn positional_cube_specs(topo: &Topology, solid: SolidId) -> Vec<FaceSpec> {
+    solid_faces(topo, solid)
+        .unwrap()
+        .into_iter()
+        .map(|id| {
+            let face = topo.face(id).unwrap();
+            let FaceSurface::Plane { normal, d } = face.surface() else {
+                panic!("cube must be planar");
+            };
+            FaceSpec::Planar {
+                vertices: crate::boolean::face_polygon(topo, id).unwrap(),
+                normal: *normal,
+                d: *d,
+                inner_wires: vec![],
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn explicit_stripe_boundaries_preserve_native_trim_direction_on_both_faces() {
+    use crate::boolean::{BoundaryCurveOverride, assemble_solid_mixed_with_history_and_curves};
+    use remus_math::nurbs::curve::NurbsCurve;
+
+    for reversed in [false, true] {
+        let mut topo = Topology::new();
+        let input = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let specs = positional_cube_specs(&topo, input);
+        let a = Point3::new(0.0, 0.0, 0.0);
+        let b = Point3::new(1.0, 0.0, 0.0);
+        let curve =
+            NurbsCurve::new(1, vec![2.0, 2.0, 5.0, 5.0], vec![a, b], vec![1.0, 2.0]).unwrap();
+        let override_ = BoundaryCurveOverride {
+            start: if reversed { b } else { a },
+            end: if reversed { a } else { b },
+            curve: EdgeCurve::NurbsCurve(curve),
+            trim: if reversed { (5.0, 2.0) } else { (2.0, 5.0) },
+        };
+        let expected_trim = override_.trim;
+        let result = assemble_solid_mixed_with_history_and_curves(
+            &mut topo,
+            &specs,
+            &[override_],
+            Tolerance::new(),
+        )
+        .unwrap()
+        .solid;
+        let edge = solid_edges(&topo, result)
+            .unwrap()
+            .into_iter()
+            .find(|&edge| matches!(topo.edge(edge).unwrap().curve(), EdgeCurve::NurbsCurve(_)))
+            .unwrap();
+        let data = topo.edge(edge).unwrap();
+        assert_eq!(data.strict_domain().unwrap(), expected_trim);
+        assert_eq!(
+            topo.vertex(data.start()).unwrap().point(),
+            if reversed { b } else { a }
+        );
+        let faces = topo
+            .build_adjacency(result)
+            .unwrap()
+            .faces_for_edge(edge)
+            .to_vec();
+        assert_eq!(faces.len(), 2);
+        let directions: Vec<_> = faces
+            .iter()
+            .map(|&id| {
+                let face = topo.face(id).unwrap();
+                topo.wire(face.outer_wire())
+                    .unwrap()
+                    .edges()
+                    .iter()
+                    .find(|use_| use_.edge() == edge)
+                    .unwrap()
+                    .is_forward()
+                    ^ face.is_reversed()
+            })
+            .collect();
+        assert_ne!(directions[0], directions[1]);
+        assert!(
+            crate::validate::validate_solid(&topo, result)
+                .unwrap()
+                .is_valid()
+        );
+        assert!((crate::measure::solid_volume(&topo, result, 0.001).unwrap() - 1.0).abs() < 1e-9);
+    }
+}
+
+#[test]
+fn malformed_stripe_boundary_override_refuses_and_rolls_back() {
+    use crate::boolean::{BoundaryCurveOverride, assemble_solid_mixed_with_history_and_curves};
+    use remus_math::nurbs::curve::NurbsCurve;
+
+    let a = Point3::new(0.0, 0.0, 0.0);
+    let b = Point3::new(1.0, 0.0, 0.0);
+    for (start, end, trim) in [
+        (a, b, (f64::NAN, 1.0)),
+        (a, b, (0.0, 0.0)),
+        (a, b, (0.0, 0.5)),
+        (a, b, (-1.0, 2.0)),
+        (Point3::new(f64::NAN, 0.0, 0.0), b, (0.0, 1.0)),
+        (a, Point3::new(f64::INFINITY, 0.0, 0.0), (0.0, 1.0)),
+    ] {
+        let mut topo = Topology::new();
+        let input = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let specs = positional_cube_specs(&topo, input);
+        let before = remus_io::arena_io::serialize_solids(&topo, &[input]).unwrap();
+        let live_before = (topo.num_vertices(), topo.num_edges(), topo.num_faces());
+        let curve =
+            NurbsCurve::new(1, vec![0.0, 0.0, 1.0, 1.0], vec![a, b], vec![1.0, 1.0]).unwrap();
+        let result = remus_topology::transaction::run_transacted(&mut topo, |topo| {
+            assemble_solid_mixed_with_history_and_curves(
+                topo,
+                &specs,
+                &[BoundaryCurveOverride {
+                    start,
+                    end,
+                    curve: EdgeCurve::NurbsCurve(curve),
+                    trim,
+                }],
+                Tolerance::new(),
+            )
+        });
+        assert!(matches!(
+            result,
+            Err(crate::OperationsError::Unsupported { .. })
+        ));
+        assert_eq!(
+            remus_io::arena_io::serialize_solids(&topo, &[input]).unwrap(),
+            before
+        );
+        assert_eq!(
+            (topo.num_vertices(), topo.num_edges(), topo.num_faces()),
+            live_before
+        );
+    }
+}
+
+#[test]
+fn positional_assembly_without_stripe_overrides_keeps_lines_and_cube_quantities() {
+    let mut topo = Topology::new();
+    let input = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    let specs = positional_cube_specs(&topo, input);
+    let result = crate::boolean::assemble_solid_mixed(&mut topo, &specs, Tolerance::new()).unwrap();
+    for edge in solid_edges(&topo, result).unwrap() {
+        assert!(matches!(topo.edge(edge).unwrap().curve(), EdgeCurve::Line));
+    }
+    assert_eq!(solid_entity_counts(&topo, result).unwrap(), (6, 12, 8));
+    assert!((crate::measure::solid_volume(&topo, result, 0.001).unwrap() - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn altered_native_boundary_pcurves_refuse_on_both_faces_and_roll_back() {
+    use remus_math::nurbs::curve::NurbsCurve;
+    let mut topo = Topology::new();
+    let input = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let source_edge = solid_edges(&topo, input)
+        .unwrap()
+        .into_iter()
+        .find(|&id| {
+            let e = topo.edge(id).unwrap();
+            let (a, b) = (
+                topo.vertex(e.start()).unwrap().point(),
+                topo.vertex(e.end()).unwrap().point(),
+            );
+            a.x() == 0.0 && a.y() == 0.0 && b.x() == 0.0 && b.y() == 0.0
+        })
+        .unwrap();
+    let result = fillet_variable(
+        &mut topo,
+        input,
+        &[(source_edge, FilletRadiusLaw::Constant(9.0))],
+    )
+    .unwrap();
+    let boundary = solid_edges(&topo,result).unwrap().into_iter().find(|&id| {
+        matches!(topo.edge(id).unwrap().curve(),EdgeCurve::NurbsCurve(c) if c.degree()==2)
+    }).unwrap();
+    let incident = topo
+        .build_adjacency(result)
+        .unwrap()
+        .faces_for_edge(boundary)
+        .to_vec();
+    assert_eq!(incident.len(), 2);
+    let before = remus_io::arena_io::serialize_solids(&topo, &[input, result]).unwrap();
+    let error: Result<(), crate::OperationsError> =
+        remus_topology::transaction::run_transacted(&mut topo, |topo| {
+            let edge = topo.edge(boundary).unwrap();
+            let trim = edge.strict_domain().unwrap();
+            let EdgeCurve::NurbsCurve(c) = edge.curve() else {
+                panic!("native boundary");
+            };
+            let mut controls = c.control_points().to_vec();
+            controls[1] = controls[1] + Vec3::new(0.0, 0.0, 0.1);
+            let bowed = NurbsCurve::new(
+                c.degree(),
+                c.knots().to_vec(),
+                controls,
+                c.weights().to_vec(),
+            )
+            .unwrap();
+            let edge = topo.edge_mut(boundary).unwrap();
+            edge.set_curve(EdgeCurve::NurbsCurve(bowed));
+            edge.set_trim(Some(trim));
+            assert!(
+                !crate::validate::validate_solid(topo, result)
+                    .unwrap()
+                    .is_valid(),
+                "the ordinary validator must detect the stored pcurve mismatch"
+            );
+            for &face in &incident {
+                let wire = topo.face(face).unwrap().outer_wire();
+                let use_ = topo
+                    .wire(wire)
+                    .unwrap()
+                    .edges()
+                    .iter()
+                    .find(|u| u.edge() == boundary)
+                    .unwrap();
+                assert!(
+                    remus_topology::validation::validate_same_parameter_strict(
+                        topo,
+                        boundary,
+                        face,
+                        use_.is_forward(),
+                        1e-7,
+                        0
+                    )
+                    .is_err(),
+                    "both incident faces must reject a changed interior"
+                );
+            }
+            variable_pcurves::register(topo, result, Tolerance::new())
+        });
+    assert!(matches!(
+        error,
+        Err(crate::OperationsError::Unsupported { .. })
+    ));
+    assert_eq!(
+        remus_io::arena_io::serialize_solids(&topo, &[input, result]).unwrap(),
+        before
+    );
+    remus_topology::validation::validate_solid_pcurve_contracts(&topo, result, 1e-7, 0).unwrap();
+}
+
+#[test]
+fn ordinary_validator_keeps_valid_unproved_native_pcurve_families() {
+    use crate::boolean::{BoundaryCurveOverride, assemble_solid_mixed_with_history_and_curves};
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::nurbs::curve::NurbsCurve;
+    use remus_math::vec::{Point2, Vec2};
+    use remus_topology::pcurve::PCurve;
+    let mut topo = Topology::new();
+    let input = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    let specs = positional_cube_specs(&topo, input);
+    let (a, b) = (Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0));
+    let curve = NurbsCurve::new(1, vec![0.0, 0.0, 1.0, 1.0], vec![a, b], vec![1.0, 1.0]).unwrap();
+    let solid = assemble_solid_mixed_with_history_and_curves(
+        &mut topo,
+        &specs,
+        &[BoundaryCurveOverride {
+            start: a,
+            end: b,
+            curve: EdgeCurve::NurbsCurve(curve),
+            trim: (0.0, 1.0),
+        }],
+        Tolerance::new(),
+    )
+    .unwrap()
+    .solid;
+    let edge = solid_edges(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&id| matches!(topo.edge(id).unwrap().curve(), EdgeCurve::NurbsCurve(_)))
+        .unwrap();
+    let faces = topo
+        .build_adjacency(solid)
+        .unwrap()
+        .faces_for_edge(edge)
+        .to_vec();
+    for face in faces {
+        let wire = topo.face(face).unwrap().outer_wire();
+        let forward = topo
+            .wire(wire)
+            .unwrap()
+            .edges()
+            .iter()
+            .find(|u| u.edge() == edge)
+            .unwrap()
+            .is_forward();
+        // Both incident planes use canonical chart v=-x. This exact linear
+        // use is geometrically valid, but Plane/Line-pcurve/NURBS-edge has
+        // no whole-interval proof family yet and must not be promoted.
+        let pc = Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(0.0, -1.0)).unwrap());
+        let (p0, p1) = if forward { (0.0, 1.0) } else { (1.0, 0.0) };
+        topo.set_pcurve_oriented(edge, face, forward, PCurve::new(pc, p0, p1))
+            .unwrap();
+        assert!(matches!(remus_topology::validation::check_same_parameter_strict(&topo,edge,face,forward,0),Err(remus_topology::validation::CurveUseValidationError::SameParameterProofUnavailable {..})));
+    }
+    assert!(
+        crate::validate::validate_solid(&topo, solid)
+            .unwrap()
+            .is_valid()
+    );
+    assert!((crate::measure::solid_volume(&topo, solid, 0.001).unwrap() - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn ordinary_validator_resolves_native_pcurve_entity_tolerance_boundary() {
+    use crate::boolean::{BoundaryCurveOverride, assemble_solid_mixed_with_history_and_curves};
+    use remus_math::curves2d::{Curve2D, NurbsCurve2D};
+    use remus_math::nurbs::curve::NurbsCurve;
+    use remus_math::vec::Point2;
+    use remus_topology::pcurve::PCurve;
+    for tolerance in [1e-7, 1e-4] {
+        for (factor, valid) in [(1.5, true), (3.0, false)] {
+            let mut topo = Topology::new();
+            let input = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+            let specs = positional_cube_specs(&topo, input);
+            let (a, b) = (Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0));
+            let knots = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+            let curve = NurbsCurve::new(
+                2,
+                knots.clone(),
+                vec![a, Point3::new(0.5, factor * tolerance, 0.0), b],
+                vec![1.0; 3],
+            )
+            .unwrap();
+            let solid = assemble_solid_mixed_with_history_and_curves(
+                &mut topo,
+                &specs,
+                &[BoundaryCurveOverride {
+                    start: a,
+                    end: b,
+                    curve: EdgeCurve::NurbsCurve(curve),
+                    trim: (0.0, 1.0),
+                }],
+                Tolerance::new(),
+            )
+            .unwrap()
+            .solid;
+            let edge = solid_edges(&topo, solid)
+                .unwrap()
+                .into_iter()
+                .find(|&id| matches!(topo.edge(id).unwrap().curve(), EdgeCurve::NurbsCurve(_)))
+                .unwrap();
+            topo.edge_mut(edge)
+                .unwrap()
+                .set_tolerance(Some(tolerance))
+                .unwrap();
+            let face=topo.build_adjacency(solid).unwrap().faces_for_edge(edge).iter().copied().find(|&id|matches!(topo.face(id).unwrap().surface(),FaceSurface::Plane {normal,..} if normal.z().abs()>0.9)).unwrap();
+            let wire = topo.face(face).unwrap().outer_wire();
+            let forward = topo
+                .wire(wire)
+                .unwrap()
+                .edges()
+                .iter()
+                .find(|u| u.edge() == edge)
+                .unwrap()
+                .is_forward();
+            let pc = NurbsCurve2D::new(
+                2,
+                knots,
+                vec![
+                    Point2::new(0.0, 0.0),
+                    Point2::new(0.0, -0.5),
+                    Point2::new(0.0, -1.0),
+                ],
+                vec![1.0; 3],
+            )
+            .unwrap();
+            let (p0, p1) = if forward { (0.0, 1.0) } else { (1.0, 0.0) };
+            topo.set_pcurve_oriented(edge, face, forward, PCurve::new(Curve2D::Nurbs(pc), p0, p1))
+                .unwrap();
+            assert_eq!(
+                remus_topology::validation::validate_same_parameter_strict(
+                    &topo, edge, face, forward, 1e-7, 0
+                )
+                .is_ok(),
+                valid
+            );
+            assert_eq!(
+                crate::validate::validate_solid(&topo, solid)
+                    .unwrap()
+                    .is_valid(),
+                valid,
+                "true quadratic maximum is half its control-point amplitude"
+            );
+        }
+    }
+}
+
+#[test]
+fn variable_boundary_outside_precision_proof_refuses_typed_and_rolls_back() {
+    let mut topo = Topology::new();
+    // The geometry fits, but its arithmetic bound exceeds the unchanged
+    // absolute tolerance. The emitter must refuse an unproved boundary.
+    let input = crate::primitives::make_box(&mut topo, 1e7, 1e7, 1e7).unwrap();
+    let edge = solid_edges(&topo, input)
+        .unwrap()
+        .into_iter()
+        .find(|&id| {
+            let edge = topo.edge(id).unwrap();
+            [edge.start(), edge.end()].into_iter().all(|vertex| {
+                let point = topo.vertex(vertex).unwrap().point();
+                point.x() == 0.0 && point.y() == 0.0
+            })
+        })
+        .unwrap();
+    let before = remus_io::arena_io::serialize_solids(&topo, &[input]).unwrap();
+    let counts = |topo: &Topology| {
+        (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+        )
+    };
+    let live_before = counts(&topo);
+    let error =
+        fillet_variable(&mut topo, input, &[(edge, FilletRadiusLaw::Constant(9e6))]).unwrap_err();
+    assert!(matches!(
+        &error,
+        crate::OperationsError::Unsupported {
+            operation: "fillet_variable",
+            ..
+        }
+    ));
+    assert_eq!(
+        crate::blend_ops::blend_failure_code(&error),
+        "unsupported-variable-boundary"
+    );
+    assert_eq!(counts(&topo), live_before);
+    assert_eq!(
+        remus_io::arena_io::serialize_solids(&topo, &[input]).unwrap(),
+        before
+    );
 }
