@@ -1030,15 +1030,43 @@ fn check_same_parameter_strict_with_tolerance(
                 }
                 _ => None,
             },
-            crate::face::FaceSurface::Nurbs(_)
-            | crate::face::FaceSurface::Cylinder(_)
-            | crate::face::FaceSurface::Cone(_)
-            | crate::face::FaceSurface::Torus(_) => None,
+            crate::face::FaceSurface::Cylinder(cylinder) => match pcurve.curve() {
+                remus_math::curves2d::Curve2D::Line(line) => {
+                    Some(same_parameter_proof::runout::cylinder_circle(
+                        cylinder,
+                        line,
+                        circle,
+                        same_parameter_proof::CurveUse {
+                            p0,
+                            p1,
+                            edge_domain: domain,
+                            forward,
+                        },
+                    ))
+                }
+                _ => None,
+            },
+            crate::face::FaceSurface::Torus(torus) => match pcurve.curve() {
+                remus_math::curves2d::Curve2D::Line(line) => {
+                    Some(same_parameter_proof::runout::torus_circle(
+                        torus,
+                        line,
+                        circle,
+                        same_parameter_proof::CurveUse {
+                            p0,
+                            p1,
+                            edge_domain: domain,
+                            forward,
+                        },
+                    ))
+                }
+                _ => None,
+            },
+            crate::face::FaceSurface::Nurbs(_) | crate::face::FaceSurface::Cone(_) => None,
         },
         crate::edge::EdgeCurve::NurbsCurve(curve) => {
             use crate::face::FaceSurface;
             use remus_math::curves2d::Curve2D;
-
             let usage = same_parameter_proof::CurveUse {
                 p0,
                 p1,
@@ -1047,10 +1075,13 @@ fn check_same_parameter_strict_with_tolerance(
             };
             match &surface {
                 FaceSurface::Plane { normal, d } => match pcurve.curve() {
-                    Curve2D::Nurbs(pc) => Some(same_parameter_proof::plane_nurbs(
+                    Curve2D::Nurbs(uv) if curve.degree() == 4 => Some(
+                        same_parameter_proof::runout::plane_quartic(*normal, *d, curve, uv, usage),
+                    ),
+                    Curve2D::Nurbs(uv) => Some(same_parameter_proof::plane_nurbs(
                         *normal,
                         *d,
-                        pc,
+                        uv,
                         curve,
                         usage,
                         tolerance_hint,
@@ -1063,10 +1094,16 @@ fn check_same_parameter_strict_with_tolerance(
                     )),
                     Curve2D::Circle(_) | Curve2D::Ellipse(_) | Curve2D::Nurbs(_) => None,
                 },
-                FaceSurface::Cylinder(_)
-                | FaceSurface::Cone(_)
-                | FaceSurface::Sphere(_)
-                | FaceSurface::Torus(_) => None,
+                FaceSurface::Torus(torus) => match pcurve.curve() {
+                    Curve2D::Nurbs(uv) if curve.degree() == 4 => Some(
+                        same_parameter_proof::runout::torus_quartic(torus, uv, curve, usage),
+                    ),
+                    Curve2D::Line(_)
+                    | Curve2D::Circle(_)
+                    | Curve2D::Ellipse(_)
+                    | Curve2D::Nurbs(_) => None,
+                },
+                FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => None,
             }
         }
         crate::edge::EdgeCurve::Ellipse(_)
@@ -1375,8 +1412,8 @@ pub fn check_same_range_strict(
                 crate::edge::EdgeCurve::NurbsCurve(_)
             )
         ) {
-            // This new endpoint family is admitted only after its complete
-            // native parameterization has a control-net certificate.
+            // Every newly admitted NURBS endpoint family first needs its
+            // whole-interval native-parameter certificate, including quartics.
             check_same_parameter_strict(topo, edge_id, face_id, forward, 0).map_err(|error| {
                 match error {
                     CurveUseValidationError::SameParameterProofUnavailable { .. } => {
@@ -2498,20 +2535,16 @@ mod same_parameter_tests {
     }
 
     #[test]
-    fn periodic_rim_refuses_without_a_certified_same_parameter_bound() {
+    fn periodic_rim_has_a_whole_interval_native_circle_certificate() {
         let (mut topo, rim, face) = cylinder_with_rim();
         topo.set_pcurve_oriented(rim, face, true, rim_pcurve(0.0))
             .unwrap();
 
-        let error = check_same_parameter_strict(&topo, rim, face, true, 32).unwrap_err();
-        assert!(matches!(
-            error,
-            CurveUseValidationError::SameParameterProofUnavailable { .. }
-        ));
-        assert_eq!(
-            error.diagnostic().code(),
-            "same_parameter_proof_unavailable"
-        );
+        let report = check_same_parameter_strict(&topo, rim, face, true, 32)
+            .unwrap()
+            .unwrap();
+        assert!(report.max_deviation <= 1e-7);
+        validate_same_parameter_strict(&topo, rim, face, true, 1e-7, 32).unwrap();
         validate_same_range_strict(&topo, rim, face, true, 1e-7).unwrap();
     }
 

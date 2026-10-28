@@ -178,3 +178,145 @@ fn fillet_vertical_edge_larger_than_earlier_top_fillet() {
     let after = volume(&mut kernel, second);
     assert!(after < before, "a convex fillet removes material");
 }
+
+fn bounded_tab_source(kernel: &mut BrepKernel) -> (u32, Vec<u32>) {
+    let solid = kernel
+        .deserialize_solid(include_bytes!(
+            "../../../operations/tests/data/rollover_tabbed_source.arena.json"
+        ))
+        .unwrap();
+    let selected: Vec<_> = kernel
+        .get_solid_edges(solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&handle| {
+            let id = kernel.resolve_edge(handle).unwrap();
+            let edge = kernel.topo().edge(id).unwrap();
+            let a = kernel.topo().vertex(edge.start()).unwrap().point();
+            let b = kernel.topo().vertex(edge.end()).unwrap().point();
+            (a.y() - 10.0).abs() < 1e-8
+                && (b.y() - 10.0).abs() < 1e-8
+                && (a.z() - 4.0).abs() < 1e-8
+                && (b.z() - 4.0).abs() < 1e-8
+        })
+        .collect();
+    assert_eq!(selected.len(), 2);
+    (solid, selected)
+}
+
+#[test]
+fn bounded_tab_rollover_native_direct_detailed_both_batches_and_history() {
+    for surface in ["direct", "detailed", "batch", "batchV2", "history"] {
+        let mut kernel = BrepKernel::new();
+        let (source, seeds) = bounded_tab_source(&mut kernel);
+        let other = kernel.make_box_solid(2.0, 3.0, 5.0).unwrap();
+        let before = kernel.serialize_solid(source).unwrap();
+        let other_before = kernel.serialize_solid(other).unwrap();
+        let result = match surface {
+            "direct" => kernel.fillet_solid(source, seeds.clone(), 3.0).unwrap(),
+            "detailed" => {
+                let payload =
+                    serde_json::to_value(kernel.fillet_detailed_impl(source, &seeds, 3.0, true))
+                        .unwrap();
+                assert_eq!(payload["status"], "ok");
+                assert_eq!(payload["details"]["quality"], "exact");
+                assert_eq!(payload["details"]["engine"], "rollingBall");
+                u32::try_from(payload["value"].as_u64().unwrap()).unwrap()
+            }
+            "history" => {
+                let payload = serde_json::to_value(
+                    kernel
+                        .fillet_with_evolution_impl(source, seeds.clone(), 3.0)
+                        .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(payload["source"]["faces"].as_array().unwrap().len(), 32);
+                assert_eq!(payload["result"]["faces"].as_array().unwrap().len(), 28);
+                assert_eq!(payload["evolution"]["provenance"], "construction");
+                assert_eq!(payload["evolution"]["deleted"].as_array().unwrap().len(), 2);
+                assert!(
+                    payload["evolution"]["unresolvedSources"]
+                        .as_array()
+                        .unwrap()
+                        .is_empty()
+                );
+                assert!(
+                    payload["evolution"]["unresolvedResults"]
+                        .as_array()
+                        .unwrap()
+                        .is_empty()
+                );
+                u32::try_from(payload["result"]["solid"].as_u64().unwrap()).unwrap()
+            }
+            _ => {
+                let program=serde_json::json!([{"op":"fillet","args":{"solid":source,"edges":seeds,"radius":3.0}}]).to_string();
+                let output = if surface == "batch" {
+                    kernel.execute_batch(&program)
+                } else {
+                    kernel.execute_batch_v2(&program)
+                };
+                let payload: serde_json::Value = serde_json::from_str(&output).unwrap();
+                ok_handle(&payload[0])
+            }
+        };
+        assert_ne!(result, source);
+        assert_eq!(kernel.get_solid_faces(result).unwrap().len(), 28);
+        let solid = kernel.resolve_solid(result).unwrap();
+        let topo = kernel.topo();
+        let mut uses = 0;
+        for face in remus_topology::explorer::solid_faces(topo, solid).unwrap() {
+            for oe in topo
+                .wire(topo.face(face).unwrap().outer_wire())
+                .unwrap()
+                .edges()
+            {
+                assert!(
+                    topo.pcurve_oriented(oe.edge(), face, oe.is_forward())
+                        .is_some()
+                );
+                remus_topology::validation::validate_same_parameter_strict(
+                    topo,
+                    oe.edge(),
+                    face,
+                    oe.is_forward(),
+                    1e-7,
+                    2,
+                )
+                .unwrap();
+                remus_topology::validation::validate_same_range_strict(
+                    topo,
+                    oe.edge(),
+                    face,
+                    oe.is_forward(),
+                    1e-7,
+                )
+                .unwrap();
+                uses += 1;
+            }
+        }
+        assert_eq!(uses, 156);
+        assert_eq!(kernel.serialize_solid(source).unwrap(), before);
+        assert_eq!(kernel.serialize_solid(other).unwrap(), other_before);
+        let counts = (
+            kernel.topo().num_vertices(),
+            kernel.topo().num_edges(),
+            kernel.topo().num_faces(),
+            kernel.topo().num_coedges(),
+        );
+        let refused =
+            serde_json::to_value(kernel.fillet_detailed_impl(source, &seeds, 4.1, true)).unwrap();
+        assert_eq!(refused["status"], "error");
+        assert_eq!(refused["code"], "cliff-encountered");
+        assert_eq!(
+            (
+                kernel.topo().num_vertices(),
+                kernel.topo().num_edges(),
+                kernel.topo().num_faces(),
+                kernel.topo().num_coedges()
+            ),
+            counts
+        );
+        assert_eq!(kernel.serialize_solid(source).unwrap(), before);
+        assert_eq!(kernel.serialize_solid(other).unwrap(), other_before);
+    }
+}

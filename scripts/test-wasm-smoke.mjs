@@ -39,6 +39,7 @@ import { runOpseqF17Packaged } from './opseq-f17-packaged.mjs';
 import { runOpseqSphereCapPackaged } from './opseq-sphere-cap-packaged.mjs';
 import { runOpseqTorusPropertiesPackaged } from './opseq-torus-properties-packaged.mjs';
 import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
+import { runBoundedTabRolloverPackaged } from './bounded-tab-rollover-packaged.mjs';
 import { runPackagedPreviewWorkContract } from './perf/face-drag-session/packaged_contract.cjs';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
@@ -94,6 +95,7 @@ runOpseqF17Packaged({ BrepKernel });
 runOpseqSphereCapPackaged({ BrepKernel });
 runOpseqTorusPropertiesPackaged({ BrepKernel });
 runDocumentCopyPackaged({ BrepKernel, RemusIo });
+runBoundedTabRolloverPackaged({ BrepKernel, decodeEvolutionPayload });
 runPackagedPreviewWorkContract({
   kernelPackage: resolve(projectRoot, 'crates/wasm/pkg'),
   ioPackage: resolve(projectRoot, 'crates/wasm-io/pkg'),

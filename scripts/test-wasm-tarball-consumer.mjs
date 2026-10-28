@@ -37,6 +37,7 @@ import { runOpseqF17Packaged } from './opseq-f17-packaged.mjs';
 import { runOpseqSphereCapPackaged } from './opseq-sphere-cap-packaged.mjs';
 import { runOpseqTorusPropertiesPackaged } from './opseq-torus-properties-packaged.mjs';
 import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
+import { runBoundedTabRolloverPackaged } from './bounded-tab-rollover-packaged.mjs';
 import { runPackagedPreviewWorkContract } from './perf/face-drag-session/packaged_contract.cjs';
 import { runGridPatternPackaged } from './grid-pattern-packaged.mjs';
 import { runRevolveHistoryPackaged } from './revolve-history-packaged.mjs';
@@ -112,6 +113,7 @@ try {
   runOpseqSphereCapPackaged(packageExports);
   runOpseqTorusPropertiesPackaged(packageExports);
   runDocumentCopyPackaged({ ...packageExports, ...ioExports });
+  runBoundedTabRolloverPackaged(packageExports);
   runPackagedPreviewWorkContract({
     kernelPackage: realpathSync(resolve(consumerDir, 'node_modules/remus-wasm')),
     ioPackage: realpathSync(resolve(consumerDir, 'node_modules/remus-wasm-io')),
