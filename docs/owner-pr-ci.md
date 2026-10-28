@@ -374,6 +374,9 @@ kernel PR waits only for the checks that can fail on its diff:
   `xtask`, `tools/vs-bench`, the WASM scripts,
   `Cargo.lock`, `Cargo.toml`, `rust-toolchain.toml`, `.cargo/config.toml`,
   `LICENSE-APACHE` or `NOTICE`.
+  Changes to the CI caller/callee, package publisher, integrity workflow or
+  fleet manifest also select package validation on PRs, so pipeline changes
+  exercise their package jobs before entering the merge queue.
   Every crate sits below the wasm bindings, so an engine change must pass the
   package smoke before merge. Until 2026-09-24 only `crates/wasm*` selected
   it: PR #618 (algo, math and operations only) passed PR CI with the job

@@ -70,8 +70,12 @@ PACKAGE_DIRECTORIES = ("crates/wasm/pkg/", "crates/wasm-io/pkg/")
 # 2026-09), so selecting it for every kernel PR does not lengthen the PR.
 WASM_DIRECTORIES = ("crates/", "xtask/", "tools/vs-bench/")
 # `.cargo/config.toml` defines the `cargo xtask` alias the package build runs.
-WASM_FILENAMES = {"Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml",
-                  "LICENSE-APACHE", "NOTICE"}
+WASM_FILENAMES = {
+    "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml",
+    "LICENSE-APACHE", "NOTICE", ".github/fleet-workflows.json",
+    ".github/workflows/ci.yml", ".github/workflows/publish.yml",
+    ".github/workflows/wasm-version.yml",
+}
 # Paths whose effect a merge group cannot leave to the main push: dependency
 # and toolchain inputs (Cargo Deny, Security Audit, MSRV) and the CI
 # definitions. Fuzz compile and render run in the first tier. Any other
@@ -138,6 +142,7 @@ def affects_wasm(path: str) -> bool:
     return (
         normalized.startswith(WASM_DIRECTORIES)
         or normalized in WASM_FILENAMES
+        or (normalized.startswith(".github/workflows/fleet-ci-") and normalized.endswith(".yml"))
         or (normalized.startswith("scripts/") and ("wasm" in name or "w9" in name))
     )
 
@@ -175,7 +180,8 @@ def classify_paths(
         or is_agent_instruction(path)
         for path in paths
     )
-    if not lightweight or any(path in {"LICENSE-APACHE", "NOTICE"} for path in paths):
+    package_input = any(affects_wasm(path) for path in paths)
+    if not lightweight or package_input:
         full = force_full and (
             not merge_group or any(needs_second_tier(path) for path in paths)
         )
@@ -183,7 +189,7 @@ def classify_paths(
             # CI Pass accepts every heavy-tier skip once heavy, full and wasm
             # are all false; docs still builds rustdoc for the combined tree.
             return Classification(heavy=False, docs=True, full=False, wasm=False, mode="queue")
-        wasm = full or any(affects_wasm(path) for path in paths)
+        wasm = full or package_input
         if full:
             mode = "full"
         elif force_full:

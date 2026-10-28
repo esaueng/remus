@@ -305,10 +305,16 @@ class ClassifyCiChangesTests(unittest.TestCase):
         self.assertEqual(result.mode, "docs")
 
     def test_workflow_change_runs_everything(self) -> None:
-        result = MODULE.classify_paths([".github/workflows/ci.yml"])
-        self.assertTrue(result.heavy)
-        self.assertTrue(result.docs)
-        self.assertEqual(result.mode, "pr")
+        for path in (".github/workflows/ci.yml", ".github/workflows/fleet-ci-v9.yml",
+                     ".github/workflows/publish.yml", ".github/workflows/wasm-version.yml",
+                     ".github/fleet-workflows.json"):
+            with self.subTest(path=path):
+                result = MODULE.classify_paths([path])
+                self.assertTrue(result.heavy)
+                self.assertTrue(result.docs)
+                self.assertTrue(result.wasm)
+                self.assertFalse(result.full)
+                self.assertEqual(result.mode, "pr")
 
     def test_github_metadata_only_skips_docs_and_heavy_jobs(self) -> None:
         result = MODULE.classify_paths([".github/dependabot.yml"])
