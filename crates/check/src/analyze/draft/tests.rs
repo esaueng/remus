@@ -138,7 +138,7 @@ fn analytic_surfaces_match_axis_angle_oracles_across_scale_and_placement() {
             FaceSurface::Sphere(SphericalSurface::with_axis(origin, 2.0 * scale, axis).unwrap()),
             false,
         );
-        for latitude in [
+        for v_angle in [
             -std::f64::consts::FRAC_PI_2,
             -0.5,
             0.0,
@@ -146,10 +146,10 @@ fn analytic_surfaces_match_axis_angle_oracles_across_scale_and_placement() {
             std::f64::consts::FRAC_PI_2,
         ] {
             close(
-                surface_draft_angle(&topo, sphere, 0.7, latitude, axis)
+                surface_draft_angle(&topo, sphere, 0.7, v_angle, axis)
                     .unwrap()
                     .angle_radians,
-                latitude,
+                v_angle,
             );
         }
         let torus = attach(
@@ -159,12 +159,12 @@ fn analytic_surfaces_match_axis_angle_oracles_across_scale_and_placement() {
             ),
             false,
         );
-        for latitude in [-0.5, 0.0, 0.5] {
+        for v_angle in [-0.5, 0.0, 0.5] {
             close(
-                surface_draft_angle(&topo, torus, 0.7, latitude, axis)
+                surface_draft_angle(&topo, torus, 0.7, v_angle, axis)
                     .unwrap()
                     .angle_radians,
-                latitude,
+                v_angle,
             );
         }
     }
