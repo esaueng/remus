@@ -149,6 +149,11 @@ class SpeedContractTests(unittest.TestCase):
         self.assertIn("prefix-key: v1-native-workspace", JOBS["test"])
         self.assertNotIn("Swatinem/rust-cache", JOBS["test-shards"])
         self.assertNotIn("Swatinem/rust-cache", JOBS["wasm-runtime"])
+        self.assertIn("shared-key: wasm-package", JOBS["wasm"])
+        self.assertIn("tool: wasm-pack@0.15.0", JOBS["wasm"])
+        manual = jobs((WORKFLOWS / "publish.yml").read_text())["build-committed-package"]
+        self.assertIn("shared-key: wasm-package", manual)
+        self.assertIn("RUSTFLAGS: -Dwarnings", manual)
 
     def test_new_revisions_stay_hosted_until_their_own_registration_switch(self):
         spec = importlib.util.spec_from_file_location("speed_direct", ROOT / "scripts/test-direct-fleet.py")

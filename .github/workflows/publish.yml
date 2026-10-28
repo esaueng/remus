@@ -54,6 +54,8 @@ jobs:
   # main's Rust source appears current.
   build-committed-package:
     name: Build committed WASM package
+    env:
+      RUSTFLAGS: -Dwarnings
     runs-on: ubuntu-24.04
     # A warm build takes about 20 minutes.
     timeout-minutes: 60
@@ -81,10 +83,13 @@ jobs:
 
       # rust-toolchain.toml provides the pinned Rust version + wasm32 target
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: wasm-package
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
-          tool: wasm-pack
+          tool: wasm-pack@0.15.0
 
       # Keep the staging package on the same reproducible build path that the
       # standalone project will use after it adopts its final package name.

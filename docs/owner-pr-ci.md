@@ -483,6 +483,9 @@ with the same pinned Nextest version. Documentation tests and the separate
 complexity guards remain required. Its native producer alone opts into workspace
 crate caching in a new cache namespace; only main writes that cache. The shards
 consume the exact archive and do not restore or rebuild Cargo targets.
+Package producers share a compatible `wasm-package` dependency cache with the
+integrity consumer after activation; PR and merge-group integrity runs only
+restore it. The package tool version and warning flags match between producers.
 
 The WASM producer builds and validates both packages with
 `cargo xtask wasm-build --defer-package-tests`. It uploads one package archive.

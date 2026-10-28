@@ -698,10 +698,11 @@ jobs:
           node-version: 24
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
+          shared-key: wasm-package
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
-          tool: wasm-pack
+          tool: wasm-pack@0.15.0
       - name: Mark the WASM build start
         run: touch "$RUNNER_TEMP/wasm-build-start"
       - name: Build and validate WASM
@@ -819,7 +820,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
-          tool: wasm-pack
+          tool: wasm-pack@0.15.0
       - name: W9 native and WASM preflight workflow
         run: bash scripts/test-w9-preflight.sh
       - name: Preserve W9 stage report
