@@ -90,6 +90,16 @@ enum Signature {
 fn cross_checks() -> Vec<CrossCheck> {
     vec![
         CrossCheck {
+            file: "opseq81-sphere-cap-classification.json",
+            signature: Signature::Probes {
+                // Independent two-sphere lens formula; the native geometric
+                // matrix retains the exact material and tighter quantity gates.
+                volume_near: (867.071_429_497_175_1, 0.01),
+                validate: ValidateExpect::Clean,
+                watertight: Some(true),
+            },
+        },
+        CrossCheck {
             file: "opseq81-coax-intersect-orientation.json",
             signature: Signature::Probes {
                 volume_near: (std::f64::consts::PI, 1e-9),

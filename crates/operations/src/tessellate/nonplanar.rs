@@ -5573,13 +5573,11 @@ fn fill_sphere_hemisphere_patch_impl(
     // A grid point almost on its retained side can still inverse-project
     // into the removed patch and fold the boundary stitch. Leave one quarter
     // of a grid cell clear, as in the pole chart, without adding samples.
-    // This spacing rule is not an admission proof: the complete holed run
-    // below must also pass the radial-orientation and incidence guards.
-    let clearance_sq = if holes.is_empty() {
-        1e-24
-    } else {
-        (0.25 * ((x_max - x_min) / n_x as f64).min((y_max - y_min) / n_y as f64)).powi(2)
-    };
+    // A hole-free patch can have the same small-circle trim. Apply the same
+    // clearance to every loop; the complete run must still pass the strict
+    // radial-orientation and incidence guards below.
+    let clearance_sq =
+        (0.25 * ((x_max - x_min) / n_x as f64).min((y_max - y_min) / n_y as f64)).powi(2);
     let on_boundary_chord = |point: Point2| {
         loop_ranges.iter().any(|&(first, last)| {
             (first..last).any(|index| {
@@ -5606,8 +5604,8 @@ fn fill_sphere_hemisphere_patch_impl(
             }
             let point = Point2::new(x, y);
             // A point inserted on a constraint splits the boundary chord
-            // with an unshared face-local vertex. The holed path additionally
-            // leaves clearance for curved native trims, as described above.
+            // with an unshared face-local vertex. Every loop also leaves
+            // clearance for curved native trims, as described above.
             if in_patch(point) && !on_boundary_chord(point) {
                 interior.push(point);
             }
@@ -5686,12 +5684,11 @@ fn fill_sphere_hemisphere_patch_impl(
         let outward = sphere.x_axis() * projected_x
             + sphere.y_axis() * projected_y
             + sphere.z_axis() * projected_z;
-        // Use the actual spherical normal in this hemisphere, not the flat
-        // triangle centroid.  An ear made solely from samples of a great-
-        // circle boundary lies in a plane through the sphere centre, where
-        // `geometric · (centroid - centre)` is identically zero and leaves
-        // adjacent hemisphere ears with arbitrary equal winding.
-        if holes.is_empty() && geometric.dot(outward) < 0.0 {
+        // Preserve the CDT's coherent chart winding. Opposite hemisphere
+        // charts have opposite orientation; decide the final outward sense
+        // once for the whole run below. Independently flipping a folded
+        // boundary facet would leave equal-directed internal edge uses.
+        if hemisphere < 0.0 {
             triangle.swap(1, 2);
         }
         // Opposite hemispheres must not share a flat ear across their
@@ -5766,9 +5763,9 @@ fn fill_sphere_hemisphere_patch_impl(
     for triangle in triangles {
         merged.indices.extend_from_slice(&triangle);
     }
-    if !holes.is_empty() {
+    {
         // The CDT is coherently oriented in its bijective chart. Decide the
-        // outward orientation once for the entire new holed-face run.
+        // outward orientation once for the entire new face run.
         orient_triangle_run(
             merged,
             index_start,

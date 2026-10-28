@@ -33,6 +33,7 @@ import { runPackageQueueWitness } from './queue-contracts-packaged.mjs';
 import { runPointedConeCutPackaged } from './pointed-cone-cut-packaged.mjs';
 import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
 import { runOpseqF17Packaged } from './opseq-f17-packaged.mjs';
+import { runOpseqSphereCapPackaged } from './opseq-sphere-cap-packaged.mjs';
 import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
 import { runGridPatternPackaged } from './grid-pattern-packaged.mjs';
 
@@ -104,6 +105,7 @@ try {
   runPointedConeCutPackaged(packageExports);
   runOpseqF3Packaged(packageExports);
   runOpseqF17Packaged(packageExports);
+  runOpseqSphereCapPackaged(packageExports);
   runDocumentCopyPackaged({ ...packageExports, ...ioExports });
   runOpenZcadConsumerRegressions({ ...packageExports, ...ioExports });
   runGridPatternPackaged(packageExports);
