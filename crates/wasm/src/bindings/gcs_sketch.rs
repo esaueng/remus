@@ -911,8 +911,12 @@ impl BrepKernel {
     /// unchanged. Two differences matter:
     ///
     /// - **Transactional.** A solve that fails to reach `tolerance` is rolled
-    ///   back: the pre-solve points and radii are restored and `rolledBack` is
-    ///   set. `gcsSolve` still publishes whatever iterate it stopped on.
+    ///   back: the pre-solver free points and radii are restored and `rolledBack`
+    ///   is set. Linked external inputs refresh first; a successful refresh
+    ///   remains current even when the solve does not converge. The rollback
+    ///   baseline and `publishedMaxResidual` use those refreshed fixed inputs.
+    ///   A thrown refresh or solver error restores the entire pre-call sketch.
+    ///   `gcsSolve` still publishes whatever iterate it stopped on.
     /// - **Measured.** Returns convergence, iteration count, residuals, DOF,
     ///   rank, parameter and equation counts, a per-constraint residual keyed
     ///   by the `gcsAddConstraint` handle, and an overall classification.

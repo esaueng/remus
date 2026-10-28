@@ -43,8 +43,7 @@ pub struct LinkedSketchResolution {
 }
 
 fn linked_error(error: LinkedSketchError) -> StructuredWasmError {
-    let mut result =
-        StructuredWasmError::operation_failed(format!("linked-sketch:{}: {error}", error.code()));
+    let mut result = StructuredWasmError::linked_sketch_failure(&error);
     result.details_mut().insert(
         "kernelCode".into(),
         format!("linked-sketch:{}", error.code()).into(),
@@ -418,6 +417,43 @@ mod tests {
         serde_json::from_str(&k.execute_batch(&ops.to_string())).unwrap()
     }
 
+    fn encode(reference: &PersistentRef) -> String {
+        String::from_utf8(remus_io::naming_io::serialize_persistent_ref(reference).unwrap())
+            .unwrap()
+    }
+
+    fn assert_refusal(
+        k: &mut BrepKernel,
+        op: &str,
+        args: serde_json::Value,
+        kernel_code: &str,
+        category: &str,
+    ) -> serde_json::Value {
+        let ops = serde_json::json!([{"op":op,"args":args}]);
+        let out: serde_json::Value =
+            serde_json::from_str(&k.execute_batch_v2(&ops.to_string())).unwrap();
+        let error = &out[0]["error"];
+        assert_eq!(error["category"], category, "{out}");
+        assert_eq!(error["details"]["kernelCode"], kernel_code, "{out}");
+        assert_eq!(error["details"]["operation"], op, "{out}");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .starts_with(&format!("{kernel_code}:")),
+            "{out}"
+        );
+        let legacy = batch(k, ops);
+        assert!(
+            legacy[0]["error"]
+                .as_str()
+                .unwrap()
+                .starts_with(&format!("{kernel_code}:")),
+            "{legacy:?}"
+        );
+        error.clone()
+    }
+
     fn setup() -> (
         BrepKernel,
         u32,
@@ -460,9 +496,6 @@ mod tests {
         let end_ref = reference(EntityKey::vertex(
             k.topo().edge(edge).unwrap().end().index(),
         ));
-        let encode = |r: &PersistentRef| {
-            String::from_utf8(remus_io::naming_io::serialize_persistent_ref(r).unwrap()).unwrap()
-        };
         let out = batch(
             &mut k,
             serde_json::json!([
@@ -476,6 +509,244 @@ mod tests {
         assert!(out[2].get("ok").is_some(), "{out:?}");
         let handles: ExternalLineHandles = serde_json::from_value(out[2]["ok"].clone()).unwrap();
         (k, 0, solid, right, edge_ref, handles)
+    }
+
+    #[test]
+    fn declared_linked_refusals_have_actionable_failure_categories() {
+        use remus_topology::journal::{EntityKind, OpId};
+        use remus_topology::naming::Anchor;
+
+        let (mut k, sketch, _, right, edge_ref, external) = setup();
+        let source = k.gcs_sketches.get(sketch as usize).unwrap().external_lines[0]
+            .reference
+            .clone();
+        let face_ref = encode(
+            k.gcs_sketches
+                .get(sketch as usize)
+                .unwrap()
+                .attachment
+                .as_ref()
+                .unwrap()
+                .reference(),
+        );
+        let unattached = batch(&mut k, serde_json::json!([{"op":"gcsNew","args":{}}]))[0]["ok"]
+            .as_u64()
+            .unwrap();
+        let frame = serde_json::json!({"origin":[0,0,4],"xAxis":[1,0,0],"normal":[0,0,1]});
+        let invalid_frame = serde_json::json!({"origin":[0,0,4],"xAxis":[0,0,0],"normal":[0,0,1]});
+        assert_refusal(
+            &mut k,
+            "gcsAttachToFace",
+            serde_json::json!({"sketch":unattached,"ref":face_ref,"frame":invalid_frame}),
+            "linked-sketch:invalid_frame",
+            "invalid_input",
+        );
+        assert_refusal(
+            &mut k,
+            "gcsAttachToFace",
+            serde_json::json!({"sketch":unattached,"ref":encode(&edge_ref),"frame":frame}),
+            "linked-sketch:invalid_reference_kind",
+            "invalid_input",
+        );
+        let Anchor::OperationOutput { operation, .. } = edge_ref.anchor else {
+            panic!()
+        };
+        let right_ref = (0..100).map(|index| PersistentRef::operation_output(operation, EntityKind::Face, index)).find(|reference| matches!(resolve(k.topo(),reference), Resolution::Bound{entity,..} if entity==EntityKey::face(right.index()))).unwrap();
+        assert_refusal(
+            &mut k,
+            "gcsAttachToFace",
+            serde_json::json!({"sketch":unattached,"ref":encode(&right_ref),"frame":frame}),
+            "linked-sketch:unsupported_attachment",
+            "unsupported",
+        );
+        // Every failed attachment leaves the sketch available for a valid one.
+        assert!(batch(&mut k, serde_json::json!([{"op":"gcsAttachToFace","args":{"sketch":unattached,"ref":face_ref,"frame":frame}}]))[0].get("ok").is_some());
+
+        let before = k.gcs_point_position_impl(sketch, external.end).unwrap();
+        assert_refusal(
+            &mut k,
+            "gcsSetPoint",
+            serde_json::json!({"sketch":sketch,"point":external.end,"x":99,"y":99}),
+            "linked-sketch:read_only_external_point",
+            "invalid_input",
+        );
+        let missing =
+            PersistentRef::operation_output(OpId::from_value(u64::MAX), EntityKind::Edge, 0);
+        let error = assert_refusal(
+            &mut k,
+            "gcsAddExternalLine",
+            serde_json::json!({"sketch":sketch,"ref":encode(&missing),"startRef":encode(&source.start),"endRef":encode(&source.end)}),
+            "linked-sketch:reference_unbound",
+            "invalid_input",
+        );
+        assert_eq!(error["details"]["referenceRole"], "edge");
+        assert_eq!(error["details"]["resolution"]["status"], "unknownOperation");
+
+        // A real analytic cylinder supplies a well-formed unsupported circle.
+        let pending = k.topo_mut().journal_begin("fixture_cylinder");
+        let cylinder = remus_operations::primitives::make_cylinder(k.topo_mut(), 2.0, 4.0).unwrap();
+        let mut draft = EvolutionDraft::construction();
+        for key in solid_entity_keys(k.topo(), cylinder).unwrap() {
+            draft.push(key, EventDraft::Generated { sources: vec![] });
+        }
+        let operation = k
+            .topo_mut()
+            .journal_record_evolution(pending, draft)
+            .unwrap();
+        let circle = remus_topology::explorer::solid_edges(k.topo(), cylinder)
+            .unwrap()
+            .into_iter()
+            .find(|&edge| {
+                matches!(
+                    k.topo().edge(edge).unwrap().curve(),
+                    remus_topology::edge::EdgeCurve::Circle(_)
+                )
+            })
+            .unwrap();
+        let output = |key: EntityKey| {
+            (0..100).map(|index| PersistentRef::operation_output(operation, key.kind, index)).find(|reference| matches!(resolve(k.topo(), reference), Resolution::Bound{entity,..} if entity==key)).unwrap()
+        };
+        let circle_ref = output(EntityKey::edge(circle.index()));
+        let start_ref = output(EntityKey::vertex(
+            k.topo().edge(circle).unwrap().start().index(),
+        ));
+        let end_ref = output(EntityKey::vertex(
+            k.topo().edge(circle).unwrap().end().index(),
+        ));
+        assert_refusal(
+            &mut k,
+            "gcsAddExternalLine",
+            serde_json::json!({"sketch":sketch,"ref":encode(&circle_ref),"startRef":encode(&start_ref),"endRef":encode(&end_ref)}),
+            "linked-sketch:unsupported_curve",
+            "unsupported",
+        );
+        assert_eq!(
+            k.gcs_point_position_impl(sketch, external.end)
+                .unwrap()
+                .map(f64::to_bits),
+            before.map(f64::to_bits)
+        );
+        assert_eq!(
+            k.gcs_sketches
+                .get(sketch as usize)
+                .unwrap()
+                .external_lines
+                .len(),
+            1
+        );
+        let state = k.gcs_sketches.get(sketch as usize).unwrap();
+        assert_eq!(state.points.len(), 2);
+        assert_eq!(state.lines.len(), 1);
+    }
+
+    #[test]
+    fn ambiguous_external_identity_preserves_resolution_and_last_good_points() {
+        let (mut k, sketch, _, _, edge_ref, external) = setup();
+        let source = k.gcs_sketches.get(sketch as usize).unwrap().external_lines[0]
+            .reference
+            .clone();
+        let Resolution::Bound { entity, .. } = resolve(k.topo(), &edge_ref) else {
+            panic!()
+        };
+        let edge = k.topo().edge_id_from_index(entity.index).unwrap();
+        let signature =
+            remus_topology::naming::EntitySignature::capture_edge(k.topo(), edge, 1e-7).unwrap();
+        let pending = k.topo_mut().journal_begin("fixture_duplicate_box");
+        let duplicate =
+            remus_operations::primitives::make_box(k.topo_mut(), 10.0, 8.0, 4.0).unwrap();
+        let mut draft = EvolutionDraft::construction();
+        for key in solid_entity_keys(k.topo(), duplicate).unwrap() {
+            draft.push(key, EventDraft::Generated { sources: vec![] });
+        }
+        k.topo_mut()
+            .journal_record_evolution(pending, draft)
+            .unwrap();
+        let ambiguous = PersistentRef::signature(signature);
+        assert!(matches!(
+            resolve(k.topo(), &ambiguous),
+            Resolution::Ambiguous { .. }
+        ));
+        let before = k.gcs_point_position_impl(sketch, external.end).unwrap();
+        let error = assert_refusal(
+            &mut k,
+            "gcsAddExternalLine",
+            serde_json::json!({"sketch":sketch,"ref":encode(&ambiguous),"startRef":encode(&source.start),"endRef":encode(&source.end)}),
+            "linked-sketch:reference_unbound",
+            "invalid_input",
+        );
+        assert_eq!(error["details"]["referenceRole"], "edge");
+        assert_eq!(error["details"]["resolution"]["status"], "ambiguous");
+        assert_eq!(
+            error["details"]["resolution"]["candidates"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            k.gcs_point_position_impl(sketch, external.end)
+                .unwrap()
+                .map(f64::to_bits),
+            before.map(f64::to_bits)
+        );
+    }
+
+    #[test]
+    fn nonconvergence_restores_free_parameters_after_successful_input_refresh() {
+        for v2 in [false, true] {
+            let (mut k, sketch, solid, right, _, external) = setup();
+            let point = k.gcs_add_point_impl(sketch, 5.0, 0.0, false).unwrap();
+            for constraint in [
+                serde_json::json!({"type":"midpoint","point":point,"line":external.line}),
+                serde_json::json!({"type":"fixX","point":point,"value":5}),
+            ] {
+                k.gcs_add_constraint_impl(sketch, &constraint.to_string())
+                    .unwrap();
+            }
+            assert!(
+                k.gcs_solve_detailed_impl(sketch, 100, 1e-10)
+                    .unwrap()
+                    .converged
+            );
+            let before = k.gcs_point_position_impl(sketch, point).unwrap();
+            remus_operations::journal_ops::move_faces_journaled(k.topo_mut(), solid, &[right], 2.0)
+                .unwrap();
+            let ops = serde_json::json!([{"op":"gcsSolveDetailed","args":{"sketch":sketch,"maxIterations":100,"tolerance":1e-10}}]);
+            let out: serde_json::Value = serde_json::from_str(&if v2 {
+                k.execute_batch_v2(&ops.to_string())
+            } else {
+                k.execute_batch(&ops.to_string())
+            })
+            .unwrap();
+            let solve = &out[0]["ok"];
+            assert_eq!(solve["converged"], false, "{out}");
+            assert_eq!(solve["rolledBack"], true, "{out}");
+            assert_eq!(solve["classification"], "unsatisfied", "{out}");
+            assert_eq!(
+                k.gcs_point_position_impl(sketch, point)
+                    .unwrap()
+                    .map(f64::to_bits),
+                before.map(f64::to_bits)
+            );
+            let start = k.gcs_point_position_impl(sketch, external.start).unwrap();
+            let end = k.gcs_point_position_impl(sketch, external.end).unwrap();
+            assert!(((end[0] - start[0]).abs() - 12.0).abs() < 1e-9);
+            let published = (before[0] - start[0].midpoint(end[0]))
+                .abs()
+                .max((before[0] - 5.0).abs());
+            assert!((published - 1.0).abs() < 1e-9);
+            assert!(
+                (solve["publishedMaxResidual"].as_f64().unwrap() - published).abs() < 1e-9,
+                "{out}"
+            );
+            assert!(
+                (solve["maxResidual"].as_f64().unwrap() - 0.5).abs() < 1e-9,
+                "{out}"
+            );
+            // Plain solve keeps its established final-iterate behavior.
+            assert!(!k.gcs_solve_impl(sketch, 100, 1e-10).unwrap().converged);
+            assert!((k.gcs_point_position_impl(sketch, point).unwrap()[0] - 5.5).abs() < 1e-9);
+        }
     }
 
     #[test]
@@ -561,6 +832,15 @@ mod tests {
                 {"op":"gcsDof","args":{"sketch":sketch}}
             ]).to_string())).unwrap();
             for item in out.as_array().unwrap() {
+                assert_eq!(
+                    item["error"]["category"],
+                    if split {
+                        "unsupported"
+                    } else {
+                        "invalid_input"
+                    },
+                    "{item}"
+                );
                 let details = &item["error"]["details"];
                 assert_eq!(
                     details["kernelCode"], "linked-sketch:reference_unbound",

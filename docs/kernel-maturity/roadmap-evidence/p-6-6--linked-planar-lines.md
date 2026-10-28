@@ -15,6 +15,18 @@ or edge references, inferred/ambiguous/deleted references and other curve types
 refuse explicitly. Existing GCS constraints consume the returned line and point
 handles. Direct and batch APIs share the same implementation.
 
+Malformed frames, wrong-kind/missing/ambiguous/deleted references, endpoint
+mismatch and writes to external points report `invalid_input`. Nonparallel or
+curved support, curved external inputs, inferred identity, splits and missing
+evolution support report `unsupported`; reference refusals retain their role and
+full resolution outcome. Direct and legacy batch refusal prefixes stay stable.
+
+Linked inputs refresh before solver evaluation. A successful refresh establishes
+the detailed solver's rollback baseline: nonconvergence restores free parameters
+while fixed external inputs remain current. `publishedMaxResidual` describes that
+published state. Thrown refresh/solver errors restore the entire pre-call sketch;
+plain `gcsSolve` continues to publish its final iterate.
+
 Full 6.6 remains open: circle/ellipse references, split-face plane continuity,
 rotated attachments, portable complete sketch documents and consumer adoption.
 References use the existing versioned persistent-reference codec; sketches are
@@ -25,8 +37,10 @@ face growth and attached-plane moves at 1e-3/1/1e3, exact arena/reference
 round-trip, edge-storage reversal, endpoint mismatch, splits, deletion,
 ambiguity, inference, stale history and frame refusal. Binding contracts in
 `bindings/linked_sketch.rs` pin driven midpoint constraints after edits, both
-read-only endpoint setters, checkpoint handle retirement, and resource-error
-rollback after input refresh. `scripts/linked-sketch-packaged.mjs` runs the
+read-only endpoint setters, checkpoint handle retirement, failure categories,
+ambiguous identities, and resource-error rollback after input refresh.
+`scripts/linked-sketch-packaged.mjs` pins refresh-first nonconvergence against
+independent midpoint/fixed-coordinate residuals and runs the
 same public workflow on direct, `executeBatch` and `executeBatchV2`, against
 a fresh build or an installed package directory. Package qualification is
 recorded separately against the immutable source commit; this source delivery

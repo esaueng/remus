@@ -11,6 +11,26 @@ function invoke(k, route, op, args, direct) {
   assert.ok(Object.hasOwn(item, 'ok'), JSON.stringify(item));
   return item.ok;
 }
+function refusal(k, route, op, args, direct, kernelCode, category) {
+  const prefix = `${kernelCode}:`;
+  if (route === 'direct') {
+    assert.throws(() => k[op](...direct), error => {
+      assert.ok(error.message.startsWith(prefix), error.message);
+      return true;
+    });
+    return;
+  }
+  const item = JSON.parse(k[route](JSON.stringify([{ op, args }])))[0];
+  assert.ok(Object.hasOwn(item, 'error'), JSON.stringify(item));
+  if (route === 'executeBatch') {
+    assert.ok(item.error.startsWith(prefix), item.error);
+  } else {
+    assert.equal(item.error.details.kernelCode, kernelCode);
+    assert.equal(item.error.category, category);
+    assert.ok(item.error.message.startsWith(prefix), item.error.message);
+  }
+  return item.error;
+}
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-8, `${a} != ${b}`);
 const json = value => typeof value === 'string' ? JSON.parse(value) : value;
 
@@ -21,6 +41,9 @@ export function runLinkedSketchPackaged({ BrepKernel }) {
       // Establish references using only public APIs: the first journaled face
       // move creates a 10 x 8 x 4 box with full construction F/E/V history.
       const initial = k.makeBox(10, 8, 3);
+      // Create this before any references exist; a later journaled move makes
+      // its line signature ambiguous without introducing an untracked edit.
+      const duplicate = k.makeBox(10, 8, 3);
       const faceWith = (solid, axis) => Array.from(k.getSolidFaces(solid)).find(f => k.getFaceNormal(f)[axis] > 0.99);
       const seeded = JSON.parse(k.moveFacesJournaled(initial, Uint32Array.of(faceWith(initial, 2)), 1));
       const top = faceWith(seeded.solid, 2);
@@ -37,10 +60,11 @@ export function runLinkedSketchPackaged({ BrepKernel }) {
         }
         assert.fail(`missing construction output for ${kind} ${handle}`);
       };
-      const faceRef = reference('face', top), edgeRef = reference('edge', edge);
+      const faceRef = reference('face', top), rightRef = reference('face', right), edgeRef = reference('edge', edge);
       const endpointHandles = k.getEdgeVertexHandles(edge);
       const startRef = reference('vertex', endpointHandles[0]), endRef = reference('vertex', endpointHandles[1]);
       const call = (op, args, direct) => invoke(k, route, op, args, direct);
+      const refuse = (op, args, direct, code, category) => refusal(k, route, op, args, direct, `linked-sketch:${code}`, category);
       const sketch = call('gcsNew', {}, []);
       const frame = { origin: [0, 0, 4], xAxis: [1, 0, 0], normal: [0, 0, 1] };
       call('gcsAttachToFace', { sketch, ref: faceRef, frame }, [sketch, faceRef, frame]);
@@ -56,18 +80,57 @@ export function runLinkedSketchPackaged({ BrepKernel }) {
       close(call('gcsPointPosition', { sketch, point }, [sketch, point])[0], 6);
       const resolved = call('gcsResolveRefs', { sketch }, [sketch]);
       assert.equal(resolved.externalLines, 1); close(resolved.frame.origin[2], 4);
-      assert.throws(() => call('gcsSetPoint', { sketch, point: ext.start, x: 99, y: 99 }, [sketch, ext.start, 99, 99]), /linked-sketch:read_only_external_point/);
+      refuse('gcsSetPoint', { sketch, point: ext.start, x: 99, y: 99 }, [sketch, ext.start, 99, 99], 'read_only_external_point', 'invalid_input');
       const before = call('gcsPointPosition', { sketch, point: ext.end }, [sketch, ext.end]);
       const inferred = k.captureSignatureRef('edge', edge, 1e-7);
-      assert.throws(() => call('gcsAddExternalLine', { sketch, ref: inferred, startRef, endRef }, [sketch, inferred, startRef, endRef]), /linked-sketch:(inferred_reference|reference_unbound)/);
+      assert.equal(JSON.parse(k.resolveRef(inferred)).status, 'bound');
+      refuse('gcsAddExternalLine', { sketch, ref: inferred, startRef, endRef }, [sketch, inferred, startRef, endRef], 'inferred_reference', 'unsupported');
       assert.deepEqual(Array.from(call('gcsPointPosition', { sketch, point: ext.end }, [sketch, ext.end])), Array.from(before));
       k.restore(checkpoint);
       assert.equal(call('gcsResolveRefs', { sketch }, [sketch]).externalLines, 1);
       close(call('gcsPointPosition', { sketch, point }, [sketch, point])[0], 5);
+
+      // Successful input refresh precedes the detailed solver's free-parameter
+      // snapshot. The contradictory constraints have optimum x=5.5, residual
+      // 0.5; rollback publishes free x=5 against the current midpoint x=6.
+      const fixX = { type: 'fixX', point, value: 5 };
+      call('gcsAddConstraint', { sketch, constraint: fixX }, [sketch, JSON.stringify(fixX)]);
+      k.moveFacesJournaled(seeded.solid, Uint32Array.of(right), 2);
+      const unsatisfied = json(call('gcsSolveDetailed', { sketch, maxIterations: 100, tolerance: 1e-10 }, [sketch, 100, 1e-10]));
+      assert.equal(unsatisfied.converged, false); assert.equal(unsatisfied.rolledBack, true);
+      assert.equal(unsatisfied.classification, 'unsatisfied');
+      close(call('gcsPointPosition', { sketch, point }, [sketch, point])[0], 5);
+      const currentStart = call('gcsPointPosition', { sketch, point: ext.start }, [sketch, ext.start]);
+      const currentEnd = call('gcsPointPosition', { sketch, point: ext.end }, [sketch, ext.end]);
+      close(Math.abs(currentEnd[0] - currentStart[0]), 12);
+      close(unsatisfied.maxResidual, 0.5); close(unsatisfied.publishedMaxResidual, 1);
+      assert.equal(json(call('gcsSolve', { sketch, maxIterations: 100, tolerance: 1e-10 }, [sketch, 100, 1e-10])).converged, false);
+      close(call('gcsPointPosition', { sketch, point }, [sketch, point])[0], 5.5);
+      k.restore(checkpoint);
+
       const invalidFrame = { ...frame, xAxis: [0, 0, 0] };
       const unattached = call('gcsNew', {}, []);
-      assert.throws(() => call('gcsAttachToFace', { sketch: unattached, ref: faceRef, frame: invalidFrame }, [unattached, faceRef, invalidFrame]), /linked-sketch:invalid_frame/);
-      console.log(`ok - linked planar sketch ${route}: construction identity, driven midpoint, edit, refusal, undo`);
+      refuse('gcsAttachToFace', { sketch: unattached, ref: faceRef, frame: invalidFrame }, [unattached, faceRef, invalidFrame], 'invalid_frame', 'invalid_input');
+      refuse('gcsAttachToFace', { sketch: unattached, ref: rightRef, frame }, [unattached, rightRef, frame], 'unsupported_attachment', 'unsupported');
+      call('gcsAttachToFace', { sketch: unattached, ref: faceRef, frame }, [unattached, faceRef, frame]);
+      const missing = k.makeOperationOutputRef(0xffffffff, 'edge', 0);
+      const missingError = refuse('gcsAddExternalLine', { sketch, ref: missing, startRef, endRef }, [sketch, missing, startRef, endRef], 'reference_unbound', 'invalid_input');
+      if (route === 'executeBatchV2') {
+        assert.equal(missingError.details.referenceRole, 'edge');
+        assert.equal(missingError.details.resolution.status, 'unknownOperation');
+      }
+      k.moveFacesJournaled(duplicate, Uint32Array.of(faceWith(duplicate, 2)), 1);
+      const ambiguous = k.captureSignatureRef('edge', edge, 1e-7);
+      assert.equal(JSON.parse(k.resolveRef(ambiguous)).status, 'ambiguous');
+      const ambiguousError = refuse('gcsAddExternalLine', { sketch, ref: ambiguous, startRef, endRef }, [sketch, ambiguous, startRef, endRef], 'reference_unbound', 'invalid_input');
+      if (route === 'executeBatchV2') {
+        assert.equal(ambiguousError.details.referenceRole, 'edge');
+        assert.equal(ambiguousError.details.resolution.status, 'ambiguous');
+        assert.ok(ambiguousError.details.resolution.candidates.length >= 2);
+      }
+      close(call('gcsPointPosition', { sketch, point }, [sketch, point])[0], 5);
+      close(call('gcsPointPosition', { sketch, point: ext.end }, [sketch, ext.end])[0], 10);
+      console.log(`ok - linked planar sketch ${route}: construction identity, edit/undo, typed refusals, refresh-first rollback`);
     } finally { k.free(); }
   }
 }
