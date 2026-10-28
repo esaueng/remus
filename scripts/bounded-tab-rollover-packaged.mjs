@@ -99,7 +99,7 @@ export function runBoundedTabRolloverPackaged({ BrepKernel, decodeEvolutionPaylo
       const output = invoke(k,surface,body,selected,3);
       let result;
       if (surface === 'evolution') {
-        const payload = decodeEvolutionPayload(output);
+        const payload = decodeEvolutionPayload(JSON.stringify(output));
         result = payload.result.solid;
         assert.equal(payload.evolution.provenance, 'construction');
         assert.equal(payload.evolution.deleted.length, 2);
