@@ -10,7 +10,7 @@
 //! - **validate** — hierarchical shape validation (geometric + topological checks)
 //! - **properties** — geometric properties (volume, area, CoM, inertia tensor)
 //! - **distance** — minimum distance and extrema between shapes
-//! - **analyze** — surface interrogation (curvature reports, minimum radius)
+//! - **analyze** — surface interrogation (curvature, minimum radius, draft angles)
 
 // Unit tests may use `sort_by`: test binaries never ship, so the per-call-site
 // sort copies that `clippy.toml` disallows in production code do not matter there.
