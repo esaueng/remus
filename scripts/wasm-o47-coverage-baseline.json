@@ -973,6 +973,16 @@
       "reason": "GCS session CRUD for the B75 ellipse slice; no solid twin applicable"
     },
     {
+      "js": "gcsAddExternalLine",
+      "rust": "gcs_add_external_line",
+      "file": "bindings/linked_sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "P-Class 6.6",
+      "reason": "Fixed external GCS line inputs from construction edge and vertex references; no topology or solid result"
+    },
+    {
       "js": "gcsAddLine",
       "rust": "gcs_add_line",
       "file": "bindings/gcs_sketch.rs",
@@ -991,6 +1001,16 @@
       "coverage": "special",
       "owner": "B16",
       "reason": "GCS session CRUD; no solid twin applicable"
+    },
+    {
+      "js": "gcsAttachToFace",
+      "rust": "gcs_attach_to_face",
+      "file": "bindings/linked_sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "P-Class 6.6",
+      "reason": "Checkpointed GCS planar attachment consuming construction references; no topology or solid result"
     },
     {
       "js": "gcsDof",
@@ -1021,6 +1041,16 @@
       "coverage": "special",
       "owner": "B16",
       "reason": "GCS session CRUD; no solid twin applicable"
+    },
+    {
+      "js": "gcsResolveRefs",
+      "rust": "gcs_resolve_refs",
+      "file": "bindings/linked_sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "P-Class 6.6",
+      "reason": "Atomic checkpointed GCS input refresh consuming construction history; no topology or solid result"
     },
     {
       "js": "gcsSetEllipse",

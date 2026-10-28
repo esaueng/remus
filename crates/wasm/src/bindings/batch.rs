@@ -246,7 +246,10 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         // final iterate exactly as the direct binding does, and
         // `gcsSolveDetailed` rolls back internally. No sketch-state snapshot
         // is taken here, so batch behavior matches direct behavior verbatim.
-        "gcsNew"
+        "gcsAttachToFace"
+        | "gcsAddExternalLine"
+        | "gcsResolveRefs"
+        | "gcsNew"
         | "gcsAddPoint"
         | "gcsAddLine"
         | "gcsAddCircle"
@@ -3398,6 +3401,7 @@ impl BrepKernel {
                 .dispatch_naming_op(other, args)
                 .or_else(|| self.dispatch_evolution_op(other, args))
                 .or_else(|| self.dispatch_gcs_op(other, args))
+                .or_else(|| self.dispatch_linked_sketch_op(other, args))
                 .or_else(|| self.dispatch_project_curve_op(other, args))
                 .or_else(|| self.dispatch_nurbs_reuse_op(other, args))
                 .unwrap_or_else(|| Err(StructuredWasmError::unknown_operation(other))),

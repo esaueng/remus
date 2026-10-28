@@ -549,6 +549,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Validation | `validate.rs` |
 | Assembly management | `assembly.rs` |
 | 2D sketch constraint solver | `sketch.rs` |
+| Persistent planar sketch attachments and external line inputs | `linked_sketch.rs` |
 | Evolution tracking | `evolution.rs` |
 | Result-aware edge/vertex evolution induced from an exact face map (typed unresolved reasons, F/E/V completeness) | `boundary_evolution.rs` |
 | Compound operations | `compound_ops.rs` |
@@ -662,6 +663,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Sequential fillet onto an earlier blend band (contract test) | `bindings/sequential_fillet_tests.rs` |
 | Entity-evolution and journal bindings | `bindings/evolution.rs` |
 | Typed persistent GCS sketch bindings | `bindings/gcs_sketch.rs` |
+| Linked planar GCS attachment and fixed external lines | `bindings/linked_sketch.rs` |
 | Faces with inner (hole) wires — validation & construction | `holed_face.rs` |
 | `log` → JS `console` bridge | `logging.rs` |
 | Panic capture for post-mortem diagnosis | `panics.rs` |

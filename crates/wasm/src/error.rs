@@ -53,6 +53,10 @@ pub enum WasmError {
     #[error(transparent)]
     Sketch(#[from] remus_sketch::SketchError),
 
+    /// A persistent linked-sketch input cannot be resolved or projected.
+    #[error("linked-sketch:{code}: {0}", code = .0.code())]
+    LinkedSketch(#[from] remus_operations::linked_sketch::LinkedSketchError),
+
     /// An error from a modeling operation.
     #[error(transparent)]
     Operations(#[from] remus_operations::OperationsError),
@@ -219,6 +223,47 @@ impl StructuredWasmError {
         structured
             .details
             .insert("kernelCode".to_string(), Value::from(code));
+        structured
+    }
+
+    /// Classify the declared linked-sketch boundary before adding reference
+    /// resolution details. Malformed or unavailable references follow the
+    /// existing naming taxonomy; splits and missing evolution support remain
+    /// explicit capability gaps rather than internal failures.
+    pub(crate) fn linked_sketch_failure(
+        error: &remus_operations::linked_sketch::LinkedSketchError,
+    ) -> Self {
+        use remus_operations::linked_sketch::LinkedSketchError;
+        use remus_topology::naming::Resolution;
+
+        let category = match error {
+            LinkedSketchError::InvalidFrame
+            | LinkedSketchError::InvalidReferenceKind(_)
+            | LinkedSketchError::EndpointMismatch
+            | LinkedSketchError::ReadOnlyExternalPoint => FailureCategory::InvalidInput,
+            LinkedSketchError::InferredReference
+            | LinkedSketchError::UnsupportedAttachment
+            | LinkedSketchError::UnsupportedCurve => FailureCategory::Unsupported,
+            LinkedSketchError::Unbound { resolution, .. } => match resolution {
+                Resolution::BoundMany { .. } | Resolution::UnresolvedAcrossOperation { .. } => {
+                    FailureCategory::Unsupported
+                }
+                Resolution::Bound { .. }
+                | Resolution::Ambiguous { .. }
+                | Resolution::Dangling { .. }
+                | Resolution::UnknownOperation { .. }
+                | Resolution::NoMatch { .. }
+                | Resolution::Stale { .. } => FailureCategory::InvalidInput,
+            },
+            LinkedSketchError::Topology(error) => error.diagnostic().category(),
+        };
+        let code = match category {
+            FailureCategory::InvalidInput => WasmErrorCode::InvalidArgument,
+            FailureCategory::InvalidTopology => WasmErrorCode::TopologyError,
+            _ => WasmErrorCode::OperationFailed,
+        };
+        let mut structured = Self::new(code, format!("linked-sketch:{}: {error}", error.code()));
+        structured.category = category.as_str();
         structured
     }
 
@@ -419,6 +464,7 @@ impl From<WasmError> for StructuredWasmError {
                     .insert("problem".to_string(), Value::from(problem.as_str()));
                 structured
             }
+            WasmError::LinkedSketch(error) => Self::from(error),
             WasmError::Operations(error) => Self::from(error),
             WasmError::Topology(error) => Self::from(error),
             WasmError::Math(error) => Self::from(error),

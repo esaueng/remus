@@ -42,6 +42,7 @@ import { runOpseqTorusPropertiesPackaged } from './opseq-torus-properties-packag
 import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
 import { runBoundedTabRolloverPackaged } from './bounded-tab-rollover-packaged.mjs';
 import { runPackagedPreviewWorkContract } from './perf/face-drag-session/packaged_contract.cjs';
+import { runLinkedSketchPackaged } from './linked-sketch-packaged.mjs';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
@@ -1766,5 +1767,7 @@ runOpseqF10Packaged({ BrepKernel });
 runOpseqF13Packaged({ BrepKernel });
 
 runWasmRayTorusPackaged({ BrepKernel });
+
+runLinkedSketchPackaged({ BrepKernel });
 
 console.log('\nAll smoke tests passed');
