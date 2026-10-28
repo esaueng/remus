@@ -17,21 +17,6 @@ on:
     - cron: "29 6 * * *"
   pull_request:
     types: [opened, synchronize, reopened, labeled]
-    paths:
-      - 'crates/**'
-      - '!crates/wasm/pkg/**'
-      - '!crates/wasm-io/pkg/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'rust-toolchain.toml'
-      - '.cargo/**'
-      - '.github/workflows/benchmark.yml'
-      - '.github/workflows/fleet-benchmark-v4.yml'
-      - 'scripts/bench*'
-      - 'scripts/perf/**'
-      - 'scripts/performance/**'
-      - 'tools/**'
-      - 'tests/**'
   workflow_dispatch:
 
 # Least privilege by default; each job opts into exactly what it needs.

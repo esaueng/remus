@@ -266,6 +266,10 @@ class SpeedContractTests(unittest.TestCase):
         self.assertNotIn("github.event_name == 'pull_request'", push)
         caller = (WORKFLOWS / "benchmark.yml").read_text()
         self.assertIn('  schedule:\n    - cron: "29 6 * * *"', caller)
+        pull_request = caller.split("  pull_request:\n", 1)[1].split("  workflow_dispatch:", 1)[0]
+        self.assertIn("labeled", pull_request)
+        self.assertNotIn("paths", pull_request)
+        self.assertIn("contains(github.event.pull_request.labels.*.name, 'ci:benchmark')", benchmark)
         self.assertIn("alert-threshold: '200%'", benchmark)
         self.assertIn("fail-on-alert: false", benchmark)
 
