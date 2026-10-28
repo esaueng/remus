@@ -1,6 +1,6 @@
 # Trusted owner CI fleet
 
-Required Linux CI jobs and their completion gate live in `fleet-ci-v7.yml`, called
+Required Linux CI jobs and their completion gate live in `fleet-ci-v9.yml`, called
 at an immutable commit from `ci.yml`. Benchmarks, corpus gauntlets, fuzzing,
 mutation checks, OSV scans, WASM candidates and size reports each have their
 own immutable `fleet-*.yml` callee. Their shared pre-checkout guard is a pinned
@@ -65,7 +65,7 @@ merging. Roll back subsequent scheduling with
 
 Before checkout, self-hosted jobs verify the non-root identity, protected runner
 files, NoNewPrivileges, fresh storage, empty rootless Docker state, mount options
-and exact cgroup limits. The active `fleet-ci-v7.yml` profile (unchanged from v6) recognizes
+and exact cgroup limits. The active `fleet-ci-v9.yml` isolation profile (unchanged from v7) recognizes
 `ci-server-jane-1`, `ci-server-jane-2` and `ci-server-jane-3`, each with six CPU
 equivalents and a 5,000,000,000-byte RAM setting. systemd aligns the enforced
 limit to whole host pages: 4,999,999,488 bytes on a 4 KiB-page host. Each slot
@@ -164,7 +164,7 @@ publisher boundary, toolchain and hosted fallback remains unchanged.
 
 | Family | Compatible helper |
 | --- | --- |
-| Benchmark | `fleet-benchmark-v3.yml` |
+| Benchmark | `fleet-benchmark-v4.yml` |
 | Fuzz | `fleet-fuzz-v4.yml` |
 | Gauntlet | `fleet-gauntlet-v4.yml` |
 | Sharded mutants | `fleet-mutants-sharded-v4.yml` |
@@ -334,13 +334,15 @@ discovery regression test keeps this suite in the required entrypoint.
 The classifier (`scripts/classify-ci-changes.py`) selects jobs in tiers so a
 kernel PR waits only for the checks that can fail on its diff:
 
-- **Tier 1** (`heavy`, every source change): Test (clippy, nextest and doc
-  tests), Complexity Guards, Approximation Census, WASM without optional
+- **Tier 1** (`heavy`, every source change): Test (clippy, archive build and doc
+  tests), both Native tests partitions, Complexity Guards, Approximation Census, WASM without optional
   I/O, Fuzz Targets Compile and Software Rendering. Fuzz compile and
   rendering joined in `fleet-ci-v4.yml`: both build against most kernel
   crates, so a queue entry that skips tier 2 must still run them. The
   complexity guards left Test for their own job in `fleet-ci-v7.yml`.
-- **Tier 2** (`full`): Coverage, MSRV, Cargo Deny, Security Audit. Selected for every main
+- **Tier 2** (`full`): MSRV, Cargo Deny and Security Audit. Coverage also runs
+  for full PR, merge-group and manual CI events; main pushes defer it to the
+  complete nightly workspace run with the same 60-percent threshold. Selected for every main
   push and dispatch, and for a PR only while it carries the `ci:full` label
   (label it, then re-run or push). A merge group selects it only when its
   diff touches a tier-2 input: a `Cargo.toml`, `Cargo.lock`,
@@ -348,10 +350,9 @@ kernel PR waits only for the checks that can fail on its diff:
   `.github/workflows/` or a committed package
   (a queue batch can pair a refresh with source PRs). Any other merge group
   runs tier 1 and the package build (mode `queue`), and the main push of the
-  same squashed tree runs tier 2 after the merge. Coverage took about 40 of a
-  queue entry's 60-70 minutes (2026-10), so this roughly halves the time a PR
-  spends in the queue; a coverage or source-level MSRV regression now turns
-  `main` red instead of blocking the entry. The pinned callee still passes
+  same squashed tree runs the dependency and MSRV tier after the merge.
+  A source-level MSRV regression can therefore turn `main` red after merging;
+  coverage regressions surface in the nightly run unless full CI selected them. The pinned callee still passes
   `--full` for merge groups; the classifier reads `GITHUB_EVENT_NAME` itself.
 - **Queue fast path** (since 2026-10-25, while `QUEUE_RERUNS_PR_TIER` in the
   classifier is `False`): a `queue`-mode merge group also skips tier 1 and the
@@ -362,15 +363,17 @@ kernel PR waits only for the checks that can fail on its diff:
   tier 2 in a merge group, because the integrity job in `wasm-version.yml`
   verifies a refresh there as it does for a package-only diff. Every tier-2
   input still runs the full suite in the queue, and every main push still
-  runs every tier. The cost: two PRs that pass alone but break together, or a
+  runs every tier except nightly coverage. The cost: two PRs that pass alone but break together, or a
   PR whose CI ran against an old `main`, turn `main` red after the merge
   instead of blocking the entry. Set the constant to `True` to restore the
   pre-merge tier-1 run.
-- **Package build** (`wasm`): WASM Build & Validate, W9 Preflight (its
+- **Package build** (`wasm`): WASM Build & Validate, both complete runtime
+  suites, W9 Preflight (its
   own job since `fleet-ci-v7.yml`) and the size gate and report. Selected
   with tier 2, and on any PR whose diff touches any crate under `crates/`,
   `xtask`, `tools/vs-bench`, the WASM scripts,
-  `Cargo.lock`, `Cargo.toml`, `rust-toolchain.toml`, or `.cargo/config.toml`.
+  `Cargo.lock`, `Cargo.toml`, `rust-toolchain.toml`, `.cargo/config.toml`,
+  `LICENSE-APACHE` or `NOTICE`.
   Every crate sits below the wasm bindings, so an engine change must pass the
   package smoke before merge. Until 2026-09-24 only `crates/wasm*` selected
   it: PR #618 (algo, math and operations only) passed PR CI with the job
@@ -472,11 +475,11 @@ unprotected-main contexts, verifies immutable pins and guard ordering, and
 retains OSV comparison and publisher permission contracts. Convergence tests
 exercise full-suite completion, cancellation, unexpected skips and independent
 PR scheduling.
-## Staged CI speed workflow
+## CI speed workflow
 
-`fleet-ci-v9.yml` and `fleet-benchmark-v4.yml` are staged definitions. They are
-not active until their caller pins and `.github/fleet-workflows.json` select
-the landed main commit. The immutable-main-ancestor check remains required.
+`fleet-ci-v9.yml` and `fleet-benchmark-v4.yml` are selected together by immutable
+main-ancestor caller pins and `.github/fleet-workflows.json`. The staging and
+activation commits remain separate; the immutable-main-ancestor check is required.
 
 V9 builds the complete native test archive once, then runs two hash partitions
 with the same pinned Nextest version. Documentation tests and the separate
@@ -498,7 +501,7 @@ and run the complete smoke and installed-tarball suites on separate runners.
 default local and package-integrity builds still run both suites themselves.
 
 The reusable publisher can consume this same run's artifact only on protected
-main pushes. Its CI caller must wait for `CI Pass`; the publishing runner never
+main pushes. Its CI caller must wait for `CI Pass` and public commit metadata; the publishing runner never
 executes the build or runtime tests with the App credential. Refresh branches remain immutable and bound to their build source; a newer
 lightweight main commit does not discard a pending artifact. The standalone manual
 refresh still builds and tests its own packages.
@@ -507,7 +510,7 @@ refresh still builds and tests its own packages.
 main dispatch, with the same `ci-test` profile and 60-percent line threshold.
 V9 retains coverage for full PR, merge-group and manual CI runs. Main pushes
 defer coverage to the nightly workflow; dependency audits and MSRV still run.
-The staged benchmark publisher records baselines on nightly/main dispatch runs;
+The benchmark publisher records baselines on nightly/main dispatch runs;
 labelled PR comparisons keep their existing threshold and read-only build job.
 
 New fleet revisions require their own runner-group registration. V9 additionally

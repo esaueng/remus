@@ -32,6 +32,8 @@ def historical_workflow(family, text):
             ['git', 'show', f'{CI_V4_LANDED}:.github/workflows/fleet-ci-v4.yml'],
             cwd=ROOT, text=True,
         )
+    if family == 'benchmark' and 'auto-push: ${{ github.ref' in text:
+        text = retained_workflow('fleet-benchmark-v3.yml')
     return (text.replace('esaueng/remus/.github/actions/fleet-guard@' + STAGE['guard'],
                          'esaueng/remus/.github/actions/fleet-guard@' + STAGE['previous_guard'])
             .replace('\"labels\":\"ci-server-jane-5gb\"', '\"labels\":\"ci-server-jane\"'))

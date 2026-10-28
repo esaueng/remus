@@ -69,6 +69,15 @@ class ClassifyCiChangesTests(unittest.TestCase):
         self.assertTrue(result.wasm)
         self.assertEqual(result.mode, "pr")
 
+    def test_distribution_licenses_always_select_a_tested_package(self) -> None:
+        for path in ("LICENSE-APACHE", "NOTICE"):
+            for paths in ([path], [path, "README.md"], [path, "crates/wasm/pkg/package.json"]):
+                for force_full in (False, True):
+                    with self.subTest(paths=paths, full=force_full):
+                        result = MODULE.classify_paths(paths, force_full=force_full)
+                        self.assertTrue(result.heavy)
+                        self.assertTrue(result.wasm)
+
     def test_source_change_with_full_runs_everything(self) -> None:
         result = MODULE.classify_paths(["crates/math/src/lib.rs"], force_full=True)
         self.assertTrue(result.heavy)

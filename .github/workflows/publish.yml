@@ -5,7 +5,7 @@ name: Refresh Apache Staging Package
 # `main`. Those directories are a real distribution channel: they are installed
 # directly by git path, so whatever is committed there is what a consumer gets.
 # A stale snapshot silently serves old kernel behavior while the Rust source
-# looks current, so every package-affecting push runs this automatically.
+# looks current. CI calls this workflow after qualifying its main-push artifact.
 on:
   workflow_call:
     inputs:
@@ -13,23 +13,6 @@ on:
         description: Consume this CI run's qualified package artifact on protected main
         type: boolean
         default: false
-  push:
-    branches: [main]
-    paths:
-      - ".cargo/**"
-      - ".github/workflows/publish.yml"
-      - "crates/**"
-      - "!crates/wasm/pkg/**"
-      - "!crates/wasm-io/pkg/**"
-      - "scripts/publish-wasm-package-pr.py"
-      - "scripts/check-wasm-version.py"
-      - "scripts/version-wasm-packages.mjs"
-      - "scripts/test-version-wasm-packages.mjs"
-      - "xtask/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "LICENSE-APACHE"
-      - "rust-toolchain.toml"
   workflow_dispatch:
     inputs:
       sync_package:
@@ -55,18 +38,16 @@ jobs:
   build-committed-package:
     name: Build committed WASM package
     env:
+      CARGO_TERM_COLOR: always
       RUSTFLAGS: -Dwarnings
     runs-on: ubuntu-24.04
     # A warm build takes about 20 minutes.
     timeout-minutes: 60
-    # Package-only PR merges are excluded by the path filter above.
+    # Automatic CI calls reuse the tested artifact and skip this rebuild.
     # A manual run is restricted to main; both jobs check out its exact event SHA.
     if: >-
-      ${{ !inputs.reuse_artifact && ((github.event_name == 'push'
-           && !contains(github.event.head_commit.message, '[skip ci]'))
-          || (github.event_name == 'workflow_dispatch'
-              && inputs.sync_package
-              && github.ref == 'refs/heads/main')) }}
+      ${{ !inputs.reuse_artifact && github.event_name == 'workflow_dispatch'
+          && inputs.sync_package && github.ref == 'refs/heads/main' }}
     permissions:
       contents: read
     steps:
