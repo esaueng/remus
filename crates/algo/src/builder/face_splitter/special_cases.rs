@@ -306,6 +306,18 @@ pub(super) fn split_noseam_face_direct(
 
     // Cap loop is interior to the boundary: cap + band-with-hole.
     let hole_edges: Vec<OrientedPCurveEdge> = cap_edges.iter().map(reverse_of).collect();
+    // A closed spherical cap may surround a longitude-chart pole. Generic UV
+    // sampling folds its outline across the seam and can choose a point in
+    // the complementary band; both regions are then classified alike. In a
+    // qualified hemisphere, use the contained stereographic cap witness.
+    // This evaluates the original sphere and leaves the section geometry,
+    // boundary directions and the periodic lateral-face paths untouched.
+    let native_circle_cap = cap_edges
+        .iter()
+        .all(|edge| matches!(edge.curve_3d, EdgeCurve::Circle(_)));
+    let cap_interior = (exact_equator && native_circle_cap)
+        .then(|| sphere_closed_loop_interior(surface, &cap_edges))
+        .flatten();
     Ok(vec![
         SplitSubFace {
             surface: surface.clone(),
@@ -314,7 +326,7 @@ pub(super) fn split_noseam_face_direct(
             reversed,
             parent: face_id,
             rank,
-            precomputed_interior: None,
+            precomputed_interior: cap_interior,
         },
         SplitSubFace {
             surface: surface.clone(),

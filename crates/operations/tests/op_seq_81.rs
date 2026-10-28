@@ -4665,6 +4665,29 @@ fn ci_regression_matrix() {
     );
 }
 
+#[test]
+fn finding_closed_sphere_cap_uses_a_contained_interior_witness() {
+    let bundle: Value = serde_json::from_str(include_str!(
+        "../../wasm/tests/repro/opseq81-sphere-cap-classification.json"
+    ))
+    .unwrap();
+    let operations = bundle["operations"].as_array().unwrap();
+    let report = execute_sequence(operations, &SeqLimits::default(), Fault::None);
+    assert_eq!(
+        report.kind,
+        SeqKind::ExactOk,
+        "{} / {}: {:?}",
+        report.kind.label(),
+        report.oracle,
+        report
+            .notes
+            .iter()
+            .map(|note| note.detail.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(report.exact_ok_bools, 1);
+}
+
 /// Hand-built partial-overlap witness: A is a 4×2×2 box, B a 2×2×2 box
 /// shifted +2.5 in x (overlap 1.5×2×2, neither center on the other's
 /// boundary), fused. Fault-free it must not read Incorrect; with the

@@ -35,6 +35,7 @@ import { runTruckNurbsReusePackaged } from './truck-nurbs-reuse-packaged.mjs';
 import { runWasmRayNurbsPackaged } from './wasm-ray-nurbs-packaged.mjs';
 import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
 import { runOpseqF17Packaged } from './opseq-f17-packaged.mjs';
+import { runOpseqSphereCapPackaged } from './opseq-sphere-cap-packaged.mjs';
 import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
 import { runPackagedPreviewWorkContract } from './perf/face-drag-session/packaged_contract.cjs';
 import {
@@ -87,6 +88,7 @@ runWasmParserReferencesPackaged({ BrepKernel });
 runVariableFilletInputPackaged({ BrepKernel });
 runOpseqF3Packaged({ BrepKernel });
 runOpseqF17Packaged({ BrepKernel });
+runOpseqSphereCapPackaged({ BrepKernel });
 runDocumentCopyPackaged({ BrepKernel, RemusIo });
 runPackagedPreviewWorkContract({
   kernelPackage: resolve(projectRoot, 'crates/wasm/pkg'),
