@@ -446,6 +446,15 @@ impl BrepKernel {
         }
         let sk = self.gcs_sketch_mut(sketch)?;
         let id = table_get(&sk.points, "gcs point", point)?;
+        if sk
+            .external_lines
+            .iter()
+            .any(|line| line.start == id || line.end == id)
+        {
+            return Err(WasmError::InvalidInput {
+                reason: "linked-sketch:read_only_external_point".into(),
+            });
+        }
         let data = sk
             .sys
             .point_mut(id)
@@ -547,6 +556,15 @@ impl BrepKernel {
                 reason: "ellipse was removed".into(),
             })?
             .center;
+        if sk
+            .external_lines
+            .iter()
+            .any(|line| line.start == center_id || line.end == center_id)
+        {
+            return Err(WasmError::InvalidInput {
+                reason: "linked-sketch:read_only_external_point".into(),
+            });
+        }
         let center = sk
             .sys
             .point_mut(center_id)
@@ -573,6 +591,17 @@ impl BrepKernel {
         max_iterations: u32,
         tolerance: f64,
     ) -> Result<crate::types::GcsSolveResult, WasmError> {
+        self.with_linked_sketch_inputs(sketch, |kernel| {
+            kernel.gcs_solve_resolved_impl(sketch, max_iterations, tolerance)
+        })
+    }
+
+    fn gcs_solve_resolved_impl(
+        &mut self,
+        sketch: u32,
+        max_iterations: u32,
+        tolerance: f64,
+    ) -> Result<crate::types::GcsSolveResult, WasmError> {
         if !(tolerance.is_finite() && tolerance > 0.0) {
             return Err(WasmError::InvalidInput {
                 reason: format!("tolerance must be positive and finite, got {tolerance}"),
@@ -593,6 +622,17 @@ impl BrepKernel {
     }
 
     pub(crate) fn gcs_solve_detailed_impl(
+        &mut self,
+        sketch: u32,
+        max_iterations: u32,
+        tolerance: f64,
+    ) -> Result<crate::types::GcsSolveDiagnostics, WasmError> {
+        self.with_linked_sketch_inputs(sketch, |kernel| {
+            kernel.gcs_solve_detailed_resolved_impl(sketch, max_iterations, tolerance)
+        })
+    }
+
+    fn gcs_solve_detailed_resolved_impl(
         &mut self,
         sketch: u32,
         max_iterations: u32,
@@ -660,6 +700,13 @@ impl BrepKernel {
     }
 
     pub(crate) fn gcs_dof_impl(
+        &mut self,
+        sketch: u32,
+    ) -> Result<crate::types::GcsDofResult, WasmError> {
+        self.with_linked_sketch_inputs(sketch, |kernel| kernel.gcs_dof_resolved_impl(sketch))
+    }
+
+    fn gcs_dof_resolved_impl(
         &mut self,
         sketch: u32,
     ) -> Result<crate::types::GcsDofResult, WasmError> {

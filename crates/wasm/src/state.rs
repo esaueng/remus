@@ -76,6 +76,9 @@ impl CheckpointStore {
 /// removal surfaces as a typed error instead of aliasing.
 #[derive(Debug, Default, Clone)]
 pub struct GcsSketchState {
+    /// Persistent planar attachment and fixed construction-derived inputs.
+    pub(crate) attachment: Option<remus_operations::linked_sketch::PlanarSketchAttachment>,
+    pub(crate) external_lines: Vec<crate::bindings::linked_sketch::ExternalLine>,
     /// The persistent constraint system.
     pub sys: remus_sketch::GcsSystem,
     /// JS handle → point id.
@@ -183,6 +186,8 @@ impl GcsSketchState {
             }
         }
         self.sys = snapshot.sys.clone();
+        self.attachment.clone_from(&snapshot.attachment);
+        self.external_lines.clone_from(&snapshot.external_lines);
         restore_table(&mut self.points, &snapshot.points);
         restore_table(&mut self.lines, &snapshot.lines);
         restore_table(&mut self.circles, &snapshot.circles);
