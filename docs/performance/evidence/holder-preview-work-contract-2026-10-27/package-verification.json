@@ -1,0 +1,107 @@
+{
+  "distributionCommit": "831741cc35c95acd58481ae7943003b97b67ed18",
+  "attributedBuildSource": "1853ad33cee018b01dfe135ccb3415e9503ceb62",
+  "independentlyRebuilt": false,
+  "files": [
+    {
+      "path": "crates/wasm/pkg/.gitignore",
+      "bytes": 1,
+      "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1"
+    },
+    {
+      "path": "crates/wasm/pkg/LICENSE-APACHE",
+      "bytes": 10669,
+      "sha256": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811"
+    },
+    {
+      "path": "crates/wasm/pkg/NOTICE",
+      "bytes": 608,
+      "sha256": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9"
+    },
+    {
+      "path": "crates/wasm/pkg/package.json",
+      "bytes": 960,
+      "sha256": "b9336a15649569084459b989c1826a79cb9934fedc6f11c8a6ca5f7532af698e"
+    },
+    {
+      "path": "crates/wasm/pkg/remus_wasm.d.ts",
+      "bytes": 189158,
+      "sha256": "31b891cb6a18ce5fbe94fc4b72066114def639379616bc6072d0b98855486dd1"
+    },
+    {
+      "path": "crates/wasm/pkg/remus_wasm.js",
+      "bytes": 421,
+      "sha256": "90e7aa4472373ea75da5d9a9a8ece929737567cab7e02b3c678d7d6f6b51bd0e"
+    },
+    {
+      "path": "crates/wasm/pkg/remus_wasm_bg.js",
+      "bytes": 350721,
+      "sha256": "d7777bbca29f67874d88b4eb47469628378720c876d2ca31e0c69e57121e2365"
+    },
+    {
+      "path": "crates/wasm/pkg/remus_wasm_bg.wasm",
+      "bytes": 10666310,
+      "sha256": "02a394340b129b903eef0ef7af49e369950074fe109f8853fdd8ddf00a790df3"
+    },
+    {
+      "path": "crates/wasm/pkg/remus_wasm_bg.wasm.d.ts",
+      "bytes": 47824,
+      "sha256": "a35fdd5c2f7dd2187d8d73c6e1c98de7e75fa9cca9afcb80f616eb6b289f02d7"
+    },
+    {
+      "path": "crates/wasm/pkg/remus_wasm_node.cjs",
+      "bytes": 352852,
+      "sha256": "5fa6c40940b66fe52a4a49d291720bc088ff54d4994324986e5bdfdb26c0150e"
+    },
+    {
+      "path": "crates/wasm-io/pkg/.gitignore",
+      "bytes": 1,
+      "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1"
+    },
+    {
+      "path": "crates/wasm-io/pkg/LICENSE-APACHE",
+      "bytes": 10669,
+      "sha256": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811"
+    },
+    {
+      "path": "crates/wasm-io/pkg/NOTICE",
+      "bytes": 608,
+      "sha256": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9"
+    },
+    {
+      "path": "crates/wasm-io/pkg/package.json",
+      "bytes": 1007,
+      "sha256": "ac4e7284832db0ab01703f06086dc00a6a81c25e5eb7a8e530df017a133b2e38"
+    },
+    {
+      "path": "crates/wasm-io/pkg/remus_wasm_io.d.ts",
+      "bytes": 5502,
+      "sha256": "c8e79635083298bd399cbac4aff923a433dc89b7a893ffa871b1d24245c880d0"
+    },
+    {
+      "path": "crates/wasm-io/pkg/remus_wasm_io.js",
+      "bytes": 268,
+      "sha256": "fe90ec123d3389eb4567206441963288bb342ebf7e72ad8392a9f799a6c37e9d"
+    },
+    {
+      "path": "crates/wasm-io/pkg/remus_wasm_io_bg.js",
+      "bytes": 23681,
+      "sha256": "845849c710d91965f6105b23e93b7acdc36824ea2acedb1f50cdcf24d7e52db9"
+    },
+    {
+      "path": "crates/wasm-io/pkg/remus_wasm_io_bg.wasm",
+      "bytes": 3188493,
+      "sha256": "6bf976b88a98c8ea1ad3da7535f0b5de110a5393c27c06365fa45b893f8cf22a"
+    },
+    {
+      "path": "crates/wasm-io/pkg/remus_wasm_io_bg.wasm.d.ts",
+      "bytes": 3532,
+      "sha256": "bd01bf4aa45bf771e527675e8d095bf5e580ca37aad44d670715e73fd98acdb3"
+    },
+    {
+      "path": "crates/wasm-io/pkg/remus_wasm_io_node.cjs",
+      "bytes": 23994,
+      "sha256": "fb134e228bb2e5566f9b84dbb290ae602fd896b2b19cceed9f671e3170018469"
+    }
+  ]
+}

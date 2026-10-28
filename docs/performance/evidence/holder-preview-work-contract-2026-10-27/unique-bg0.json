@@ -1,0 +1,4135 @@
+{
+  "label": "unique-bg0",
+  "metadata": {
+    "kernel": {
+      "name": "remus-wasm",
+      "version": "2026.1.81",
+      "wasmBytes": 10666310,
+      "wasmSha256": "02a394340b129b903eef0ef7af49e369950074fe109f8853fdd8ddf00a790df3",
+      "wrapperSha256": "5fa6c40940b66fe52a4a49d291720bc088ff54d4994324986e5bdfdb26c0150e"
+    },
+    "io": {
+      "name": "remus-wasm-io",
+      "version": "2026.1.81",
+      "wasmBytes": 3188493,
+      "wasmSha256": "6bf976b88a98c8ea1ad3da7535f0b5de110a5393c27c06365fa45b893f8cf22a",
+      "wrapperSha256": "fb134e228bb2e5566f9b84dbb290ae602fd896b2b19cceed9f671e3170018469"
+    },
+    "fixtureSha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8",
+    "harnessSha256": "477c8696f977f890fc784384442f161ee301b5b2decbd5b11804405682a24ce3",
+    "meshQualityHarnessSha256": "605bcfe13bb916afa6663be7b91135ecbde7ec865a786f8864c06e18a4c5f03b",
+    "node": "v24.22.1",
+    "versions": {
+      "node": "24.22.1",
+      "acorn": "8.18.0",
+      "ada": "4.0.0",
+      "amaro": "1.1.11",
+      "ares": "1.34.9",
+      "brotli": "1.2.0",
+      "cldr": "48.0",
+      "icu": "78.3",
+      "llhttp": "9.4.3",
+      "merve": "1.2.2",
+      "modules": "137",
+      "napi": "10",
+      "nbytes": "0.1.4",
+      "ncrypto": "0.0.1",
+      "nghttp2": "1.70.0",
+      "nghttp3": "",
+      "ngtcp2": "",
+      "openssl": "3.5.9",
+      "simdjson": "4.6.11",
+      "simdutf": "6.4.0",
+      "sqlite": "3.53.4",
+      "tz": "2026e",
+      "undici": "7.30.1",
+      "unicode": "17.0",
+      "uv": "1.52.1",
+      "uvwasi": "0.0.23",
+      "v8": "13.6.233.17-node.58",
+      "zlib": "1.3.2.1-motley-285e94b",
+      "zstd": "1.5.7"
+    },
+    "platform": "linux x64",
+    "cpu": "AMD Ryzen 9 5900XT 16-Core Processor",
+    "affinity": "31",
+    "packageSourceSha": "1853ad33cee018b01dfe135ccb3415e9503ceb62",
+    "packageSourceProvenance": "externally supplied; not automatically verified by this driver",
+    "move": "prepared",
+    "background": 0,
+    "ticks": 24,
+    "warmup": 2,
+    "pattern": "unique",
+    "timingStatus": "measured",
+    "timingsExcluded": false,
+    "timingBoundaries": {
+      "tick": "sum of restore/move/relaxed validation/display mesh public kernel-call durations",
+      "tickWithTransfer": "tick plus positions/normals/indices/grouping bulk getters and grouped-result free",
+      "observedWall": "wall from restore through transfer, including between-stage memory diagnostic reads",
+      "quality": "mesh closure, finite buffers, face count and selected cap placement checked after timers",
+      "excluded": "consumer orchestration, worker queue, rendering, browser presentation and commit quantities/recognition",
+      "memory": "observed arena/WASM/process snapshots; diagnostic reads and JS GC can affect process memory",
+      "revisited": "previously requested offset, including refused requests; not a proven cache hit"
+    },
+    "display": {
+      "deflection": 0.02,
+      "angle": 0.35
+    },
+    "importMs": 157.234774,
+    "memoryBeforePrepare": {
+      "allocatedSlots": 1906,
+      "retiredSlots": 0,
+      "linearMemoryBytes": 2949120,
+      "processRssBytes": 170303488,
+      "jsHeapUsedBytes": 7149248,
+      "externalBytes": 25651228,
+      "arrayBufferBytes": 15569316
+    },
+    "prepareMs": 48.16914700000001,
+    "memoryAfterPrepare": {
+      "allocatedSlots": 1906,
+      "retiredSlots": 0,
+      "linearMemoryBytes": 3866624,
+      "processRssBytes": 175284224,
+      "jsHeapUsedBytes": 7192096,
+      "externalBytes": 26569412,
+      "arrayBufferBytes": 15569956
+    }
+  },
+  "summary": {
+    "ticks": 24,
+    "refused": 0,
+    "accepted": {
+      "restore": {
+        "n": 24,
+        "p50": 0.16431099999999788,
+        "p95": 3.5209899999999834,
+        "max": 11.573008999999956
+      },
+      "move": {
+        "n": 24,
+        "p50": 22.47337600000037,
+        "p95": 137.17763800000012,
+        "max": 974.213958
+      },
+      "validate": {
+        "n": 24,
+        "p50": 0.10246400000005451,
+        "p95": 0.4034030000000257,
+        "max": 1.6197440000000825
+      },
+      "mesh": {
+        "n": 24,
+        "p50": 15.38590000000022,
+        "p95": 82.79044999999996,
+        "max": 311.35416499999997
+      },
+      "transfer": {
+        "n": 24,
+        "p50": 0.12765099999978702,
+        "p95": 0.4035140000000865,
+        "max": 3.215382000000318
+      },
+      "tick": {
+        "n": 24,
+        "p50": 39.58148500000061,
+        "p95": 163.29554800000005,
+        "max": 1297.544535
+      },
+      "tickWithTransfer": {
+        "n": 24,
+        "p50": 39.72215100000085,
+        "p95": 163.4241609999999,
+        "max": 1297.948049
+      },
+      "observedWall": {
+        "n": 24,
+        "p50": 41.58663699999988,
+        "p95": 165.17773699999998,
+        "max": 1299.326756
+      }
+    },
+    "cold": {
+      "tick": 0,
+      "distance": 5,
+      "cold": true,
+      "warmup": true,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 11.573008999999956,
+        "move": 974.213958,
+        "validate": 0.4034030000000257,
+        "mesh": 311.35416499999997,
+        "transfer": 0.4035140000000865,
+        "observedWall": 1299.326756,
+        "tick": 1297.544535,
+        "tickWithTransfer": 1297.948049
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58308.79702072338,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 3866624,
+          "processRssBytes": 175284224,
+          "jsHeapUsedBytes": 7195112,
+          "externalBytes": 26569412,
+          "arrayBufferBytes": 15569956
+        },
+        "restore": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 3866624,
+          "processRssBytes": 175808512,
+          "jsHeapUsedBytes": 7199984,
+          "externalBytes": 26569412,
+          "arrayBufferBytes": 15569956
+        },
+        "move": {
+          "allocatedSlots": 5718,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 5373952,
+          "processRssBytes": 184623104,
+          "jsHeapUsedBytes": 7271584,
+          "externalBytes": 28076740,
+          "arrayBufferBytes": 15569956
+        },
+        "validate": {
+          "allocatedSlots": 5718,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 5373952,
+          "processRssBytes": 184623104,
+          "jsHeapUsedBytes": 7275456,
+          "externalBytes": 28076740,
+          "arrayBufferBytes": 15569956
+        },
+        "mesh": {
+          "allocatedSlots": 5718,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 20447232,
+          "processRssBytes": 256434176,
+          "jsHeapUsedBytes": 7370496,
+          "externalBytes": 43150020,
+          "arrayBufferBytes": 15569956
+        },
+        "transfer": {
+          "allocatedSlots": 5718,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 20447232,
+          "processRssBytes": 256434176,
+          "jsHeapUsedBytes": 7379888,
+          "externalBytes": 44549480,
+          "arrayBufferBytes": 16969416
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 524288,
+          "jsHeapUsedBytes": 4872,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 3812,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 1507328,
+          "processRssBytes": 8814592,
+          "jsHeapUsedBytes": 71600,
+          "externalBytes": 1507328,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3872,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 15073280,
+          "processRssBytes": 71811072,
+          "jsHeapUsedBytes": 95040,
+          "externalBytes": 15073280,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 9392,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 5718,
+        "retiredSlots": 0,
+        "linearMemoryBytes": 20447232,
+        "processRssBytes": 274280448,
+        "jsHeapUsedBytes": 18324040,
+        "externalBytes": 29761302,
+        "arrayBufferBytes": 2181238
+      }
+    },
+    "warmedSamples": 22,
+    "warmed": {
+      "restore": {
+        "n": 22,
+        "p50": 0.15969200000017736,
+        "p95": 0.8365719999997054,
+        "max": 3.5209899999999834
+      },
+      "move": {
+        "n": 22,
+        "p50": 22.419765000000098,
+        "p95": 34.129051999999774,
+        "max": 137.17763800000012
+      },
+      "validate": {
+        "n": 22,
+        "p50": 0.10189300000001822,
+        "p95": 0.13382300000012037,
+        "max": 1.6197440000000825
+      },
+      "mesh": {
+        "n": 22,
+        "p50": 14.618418999999903,
+        "p95": 25.872063999999682,
+        "max": 34.72679199999993
+      },
+      "transfer": {
+        "n": 22,
+        "p50": 0.12719000000015512,
+        "p95": 0.2142149999999674,
+        "max": 3.215382000000318
+      },
+      "tick": {
+        "n": 22,
+        "p50": 38.89330299999983,
+        "p95": 56.3203239999998,
+        "max": 163.29554800000005
+      },
+      "tickWithTransfer": {
+        "n": 22,
+        "p50": 39.016245000000254,
+        "p95": 56.46576899999991,
+        "max": 163.4241609999999
+      },
+      "observedWall": {
+        "n": 22,
+        "p50": 40.44378500000039,
+        "p95": 57.08835699999986,
+        "max": 165.17773699999998
+      }
+    },
+    "firstSeenSamples": 22,
+    "firstSeen": {
+      "restore": {
+        "n": 22,
+        "p50": 0.15969200000017736,
+        "p95": 0.8365719999997054,
+        "max": 3.5209899999999834
+      },
+      "move": {
+        "n": 22,
+        "p50": 22.419765000000098,
+        "p95": 34.129051999999774,
+        "max": 137.17763800000012
+      },
+      "validate": {
+        "n": 22,
+        "p50": 0.10189300000001822,
+        "p95": 0.13382300000012037,
+        "max": 1.6197440000000825
+      },
+      "mesh": {
+        "n": 22,
+        "p50": 14.618418999999903,
+        "p95": 25.872063999999682,
+        "max": 34.72679199999993
+      },
+      "transfer": {
+        "n": 22,
+        "p50": 0.12719000000015512,
+        "p95": 0.2142149999999674,
+        "max": 3.215382000000318
+      },
+      "tick": {
+        "n": 22,
+        "p50": 38.89330299999983,
+        "p95": 56.3203239999998,
+        "max": 163.29554800000005
+      },
+      "tickWithTransfer": {
+        "n": 22,
+        "p50": 39.016245000000254,
+        "p95": 56.46576899999991,
+        "max": 163.4241609999999
+      },
+      "observedWall": {
+        "n": 22,
+        "p50": 40.44378500000039,
+        "p95": 57.08835699999986,
+        "max": 165.17773699999998
+      }
+    },
+    "revisitedSamples": 0,
+    "revisited": {
+      "restore": null,
+      "move": null,
+      "validate": null,
+      "mesh": null,
+      "transfer": null,
+      "tick": null,
+      "tickWithTransfer": null,
+      "observedWall": null
+    },
+    "memoryGrowthByStage": {
+      "restore": {
+        "allocatedSlots": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "retiredSlots": {
+          "n": 24,
+          "p50": 1906,
+          "p95": 1906,
+          "max": 1906
+        },
+        "linearMemoryBytes": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "processRssBytes": {
+          "n": 24,
+          "p50": 0,
+          "p95": 262144,
+          "max": 524288
+        },
+        "jsHeapUsedBytes": {
+          "n": 24,
+          "p50": 1616,
+          "p95": 4872,
+          "max": 11176
+        },
+        "externalBytes": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "arrayBufferBytes": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        }
+      },
+      "move": {
+        "allocatedSlots": {
+          "n": 24,
+          "p50": 1906,
+          "p95": 1906,
+          "max": 3812
+        },
+        "retiredSlots": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "linearMemoryBytes": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 1507328
+        },
+        "processRssBytes": {
+          "n": 24,
+          "p50": 0,
+          "p95": 3932160,
+          "max": 8814592
+        },
+        "jsHeapUsedBytes": {
+          "n": 24,
+          "p50": 1568,
+          "p95": 9376,
+          "max": 71600
+        },
+        "externalBytes": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 1507328
+        },
+        "arrayBufferBytes": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        }
+      },
+      "validate": {
+        "allocatedSlots": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "retiredSlots": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "linearMemoryBytes": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "processRssBytes": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "jsHeapUsedBytes": {
+          "n": 24,
+          "p50": 1488,
+          "p95": 1752,
+          "max": 3872
+        },
+        "externalBytes": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "arrayBufferBytes": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        }
+      },
+      "mesh": {
+        "allocatedSlots": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "retiredSlots": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "linearMemoryBytes": {
+          "n": 24,
+          "p50": 0,
+          "p95": 5570560,
+          "max": 15073280
+        },
+        "processRssBytes": {
+          "n": 24,
+          "p50": 262144,
+          "p95": 8650752,
+          "max": 71811072
+        },
+        "jsHeapUsedBytes": {
+          "n": 24,
+          "p50": 1720,
+          "p95": 4760,
+          "max": 95040
+        },
+        "externalBytes": {
+          "n": 24,
+          "p50": 0,
+          "p95": 5570560,
+          "max": 15073280
+        },
+        "arrayBufferBytes": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        }
+      },
+      "transfer": {
+        "allocatedSlots": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "retiredSlots": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "linearMemoryBytes": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "processRssBytes": {
+          "n": 24,
+          "p50": 0,
+          "p95": 0,
+          "max": 0
+        },
+        "jsHeapUsedBytes": {
+          "n": 24,
+          "p50": 3208,
+          "p95": 9392,
+          "max": 10992
+        },
+        "externalBytes": {
+          "n": 24,
+          "p50": 1399460,
+          "p95": 1399460,
+          "max": 1399460
+        },
+        "arrayBufferBytes": {
+          "n": 24,
+          "p50": 1399460,
+          "p95": 1399460,
+          "max": 1399460
+        }
+      }
+    },
+    "firstWindow": {
+      "restore": {
+        "n": 20,
+        "p50": 0.16431099999999788,
+        "p95": 3.5209899999999834,
+        "max": 11.573008999999956
+      },
+      "move": {
+        "n": 20,
+        "p50": 23.996275999999853,
+        "p95": 137.17763800000012,
+        "max": 974.213958
+      },
+      "validate": {
+        "n": 20,
+        "p50": 0.10763400000041656,
+        "p95": 0.4034030000000257,
+        "max": 1.6197440000000825
+      },
+      "mesh": {
+        "n": 20,
+        "p50": 16.175032999999985,
+        "p95": 82.79044999999996,
+        "max": 311.35416499999997
+      },
+      "transfer": {
+        "n": 20,
+        "p50": 0.13320199999998295,
+        "p95": 0.4035140000000865,
+        "max": 3.215382000000318
+      },
+      "tick": {
+        "n": 20,
+        "p50": 40.4265919999998,
+        "p95": 163.29554800000005,
+        "max": 1297.544535
+      },
+      "tickWithTransfer": {
+        "n": 20,
+        "p50": 40.55979399999978,
+        "p95": 163.4241609999999,
+        "max": 1297.948049
+      },
+      "observedWall": {
+        "n": 20,
+        "p50": 42.86037599999963,
+        "p95": 165.17773699999998,
+        "max": 1299.326756
+      }
+    },
+    "lastWindow": {
+      "restore": {
+        "n": 20,
+        "p50": 0.15969200000017736,
+        "p95": 0.8365719999997054,
+        "max": 3.5209899999999834
+      },
+      "move": {
+        "n": 20,
+        "p50": 22.419765000000098,
+        "p95": 34.129051999999774,
+        "max": 137.17763800000012
+      },
+      "validate": {
+        "n": 20,
+        "p50": 0.10016999999970722,
+        "p95": 0.13382300000012037,
+        "max": 1.6197440000000825
+      },
+      "mesh": {
+        "n": 20,
+        "p50": 14.264208999999937,
+        "p95": 20.543314999999893,
+        "max": 25.872063999999682
+      },
+      "transfer": {
+        "n": 20,
+        "p50": 0.12707000000000335,
+        "p95": 0.2142149999999674,
+        "max": 3.215382000000318
+      },
+      "tick": {
+        "n": 20,
+        "p50": 38.789144999999735,
+        "p95": 48.6210329999999,
+        "max": 163.29554800000005
+      },
+      "tickWithTransfer": {
+        "n": 20,
+        "p50": 39.0033599999997,
+        "p95": 48.765346000000136,
+        "max": 163.4241609999999
+      },
+      "observedWall": {
+        "n": 20,
+        "p50": 40.15777399999979,
+        "p95": 49.754003999999895,
+        "max": 165.17773699999998
+      }
+    },
+    "firstTickSlots": 3812,
+    "slotsPerTick": 1906,
+    "memoryBefore": {
+      "allocatedSlots": 1906,
+      "retiredSlots": 0,
+      "linearMemoryBytes": 3866624,
+      "processRssBytes": 175284224,
+      "jsHeapUsedBytes": 7193256,
+      "externalBytes": 26569412,
+      "arrayBufferBytes": 15569956
+    },
+    "memoryLast": {
+      "allocatedSlots": 49556,
+      "retiredSlots": 43838,
+      "linearMemoryBytes": 40108032,
+      "processRssBytes": 405950464,
+      "jsHeapUsedBytes": 79421160,
+      "externalBytes": 50821505,
+      "arrayBufferBytes": 3581978
+    }
+  },
+  "records": [
+    {
+      "tick": 0,
+      "distance": 5,
+      "cold": true,
+      "warmup": true,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 11.573008999999956,
+        "move": 974.213958,
+        "validate": 0.4034030000000257,
+        "mesh": 311.35416499999997,
+        "transfer": 0.4035140000000865,
+        "observedWall": 1299.326756,
+        "tick": 1297.544535,
+        "tickWithTransfer": 1297.948049
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58308.79702072338,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 3866624,
+          "processRssBytes": 175284224,
+          "jsHeapUsedBytes": 7195112,
+          "externalBytes": 26569412,
+          "arrayBufferBytes": 15569956
+        },
+        "restore": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 3866624,
+          "processRssBytes": 175808512,
+          "jsHeapUsedBytes": 7199984,
+          "externalBytes": 26569412,
+          "arrayBufferBytes": 15569956
+        },
+        "move": {
+          "allocatedSlots": 5718,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 5373952,
+          "processRssBytes": 184623104,
+          "jsHeapUsedBytes": 7271584,
+          "externalBytes": 28076740,
+          "arrayBufferBytes": 15569956
+        },
+        "validate": {
+          "allocatedSlots": 5718,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 5373952,
+          "processRssBytes": 184623104,
+          "jsHeapUsedBytes": 7275456,
+          "externalBytes": 28076740,
+          "arrayBufferBytes": 15569956
+        },
+        "mesh": {
+          "allocatedSlots": 5718,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 20447232,
+          "processRssBytes": 256434176,
+          "jsHeapUsedBytes": 7370496,
+          "externalBytes": 43150020,
+          "arrayBufferBytes": 15569956
+        },
+        "transfer": {
+          "allocatedSlots": 5718,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 20447232,
+          "processRssBytes": 256434176,
+          "jsHeapUsedBytes": 7379888,
+          "externalBytes": 44549480,
+          "arrayBufferBytes": 16969416
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 524288,
+          "jsHeapUsedBytes": 4872,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 3812,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 1507328,
+          "processRssBytes": 8814592,
+          "jsHeapUsedBytes": 71600,
+          "externalBytes": 1507328,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3872,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 15073280,
+          "processRssBytes": 71811072,
+          "jsHeapUsedBytes": 95040,
+          "externalBytes": 15073280,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 9392,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 5718,
+        "retiredSlots": 0,
+        "linearMemoryBytes": 20447232,
+        "processRssBytes": 274280448,
+        "jsHeapUsedBytes": 18324040,
+        "externalBytes": 29761302,
+        "arrayBufferBytes": 2181238
+      }
+    },
+    {
+      "tick": 1,
+      "distance": 5.02,
+      "cold": false,
+      "warmup": true,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 1.099458999999797,
+        "move": 50.499775,
+        "validate": 0.13654799999994793,
+        "mesh": 82.79044999999996,
+        "transfer": 0.1533999999999196,
+        "observedWall": 135.35700500000007,
+        "tick": 134.5262319999997,
+        "tickWithTransfer": 134.67963199999963
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58341.10668256667,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 5718,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 20447232,
+          "processRssBytes": 274280448,
+          "jsHeapUsedBytes": 18326264,
+          "externalBytes": 29761302,
+          "arrayBufferBytes": 2181238
+        },
+        "restore": {
+          "allocatedSlots": 5718,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 20447232,
+          "processRssBytes": 274542592,
+          "jsHeapUsedBytes": 18337440,
+          "externalBytes": 29761302,
+          "arrayBufferBytes": 2181238
+        },
+        "move": {
+          "allocatedSlots": 7624,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 20447232,
+          "processRssBytes": 278474752,
+          "jsHeapUsedBytes": 18339128,
+          "externalBytes": 29761302,
+          "arrayBufferBytes": 2181238
+        },
+        "validate": {
+          "allocatedSlots": 7624,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 20447232,
+          "processRssBytes": 278474752,
+          "jsHeapUsedBytes": 18340760,
+          "externalBytes": 29761302,
+          "arrayBufferBytes": 2181238
+        },
+        "mesh": {
+          "allocatedSlots": 7624,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 25624576,
+          "processRssBytes": 287125504,
+          "jsHeapUsedBytes": 18345520,
+          "externalBytes": 34938646,
+          "arrayBufferBytes": 2181238
+        },
+        "transfer": {
+          "allocatedSlots": 7624,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 25624576,
+          "processRssBytes": 287125504,
+          "jsHeapUsedBytes": 18349024,
+          "externalBytes": 36338106,
+          "arrayBufferBytes": 3580698
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 262144,
+          "jsHeapUsedBytes": 11176,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 3932160,
+          "jsHeapUsedBytes": 1688,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1632,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 5177344,
+          "processRssBytes": 8650752,
+          "jsHeapUsedBytes": 4760,
+          "externalBytes": 5177344,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3504,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 7624,
+        "retiredSlots": 1906,
+        "linearMemoryBytes": 25624576,
+        "processRssBytes": 305999872,
+        "jsHeapUsedBytes": 31957712,
+        "externalBytes": 36338746,
+        "arrayBufferBytes": 3581338
+      }
+    },
+    {
+      "tick": 2,
+      "distance": 5.04,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.15175699999986136,
+        "move": 21.317639999999983,
+        "validate": 0.12413500000002387,
+        "mesh": 34.72679199999993,
+        "transfer": 0.14544500000010885,
+        "observedWall": 57.08835699999986,
+        "tick": 56.3203239999998,
+        "tickWithTransfer": 56.46576899999991
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58373.416364995464,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 7624,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 25624576,
+          "processRssBytes": 305999872,
+          "jsHeapUsedBytes": 31958904,
+          "externalBytes": 36338746,
+          "arrayBufferBytes": 3581338
+        },
+        "restore": {
+          "allocatedSlots": 7624,
+          "retiredSlots": 3812,
+          "linearMemoryBytes": 25624576,
+          "processRssBytes": 305999872,
+          "jsHeapUsedBytes": 31960504,
+          "externalBytes": 36338746,
+          "arrayBufferBytes": 3581338
+        },
+        "move": {
+          "allocatedSlots": 9530,
+          "retiredSlots": 3812,
+          "linearMemoryBytes": 25624576,
+          "processRssBytes": 305999872,
+          "jsHeapUsedBytes": 31962072,
+          "externalBytes": 36338746,
+          "arrayBufferBytes": 3581338
+        },
+        "validate": {
+          "allocatedSlots": 9530,
+          "retiredSlots": 3812,
+          "linearMemoryBytes": 25624576,
+          "processRssBytes": 305999872,
+          "jsHeapUsedBytes": 31963560,
+          "externalBytes": 36338746,
+          "arrayBufferBytes": 3581338
+        },
+        "mesh": {
+          "allocatedSlots": 9530,
+          "retiredSlots": 3812,
+          "linearMemoryBytes": 31195136,
+          "processRssBytes": 311504896,
+          "jsHeapUsedBytes": 31966448,
+          "externalBytes": 41909306,
+          "arrayBufferBytes": 3581338
+        },
+        "transfer": {
+          "allocatedSlots": 9530,
+          "retiredSlots": 3812,
+          "linearMemoryBytes": 31195136,
+          "processRssBytes": 311504896,
+          "jsHeapUsedBytes": 31969848,
+          "externalBytes": 43308766,
+          "arrayBufferBytes": 4980798
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1600,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 5570560,
+          "processRssBytes": 5505024,
+          "jsHeapUsedBytes": 2888,
+          "externalBytes": 5570560,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3400,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 9530,
+        "retiredSlots": 3812,
+        "linearMemoryBytes": 31195136,
+        "processRssBytes": 302645248,
+        "jsHeapUsedBytes": 25665224,
+        "externalBytes": 40509846,
+        "arrayBufferBytes": 2181878
+      }
+    },
+    {
+      "tick": 3,
+      "distance": 5.06,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.16431099999999788,
+        "move": 22.47337600000037,
+        "validate": 0.1278319999996711,
+        "mesh": 20.419120999999905,
+        "transfer": 0.13892299999997704,
+        "observedWall": 44.01255499999979,
+        "tick": 43.184639999999945,
+        "tickWithTransfer": 43.32356299999992
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58405.72609734456,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 9530,
+          "retiredSlots": 3812,
+          "linearMemoryBytes": 31195136,
+          "processRssBytes": 302645248,
+          "jsHeapUsedBytes": 25666416,
+          "externalBytes": 40509846,
+          "arrayBufferBytes": 2181878
+        },
+        "restore": {
+          "allocatedSlots": 9530,
+          "retiredSlots": 5718,
+          "linearMemoryBytes": 31195136,
+          "processRssBytes": 302645248,
+          "jsHeapUsedBytes": 25668016,
+          "externalBytes": 40509846,
+          "arrayBufferBytes": 2181878
+        },
+        "move": {
+          "allocatedSlots": 11436,
+          "retiredSlots": 5718,
+          "linearMemoryBytes": 31195136,
+          "processRssBytes": 302645248,
+          "jsHeapUsedBytes": 25669584,
+          "externalBytes": 40509846,
+          "arrayBufferBytes": 2181878
+        },
+        "validate": {
+          "allocatedSlots": 11436,
+          "retiredSlots": 5718,
+          "linearMemoryBytes": 31195136,
+          "processRssBytes": 302645248,
+          "jsHeapUsedBytes": 25671072,
+          "externalBytes": 40509846,
+          "arrayBufferBytes": 2181878
+        },
+        "mesh": {
+          "allocatedSlots": 11436,
+          "retiredSlots": 5718,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 303693824,
+          "jsHeapUsedBytes": 25672928,
+          "externalBytes": 42738070,
+          "arrayBufferBytes": 2181878
+        },
+        "transfer": {
+          "allocatedSlots": 11436,
+          "retiredSlots": 5718,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 303693824,
+          "jsHeapUsedBytes": 25676328,
+          "externalBytes": 44137530,
+          "arrayBufferBytes": 3581338
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1600,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 2228224,
+          "processRssBytes": 1048576,
+          "jsHeapUsedBytes": 1856,
+          "externalBytes": 2228224,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3400,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 11436,
+        "retiredSlots": 5718,
+        "linearMemoryBytes": 33423360,
+        "processRssBytes": 305557504,
+        "jsHeapUsedBytes": 27035456,
+        "externalBytes": 42738070,
+        "arrayBufferBytes": 2181878
+      }
+    },
+    {
+      "tick": 4,
+      "distance": 5.08,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.15969200000017736,
+        "move": 25.75255900000002,
+        "validate": 0.11796300000014526,
+        "mesh": 20.543314999999893,
+        "transfer": 0.15601500000002488,
+        "observedWall": 47.521541999999954,
+        "tick": 46.573529000000235,
+        "tickWithTransfer": 46.72954400000026
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58438.036065989996,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 11436,
+          "retiredSlots": 5718,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 305557504,
+          "jsHeapUsedBytes": 27036848,
+          "externalBytes": 42738070,
+          "arrayBufferBytes": 2181878
+        },
+        "restore": {
+          "allocatedSlots": 11436,
+          "retiredSlots": 7624,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 305557504,
+          "jsHeapUsedBytes": 27038448,
+          "externalBytes": 42738070,
+          "arrayBufferBytes": 2181878
+        },
+        "move": {
+          "allocatedSlots": 13342,
+          "retiredSlots": 7624,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 305557504,
+          "jsHeapUsedBytes": 27040016,
+          "externalBytes": 42738070,
+          "arrayBufferBytes": 2181878
+        },
+        "validate": {
+          "allocatedSlots": 13342,
+          "retiredSlots": 7624,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 305557504,
+          "jsHeapUsedBytes": 27041504,
+          "externalBytes": 42738070,
+          "arrayBufferBytes": 2181878
+        },
+        "mesh": {
+          "allocatedSlots": 13342,
+          "retiredSlots": 7624,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 306343936,
+          "jsHeapUsedBytes": 27043272,
+          "externalBytes": 42738070,
+          "arrayBufferBytes": 2181878
+        },
+        "transfer": {
+          "allocatedSlots": 13342,
+          "retiredSlots": 7624,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 306343936,
+          "jsHeapUsedBytes": 27046792,
+          "externalBytes": 44137530,
+          "arrayBufferBytes": 3581338
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1600,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 786432,
+          "jsHeapUsedBytes": 1768,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3520,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 13342,
+        "retiredSlots": 7624,
+        "linearMemoryBytes": 33423360,
+        "processRssBytes": 311021568,
+        "jsHeapUsedBytes": 25357792,
+        "externalBytes": 42738070,
+        "arrayBufferBytes": 2181878
+      }
+    },
+    {
+      "tick": 5,
+      "distance": 5.1,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.1724659999999858,
+        "move": 24.725225000000137,
+        "validate": 0.11819299999979194,
+        "mesh": 13.459156999999777,
+        "transfer": 0.13941399999976056,
+        "observedWall": 39.475634000000355,
+        "tick": 38.47504099999969,
+        "tickWithTransfer": 38.61445499999945
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58470.34180894301,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 13342,
+          "retiredSlots": 7624,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 311021568,
+          "jsHeapUsedBytes": 25358984,
+          "externalBytes": 42738070,
+          "arrayBufferBytes": 2181878
+        },
+        "restore": {
+          "allocatedSlots": 13342,
+          "retiredSlots": 9530,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 311021568,
+          "jsHeapUsedBytes": 25360584,
+          "externalBytes": 42738070,
+          "arrayBufferBytes": 2181878
+        },
+        "move": {
+          "allocatedSlots": 15248,
+          "retiredSlots": 9530,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 311021568,
+          "jsHeapUsedBytes": 25362152,
+          "externalBytes": 42738070,
+          "arrayBufferBytes": 2181878
+        },
+        "validate": {
+          "allocatedSlots": 15248,
+          "retiredSlots": 9530,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 311021568,
+          "jsHeapUsedBytes": 25363640,
+          "externalBytes": 42738070,
+          "arrayBufferBytes": 2181878
+        },
+        "mesh": {
+          "allocatedSlots": 15248,
+          "retiredSlots": 9530,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 311021568,
+          "jsHeapUsedBytes": 25365256,
+          "externalBytes": 42738070,
+          "arrayBufferBytes": 2181878
+        },
+        "transfer": {
+          "allocatedSlots": 15248,
+          "retiredSlots": 9530,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 311021568,
+          "jsHeapUsedBytes": 25368448,
+          "externalBytes": 44137530,
+          "arrayBufferBytes": 3581338
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1600,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3192,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 15248,
+        "retiredSlots": 9530,
+        "linearMemoryBytes": 33423360,
+        "processRssBytes": 326926336,
+        "jsHeapUsedBytes": 39430032,
+        "externalBytes": 44138170,
+        "arrayBufferBytes": 3581978
+      }
+    },
+    {
+      "tick": 6,
+      "distance": 5.12,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.16657600000007733,
+        "move": 22.419765000000098,
+        "validate": 0.13382300000012037,
+        "mesh": 16.861321000000316,
+        "transfer": 0.14066600000023755,
+        "observedWall": 43.312041000000136,
+        "tick": 39.58148500000061,
+        "tickWithTransfer": 39.72215100000085
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58502.65175120353,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 15248,
+          "retiredSlots": 9530,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 326926336,
+          "jsHeapUsedBytes": 39431224,
+          "externalBytes": 44138170,
+          "arrayBufferBytes": 3581978
+        },
+        "restore": {
+          "allocatedSlots": 15248,
+          "retiredSlots": 11436,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 326926336,
+          "jsHeapUsedBytes": 39432824,
+          "externalBytes": 44138170,
+          "arrayBufferBytes": 3581978
+        },
+        "move": {
+          "allocatedSlots": 17154,
+          "retiredSlots": 11436,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 326926336,
+          "jsHeapUsedBytes": 39434392,
+          "externalBytes": 44138170,
+          "arrayBufferBytes": 3581978
+        },
+        "validate": {
+          "allocatedSlots": 17154,
+          "retiredSlots": 11436,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 326926336,
+          "jsHeapUsedBytes": 39435880,
+          "externalBytes": 44138170,
+          "arrayBufferBytes": 3581978
+        },
+        "mesh": {
+          "allocatedSlots": 17154,
+          "retiredSlots": 11436,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 326926336,
+          "jsHeapUsedBytes": 39437600,
+          "externalBytes": 44138170,
+          "arrayBufferBytes": 3581978
+        },
+        "transfer": {
+          "allocatedSlots": 17154,
+          "retiredSlots": 11436,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 326926336,
+          "jsHeapUsedBytes": 39440792,
+          "externalBytes": 45537630,
+          "arrayBufferBytes": 4981438
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1600,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1720,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3192,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 17154,
+        "retiredSlots": 11436,
+        "linearMemoryBytes": 33423360,
+        "processRssBytes": 306847744,
+        "jsHeapUsedBytes": 18411256,
+        "externalBytes": 42738070,
+        "arrayBufferBytes": 2181878
+      }
+    },
+    {
+      "tick": 7,
+      "distance": 5.14,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.16901000000007116,
+        "move": 34.129051999999774,
+        "validate": 0.10763400000041656,
+        "mesh": 14.215336999999636,
+        "transfer": 0.1443130000002384,
+        "observedWall": 49.754003999999895,
+        "tick": 48.6210329999999,
+        "tickWithTransfer": 48.765346000000136
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58534.961459811726,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 17154,
+          "retiredSlots": 11436,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 306847744,
+          "jsHeapUsedBytes": 18412448,
+          "externalBytes": 42738070,
+          "arrayBufferBytes": 2181878
+        },
+        "restore": {
+          "allocatedSlots": 17154,
+          "retiredSlots": 13342,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 306847744,
+          "jsHeapUsedBytes": 18414048,
+          "externalBytes": 42738070,
+          "arrayBufferBytes": 2181878
+        },
+        "move": {
+          "allocatedSlots": 19060,
+          "retiredSlots": 13342,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 306847744,
+          "jsHeapUsedBytes": 18415616,
+          "externalBytes": 42738070,
+          "arrayBufferBytes": 2181878
+        },
+        "validate": {
+          "allocatedSlots": 19060,
+          "retiredSlots": 13342,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 306847744,
+          "jsHeapUsedBytes": 18417104,
+          "externalBytes": 42738070,
+          "arrayBufferBytes": 2181878
+        },
+        "mesh": {
+          "allocatedSlots": 19060,
+          "retiredSlots": 13342,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 306847744,
+          "jsHeapUsedBytes": 18418720,
+          "externalBytes": 42738070,
+          "arrayBufferBytes": 2181878
+        },
+        "transfer": {
+          "allocatedSlots": 19060,
+          "retiredSlots": 13342,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 306847744,
+          "jsHeapUsedBytes": 18421912,
+          "externalBytes": 44137530,
+          "arrayBufferBytes": 3581338
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1600,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3192,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 19060,
+        "retiredSlots": 13342,
+        "linearMemoryBytes": 33423360,
+        "processRssBytes": 323706880,
+        "jsHeapUsedBytes": 33073360,
+        "externalBytes": 44138170,
+        "arrayBufferBytes": 3581978
+      }
+    },
+    {
+      "tick": 8,
+      "distance": 5.16,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.8365719999997054,
+        "move": 21.659717,
+        "validate": 0.11782300000004398,
+        "mesh": 16.175032999999985,
+        "transfer": 0.2142149999999674,
+        "observedWall": 40.15777399999979,
+        "tick": 38.789144999999735,
+        "tickWithTransfer": 39.0033599999997
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58567.27125846665,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 19060,
+          "retiredSlots": 13342,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 323706880,
+          "jsHeapUsedBytes": 33074912,
+          "externalBytes": 44138170,
+          "arrayBufferBytes": 3581978
+        },
+        "restore": {
+          "allocatedSlots": 19060,
+          "retiredSlots": 15248,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 323706880,
+          "jsHeapUsedBytes": 33076736,
+          "externalBytes": 44138170,
+          "arrayBufferBytes": 3581978
+        },
+        "move": {
+          "allocatedSlots": 20966,
+          "retiredSlots": 15248,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 323706880,
+          "jsHeapUsedBytes": 33086112,
+          "externalBytes": 44138170,
+          "arrayBufferBytes": 3581978
+        },
+        "validate": {
+          "allocatedSlots": 20966,
+          "retiredSlots": 15248,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 323706880,
+          "jsHeapUsedBytes": 33087864,
+          "externalBytes": 44138170,
+          "arrayBufferBytes": 3581978
+        },
+        "mesh": {
+          "allocatedSlots": 20966,
+          "retiredSlots": 15248,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 324755456,
+          "jsHeapUsedBytes": 33090080,
+          "externalBytes": 44138170,
+          "arrayBufferBytes": 3581978
+        },
+        "transfer": {
+          "allocatedSlots": 20966,
+          "retiredSlots": 15248,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 324755456,
+          "jsHeapUsedBytes": 33101072,
+          "externalBytes": 45537630,
+          "arrayBufferBytes": 4981438
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1824,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 9376,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1752,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 1048576,
+          "jsHeapUsedBytes": 2216,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 10992,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 20966,
+        "retiredSlots": 15248,
+        "linearMemoryBytes": 33423360,
+        "processRssBytes": 341405696,
+        "jsHeapUsedBytes": 53310704,
+        "externalBytes": 45538270,
+        "arrayBufferBytes": 4982078
+      }
+    },
+    {
+      "tick": 9,
+      "distance": 5.18,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.6327369999999064,
+        "move": 20.71124299999974,
+        "validate": 0.11429699999962395,
+        "mesh": 13.975382999999965,
+        "transfer": 3.215382000000318,
+        "observedWall": 39.804405999999744,
+        "tick": 35.433659999999236,
+        "tickWithTransfer": 38.649041999999554
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58599.58102207498,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 20966,
+          "retiredSlots": 15248,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 341405696,
+          "jsHeapUsedBytes": 53343816,
+          "externalBytes": 45538270,
+          "arrayBufferBytes": 4982078
+        },
+        "restore": {
+          "allocatedSlots": 20966,
+          "retiredSlots": 17154,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 341405696,
+          "jsHeapUsedBytes": 53345448,
+          "externalBytes": 45538270,
+          "arrayBufferBytes": 4982078
+        },
+        "move": {
+          "allocatedSlots": 22872,
+          "retiredSlots": 17154,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 341405696,
+          "jsHeapUsedBytes": 53347048,
+          "externalBytes": 45538270,
+          "arrayBufferBytes": 4982078
+        },
+        "validate": {
+          "allocatedSlots": 22872,
+          "retiredSlots": 17154,
+          "linearMemoryBytes": 33423360,
+          "processRssBytes": 341405696,
+          "jsHeapUsedBytes": 53348568,
+          "externalBytes": 45538270,
+          "arrayBufferBytes": 4982078
+        },
+        "mesh": {
+          "allocatedSlots": 22872,
+          "retiredSlots": 17154,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 342192128,
+          "jsHeapUsedBytes": 53350560,
+          "externalBytes": 47766494,
+          "arrayBufferBytes": 4982078
+        },
+        "transfer": {
+          "allocatedSlots": 22872,
+          "retiredSlots": 17154,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 342192128,
+          "jsHeapUsedBytes": 53354352,
+          "externalBytes": 49165954,
+          "arrayBufferBytes": 6381538
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1632,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1600,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1520,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 2228224,
+          "processRssBytes": 786432,
+          "jsHeapUsedBytes": 1992,
+          "externalBytes": 2228224,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3792,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 22872,
+        "retiredSlots": 17154,
+        "linearMemoryBytes": 35651584,
+        "processRssBytes": 316563456,
+        "jsHeapUsedBytes": 25371240,
+        "externalBytes": 44964957,
+        "arrayBufferBytes": 2181878
+      }
+    },
+    {
+      "tick": 10,
+      "distance": 5.2,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.19215299999996205,
+        "move": 23.996275999999853,
+        "validate": 1.6197440000000825,
+        "mesh": 14.618418999999903,
+        "transfer": 0.13320199999998295,
+        "observedWall": 41.836459000000104,
+        "tick": 40.4265919999998,
+        "tickWithTransfer": 40.55979399999978
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58631.89071067736,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 22872,
+          "retiredSlots": 17154,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 316563456,
+          "jsHeapUsedBytes": 25372496,
+          "externalBytes": 44964957,
+          "arrayBufferBytes": 2181878
+        },
+        "restore": {
+          "allocatedSlots": 22872,
+          "retiredSlots": 19060,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 316563456,
+          "jsHeapUsedBytes": 25374128,
+          "externalBytes": 44964957,
+          "arrayBufferBytes": 2181878
+        },
+        "move": {
+          "allocatedSlots": 24778,
+          "retiredSlots": 19060,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 316563456,
+          "jsHeapUsedBytes": 25375696,
+          "externalBytes": 44964957,
+          "arrayBufferBytes": 2181878
+        },
+        "validate": {
+          "allocatedSlots": 24778,
+          "retiredSlots": 19060,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 316563456,
+          "jsHeapUsedBytes": 25377184,
+          "externalBytes": 44964957,
+          "arrayBufferBytes": 2181878
+        },
+        "mesh": {
+          "allocatedSlots": 24778,
+          "retiredSlots": 19060,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 316563456,
+          "jsHeapUsedBytes": 25378904,
+          "externalBytes": 44964957,
+          "arrayBufferBytes": 2181878
+        },
+        "transfer": {
+          "allocatedSlots": 24778,
+          "retiredSlots": 19060,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 316563456,
+          "jsHeapUsedBytes": 25382216,
+          "externalBytes": 46364417,
+          "arrayBufferBytes": 3581338
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1632,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1720,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3312,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 24778,
+        "retiredSlots": 19060,
+        "linearMemoryBytes": 35651584,
+        "processRssBytes": 313376768,
+        "jsHeapUsedBytes": 19450520,
+        "externalBytes": 44964957,
+        "arrayBufferBytes": 2181878
+      }
+    },
+    {
+      "tick": 11,
+      "distance": 5.22,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.764466000000084,
+        "move": 25.052344000000176,
+        "validate": 0.09676300000000992,
+        "mesh": 14.248269000000164,
+        "transfer": 0.1257380000001831,
+        "observedWall": 41.58663699999988,
+        "tick": 40.16184200000043,
+        "tickWithTransfer": 40.28758000000062
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58664.200487273825,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 24778,
+          "retiredSlots": 19060,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 313376768,
+          "jsHeapUsedBytes": 19451808,
+          "externalBytes": 44964957,
+          "arrayBufferBytes": 2181878
+        },
+        "restore": {
+          "allocatedSlots": 24778,
+          "retiredSlots": 20966,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 313376768,
+          "jsHeapUsedBytes": 19453520,
+          "externalBytes": 44964957,
+          "arrayBufferBytes": 2181878
+        },
+        "move": {
+          "allocatedSlots": 26684,
+          "retiredSlots": 20966,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 313376768,
+          "jsHeapUsedBytes": 19455088,
+          "externalBytes": 44964957,
+          "arrayBufferBytes": 2181878
+        },
+        "validate": {
+          "allocatedSlots": 26684,
+          "retiredSlots": 20966,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 313376768,
+          "jsHeapUsedBytes": 19456576,
+          "externalBytes": 44964957,
+          "arrayBufferBytes": 2181878
+        },
+        "mesh": {
+          "allocatedSlots": 26684,
+          "retiredSlots": 20966,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 313638912,
+          "jsHeapUsedBytes": 19458192,
+          "externalBytes": 44964957,
+          "arrayBufferBytes": 2181878
+        },
+        "transfer": {
+          "allocatedSlots": 26684,
+          "retiredSlots": 20966,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 313638912,
+          "jsHeapUsedBytes": 19461400,
+          "externalBytes": 46364417,
+          "arrayBufferBytes": 3581338
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1712,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 262144,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3208,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 26684,
+        "retiredSlots": 20966,
+        "linearMemoryBytes": 35651584,
+        "processRssBytes": 337797120,
+        "jsHeapUsedBytes": 41566944,
+        "externalBytes": 46365057,
+        "arrayBufferBytes": 3581978
+      }
+    },
+    {
+      "tick": 12,
+      "distance": 5.24,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 3.5209899999999834,
+        "move": 25.033940000000257,
+        "validate": 0.09660200000007535,
+        "mesh": 15.38590000000022,
+        "transfer": 0.12765099999978702,
+        "observedWall": 45.55775799999992,
+        "tick": 44.037432000000535,
+        "tickWithTransfer": 44.16508300000032
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58696.51027841062,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 26684,
+          "retiredSlots": 20966,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 337797120,
+          "jsHeapUsedBytes": 41568152,
+          "externalBytes": 46365057,
+          "arrayBufferBytes": 3581978
+        },
+        "restore": {
+          "allocatedSlots": 26684,
+          "retiredSlots": 22872,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 337797120,
+          "jsHeapUsedBytes": 41569768,
+          "externalBytes": 46365057,
+          "arrayBufferBytes": 3581978
+        },
+        "move": {
+          "allocatedSlots": 28590,
+          "retiredSlots": 22872,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 337797120,
+          "jsHeapUsedBytes": 41571336,
+          "externalBytes": 46365057,
+          "arrayBufferBytes": 3581978
+        },
+        "validate": {
+          "allocatedSlots": 28590,
+          "retiredSlots": 22872,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 337797120,
+          "jsHeapUsedBytes": 41572824,
+          "externalBytes": 46365057,
+          "arrayBufferBytes": 3581978
+        },
+        "mesh": {
+          "allocatedSlots": 28590,
+          "retiredSlots": 22872,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 338321408,
+          "jsHeapUsedBytes": 41574544,
+          "externalBytes": 46365057,
+          "arrayBufferBytes": 3581978
+        },
+        "transfer": {
+          "allocatedSlots": 28590,
+          "retiredSlots": 22872,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 338321408,
+          "jsHeapUsedBytes": 41577752,
+          "externalBytes": 47764517,
+          "arrayBufferBytes": 4981438
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 524288,
+          "jsHeapUsedBytes": 1720,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3208,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 28590,
+        "retiredSlots": 22872,
+        "linearMemoryBytes": 35651584,
+        "processRssBytes": 326717440,
+        "jsHeapUsedBytes": 18852480,
+        "externalBytes": 44964957,
+        "arrayBufferBytes": 2181878
+      }
+    },
+    {
+      "tick": 13,
+      "distance": 5.26,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.15116600000010294,
+        "move": 23.228844999999637,
+        "validate": 0.10255400000005466,
+        "mesh": 15.410738000000038,
+        "transfer": 0.1229420000004211,
+        "observedWall": 40.44378500000039,
+        "tick": 38.89330299999983,
+        "tickWithTransfer": 39.016245000000254
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58728.8160425024,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 28590,
+          "retiredSlots": 22872,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 326717440,
+          "jsHeapUsedBytes": 18853688,
+          "externalBytes": 44964957,
+          "arrayBufferBytes": 2181878
+        },
+        "restore": {
+          "allocatedSlots": 28590,
+          "retiredSlots": 24778,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 326717440,
+          "jsHeapUsedBytes": 18855304,
+          "externalBytes": 44964957,
+          "arrayBufferBytes": 2181878
+        },
+        "move": {
+          "allocatedSlots": 30496,
+          "retiredSlots": 24778,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 326717440,
+          "jsHeapUsedBytes": 18856872,
+          "externalBytes": 44964957,
+          "arrayBufferBytes": 2181878
+        },
+        "validate": {
+          "allocatedSlots": 30496,
+          "retiredSlots": 24778,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 326717440,
+          "jsHeapUsedBytes": 18858360,
+          "externalBytes": 44964957,
+          "arrayBufferBytes": 2181878
+        },
+        "mesh": {
+          "allocatedSlots": 30496,
+          "retiredSlots": 24778,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 326717440,
+          "jsHeapUsedBytes": 18859976,
+          "externalBytes": 44964957,
+          "arrayBufferBytes": 2181878
+        },
+        "transfer": {
+          "allocatedSlots": 30496,
+          "retiredSlots": 24778,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 326717440,
+          "jsHeapUsedBytes": 18863184,
+          "externalBytes": 46364417,
+          "arrayBufferBytes": 3581338
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3208,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 30496,
+        "retiredSlots": 24778,
+        "linearMemoryBytes": 35651584,
+        "processRssBytes": 340119552,
+        "jsHeapUsedBytes": 30352016,
+        "externalBytes": 46365057,
+        "arrayBufferBytes": 3581978
+      }
+    },
+    {
+      "tick": 14,
+      "distance": 5.28,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.14446300000008705,
+        "move": 21.558636000000206,
+        "validate": 0.10189300000001822,
+        "mesh": 13.780343999999786,
+        "transfer": 0.12707000000000335,
+        "observedWall": 37.22439600000007,
+        "tick": 35.5853360000001,
+        "tickWithTransfer": 35.7124060000001
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58761.12595875735,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 30496,
+          "retiredSlots": 24778,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 340119552,
+          "jsHeapUsedBytes": 30353224,
+          "externalBytes": 46365057,
+          "arrayBufferBytes": 3581978
+        },
+        "restore": {
+          "allocatedSlots": 30496,
+          "retiredSlots": 26684,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 340119552,
+          "jsHeapUsedBytes": 30354840,
+          "externalBytes": 46365057,
+          "arrayBufferBytes": 3581978
+        },
+        "move": {
+          "allocatedSlots": 32402,
+          "retiredSlots": 26684,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 340119552,
+          "jsHeapUsedBytes": 30356408,
+          "externalBytes": 46365057,
+          "arrayBufferBytes": 3581978
+        },
+        "validate": {
+          "allocatedSlots": 32402,
+          "retiredSlots": 26684,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 340119552,
+          "jsHeapUsedBytes": 30357896,
+          "externalBytes": 46365057,
+          "arrayBufferBytes": 3581978
+        },
+        "mesh": {
+          "allocatedSlots": 32402,
+          "retiredSlots": 26684,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 340643840,
+          "jsHeapUsedBytes": 30359616,
+          "externalBytes": 46365057,
+          "arrayBufferBytes": 3581978
+        },
+        "transfer": {
+          "allocatedSlots": 32402,
+          "retiredSlots": 26684,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 340643840,
+          "jsHeapUsedBytes": 30362824,
+          "externalBytes": 47764517,
+          "arrayBufferBytes": 4981438
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 524288,
+          "jsHeapUsedBytes": 1720,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3208,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 32402,
+        "retiredSlots": 26684,
+        "linearMemoryBytes": 35651584,
+        "processRssBytes": 354054144,
+        "jsHeapUsedBytes": 41852848,
+        "externalBytes": 47765157,
+        "arrayBufferBytes": 4982078
+      }
+    },
+    {
+      "tick": 15,
+      "distance": 5.3,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.14662700000008044,
+        "move": 20.15975000000026,
+        "validate": 0.10246400000005451,
+        "mesh": 12.801042000000052,
+        "transfer": 0.12460600000031263,
+        "observedWall": 34.93000699999993,
+        "tick": 33.209883000000445,
+        "tickWithTransfer": 33.33448900000076
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58793.43573640606,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 32402,
+          "retiredSlots": 26684,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 354054144,
+          "jsHeapUsedBytes": 41854056,
+          "externalBytes": 47765157,
+          "arrayBufferBytes": 4982078
+        },
+        "restore": {
+          "allocatedSlots": 32402,
+          "retiredSlots": 28590,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 354054144,
+          "jsHeapUsedBytes": 41855672,
+          "externalBytes": 47765157,
+          "arrayBufferBytes": 4982078
+        },
+        "move": {
+          "allocatedSlots": 34308,
+          "retiredSlots": 28590,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 354054144,
+          "jsHeapUsedBytes": 41857240,
+          "externalBytes": 47765157,
+          "arrayBufferBytes": 4982078
+        },
+        "validate": {
+          "allocatedSlots": 34308,
+          "retiredSlots": 28590,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 354054144,
+          "jsHeapUsedBytes": 41858728,
+          "externalBytes": 47765157,
+          "arrayBufferBytes": 4982078
+        },
+        "mesh": {
+          "allocatedSlots": 34308,
+          "retiredSlots": 28590,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 354054144,
+          "jsHeapUsedBytes": 41860344,
+          "externalBytes": 47765157,
+          "arrayBufferBytes": 4982078
+        },
+        "transfer": {
+          "allocatedSlots": 34308,
+          "retiredSlots": 28590,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 354054144,
+          "jsHeapUsedBytes": 41863552,
+          "externalBytes": 49164617,
+          "arrayBufferBytes": 6381538
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3208,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 34308,
+        "retiredSlots": 28590,
+        "linearMemoryBytes": 35651584,
+        "processRssBytes": 367984640,
+        "jsHeapUsedBytes": 70122800,
+        "externalBytes": 49165257,
+        "arrayBufferBytes": 6382178
+      }
+    },
+    {
+      "tick": 16,
+      "distance": 5.32,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.1485210000000734,
+        "move": 24.311963000000105,
+        "validate": 0.09710400000039954,
+        "mesh": 16.480430999999953,
+        "transfer": 0.12023799999997209,
+        "observedWall": 42.86037599999963,
+        "tick": 41.03801900000053,
+        "tickWithTransfer": 41.1582570000005
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58825.745554386674,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 34308,
+          "retiredSlots": 28590,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 367984640,
+          "jsHeapUsedBytes": 70124800,
+          "externalBytes": 49165257,
+          "arrayBufferBytes": 6382178
+        },
+        "restore": {
+          "allocatedSlots": 34308,
+          "retiredSlots": 30496,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 367984640,
+          "jsHeapUsedBytes": 70126416,
+          "externalBytes": 49165257,
+          "arrayBufferBytes": 6382178
+        },
+        "move": {
+          "allocatedSlots": 36214,
+          "retiredSlots": 30496,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 367984640,
+          "jsHeapUsedBytes": 70127984,
+          "externalBytes": 49165257,
+          "arrayBufferBytes": 6382178
+        },
+        "validate": {
+          "allocatedSlots": 36214,
+          "retiredSlots": 30496,
+          "linearMemoryBytes": 35651584,
+          "processRssBytes": 367984640,
+          "jsHeapUsedBytes": 70129472,
+          "externalBytes": 49165257,
+          "arrayBufferBytes": 6382178
+        },
+        "mesh": {
+          "allocatedSlots": 36214,
+          "retiredSlots": 30496,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 369819648,
+          "jsHeapUsedBytes": 70131432,
+          "externalBytes": 51393481,
+          "arrayBufferBytes": 6382178
+        },
+        "transfer": {
+          "allocatedSlots": 36214,
+          "retiredSlots": 30496,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 369819648,
+          "jsHeapUsedBytes": 70134848,
+          "externalBytes": 52792941,
+          "arrayBufferBytes": 7781638
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 2228224,
+          "processRssBytes": 1835008,
+          "jsHeapUsedBytes": 1960,
+          "externalBytes": 2228224,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3416,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 36214,
+        "retiredSlots": 30496,
+        "linearMemoryBytes": 37879808,
+        "processRssBytes": 352768000,
+        "jsHeapUsedBytes": 54915040,
+        "externalBytes": 47193181,
+        "arrayBufferBytes": 2181878
+      }
+    },
+    {
+      "tick": 17,
+      "distance": 5.34,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.14894200000026103,
+        "move": 137.17763800000012,
+        "validate": 0.096903999999995,
+        "mesh": 25.872063999999682,
+        "transfer": 0.1286129999998593,
+        "observedWall": 165.17773699999998,
+        "tick": 163.29554800000005,
+        "tickWithTransfer": 163.4241609999999
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58858.055244431984,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 36214,
+          "retiredSlots": 30496,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 352768000,
+          "jsHeapUsedBytes": 54916248,
+          "externalBytes": 47193181,
+          "arrayBufferBytes": 2181878
+        },
+        "restore": {
+          "allocatedSlots": 36214,
+          "retiredSlots": 32402,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 352768000,
+          "jsHeapUsedBytes": 54917864,
+          "externalBytes": 47193181,
+          "arrayBufferBytes": 2181878
+        },
+        "move": {
+          "allocatedSlots": 38120,
+          "retiredSlots": 32402,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 352768000,
+          "jsHeapUsedBytes": 54919528,
+          "externalBytes": 47193181,
+          "arrayBufferBytes": 2181878
+        },
+        "validate": {
+          "allocatedSlots": 38120,
+          "retiredSlots": 32402,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 352768000,
+          "jsHeapUsedBytes": 54921016,
+          "externalBytes": 47193181,
+          "arrayBufferBytes": 2181878
+        },
+        "mesh": {
+          "allocatedSlots": 38120,
+          "retiredSlots": 32402,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 353030144,
+          "jsHeapUsedBytes": 54922632,
+          "externalBytes": 47193181,
+          "arrayBufferBytes": 2181878
+        },
+        "transfer": {
+          "allocatedSlots": 38120,
+          "retiredSlots": 32402,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 353030144,
+          "jsHeapUsedBytes": 54925840,
+          "externalBytes": 48592641,
+          "arrayBufferBytes": 3581338
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1664,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 262144,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3208,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 38120,
+        "retiredSlots": 32402,
+        "linearMemoryBytes": 37879808,
+        "processRssBytes": 367693824,
+        "jsHeapUsedBytes": 53014776,
+        "externalBytes": 48593281,
+        "arrayBufferBytes": 3581978
+      }
+    },
+    {
+      "tick": 18,
+      "distance": 5.36,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.14844099999982063,
+        "move": 24.49112299999979,
+        "validate": 0.09876699999995253,
+        "mesh": 16.43338199999971,
+        "transfer": 0.12719000000015512,
+        "observedWall": 43.1266099999998,
+        "tick": 41.17171299999927,
+        "tickWithTransfer": 41.29890299999943
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58890.36503323833,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 38120,
+          "retiredSlots": 32402,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 367693824,
+          "jsHeapUsedBytes": 53016344,
+          "externalBytes": 48593281,
+          "arrayBufferBytes": 3581978
+        },
+        "restore": {
+          "allocatedSlots": 38120,
+          "retiredSlots": 34308,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 367693824,
+          "jsHeapUsedBytes": 53017960,
+          "externalBytes": 48593281,
+          "arrayBufferBytes": 3581978
+        },
+        "move": {
+          "allocatedSlots": 40026,
+          "retiredSlots": 34308,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 367693824,
+          "jsHeapUsedBytes": 53019528,
+          "externalBytes": 48593281,
+          "arrayBufferBytes": 3581978
+        },
+        "validate": {
+          "allocatedSlots": 40026,
+          "retiredSlots": 34308,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 367693824,
+          "jsHeapUsedBytes": 53021016,
+          "externalBytes": 48593281,
+          "arrayBufferBytes": 3581978
+        },
+        "mesh": {
+          "allocatedSlots": 40026,
+          "retiredSlots": 34308,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 367693824,
+          "jsHeapUsedBytes": 53022736,
+          "externalBytes": 48593281,
+          "arrayBufferBytes": 3581978
+        },
+        "transfer": {
+          "allocatedSlots": 40026,
+          "retiredSlots": 34308,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 367693824,
+          "jsHeapUsedBytes": 53025944,
+          "externalBytes": 49992741,
+          "arrayBufferBytes": 4981438
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1720,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3208,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 40026,
+        "retiredSlots": 34308,
+        "linearMemoryBytes": 37879808,
+        "processRssBytes": 371576832,
+        "jsHeapUsedBytes": 51144032,
+        "externalBytes": 48593281,
+        "arrayBufferBytes": 3581978
+      }
+    },
+    {
+      "tick": 19,
+      "distance": 5.38,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.14887199999975564,
+        "move": 20.009555999999975,
+        "validate": 0.09680299999990893,
+        "mesh": 17.089142999999694,
+        "transfer": 0.12208099999998012,
+        "observedWall": 39.48037300000033,
+        "tick": 37.344373999999334,
+        "tickWithTransfer": 37.466454999999314
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58922.67468897589,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 40026,
+          "retiredSlots": 34308,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 371576832,
+          "jsHeapUsedBytes": 51145240,
+          "externalBytes": 48593281,
+          "arrayBufferBytes": 3581978
+        },
+        "restore": {
+          "allocatedSlots": 40026,
+          "retiredSlots": 36214,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 371576832,
+          "jsHeapUsedBytes": 51146856,
+          "externalBytes": 48593281,
+          "arrayBufferBytes": 3581978
+        },
+        "move": {
+          "allocatedSlots": 41932,
+          "retiredSlots": 36214,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 371576832,
+          "jsHeapUsedBytes": 51148424,
+          "externalBytes": 48593281,
+          "arrayBufferBytes": 3581978
+        },
+        "validate": {
+          "allocatedSlots": 41932,
+          "retiredSlots": 36214,
+          "linearMemoryBytes": 37879808,
+          "processRssBytes": 371576832,
+          "jsHeapUsedBytes": 51149912,
+          "externalBytes": 48593281,
+          "arrayBufferBytes": 3581978
+        },
+        "mesh": {
+          "allocatedSlots": 41932,
+          "retiredSlots": 36214,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 372625408,
+          "jsHeapUsedBytes": 51151768,
+          "externalBytes": 50821505,
+          "arrayBufferBytes": 3581978
+        },
+        "transfer": {
+          "allocatedSlots": 41932,
+          "retiredSlots": 36214,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 372625408,
+          "jsHeapUsedBytes": 51155184,
+          "externalBytes": 52220965,
+          "arrayBufferBytes": 4981438
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 2228224,
+          "processRssBytes": 1048576,
+          "jsHeapUsedBytes": 1856,
+          "externalBytes": 2228224,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3416,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 41932,
+        "retiredSlots": 36214,
+        "linearMemoryBytes": 40108032,
+        "processRssBytes": 372641792,
+        "jsHeapUsedBytes": 54859024,
+        "externalBytes": 49421405,
+        "arrayBufferBytes": 2181878
+      }
+    },
+    {
+      "tick": 20,
+      "distance": 5.4,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.4860590000002958,
+        "move": 20.85012599999982,
+        "validate": 0.09638200000017605,
+        "mesh": 13.409593000000314,
+        "transfer": 0.12247200000001612,
+        "observedWall": 37.073561000000154,
+        "tick": 34.842160000000604,
+        "tickWithTransfer": 34.96463200000062
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58954.98450024342,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 41932,
+          "retiredSlots": 36214,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 372641792,
+          "jsHeapUsedBytes": 54860232,
+          "externalBytes": 49421405,
+          "arrayBufferBytes": 2181878
+        },
+        "restore": {
+          "allocatedSlots": 41932,
+          "retiredSlots": 38120,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 372641792,
+          "jsHeapUsedBytes": 54861848,
+          "externalBytes": 49421405,
+          "arrayBufferBytes": 2181878
+        },
+        "move": {
+          "allocatedSlots": 43838,
+          "retiredSlots": 38120,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 372641792,
+          "jsHeapUsedBytes": 54863416,
+          "externalBytes": 49421405,
+          "arrayBufferBytes": 2181878
+        },
+        "validate": {
+          "allocatedSlots": 43838,
+          "retiredSlots": 38120,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 372641792,
+          "jsHeapUsedBytes": 54864904,
+          "externalBytes": 49421405,
+          "arrayBufferBytes": 2181878
+        },
+        "mesh": {
+          "allocatedSlots": 43838,
+          "retiredSlots": 38120,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 372641792,
+          "jsHeapUsedBytes": 54866624,
+          "externalBytes": 49421405,
+          "arrayBufferBytes": 2181878
+        },
+        "transfer": {
+          "allocatedSlots": 43838,
+          "retiredSlots": 38120,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 372641792,
+          "jsHeapUsedBytes": 54869832,
+          "externalBytes": 50820865,
+          "arrayBufferBytes": 3581338
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1720,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3208,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 43838,
+        "retiredSlots": 38120,
+        "linearMemoryBytes": 40108032,
+        "processRssBytes": 372649984,
+        "jsHeapUsedBytes": 52997360,
+        "externalBytes": 50821505,
+        "arrayBufferBytes": 3581978
+      }
+    },
+    {
+      "tick": 21,
+      "distance": 5.42,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.14352199999984805,
+        "move": 19.986421999999948,
+        "validate": 0.10016999999970722,
+        "mesh": 13.121697999999924,
+        "transfer": 0.12363400000003821,
+        "observedWall": 35.62939899999992,
+        "tick": 33.35181199999943,
+        "tickWithTransfer": 33.475445999999465
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 58987.290377781675,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 43838,
+          "retiredSlots": 38120,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 372649984,
+          "jsHeapUsedBytes": 52998568,
+          "externalBytes": 50821505,
+          "arrayBufferBytes": 3581978
+        },
+        "restore": {
+          "allocatedSlots": 43838,
+          "retiredSlots": 40026,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 372649984,
+          "jsHeapUsedBytes": 53000184,
+          "externalBytes": 50821505,
+          "arrayBufferBytes": 3581978
+        },
+        "move": {
+          "allocatedSlots": 45744,
+          "retiredSlots": 40026,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 372649984,
+          "jsHeapUsedBytes": 53001752,
+          "externalBytes": 50821505,
+          "arrayBufferBytes": 3581978
+        },
+        "validate": {
+          "allocatedSlots": 45744,
+          "retiredSlots": 40026,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 372649984,
+          "jsHeapUsedBytes": 53003240,
+          "externalBytes": 50821505,
+          "arrayBufferBytes": 3581978
+        },
+        "mesh": {
+          "allocatedSlots": 45744,
+          "retiredSlots": 40026,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 373698560,
+          "jsHeapUsedBytes": 53004856,
+          "externalBytes": 50821505,
+          "arrayBufferBytes": 3581978
+        },
+        "transfer": {
+          "allocatedSlots": 45744,
+          "retiredSlots": 40026,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 373698560,
+          "jsHeapUsedBytes": 53008064,
+          "externalBytes": 52220965,
+          "arrayBufferBytes": 4981438
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 1048576,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3208,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 45744,
+        "retiredSlots": 40026,
+        "linearMemoryBytes": 40108032,
+        "processRssBytes": 373530624,
+        "jsHeapUsedBytes": 50853976,
+        "externalBytes": 50821505,
+        "arrayBufferBytes": 3581978
+      }
+    },
+    {
+      "tick": 22,
+      "distance": 5.44,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.562373999999636,
+        "move": 20.276842000000215,
+        "validate": 0.09078200000021752,
+        "mesh": 13.445389999999861,
+        "transfer": 0.12541700000019773,
+        "observedWall": 36.74382699999978,
+        "tick": 34.37538799999993,
+        "tickWithTransfer": 34.50080500000013
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 59019.60016998456,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 45744,
+          "retiredSlots": 40026,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 373530624,
+          "jsHeapUsedBytes": 50855184,
+          "externalBytes": 50821505,
+          "arrayBufferBytes": 3581978
+        },
+        "restore": {
+          "allocatedSlots": 45744,
+          "retiredSlots": 41932,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 373530624,
+          "jsHeapUsedBytes": 50856800,
+          "externalBytes": 50821505,
+          "arrayBufferBytes": 3581978
+        },
+        "move": {
+          "allocatedSlots": 47650,
+          "retiredSlots": 41932,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 373530624,
+          "jsHeapUsedBytes": 50858368,
+          "externalBytes": 50821505,
+          "arrayBufferBytes": 3581978
+        },
+        "validate": {
+          "allocatedSlots": 47650,
+          "retiredSlots": 41932,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 373530624,
+          "jsHeapUsedBytes": 50859856,
+          "externalBytes": 50821505,
+          "arrayBufferBytes": 3581978
+        },
+        "mesh": {
+          "allocatedSlots": 47650,
+          "retiredSlots": 41932,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 373530624,
+          "jsHeapUsedBytes": 50861576,
+          "externalBytes": 50821505,
+          "arrayBufferBytes": 3581978
+        },
+        "transfer": {
+          "allocatedSlots": 47650,
+          "retiredSlots": 41932,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 373530624,
+          "jsHeapUsedBytes": 50864784,
+          "externalBytes": 52220965,
+          "arrayBufferBytes": 4981438
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1720,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3208,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 47650,
+        "retiredSlots": 41932,
+        "linearMemoryBytes": 40108032,
+        "processRssBytes": 390180864,
+        "jsHeapUsedBytes": 65695232,
+        "externalBytes": 50821505,
+        "arrayBufferBytes": 3581978
+      }
+    },
+    {
+      "tick": 23,
+      "distance": 5.46,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.14010499999994863,
+        "move": 21.0954999999999,
+        "validate": 0.09996899999987363,
+        "mesh": 14.264208999999937,
+        "transfer": 0.12615900000037072,
+        "observedWall": 38.038456000000224,
+        "tick": 35.59978299999966,
+        "tickWithTransfer": 35.72594200000003
+      },
+      "triangles": 58286,
+      "quality": {
+        "vertices": 29141,
+        "triangles": 58286,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 59051.91014427668,
+        "faces": 160,
+        "capAtRequestedOffset": true
+      },
+      "memoryStages": {
+        "before": {
+          "allocatedSlots": 47650,
+          "retiredSlots": 41932,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 390180864,
+          "jsHeapUsedBytes": 65696440,
+          "externalBytes": 50821505,
+          "arrayBufferBytes": 3581978
+        },
+        "restore": {
+          "allocatedSlots": 47650,
+          "retiredSlots": 43838,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 390180864,
+          "jsHeapUsedBytes": 65698056,
+          "externalBytes": 50821505,
+          "arrayBufferBytes": 3581978
+        },
+        "move": {
+          "allocatedSlots": 49556,
+          "retiredSlots": 43838,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 390180864,
+          "jsHeapUsedBytes": 65699624,
+          "externalBytes": 50821505,
+          "arrayBufferBytes": 3581978
+        },
+        "validate": {
+          "allocatedSlots": 49556,
+          "retiredSlots": 43838,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 390180864,
+          "jsHeapUsedBytes": 65701112,
+          "externalBytes": 50821505,
+          "arrayBufferBytes": 3581978
+        },
+        "mesh": {
+          "allocatedSlots": 49556,
+          "retiredSlots": 43838,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 390180864,
+          "jsHeapUsedBytes": 65702728,
+          "externalBytes": 50821505,
+          "arrayBufferBytes": 3581978
+        },
+        "transfer": {
+          "allocatedSlots": 49556,
+          "retiredSlots": 43838,
+          "linearMemoryBytes": 40108032,
+          "processRssBytes": 390180864,
+          "jsHeapUsedBytes": 65705936,
+          "externalBytes": 52220965,
+          "arrayBufferBytes": 4981438
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 1906,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "move": {
+          "allocatedSlots": 1906,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1568,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1488,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3208,
+          "externalBytes": 1399460,
+          "arrayBufferBytes": 1399460
+        }
+      },
+      "memoryAfter": {
+        "allocatedSlots": 49556,
+        "retiredSlots": 43838,
+        "linearMemoryBytes": 40108032,
+        "processRssBytes": 405950464,
+        "jsHeapUsedBytes": 79421160,
+        "externalBytes": 50821505,
+        "arrayBufferBytes": 3581978
+      }
+    }
+  ]
+}
