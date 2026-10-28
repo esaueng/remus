@@ -145,7 +145,9 @@ export function runBoundedTabRolloverPackaged({ BrepKernel, decodeEvolutionPaylo
       }
       assert.deepEqual(bytes(k,input),before);
       const refuse=k.filletDetailed(input,selected,4.1,true);
-      assert.equal(refuse.status,'error'); assert.equal(refuse.code,'cliff-encountered');
+      // F1/F2 changes which prior engine's final typed refusal is preserved.
+      const expectedRefusal=prefix ? 'unsupported-seam-crossing' : 'cliff-encountered';
+      assert.equal(refuse.status,'error'); assert.equal(refuse.code,expectedRefusal);
       assert.deepEqual(bytes(k,input),before);
     } finally { k.free(); }
   }
