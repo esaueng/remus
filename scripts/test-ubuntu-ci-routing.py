@@ -19,6 +19,7 @@ SPEC.loader.exec_module(DIRECT)
 FILES = sorted(p for p in WORKFLOWS.glob("fleet-*.yml") if not is_ci_workflow(p))
 PROFILE_FILES = {entry['staged'] for entry in STAGE['workflows'].values()}
 PROFILE_FILES.update(staged for family, (_previous, staged) in ACTION_STAGES.items() if family != 'ci')
+PROFILE_FILES.add('fleet-benchmark-v4.yml')
 GUARD_PATH = ".github/actions/fleet-guard/action.yml"
 GUARD = (ROOT / GUARD_PATH).read_text()
 # Hosted jobs name an exact image: `ubuntu-latest` moves to a new Ubuntu
@@ -46,6 +47,7 @@ class UbuntuRoutingTests(unittest.TestCase):
         fixture.setUp()
         self.github = fixture.github
         self.variables = fixture.variables
+        self.variables['CI_FLEET_BENCHMARK_V4_ENABLED'] = 'true'
 
     def expressions(self):
         for path in FILES:
@@ -99,7 +101,8 @@ class UbuntuRoutingTests(unittest.TestCase):
 
     def test_validation_ref_authorizes_only_one_trusted_pr(self):
         variables = {"CI_FLEET_ENABLED": "false", "CI_FLEET_TARGET": "ci-server-jane",
-                     "CI_FLEET_VALIDATION_REF": self.github["ref"]}
+                     "CI_FLEET_VALIDATION_REF": self.github["ref"],
+                     "CI_FLEET_BENCHMARK_V4_ENABLED": "true"}
         for filename, expression in self.expressions():
             with self.subTest(file=filename):
                 self.assertIsInstance(DIRECT.evaluate(expression, self.github, variables), dict)

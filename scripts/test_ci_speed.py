@@ -2,6 +2,7 @@
 """Exercise the staged CI fan-in, artifact boundary, and privacy event coverage."""
 
 import json
+import importlib.util
 import os
 from pathlib import Path
 import re
@@ -148,6 +149,33 @@ class SpeedContractTests(unittest.TestCase):
         self.assertIn("prefix-key: v1-native-workspace", JOBS["test"])
         self.assertNotIn("Swatinem/rust-cache", JOBS["test-shards"])
         self.assertNotIn("Swatinem/rust-cache", JOBS["wasm-runtime"])
+
+    def test_new_revisions_stay_hosted_until_their_own_registration_switch(self):
+        spec = importlib.util.spec_from_file_location("speed_direct", ROOT / "scripts/test-direct-fleet.py")
+        direct = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(direct)
+        fixture = direct.DirectFleetTests()
+        fixture.setUp()
+        ci_expressions = re.findall(
+            r"^    runs-on: (?:&fleet(?:-light)?-runner )?(\$\{\{ fromJSON\(.+\) \}\})$",
+            STAGED, re.M,
+        )
+        self.assertEqual(len(ci_expressions), 2)
+        benchmark = (WORKFLOWS / "fleet-benchmark-v4.yml").read_text()
+        bench_expression = re.search(r"runs-on: &fleet-runner (\$\{\{.+\}\})", benchmark)[1]
+        for switch, expressions in (
+            ("CI_FLEET_CI_V9_ENABLED", ci_expressions),
+            ("CI_FLEET_BENCHMARK_V4_ENABLED", [bench_expression]),
+        ):
+            for expression in expressions:
+                for enabled in (None, "", "false", "true"):
+                    variables = dict(fixture.variables, **{switch: enabled})
+                    expected = ({"group": "ci-trusted-main", "labels": "ci-server-jane-5gb"}
+                                if enabled == "true" else "ubuntu-24.04")
+                    self.assertEqual(direct.evaluate(expression, fixture.github, variables), expected)
+                wrong_actor = dict(fixture.github, actor="outsider")
+                self.assertEqual(direct.evaluate(expression, wrong_actor, dict(fixture.variables, **{switch: "true"})),
+                                 "ubuntu-24.04")
 
     def test_shared_publisher_preserves_the_clean_credential_boundary(self):
         publisher = (WORKFLOWS / "publish.yml").read_text()

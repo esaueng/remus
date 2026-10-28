@@ -506,6 +506,7 @@ labelled PR comparisons keep their existing threshold and read-only build job.
 
 New fleet revisions require their own runner-group registration. V9 additionally
 requires `CI_FLEET_CI_V9_ENABLED=true` before it can select a self-hosted runner.
+The benchmark revision similarly requires `CI_FLEET_BENCHMARK_V4_ENABLED=true`.
 Existing fleet variables alone therefore keep this revision hosted. This change
 does not activate runners, edit their group allowlist, or change branch protection.
 
