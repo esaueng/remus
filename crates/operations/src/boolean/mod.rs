@@ -918,6 +918,7 @@ fn boolean_with_context_impl(
     if op == BooleanOp::Cut
         && let Some(result) = local_cut::try_local_hole(topo, a, b, tol)?
     {
+        crate::performance::bump_boolean_route(crate::performance::BooleanRoute::LocalCutSuccess);
         return Ok(result);
     }
 
@@ -1400,6 +1401,7 @@ fn boolean_with_context_impl(
     }
     let (gfa_a, gfa_b) = (a, b);
     let gfa_start = timer_now();
+    crate::performance::bump_boolean_route(crate::performance::BooleanRoute::GeneralGfa);
     match remus_algo::gfa::boolean_with_context(topo, algo_op, gfa_a, gfa_b, context) {
         Ok(result) => {
             let result_faces = remus_topology::explorer::solid_faces(topo, result)?.len();
@@ -2167,10 +2169,14 @@ fn fuse_cluster_with_context(
     };
     if cluster.len() >= 3 {
         let fused = match cluster_candidate_pairs(topo, cluster, context.tolerance.linear) {
-            ClusterPairs::Candidates(pairs) => Some(remus_algo::gfa::fuse_n_with_candidate_pairs(
-                topo, cluster, &pairs, context,
-            )),
+            ClusterPairs::Candidates(pairs) => {
+                crate::performance::bump_boolean_route(crate::performance::BooleanRoute::Nary);
+                Some(remus_algo::gfa::fuse_n_with_candidate_pairs(
+                    topo, cluster, &pairs, context,
+                ))
+            }
             ClusterPairs::Unproven => {
+                crate::performance::bump_boolean_route(crate::performance::BooleanRoute::Nary);
                 Some(remus_algo::gfa::fuse_n_with_context(topo, cluster, context))
             }
             // The N-way fuse would refuse this many pairs; go straight to

@@ -227,6 +227,7 @@ pub fn run_pave_filler_with_context(
     }
 
     // Stage 2: Resolution (mutable Topology)
+    let _phase = crate::perf::phase(crate::perf::PhaseKind::Resolve);
     context.check_cancelled()?;
     make_blocks::perform(arena)?;
     context.check_cancelled()?;
@@ -437,6 +438,7 @@ pub fn run_pave_filler_n_with_pairs(
     }
 
     // Stage 2: Resolution (solid-agnostic — reads the accumulated arena).
+    let _phase = crate::perf::phase(crate::perf::PhaseKind::Resolve);
     context.check_cancelled()?;
     make_blocks::perform(arena)?;
     context.check_cancelled()?;
