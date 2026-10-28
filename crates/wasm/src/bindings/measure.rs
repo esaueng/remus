@@ -1193,6 +1193,98 @@ mod tests {
 
     // ── Mass-properties numerical controls (B20 follow-up) ──────────
 
+    #[test]
+    fn torus_periodic_pocket_mass_matches_sections_through_direct_body_and_both_batches() {
+        let expected = 336.286_642_360_514_2;
+        for entry_point in 0..3 {
+            let mut kernel = BrepKernel::new();
+            let solid = if entry_point == 0 {
+                let torus = kernel.make_torus_solid(5.0, 2.0, 16).unwrap();
+                let cylinder = kernel.make_cylinder_solid(5.5, 7.5).unwrap();
+                kernel
+                    .transform_solid_binding(
+                        torus,
+                        vec![
+                            1.0, 0.0, 0.0, 3.0, 0.0, 1.0, 0.0, 1.5, 0.0, 0.0, 1.0, -0.5, 0.0, 0.0,
+                            0.0, 1.0,
+                        ],
+                    )
+                    .unwrap();
+                let result = kernel
+                    .boolean_with_quality_impl(
+                        "cut",
+                        torus,
+                        cylinder,
+                        Some(true),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                assert_eq!(result.quality, "exact");
+                result.solid
+            } else {
+                let script = r#"[
+                    {"op":"makeTorus","args":{"majorRadius":5,"minorRadius":2,"segments":16}},
+                    {"op":"makeCylinder","args":{"radius":5.5,"height":7.5}},
+                    {"op":"transform","args":{"solid":0,"matrix":[1,0,0,3,0,1,0,1.5,0,0,1,-0.5,0,0,0,1]}},
+                    {"op":"booleanWithQuality","args":{"operation":"cut","solidA":0,"solidB":1,"exactOnly":true}}
+                ]"#;
+                let result = if entry_point == 1 {
+                    kernel.execute_batch(script)
+                } else {
+                    kernel.execute_batch_v2(script)
+                };
+                let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+                assert_eq!(result[3]["ok"]["quality"], "exact", "{result}");
+                u32::try_from(result[3]["ok"]["solid"].as_u64().unwrap()).unwrap()
+            };
+            let before = remus_io::arena_io::serialize_solids(
+                &kernel.topo,
+                &[kernel.resolve_solid(solid).unwrap()],
+            )
+            .unwrap();
+            let properties = if entry_point == 0 {
+                // The direct wrapper's final JsValue conversion cannot run
+                // natively. Exercise its exact measurement/serialization body;
+                // the installed-package test also calls the actual JS wrapper.
+                let options = super::mass_properties_options(None, None, None).unwrap();
+                let native = remus_operations::measure::mass_properties_with_options(
+                    &kernel.topo,
+                    kernel.resolve_solid(solid).unwrap(),
+                    &options,
+                )
+                .unwrap();
+                serde_json::to_value(super::mass_properties_result(&native)).unwrap()
+            } else {
+                let script =
+                    serde_json::json!([{"op":"massProperties","args":{"solid":solid}}]).to_string();
+                let result = if entry_point == 1 {
+                    kernel.execute_batch(&script)
+                } else {
+                    kernel.execute_batch_v2(&script)
+                };
+                serde_json::from_str::<serde_json::Value>(&result).unwrap()[0]["ok"].clone()
+            };
+            let volume = properties["volume"].as_f64().unwrap();
+            assert!(
+                (volume - expected).abs() < expected * 1e-5,
+                "entry={entry_point}, properties={properties}"
+            );
+            assert_eq!(
+                remus_io::arena_io::serialize_solids(
+                    &kernel.topo,
+                    &[kernel.resolve_solid(solid).unwrap()],
+                )
+                .unwrap(),
+                before
+            );
+        }
+    }
+
     fn batch_v2(k: &mut BrepKernel, script: &str) -> serde_json::Value {
         serde_json::from_str(&k.execute_batch_v2(script)).unwrap()
     }
