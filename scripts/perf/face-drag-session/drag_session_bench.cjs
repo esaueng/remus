@@ -77,6 +77,7 @@ function packageMetadata(directory, stem) {
   const wasm = fs.readFileSync(path.join(directory, `${stem}_bg.wasm`));
   return { directory, name: info.name, version: info.version, wasmBytes: wasm.length,
     wasmSha256: sha256(wasm),
+    packageJsonSha256: sha256(fs.readFileSync(path.join(directory, 'package.json'))),
     wrapperSha256: sha256(fs.readFileSync(path.join(directory, `${stem}_node.cjs`))) };
 }
 
@@ -170,6 +171,69 @@ function summarize(records, window, before) {
   };
 }
 
+// A selected-body edit may copy the checkpoint's document once, then append
+// at most one source body's topology per tick. Retired slots intentionally
+// remain reserved: this gate never requires recycling external handles.
+// These are retained arena-slot budgets, not allocation-byte or CPU budgets.
+function workContract(records, sourceSlots, before) {
+  const violations = [];
+  const fail = (tick, stage, message) => violations.push({ tick, stage, message });
+  if (!Number.isSafeInteger(sourceSlots) || sourceSlots <= 0 ||
+      !Number.isSafeInteger(before.allocatedSlots) || before.allocatedSlots < sourceSlots) {
+    throw new Error('Invalid source/document topology inventory');
+  }
+  if (records.length < 2) fail(-1, 'capture', 'Need multiple edits to qualify recurring work');
+  let previous = before;
+  let maximumRecurringSlots = 0;
+  for (const [index, row] of records.entries()) {
+    if (row.tick !== index || !row.accepted) fail(index, 'result', 'Missing or refused edit');
+    const stages = row.memoryStages || {};
+    const snapshots = ['before', ...STAGES, 'transfer'].map(stage => [stage, stages[stage]]);
+    for (const [stage, snapshot] of snapshots) {
+      if (!snapshot || !['allocatedSlots', 'retiredSlots'].every(key =>
+        Number.isSafeInteger(snapshot[key]) && snapshot[key] >= 0) ||
+          snapshot.retiredSlots > snapshot.allocatedSlots) {
+        fail(index, stage, 'Invalid topology-slot snapshot');
+      }
+    }
+    if (snapshots.some(([, snapshot]) => !snapshot ||
+        !Number.isSafeInteger(snapshot.allocatedSlots) || !Number.isSafeInteger(snapshot.retiredSlots))) continue;
+    if (stages.before.allocatedSlots !== previous.allocatedSlots ||
+        stages.before.retiredSlots !== previous.retiredSlots) {
+      fail(index, 'before', 'Untimed diagnostics changed topology slots');
+    }
+    let prior = stages.before;
+    for (const stage of [...STAGES, 'transfer']) {
+      const current = stages[stage];
+      const allocated = current.allocatedSlots - prior.allocatedSlots;
+      const retired = current.retiredSlots - prior.retiredSlots;
+      const budget = stage === 'move' ? sourceSlots + (index === 0 ? before.allocatedSlots : 0) : 0;
+      if (allocated < 0 || allocated > budget) {
+        fail(index, stage, `Allocated ${allocated} topology slots; budget ${budget}`);
+      }
+      if (retired < 0 || retired > (stage === 'restore' ? sourceSlots : 0)) {
+        fail(index, stage, `Retired ${retired} topology slots outside restore's source-body budget`);
+      }
+      if (index > 0 && stage === 'move') maximumRecurringSlots = Math.max(maximumRecurringSlots, allocated);
+      prior = current;
+    }
+    if (!row.memoryAfter || row.memoryAfter.allocatedSlots !== prior.allocatedSlots ||
+        row.memoryAfter.retiredSlots !== prior.retiredSlots) {
+      fail(index, 'quality', 'Untimed quality checks changed topology slots');
+    }
+    if (prior.allocatedSlots - prior.retiredSlots > 2 * before.allocatedSlots + sourceSlots) {
+      fail(index, 'result', 'Live topology exceeds the checkpoint, its document copy and one edited body');
+    }
+    previous = row.memoryAfter || prior;
+  }
+  return { schema: 1, passed: violations.length === 0, sourceSlots,
+    initialDocumentSlots: before.allocatedSlots,
+    firstMoveSlotBudget: before.allocatedSlots + sourceSlots,
+    recurringMoveSlotBudget: sourceSlots, maximumRecurringSlots,
+    liveSlotBudget: 2 * before.allocatedSlots + sourceSlots,
+    readStageSlotBudget: 0, restoreRetirementSlotBudget: sourceSlots, violations };
+}
+
 function main(argv = process.argv.slice(2)) {
   const args = options(argv);
   if (args.out && fs.existsSync(args.out)) throw new Error('Output file already exists');
@@ -212,9 +276,11 @@ function main(argv = process.argv.slice(2)) {
   let prepared = null;
   try {
     for (let i = 0; i < args.background; i++) kernel.makeBox(10, 8, 6);
+    const beforeImport = memory(kernel);
     const roots = kernel.deserializeSolids(imported);
     assert(roots.length === 1, `Expected one imported solid; found ${roots.length}`);
     const solid = roots[0];
+    meta.sourceTopologySlots = memory(kernel).allocatedSlots - beforeImport.allocatedSlots;
     const faceIndex = sourceFaceIndex(kernel, solid);
     assert(kernel.getSolidFaces(solid).length === 160, 'Expected the 160-face holder');
     const checkpoint = kernel.checkpoint();
@@ -284,7 +350,7 @@ function main(argv = process.argv.slice(2)) {
         memoryStages, memoryDeltas, memoryAfter: memory(kernel) });
     }
     const result = { label: args.label, metadata: meta, summary: summarize(records, args.window, before),
-      records };
+      workContract: workContract(records, meta.sourceTopologySlots, before), records };
     if (args.out) fs.writeFileSync(args.out, JSON.stringify(result, null, 2) + '\n', { flag: 'wx' });
     const s = result.summary;
     const line = (name, q) => q ?
@@ -304,13 +370,16 @@ function main(argv = process.argv.slice(2)) {
         `${s.memoryLast.retiredSlots} retired), linear memory ` +
         `${s.memoryBefore.linearMemoryBytes} -> ${s.memoryLast.linearMemoryBytes} bytes`,
     ].join('\n') + '\n');
+    assert(result.workContract.passed, 'Preview topology work contract failed: ' +
+      JSON.stringify(result.workContract.violations));
+    return result;
   } finally {
     if (prepared) kernel.releasePreparedMove(prepared.result);
     kernel.free();
   }
 }
 
-module.exports = { main, options, distanceAt, summarize, memoryDelta };
+module.exports = { main, options, distanceAt, summarize, memoryDelta, workContract };
 if (require.main === module) {
   try { main(); } catch (error) {
     process.stderr.write(`${error.stack || error}\n`);

@@ -1,0 +1,35 @@
+{
+  "unique-bg200": {
+    "sourceInventory": "derived from the independently observed 1906-slot imported holder; original capture predates the driver work gate",
+    "workContract": {
+      "sourceSlots": 1906,
+      "firstMoveSlotBudget": 16612,
+      "recurringMoveSlotBudget": 1906,
+      "maximumRecurringSlots": 1906,
+      "liveSlotBudget": 31318,
+      "readStageSlotBudget": 0
+    }
+  },
+  "unique-bg0": {
+    "sourceInventory": "derived from the independently observed 1906-slot imported holder; original capture predates the driver work gate",
+    "workContract": {
+      "sourceSlots": 1906,
+      "firstMoveSlotBudget": 3812,
+      "recurringMoveSlotBudget": 1906,
+      "maximumRecurringSlots": 1906,
+      "liveSlotBudget": 5718,
+      "readStageSlotBudget": 0
+    }
+  },
+  "repeated-bg0": {
+    "sourceInventory": "derived from the independently observed 1906-slot imported holder; original capture predates the driver work gate",
+    "workContract": {
+      "sourceSlots": 1906,
+      "firstMoveSlotBudget": 3812,
+      "recurringMoveSlotBudget": 1906,
+      "maximumRecurringSlots": 1906,
+      "liveSlotBudget": 5718,
+      "readStageSlotBudget": 0
+    }
+  }
+}

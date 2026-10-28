@@ -23,6 +23,40 @@ not prove retained ownership or isolate allocator costs. Diagnostic reads can
 themselves affect memory. Restores retire every slot a tick allocated; slots
 are never reused, so raw handles cannot alias later entities.
 
+## Portable topology-work gate
+
+Every capture enforces a retained-topology-slot budget through the actual
+WASM preview calls. The source body's slot count is measured when its exact
+arena document is deserialized, separately from unrelated background bodies.
+The first move may append that body and cause one whole-document checkpoint
+copy. Subsequent moves may append at most one source body each. Restore may
+retire at most one source body and allocate no slots; relaxed validation,
+meshing, transfer, and the untimed diagnostic/quality reads must neither
+allocate nor retire topology slots. Invalid or decreasing counters and refused
+edits do not qualify. The JSON retains every snapshot and any failure, and a
+failed contract exits unsuccessfully after writing its evidence.
+The live slot inventory may hold the original checkpoint, its one document
+copy and one edited body; forgetting to retire previous results also fails.
+
+This is a deterministic retained-arena work limit, not a byte-allocation,
+peak-memory, latency, or geometric-accuracy bound. Transient clones freed
+within a call are not visible to these snapshots. Retired slots remain
+reserved for stale-handle safety; total session slots can grow linearly with
+accepted edits. `copyDocument` already provides an explicit fresh-owner path,
+but this preview does not migrate owners or erase tombstones.
+
+The matched-revision comparator independently rescores the raw snapshots and
+checks the final inventory rather than trusting a claimed passing summary.
+It applies the same body-relative bound at zero and 200 unrelated bodies;
+no machine-specific millisecond threshold is introduced. Cold/warmed timing,
+WASM linear memory, RSS, and GC observations remain separate diagnostics.
+
+The normal WASM smoke and installed-tarball suites run the same driver for
+three correctness-only ticks at zero and 200 background bodies through
+`packaged_contract.cjs`. They resolve the actual package paths supplied by
+each suite and exclude every timing sample. These short probes enforce work
+bounds, not long-session memory qualification.
+
 `--background N` creates N unrelated boxes before the import, which exposes
 per-tick work that grows with the document. Volume, recognition and all
 consumer work are excluded: the OpenZCAD

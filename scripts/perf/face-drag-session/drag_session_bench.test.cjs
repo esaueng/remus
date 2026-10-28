@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
-const { main, options, distanceAt, summarize, memoryDelta } = require('./drag_session_bench.cjs');
+const { main, options, distanceAt, summarize, memoryDelta, workContract } = require('./drag_session_bench.cjs');
 const { meshQuality } = require('../filleted-face-edit/wasm_edit_bench.cjs');
 
 const required = ['--kernel-pkg', '.', '--io-pkg', '.', '--fixture', 'README.md'];
@@ -91,4 +91,78 @@ test('the shared output gate accepts a closed tetrahedron and rejects an open di
   assert.equal(meshQuality(mesh, 4).watertight, true);
   assert.throws(() => meshQuality({ ...mesh, indices: mesh.indices.slice(0, 9),
     faceOffsets: Uint32Array.of(0, 3, 6, 9) }, 3), /not watertight/);
+});
+
+function workRecords(backgroundSlots = 0) {
+  const source = 3, initial = backgroundSlots + source;
+  const records = [];
+  let allocated = initial, retired = 0;
+  for (let tick = 0; tick < 3; tick++) {
+    const before = { allocatedSlots: allocated, retiredSlots: retired };
+    if (tick) retired += source;
+    const restore = { allocatedSlots: allocated, retiredSlots: retired };
+    allocated += source + (tick === 0 ? initial : 0);
+    const move = { allocatedSlots: allocated, retiredSlots: retired };
+    records.push({ tick, accepted: true,
+      memoryStages: { before, restore, move, validate: { ...move }, mesh: { ...move }, transfer: { ...move } },
+      memoryAfter: { ...move } });
+  }
+  return { records, initial: { allocatedSlots: initial, retiredSlots: 0 } };
+}
+
+test('the work budget permits one document copy and keeps recurring work body-local', () => {
+  for (const background of [0, 200 * 64]) {
+    const { records, initial } = workRecords(background);
+    const result = workContract(records, 3, initial);
+    assert.equal(result.passed, true);
+    assert.equal(result.firstMoveSlotBudget, background + 6);
+    assert.equal(result.maximumRecurringSlots, 3);
+    assert.equal(result.recurringMoveSlotBudget, 3);
+  }
+});
+
+test('an extra recurring document copy cannot hide behind matching average growth', () => {
+  const { records, initial } = workRecords(200 * 64);
+  // A second edit copies unrelated topology; a later apparent reclamation
+  // cancels it in the final total. Every individual stage must still fail.
+  records[1].memoryStages.move.allocatedSlots += initial.allocatedSlots;
+  const result = workContract(records, 3, initial);
+  assert.equal(result.passed, false);
+  assert.ok(result.violations.some(v => v.tick === 1 && v.stage === 'move'));
+  assert.ok(result.violations.some(v => v.tick === 1 && v.stage === 'validate'));
+});
+
+test('read-only stages, retirement and untimed reads cannot spend topology slots', () => {
+  for (const stage of ['restore', 'validate', 'mesh', 'transfer']) {
+    const { records, initial } = workRecords();
+    records[1].memoryStages[stage].allocatedSlots++;
+    assert.equal(workContract(records, 3, initial).passed, false, stage);
+  }
+  for (const mutate of [
+    r => { r[1].memoryStages.before.retiredSlots--; },
+    r => { r[1].memoryStages.move.retiredSlots++; },
+    r => { r[1].memoryAfter.allocatedSlots++; },
+    r => { r[1].memoryStages.restore.allocatedSlots = Number.NaN; },
+    r => { r[1].memoryStages.restore.retiredSlots = -1; },
+    r => { delete r[1].memoryStages.mesh; },
+    r => { r[1].accepted = false; },
+    r => { r[1].tick = 2; },
+  ]) {
+    const { records, initial } = workRecords();
+    mutate(records);
+    assert.equal(workContract(records, 3, initial).passed, false);
+  }
+  assert.equal(workContract([], 3, { allocatedSlots: 3 }).passed, false);
+  assert.throws(() => workContract([], 0, { allocatedSlots: 3 }), /Invalid/);
+});
+
+test('missing retirement cannot leak live result bodies under a fixed append budget', () => {
+  const { records, initial } = workRecords();
+  for (const row of records) {
+    for (const snapshot of Object.values(row.memoryStages)) snapshot.retiredSlots = 0;
+    row.memoryAfter.retiredSlots = 0;
+  }
+  const result = workContract(records, 3, initial);
+  assert.equal(result.passed, false);
+  assert.ok(result.violations.some(v => v.message.startsWith('Live topology exceeds')));
 });

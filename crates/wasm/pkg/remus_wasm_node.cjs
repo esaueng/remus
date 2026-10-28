@@ -6775,6 +6775,43 @@ class BrepKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * Full-turn analytic radial-profile revolution with complete construction
+     * history. Angles are degrees, as in `revolve`.
+     *
+     * Returns JSON `{"solid", "op", "evolution"}`. Faces and circular rims
+     * are generated from the profile face; reused profile seams and vertices
+     * are modified into themselves. Completeness is checked against every
+     * result entity. Only planar hole-free straight-edge radial profiles have
+     * qualified history; other profiles and partial turns refuse atomically.
+     * @param {number} face
+     * @param {number} origin_x
+     * @param {number} origin_y
+     * @param {number} origin_z
+     * @param {number} axis_x
+     * @param {number} axis_y
+     * @param {number} axis_z
+     * @param {number} angle_degrees
+     * @returns {string}
+     */
+    revolveJournaled(face, origin_x, origin_y, origin_z, axis_x, axis_y, axis_z, angle_degrees) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_revolveJournaled(this.__wbg_ptr, face, origin_x, origin_y, origin_z, axis_x, axis_y, axis_z, angle_degrees);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Run a custom sequence of healing operators on a solid.
      *
      * `steps` names built-in operators, executed in order: `fix_shape`,

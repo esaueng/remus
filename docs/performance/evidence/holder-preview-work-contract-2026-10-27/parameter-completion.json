@@ -1,0 +1,6816 @@
+{
+  "metadata": {
+    "mode": "completion",
+    "rebuildMode": "full",
+    "pattern": "repeated",
+    "ticks": 4,
+    "warmup": 1,
+    "timingStatus": "contended-smoke-excluded",
+    "timingsExcluded": true,
+    "package": {
+      "name": "remus-wasm",
+      "version": "2026.1.81",
+      "wasmBytes": 10666310,
+      "wasmSha256": "02a394340b129b903eef0ef7af49e369950074fe109f8853fdd8ddf00a790df3",
+      "wrapperSha256": "5fa6c40940b66fe52a4a49d291720bc088ff54d4994324986e5bdfdb26c0150e",
+      "packageJsonSha256": "b9336a15649569084459b989c1826a79cb9934fedc6f11c8a6ca5f7532af698e",
+      "suppliedSourceSha": "1853ad33cee018b01dfe135ccb3415e9503ceb62",
+      "suppliedSourceShaVerification": "Externally supplied; not verified by the driver."
+    },
+    "fixture": {
+      "identity": "hammer-holder-opening-width-31-feature-v1",
+      "recipeSha256": "8a24356effac832b714ca6724d33feedf91c1251d2bb62096d332ed2c55c8719",
+      "source": {
+        "path": "crates/io/tests/data/shapr3d_hammer_holder.step",
+        "sha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8",
+        "faces": 160,
+        "nurbsFaces": 42
+      },
+      "documents": {
+        "base": "7a8a3fac03a2ce63eb0e84ed61fd9fc09c6454973cc6225d5122cc1e3bf05026",
+        "text": "dd59dd4c7de07fb7c63c2c8b69aac17fd4ba97244bab7ba3fcfb3638b4b0a96f"
+      },
+      "consumer": {
+        "repository": "https://github.com/esaueng/OpenZCAD",
+        "revision": "913bb9ddd015bf2e6284c60a231eaa5afe7f2106",
+        "recipeCompiler": "packages/command-system/src/growing-holder.ts",
+        "recognizer": "packages/kernel-adapter/src/opening-recognition.ts",
+        "license": "Apache-2.0"
+      },
+      "featureCount": 31
+    },
+    "harnessSha256": "79751f89874700de56917dad0e0a5c1d46a2b0008e9aac9178b90a09ac4f4d09",
+    "recipeHarnessSha256": "68a572fe2294321a2c53893ffc0edf160e3b318e1b3395fb82602f6d1f0811a5",
+    "meshQualityHarnessSha256": "605bcfe13bb916afa6663be7b91135ecbde7ec865a786f8864c06e18a4c5f03b",
+    "node": "v24.22.1",
+    "versions": {
+      "node": "24.22.1",
+      "acorn": "8.18.0",
+      "ada": "4.0.0",
+      "amaro": "1.1.11",
+      "ares": "1.34.9",
+      "brotli": "1.2.0",
+      "cldr": "48.0",
+      "icu": "78.3",
+      "llhttp": "9.4.3",
+      "merve": "1.2.2",
+      "modules": "137",
+      "napi": "10",
+      "nbytes": "0.1.4",
+      "ncrypto": "0.0.1",
+      "nghttp2": "1.70.0",
+      "nghttp3": "",
+      "ngtcp2": "",
+      "openssl": "3.5.9",
+      "simdjson": "4.6.11",
+      "simdutf": "6.4.0",
+      "sqlite": "3.53.4",
+      "tz": "2026e",
+      "undici": "7.30.1",
+      "unicode": "17.0",
+      "uv": "1.52.1",
+      "uvwasi": "0.0.23",
+      "v8": "13.6.233.17-node.58",
+      "zlib": "1.3.2.1-motley-285e94b",
+      "zstd": "1.5.7"
+    },
+    "cpu": "AMD Ryzen 9 5900XT 16-Core Processor",
+    "platform": "linux",
+    "architecture": "x64",
+    "affinity": "31",
+    "timing": {
+      "clock": "performance.now; synchronous kernel replay stage intervals",
+      "stageSum": "Sum of replay stage intervals, including in-block JavaScript, prefix validation and prefix serialization; between-stage memory probes excluded.",
+      "observedWall": "Restore through transfer (preview) or recognition (completion), including between-stage probes.",
+      "quality": "All quality, material, inventory and full arena reads are outside timings; may affect subsequent ticks.",
+      "revisit": "Previously requested width, including a refused request; does not establish a cache hit.",
+      "cold": "First tick in this module process after separately reported checkpoint setup; full mode includes all 31 geometry features; not cold application launch."
+    },
+    "policy": {
+      "linear": 0.02,
+      "angular": 0.35,
+      "measurement": 0.08,
+      "height": 58,
+      "measurementReuse": "production defaults",
+      "prefix": "Rebuild all 17 fixed features on every request from immutable exact base/text imports.",
+      "suffix": "14 features: three sketch/extrude pairs, six body placements, union, and text placement",
+      "inputToFrame": false
+    },
+    "moduleLoadMs": 58.208508,
+    "constructorMs": 0.5204540000000009,
+    "memoryBeforePrepare": {
+      "allocatedSlots": 0,
+      "retiredSlots": 0,
+      "linearMemoryBytes": 1507328,
+      "processRssBytes": 89853952,
+      "jsHeapUsedBytes": 6632480,
+      "externalBytes": 25915574,
+      "arrayBufferBytes": 22452798
+    },
+    "prepareMs": 0.1471390000000099,
+    "memoryAfterPrepare": {
+      "allocatedSlots": 0,
+      "retiredSlots": 0,
+      "linearMemoryBytes": 1507328,
+      "processRssBytes": 89853952,
+      "jsHeapUsedBytes": 6641960,
+      "externalBytes": 25915614,
+      "arrayBufferBytes": 22452798
+    },
+    "prepareMemoryDelta": {
+      "allocatedSlots": 0,
+      "retiredSlots": 0,
+      "linearMemoryBytes": 0,
+      "processRssBytes": 0,
+      "jsHeapUsedBytes": 9480,
+      "externalBytes": 40,
+      "arrayBufferBytes": 0
+    },
+    "prefixDocumentSha256": "32f286e5843825a82478470aeb3cc616f9bd65b61da76fd3e20485ea41b028fb"
+  },
+  "records": [
+    {
+      "index": 0,
+      "width": 47,
+      "cold": true,
+      "warmup": true,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.30759100000000217,
+        "prefix": 2152.091568,
+        "rebuild": 354.25464599999987,
+        "validate": 3.992601999999806,
+        "mesh": 317.7020600000001,
+        "transfer": 0.5458530000000792,
+        "volume": 507.60211100000015,
+        "recognize": 275.84066200000007,
+        "observedWall": 3620.336601,
+        "stageSum": 3612.3370929999996,
+        "previewStageSum": 2828.8943199999994
+      },
+      "memoryBefore": {
+        "allocatedSlots": 0,
+        "retiredSlots": 0,
+        "linearMemoryBytes": 1507328,
+        "processRssBytes": 89853952,
+        "jsHeapUsedBytes": 6648504,
+        "externalBytes": 25915614,
+        "arrayBufferBytes": 22452798
+      },
+      "memoryAfter": {
+        "allocatedSlots": 13000,
+        "retiredSlots": 0,
+        "linearMemoryBytes": 23265280,
+        "processRssBytes": 339845120,
+        "jsHeapUsedBytes": 7574864,
+        "externalBytes": 49886222,
+        "arrayBufferBytes": 24665454
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 5352,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "prefix": {
+          "allocatedSlots": 6944,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 6225920,
+          "processRssBytes": 203685888,
+          "jsHeapUsedBytes": 483640,
+          "externalBytes": 6879580,
+          "arrayBufferBytes": 653660
+        },
+        "rebuild": {
+          "allocatedSlots": 6056,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 917504,
+          "processRssBytes": 1990656,
+          "jsHeapUsedBytes": 213592,
+          "externalBytes": 919296,
+          "arrayBufferBytes": 1792
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 4168,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 14614528,
+          "processRssBytes": 65060864,
+          "jsHeapUsedBytes": 97224,
+          "externalBytes": 14614528,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 2359296,
+          "jsHeapUsedBytes": 27584,
+          "externalBytes": 1557204,
+          "arrayBufferBytes": 1557204
+        },
+        "volume": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": -32542720,
+          "jsHeapUsedBytes": 24184,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "recognize": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 9437184,
+          "jsHeapUsedBytes": 70616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        }
+      },
+      "memoryAfterStage": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 1507328,
+          "processRssBytes": 89853952,
+          "jsHeapUsedBytes": 6653856,
+          "externalBytes": 25915614,
+          "arrayBufferBytes": 22452798
+        },
+        "prefix": {
+          "allocatedSlots": 6944,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 7733248,
+          "processRssBytes": 293539840,
+          "jsHeapUsedBytes": 7137496,
+          "externalBytes": 32795194,
+          "arrayBufferBytes": 23106458
+        },
+        "rebuild": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 8650752,
+          "processRssBytes": 295530496,
+          "jsHeapUsedBytes": 7351088,
+          "externalBytes": 33714490,
+          "arrayBufferBytes": 23108250
+        },
+        "validate": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 8650752,
+          "processRssBytes": 295530496,
+          "jsHeapUsedBytes": 7355256,
+          "externalBytes": 33714490,
+          "arrayBufferBytes": 23108250
+        },
+        "mesh": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 23265280,
+          "processRssBytes": 360591360,
+          "jsHeapUsedBytes": 7452480,
+          "externalBytes": 48329018,
+          "arrayBufferBytes": 23108250
+        },
+        "transfer": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 23265280,
+          "processRssBytes": 362950656,
+          "jsHeapUsedBytes": 7480064,
+          "externalBytes": 49886222,
+          "arrayBufferBytes": 24665454
+        },
+        "volume": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 23265280,
+          "processRssBytes": 330407936,
+          "jsHeapUsedBytes": 7504248,
+          "externalBytes": 49886222,
+          "arrayBufferBytes": 24665454
+        },
+        "recognize": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 23265280,
+          "processRssBytes": 339845120,
+          "jsHeapUsedBytes": 7574864,
+          "externalBytes": 49886222,
+          "arrayBufferBytes": 24665454
+        }
+      },
+      "validation": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "volumes": [
+        50364.08950370699,
+        6.393221518248117,
+        5.326742529920282,
+        0.7201131976088323,
+        6.074200484840347,
+        6.3977672310713505,
+        6.070310730755033,
+        6.2849630909964205
+      ],
+      "features": [
+        [
+          {
+            "area": 29.416602217275457,
+            "face": 918,
+            "type": "filletLike"
+          },
+          {
+            "area": 28.882096299375732,
+            "face": 922,
+            "type": "filletLike"
+          },
+          {
+            "area": 23.466850372153164,
+            "face": 923,
+            "type": "filletLike"
+          },
+          {
+            "area": 3.9000828762792357,
+            "face": 924,
+            "type": "filletLike"
+          },
+          {
+            "area": 31.70050677339304,
+            "face": 927,
+            "type": "filletLike"
+          },
+          {
+            "area": 9.194056453067724,
+            "face": 935,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.8495559158819,
+            "face": 948,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026435206122,
+            "face": 956,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026428541863,
+            "face": 962,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157617,
+            "face": 970,
+            "type": "filletLike"
+          },
+          {
+            "area": 29.415522425025014,
+            "face": 975,
+            "type": "filletLike"
+          },
+          {
+            "area": 3.9000828291805925,
+            "face": 980,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157619,
+            "face": 984,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.849555915881922,
+            "face": 987,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.068583465864631,
+            "face": 999,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.13716694115407,
+            "face": 1001,
+            "type": "filletLike"
+          },
+          {
+            "area": 31.70155516140678,
+            "face": 1005,
+            "type": "filletLike"
+          },
+          {
+            "area": 9.19405645306771,
+            "face": 1007,
+            "type": "filletLike"
+          },
+          {
+            "area": 23.471018628098335,
+            "face": 1008,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.068583473301001,
+            "face": 1010,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.137166941154069,
+            "face": 1011,
+            "type": "filletLike"
+          },
+          {
+            "area": 28.88081109442495,
+            "face": 1020,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026431873964,
+            "face": 1030,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157617,
+            "face": 1032,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157617,
+            "face": 1038,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026435206129,
+            "face": 1040,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.849555915881908,
+            "face": 1041,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.0685834733010005,
+            "face": 1042,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.13716694115407,
+            "face": 1044,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.137166941154057,
+            "face": 1047,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.068583465864631,
+            "face": 1048,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.849555915881922,
+            "face": 1049,
+            "type": "filletLike"
+          },
+          {
+            "diameter": 5,
+            "faces": [
+              954
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 10,
+            "faces": [
+              934
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 6,
+            "faces": [
+              948
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 16,
+            "faces": [
+              917,
+              974
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 10,
+            "faces": [
+              991
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 5,
+            "faces": [
+              998
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 6,
+            "faces": [
+              1041
+            ],
+            "through": false,
+            "type": "hole"
+          }
+        ],
+        [],
+        [],
+        [],
+        [],
+        [
+          {
+            "area": 0.16674962607460195,
+            "face": 1096,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.5390421966966625,
+            "face": 1104,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.06587002792673549,
+            "face": 1106,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.3082292449736024,
+            "face": 1108,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.3369341314047932,
+            "face": 1109,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.26320697527147724,
+            "face": 1111,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.22289290011249233,
+            "face": 1112,
+            "type": "filletLike"
+          }
+        ],
+        [
+          {
+            "area": 0.19453181448230822,
+            "face": 1116,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.27637422790053034,
+            "face": 1117,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.2452179976051974,
+            "face": 1122,
+            "type": "filletLike"
+          }
+        ],
+        [
+          {
+            "area": 1.0137522185761432,
+            "face": 1133,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.38250506873135104,
+            "face": 1134,
+            "type": "filletLike"
+          },
+          {
+            "floor": 1135,
+            "type": "pocket",
+            "walls": [
+              1133,
+              1134
+            ]
+          }
+        ]
+      ],
+      "featureSummary": [
+        {
+          "counts": {
+            "filletLike": 32,
+            "hole": 7
+          },
+          "holeDiameters": [
+            5,
+            5,
+            6,
+            6,
+            10,
+            10,
+            16
+          ]
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {
+            "filletLike": 7
+          },
+          "holeDiameters": []
+        },
+        {
+          "counts": {
+            "filletLike": 3
+          },
+          "holeDiameters": []
+        },
+        {
+          "counts": {
+            "filletLike": 2,
+            "pocket": 1
+          },
+          "holeDiameters": []
+        }
+      ],
+      "checkpointCount": 1,
+      "bbox": [
+        -26.5,
+        6.5,
+        4.5,
+        48.5,
+        59.5,
+        62.5
+      ],
+      "inventories": [
+        {
+          "faces": 108,
+          "counts": {
+            "cylinder": 42,
+            "nurbs": 8,
+            "torus": 14,
+            "plane": 34,
+            "cone": 2,
+            "sphere": 8
+          },
+          "radii": [
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ]
+          ]
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 2,
+            "nurbs": 4
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 4,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 6
+          },
+          "radii": []
+        },
+        {
+          "faces": 12,
+          "counts": {
+            "plane": 10,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 19,
+          "counts": {
+            "plane": 7,
+            "nurbs": 12
+          },
+          "radii": []
+        },
+        {
+          "faces": 13,
+          "counts": {
+            "plane": 4,
+            "nurbs": 9
+          },
+          "radii": []
+        },
+        {
+          "faces": 10,
+          "counts": {
+            "plane": 5,
+            "nurbs": 5
+          },
+          "radii": []
+        }
+      ],
+      "meshChecks": [
+        {
+          "vertices": 29649,
+          "triangles": 59302,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 50355.298483334656
+        },
+        {
+          "vertices": 422,
+          "triangles": 844,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.3885432491985386
+        },
+        {
+          "vertices": 393,
+          "triangles": 782,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 5.321569645186874
+        },
+        {
+          "vertices": 8,
+          "triangles": 12,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 0.7201136228248393
+        },
+        {
+          "vertices": 274,
+          "triangles": 544,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.073480788883843
+        },
+        {
+          "vertices": 638,
+          "triangles": 1276,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.3951797306077305
+        },
+        {
+          "vertices": 680,
+          "triangles": 1356,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.063210854641909
+        },
+        {
+          "vertices": 370,
+          "triangles": 740,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.277655723072674
+        }
+      ],
+      "material": [
+        {
+          "point": [
+            11,
+            49.5,
+            8
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            11,
+            18,
+            40
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            -19.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            41.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            -9.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            31.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "806f0cf2dd391c16f89f8b20e28b38a991e3b20e9c70e22d9546785d92a8455a",
+      "meshSha256": [
+        {
+          "positions": "a5ec6e5bf6ef70c1c8572a0a0fbe194650127ba96538244e916ffaac360472dc",
+          "indices": "06e493bc3095b7afa1577676d2d6aca64bb320fe2429b9dd433e795899582897",
+          "normals": "2814e723d00baa6dc9b4d406b4886ada1571a7f4fd117a4ee47b2adbe49b90f3",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "16084e93ea84b0fcfdfe508998a232e778fea0e50a2b28d3ac3029336a84d930",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "43cac2eac88806fb2b8a189c69b5034849efcab114660bf8c82ac9488845860e",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "d34b7a599c8ae53400ba88fe404b09037eef1b8cc1fa93215e9d596c50913d99",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "9756d0f6cf1b3f4abe0c7f99c3277c6cefd83fec1a5aefe201c45bbf9fce96af",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "4028fbc8e2585d2a63686843b9b902f70877393c942cb16daa599d7425f25168",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "32449273c5438ecc0add055509746432bb993e444933681a47c1a19c1af9b090",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "bcf97d53077769abb85625d4be31009e48737c2ee6c21a4581dd0869d019b283",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 1,
+      "width": 48,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.5443599999998696,
+        "prefix": 155.8996729999999,
+        "rebuild": 151.2194499999996,
+        "validate": 7.482312000000093,
+        "mesh": 65.93000200000006,
+        "transfer": 0.21355400000084046,
+        "volume": 17.683767999999873,
+        "recognize": 151.2268639999993,
+        "observedWall": 552.6716759999999,
+        "stageSum": 550.1999829999995,
+        "previewStageSum": 381.28935100000035
+      },
+      "memoryBefore": {
+        "allocatedSlots": 13000,
+        "retiredSlots": 0,
+        "linearMemoryBytes": 23265280,
+        "processRssBytes": 349761536,
+        "jsHeapUsedBytes": 19174000,
+        "externalBytes": 39604025,
+        "arrayBufferBytes": 14287176
+      },
+      "memoryAfter": {
+        "allocatedSlots": 26000,
+        "retiredSlots": 13000,
+        "linearMemoryBytes": 38010880,
+        "processRssBytes": 364953600,
+        "jsHeapUsedBytes": 19411408,
+        "externalBytes": 56562281,
+        "arrayBufferBytes": 16499832
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 4120,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "prefix": {
+          "allocatedSlots": 6944,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 4915200,
+          "processRssBytes": 4718592,
+          "jsHeapUsedBytes": 58336,
+          "externalBytes": 5568860,
+          "arrayBufferBytes": 653660
+        },
+        "rebuild": {
+          "allocatedSlots": 6056,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 262144,
+          "jsHeapUsedBytes": 114192,
+          "externalBytes": 1792,
+          "arrayBufferBytes": 1792
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3392,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 9830400,
+          "processRssBytes": 10747904,
+          "jsHeapUsedBytes": 15120,
+          "externalBytes": 9830400,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 17584,
+          "externalBytes": 1557204,
+          "arrayBufferBytes": 1557204
+        },
+        "volume": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 10032,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "recognize": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": -536576,
+          "jsHeapUsedBytes": 14632,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        }
+      },
+      "memoryAfterStage": {
+        "restore": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 23265280,
+          "processRssBytes": 349761536,
+          "jsHeapUsedBytes": 19178120,
+          "externalBytes": 39604025,
+          "arrayBufferBytes": 14287176
+        },
+        "prefix": {
+          "allocatedSlots": 19944,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 28180480,
+          "processRssBytes": 354480128,
+          "jsHeapUsedBytes": 19236456,
+          "externalBytes": 45172885,
+          "arrayBufferBytes": 14940836
+        },
+        "rebuild": {
+          "allocatedSlots": 26000,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 28180480,
+          "processRssBytes": 354742272,
+          "jsHeapUsedBytes": 19350648,
+          "externalBytes": 45174677,
+          "arrayBufferBytes": 14942628
+        },
+        "validate": {
+          "allocatedSlots": 26000,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 28180480,
+          "processRssBytes": 354742272,
+          "jsHeapUsedBytes": 19354040,
+          "externalBytes": 45174677,
+          "arrayBufferBytes": 14942628
+        },
+        "mesh": {
+          "allocatedSlots": 26000,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 38010880,
+          "processRssBytes": 365490176,
+          "jsHeapUsedBytes": 19369160,
+          "externalBytes": 55005077,
+          "arrayBufferBytes": 14942628
+        },
+        "transfer": {
+          "allocatedSlots": 26000,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 38010880,
+          "processRssBytes": 365490176,
+          "jsHeapUsedBytes": 19386744,
+          "externalBytes": 56562281,
+          "arrayBufferBytes": 16499832
+        },
+        "volume": {
+          "allocatedSlots": 26000,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 38010880,
+          "processRssBytes": 365490176,
+          "jsHeapUsedBytes": 19396776,
+          "externalBytes": 56562281,
+          "arrayBufferBytes": 16499832
+        },
+        "recognize": {
+          "allocatedSlots": 26000,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 38010880,
+          "processRssBytes": 364953600,
+          "jsHeapUsedBytes": 19411408,
+          "externalBytes": 56562281,
+          "arrayBufferBytes": 16499832
+        }
+      },
+      "validation": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "volumes": [
+        50520.22685771142,
+        6.393221518248117,
+        5.326742529920282,
+        0.7201131976088323,
+        6.074200484840347,
+        6.3977672310713505,
+        6.070310730755033,
+        6.2849630909964205
+      ],
+      "features": [
+        [
+          {
+            "area": 29.416602217275457,
+            "face": 2055,
+            "type": "filletLike"
+          },
+          {
+            "area": 28.882096299375732,
+            "face": 2059,
+            "type": "filletLike"
+          },
+          {
+            "area": 23.466850372153164,
+            "face": 2060,
+            "type": "filletLike"
+          },
+          {
+            "area": 3.9000828762792583,
+            "face": 2061,
+            "type": "filletLike"
+          },
+          {
+            "area": 31.70050677339304,
+            "face": 2064,
+            "type": "filletLike"
+          },
+          {
+            "area": 9.194056453067724,
+            "face": 2072,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.8495559158819,
+            "face": 2085,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026435206122,
+            "face": 2093,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026428541863,
+            "face": 2099,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157617,
+            "face": 2107,
+            "type": "filletLike"
+          },
+          {
+            "area": 29.415522425025014,
+            "face": 2112,
+            "type": "filletLike"
+          },
+          {
+            "area": 3.9000828291805893,
+            "face": 2117,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157619,
+            "face": 2121,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.849555915881922,
+            "face": 2124,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.068583465864631,
+            "face": 2136,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.13716694115407,
+            "face": 2138,
+            "type": "filletLike"
+          },
+          {
+            "area": 31.70155516140678,
+            "face": 2142,
+            "type": "filletLike"
+          },
+          {
+            "area": 9.194056453067706,
+            "face": 2144,
+            "type": "filletLike"
+          },
+          {
+            "area": 23.471018628098335,
+            "face": 2145,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.068583473301001,
+            "face": 2147,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.137166941154069,
+            "face": 2148,
+            "type": "filletLike"
+          },
+          {
+            "area": 28.88081109442495,
+            "face": 2157,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026431873964,
+            "face": 2167,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157617,
+            "face": 2169,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157617,
+            "face": 2175,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026435206129,
+            "face": 2177,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.849555915881908,
+            "face": 2178,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.0685834733010005,
+            "face": 2179,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.13716694115407,
+            "face": 2181,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.137166941154057,
+            "face": 2184,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.068583465864631,
+            "face": 2185,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.849555915881922,
+            "face": 2186,
+            "type": "filletLike"
+          },
+          {
+            "diameter": 5,
+            "faces": [
+              2091
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 10,
+            "faces": [
+              2071
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 6,
+            "faces": [
+              2085
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 16,
+            "faces": [
+              2054,
+              2111
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 10,
+            "faces": [
+              2128
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 5,
+            "faces": [
+              2135
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 6,
+            "faces": [
+              2178
+            ],
+            "through": false,
+            "type": "hole"
+          }
+        ],
+        [],
+        [],
+        [],
+        [],
+        [
+          {
+            "area": 0.16674962607460195,
+            "face": 2233,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.5390421966966625,
+            "face": 2241,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.06587002792673549,
+            "face": 2243,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.3082292449736024,
+            "face": 2245,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.3369341314047932,
+            "face": 2246,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.26320697527147724,
+            "face": 2248,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.22289290011249233,
+            "face": 2249,
+            "type": "filletLike"
+          }
+        ],
+        [
+          {
+            "area": 0.19453181448230822,
+            "face": 2253,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.27637422790053034,
+            "face": 2254,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.2452179976051974,
+            "face": 2259,
+            "type": "filletLike"
+          }
+        ],
+        [
+          {
+            "area": 1.0137522185761432,
+            "face": 2270,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.38250506873135104,
+            "face": 2271,
+            "type": "filletLike"
+          },
+          {
+            "floor": 2272,
+            "type": "pocket",
+            "walls": [
+              2270,
+              2271
+            ]
+          }
+        ]
+      ],
+      "featureSummary": [
+        {
+          "counts": {
+            "filletLike": 32,
+            "hole": 7
+          },
+          "holeDiameters": [
+            5,
+            5,
+            6,
+            6,
+            10,
+            10,
+            16
+          ]
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {
+            "filletLike": 7
+          },
+          "holeDiameters": []
+        },
+        {
+          "counts": {
+            "filletLike": 3
+          },
+          "holeDiameters": []
+        },
+        {
+          "counts": {
+            "filletLike": 2,
+            "pocket": 1
+          },
+          "holeDiameters": []
+        }
+      ],
+      "checkpointCount": 1,
+      "bbox": [
+        -27,
+        6.5,
+        4.5,
+        49,
+        59.5,
+        62.5
+      ],
+      "inventories": [
+        {
+          "faces": 108,
+          "counts": {
+            "cylinder": 42,
+            "nurbs": 8,
+            "torus": 14,
+            "plane": 34,
+            "cone": 2,
+            "sphere": 8
+          },
+          "radii": [
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ]
+          ]
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 2,
+            "nurbs": 4
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 4,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 6
+          },
+          "radii": []
+        },
+        {
+          "faces": 12,
+          "counts": {
+            "plane": 10,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 19,
+          "counts": {
+            "plane": 7,
+            "nurbs": 12
+          },
+          "radii": []
+        },
+        {
+          "faces": 13,
+          "counts": {
+            "plane": 4,
+            "nurbs": 9
+          },
+          "radii": []
+        },
+        {
+          "faces": 10,
+          "counts": {
+            "plane": 5,
+            "nurbs": 5
+          },
+          "radii": []
+        }
+      ],
+      "meshChecks": [
+        {
+          "vertices": 29649,
+          "triangles": 59302,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 50511.42423295274
+        },
+        {
+          "vertices": 422,
+          "triangles": 844,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.388543249198576
+        },
+        {
+          "vertices": 393,
+          "triangles": 782,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 5.321569645186783
+        },
+        {
+          "vertices": 8,
+          "triangles": 12,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 0.7201136228248401
+        },
+        {
+          "vertices": 274,
+          "triangles": 544,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.073480788883791
+        },
+        {
+          "vertices": 638,
+          "triangles": 1276,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.395179730607751
+        },
+        {
+          "vertices": 680,
+          "triangles": 1356,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.0632108546418095
+        },
+        {
+          "vertices": 370,
+          "triangles": 740,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.277655723072472
+        }
+      ],
+      "material": [
+        {
+          "point": [
+            11,
+            49.5,
+            8
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            11,
+            18,
+            40
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            -20,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            42,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            -10,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            32,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "61782addea2d7d8f480dc75f18cd9d3c47fab8984411d7d618561857e660cde1",
+      "meshSha256": [
+        {
+          "positions": "3b7a54e976d47eabbd3c4b04a485e998466ec60d00b3de635de6abb0dfebb380",
+          "indices": "130b6c91f708334c7ac1f69d07240d5ff2c6388598b351fa3dfee82792cf3f6b",
+          "normals": "a12690b9f2a2c8e1b5081a48c440440d8ea8f00a77545022cfc4ed51ac6765b1",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "eb872454d6fd37a62a87184bd5925199c2a5715b0c197c040813e116383d659e",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "4d8a2cf23a672acbe82d537a79ed2eea38b8365ab8765234c387ba86a17d006c",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "abab5b997780a7323a88bc01f4e4aeda2e09dbcb4de0fbf6b23a1934e22a0fe6",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "c2902748efc601ce84dbf85f8166b4c411e80a89fdf50084e24cf9d2384b5ea3",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "ed25830afa0c0f87f06ae31bfb0355acbe7938fc61c17dc84a1801a7c4ac9858",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "e715a11ad48860c93fbb3da7bc04c1fdeb0e9cd46f773db9e7ea0a37e6645d27",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "7d24f269a0c14df1f49c60d94b019571a4cf395fab888b5ff3d6e564279117e2",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 2,
+      "width": 49,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.0452049999994415,
+        "prefix": 106.30818400000044,
+        "rebuild": 129.0359010000002,
+        "validate": 2.6679060000005848,
+        "mesh": 38.820395999999164,
+        "transfer": 0.16297899999972287,
+        "volume": 20.266381999999794,
+        "recognize": 145.91402500000004,
+        "observedWall": 446.90879399999994,
+        "stageSum": 443.2209779999994,
+        "previewStageSum": 277.04057099999955
+      },
+      "memoryBefore": {
+        "allocatedSlots": 26000,
+        "retiredSlots": 13000,
+        "linearMemoryBytes": 38010880,
+        "processRssBytes": 365289472,
+        "jsHeapUsedBytes": 16836272,
+        "externalBytes": 54349631,
+        "arrayBufferBytes": 14287182
+      },
+      "memoryAfter": {
+        "allocatedSlots": 39000,
+        "retiredSlots": 26000,
+        "linearMemoryBytes": 50987008,
+        "processRssBytes": 376561664,
+        "jsHeapUsedBytes": 17055664,
+        "externalBytes": 69538415,
+        "arrayBufferBytes": 16499838
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1688,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "prefix": {
+          "allocatedSlots": 6944,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 12976128,
+          "processRssBytes": 10485760,
+          "jsHeapUsedBytes": 49560,
+          "externalBytes": 13629788,
+          "arrayBufferBytes": 653660
+        },
+        "rebuild": {
+          "allocatedSlots": 6056,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 262144,
+          "jsHeapUsedBytes": 125640,
+          "externalBytes": 1792,
+          "arrayBufferBytes": 1792
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3288,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 262144,
+          "jsHeapUsedBytes": 5808,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 15544,
+          "externalBytes": 1557204,
+          "arrayBufferBytes": 1557204
+        },
+        "volume": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3624,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "recognize": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 262144,
+          "jsHeapUsedBytes": 14240,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        }
+      },
+      "memoryAfterStage": {
+        "restore": {
+          "allocatedSlots": 26000,
+          "retiredSlots": 26000,
+          "linearMemoryBytes": 38010880,
+          "processRssBytes": 365289472,
+          "jsHeapUsedBytes": 16837960,
+          "externalBytes": 54349631,
+          "arrayBufferBytes": 14287182
+        },
+        "prefix": {
+          "allocatedSlots": 32944,
+          "retiredSlots": 26000,
+          "linearMemoryBytes": 50987008,
+          "processRssBytes": 375775232,
+          "jsHeapUsedBytes": 16887520,
+          "externalBytes": 67979419,
+          "arrayBufferBytes": 14940842
+        },
+        "rebuild": {
+          "allocatedSlots": 39000,
+          "retiredSlots": 26000,
+          "linearMemoryBytes": 50987008,
+          "processRssBytes": 376037376,
+          "jsHeapUsedBytes": 17013160,
+          "externalBytes": 67981211,
+          "arrayBufferBytes": 14942634
+        },
+        "validate": {
+          "allocatedSlots": 39000,
+          "retiredSlots": 26000,
+          "linearMemoryBytes": 50987008,
+          "processRssBytes": 376037376,
+          "jsHeapUsedBytes": 17016448,
+          "externalBytes": 67981211,
+          "arrayBufferBytes": 14942634
+        },
+        "mesh": {
+          "allocatedSlots": 39000,
+          "retiredSlots": 26000,
+          "linearMemoryBytes": 50987008,
+          "processRssBytes": 376299520,
+          "jsHeapUsedBytes": 17022256,
+          "externalBytes": 67981211,
+          "arrayBufferBytes": 14942634
+        },
+        "transfer": {
+          "allocatedSlots": 39000,
+          "retiredSlots": 26000,
+          "linearMemoryBytes": 50987008,
+          "processRssBytes": 376299520,
+          "jsHeapUsedBytes": 17037800,
+          "externalBytes": 69538415,
+          "arrayBufferBytes": 16499838
+        },
+        "volume": {
+          "allocatedSlots": 39000,
+          "retiredSlots": 26000,
+          "linearMemoryBytes": 50987008,
+          "processRssBytes": 376299520,
+          "jsHeapUsedBytes": 17041424,
+          "externalBytes": 69538415,
+          "arrayBufferBytes": 16499838
+        },
+        "recognize": {
+          "allocatedSlots": 39000,
+          "retiredSlots": 26000,
+          "linearMemoryBytes": 50987008,
+          "processRssBytes": 376561664,
+          "jsHeapUsedBytes": 17055664,
+          "externalBytes": 69538415,
+          "arrayBufferBytes": 16499838
+        }
+      },
+      "validation": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "volumes": [
+        50676.364211716114,
+        6.393221518248117,
+        5.326742529920282,
+        0.7201131976088323,
+        6.074200484840347,
+        6.3977672310713505,
+        6.070310730755033,
+        6.2849630909964205
+      ],
+      "features": [
+        [
+          {
+            "area": 29.416602217275457,
+            "face": 3192,
+            "type": "filletLike"
+          },
+          {
+            "area": 28.882096299375732,
+            "face": 3196,
+            "type": "filletLike"
+          },
+          {
+            "area": 23.46685037215319,
+            "face": 3197,
+            "type": "filletLike"
+          },
+          {
+            "area": 3.900082876279109,
+            "face": 3198,
+            "type": "filletLike"
+          },
+          {
+            "area": 31.70050677339304,
+            "face": 3201,
+            "type": "filletLike"
+          },
+          {
+            "area": 9.194056453067722,
+            "face": 3209,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.8495559158819,
+            "face": 3222,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026435206122,
+            "face": 3230,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026428541863,
+            "face": 3236,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157617,
+            "face": 3244,
+            "type": "filletLike"
+          },
+          {
+            "area": 29.415522425025014,
+            "face": 3249,
+            "type": "filletLike"
+          },
+          {
+            "area": 3.9000828291807608,
+            "face": 3254,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157619,
+            "face": 3258,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.849555915881922,
+            "face": 3261,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.068583465864631,
+            "face": 3273,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.13716694115407,
+            "face": 3275,
+            "type": "filletLike"
+          },
+          {
+            "area": 31.70155516140678,
+            "face": 3279,
+            "type": "filletLike"
+          },
+          {
+            "area": 9.194056453067704,
+            "face": 3281,
+            "type": "filletLike"
+          },
+          {
+            "area": 23.471018628098335,
+            "face": 3282,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.068583473301001,
+            "face": 3284,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.137166941154069,
+            "face": 3285,
+            "type": "filletLike"
+          },
+          {
+            "area": 28.88081109442495,
+            "face": 3294,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026431873964,
+            "face": 3304,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157617,
+            "face": 3306,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157617,
+            "face": 3312,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026435206129,
+            "face": 3314,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.849555915881908,
+            "face": 3315,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.0685834733010005,
+            "face": 3316,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.13716694115407,
+            "face": 3318,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.137166941154057,
+            "face": 3321,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.068583465864631,
+            "face": 3322,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.849555915881922,
+            "face": 3323,
+            "type": "filletLike"
+          },
+          {
+            "diameter": 5,
+            "faces": [
+              3228
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 10,
+            "faces": [
+              3208
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 6,
+            "faces": [
+              3222
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 16,
+            "faces": [
+              3191,
+              3248
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 10,
+            "faces": [
+              3265
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 5,
+            "faces": [
+              3272
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 6,
+            "faces": [
+              3315
+            ],
+            "through": false,
+            "type": "hole"
+          }
+        ],
+        [],
+        [],
+        [],
+        [],
+        [
+          {
+            "area": 0.16674962607460195,
+            "face": 3370,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.5390421966966625,
+            "face": 3378,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.06587002792673549,
+            "face": 3380,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.3082292449736024,
+            "face": 3382,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.3369341314047932,
+            "face": 3383,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.26320697527147724,
+            "face": 3385,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.22289290011249233,
+            "face": 3386,
+            "type": "filletLike"
+          }
+        ],
+        [
+          {
+            "area": 0.19453181448230822,
+            "face": 3390,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.27637422790053034,
+            "face": 3391,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.2452179976051974,
+            "face": 3396,
+            "type": "filletLike"
+          }
+        ],
+        [
+          {
+            "area": 1.0137522185761432,
+            "face": 3407,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.38250506873135104,
+            "face": 3408,
+            "type": "filletLike"
+          },
+          {
+            "floor": 3409,
+            "type": "pocket",
+            "walls": [
+              3407,
+              3408
+            ]
+          }
+        ]
+      ],
+      "featureSummary": [
+        {
+          "counts": {
+            "filletLike": 32,
+            "hole": 7
+          },
+          "holeDiameters": [
+            5,
+            5,
+            6,
+            6,
+            10,
+            10,
+            16
+          ]
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {
+            "filletLike": 7
+          },
+          "holeDiameters": []
+        },
+        {
+          "counts": {
+            "filletLike": 3
+          },
+          "holeDiameters": []
+        },
+        {
+          "counts": {
+            "filletLike": 2,
+            "pocket": 1
+          },
+          "holeDiameters": []
+        }
+      ],
+      "checkpointCount": 1,
+      "bbox": [
+        -27.5,
+        6.5,
+        4.5,
+        49.5,
+        59.5,
+        62.5
+      ],
+      "inventories": [
+        {
+          "faces": 108,
+          "counts": {
+            "cylinder": 42,
+            "nurbs": 8,
+            "torus": 14,
+            "plane": 34,
+            "cone": 2,
+            "sphere": 8
+          },
+          "radii": [
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ]
+          ]
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 2,
+            "nurbs": 4
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 4,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 6
+          },
+          "radii": []
+        },
+        {
+          "faces": 12,
+          "counts": {
+            "plane": 10,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 19,
+          "counts": {
+            "plane": 7,
+            "nurbs": 12
+          },
+          "radii": []
+        },
+        {
+          "faces": 13,
+          "counts": {
+            "plane": 4,
+            "nurbs": 9
+          },
+          "radii": []
+        },
+        {
+          "faces": 10,
+          "counts": {
+            "plane": 5,
+            "nurbs": 5
+          },
+          "radii": []
+        }
+      ],
+      "meshChecks": [
+        {
+          "vertices": 29649,
+          "triangles": 59302,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 50667.547016030076
+        },
+        {
+          "vertices": 422,
+          "triangles": 844,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.388543249198406
+        },
+        {
+          "vertices": 393,
+          "triangles": 782,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 5.321569645186898
+        },
+        {
+          "vertices": 8,
+          "triangles": 12,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 0.720113622824841
+        },
+        {
+          "vertices": 274,
+          "triangles": 544,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.073480788883771
+        },
+        {
+          "vertices": 638,
+          "triangles": 1276,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.395179730607552
+        },
+        {
+          "vertices": 680,
+          "triangles": 1356,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.063210854642016
+        },
+        {
+          "vertices": 370,
+          "triangles": 740,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.277655723072613
+        }
+      ],
+      "material": [
+        {
+          "point": [
+            11,
+            49.5,
+            8
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            11,
+            18,
+            40
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            -20.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            42.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            -10.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            32.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "e11b328f6e878ae06ce7b96f866d3c7c20d70313120e1654624f1aa9dab53f90",
+      "meshSha256": [
+        {
+          "positions": "c9195cfc05894fd63d6411a0061273973306c6ebb5f1372c1193e9f0512a0736",
+          "indices": "08838f1e75f1e1f7005dd926949a9b4e59b1520ccd15cc228dcb3f0afffef083",
+          "normals": "b3878204e64ade6f2f15d774754767df40e8269b815da006c9ee1d85b49a3338",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "df6c4f580ca2debb7f10cb1f8ad7f86a9a7af6dbada8adddf42e126ada5f8e3a",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "0e5caa94aae993c118ac74681775e7565ea07d12c50b17a0191a90a54f7c3b8e",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "06b76fe6dbc7ecd6f9f544a25d1d316c87598c934948c591c6bb1b9341c1573b",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "43f359005da14b21901c2d67454f2a95e60ecb9dcadc63401bdaa3fc76c94af0",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "ba059168e1131fcac36ed72bc9fecc57639e931198051ea1a121fa245748db1f",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "cfd49fa8f46ff708482f28f4d91b43cdf555d9746b5c8cb0dd1dc4723a922b6e",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "90d2ffedccf560e61b5107df88f020098cafd23617f0d92b3a6bf741c2fb7c7b",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 3,
+      "width": 48,
+      "cold": false,
+      "warmup": false,
+      "revisited": true,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.059552000000621774,
+        "prefix": 104.5764280000003,
+        "rebuild": 90.84446600000047,
+        "validate": 2.0038100000001577,
+        "mesh": 21.487482000000455,
+        "transfer": 0.1632079999999405,
+        "volume": 0.5388990000001286,
+        "recognize": 31.741637000000082,
+        "observedWall": 256.04833599999984,
+        "stageSum": 251.41548200000216,
+        "previewStageSum": 219.13494600000195
+      },
+      "memoryBefore": {
+        "allocatedSlots": 39000,
+        "retiredSlots": 26000,
+        "linearMemoryBytes": 50987008,
+        "processRssBytes": 376586240,
+        "jsHeapUsedBytes": 18689840,
+        "externalBytes": 67326027,
+        "arrayBufferBytes": 14287450
+      },
+      "memoryAfter": {
+        "allocatedSlots": 52000,
+        "retiredSlots": 39000,
+        "linearMemoryBytes": 64618496,
+        "processRssBytes": 381825024,
+        "jsHeapUsedBytes": 6466040,
+        "externalBytes": 83170171,
+        "arrayBufferBytes": 12992596
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 1696,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "prefix": {
+          "allocatedSlots": 6944,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 11403264,
+          "processRssBytes": 10747904,
+          "jsHeapUsedBytes": 33584,
+          "externalBytes": 12056924,
+          "arrayBufferBytes": 653660
+        },
+        "rebuild": {
+          "allocatedSlots": 6056,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 524288,
+          "jsHeapUsedBytes": 114712,
+          "externalBytes": 1792,
+          "arrayBufferBytes": 1792
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3288,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 2228224,
+          "processRssBytes": 2621440,
+          "jsHeapUsedBytes": 5472,
+          "externalBytes": 2228224,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 15648,
+          "externalBytes": 1557204,
+          "arrayBufferBytes": 1557204
+        },
+        "volume": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 3624,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "recognize": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": -8654848,
+          "jsHeapUsedBytes": -12401824,
+          "externalBytes": 0,
+          "arrayBufferBytes": -3507510
+        }
+      },
+      "memoryAfterStage": {
+        "restore": {
+          "allocatedSlots": 39000,
+          "retiredSlots": 39000,
+          "linearMemoryBytes": 50987008,
+          "processRssBytes": 376586240,
+          "jsHeapUsedBytes": 18691536,
+          "externalBytes": 67326027,
+          "arrayBufferBytes": 14287450
+        },
+        "prefix": {
+          "allocatedSlots": 45944,
+          "retiredSlots": 39000,
+          "linearMemoryBytes": 62390272,
+          "processRssBytes": 387334144,
+          "jsHeapUsedBytes": 18725120,
+          "externalBytes": 79382951,
+          "arrayBufferBytes": 14941110
+        },
+        "rebuild": {
+          "allocatedSlots": 52000,
+          "retiredSlots": 39000,
+          "linearMemoryBytes": 62390272,
+          "processRssBytes": 387858432,
+          "jsHeapUsedBytes": 18839832,
+          "externalBytes": 79384743,
+          "arrayBufferBytes": 14942902
+        },
+        "validate": {
+          "allocatedSlots": 52000,
+          "retiredSlots": 39000,
+          "linearMemoryBytes": 62390272,
+          "processRssBytes": 387858432,
+          "jsHeapUsedBytes": 18843120,
+          "externalBytes": 79384743,
+          "arrayBufferBytes": 14942902
+        },
+        "mesh": {
+          "allocatedSlots": 52000,
+          "retiredSlots": 39000,
+          "linearMemoryBytes": 64618496,
+          "processRssBytes": 390479872,
+          "jsHeapUsedBytes": 18848592,
+          "externalBytes": 81612967,
+          "arrayBufferBytes": 14942902
+        },
+        "transfer": {
+          "allocatedSlots": 52000,
+          "retiredSlots": 39000,
+          "linearMemoryBytes": 64618496,
+          "processRssBytes": 390479872,
+          "jsHeapUsedBytes": 18864240,
+          "externalBytes": 83170171,
+          "arrayBufferBytes": 16500106
+        },
+        "volume": {
+          "allocatedSlots": 52000,
+          "retiredSlots": 39000,
+          "linearMemoryBytes": 64618496,
+          "processRssBytes": 390479872,
+          "jsHeapUsedBytes": 18867864,
+          "externalBytes": 83170171,
+          "arrayBufferBytes": 16500106
+        },
+        "recognize": {
+          "allocatedSlots": 52000,
+          "retiredSlots": 39000,
+          "linearMemoryBytes": 64618496,
+          "processRssBytes": 381825024,
+          "jsHeapUsedBytes": 6466040,
+          "externalBytes": 83170171,
+          "arrayBufferBytes": 12992596
+        }
+      },
+      "validation": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "volumes": [
+        50520.22685771142,
+        6.393221518248117,
+        5.326742529920282,
+        0.7201131976088323,
+        6.074200484840347,
+        6.3977672310713505,
+        6.070310730755033,
+        6.2849630909964205
+      ],
+      "features": [
+        [
+          {
+            "area": 29.416602217275457,
+            "face": 4329,
+            "type": "filletLike"
+          },
+          {
+            "area": 28.882096299375732,
+            "face": 4333,
+            "type": "filletLike"
+          },
+          {
+            "area": 23.466850372153164,
+            "face": 4334,
+            "type": "filletLike"
+          },
+          {
+            "area": 3.9000828762792583,
+            "face": 4335,
+            "type": "filletLike"
+          },
+          {
+            "area": 31.70050677339304,
+            "face": 4338,
+            "type": "filletLike"
+          },
+          {
+            "area": 9.194056453067724,
+            "face": 4346,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.8495559158819,
+            "face": 4359,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026435206122,
+            "face": 4367,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026428541863,
+            "face": 4373,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157617,
+            "face": 4381,
+            "type": "filletLike"
+          },
+          {
+            "area": 29.415522425025014,
+            "face": 4386,
+            "type": "filletLike"
+          },
+          {
+            "area": 3.9000828291805893,
+            "face": 4391,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157619,
+            "face": 4395,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.849555915881922,
+            "face": 4398,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.068583465864631,
+            "face": 4410,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.13716694115407,
+            "face": 4412,
+            "type": "filletLike"
+          },
+          {
+            "area": 31.70155516140678,
+            "face": 4416,
+            "type": "filletLike"
+          },
+          {
+            "area": 9.194056453067706,
+            "face": 4418,
+            "type": "filletLike"
+          },
+          {
+            "area": 23.471018628098335,
+            "face": 4419,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.068583473301001,
+            "face": 4421,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.137166941154069,
+            "face": 4422,
+            "type": "filletLike"
+          },
+          {
+            "area": 28.88081109442495,
+            "face": 4431,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026431873964,
+            "face": 4441,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157617,
+            "face": 4443,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157617,
+            "face": 4449,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026435206129,
+            "face": 4451,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.849555915881908,
+            "face": 4452,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.0685834733010005,
+            "face": 4453,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.13716694115407,
+            "face": 4455,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.137166941154057,
+            "face": 4458,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.068583465864631,
+            "face": 4459,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.849555915881922,
+            "face": 4460,
+            "type": "filletLike"
+          },
+          {
+            "diameter": 5,
+            "faces": [
+              4365
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 10,
+            "faces": [
+              4345
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 6,
+            "faces": [
+              4359
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 16,
+            "faces": [
+              4328,
+              4385
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 10,
+            "faces": [
+              4402
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 5,
+            "faces": [
+              4409
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 6,
+            "faces": [
+              4452
+            ],
+            "through": false,
+            "type": "hole"
+          }
+        ],
+        [],
+        [],
+        [],
+        [],
+        [
+          {
+            "area": 0.16674962607460195,
+            "face": 4507,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.5390421966966625,
+            "face": 4515,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.06587002792673549,
+            "face": 4517,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.3082292449736024,
+            "face": 4519,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.3369341314047932,
+            "face": 4520,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.26320697527147724,
+            "face": 4522,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.22289290011249233,
+            "face": 4523,
+            "type": "filletLike"
+          }
+        ],
+        [
+          {
+            "area": 0.19453181448230822,
+            "face": 4527,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.27637422790053034,
+            "face": 4528,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.2452179976051974,
+            "face": 4533,
+            "type": "filletLike"
+          }
+        ],
+        [
+          {
+            "area": 1.0137522185761432,
+            "face": 4544,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.38250506873135104,
+            "face": 4545,
+            "type": "filletLike"
+          },
+          {
+            "floor": 4546,
+            "type": "pocket",
+            "walls": [
+              4544,
+              4545
+            ]
+          }
+        ]
+      ],
+      "featureSummary": [
+        {
+          "counts": {
+            "filletLike": 32,
+            "hole": 7
+          },
+          "holeDiameters": [
+            5,
+            5,
+            6,
+            6,
+            10,
+            10,
+            16
+          ]
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {
+            "filletLike": 7
+          },
+          "holeDiameters": []
+        },
+        {
+          "counts": {
+            "filletLike": 3
+          },
+          "holeDiameters": []
+        },
+        {
+          "counts": {
+            "filletLike": 2,
+            "pocket": 1
+          },
+          "holeDiameters": []
+        }
+      ],
+      "checkpointCount": 1,
+      "bbox": [
+        -27,
+        6.5,
+        4.5,
+        49,
+        59.5,
+        62.5
+      ],
+      "inventories": [
+        {
+          "faces": 108,
+          "counts": {
+            "cylinder": 42,
+            "nurbs": 8,
+            "torus": 14,
+            "plane": 34,
+            "cone": 2,
+            "sphere": 8
+          },
+          "radii": [
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ]
+          ]
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 2,
+            "nurbs": 4
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 4,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 6
+          },
+          "radii": []
+        },
+        {
+          "faces": 12,
+          "counts": {
+            "plane": 10,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 19,
+          "counts": {
+            "plane": 7,
+            "nurbs": 12
+          },
+          "radii": []
+        },
+        {
+          "faces": 13,
+          "counts": {
+            "plane": 4,
+            "nurbs": 9
+          },
+          "radii": []
+        },
+        {
+          "faces": 10,
+          "counts": {
+            "plane": 5,
+            "nurbs": 5
+          },
+          "radii": []
+        }
+      ],
+      "meshChecks": [
+        {
+          "vertices": 29649,
+          "triangles": 59302,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 50511.42423295274
+        },
+        {
+          "vertices": 422,
+          "triangles": 844,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.388543249198576
+        },
+        {
+          "vertices": 393,
+          "triangles": 782,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 5.321569645186783
+        },
+        {
+          "vertices": 8,
+          "triangles": 12,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 0.7201136228248401
+        },
+        {
+          "vertices": 274,
+          "triangles": 544,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.073480788883791
+        },
+        {
+          "vertices": 638,
+          "triangles": 1276,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.395179730607751
+        },
+        {
+          "vertices": 680,
+          "triangles": 1356,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.0632108546418095
+        },
+        {
+          "vertices": 370,
+          "triangles": 740,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.277655723072472
+        }
+      ],
+      "material": [
+        {
+          "point": [
+            11,
+            49.5,
+            8
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            11,
+            18,
+            40
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            -20,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            42,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            -10,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            32,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "61782addea2d7d8f480dc75f18cd9d3c47fab8984411d7d618561857e660cde1",
+      "meshSha256": [
+        {
+          "positions": "3b7a54e976d47eabbd3c4b04a485e998466ec60d00b3de635de6abb0dfebb380",
+          "indices": "130b6c91f708334c7ac1f69d07240d5ff2c6388598b351fa3dfee82792cf3f6b",
+          "normals": "a12690b9f2a2c8e1b5081a48c440440d8ea8f00a77545022cfc4ed51ac6765b1",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "eb872454d6fd37a62a87184bd5925199c2a5715b0c197c040813e116383d659e",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "4d8a2cf23a672acbe82d537a79ed2eea38b8365ab8765234c387ba86a17d006c",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "abab5b997780a7323a88bc01f4e4aeda2e09dbcb4de0fbf6b23a1934e22a0fe6",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "c2902748efc601ce84dbf85f8166b4c411e80a89fdf50084e24cf9d2384b5ea3",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "ed25830afa0c0f87f06ae31bfb0355acbe7938fc61c17dc84a1801a7c4ac9858",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "e715a11ad48860c93fbb3da7bc04c1fdeb0e9cd46f773db9e7ea0a37e6645d27",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "7d24f269a0c14df1f49c60d94b019571a4cf395fab888b5ff3d6e564279117e2",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "transferredBytes": 1557440
+    }
+  ],
+  "summary": {
+    "total": 4,
+    "cold": {
+      "index": 0,
+      "width": 47,
+      "cold": true,
+      "warmup": true,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.30759100000000217,
+        "prefix": 2152.091568,
+        "rebuild": 354.25464599999987,
+        "validate": 3.992601999999806,
+        "mesh": 317.7020600000001,
+        "transfer": 0.5458530000000792,
+        "volume": 507.60211100000015,
+        "recognize": 275.84066200000007,
+        "observedWall": 3620.336601,
+        "stageSum": 3612.3370929999996,
+        "previewStageSum": 2828.8943199999994
+      },
+      "memoryBefore": {
+        "allocatedSlots": 0,
+        "retiredSlots": 0,
+        "linearMemoryBytes": 1507328,
+        "processRssBytes": 89853952,
+        "jsHeapUsedBytes": 6648504,
+        "externalBytes": 25915614,
+        "arrayBufferBytes": 22452798
+      },
+      "memoryAfter": {
+        "allocatedSlots": 13000,
+        "retiredSlots": 0,
+        "linearMemoryBytes": 23265280,
+        "processRssBytes": 339845120,
+        "jsHeapUsedBytes": 7574864,
+        "externalBytes": 49886222,
+        "arrayBufferBytes": 24665454
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 5352,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "prefix": {
+          "allocatedSlots": 6944,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 6225920,
+          "processRssBytes": 203685888,
+          "jsHeapUsedBytes": 483640,
+          "externalBytes": 6879580,
+          "arrayBufferBytes": 653660
+        },
+        "rebuild": {
+          "allocatedSlots": 6056,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 917504,
+          "processRssBytes": 1990656,
+          "jsHeapUsedBytes": 213592,
+          "externalBytes": 919296,
+          "arrayBufferBytes": 1792
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 4168,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 14614528,
+          "processRssBytes": 65060864,
+          "jsHeapUsedBytes": 97224,
+          "externalBytes": 14614528,
+          "arrayBufferBytes": 0
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 2359296,
+          "jsHeapUsedBytes": 27584,
+          "externalBytes": 1557204,
+          "arrayBufferBytes": 1557204
+        },
+        "volume": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": -32542720,
+          "jsHeapUsedBytes": 24184,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        },
+        "recognize": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 9437184,
+          "jsHeapUsedBytes": 70616,
+          "externalBytes": 0,
+          "arrayBufferBytes": 0
+        }
+      },
+      "memoryAfterStage": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 1507328,
+          "processRssBytes": 89853952,
+          "jsHeapUsedBytes": 6653856,
+          "externalBytes": 25915614,
+          "arrayBufferBytes": 22452798
+        },
+        "prefix": {
+          "allocatedSlots": 6944,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 7733248,
+          "processRssBytes": 293539840,
+          "jsHeapUsedBytes": 7137496,
+          "externalBytes": 32795194,
+          "arrayBufferBytes": 23106458
+        },
+        "rebuild": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 8650752,
+          "processRssBytes": 295530496,
+          "jsHeapUsedBytes": 7351088,
+          "externalBytes": 33714490,
+          "arrayBufferBytes": 23108250
+        },
+        "validate": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 8650752,
+          "processRssBytes": 295530496,
+          "jsHeapUsedBytes": 7355256,
+          "externalBytes": 33714490,
+          "arrayBufferBytes": 23108250
+        },
+        "mesh": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 23265280,
+          "processRssBytes": 360591360,
+          "jsHeapUsedBytes": 7452480,
+          "externalBytes": 48329018,
+          "arrayBufferBytes": 23108250
+        },
+        "transfer": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 23265280,
+          "processRssBytes": 362950656,
+          "jsHeapUsedBytes": 7480064,
+          "externalBytes": 49886222,
+          "arrayBufferBytes": 24665454
+        },
+        "volume": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 23265280,
+          "processRssBytes": 330407936,
+          "jsHeapUsedBytes": 7504248,
+          "externalBytes": 49886222,
+          "arrayBufferBytes": 24665454
+        },
+        "recognize": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 23265280,
+          "processRssBytes": 339845120,
+          "jsHeapUsedBytes": 7574864,
+          "externalBytes": 49886222,
+          "arrayBufferBytes": 24665454
+        }
+      },
+      "validation": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "volumes": [
+        50364.08950370699,
+        6.393221518248117,
+        5.326742529920282,
+        0.7201131976088323,
+        6.074200484840347,
+        6.3977672310713505,
+        6.070310730755033,
+        6.2849630909964205
+      ],
+      "features": [
+        [
+          {
+            "area": 29.416602217275457,
+            "face": 918,
+            "type": "filletLike"
+          },
+          {
+            "area": 28.882096299375732,
+            "face": 922,
+            "type": "filletLike"
+          },
+          {
+            "area": 23.466850372153164,
+            "face": 923,
+            "type": "filletLike"
+          },
+          {
+            "area": 3.9000828762792357,
+            "face": 924,
+            "type": "filletLike"
+          },
+          {
+            "area": 31.70050677339304,
+            "face": 927,
+            "type": "filletLike"
+          },
+          {
+            "area": 9.194056453067724,
+            "face": 935,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.8495559158819,
+            "face": 948,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026435206122,
+            "face": 956,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026428541863,
+            "face": 962,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157617,
+            "face": 970,
+            "type": "filletLike"
+          },
+          {
+            "area": 29.415522425025014,
+            "face": 975,
+            "type": "filletLike"
+          },
+          {
+            "area": 3.9000828291805925,
+            "face": 980,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157619,
+            "face": 984,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.849555915881922,
+            "face": 987,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.068583465864631,
+            "face": 999,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.13716694115407,
+            "face": 1001,
+            "type": "filletLike"
+          },
+          {
+            "area": 31.70155516140678,
+            "face": 1005,
+            "type": "filletLike"
+          },
+          {
+            "area": 9.19405645306771,
+            "face": 1007,
+            "type": "filletLike"
+          },
+          {
+            "area": 23.471018628098335,
+            "face": 1008,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.068583473301001,
+            "face": 1010,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.137166941154069,
+            "face": 1011,
+            "type": "filletLike"
+          },
+          {
+            "area": 28.88081109442495,
+            "face": 1020,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026431873964,
+            "face": 1030,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157617,
+            "face": 1032,
+            "type": "filletLike"
+          },
+          {
+            "area": 8.281360661157617,
+            "face": 1038,
+            "type": "filletLike"
+          },
+          {
+            "area": 15.138026435206129,
+            "face": 1040,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.849555915881908,
+            "face": 1041,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.0685834733010005,
+            "face": 1042,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.13716694115407,
+            "face": 1044,
+            "type": "filletLike"
+          },
+          {
+            "area": 14.137166941154057,
+            "face": 1047,
+            "type": "filletLike"
+          },
+          {
+            "area": 7.068583465864631,
+            "face": 1048,
+            "type": "filletLike"
+          },
+          {
+            "area": 18.849555915881922,
+            "face": 1049,
+            "type": "filletLike"
+          },
+          {
+            "diameter": 5,
+            "faces": [
+              954
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 10,
+            "faces": [
+              934
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 6,
+            "faces": [
+              948
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 16,
+            "faces": [
+              917,
+              974
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 10,
+            "faces": [
+              991
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 5,
+            "faces": [
+              998
+            ],
+            "through": false,
+            "type": "hole"
+          },
+          {
+            "diameter": 6,
+            "faces": [
+              1041
+            ],
+            "through": false,
+            "type": "hole"
+          }
+        ],
+        [],
+        [],
+        [],
+        [],
+        [
+          {
+            "area": 0.16674962607460195,
+            "face": 1096,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.5390421966966625,
+            "face": 1104,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.06587002792673549,
+            "face": 1106,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.3082292449736024,
+            "face": 1108,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.3369341314047932,
+            "face": 1109,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.26320697527147724,
+            "face": 1111,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.22289290011249233,
+            "face": 1112,
+            "type": "filletLike"
+          }
+        ],
+        [
+          {
+            "area": 0.19453181448230822,
+            "face": 1116,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.27637422790053034,
+            "face": 1117,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.2452179976051974,
+            "face": 1122,
+            "type": "filletLike"
+          }
+        ],
+        [
+          {
+            "area": 1.0137522185761432,
+            "face": 1133,
+            "type": "filletLike"
+          },
+          {
+            "area": 0.38250506873135104,
+            "face": 1134,
+            "type": "filletLike"
+          },
+          {
+            "floor": 1135,
+            "type": "pocket",
+            "walls": [
+              1133,
+              1134
+            ]
+          }
+        ]
+      ],
+      "featureSummary": [
+        {
+          "counts": {
+            "filletLike": 32,
+            "hole": 7
+          },
+          "holeDiameters": [
+            5,
+            5,
+            6,
+            6,
+            10,
+            10,
+            16
+          ]
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {},
+          "holeDiameters": []
+        },
+        {
+          "counts": {
+            "filletLike": 7
+          },
+          "holeDiameters": []
+        },
+        {
+          "counts": {
+            "filletLike": 3
+          },
+          "holeDiameters": []
+        },
+        {
+          "counts": {
+            "filletLike": 2,
+            "pocket": 1
+          },
+          "holeDiameters": []
+        }
+      ],
+      "checkpointCount": 1,
+      "bbox": [
+        -26.5,
+        6.5,
+        4.5,
+        48.5,
+        59.5,
+        62.5
+      ],
+      "inventories": [
+        {
+          "faces": 108,
+          "counts": {
+            "cylinder": 42,
+            "nurbs": 8,
+            "torus": 14,
+            "plane": 34,
+            "cone": 2,
+            "sphere": 8
+          },
+          "radii": [
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ]
+          ]
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 2,
+            "nurbs": 4
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 4,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 6
+          },
+          "radii": []
+        },
+        {
+          "faces": 12,
+          "counts": {
+            "plane": 10,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 19,
+          "counts": {
+            "plane": 7,
+            "nurbs": 12
+          },
+          "radii": []
+        },
+        {
+          "faces": 13,
+          "counts": {
+            "plane": 4,
+            "nurbs": 9
+          },
+          "radii": []
+        },
+        {
+          "faces": 10,
+          "counts": {
+            "plane": 5,
+            "nurbs": 5
+          },
+          "radii": []
+        }
+      ],
+      "meshChecks": [
+        {
+          "vertices": 29649,
+          "triangles": 59302,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 50355.298483334656
+        },
+        {
+          "vertices": 422,
+          "triangles": 844,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.3885432491985386
+        },
+        {
+          "vertices": 393,
+          "triangles": 782,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 5.321569645186874
+        },
+        {
+          "vertices": 8,
+          "triangles": 12,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 0.7201136228248393
+        },
+        {
+          "vertices": 274,
+          "triangles": 544,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.073480788883843
+        },
+        {
+          "vertices": 638,
+          "triangles": 1276,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.3951797306077305
+        },
+        {
+          "vertices": 680,
+          "triangles": 1356,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.063210854641909
+        },
+        {
+          "vertices": 370,
+          "triangles": 740,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.277655723072674
+        }
+      ],
+      "material": [
+        {
+          "point": [
+            11,
+            49.5,
+            8
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            11,
+            18,
+            40
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            -19.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            41.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            -9.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            31.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "806f0cf2dd391c16f89f8b20e28b38a991e3b20e9c70e22d9546785d92a8455a",
+      "meshSha256": [
+        {
+          "positions": "a5ec6e5bf6ef70c1c8572a0a0fbe194650127ba96538244e916ffaac360472dc",
+          "indices": "06e493bc3095b7afa1577676d2d6aca64bb320fe2429b9dd433e795899582897",
+          "normals": "2814e723d00baa6dc9b4d406b4886ada1571a7f4fd117a4ee47b2adbe49b90f3",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "16084e93ea84b0fcfdfe508998a232e778fea0e50a2b28d3ac3029336a84d930",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "43cac2eac88806fb2b8a189c69b5034849efcab114660bf8c82ac9488845860e",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "d34b7a599c8ae53400ba88fe404b09037eef1b8cc1fa93215e9d596c50913d99",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "9756d0f6cf1b3f4abe0c7f99c3277c6cefd83fec1a5aefe201c45bbf9fce96af",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "4028fbc8e2585d2a63686843b9b902f70877393c942cb16daa599d7425f25168",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "32449273c5438ecc0add055509746432bb993e444933681a47c1a19c1af9b090",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "bcf97d53077769abb85625d4be31009e48737c2ee6c21a4581dd0869d019b283",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "transferredBytes": 1557440
+    },
+    "retained": {
+      "samples": 3,
+      "timingsMs": {
+        "restore": {
+          "n": 3,
+          "p50": 0.059552000000621774,
+          "p95": 0.5443599999998696,
+          "max": 0.5443599999998696
+        },
+        "prefix": {
+          "n": 3,
+          "p50": 106.30818400000044,
+          "p95": 155.8996729999999,
+          "max": 155.8996729999999
+        },
+        "rebuild": {
+          "n": 3,
+          "p50": 129.0359010000002,
+          "p95": 151.2194499999996,
+          "max": 151.2194499999996
+        },
+        "validate": {
+          "n": 3,
+          "p50": 2.6679060000005848,
+          "p95": 7.482312000000093,
+          "max": 7.482312000000093
+        },
+        "mesh": {
+          "n": 3,
+          "p50": 38.820395999999164,
+          "p95": 65.93000200000006,
+          "max": 65.93000200000006
+        },
+        "transfer": {
+          "n": 3,
+          "p50": 0.1632079999999405,
+          "p95": 0.21355400000084046,
+          "max": 0.21355400000084046
+        },
+        "volume": {
+          "n": 3,
+          "p50": 17.683767999999873,
+          "p95": 20.266381999999794,
+          "max": 20.266381999999794
+        },
+        "recognize": {
+          "n": 3,
+          "p50": 145.91402500000004,
+          "p95": 151.2268639999993,
+          "max": 151.2268639999993
+        },
+        "observedWall": {
+          "n": 3,
+          "p50": 446.90879399999994,
+          "p95": 552.6716759999999,
+          "max": 552.6716759999999
+        },
+        "stageSum": {
+          "n": 3,
+          "p50": 443.2209779999994,
+          "p95": 550.1999829999995,
+          "max": 550.1999829999995
+        },
+        "previewStageSum": {
+          "n": 3,
+          "p50": 277.04057099999955,
+          "p95": 381.28935100000035,
+          "max": 381.28935100000035
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 3,
+            "p50": 13000,
+            "p95": 13000,
+            "max": 13000
+          },
+          "linearMemoryBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 3,
+            "p50": 1696,
+            "p95": 4120,
+            "max": 4120
+          },
+          "externalBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "arrayBufferBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "prefix": {
+          "allocatedSlots": {
+            "n": 3,
+            "p50": 6944,
+            "p95": 6944,
+            "max": 6944
+          },
+          "retiredSlots": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 3,
+            "p50": 11403264,
+            "p95": 12976128,
+            "max": 12976128
+          },
+          "processRssBytes": {
+            "n": 3,
+            "p50": 10485760,
+            "p95": 10747904,
+            "max": 10747904
+          },
+          "jsHeapUsedBytes": {
+            "n": 3,
+            "p50": 49560,
+            "p95": 58336,
+            "max": 58336
+          },
+          "externalBytes": {
+            "n": 3,
+            "p50": 12056924,
+            "p95": 13629788,
+            "max": 13629788
+          },
+          "arrayBufferBytes": {
+            "n": 3,
+            "p50": 653660,
+            "p95": 653660,
+            "max": 653660
+          }
+        },
+        "rebuild": {
+          "allocatedSlots": {
+            "n": 3,
+            "p50": 6056,
+            "p95": 6056,
+            "max": 6056
+          },
+          "retiredSlots": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 3,
+            "p50": 262144,
+            "p95": 524288,
+            "max": 524288
+          },
+          "jsHeapUsedBytes": {
+            "n": 3,
+            "p50": 114712,
+            "p95": 125640,
+            "max": 125640
+          },
+          "externalBytes": {
+            "n": 3,
+            "p50": 1792,
+            "p95": 1792,
+            "max": 1792
+          },
+          "arrayBufferBytes": {
+            "n": 3,
+            "p50": 1792,
+            "p95": 1792,
+            "max": 1792
+          }
+        },
+        "validate": {
+          "allocatedSlots": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 3,
+            "p50": 3288,
+            "p95": 3392,
+            "max": 3392
+          },
+          "externalBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "arrayBufferBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "mesh": {
+          "allocatedSlots": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 3,
+            "p50": 2228224,
+            "p95": 9830400,
+            "max": 9830400
+          },
+          "processRssBytes": {
+            "n": 3,
+            "p50": 2621440,
+            "p95": 10747904,
+            "max": 10747904
+          },
+          "jsHeapUsedBytes": {
+            "n": 3,
+            "p50": 5808,
+            "p95": 15120,
+            "max": 15120
+          },
+          "externalBytes": {
+            "n": 3,
+            "p50": 2228224,
+            "p95": 9830400,
+            "max": 9830400
+          },
+          "arrayBufferBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "transfer": {
+          "allocatedSlots": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 3,
+            "p50": 15648,
+            "p95": 17584,
+            "max": 17584
+          },
+          "externalBytes": {
+            "n": 3,
+            "p50": 1557204,
+            "p95": 1557204,
+            "max": 1557204
+          },
+          "arrayBufferBytes": {
+            "n": 3,
+            "p50": 1557204,
+            "p95": 1557204,
+            "max": 1557204
+          }
+        },
+        "volume": {
+          "allocatedSlots": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 3,
+            "p50": 3624,
+            "p95": 10032,
+            "max": 10032
+          },
+          "externalBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "arrayBufferBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "recognize": {
+          "allocatedSlots": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 3,
+            "p50": -536576,
+            "p95": 262144,
+            "max": 262144
+          },
+          "jsHeapUsedBytes": {
+            "n": 3,
+            "p50": 14240,
+            "p95": 14632,
+            "max": 14632
+          },
+          "externalBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "arrayBufferBytes": {
+            "n": 3,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          }
+        }
+      }
+    },
+    "firstSeen": {
+      "samples": 2,
+      "timingsMs": {
+        "restore": {
+          "n": 2,
+          "p50": 0.0452049999994415,
+          "p95": 0.5443599999998696,
+          "max": 0.5443599999998696
+        },
+        "prefix": {
+          "n": 2,
+          "p50": 106.30818400000044,
+          "p95": 155.8996729999999,
+          "max": 155.8996729999999
+        },
+        "rebuild": {
+          "n": 2,
+          "p50": 129.0359010000002,
+          "p95": 151.2194499999996,
+          "max": 151.2194499999996
+        },
+        "validate": {
+          "n": 2,
+          "p50": 2.6679060000005848,
+          "p95": 7.482312000000093,
+          "max": 7.482312000000093
+        },
+        "mesh": {
+          "n": 2,
+          "p50": 38.820395999999164,
+          "p95": 65.93000200000006,
+          "max": 65.93000200000006
+        },
+        "transfer": {
+          "n": 2,
+          "p50": 0.16297899999972287,
+          "p95": 0.21355400000084046,
+          "max": 0.21355400000084046
+        },
+        "volume": {
+          "n": 2,
+          "p50": 17.683767999999873,
+          "p95": 20.266381999999794,
+          "max": 20.266381999999794
+        },
+        "recognize": {
+          "n": 2,
+          "p50": 145.91402500000004,
+          "p95": 151.2268639999993,
+          "max": 151.2268639999993
+        },
+        "observedWall": {
+          "n": 2,
+          "p50": 446.90879399999994,
+          "p95": 552.6716759999999,
+          "max": 552.6716759999999
+        },
+        "stageSum": {
+          "n": 2,
+          "p50": 443.2209779999994,
+          "p95": 550.1999829999995,
+          "max": 550.1999829999995
+        },
+        "previewStageSum": {
+          "n": 2,
+          "p50": 277.04057099999955,
+          "p95": 381.28935100000035,
+          "max": 381.28935100000035
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 2,
+            "p50": 13000,
+            "p95": 13000,
+            "max": 13000
+          },
+          "linearMemoryBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 2,
+            "p50": 1688,
+            "p95": 4120,
+            "max": 4120
+          },
+          "externalBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "arrayBufferBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "prefix": {
+          "allocatedSlots": {
+            "n": 2,
+            "p50": 6944,
+            "p95": 6944,
+            "max": 6944
+          },
+          "retiredSlots": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 2,
+            "p50": 4915200,
+            "p95": 12976128,
+            "max": 12976128
+          },
+          "processRssBytes": {
+            "n": 2,
+            "p50": 4718592,
+            "p95": 10485760,
+            "max": 10485760
+          },
+          "jsHeapUsedBytes": {
+            "n": 2,
+            "p50": 49560,
+            "p95": 58336,
+            "max": 58336
+          },
+          "externalBytes": {
+            "n": 2,
+            "p50": 5568860,
+            "p95": 13629788,
+            "max": 13629788
+          },
+          "arrayBufferBytes": {
+            "n": 2,
+            "p50": 653660,
+            "p95": 653660,
+            "max": 653660
+          }
+        },
+        "rebuild": {
+          "allocatedSlots": {
+            "n": 2,
+            "p50": 6056,
+            "p95": 6056,
+            "max": 6056
+          },
+          "retiredSlots": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 2,
+            "p50": 262144,
+            "p95": 262144,
+            "max": 262144
+          },
+          "jsHeapUsedBytes": {
+            "n": 2,
+            "p50": 114192,
+            "p95": 125640,
+            "max": 125640
+          },
+          "externalBytes": {
+            "n": 2,
+            "p50": 1792,
+            "p95": 1792,
+            "max": 1792
+          },
+          "arrayBufferBytes": {
+            "n": 2,
+            "p50": 1792,
+            "p95": 1792,
+            "max": 1792
+          }
+        },
+        "validate": {
+          "allocatedSlots": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 2,
+            "p50": 3288,
+            "p95": 3392,
+            "max": 3392
+          },
+          "externalBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "arrayBufferBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "mesh": {
+          "allocatedSlots": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 9830400,
+            "max": 9830400
+          },
+          "processRssBytes": {
+            "n": 2,
+            "p50": 262144,
+            "p95": 10747904,
+            "max": 10747904
+          },
+          "jsHeapUsedBytes": {
+            "n": 2,
+            "p50": 5808,
+            "p95": 15120,
+            "max": 15120
+          },
+          "externalBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 9830400,
+            "max": 9830400
+          },
+          "arrayBufferBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "transfer": {
+          "allocatedSlots": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 2,
+            "p50": 15544,
+            "p95": 17584,
+            "max": 17584
+          },
+          "externalBytes": {
+            "n": 2,
+            "p50": 1557204,
+            "p95": 1557204,
+            "max": 1557204
+          },
+          "arrayBufferBytes": {
+            "n": 2,
+            "p50": 1557204,
+            "p95": 1557204,
+            "max": 1557204
+          }
+        },
+        "volume": {
+          "allocatedSlots": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 2,
+            "p50": 3624,
+            "p95": 10032,
+            "max": 10032
+          },
+          "externalBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "arrayBufferBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "recognize": {
+          "allocatedSlots": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 2,
+            "p50": -536576,
+            "p95": 262144,
+            "max": 262144
+          },
+          "jsHeapUsedBytes": {
+            "n": 2,
+            "p50": 14240,
+            "p95": 14632,
+            "max": 14632
+          },
+          "externalBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "arrayBufferBytes": {
+            "n": 2,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          }
+        }
+      }
+    },
+    "revisited": {
+      "samples": 1,
+      "timingsMs": {
+        "restore": {
+          "n": 1,
+          "p50": 0.059552000000621774,
+          "p95": 0.059552000000621774,
+          "max": 0.059552000000621774
+        },
+        "prefix": {
+          "n": 1,
+          "p50": 104.5764280000003,
+          "p95": 104.5764280000003,
+          "max": 104.5764280000003
+        },
+        "rebuild": {
+          "n": 1,
+          "p50": 90.84446600000047,
+          "p95": 90.84446600000047,
+          "max": 90.84446600000047
+        },
+        "validate": {
+          "n": 1,
+          "p50": 2.0038100000001577,
+          "p95": 2.0038100000001577,
+          "max": 2.0038100000001577
+        },
+        "mesh": {
+          "n": 1,
+          "p50": 21.487482000000455,
+          "p95": 21.487482000000455,
+          "max": 21.487482000000455
+        },
+        "transfer": {
+          "n": 1,
+          "p50": 0.1632079999999405,
+          "p95": 0.1632079999999405,
+          "max": 0.1632079999999405
+        },
+        "volume": {
+          "n": 1,
+          "p50": 0.5388990000001286,
+          "p95": 0.5388990000001286,
+          "max": 0.5388990000001286
+        },
+        "recognize": {
+          "n": 1,
+          "p50": 31.741637000000082,
+          "p95": 31.741637000000082,
+          "max": 31.741637000000082
+        },
+        "observedWall": {
+          "n": 1,
+          "p50": 256.04833599999984,
+          "p95": 256.04833599999984,
+          "max": 256.04833599999984
+        },
+        "stageSum": {
+          "n": 1,
+          "p50": 251.41548200000216,
+          "p95": 251.41548200000216,
+          "max": 251.41548200000216
+        },
+        "previewStageSum": {
+          "n": 1,
+          "p50": 219.13494600000195,
+          "p95": 219.13494600000195,
+          "max": 219.13494600000195
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 1,
+            "p50": 13000,
+            "p95": 13000,
+            "max": 13000
+          },
+          "linearMemoryBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 1,
+            "p50": 1696,
+            "p95": 1696,
+            "max": 1696
+          },
+          "externalBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "arrayBufferBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "prefix": {
+          "allocatedSlots": {
+            "n": 1,
+            "p50": 6944,
+            "p95": 6944,
+            "max": 6944
+          },
+          "retiredSlots": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 1,
+            "p50": 11403264,
+            "p95": 11403264,
+            "max": 11403264
+          },
+          "processRssBytes": {
+            "n": 1,
+            "p50": 10747904,
+            "p95": 10747904,
+            "max": 10747904
+          },
+          "jsHeapUsedBytes": {
+            "n": 1,
+            "p50": 33584,
+            "p95": 33584,
+            "max": 33584
+          },
+          "externalBytes": {
+            "n": 1,
+            "p50": 12056924,
+            "p95": 12056924,
+            "max": 12056924
+          },
+          "arrayBufferBytes": {
+            "n": 1,
+            "p50": 653660,
+            "p95": 653660,
+            "max": 653660
+          }
+        },
+        "rebuild": {
+          "allocatedSlots": {
+            "n": 1,
+            "p50": 6056,
+            "p95": 6056,
+            "max": 6056
+          },
+          "retiredSlots": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 1,
+            "p50": 524288,
+            "p95": 524288,
+            "max": 524288
+          },
+          "jsHeapUsedBytes": {
+            "n": 1,
+            "p50": 114712,
+            "p95": 114712,
+            "max": 114712
+          },
+          "externalBytes": {
+            "n": 1,
+            "p50": 1792,
+            "p95": 1792,
+            "max": 1792
+          },
+          "arrayBufferBytes": {
+            "n": 1,
+            "p50": 1792,
+            "p95": 1792,
+            "max": 1792
+          }
+        },
+        "validate": {
+          "allocatedSlots": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 1,
+            "p50": 3288,
+            "p95": 3288,
+            "max": 3288
+          },
+          "externalBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "arrayBufferBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "mesh": {
+          "allocatedSlots": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 1,
+            "p50": 2228224,
+            "p95": 2228224,
+            "max": 2228224
+          },
+          "processRssBytes": {
+            "n": 1,
+            "p50": 2621440,
+            "p95": 2621440,
+            "max": 2621440
+          },
+          "jsHeapUsedBytes": {
+            "n": 1,
+            "p50": 5472,
+            "p95": 5472,
+            "max": 5472
+          },
+          "externalBytes": {
+            "n": 1,
+            "p50": 2228224,
+            "p95": 2228224,
+            "max": 2228224
+          },
+          "arrayBufferBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "transfer": {
+          "allocatedSlots": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 1,
+            "p50": 15648,
+            "p95": 15648,
+            "max": 15648
+          },
+          "externalBytes": {
+            "n": 1,
+            "p50": 1557204,
+            "p95": 1557204,
+            "max": 1557204
+          },
+          "arrayBufferBytes": {
+            "n": 1,
+            "p50": 1557204,
+            "p95": 1557204,
+            "max": 1557204
+          }
+        },
+        "volume": {
+          "allocatedSlots": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 1,
+            "p50": 3624,
+            "p95": 3624,
+            "max": 3624
+          },
+          "externalBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "arrayBufferBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          }
+        },
+        "recognize": {
+          "allocatedSlots": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 1,
+            "p50": -8654848,
+            "p95": -8654848,
+            "max": -8654848
+          },
+          "jsHeapUsedBytes": {
+            "n": 1,
+            "p50": -12401824,
+            "p95": -12401824,
+            "max": -12401824
+          },
+          "externalBytes": {
+            "n": 1,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "arrayBufferBytes": {
+            "n": 1,
+            "p50": -3507510,
+            "p95": -3507510,
+            "max": -3507510
+          }
+        }
+      }
+    }
+  }
+}
