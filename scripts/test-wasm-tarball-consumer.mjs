@@ -39,6 +39,7 @@ import { runOpseqTorusPropertiesPackaged } from './opseq-torus-properties-packag
 import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
 import { runBoundedTabRolloverPackaged } from './bounded-tab-rollover-packaged.mjs';
 import { runPackagedPreviewWorkContract } from './perf/face-drag-session/packaged_contract.cjs';
+import { runLinkedSketchPackaged } from './linked-sketch-packaged.mjs';
 import { runGridPatternPackaged } from './grid-pattern-packaged.mjs';
 import { runRevolveHistoryPackaged } from './revolve-history-packaged.mjs';
 
@@ -135,6 +136,8 @@ try {
   runOpseqF10Packaged(packageExports);
   runOpseqF13Packaged(packageExports);
   runWasmRayTorusPackaged(packageExports);
+  runLinkedSketchPackaged(packageExports);
+
   console.log('\nInstalled-tarball consumer regressions passed');
 } finally {
   rmSync(temporaryRoot, { recursive: true, force: true });
