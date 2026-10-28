@@ -389,10 +389,11 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PUSH_BASE: ${{ github.event.before }}
           MERGE_BASE: ${{ github.event.merge_group.base_sha }}
-          # The second tier (coverage, MSRV, deny, audit, package build)
-          # runs for every main push and dispatch, for merge groups whose
+          # The second tier (MSRV, deny, audit, package build) runs for
+          # every main push and dispatch, for merge groups whose
           # diff touches its inputs, and for PRs only with the `ci:full`
-          # label. Fuzz compile and render run with the first tier: they
+          # label. Coverage runs nightly instead of on main pushes.
+          # Fuzz compile and render run with the first tier: they
           # build against most kernel crates and take about a minute each.
           FORCE_FULL: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
         run: |
@@ -505,6 +506,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-tests
+          compression-level: 0
           path: ${{ runner.temp }}/native-tests.tar.zst
           if-no-files-found: error
           retention-days: 1
@@ -758,6 +760,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: committed-wasm-package
+          compression-level: 0
           path: ${{ runner.temp }}/committed-wasm-package.tar.gz
           if-no-files-found: error
           retention-days: 1

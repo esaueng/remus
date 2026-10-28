@@ -64,6 +64,13 @@ class SpeedContractTests(unittest.TestCase):
             self.assertNotIn("secrets.", job)
             self.assertNotIn(": write", job)
 
+    def test_compressed_transport_archives_are_not_compressed_again(self):
+        for producer, name in ((JOBS["test"], "native-tests"),
+                               (JOBS["wasm"], "committed-wasm-package"),
+                               (jobs((WORKFLOWS / "publish.yml").read_text())["build-committed-package"],
+                                "committed-wasm-package")):
+            self.assertIn(f"name: {name}\n          compression-level: 0\n", producer)
+
     def test_native_suite_builds_once_and_both_partitions_are_required(self):
         build, shards = JOBS["test"], JOBS["test-shards"]
         self.assertIn("cargo nextest archive --workspace --cargo-profile ci-test", build)
