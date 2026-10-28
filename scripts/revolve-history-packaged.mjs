@@ -122,7 +122,10 @@ export function runRevolveHistoryPackaged({ BrepKernel }) {
       } else {
         const [row] = JSON.parse(kernel[route](JSON.stringify([{ op: 'revolveJournaled', args: { face, angle: 180 } }])));
         assert.ok(row.error);
-        if (route === 'executeBatchV2') assert.equal(row.error.category, 'unsupported');
+        if (route === 'executeBatchV2') {
+          assert.equal(row.error.category, 'unsupported');
+          assert.equal(row.error.details.kernelCode, 'revolve_history_unsupported');
+        }
       }
       assert.equal(kernel.journalSummary(), journal);
       const after = JSON.parse(kernel.checkpointMemoryStats());

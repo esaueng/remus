@@ -1109,6 +1109,12 @@ mod revolve_history_tests {
                 .revolve_journaled_json(face, [0.0; 3], [0.0, 0.0, 1.0], 180.0)
                 .unwrap_err();
             assert_eq!(kernel.journal_summary(), before);
+            let expected = serde_json::to_value(direct_error).unwrap();
+            assert_eq!(expected["category"], "unsupported");
+            assert_eq!(
+                expected["details"]["kernelCode"],
+                "revolve_history_unsupported"
+            );
             let ops =
                 serde_json::json!([{"op":"revolveJournaled", "args":{"face":face,"angle":180.0}}]);
             let response = if v2 {
@@ -1119,7 +1125,6 @@ mod revolve_history_tests {
             let rows: serde_json::Value = serde_json::from_str(&response).unwrap();
             assert!(rows[0].get("error").is_some());
             if v2 {
-                let expected = serde_json::to_value(direct_error).unwrap();
                 assert_eq!(rows[0]["error"]["code"], expected["code"]);
                 assert_eq!(rows[0]["error"]["category"], expected["category"]);
             }
