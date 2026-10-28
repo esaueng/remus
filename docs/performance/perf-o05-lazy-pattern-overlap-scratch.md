@@ -34,9 +34,10 @@ AMD Ryzen 9 5900XT 16-Core Processor; compiler is rustc 1.96.0 (ac68faa20 2026-0
 For every case, eight fresh processes execute A–B–B–A / B–A–A–B, with two
 warmups and eleven retained samples in each process. Each variant therefore
 has 44 retained samples per case. Processes use CPU31 and
-`RAYON_NUM_THREADS=1`; agent-owned validation excludes CPU31 and its physical
-sibling CPU15. Other validation continues on the remaining cores, so this is
-a reserved-core observation, not a whole-host-idle or cross-machine claim.
+`RAYON_NUM_THREADS=1`; this task's validation excludes CPU31 and its physical
+sibling CPU15. Other work was active on the host. External activity, thermal
+state and frequency were not fully characterized, so these captures do not
+establish exclusive core ownership or whole-host isolation.
 
 Times below are milliseconds, with empirical p50 / nearest-rank p95.
 

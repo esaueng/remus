@@ -18,3 +18,11 @@ locality alone is not route evidence. A `scaling_` operations contract runs in
 the existing feature-enabled complexity suite and pins pair visits, rejected
 versus surviving work and phase coverage on separated/overlapping boxes. This
 adds measurement infrastructure, not a candidate-generation optimization.
+
+The source-bound controls in
+`docs/performance/complex-boolean-baseline-2026-10-28.md` quantify clock-disabled
+counter overhead separately. The 144-hole diagnostic records 7104 VE visits
+with zero projections, 5328 EE visits with zero survivors and 900 FF visits
+with eight survivors. Its inclusive timings point toward reconstruction,
+assembly and store copies for the next fixture-specific investigation;
+Cartesian visit counts alone do not rank elapsed-time opportunities.

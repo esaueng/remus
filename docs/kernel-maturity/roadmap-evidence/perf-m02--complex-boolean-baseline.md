@@ -29,3 +29,14 @@ are unchanged. Initial instrumented smoke receipts qualify the 14 eligible
 cases and three store-local/phase-clock requests, but deliberately exclude
 contended timings and label their externally supplied executables honestly.
 Receipts: `docs/performance/evidence/complex-boolean-milestone/`.
+
+Subsequent Cargo-artifact-bound captures qualify all 14 eligible cases in a
+28-record counter-free smoke. Balanced independent-process controls retain
+160 samples for counter overhead and 240 samples for the existing store-local
+setting, plus 12 separate route/phase proofs. Instrumentation costs about
+1.0–1.5% on the two selected plates; enabled locality reduces observed kernel
+medians 33–60% on the three declared 144-hole operations. These are scoped
+native observations with documented host-activity limitations. Store-local
+remains off by default, and its separate stored-tolerance adoption failure
+remains open. Report and portable raw evidence:
+`docs/performance/complex-boolean-baseline-2026-10-28.md`.

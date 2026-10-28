@@ -243,7 +243,7 @@ mod phases {
         }
     }
 
-    #[cfg(all(test, feature = "perf-counters"))]
+    #[cfg(test)]
     mod tests {
         use super::*;
         thread_local! { static CLOCK: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) }; }

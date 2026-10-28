@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "kind": "fresh-canonical-main-installed-package-correctness",
+  "source": {
+    "sha": "70f675bea4aebd35b0a36d59eaec89118c278ef6",
+    "tree": "fa29f1681380c79b9733d903fc7c5ed24f668297",
+    "trackedChanges": [
+      "crates/wasm-io/pkg/package.json",
+      "crates/wasm/pkg/package.json"
+    ],
+    "kernelSourceUnmodified": true,
+    "generatedMetadataDifferences": "repository URL normalization and removal of homepage in both pkg/package.json files; these do not change WASM/wrapper bytes."
+  },
+  "canonicalBuild": {
+    "command": [
+      "cargo",
+      "xtask",
+      "wasm-build"
+    ],
+    "logSha256": "9d39a032e5bd92db2964363425ecc45c70ca269310d556c7bec63a367802399b",
+    "completionMarkersVerified": true,
+    "smokeAndInstalledTarballSuitesPassed": true,
+    "scope": "This receipt connects the existing completed canonical build to its checked source workspace and verified package bytes. The qualification driver still correctly labels --package-source-sha as externally supplied."
+  },
+  "installation": {
+    "method": "npm pack both generated packages, then npm install both local tarballs in an isolated temporary consumer",
+    "offline": true,
+    "ignoreScripts": true,
+    "audit": false,
+    "published": false,
+    "packageVerification": "fresh-main-package-verification.json",
+    "fileModes": "Archive 0644 versus source/installed 0664; source and installed permissions match, and executable bits match through all three representations.",
+    "npmVersion": "11.21.1"
+  },
+  "qualification": {
+    "full": {
+      "file": "fresh-main-full.json",
+      "exitCode": 1,
+      "directBatchCells": 24,
+      "recipeRuns": 4,
+      "exactContentFailures": 2,
+      "failedCells": [
+        {
+          "name": "cross_drilled_shaft",
+          "requestedStoreLocal": true,
+          "binding": "direct"
+        },
+        {
+          "name": "cross_drilled_shaft",
+          "requestedStoreLocal": true,
+          "binding": "batch"
+        }
+      ]
+    },
+    "positive": {
+      "file": "fresh-main-positive.json",
+      "exitCode": 0,
+      "directBatchCells": 20,
+      "recipeRuns": 4,
+      "exactContentFailures": 0
+    },
+    "settingsAndLineageContracts": "passed in both invocations",
+    "realWasmRuntime": true,
+    "timingsCollected": false
+  },
+  "comparisonToInitialCommittedPackage": {
+    "canonicalAndArenaHashesMatchForAll24Cells": true,
+    "canonicalAndArenaHashesMatchForAll4RecipeRuns": true,
+    "conclusion": "The fresh canonical reconstruction reproduces the earlier bounded outcomes and the enabled cross-drilled adoption blocker."
+  },
+  "scopeLimits": [
+    "Boundary-use content and entity counts are not full incidence/alias graph isomorphism.",
+    "The JS API does not expose actual store-local routes; native feature counters provide separate routing evidence.",
+    "No general imported-body, cavity, NURBS-pcurve, identity/lineage or default enablement approval.",
+    "No speed claim; this receipt qualifies correctness and artifact provenance."
+  ],
+  "artifacts": {
+    "fresh-main-package-verification.json": "a36d4683b623f1441a902232333a74bfca82987839aa46953be60bd56c30cae6",
+    "fresh-main-full.json": "5043212a63f075f5559b142cba1839d76906a57436528dc48bbdd1cdbc9b96d7",
+    "fresh-main-positive.json": "fbbc5139f78e3d1435e006f1aef3ec0987d41af505aaccba3ffff363ab0c0971"
+  }
+}
