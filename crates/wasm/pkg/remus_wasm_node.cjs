@@ -7806,6 +7806,12 @@ class BrepKernel {
      *
      * `contact_mode`: "rmf" (default), "fixed", or "constantNormal:x,y,z"
      * `scale_values`: flat `[t0,s0,t1,s1,...]` pairs for piecewise-linear scale law.
+     * Parameters must be finite and strictly increasing, their adjacent spans
+     * finite, and scales finite and positive. Empty pairs select unit scale.
+     * Qualified linear tapers use XY straight-edge profiles, including holes,
+     * +Z straight paths and fixed contact. Intermediate law breakpoints must
+     * coincide with section rings. General initial roll/profile placement
+     * remains unqualified.
      * `corner_mode`: "smooth" (default), "miter", or "round:&lt;radius&gt;"
      *   (e.g. `"round:2.5"` — rounding a corner needs a radius).
      * Returns a solid handle.
