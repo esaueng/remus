@@ -21,6 +21,7 @@ import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs'
 import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
 import { runWasmParserReferencesPackaged } from './wasm-parser-refs-packaged.mjs';
 import { runVariableFilletInputPackaged } from './variable-fillet-input-packaged.mjs';
+import { runVariableFilletBoundariesPackaged } from './variable-fillet-boundaries-packaged.mjs';
 import { runOpseqF5Packaged } from './opseq-f5-packaged.mjs';
 import { runOpseqF6Packaged } from './opseq-f6-packaged.mjs';
 import { runOpseqOffsetWallPackaged } from './opseq-offset-wall-packaged.mjs';
@@ -87,6 +88,7 @@ runTruckNurbsReusePackaged({ BrepKernel });
 runWasmRayNurbsPackaged({ BrepKernel });
 runWasmParserReferencesPackaged({ BrepKernel });
 runVariableFilletInputPackaged({ BrepKernel });
+runVariableFilletBoundariesPackaged({ BrepKernel });
 runOpseqF3Packaged({ BrepKernel });
 runOpseqF17Packaged({ BrepKernel });
 runOpseqSphereCapPackaged({ BrepKernel });

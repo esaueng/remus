@@ -12,6 +12,663 @@ use remus_math::surfaces::SphericalSurface;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point2, Point3, Vec2, Vec3};
 
+mod nurbs_boundary {
+    //! Control-net certificates for a bounded clamped Bezier boundary family.
+
+    use remus_math::curves2d::{Line2D, NurbsCurve2D};
+    use remus_math::nurbs::curve::NurbsCurve;
+    use remus_math::nurbs::surface::NurbsSurface;
+    use remus_math::vec::{Point3, Vec2, Vec3};
+
+    use super::{
+        CurveUse, PlaneChart, ProofBound, ProofResult, STRICT_TOLERANCE, add_up, arithmetic_bound,
+    };
+
+    fn control_bound(residual: f64, arithmetic: f64, usage: CurveUse) -> ProofResult {
+        if !residual.is_finite() || !arithmetic.is_finite() {
+            return ProofResult::NonFinite;
+        }
+        if arithmetic > STRICT_TOLERANCE {
+            return ProofResult::Unavailable;
+        }
+        ProofResult::Certified(ProofBound {
+            max_deviation: add_up(residual, arithmetic),
+            at_parameter: usage.p0,
+            evaluations: 0,
+        })
+    }
+
+    fn equal(a: f64, b: f64) -> bool {
+        a.partial_cmp(&b) == Some(std::cmp::Ordering::Equal)
+    }
+
+    fn native_use(curve: &NurbsCurve, usage: CurveUse) -> bool {
+        let (a, b) = curve.domain();
+        let (e0, e1) = usage.edge_domain;
+        let (p0, p1) = if usage.forward { (e0, e1) } else { (e1, e0) };
+        ((equal(e0, a) && equal(e1, b)) || (equal(e0, b) && equal(e1, a)))
+            && equal(usage.p0, p0)
+            && equal(usage.p1, p1)
+    }
+
+    fn clamped_bezier(degree: usize, knots: &[f64], count: usize) -> bool {
+        if !(1..=3).contains(&degree) || count != degree + 1 || knots.len() != 2 * count {
+            return false;
+        }
+        let (a, b) = (knots[0], knots[count]);
+        a.is_finite()
+            && b.is_finite()
+            && (1.0e-12..=1.0e12).contains(&(b - a))
+            && knots[..count].iter().all(|&v| equal(v, a))
+            && knots[count..].iter().all(|&v| equal(v, b))
+    }
+
+    fn weight_condition(weights: impl Iterator<Item = f64>) -> Option<f64> {
+        let (mut lower, mut upper) = (f64::INFINITY, 0.0_f64);
+        for w in weights {
+            // Keep the actual evaluators away from overflow, underflow and a
+            // nearly singular homogeneous denominator. No sampling is involved.
+            if !w.is_finite() || !(2.0_f64.powi(-128)..=2.0_f64.powi(128)).contains(&w) {
+                return None;
+            }
+            lower = lower.min(w);
+            upper = upper.max(w);
+        }
+        let condition = upper / lower;
+        (condition.is_finite() && (1.0..=16.0).contains(&condition)).then_some(condition)
+    }
+
+    fn scale(points: impl Iterator<Item = Point3>) -> Option<f64> {
+        let mut result = 1.0_f64;
+        for point in points {
+            for coordinate in point.0 {
+                if !coordinate.is_finite() {
+                    return None;
+                }
+                result = result.max(coordinate.abs());
+            }
+        }
+        Some(result)
+    }
+
+    struct ResidualPiece {
+        controls: Vec<(Vec3, f64)>,
+        start: f64,
+        end: f64,
+    }
+
+    fn split_residual(piece: ResidualPiece) -> (ResidualPiece, ResidualPiece) {
+        let mut work = piece.controls;
+        let mut left = vec![work[0]];
+        let mut right = vec![work[work.len() - 1]];
+        while work.len() > 1 {
+            for i in 0..work.len() - 1 {
+                work[i] = (
+                    (work[i].0 + work[i + 1].0) * 0.5,
+                    work[i].1.midpoint(work[i + 1].1),
+                );
+            }
+            work.pop();
+            left.push(work[0]);
+            right.push(work[work.len() - 1]);
+        }
+        right.reverse();
+        let mid = piece.start.midpoint(piece.end);
+        (
+            ResidualPiece {
+                controls: left,
+                start: piece.start,
+                end: mid,
+            },
+            ResidualPiece {
+                controls: right,
+                start: mid,
+                end: piece.end,
+            },
+        )
+    }
+
+    fn refined_residual_bound(
+        controls: Vec<(Vec3, f64)>,
+        edge: &NurbsCurve,
+        usage: CurveUse,
+        condition: f64,
+        coordinate_scale: f64,
+        tolerance_hint: Option<f64>,
+    ) -> ProofResult {
+        // At most 256 pieces, each with at most four homogeneous controls.
+        // Hulls prove the complete interval; endpoint witnesses only prove
+        // excess. An unresolved tolerance boundary remains typed unproved.
+        const MAX_DEPTH: usize = 8;
+        let mut pieces = vec![ResidualPiece {
+            controls,
+            start: 0.0,
+            end: 1.0,
+        }];
+        for depth in 0..=MAX_DEPTH {
+            let mut upper = 0.0_f64;
+            let mut witness = 0.0_f64;
+            let mut station = 0.0;
+            for piece in &pieces {
+                for (numerator, weight) in &piece.controls {
+                    let value = (*numerator * (1.0 / *weight)).length();
+                    if !value.is_finite() {
+                        return ProofResult::NonFinite;
+                    }
+                    upper = upper.max(value);
+                }
+                for (index, parameter) in [(0, piece.start), (piece.controls.len() - 1, piece.end)]
+                {
+                    let (numerator, weight) = piece.controls[index];
+                    let value = (numerator * (1.0 / weight)).length();
+                    if value > witness {
+                        witness = value;
+                        station = parameter;
+                    }
+                }
+            }
+            let arithmetic = arithmetic_bound(
+                (512.0 + 64.0 * depth as f64) * (edge.degree() + 1) as f64 * condition,
+                coordinate_scale,
+            );
+            let resolved = match tolerance_hint {
+                Some(tolerance) => {
+                    add_up(upper, arithmetic) <= tolerance
+                        || witness > add_up(tolerance, arithmetic)
+                }
+                None => depth >= 2 || add_up(upper, arithmetic) <= STRICT_TOLERANCE,
+            };
+            if resolved {
+                let result = control_bound(upper, arithmetic, usage);
+                return match result {
+                    ProofResult::Certified(mut bound) => {
+                        let (a, b) = edge.domain();
+                        bound.at_parameter = (b - a).mul_add(station, a);
+                        bound.evaluations = pieces.len() * 2;
+                        ProofResult::Certified(bound)
+                    }
+                    other => other,
+                };
+            }
+            if depth == MAX_DEPTH {
+                return ProofResult::Unavailable;
+            }
+            pieces = pieces
+                .into_iter()
+                .flat_map(|piece| {
+                    let (a, b) = split_residual(piece);
+                    [a, b]
+                })
+                .collect();
+        }
+        ProofResult::Unavailable
+    }
+
+    pub(in crate::validation) fn plane_nurbs(
+        normal: remus_math::vec::Vec3,
+        d: f64,
+        pcurve: &NurbsCurve2D,
+        edge: &NurbsCurve,
+        usage: CurveUse,
+        tolerance_hint: Option<f64>,
+    ) -> ProofResult {
+        let Some(chart) = PlaneChart::canonical(normal, d) else {
+            return ProofResult::Unavailable;
+        };
+        if !clamped_bezier(edge.degree(), edge.knots(), edge.control_points().len())
+            || !native_use(edge, usage)
+            || edge.weights().len() != edge.control_points().len()
+            || edge.degree() != pcurve.degree()
+            || edge.knots() != pcurve.knots()
+            || edge.weights() != pcurve.weights()
+            || edge.control_points().len() != pcurve.control_points().len()
+        {
+            return ProofResult::Unavailable;
+        }
+        let Some(condition) = weight_condition(edge.weights().iter().copied()) else {
+            return ProofResult::Unavailable;
+        };
+        // The UV evaluator uses unscaled weights and falls back to its first
+        // control point when the denominator is below EPSILON. Unlike the
+        // normalized 3D evaluator, a tiny common weight scale can therefore
+        // change its actual curve. Positive Bezier bases and this margin keep
+        // the complete UV denominator above that fallback threshold.
+        if pcurve
+            .weights()
+            .iter()
+            .any(|&weight| weight < 2.0 * f64::EPSILON)
+        {
+            return ProofResult::Unavailable;
+        }
+        let lifted: Vec<Point3> = pcurve
+            .control_points()
+            .iter()
+            .map(|p| chart.evaluate(p.x(), p.y()))
+            .collect();
+        let Some(mut coordinate_scale) = scale(
+            edge.control_points()
+                .iter()
+                .copied()
+                .chain(lifted.iter().copied())
+                .chain(std::iter::once(chart.origin)),
+        ) else {
+            return ProofResult::NonFinite;
+        };
+        for point in pcurve.control_points() {
+            coordinate_scale = coordinate_scale.max(point.x().abs()).max(point.y().abs());
+        }
+        coordinate_scale = coordinate_scale.max(d.abs());
+        let controls = edge
+            .control_points()
+            .iter()
+            .zip(&lifted)
+            .zip(edge.weights())
+            .map(|((a, b), &weight)| ((*a - *b) * weight, weight))
+            .collect();
+        // Identical basis and positive identical weights make the complete
+        // residual a convex combination of the control-point residuals. The
+        // fixed degree and weight-condition bounds also bound evaluation work.
+        refined_residual_bound(
+            controls,
+            edge,
+            usage,
+            condition,
+            coordinate_scale,
+            tolerance_hint,
+        )
+    }
+
+    pub(in crate::validation) fn nurbs_isocurve(
+        surface: &NurbsSurface,
+        line: &Line2D,
+        edge: &NurbsCurve,
+        usage: CurveUse,
+    ) -> ProofResult {
+        let points = surface.control_points();
+        let weights = surface.weights();
+        if points.is_empty()
+            || !clamped_bezier(edge.degree(), edge.knots(), edge.control_points().len())
+            || !native_use(edge, usage)
+            || !clamped_bezier(surface.degree_u(), surface.knots_u(), points.len())
+            || !clamped_bezier(surface.degree_v(), surface.knots_v(), points[0].len())
+            || points.iter().any(|row| row.len() != points[0].len())
+            || weights.len() != points.len()
+            || weights.iter().any(|row| row.len() != points[0].len())
+        {
+            return ProofResult::Unavailable;
+        }
+        let Some(condition) = weight_condition(weights.iter().flatten().copied()) else {
+            return ProofResult::Unavailable;
+        };
+        let Some(coordinate_scale) = scale(points.iter().flatten().copied()) else {
+            return ProofResult::NonFinite;
+        };
+        let origin = line.origin();
+        let direction = line.direction();
+        let (degree, knots, boundary_points, boundary_weights) =
+            if direction == Vec2::new(1.0, 0.0) && equal(origin.x(), 0.0) {
+                let (v0, v1) = surface.domain_v();
+                let column = if equal(origin.y(), v0) {
+                    0
+                } else if equal(origin.y(), v1) {
+                    points[0].len() - 1
+                } else {
+                    return ProofResult::Unavailable;
+                };
+                (
+                    surface.degree_u(),
+                    surface.knots_u(),
+                    points.iter().map(|row| row[column]).collect(),
+                    weights.iter().map(|row| row[column]).collect(),
+                )
+            } else if direction == Vec2::new(0.0, 1.0) && equal(origin.y(), 0.0) {
+                let (u0, u1) = surface.domain_u();
+                let row = if equal(origin.x(), u0) {
+                    0
+                } else if equal(origin.x(), u1) {
+                    points.len() - 1
+                } else {
+                    return ProofResult::Unavailable;
+                };
+                (
+                    surface.degree_v(),
+                    surface.knots_v(),
+                    points[row].clone(),
+                    weights[row].clone(),
+                )
+            } else {
+                return ProofResult::Unavailable;
+            };
+        let Ok(boundary) =
+            NurbsCurve::new(degree, knots.to_vec(), boundary_points, boundary_weights)
+        else {
+            return ProofResult::Unavailable;
+        };
+        if &boundary != edge {
+            return ProofResult::Unavailable;
+        }
+        // Clamping makes the fixed-coordinate basis exactly an endpoint unit
+        // vector. The retained row/column is the same rational polynomial as
+        // the edge over its whole native interval, including reversed uses.
+        let arithmetic = arithmetic_bound(
+            128.0 * (surface.degree_u() + 1) as f64 * (surface.degree_v() + 1) as f64 * condition,
+            coordinate_scale,
+        );
+        control_bound(0.0, arithmetic, usage)
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used)]
+    mod tests {
+        use super::*;
+        use remus_math::vec::{Point2, Vec3};
+
+        fn fixture() -> (NurbsSurface, NurbsCurve, NurbsCurve2D) {
+            let points = vec![
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+            ];
+            let weights = vec![1.0, std::f64::consts::FRAC_1_SQRT_2, 1.0];
+            let knots = vec![2.0, 2.0, 2.0, 5.0, 5.0, 5.0];
+            let surface = NurbsSurface::new(
+                2,
+                1,
+                knots.clone(),
+                vec![7.0, 7.0, 9.0, 9.0],
+                points
+                    .iter()
+                    .map(|p| vec![*p, *p + Vec3::new(0.0, 0.0, 4.0)])
+                    .collect(),
+                weights.iter().map(|w| vec![*w, *w]).collect(),
+            )
+            .unwrap();
+            let curve = NurbsCurve::new(2, knots.clone(), points.clone(), weights.clone()).unwrap();
+            let pc = NurbsCurve2D::new(
+                2,
+                knots,
+                points.iter().map(|p| Point2::new(p.y(), -p.x())).collect(),
+                weights,
+            )
+            .unwrap();
+            (surface, curve, pc)
+        }
+
+        #[test]
+        fn certificates_cover_native_nonunit_domains_and_both_orientations() {
+            let (surface, edge, pc) = fixture();
+            let line = Line2D::new(Point2::new(0.0, 7.0), Vec2::new(1.0, 0.0)).unwrap();
+            for domain in [(2.0, 5.0), (5.0, 2.0)] {
+                for forward in [true, false] {
+                    let (p0, p1) = if forward {
+                        domain
+                    } else {
+                        (domain.1, domain.0)
+                    };
+                    let usage = CurveUse {
+                        p0,
+                        p1,
+                        edge_domain: domain,
+                        forward,
+                    };
+                    assert!(matches!(
+                        plane_nurbs(Vec3::new(0.0, 0.0, 1.0), 0.0, &pc, &edge, usage, None),
+                        ProofResult::Certified(_)
+                    ));
+                    assert!(matches!(
+                        nurbs_isocurve(&surface, &line, &edge, usage),
+                        ProofResult::Certified(_)
+                    ));
+                }
+            }
+        }
+
+        #[test]
+        fn endpoint_agreement_cannot_certify_a_bowed_edge_or_pcurve() {
+            let (surface, edge, pc) = fixture();
+            let usage = CurveUse {
+                p0: 2.0,
+                p1: 5.0,
+                edge_domain: (2.0, 5.0),
+                forward: true,
+            };
+            let line = Line2D::new(Point2::new(0.0, 7.0), Vec2::new(1.0, 0.0)).unwrap();
+            let mut controls = edge.control_points().to_vec();
+            controls[1] = controls[1] + Vec3::new(0.0, 0.0, 0.1);
+            let bowed =
+                NurbsCurve::new(2, edge.knots().to_vec(), controls, edge.weights().to_vec())
+                    .unwrap();
+            let ProofResult::Certified(bound) =
+                plane_nurbs(Vec3::new(0.0, 0.0, 1.0), 0.0, &pc, &bowed, usage, None)
+            else {
+                unreachable!();
+            };
+            let expected =
+                0.1 * std::f64::consts::FRAC_1_SQRT_2 / (1.0 + std::f64::consts::FRAC_1_SQRT_2);
+            assert!(bound.max_deviation >= expected && bound.max_deviation < expected + 1e-10);
+            assert!(matches!(
+                nurbs_isocurve(&surface, &line, &bowed, usage),
+                ProofResult::Unavailable
+            ));
+            let mut controls = pc.control_points().to_vec();
+            controls[1] = controls[1] + Vec2::new(0.0, 0.1);
+            let bowed_pc =
+                NurbsCurve2D::new(2, pc.knots().to_vec(), controls, pc.weights().to_vec()).unwrap();
+            let ProofResult::Certified(bound) =
+                plane_nurbs(Vec3::new(0.0, 0.0, 1.0), 0.0, &bowed_pc, &edge, usage, None)
+            else {
+                unreachable!();
+            };
+            let expected =
+                0.1 * std::f64::consts::FRAC_1_SQRT_2 / (1.0 + std::f64::consts::FRAC_1_SQRT_2);
+            assert!(bound.max_deviation >= expected && bound.max_deviation < expected + 1e-10);
+            let wrong_use = CurveUse {
+                p0: 5.0,
+                p1: 2.0,
+                ..usage
+            };
+            assert!(matches!(
+                nurbs_isocurve(&surface, &line, &edge, wrong_use),
+                ProofResult::Unavailable
+            ));
+        }
+
+        #[test]
+        fn plane_certificate_respects_the_actual_uv_weight_fallback() {
+            for weight in [1e-30, f64::EPSILON, 2.0 * f64::EPSILON, 1.0] {
+                let knots = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+                let edge = NurbsCurve::new(
+                    2,
+                    knots.clone(),
+                    vec![
+                        Point3::new(0.0, 0.0, 0.0),
+                        Point3::new(0.5, 0.0, 0.0),
+                        Point3::new(1.0, 0.0, 0.0),
+                    ],
+                    vec![weight; 3],
+                )
+                .unwrap();
+                let pc = NurbsCurve2D::new(
+                    2,
+                    knots,
+                    vec![
+                        Point2::new(0.0, 0.0),
+                        Point2::new(0.0, -0.5),
+                        Point2::new(0.0, -1.0),
+                    ],
+                    vec![weight; 3],
+                )
+                .unwrap();
+                let uv = pc.evaluate(0.5);
+                // The canonical PlaneZ chart is u=(0,1,0), v=(-1,0,0).
+                // Inspect actual evaluators independently of the proof hull.
+                let actual = (edge.evaluate(0.5) - Point3::new(-uv.y(), uv.x(), 0.0)).length();
+                if weight < f64::EPSILON {
+                    assert!(actual > 0.49, "tiny common weights trigger the UV fallback");
+                } else {
+                    assert!(actual < 1e-12);
+                }
+                for forward in [true, false] {
+                    let usage = CurveUse {
+                        p0: if forward { 0.0 } else { 1.0 },
+                        p1: if forward { 1.0 } else { 0.0 },
+                        edge_domain: (0.0, 1.0),
+                        forward,
+                    };
+                    let result =
+                        plane_nurbs(Vec3::new(0.0, 0.0, 1.0), 0.0, &pc, &edge, usage, Some(1e-7));
+                    if weight < 2.0 * f64::EPSILON {
+                        assert!(matches!(result, ProofResult::Unavailable));
+                    } else {
+                        assert!(
+                            matches!(result, ProofResult::Certified(bound) if bound.max_deviation < 1e-7)
+                        );
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn residual_subdivision_distinguishes_tolerance_from_a_control_hull() {
+            for tolerance in [1e-7, 1e-4] {
+                for (factor, kind) in [(1.5, 0), (3.0, 1), (2.0, 2)] {
+                    let amplitude = factor * tolerance;
+                    let knots = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+                    let curve = NurbsCurve::new(
+                        2,
+                        knots.clone(),
+                        vec![
+                            Point3::new(0.0, 0.0, 0.0),
+                            Point3::new(0.5, amplitude, 0.0),
+                            Point3::new(1.0, 0.0, 0.0),
+                        ],
+                        vec![1.0; 3],
+                    )
+                    .unwrap();
+                    let pc = NurbsCurve2D::new(
+                        2,
+                        knots,
+                        vec![
+                            Point2::new(0.0, 0.0),
+                            Point2::new(0.0, -0.5),
+                            Point2::new(0.0, -1.0),
+                        ],
+                        vec![1.0; 3],
+                    )
+                    .unwrap();
+                    let usage = CurveUse {
+                        p0: 0.0,
+                        p1: 1.0,
+                        edge_domain: (0.0, 1.0),
+                        forward: true,
+                    };
+                    // The exact residual is 2*a*t*(1-t), with maximum a/2;
+                    // its original control hull only gives the loose bound a.
+                    let result = plane_nurbs(
+                        Vec3::new(0.0, 0.0, 1.0),
+                        0.0,
+                        &pc,
+                        &curve,
+                        usage,
+                        Some(tolerance),
+                    );
+                    match (kind, result) {
+                        (0, ProofResult::Certified(bound)) => assert!(
+                            bound.max_deviation <= tolerance
+                                && bound.max_deviation >= amplitude / 2.0
+                        ),
+                        (1, ProofResult::Certified(bound)) => {
+                            assert!(bound.max_deviation > tolerance && amplitude / 2.0 > tolerance);
+                        }
+                        (2, ProofResult::Unavailable) => {}
+                        _ => unreachable!("bound must classify within, excess, or unresolved"),
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn mismatched_weights_unclamped_and_ill_conditioned_definitions_remain_unproved() {
+            let (surface, edge, pc) = fixture();
+            let usage = CurveUse {
+                p0: 2.0,
+                p1: 5.0,
+                edge_domain: (2.0, 5.0),
+                forward: true,
+            };
+            let bad_pc = NurbsCurve2D::new(
+                pc.degree(),
+                pc.knots().to_vec(),
+                pc.control_points().to_vec(),
+                vec![1.0, 0.9, 1.0],
+            )
+            .unwrap();
+            assert!(matches!(
+                plane_nurbs(Vec3::new(0.0, 0.0, 1.0), 0.0, &bad_pc, &edge, usage, None),
+                ProofResult::Unavailable
+            ));
+            let unclamped = NurbsSurface::new(
+                2,
+                1,
+                vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+                surface.knots_v().to_vec(),
+                surface.control_points().to_vec(),
+                surface.weights().to_vec(),
+            )
+            .unwrap();
+            let column = NurbsCurve::new(
+                1,
+                unclamped.knots_v().to_vec(),
+                unclamped.control_points()[0].clone(),
+                unclamped.weights()[0].clone(),
+            )
+            .unwrap();
+            let fixed_unclamped = Line2D::new(Point2::new(2.0, 0.0), Vec2::new(0.0, 1.0)).unwrap();
+            let column_use = CurveUse {
+                p0: 7.0,
+                p1: 9.0,
+                edge_domain: (7.0, 9.0),
+                forward: true,
+            };
+            assert!(
+                (unclamped.evaluate(2.0, 8.0) - column.evaluate(8.0)).length() > 0.1,
+                "an unclamped endpoint is not the outer control row"
+            );
+            assert!(matches!(
+                nurbs_isocurve(&unclamped, &fixed_unclamped, &column, column_use),
+                ProofResult::Unavailable
+            ));
+            let weights = vec![1.0, 1.0e-100, 1.0];
+            let ill_edge = NurbsCurve::new(
+                edge.degree(),
+                edge.knots().to_vec(),
+                edge.control_points().to_vec(),
+                weights.clone(),
+            )
+            .unwrap();
+            let ill_pc = NurbsCurve2D::new(
+                pc.degree(),
+                pc.knots().to_vec(),
+                pc.control_points().to_vec(),
+                weights,
+            )
+            .unwrap();
+            assert!(matches!(
+                plane_nurbs(
+                    Vec3::new(0.0, 0.0, 1.0),
+                    0.0,
+                    &ill_pc,
+                    &ill_edge,
+                    usage,
+                    None
+                ),
+                ProofResult::Unavailable
+            ));
+        }
+    }
+}
+pub(super) use nurbs_boundary::{nurbs_isocurve, plane_nurbs};
+
 const STRICT_TOLERANCE: f64 = Tolerance::new().linear;
 const MAX_SPHERE_INTERVALS: usize = 65_536;
 
