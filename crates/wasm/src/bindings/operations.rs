@@ -265,30 +265,53 @@ pub(super) fn parse_sweep_options(
         SweepContactMode::RotationMinimizing
     };
 
-    let scale_law: Option<Box<dyn Fn(f64) -> f64 + Send + Sync>> =
-        if scale_values.len() >= 4 && scale_values.len().is_multiple_of(2) {
-            let pairs: Vec<(f64, f64)> = scale_values
-                .chunks_exact(2)
-                .map(|pair| (pair[0], pair[1]))
-                .collect();
-            Some(Box::new(move |t: f64| -> f64 {
-                if t <= pairs[0].0 {
-                    return pairs[0].1;
+    if !scale_values.is_empty() {
+        if scale_values.len() < 4 || !scale_values.len().is_multiple_of(2) {
+            return Err(
+                "sweep scaleValues must contain at least two [parameter, scale] pairs".into(),
+            );
+        }
+        let mut previous = None;
+        for pair in scale_values.chunks_exact(2) {
+            let (parameter, scale) = (pair[0], pair[1]);
+            if !parameter.is_finite() || !scale.is_finite() || scale <= 0.0 {
+                return Err(
+                    "sweep scaleValues need finite parameters and finite positive scales".into(),
+                );
+            }
+            if previous.is_some_and(|last| parameter <= last) {
+                return Err("sweep scaleValues parameters must be strictly increasing".into());
+            }
+            if previous.is_some_and(|last| !(parameter - last).is_finite()) {
+                return Err("sweep scaleValues parameter spans must be finite".into());
+            }
+            previous = Some(parameter);
+        }
+    }
+
+    let scale_law: Option<Box<dyn Fn(f64) -> f64 + Send + Sync>> = if scale_values.is_empty() {
+        None
+    } else {
+        let pairs: Vec<(f64, f64)> = scale_values
+            .chunks_exact(2)
+            .map(|pair| (pair[0], pair[1]))
+            .collect();
+        Some(Box::new(move |t: f64| -> f64 {
+            if t <= pairs[0].0 {
+                return pairs[0].1;
+            }
+            if t >= pairs[pairs.len() - 1].0 {
+                return pairs[pairs.len() - 1].1;
+            }
+            for window in pairs.windows(2) {
+                if t >= window[0].0 && t <= window[1].0 {
+                    let fraction = (t - window[0].0) / (window[1].0 - window[0].0);
+                    return window[0].1 + fraction * (window[1].1 - window[0].1);
                 }
-                if t >= pairs[pairs.len() - 1].0 {
-                    return pairs[pairs.len() - 1].1;
-                }
-                for window in pairs.windows(2) {
-                    if t >= window[0].0 && t <= window[1].0 {
-                        let fraction = (t - window[0].0) / (window[1].0 - window[0].0);
-                        return window[0].1 + fraction * (window[1].1 - window[0].1);
-                    }
-                }
-                1.0
-            }))
-        } else {
-            None
-        };
+            }
+            1.0
+        }))
+    };
 
     let corner_mode = if corner_mode == "miter" {
         SweepCornerMode::Miter
@@ -1802,6 +1825,12 @@ impl BrepKernel {
     ///
     /// `contact_mode`: "rmf" (default), "fixed", or "constantNormal:x,y,z"
     /// `scale_values`: flat `[t0,s0,t1,s1,...]` pairs for piecewise-linear scale law.
+    /// Parameters must be finite and strictly increasing, their adjacent spans
+    /// finite, and scales finite and positive. Empty pairs select unit scale.
+    /// Qualified linear tapers use XY straight-edge profiles, including holes,
+    /// +Z straight paths and fixed contact. Intermediate law breakpoints must
+    /// coincide with section rings. General initial roll/profile placement
+    /// remains unqualified.
     /// `corner_mode`: "smooth" (default), "miter", or "round:&lt;radius&gt;"
     ///   (e.g. `"round:2.5"` — rounding a corner needs a radius).
     /// Returns a solid handle.
@@ -2815,6 +2844,10 @@ fn raw_nurbs_curve(
         weights,
     )?)
 }
+
+#[cfg(test)]
+#[path = "tapered_hollow_sweep_tests.rs"]
+mod tapered_hollow_sweep_tests;
 
 #[cfg(test)]
 mod tests {
