@@ -34,10 +34,10 @@
 //! patches to chords, and the solid mesher dropped a triangle at the pole of
 //! a NURBS band whose collapsed row is the last one.
 //!
-//! F4 after F3 stays refused: G1 propagation carries the concave chain around
-//! the F3 cylinders onto an arc that ends tangent to the front face, where the
-//! band overflows the body for any radius. That needs blend rollover; see the
-//! ignored ready-repro at the end.
+//! F4 after F3 has a bounded exact rollover: analytic cylinders/tori share a
+//! rational quartic trim with the front plane. The selected quarter-cylinder
+//! tab family requires complete boundary/history/reach proofs; a radius that
+//! contacts the notch remains a transactional typed refusal.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -489,11 +489,9 @@ fn later_fillet_keeps_earlier_corner_ball_arcs() {
 }
 
 #[test]
-fn concave_tab_base_after_tab_verticals_is_refused_whole() {
-    // After F3 the concave chain is G1-propagated around the F3 cylinders and
-    // ends on an arc tangent to the front face, where the band would overflow
-    // the body at any radius. Until rollover exists that is a typed refusal
-    // that leaves the body untouched.
+fn concave_tab_base_beyond_certified_reach_is_refused_whole() {
+    // A radius crossing the notch is outside the bounded rollover family.
+    // Its pre-existing typed cliff refusal and the input body are preserved.
     let mut model = Model::new();
     let s0 = bracket(&mut model);
     let edges = f3_edges(&model, s0);
@@ -509,8 +507,8 @@ fn concave_tab_base_after_tab_verticals_is_refused_whole() {
     let volume = model.volume(s3, 0.01).unwrap();
 
     let edges = f4_edges(&model, s3);
-    let Err(error) = model.fillet(s3, &edges, 3.0) else {
-        panic!("F4 after F3 should be refused until rollover exists");
+    let Err(error) = model.fillet(s3, &edges, 4.1) else {
+        panic!("F4 crossing the notch must be refused");
     };
     assert!(
         matches!(
@@ -525,8 +523,6 @@ fn concave_tab_base_after_tab_verticals_is_refused_whole() {
 }
 
 #[test]
-#[ignore = "open: F4 after F3 needs blend rollover — the G1 chain ends on an arc tangent \
-            to the front face and the band overflows it (roadmap 5.8 / B4 curved trimming)"]
 fn concave_tab_base_after_tab_verticals_rolls_over_front_face() {
     let mut model = Model::new();
     let s0 = bracket(&mut model);
@@ -547,4 +543,237 @@ fn concave_tab_base_after_tab_verticals_rolls_over_front_face() {
         added > lower && added < 2.0 * lower + 2.0 * spandrel(3.0) * 18.0,
         "added {added}"
     );
+}
+
+fn assert_runout_material(model: &Model, solid: SolidId, placement: Mat4) {
+    use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
+    let options = ClassifyOptions::default();
+    let mut checked = 0;
+    let mut probe = |point: Point3, inside: bool| {
+        let point = placement.mul_point(point);
+        assert_eq!(
+            classify_point(model.topology(), solid, point, &options).unwrap(),
+            if inside {
+                PointClassification::Inside
+            } else {
+                PointClassification::Outside
+            },
+            "{point:?}"
+        );
+        checked += 1;
+    };
+    for mirror in [false, true] {
+        let w = |x: f64, y: f64, z: f64| Point3::new(if mirror { 74.0 - x } else { x }, y, z);
+        for z in [0.3, 1.0, 2.0] {
+            let q = 3.0 - (6.0_f64 * z - z * z).sqrt();
+            for (x, y, inside) in [
+                (8.0, 10.0 + q / 2.0, true),
+                (8.0, 10.1 + q, false),
+                (18.0 + q / 2.0, 5.0, true),
+                (18.1 + q, 5.0, false),
+                (
+                    16.0 + (2.0 + q / 2.0) * 2.0_f64.sqrt() / 2.0,
+                    8.0 + (2.0 + q / 2.0) * 2.0_f64.sqrt() / 2.0,
+                    true,
+                ),
+                (
+                    16.0 + (2.1 + q) * 2.0_f64.sqrt() / 2.0,
+                    8.0 + (2.1 + q) * 2.0_f64.sqrt() / 2.0,
+                    false,
+                ),
+                (
+                    16.0 + (2.0 + q / 2.0) * 0.4_f64.cos(),
+                    2.0 - (2.0 + q / 2.0) * 0.4_f64.sin(),
+                    true,
+                ),
+                (
+                    16.0 + (2.1 + q) * 0.4_f64.cos(),
+                    2.0 - (2.1 + q) * 0.4_f64.sin(),
+                    false,
+                ),
+                (
+                    16.0 + (4.0_f64 - 1.85 * 1.85)
+                        .sqrt()
+                        .midpoint(((2.0 + q).powi(2) - 1.85 * 1.85).sqrt()),
+                    0.15,
+                    true,
+                ),
+                (16.1 + ((2.0 + q).powi(2) - 1.85 * 1.85).sqrt(), 0.15, false),
+                (16.5, -0.1, false),
+            ] {
+                probe(w(x, y, 4.0 + z), inside);
+            }
+        }
+        probe(w(8.0, 5.0, 30.0), true);
+        probe(w(17.9, 0.1, 12.0), false);
+    }
+    probe(Point3::new(40.0, 30.0, 2.0), true);
+    probe(Point3::new(30.0, 4.0, 2.0), false);
+    assert_eq!(checked, 72);
+}
+
+fn assert_runout_pcurves(model: &Model, solid: SolidId) {
+    let topo = model.topology();
+    let mut quartic_uses = 0;
+    for face in remus_topology::explorer::solid_faces(topo, solid).unwrap() {
+        for oe in topo
+            .wire(topo.face(face).unwrap().outer_wire())
+            .unwrap()
+            .edges()
+        {
+            assert!(
+                topo.pcurve_oriented(oe.edge(), face, oe.is_forward())
+                    .is_some()
+            );
+            remus_topology::validation::validate_same_parameter_strict(
+                topo,
+                oe.edge(),
+                face,
+                oe.is_forward(),
+                1e-7,
+                2,
+            )
+            .unwrap();
+            remus_topology::validation::validate_same_range_strict(
+                topo,
+                oe.edge(),
+                face,
+                oe.is_forward(),
+                1e-7,
+            )
+            .unwrap();
+            if matches!(topo.edge(oe.edge()).unwrap().curve(),EdgeCurve::NurbsCurve(n) if n.degree()==4)
+            {
+                quartic_uses += 1;
+            }
+        }
+    }
+    assert_eq!(quartic_uses, 4);
+}
+
+fn runout_geometry_snapshot(model: &Model, solid: SolidId) -> Vec<u8> {
+    // A successful journaled operation intentionally adds source lineage to
+    // its serialized document. Compare every geometry/attribute/authority byte
+    // on a test-only clone, while the test separately verifies the new entry
+    // and complete source/result provenance. The live journal is untouched.
+    let mut geometry = model.topology().clone();
+    geometry.load_journal(remus_topology::journal::Journal::default());
+    remus_io::arena_io::serialize_solid(&geometry, solid).unwrap()
+}
+
+#[test]
+fn bounded_tab_rollover_preserves_prefix_and_records_complete_face_history() {
+    use std::collections::HashSet;
+    for prefix in [false, true] {
+        let mut model = Model::new();
+        let mut source = bracket(&mut model);
+        if prefix {
+            let selected = f1_edges(&model, source);
+            source = model.fillet(source, &selected, 6.0).unwrap().solid;
+            let selected = f2_edges(&model, source);
+            source = model.fillet(source, &selected, 2.0).unwrap().solid;
+        }
+        let selected = f3_edges(&model, source);
+        source = model.fillet(source, &selected, 2.0).unwrap().solid;
+        let other = model.make_box(2.0, 3.0, 5.0).unwrap();
+        let before = runout_geometry_snapshot(&model, source);
+        let other_before = remus_io::arena_io::serialize_solid(model.topology(), other).unwrap();
+        let source_faces: HashSet<_> =
+            remus_topology::explorer::solid_faces(model.topology(), source)
+                .unwrap()
+                .into_iter()
+                .map(remus_topology::arena::Id::index)
+                .collect();
+        let journal = model.topology().journal().entries().len();
+        let selected = f4_edges(&model, source);
+        let tracked = model.fillet_journaled(source, &selected, 3.0).unwrap();
+        assert!(tracked.map.origin.is_exact());
+        assert!(tracked.map.unresolved.is_empty());
+        assert_eq!(model.topology().journal().entries().len(), journal + 1);
+        let known_sources: HashSet<_> = tracked
+            .map
+            .modified
+            .keys()
+            .copied()
+            .chain(tracked.map.deleted.iter().copied())
+            .collect();
+        assert_eq!(known_sources, source_faces);
+        let known_results: HashSet<_> = tracked
+            .map
+            .modified
+            .values()
+            .chain(tracked.map.generated.values())
+            .flatten()
+            .copied()
+            .collect();
+        let result = tracked.result.solid;
+        assert_eq!(
+            known_results,
+            remus_topology::explorer::solid_faces(model.topology(), result)
+                .unwrap()
+                .into_iter()
+                .map(remus_topology::arena::Id::index)
+                .collect()
+        );
+        assert_runout_pcurves(&model, result);
+        assert_runout_material(&model, result, Mat4::identity());
+        assert_sound(&model, result, "bounded rollover with prefix");
+        let mesh = model
+            .tessellate_with_tolerance(result, 0.0005, 0.005)
+            .unwrap();
+        assert_eq!(boundary_edge_count(&mesh), 0);
+        assert_eq!(non_manifold_edge_count(&mesh), 0);
+        let reference = mesh.positions[0];
+        let volume: f64 = mesh
+            .indices
+            .chunks_exact(3)
+            .map(|ix| {
+                let [a, b, c] =
+                    [ix[0], ix[1], ix[2]].map(|i| mesh.positions[i as usize] - reference);
+                a.dot(b.cross(c)) / 6.0
+            })
+            .sum();
+        let expected = 29_746.712_312_911_633
+            - if prefix {
+                2.0 * 4.0 * (spandrel(6.0) - spandrel(2.0))
+            } else {
+                0.0
+            };
+        assert!(
+            (volume - expected).abs() < 0.005,
+            "{volume} against independent {expected}"
+        );
+        assert_eq!(runout_geometry_snapshot(&model, source), before);
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(model.topology(), other).unwrap(),
+            other_before
+        );
+    }
+}
+
+#[test]
+fn bounded_tab_rollover_is_covariant_under_rigid_placement_scale_and_reflection() {
+    for scale in [0.01, 1.0, 4.0] {
+        for mirror in [false, true] {
+            let mut model = Model::new();
+            let s = bracket(&mut model);
+            let selected = f3_edges(&model, s);
+            let source = model.fillet(s, &selected, 2.0).unwrap().solid;
+            let selected = f4_edges(&model, source);
+            let placement = Mat4::translation(13.0, -7.0, 11.0)
+                * Mat4::rotation_x(0.37)
+                * Mat4::rotation_z(0.23)
+                * Mat4::scale(if mirror { -scale } else { scale }, scale, scale);
+            model.transform(source, &placement).unwrap();
+            let before = remus_io::arena_io::serialize_solid(model.topology(), source).unwrap();
+            let result = model.fillet(source, &selected, 3.0 * scale).unwrap().solid;
+            assert_runout_pcurves(&model, result);
+            assert_runout_material(&model, result, placement);
+            assert!(model.validate(result).unwrap().is_valid());
+            assert_eq!(
+                remus_io::arena_io::serialize_solid(model.topology(), source).unwrap(),
+                before
+            );
+        }
+    }
 }

@@ -3002,3 +3002,191 @@ mod boundary_plan_pipeline_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod inner_tangent_runout_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use crate::tessellate::{boundary_edge_count, non_manifold_edge_count};
+    use std::collections::BTreeMap;
+
+    // Integrate added horizontal/radial material, without using the kernel's
+    // surface/volume integration or constructor coefficients. The theta change
+    // of variable removes the radial endpoint square root.
+    fn independent_quantities(radius: f64, panels: usize) -> (f64, f64) {
+        use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
+        let a = 2.0;
+        let major = a + radius;
+        let step = FRAC_PI_2 / panels as f64;
+        let integral = |area: bool| {
+            (0..=panels)
+                .map(|i| {
+                    let theta = i as f64 * step;
+                    let rho = major - radius * theta.cos();
+                    let value = if area {
+                        radius * rho * (a / rho).asin()
+                    } else {
+                        rho * radius.powi(2) * (1.0 - theta.sin()) * theta.sin() * (a / rho).asin()
+                    };
+                    value
+                        * if i == 0 || i == panels {
+                            1.0
+                        } else if i % 2 == 0 {
+                            2.0
+                        } else {
+                            4.0
+                        }
+                })
+                .sum::<f64>()
+                * step
+                / 3.0
+        };
+        let section = radius.powi(2) * (1.0 - FRAC_PI_4);
+        let moment = radius.powi(3) * (5.0 / 6.0 - FRAC_PI_4);
+        let source = 29_760.0 - 4.0 * 36.0 * a * a * (1.0 - FRAC_PI_4);
+        (
+            source + 2.0 * (22.0 * section + FRAC_PI_2 * (a * section + moment) + integral(false)),
+            integral(true),
+        )
+    }
+
+    /// Independent fixed B-Rep and actual qualified constructors over the
+    /// admitted radius range. Public-cascade coverage lives in the Model
+    /// tests. These maintained boundary plans and face emitters run before
+    /// welding, coincident-triangle deletion or gap filling.
+    #[test]
+    fn inner_tangent_body_has_raw_shared_boundaries_and_independent_quantities() {
+        let mut topo = Topology::new();
+        let solid = remus_io::arena_io::deserialize_solid(
+            include_bytes!("../../tests/data/rollover_inner_tangent.arena.json"),
+            &mut topo,
+        )
+        .unwrap();
+        let mut witnesses = vec![(solid, 3.0)];
+        for radius in [0.5, 1.0, 3.0, 3.9] {
+            witnesses.push((
+                crate::fillet::arc_torus::constructed_tab_runout_for_test(&mut topo, radius)
+                    .unwrap(),
+                radius,
+            ));
+        }
+        for (solid, radius) in witnesses {
+            let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+            assert_eq!(faces.len(), 28);
+            let mut tori = 0;
+            let mut cylinders = 0;
+            for &face in &faces {
+                let surface = topo.face(face).unwrap().surface();
+                assert!(matches!(
+                    surface,
+                    FaceSurface::Plane { .. } | FaceSurface::Cylinder(_) | FaceSurface::Torus(_)
+                ));
+                cylinders += usize::from(matches!(surface, FaceSurface::Cylinder(_)));
+                tori += usize::from(matches!(surface, FaceSurface::Torus(_)));
+            }
+            assert_eq!((cylinders, tori), (8, 4));
+            let map = remus_topology::explorer::edge_to_face_map_for_faces(&topo, &faces).unwrap();
+            let mut edges: Vec<_> = map.keys().copied().collect();
+            edges.sort_unstable();
+            let (expected_volume, expected_front_area) = independent_quantities(radius, 1024);
+            let previous = independent_quantities(radius, 512);
+            assert!((expected_volume - previous.0).abs() < 1e-7);
+            assert!((expected_front_area - previous.1).abs() < 1e-7);
+            if (radius - 3.0_f64).abs() < 1e-14 {
+                assert!((expected_volume - 29_746.712_312_911_633).abs() < 1e-8);
+                assert!((expected_front_area - 10.978_688_504_955_37).abs() < 1e-8);
+            }
+            for (deflection, angular) in [(0.002, 0.01), (0.0005, 0.005)] {
+                let mut plan = build_boundary_plan(
+                    &topo, &faces, &edges, None, deflection, angular, false, None,
+                )
+                .unwrap();
+                let mut front_areas = Vec::new();
+                for &face in &faces {
+                    let start = plan.merged.indices.len();
+                    tessellate_face_with_shared_edges(
+                        &topo,
+                        face,
+                        plan.deflection,
+                        plan.angular_tol,
+                        plan.policy.circle_floor,
+                        true,
+                        false,
+                        &plan.edge_chains,
+                        &mut plan.merged,
+                        &mut plan.point_to_global,
+                    )
+                    .unwrap();
+                    assert!(plan.merged.indices.len() > start, "empty face {face:?}");
+                    let is_front = matches!(
+                        topo.face(face).unwrap().surface(),
+                        FaceSurface::Torus(torus) if (torus.center().y() - 2.0).abs() < 1e-10
+                    );
+                    let mut area = 0.0;
+                    for tri in plan.merged.indices[start..].chunks_exact(3) {
+                        let [a, b, c] = [tri[0], tri[1], tri[2]]
+                            .map(|index| plan.merged.positions[index as usize]);
+                        let normal = (b - a).cross(c - a);
+                        assert!(normal.length() > 1e-15, "degenerate triangle {face:?}");
+                        let centre = a + ((b - a) + (c - a)) * (1.0 / 3.0);
+                        let outward =
+                            crate::query::effective_face_normal(&topo, face, centre).unwrap();
+                        assert!(normal.dot(outward) > 0.0, "inward triangle {face:?}");
+                        area += normal.length() * 0.5;
+                    }
+                    if is_front {
+                        front_areas.push(area);
+                    }
+                }
+                let mesh = &plan.merged;
+                assert_eq!(boundary_edge_count(mesh), 0, "raw boundary d={deflection}");
+                assert_eq!(
+                    non_manifold_edge_count(mesh),
+                    0,
+                    "raw incidence d={deflection}"
+                );
+                let mut indexed = BTreeMap::<(u32, u32), Vec<bool>>::new();
+                let mut positioned = BTreeMap::new();
+                let position_key = |id: u32| {
+                    mesh.positions[id as usize]
+                        .0
+                        .map(|v| (v * 1e8).round() as i64)
+                };
+                let reference = Point3::new(37.0, 30.0, 4.0);
+                let mut volume = 0.0;
+                for tri in mesh.indices.chunks_exact(3) {
+                    let [a, b, c] = [tri[0], tri[1], tri[2]]
+                        .map(|index| mesh.positions[index as usize] - reference);
+                    volume += a.dot(b.cross(c)) / 6.0;
+                    for (a, b) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+                        indexed.entry((a.min(b), a.max(b))).or_default().push(a < b);
+                        let (pa, pb) = (position_key(a), position_key(b));
+                        assert_ne!(pa, pb, "collapsed position edge");
+                        positioned
+                            .entry((pa.min(pb), pa.max(pb)))
+                            .or_insert_with(Vec::new)
+                            .push(pa < pb);
+                    }
+                }
+                for uses in indexed.values().chain(positioned.values()) {
+                    assert_eq!(uses.len(), 2, "raw multiplicity d={deflection}");
+                    assert_ne!(uses[0], uses[1], "raw orientation d={deflection}");
+                }
+                assert_eq!(front_areas.len(), 2);
+                if deflection < 0.001 {
+                    assert!(
+                        (volume - expected_volume).abs() < 0.01,
+                        "raw quantity {volume} != {expected_volume}"
+                    );
+                    for area in front_areas {
+                        assert!(
+                            (area - expected_front_area).abs() < 0.005,
+                            "clipped torus area {area} != {expected_front_area}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

@@ -35,6 +35,7 @@ import { runWasmRayNurbsPackaged } from './wasm-ray-nurbs-packaged.mjs';
 import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
 import { runOpseqF17Packaged } from './opseq-f17-packaged.mjs';
 import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
+import { runBoundedTabRolloverPackaged } from './bounded-tab-rollover-packaged.mjs';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
@@ -86,6 +87,7 @@ runVariableFilletInputPackaged({ BrepKernel });
 runOpseqF3Packaged({ BrepKernel });
 runOpseqF17Packaged({ BrepKernel });
 runDocumentCopyPackaged({ BrepKernel, RemusIo });
+runBoundedTabRolloverPackaged({ BrepKernel, decodeEvolutionPayload });
 
 const DEFLECTION = 0.1;
 

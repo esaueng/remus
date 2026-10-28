@@ -34,6 +34,7 @@ import { runPointedConeCutPackaged } from './pointed-cone-cut-packaged.mjs';
 import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
 import { runOpseqF17Packaged } from './opseq-f17-packaged.mjs';
 import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
+import { runBoundedTabRolloverPackaged } from './bounded-tab-rollover-packaged.mjs';
 import { runGridPatternPackaged } from './grid-pattern-packaged.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -105,6 +106,7 @@ try {
   runOpseqF3Packaged(packageExports);
   runOpseqF17Packaged(packageExports);
   runDocumentCopyPackaged({ ...packageExports, ...ioExports });
+  runBoundedTabRolloverPackaged(packageExports);
   runOpenZcadConsumerRegressions({ ...packageExports, ...ioExports });
   runGridPatternPackaged(packageExports);
   runProjectCurvePackaged(packageExports);

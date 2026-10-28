@@ -1892,7 +1892,17 @@ pub fn fillet_cascade(
 ) -> Result<BlendResult, OperationsError> {
     // Every attempt's volume guard measures the same input, and a rolled-back
     // attempt rebuilt under the material guard measures an identical result.
-    crate::measure::volume_memo::scoped(|| fillet_cascade_attempts(topo, solid, edges, radius))
+    crate::measure::volume_memo::scoped(|| {
+        let refusal = match fillet_cascade_attempts(topo, solid, edges, radius) {
+            Ok(result) => return Ok(result),
+            Err(error) => error,
+        };
+        // Preserve every existing engine/reorder/cavity success. This bounded
+        // cavity-free analytic family is attempted only after their final
+        // refusal, outside the outer-shell proxy used by cavity carrying.
+        crate::fillet::arc_torus::inner_tangent_tab_fillet(topo, solid, edges, radius)
+            .or(Err(refusal))
+    })
 }
 
 fn fillet_cascade_attempts(
