@@ -65,6 +65,14 @@ export interface SolidProjection {
 }
 
 /**
+ * Current attached plane and count of refreshed external lines.
+ */
+export interface LinkedSketchResolution {
+    frame: SketchFrame;
+    externalLines: number;
+}
+
+/**
  * Disclosed projection quality; approximate deviation is a sampled maximum.
  */
 export type ProjectionQuality = { kind: "exact" } | { kind: "approximate"; maxDeviation: number };
@@ -78,6 +86,15 @@ export type ProjectionQuality = { kind: "exact" } | { kind: "approximate"; maxDe
  * descending source intervals; the control net is never reversed.
  */
 export type PlaneCurve2d = { kind: "line"; start: [number, number]; end: [number, number] } | { kind: "circle"; center: [number, number]; radius: number; startAngle: number; endAngle: number } | { kind: "ellipse"; center: [number, number]; semiMajor: number; semiMinor: number; rotation: number; startAngle: number; endAngle: number } | { kind: "nurbs"; tStart: number; tEnd: number; degree: number; knots: number[]; controlPoints: [number, number][]; weights: number[] };
+
+/**
+ * Handles for ordinary GCS constraints; the two point inputs are read-only.
+ */
+export interface ExternalLineHandles {
+    line: number;
+    start: number;
+    end: number;
+}
 
 /**
  * Material side for `faceMaterialSense`: `"outward"` (boss-like) or
@@ -2121,6 +2138,10 @@ export class BrepKernel {
      */
     gcsAddEllipse(sketch: number, center: number, a: number, b: number, angle: number): number;
     /**
+     * Add a fixed external line whose returned handles can be constrained to.
+     */
+    gcsAddExternalLine(sketch: number, reference: string, start_ref: string, end_ref: string): ExternalLineHandles;
+    /**
      * Add a line through two existing points. Returns a line handle.
      */
     gcsAddLine(sketch: number, p1: number, p2: number): number;
@@ -2129,6 +2150,12 @@ export class BrepKernel {
      * Returns a point handle.
      */
     gcsAddPoint(sketch: number, x: number, y: number, fixed: boolean): number;
+    /**
+     * Attach an existing GCS sketch to one construction-resolved planar face.
+     * Frame axes must be unit and perpendicular; this slice supports parallel
+     * plane moves. The reference uses the existing versioned JSON codec.
+     */
+    gcsAttachToFace(sketch: number, reference: string, frame: SketchFrame): LinkedSketchResolution;
     /**
      * Current radius of a circle.
      */
@@ -2162,6 +2189,11 @@ export class BrepKernel {
      */
     gcsRemoveConstraint(sketch: number, constraint: number): void;
     /**
+     * Atomically refresh every external input; a failed rebind preserves all
+     * previous coordinates. Solve and detailed solve refresh automatically.
+     */
+    gcsResolveRefs(sketch: number): LinkedSketchResolution;
+    /**
      * Move an ellipse's center to `(x, y)` and set its semiaxes and
      * orientation without solving (e.g. while dragging). `a` and `b` must
      * be positive and finite; `angle` is finite radians.
@@ -2188,8 +2220,12 @@ export class BrepKernel {
      * unchanged. Two differences matter:
      *
      * - **Transactional.** A solve that fails to reach `tolerance` is rolled
-     *   back: the pre-solve points and radii are restored and `rolledBack` is
-     *   set. `gcsSolve` still publishes whatever iterate it stopped on.
+     *   back: the pre-solver free points and radii are restored and `rolledBack`
+     *   is set. Linked external inputs refresh first; a successful refresh
+     *   remains current even when the solve does not converge. The rollback
+     *   baseline and `publishedMaxResidual` use those refreshed fixed inputs.
+     *   A thrown refresh or solver error restores the entire pre-call sketch.
+     *   `gcsSolve` still publishes whatever iterate it stopped on.
      * - **Measured.** Returns convergence, iteration count, residuals, DOF,
      *   rank, parameter and equation counts, a per-constraint residual keyed
      *   by the `gcsAddConstraint` handle, and an overall classification.
@@ -4275,6 +4311,12 @@ export class BrepKernel {
      *
      * `contact_mode`: "rmf" (default), "fixed", or "constantNormal:x,y,z"
      * `scale_values`: flat `[t0,s0,t1,s1,...]` pairs for piecewise-linear scale law.
+     * Parameters must be finite and strictly increasing, their adjacent spans
+     * finite, and scales finite and positive. Empty pairs select unit scale.
+     * Qualified linear tapers use XY straight-edge profiles, including holes,
+     * +Z straight paths and fixed contact. Intermediate law breakpoints must
+     * coincide with section rings. General initial roll/profile placement
+     * remains unqualified.
      * `corner_mode`: "smooth" (default), "miter", or "round:&lt;radius&gt;"
      *   (e.g. `"round:2.5"` — rounding a corner needs a radius).
      * Returns a solid handle.
