@@ -34,6 +34,7 @@ import { runPointedConeCutPackaged } from './pointed-cone-cut-packaged.mjs';
 import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
 import { runOpseqF17Packaged } from './opseq-f17-packaged.mjs';
 import { runOpseqSphereCapPackaged } from './opseq-sphere-cap-packaged.mjs';
+import { runOpseqTorusPropertiesPackaged } from './opseq-torus-properties-packaged.mjs';
 import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
 import { runPackagedPreviewWorkContract } from './perf/face-drag-session/packaged_contract.cjs';
 import { runGridPatternPackaged } from './grid-pattern-packaged.mjs';
@@ -108,6 +109,7 @@ try {
   runOpseqF3Packaged(packageExports);
   runOpseqF17Packaged(packageExports);
   runOpseqSphereCapPackaged(packageExports);
+  runOpseqTorusPropertiesPackaged(packageExports);
   runDocumentCopyPackaged({ ...packageExports, ...ioExports });
   runPackagedPreviewWorkContract({
     kernelPackage: realpathSync(resolve(consumerDir, 'node_modules/remus-wasm')),

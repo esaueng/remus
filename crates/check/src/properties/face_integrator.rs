@@ -847,7 +847,7 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
             // A torus is periodic in `v` as well, so the trimming boundary has
             // to be unwrapped on that axis too or a seam-crossing band lands in
             // a different branch than the range above.
-            let uv = build_face_uv(
+            let mut uv = build_face_uv(
                 topo,
                 face_id,
                 |p| s.project_point(p),
@@ -856,6 +856,7 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 true,
                 false,
             )?;
+            align_torus_pockets(&mut uv, (u_range, v_range), face.inner_wires().len())?;
             integrate_with_trimming::<_, AREA_ONLY>(
                 s,
                 u_range,
@@ -1508,6 +1509,183 @@ struct FaceUv {
     /// integration range instead of masking abscissae (see
     /// [`full_revolution_hole_vs`]).
     hole_vs: Vec<f64>,
+}
+
+/// Bring nonwrapping torus pockets into an already resolved one-period chart.
+///
+/// Each wire was unwrapped independently. Its tube-angle branch can therefore
+/// be a period away from the outer wire's, even though it removes material
+/// inside that wire. Keep every periodic image intersecting the resolved
+/// window; `UvTrim` clips its crossings to the window and subtracts the union.
+/// A pocket crossing the window's seam needs two images, each clipped once.
+///
+/// This does not resolve wider windows or wrapping holes. Those retain their
+/// existing path, as do all other carriers. No new boundary samples are taken;
+/// the existing point budget also bounds the copied images.
+fn align_torus_pockets(
+    uv: &mut FaceUv,
+    bounds: UvBounds,
+    original_holes: usize,
+) -> Result<bool, CheckError> {
+    use std::f64::consts::{PI, TAU};
+
+    let single_period = |(lo, hi): (f64, f64)| {
+        // Only account for roundoff in an unwrapped full turn, whose computed
+        // endpoints can differ by a few ulps more than TAU. This is not a
+        // geometric tolerance or permission to integrate a wider chart.
+        let roundoff = 8.0 * f64::EPSILON * lo.abs().max(hi.abs()).max(TAU);
+        lo.is_finite() && hi.is_finite() && hi > lo && hi - lo <= TAU + roundoff
+    };
+    // build_face_uv can omit a wrapping/degenerate wire. A mixed face with
+    // any such original hole stays outside this bounded pocket-only family.
+    if uv.pockets.len() != original_holes
+        || !uv.u_periodic
+        || uv.pockets.is_empty()
+        || !uv.bands.is_empty()
+        || !uv.hole_vs.is_empty()
+        || !single_period(bounds.0)
+        || !single_period(bounds.1)
+    {
+        return Ok(false);
+    }
+
+    // Qualify the entire face before expansion can exhaust the budget. An
+    // unsupported hole must retain the old path regardless of wire order.
+    let mut ranges = Vec::with_capacity(uv.pockets.len());
+    for pocket in &uv.pockets {
+        if pocket.points.len() < 3
+            || !pocket
+                .points
+                .iter()
+                .all(|p| p.x().is_finite() && p.y().is_finite())
+        {
+            return Ok(false);
+        }
+        let (mut u_lo, mut u_hi, mut v_lo, mut v_hi) = (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        );
+        let mut v_winding = 0.0;
+        for (i, p) in pocket.points.iter().enumerate() {
+            u_lo = u_lo.min(p.x());
+            u_hi = u_hi.max(p.x());
+            v_lo = v_lo.min(p.y());
+            v_hi = v_hi.max(p.y());
+            let d = pocket.points[(i + 1) % pocket.points.len()].y() - p.y();
+            v_winding += d - TAU * ((d + PI) / TAU).floor();
+        }
+        if u_hi - u_lo >= TAU
+            || v_hi - v_lo >= TAU
+            || pocket.u_winding().abs() >= WRAP_EPS
+            || v_winding.abs() >= WRAP_EPS
+        {
+            return Ok(false);
+        }
+
+        ranges.push(((u_lo, u_hi), (v_lo, v_hi)));
+    }
+
+    let mut images = Vec::new();
+    let mut point_count = uv.boundary.points.len();
+    for (pocket, ((u_lo, u_hi), (v_lo, v_hi))) in uv.pockets.iter().zip(ranges) {
+        // Keep the u branch near the integration window too. Then the
+        // existing u_breaks offsets (0, +/-TAU) cover every translated vertex,
+        // including when both windows straddle different canonical seams.
+        let u_shift = ((f64::midpoint(bounds.0.0, bounds.0.1) - f64::midpoint(u_lo, u_hi)) / TAU)
+            .round()
+            * TAU;
+        let shift = ((f64::midpoint(bounds.1.0, bounds.1.1) - f64::midpoint(v_lo, v_hi)) / TAU)
+            .round()
+            * TAU;
+        // Two intervals each no wider than a period can intersect in at most
+        // two periodic images. The nearest image and its neighbors cover all
+        // possibilities, including a hole straddling either end of the window.
+        for offset in [shift - TAU, shift, shift + TAU] {
+            if v_hi + offset <= bounds.1.0 || v_lo + offset >= bounds.1.1 {
+                continue;
+            }
+            let image = torus_pocket_image(pocket, (u_shift, offset), bounds.1)?;
+            point_count = point_count.saturating_add(image.points.len());
+            if point_count > MAX_TRIM_POINTS {
+                return Err(CheckError::IntegrationFailed(format!(
+                    "face trim exceeds the {MAX_TRIM_POINTS}-point integration budget"
+                )));
+            }
+            images.push(image);
+        }
+    }
+    // Assign only after every pocket qualified and every image fit the budget.
+    uv.pockets = images;
+    Ok(true)
+}
+
+/// Clip a translated pocket to the tube window with exact polygon/half-plane
+/// intersections. These intersections become u breaks, so clipping changes
+/// slope only at quadrature cell boundaries. Outside vertices are discarded,
+/// keeping seam images within the same point ceiling rather than retaining
+/// two full copies of a split pocket. Concave pieces may join along the window
+/// boundary; those zero-area bridges do not change interior winding.
+fn torus_pocket_image(
+    pocket: &UvLoop,
+    offset: (f64, f64),
+    v_range: (f64, f64),
+) -> Result<UvLoop, CheckError> {
+    let mut points: Vec<_> = pocket
+        .points
+        .iter()
+        .map(|p| {
+            Point2::new(
+                if offset.0 == 0.0 {
+                    p.x()
+                } else {
+                    p.x() + offset.0
+                },
+                if offset.1 == 0.0 {
+                    p.y()
+                } else {
+                    p.y() + offset.1
+                },
+            )
+        })
+        .collect();
+    for (limit, keep_above) in [(v_range.0, true), (v_range.1, false)] {
+        let Some(&last) = points.last() else { break };
+        let mut clipped = Vec::new();
+        let mut push = |point| {
+            if clipped.len() == MAX_TRIM_POINTS {
+                return Err(CheckError::IntegrationFailed(format!(
+                    "face trim exceeds the {MAX_TRIM_POINTS}-point integration budget"
+                )));
+            }
+            clipped.push(point);
+            Ok(())
+        };
+        let inside = |p: Point2| {
+            if keep_above {
+                p.y() >= limit
+            } else {
+                p.y() <= limit
+            }
+        };
+        let mut a = last;
+        for &b in &points {
+            if inside(a) != inside(b) {
+                let t = (limit - a.y()) / (b.y() - a.y());
+                push(Point2::new((b.x() - a.x()).fma(t, a.x()), limit))?;
+            }
+            if inside(b) {
+                push(b)?;
+            }
+            a = b;
+        }
+        points = clipped;
+    }
+    Ok(UvLoop {
+        points,
+        u_center: pocket.u_center + offset.0,
+    })
 }
 
 /// Project a face's wires into the surface's UV domain.
@@ -4577,6 +4755,296 @@ mod tests {
 
     use super::*;
     use remus_math::vec::{Point3, Vec3};
+
+    fn angular_rectangle(u: (f64, f64), v: (f64, f64)) -> UvLoop {
+        // Already unwrapped, as produced by build_face_uv. A single straight
+        // polygon side may exceed PI; it must not be shortest-step unwrapped.
+        UvLoop::new(
+            vec![
+                Point2::new(u.0, v.0),
+                Point2::new(u.1, v.0),
+                Point2::new(u.1, v.1),
+                Point2::new(u.0, v.1),
+            ],
+            false,
+            false,
+        )
+    }
+
+    fn angular_trim_area(uv: &FaceUv, bounds: UvBounds) -> f64 {
+        let trim = UvTrim::holes_of(uv);
+        // Rectangle boundaries have piecewise constant accepted height. This
+        // exact area sum checks clipping/union independently of quadrature.
+        trim.u_breaks(bounds.0)
+            .windows(2)
+            .map(|w| {
+                (w[1] - w[0])
+                    * trim
+                        .v_spans(f64::midpoint(w[0], w[1]), bounds.1)
+                        .iter()
+                        .map(|(lo, hi)| hi - lo)
+                        .sum::<f64>()
+            })
+            .sum()
+    }
+
+    #[test]
+    fn torus_pocket_images_remove_the_same_patch_across_both_seams() {
+        use std::f64::consts::{FRAC_PI_2, TAU};
+        let pockets = vec![
+            angular_rectangle((1.0, 2.0), (0.25, 2.89)),
+            // This disjoint pocket crosses both periodic seams.
+            angular_rectangle((-0.2, 0.2), (-0.3, 0.3)),
+        ];
+        let removed_area = 2.64 + 0.4 * 0.6;
+        // Different cyclic starts of a full tube window; a seam can cut a
+        // pocket, separate the two pockets, or leave both in one branch.
+        for start in [0.0, FRAC_PI_2, 3.0 * FRAC_PI_2, TAU, -TAU] {
+            let bounds = ((0.0, TAU), (start, start + TAU));
+            let mut uv = FaceUv {
+                boundary: angular_rectangle(bounds.0, bounds.1),
+                pockets: pockets.clone(),
+                u_periodic: true,
+                ..FaceUv::default()
+            };
+            assert!(align_torus_pockets(&mut uv, bounds, 2).unwrap());
+            assert!((angular_trim_area(&uv, bounds) - (TAU * TAU - removed_area)).abs() < 1e-11);
+            let trim = UvTrim::holes_of(&uv);
+            let inside = start + (1.0 - start).rem_euclid(TAU);
+            assert!(!trim.accepts(1.5, inside), "start={start}");
+            assert!(trim.accepts(3.0, inside), "start={start}");
+        }
+    }
+
+    #[test]
+    fn torus_pocket_images_clip_to_a_narrower_window() {
+        use std::f64::consts::TAU;
+        let bounds = ((0.0, 2.0), (TAU - 0.1, TAU + 0.2));
+        let mut uv = FaceUv {
+            boundary: angular_rectangle(bounds.0, bounds.1),
+            pockets: vec![angular_rectangle((0.5, 1.5), (-0.3, 0.3))],
+            u_periodic: true,
+            ..FaceUv::default()
+        };
+        assert!(align_torus_pockets(&mut uv, bounds, 1).unwrap());
+        assert_eq!(uv.pockets.len(), 1);
+        assert!((angular_trim_area(&uv, bounds) - 0.3).abs() < 1e-12);
+
+        // Slanted sides cross the ends of a narrower window between existing
+        // vertices. The removed height is (u/2 + 1/2) then (3/2 - u/2), so
+        // the exact clipped area is 3/2. Without the new clipping breaks a
+        // single midpoint across u in [0, 2] reports area 2 instead.
+        let bounds = ((0.0, 2.0), (0.0, 1.0));
+        let mut uv = FaceUv {
+            pockets: vec![UvLoop::new(
+                vec![
+                    Point2::new(0.0, -0.5),
+                    Point2::new(2.0, 0.5),
+                    Point2::new(2.0, 1.5),
+                    Point2::new(0.0, 0.5),
+                ],
+                false,
+                false,
+            )],
+            u_periodic: true,
+            ..FaceUv::default()
+        };
+        assert!(align_torus_pockets(&mut uv, bounds, 1).unwrap());
+        assert!((angular_trim_area(&uv, bounds) - 0.5).abs() < 1e-12);
+
+        // Clipping this concave U leaves two disjoint unit squares. The
+        // boundary bridges produced by half-plane clipping carry zero area.
+        let outline = vec![
+            Point2::new(0.0, -1.0),
+            Point2::new(3.0, -1.0),
+            Point2::new(3.0, 2.0),
+            Point2::new(2.0, 2.0),
+            Point2::new(2.0, 0.0),
+            Point2::new(1.0, 0.0),
+            Point2::new(1.0, 2.0),
+            Point2::new(0.0, 2.0),
+        ];
+        let bounds = ((0.0, 4.0), (0.5, 1.5));
+        for reverse in [false, true] {
+            for start in 0..outline.len() {
+                let mut points = outline.clone();
+                points.rotate_left(start);
+                if reverse {
+                    points.reverse();
+                }
+                let mut uv = FaceUv {
+                    pockets: vec![UvLoop::new(points, false, false)],
+                    u_periodic: true,
+                    ..FaceUv::default()
+                };
+                assert!(align_torus_pockets(&mut uv, bounds, 1).unwrap());
+                assert!((angular_trim_area(&uv, bounds) - 2.0).abs() < 1e-12);
+                let trim = UvTrim::holes_of(&uv);
+                assert!(!trim.accepts(0.5, 1.0));
+                assert!(trim.accepts(1.5, 1.0));
+                assert!(!trim.accepts(2.5, 1.0));
+            }
+        }
+    }
+
+    #[test]
+    fn torus_pocket_images_normalize_u_before_building_quadrature_breaks() {
+        use remus_math::surfaces::ToroidalSurface;
+        use std::f64::consts::TAU;
+        let bounds = ((-TAU + 0.1, 0.1), (4.71, 4.71 + TAU));
+        let mut uv = FaceUv {
+            // Its tube coordinates already lie in the domain. The u branch
+            // still needs a shift of -2TAU for one of its seam components.
+            pockets: vec![angular_rectangle((6.2, 6.8), (0.25 + TAU, 2.89 + TAU))],
+            u_periodic: true,
+            ..FaceUv::default()
+        };
+        let exact_area = TAU * TAU - 0.6 * 2.64;
+        assert!((angular_trim_area(&uv, bounds) - exact_area).abs() > 0.1);
+        let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 5.0, 2.0).unwrap();
+        let expected = 40.0 * std::f64::consts::PI.powi(2)
+            - 0.6 * (10.0 * 2.64 + 4.0 * (2.89_f64.sin() - 0.25_f64.sin()));
+        let area = |uv: &FaceUv| {
+            integrate_parametric::<_, true>(
+                &torus,
+                bounds.0,
+                bounds.1,
+                IntegrationRule {
+                    order: 5,
+                    adaptive: None,
+                    knots: None,
+                    reference: Point3::new(0.0, 0.0, 0.0),
+                    volume_only: false,
+                    flux: None,
+                    cone_apex: None,
+                },
+                1.0,
+                &UvTrim::holes_of(uv),
+                PatchScale::ANGULAR,
+            )
+            .unwrap()
+            .area
+        };
+        assert!((area(&uv) - expected).abs() > 1.0);
+        assert!(align_torus_pockets(&mut uv, bounds, 1).unwrap());
+        assert!((angular_trim_area(&uv, bounds) - exact_area).abs() < 1e-11);
+        assert!((area(&uv) - expected).abs() < 1e-7);
+    }
+
+    #[test]
+    fn torus_pocket_images_preflight_all_holes_before_budgeting() {
+        use std::f64::consts::TAU;
+        let bounds = ((0.0, TAU), (0.0, TAU));
+        let mut ordinary = angular_rectangle((0.5, 1.5), (-0.3, 0.3));
+        ordinary.points = ordinary.points.repeat(512);
+        let mut unsupported = angular_rectangle((2.0, 3.0), (0.0, TAU + 0.1));
+        unsupported.points = unsupported.points.repeat(128);
+        let mut boundary = angular_rectangle(bounds.0, bounds.1);
+        boundary.points = boundary.points.repeat(128);
+        assert_eq!(
+            boundary.points.len() + ordinary.points.len() + unsupported.points.len(),
+            3072
+        );
+        for pockets in [
+            vec![ordinary.clone(), unsupported.clone()],
+            vec![unsupported, ordinary.clone()],
+        ] {
+            let mut uv = FaceUv {
+                boundary: boundary.clone(),
+                pockets,
+                u_periodic: true,
+                ..FaceUv::default()
+            };
+            let before = format!("{uv:?}");
+            assert!(!align_torus_pockets(&mut uv, bounds, 2).unwrap());
+            assert_eq!(format!("{uv:?}"), before);
+        }
+        let mut qualified = FaceUv {
+            boundary,
+            pockets: vec![ordinary],
+            u_periodic: true,
+            ..FaceUv::default()
+        };
+        assert!(matches!(
+            align_torus_pockets(&mut qualified, bounds, 1),
+            Err(CheckError::IntegrationFailed(_))
+        ));
+    }
+
+    #[test]
+    fn torus_pocket_images_leave_unqualified_charts_unchanged() {
+        use std::f64::consts::TAU;
+        let bounds = ((0.0, TAU), (0.0, TAU));
+        let ordinary = angular_rectangle((0.5, 1.5), (-0.3, 0.3));
+        // A tube-wrapping loop with nonzero projected area, and a loop wider
+        // than one tube period, are deliberately outside this repair.
+        let wrapping = UvLoop::new(
+            (0..32)
+                .map(|i| {
+                    let v = TAU * f64::from(i) / 32.0;
+                    Point2::new(1.0 + 0.1 * v.sin(), v)
+                })
+                .collect(),
+            false,
+            false,
+        );
+        let mut nonfinite = ordinary.clone();
+        nonfinite.points[0] = Point2::new(0.5, f64::NAN);
+        for (bounds, unsupported, periodic) in [
+            (((0.0, TAU), (0.0, TAU + 0.01)), ordinary.clone(), true),
+            (
+                bounds,
+                angular_rectangle((0.5, 1.5), (0.0, TAU + 0.01)),
+                true,
+            ),
+            (bounds, wrapping, true),
+            (bounds, nonfinite, true),
+            (bounds, ordinary.clone(), false),
+        ] {
+            let mut uv = FaceUv {
+                boundary: angular_rectangle(bounds.0, bounds.1),
+                pockets: vec![ordinary.clone(), unsupported],
+                u_periodic: periodic,
+                ..FaceUv::default()
+            };
+            let before = format!("{uv:?}");
+            assert!(!align_torus_pockets(&mut uv, bounds, 2).unwrap());
+            assert_eq!(format!("{uv:?}"), before);
+        }
+        // An original wrapping/degenerate wire can have been discarded by
+        // build_face_uv. Seeing one ordinary pocket does not qualify that
+        // mixed face: its complete original hole set must still be present.
+        let mut uv = FaceUv {
+            pockets: vec![ordinary],
+            u_periodic: true,
+            ..FaceUv::default()
+        };
+        let before = format!("{uv:?}");
+        assert!(!align_torus_pockets(&mut uv, bounds, 2).unwrap());
+        assert_eq!(format!("{uv:?}"), before);
+    }
+
+    #[test]
+    fn torus_pocket_images_preserve_the_existing_point_budget() {
+        use std::f64::consts::TAU;
+        let bounds = ((0.0, TAU), (0.0, TAU));
+        let mut pocket = angular_rectangle((0.5, 1.5), (-0.3, 0.3));
+        // Repeated vertices do not change its region. The original outline
+        // fits, but two seam images would exceed the unchanged work ceiling.
+        pocket.points = pocket.points.repeat(MAX_TRIM_POINTS / 8);
+        let mut uv = FaceUv {
+            boundary: angular_rectangle(bounds.0, bounds.1),
+            pockets: vec![pocket],
+            u_periodic: true,
+            ..FaceUv::default()
+        };
+        let before = format!("{uv:?}");
+        assert!(matches!(
+            align_torus_pockets(&mut uv, bounds, 1),
+            Err(CheckError::IntegrationFailed(_))
+        ));
+        assert_eq!(format!("{uv:?}"), before);
+    }
 
     /// A torus band whose `v` extent crosses the period seam must trim in the
     /// same branch the integration range lives in.
