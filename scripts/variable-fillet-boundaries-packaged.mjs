@@ -77,7 +77,7 @@ function unprovedBoundaryRefusal(BrepKernel, route) {
       if (route.endsWith('Detailed')) {
         const result = route === 'directDetailed' ? output : output.ok;
         assert.equal(result?.status, 'error', label);
-        assert.equal(result.code, 'operation_failed', label);
+        assert.equal(result.code, 'unsupported-variable-boundary', label);
         assert.equal(result.category, 'unsupported', label);
         assert.equal(result.details.kernelCode, 'unsupported-variable-boundary', label);
       } else if (route.startsWith('executeBatchV2')) {
