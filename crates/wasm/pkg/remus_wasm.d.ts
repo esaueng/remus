@@ -3814,6 +3814,17 @@ export class BrepKernel {
      */
     revolveDetailed(face: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, angle_degrees: number): SolidOperationDetailedResult;
     /**
+     * Full-turn analytic radial-profile revolution with complete construction
+     * history. Angles are degrees, as in `revolve`.
+     *
+     * Returns JSON `{"solid", "op", "evolution"}`. Faces and circular rims
+     * are generated from the profile face; reused profile seams and vertices
+     * are modified into themselves. Completeness is checked against every
+     * result entity. Only planar hole-free straight-edge radial profiles have
+     * qualified history; other profiles and partial turns refuse atomically.
+     */
+    revolveJournaled(face: number, origin_x: number, origin_y: number, origin_z: number, axis_x: number, axis_y: number, axis_z: number, angle_degrees: number): string;
+    /**
      * Run a custom sequence of healing operators on a solid.
      *
      * `steps` names built-in operators, executed in order: `fix_shape`,

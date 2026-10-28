@@ -301,6 +301,7 @@ export const brepkernel_restore: (a: number, b: number) => [number, number];
 export const brepkernel_reverseShape: (a: number, b: number) => [number, number, number];
 export const brepkernel_revolve: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
 export const brepkernel_revolveDetailed: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
+export const brepkernel_revolveJournaled: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number, number];
 export const brepkernel_runHealPipeline: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const brepkernel_runHealPipelineJournaled: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const brepkernel_sampleEdge: (a: number, b: number, c: number) => [number, number, number, number];
