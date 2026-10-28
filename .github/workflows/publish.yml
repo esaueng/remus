@@ -7,6 +7,12 @@ name: Refresh Apache Staging Package
 # A stale snapshot silently serves old kernel behavior while the Rust source
 # looks current, so every package-affecting push runs this automatically.
 on:
+  workflow_call:
+    inputs:
+      reuse_artifact:
+        description: Consume this CI run's qualified package artifact on protected main
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -35,8 +41,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: apache-package-refresh-${{ github.ref }}
-  cancel-in-progress: true
+  group: apache-package-refresh-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   # The committed package directories are a real distribution channel, not a
@@ -54,11 +60,11 @@ jobs:
     # Package-only PR merges are excluded by the path filter above.
     # A manual run is restricted to main; both jobs check out its exact event SHA.
     if: >-
-      ${{ (github.event_name == 'push'
+      ${{ !inputs.reuse_artifact && ((github.event_name == 'push'
            && !contains(github.event.head_commit.message, '[skip ci]'))
           || (github.event_name == 'workflow_dispatch'
               && inputs.sync_package
-              && github.ref == 'refs/heads/main') }}
+              && github.ref == 'refs/heads/main')) }}
     permissions:
       contents: read
     steps:
@@ -113,6 +119,13 @@ jobs:
   sync-committed-package:
     name: Propose refreshed WASM package
     needs: [build-committed-package]
+    # Only the CI caller uses reuse_artifact, after its required completion gate
+    # has accepted both runtime suites. Artifacts stay inside the same run/SHA.
+    if: >-
+      ${{ !cancelled() && github.repository == 'esaueng/remus'
+          && github.ref == 'refs/heads/main' && github.ref_protected
+          && (needs.build-committed-package.result == 'success'
+              || (inputs.reuse_artifact && github.event_name == 'push')) }}
     environment: remus-bot
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -139,6 +152,14 @@ jobs:
       - name: Check whether the package needs publishing
         id: package-diff
         run: |
+          # A newer main commit owns its own qualified artifact. Do not open a
+          # refresh for a superseded source while another CI run is finishing.
+          current_main=$(git ls-remote --exit-code origin refs/heads/main | cut -f1)
+          if [ "$current_main" != "$GITHUB_SHA" ]; then
+            echo "needs_publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::A newer source owns the next package refresh."
+            exit 0
+          fi
           # wasm-pack places a `*` .gitignore in its output directory, so force
           # staging is required for newly generated package files.
           git add --force crates/wasm/pkg crates/wasm-io/pkg

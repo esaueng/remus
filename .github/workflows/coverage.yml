@@ -1,0 +1,52 @@
+name: Nightly Coverage
+
+on:
+  schedule:
+    - cron: "13 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
+concurrency:
+  group: nightly-coverage-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  coverage:
+    name: Coverage
+    if: github.repository == 'esaueng/remus' && github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CARGO_INCREMENTAL: "0"
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          key: nightly-coverage
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-llvm-cov,nextest@0.9.150
+      - name: Generate coverage
+        run: |
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov nextest --workspace --cargo-profile ci-test --no-report --test-threads "${RUST_TEST_THREADS:-num-cpus}"
+          cargo llvm-cov report --profile ci-test --lcov --output-path lcov.info
+          cargo llvm-cov report --profile ci-test --fail-under-lines 60
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        if: always()
+        with:
+          files: lcov.info
+          use_oidc: true

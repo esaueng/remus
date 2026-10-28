@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from fleet_workflows import workflow_path
 import test_fleet_workflows
+import test_ci_speed
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -99,6 +100,7 @@ def load_tests(loader, tests, pattern):
     # Explicitly include pin validation instead of relying on discovery of an
     # imported TestCase class; its failures must continue to fail CI Pass.
     tests.addTests(loader.loadTestsFromModule(test_fleet_workflows, pattern=pattern))
+    tests.addTests(loader.loadTestsFromModule(test_ci_speed, pattern=pattern))
     return tests
 
 
