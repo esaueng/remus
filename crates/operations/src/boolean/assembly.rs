@@ -545,7 +545,7 @@ pub(crate) struct MixedAssemblyResult {
     pub(crate) boundary_edges: HashMap<(usize, usize), EdgeId>,
 }
 
-/// Analytic geometry for a positional face-spec boundary that would otherwise
+/// Native curve geometry for a positional face-spec boundary that would otherwise
 /// be assembled as a straight chord. The endpoints are undirected for sharing;
 /// `start`/`end` and `trim` define the stored curve orientation.
 pub(crate) struct BoundaryCurveOverride {
@@ -582,7 +582,7 @@ pub(crate) fn assemble_solid_mixed_with_history(
     assemble_solid_mixed_with_history_and_curves(topo, face_specs, &[], tol)
 }
 
-/// [`assemble_solid_mixed_with_history`] with analytic overrides for selected
+/// [`assemble_solid_mixed_with_history`] with native curve overrides for selected
 /// positional boundaries.
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) fn assemble_solid_mixed_with_history_and_curves(
@@ -591,6 +591,21 @@ pub(crate) fn assemble_solid_mixed_with_history_and_curves(
     boundary_curves: &[BoundaryCurveOverride],
     tol: Tolerance,
 ) -> Result<MixedAssemblyResult, crate::OperationsError> {
+    if boundary_curves.iter().any(|curve| {
+        curve
+            .start
+            .0
+            .iter()
+            .chain(&curve.end.0)
+            .any(|v| !v.is_finite())
+    }) {
+        // Non-finite endpoints must not disappear from the positional
+        // lookup and silently fall back to an ordinary chord.
+        return Err(crate::OperationsError::Unsupported {
+            operation: "assemble_solid_mixed",
+            reason: "boundary override endpoints must be finite".into(),
+        });
+    }
     assemble_solid_mixed_traced(topo, face_specs, boundary_curves, tol, false)
 }
 
@@ -1179,9 +1194,66 @@ fn assemble_solid_mixed_traced(
                     }
                     let (key_min, key_max) = if vi <= vj { (vi, vj) } else { (vj, vi) };
 
-                    let edge_id = *edge_map.entry((key_min, key_max)).or_insert_with(|| {
-                        topo.add_edge(Edge::new(vert_ids[i], vert_ids[j], EdgeCurve::Line))
-                    });
+                    let edge_id = if let Some(&existing) = edge_map.get(&(key_min, key_max)) {
+                        existing
+                    } else {
+                        let candidate = boundary_curves.iter().find(|candidate| {
+                            ((candidate.start - verts[i]).length() <= tol.linear
+                                && (candidate.end - verts[j]).length() <= tol.linear)
+                                || ((candidate.start - verts[j]).length() <= tol.linear
+                                    && (candidate.end - verts[i]).length() <= tol.linear)
+                        });
+                        let edge = if let Some(candidate) = candidate {
+                            let forward = (candidate.start - verts[i]).length() <= tol.linear;
+                            let (start, end) = if forward {
+                                (vert_ids[i], vert_ids[j])
+                            } else {
+                                (vert_ids[j], vert_ids[i])
+                            };
+                            let (t0, t1) = candidate.trim;
+                            let a = topo.vertex(start)?.point();
+                            let b = topo.vertex(end)?.point();
+                            let valid = t0.is_finite()
+                                && t1.is_finite()
+                                && t0.partial_cmp(&t1) != Some(std::cmp::Ordering::Equal)
+                                && match &candidate.curve {
+                                    EdgeCurve::NurbsCurve(curve) => {
+                                        let (lower, upper) = curve.domain();
+                                        t0 >= lower && t0 <= upper && t1 >= lower && t1 <= upper
+                                    }
+                                    EdgeCurve::Line
+                                    | EdgeCurve::Circle(_)
+                                    | EdgeCurve::Ellipse(_)
+                                    | EdgeCurve::Hyperbola(_)
+                                    | EdgeCurve::Parabola(_) => true,
+                                }
+                                && [(t0, a), (t1, b)].into_iter().all(|(t, point)| {
+                                    let error = (candidate.curve.evaluate_with_endpoints(t, a, b)
+                                        - point)
+                                        .length();
+                                    error.is_finite() && error <= tol.linear
+                                });
+                            if !valid {
+                                return Err(crate::OperationsError::Unsupported {
+                                    operation: "assemble_solid_mixed",
+                                    reason: "boundary override does not realize its stored endpoints and trim"
+                                        .into(),
+                                });
+                            }
+                            edge_with_trim(
+                                start,
+                                end,
+                                candidate.curve.clone(),
+                                None,
+                                Some(candidate.trim),
+                            )
+                        } else {
+                            Edge::new(vert_ids[i], vert_ids[j], EdgeCurve::Line)
+                        };
+                        let minted = topo.add_edge(edge);
+                        edge_map.insert((key_min, key_max), minted);
+                        minted
+                    };
                     // Shared edges (e.g. circle arcs created by an adjacent
                     // cylindrical face) carry a geometric direction, so derive
                     // orientation from the stored start vertex rather than

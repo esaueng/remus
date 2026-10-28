@@ -2113,6 +2113,10 @@ pub fn blend_failure_code(error: &OperationsError) -> &'static str {
         OperationsError::Blend(_) => "blend-failed",
         OperationsError::PartialResult { .. } => "partial-result",
         OperationsError::InvalidInput { .. } => "invalid-input",
+        OperationsError::Unsupported {
+            operation: "fillet_variable",
+            ..
+        } => "unsupported-variable-boundary",
         _ => "fillet-failed",
     }
 }

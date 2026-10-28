@@ -717,6 +717,62 @@ fn periodic_outer_rims_are_full_turns(
     Ok(false)
 }
 
+/// Enforce available whole-interval certificates for stored native NURBS
+/// boundaries. Unproved curve/surface combinations retain their prior
+/// validation behavior; a stored, admitted certificate must satisfy the
+/// existing entity tolerance rather than silently being ignored.
+fn native_pcurve_use_issues(
+    topo: &Topology,
+    faces: &[remus_topology::face::FaceId],
+    tolerance: f64,
+) -> Result<Vec<ValidationIssue>, crate::OperationsError> {
+    use remus_topology::validation::{
+        CurveUseValidationError, validate_same_parameter_strict, validate_same_range_strict,
+    };
+    let mut issues = Vec::new();
+    for &face in faces {
+        let data = topo.face(face)?;
+        for wire in std::iter::once(data.outer_wire()).chain(data.inner_wires().iter().copied()) {
+            for usage in topo.wire(wire)?.edges() {
+                let edge = usage.edge();
+                if !matches!(topo.edge(edge)?.curve(), EdgeCurve::NurbsCurve(_))
+                    || topo
+                        .pcurve_oriented(edge, face, usage.is_forward())
+                        .is_none()
+                {
+                    continue;
+                }
+                match validate_same_parameter_strict(
+                    topo,
+                    edge,
+                    face,
+                    usage.is_forward(),
+                    tolerance,
+                    0,
+                ) {
+                    Ok(()) => {}
+                    Err(CurveUseValidationError::SameParameterProofUnavailable { .. }) => continue,
+                    Err(error) => {
+                        issues.push(ValidationIssue {
+                            severity: Severity::Error,
+                            description: error.to_string(),
+                        });
+                        continue;
+                    }
+                }
+                match validate_same_range_strict(topo, edge, face, usage.is_forward(), tolerance) {
+                    Ok(()) | Err(CurveUseValidationError::SameRangeProofUnavailable { .. }) => {}
+                    Err(error) => issues.push(ValidationIssue {
+                        severity: Severity::Error,
+                        description: error.to_string(),
+                    }),
+                }
+            }
+        }
+    }
+    Ok(issues)
+}
+
 /// 1. **Euler-Poincaré**: V - E + F = 2(1 - g) for genus-g closed solid
 /// 2. **Manifold edges**: each edge shared by exactly 2 faces
 /// 3. **Boundary edges**: no edge shared by only 1 face (open shell)
@@ -731,6 +787,8 @@ fn periodic_outer_rims_are_full_turns(
 ///     or disjoint fuse results, cavity shells)
 /// 11. **Redundant faces**: same face ID appearing twice in shell
 /// 12. **Edge vertex consistency**: edge vertices belong to the solid
+/// 13. **Native pcurve certificates**: available whole-interval NURBS use
+///     certificates satisfy the existing parameter/range tolerance
 ///
 /// # Errors
 ///
@@ -1207,6 +1265,7 @@ fn validate_solid_observed(
         }
     }
 
+    issues.extend(native_pcurve_use_issues(topo, &faces, tol.linear)?);
     Ok(ValidationReport { issues })
 }
 
