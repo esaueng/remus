@@ -1,0 +1,280 @@
+{
+  "schema": "remus-complex-boolean-source-bound-smoke-v1",
+  "run_status": "passed",
+  "base_commit": "70f675bea4aebd35b0a36d59eaec89118c278ef6",
+  "working_tree_sha256": "eb80f1529398934d852bc948897a743de189e2796f96ef30bdade3d1c950440d",
+  "source_binding": "Actual Cargo build artifact; source identity checked before build and after all sampling; frozen executable SHA checked before/after sampling",
+  "native_binary_sha256": "4c4ad66666c0a4488230298f7962f8cf144134e7fa1466b6247be30344032daa",
+  "native_profile": {
+    "opt_level": "3",
+    "debuginfo": 2,
+    "debug_assertions": false,
+    "overflow_checks": true,
+    "test": false
+  },
+  "native_features": [],
+  "build_command": [
+    "cargo",
+    "build",
+    "--locked",
+    "--profile",
+    "profiling",
+    "-p",
+    "remus-operations",
+    "--example",
+    "complex_boolean_baseline",
+    "--message-format=json",
+    "--offline"
+  ],
+  "toolchain": {
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.0\nLLVM version: 22.1.2",
+    "cargo": "cargo 1.96.0 (30a34c682 2026-05-25)"
+  },
+  "recorded_build_environment": {
+    "RAYON_NUM_THREADS": "1",
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_INCREMENTAL": "0",
+    "RUST_MIN_STACK": "536870912"
+  },
+  "harness_sha256": {
+    "scripts/performance/complex-boolean/run.py": "1cb5726630429f65f168a8873648dde71882640c825a6e447bec829b7fb262ec",
+    "scripts/performance/complex-boolean/workloads.json": "938f217f03d3d310898132cb632b4f87ff2a28df47dc0f5bc4b3783489182096",
+    "crates/operations/examples/complex_boolean_baseline.rs": "72acdd85e9b21d63e200532cb90224b5f68ef49dbbc5988b05e7f46708468c32",
+    "scripts/performance/run.py": "11375b219deefd58d2624d531cd71912aa1dd02c26a3519f447cf2bb0089d0da"
+  },
+  "counter_source_sha256": {
+    "crates/algo/src/perf.rs": "b5b35d2c24bd06497d1f934af87bf6a76d29128adc2b15c46e9ac1333e672bbb",
+    "crates/operations/src/performance.rs": "da9d32d3bde0c3ad2a7dbd026a9859ee9111e8264f9dee57d1528db9a80bf077"
+  },
+  "cargo_artifact_receipt": {
+    "reason": "compiler-artifact",
+    "target_name": "complex_boolean_baseline",
+    "target_kind": [
+      "example"
+    ],
+    "crate_types": [
+      "bin"
+    ],
+    "features": [],
+    "profile": {
+      "opt_level": "3",
+      "debuginfo": 2,
+      "debug_assertions": false,
+      "overflow_checks": true,
+      "test": false
+    },
+    "fresh": true,
+    "full_local_receipt_sha256": "129c600dcd1a8adcb5bfeeaefe3b749006932b334c5243dd23f5278f3b802e28"
+  },
+  "memo_policy": "pcurve-and-wire-area-only; all other native caches retain their defaults",
+  "settings": {
+    "store_local_requested": false,
+    "content_memos": true,
+    "phase_clock": false,
+    "perf_counters": false
+  },
+  "raw_records": 28,
+  "retained_records": 14,
+  "timings_excluded": true,
+  "timing_note": "Correctness smoke on contended build cores; no elapsed-time baseline from these records.",
+  "cases": [
+    {
+      "case_id": "slot-cut-0",
+      "scenario": "slot_cut",
+      "size": 0,
+      "raw_records": 2,
+      "warmup_records": 1,
+      "independent_volume_reference": 26920.0,
+      "volume_bound": 0.0002692,
+      "max_absolute_volume_residual": 3.2741809263825417e-11,
+      "edge_connected_components": 1,
+      "material_probes_per_record": 3,
+      "strict_validation_and_material_and_input_preservation_gates": "passed"
+    },
+    {
+      "case_id": "slot-cut-36",
+      "scenario": "slot_cut",
+      "size": 6,
+      "raw_records": 2,
+      "warmup_records": 1,
+      "independent_volume_reference": 53116.106578830695,
+      "volume_bound": 0.0005311610657883069,
+      "max_absolute_volume_residual": 1.4551915228366852e-10,
+      "edge_connected_components": 1,
+      "material_probes_per_record": 4,
+      "strict_validation_and_material_and_input_preservation_gates": "passed"
+    },
+    {
+      "case_id": "slot-cut-144",
+      "scenario": "slot_cut",
+      "size": 12,
+      "raw_records": 2,
+      "warmup_records": 1,
+      "independent_volume_reference": 200824.42631532278,
+      "volume_bound": 0.0020082442631532277,
+      "max_absolute_volume_residual": 1.2223608791828156e-09,
+      "edge_connected_components": 1,
+      "material_probes_per_record": 4,
+      "strict_validation_and_material_and_input_preservation_gates": "passed"
+    },
+    {
+      "case_id": "slot-fuse-0",
+      "scenario": "slot_fuse",
+      "size": 0,
+      "raw_records": 2,
+      "warmup_records": 1,
+      "independent_volume_reference": 27064.0,
+      "volume_bound": 0.00027064,
+      "max_absolute_volume_residual": 3.2741809263825417e-11,
+      "edge_connected_components": 1,
+      "material_probes_per_record": 3,
+      "strict_validation_and_material_and_input_preservation_gates": "passed"
+    },
+    {
+      "case_id": "slot-fuse-36",
+      "scenario": "slot_fuse",
+      "size": 6,
+      "raw_records": 2,
+      "warmup_records": 1,
+      "independent_volume_reference": 53260.106578830695,
+      "volume_bound": 0.0005326010657883069,
+      "max_absolute_volume_residual": 1.4551915228366852e-10,
+      "edge_connected_components": 1,
+      "material_probes_per_record": 4,
+      "strict_validation_and_material_and_input_preservation_gates": "passed"
+    },
+    {
+      "case_id": "slot-fuse-144",
+      "scenario": "slot_fuse",
+      "size": 12,
+      "raw_records": 2,
+      "warmup_records": 1,
+      "independent_volume_reference": 200968.42631532278,
+      "volume_bound": 0.002009684263153228,
+      "max_absolute_volume_residual": 1.2223608791828156e-09,
+      "edge_connected_components": 1,
+      "material_probes_per_record": 4,
+      "strict_validation_and_material_and_input_preservation_gates": "passed"
+    },
+    {
+      "case_id": "slot-intersect-0",
+      "scenario": "slot_intersect",
+      "size": 0,
+      "raw_records": 2,
+      "warmup_records": 1,
+      "independent_volume_reference": 120.0,
+      "volume_bound": 1.2e-06,
+      "max_absolute_volume_residual": 1.1368683772161603e-13,
+      "edge_connected_components": 1,
+      "material_probes_per_record": 3,
+      "strict_validation_and_material_and_input_preservation_gates": "passed"
+    },
+    {
+      "case_id": "slot-intersect-36",
+      "scenario": "slot_intersect",
+      "size": 6,
+      "raw_records": 2,
+      "warmup_records": 1,
+      "independent_volume_reference": 120.0,
+      "volume_bound": 1.2e-06,
+      "max_absolute_volume_residual": 1.1368683772161603e-13,
+      "edge_connected_components": 1,
+      "material_probes_per_record": 4,
+      "strict_validation_and_material_and_input_preservation_gates": "passed"
+    },
+    {
+      "case_id": "slot-intersect-144",
+      "scenario": "slot_intersect",
+      "size": 12,
+      "raw_records": 2,
+      "warmup_records": 1,
+      "independent_volume_reference": 120.0,
+      "volume_bound": 1.2e-06,
+      "max_absolute_volume_residual": 1.1368683772161603e-13,
+      "edge_connected_components": 1,
+      "material_probes_per_record": 4,
+      "strict_validation_and_material_and_input_preservation_gates": "passed"
+    },
+    {
+      "case_id": "sparse-fuse-16",
+      "scenario": "fuse_sparse",
+      "size": 16,
+      "raw_records": 2,
+      "warmup_records": 1,
+      "independent_volume_reference": 16.0,
+      "volume_bound": 1.6e-07,
+      "max_absolute_volume_residual": 3.197442310920451e-14,
+      "edge_connected_components": 16,
+      "material_probes_per_record": 18,
+      "strict_validation_and_material_and_input_preservation_gates": "passed"
+    },
+    {
+      "case_id": "sparse-fuse-64",
+      "scenario": "fuse_sparse",
+      "size": 64,
+      "raw_records": 2,
+      "warmup_records": 1,
+      "independent_volume_reference": 64.0,
+      "volume_bound": 6.4e-07,
+      "max_absolute_volume_residual": 2.4158453015843406e-13,
+      "edge_connected_components": 64,
+      "material_probes_per_record": 66,
+      "strict_validation_and_material_and_input_preservation_gates": "passed"
+    },
+    {
+      "case_id": "dense-fuse-8",
+      "scenario": "fuse_dense",
+      "size": 8,
+      "raw_records": 2,
+      "warmup_records": 1,
+      "independent_volume_reference": 1.4375,
+      "volume_bound": 1.4375e-08,
+      "max_absolute_volume_residual": 2.6645352591003757e-15,
+      "edge_connected_components": 1,
+      "material_probes_per_record": 9,
+      "strict_validation_and_material_and_input_preservation_gates": "passed"
+    },
+    {
+      "case_id": "dense-fuse-16",
+      "scenario": "fuse_dense",
+      "size": 16,
+      "raw_records": 2,
+      "warmup_records": 1,
+      "independent_volume_reference": 1.46875,
+      "volume_bound": 1.46875e-08,
+      "max_absolute_volume_residual": 1.7763568394002505e-15,
+      "edge_connected_components": 1,
+      "material_probes_per_record": 17,
+      "strict_validation_and_material_and_input_preservation_gates": "passed"
+    },
+    {
+      "case_id": "curved-half-cylinder",
+      "scenario": "curved_half_cylinder",
+      "size": 1,
+      "raw_records": 2,
+      "warmup_records": 1,
+      "independent_volume_reference": 62.83185307179586,
+      "volume_bound": 6.283185307179586e-07,
+      "max_absolute_volume_residual": 5.186961971048731e-13,
+      "edge_connected_components": 1,
+      "material_probes_per_record": 3,
+      "strict_validation_and_material_and_input_preservation_gates": "passed"
+    }
+  ],
+  "known_unqualified_cases": [
+    {
+      "id": "sparse-fuse-256",
+      "scenario": "fuse_sparse",
+      "size": 256,
+      "measurement_eligible": false,
+      "qualification_gap": "Strict validation fails closed at its unchanged 4096 component-pair proof budget (256 components require 32640 pairs). Retained as an explicit witness; request --case sparse-fuse-256 to reproduce the rejection."
+    }
+  ],
+  "local_raw_artifacts_sha256": {
+    "run.json": "0b73b0008cff7555fee51305c262bfd4826fd5bb64d0abd7ddf3c7cef82496c6",
+    "build.jsonl": "14f860257da7157630d88e6bde657e1015d3b3982e9688a2277bf54ad0137c82",
+    "build.stderr.txt": "ce3ca91c1d0167f5e3f2da7b0f4540d091d0cf629f85189c3664f74ad3d150bd",
+    "samples.jsonl": "6fb9f1d504343245f47310e3ed93ca85264ee57ce7d1cf4e6e7986759b214ab0",
+    "summary.json": "8ebb3b809e9cfa34b96eef16c3473b2a8211687767068ce88ba47249d19508e6"
+  }
+}

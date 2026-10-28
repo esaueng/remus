@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Repeated-minimum coedge cyclic-normalization regression qualification",
+  "qualifierSha256": "b4971356955e0b9c9837e01b2a8f7d8a6cde77114436f2a48fafcb675a06cca7",
+  "previousQualifierSha256": "47a3f0191f0ca2219d826de982a9d4b820058781f894cba4c6f7f2ab0519b6ae",
+  "comparatorTests": {
+    "before": {
+      "passed": 7,
+      "failed": 1
+    },
+    "after": {
+      "passed": 8,
+      "failed": 0
+    }
+  },
+  "packages": [
+    {
+      "label": "fresh-main",
+      "sourceSha": "70f675bea4aebd35b0a36d59eaec89118c278ef6",
+      "preservedPackageVerificationSha256": "a36d4683b623f1441a902232333a74bfca82987839aa46953be60bd56c30cae6",
+      "allInstalledFilesReverified": true,
+      "runs": [
+        {
+          "mode": "full",
+          "exitCode": 1,
+          "syntheticCells": 24,
+          "recipeRuns": 4,
+          "expectedAdoptionFailures": 2,
+          "previousReceiptSha256": "5043212a63f075f5559b142cba1839d76906a57436528dc48bbdd1cdbc9b96d7",
+          "nonCanonicalFieldsUnchanged": true,
+          "canonicalCaseHashesChanged": [],
+          "canonicalRecipeHashesChanged": [],
+          "onlyAttestationFieldChangedFromPrevious": "harnessSha256",
+          "originalAttestation": "fresh-main-full.json",
+          "requalifiedCaptureSha256": "debcaa7a022842cff20d6200e66c97b1b054ceabb2b109cba3ef590d0dd40846"
+        },
+        {
+          "mode": "positive",
+          "exitCode": 0,
+          "syntheticCells": 20,
+          "recipeRuns": 4,
+          "expectedAdoptionFailures": 0,
+          "previousReceiptSha256": "fbbc5139f78e3d1435e006f1aef3ec0987d41af505aaccba3ffff363ab0c0971",
+          "nonCanonicalFieldsUnchanged": true,
+          "canonicalCaseHashesChanged": [],
+          "canonicalRecipeHashesChanged": [],
+          "onlyAttestationFieldChangedFromPrevious": "harnessSha256",
+          "originalAttestation": "fresh-main-positive.json",
+          "requalifiedCaptureSha256": "07f5105fe38aef8e93c6114fdc5c7df34b0fdc22246b2f9eda3942ae0b711c44"
+        }
+      ]
+    },
+    {
+      "label": "candidate",
+      "sourceSha": "a82e1a27749c8ddf29c94797f6ad4ef9a0baceda",
+      "preservedPackageVerificationSha256": "e27cc1312342d77ba01e3aea1ee21da7a54b947e13fe8706575930b5b8bbb07b",
+      "allInstalledFilesReverified": true,
+      "runs": [
+        {
+          "mode": "full",
+          "exitCode": 1,
+          "syntheticCells": 24,
+          "recipeRuns": 4,
+          "expectedAdoptionFailures": 2,
+          "previousReceiptSha256": "469cde940294ecd9afb114b5570391aa70a53c3d6a406ae07fadbf604f3567e0",
+          "nonCanonicalFieldsUnchanged": true,
+          "canonicalCaseHashesChanged": [],
+          "canonicalRecipeHashesChanged": [],
+          "onlyAttestationFieldChangedFromPrevious": "harnessSha256",
+          "originalAttestation": "candidate-full.json",
+          "requalifiedCaptureSha256": "ab06762f6e9f2130f6522abb70b06e612e89d59e0465902360d1bf2bd4f4b50f"
+        },
+        {
+          "mode": "positive",
+          "exitCode": 0,
+          "syntheticCells": 20,
+          "recipeRuns": 4,
+          "expectedAdoptionFailures": 0,
+          "previousReceiptSha256": "889229f86cbd4a19828ee46c892a6eb3bda0fe346be9011eccce5443f71a6833",
+          "nonCanonicalFieldsUnchanged": true,
+          "canonicalCaseHashesChanged": [],
+          "canonicalRecipeHashesChanged": [],
+          "onlyAttestationFieldChangedFromPrevious": "harnessSha256",
+          "originalAttestation": "candidate-positive.json",
+          "requalifiedCaptureSha256": "bafafd823a97ffe3f76ab5f70f8ec446977aba17c5056b12b676be392cd816bb"
+        }
+      ]
+    }
+  ],
+  "noBenchmarkRecaptures": true,
+  "oldReceiptsModified": false,
+  "captureReconstruction": "Read each originalAttestation from this directory and replace the single previousQualifierSha256 token with qualifierSha256. Every other byte is unchanged; SHA-256 must equal requalifiedCaptureSha256. Full original and requalified captures are retained locally."
+}

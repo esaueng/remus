@@ -1,0 +1,25 @@
+{
+  "schema": "remus-complex-boolean-qualification-gap-v1",
+  "base_commit": "70f675bea4aebd35b0a36d59eaec89118c278ef6",
+  "dirty_working_tree_sha256": "d2ebe2fc73538535b779c8ee5f56ae66ec299fc2dbfe5da543263444d122f687",
+  "native_binary_sha256": "557503f9d06add6fe3ed01bff409725ba9855a1124545ab841bc6f7c628fabd4",
+  "binary_source_equivalence": "Externally supplied executable; not independently established",
+  "case": {
+    "id": "sparse-fuse-256",
+    "scenario": "fuse_sparse",
+    "size": 256
+  },
+  "result": "strict_validation_rejected",
+  "reported_error": "shell is disconnected: 1530 face(s) not reachable from first face",
+  "stage": "qualification",
+  "component_pair_budget": 4096,
+  "required_component_pairs": 32640,
+  "guard_policy": "Unchanged fail-closed strict validation; no timings accepted for this witness.",
+  "worker_exit_code": 101,
+  "timings_excluded": true,
+  "raw_receipt_sha256": {
+    "sparse-fuse-256.0.process.json": "99e1be649a8f06815bad4af9bf095470dd936f14ff4fbbff2818783612f6a09c",
+    "sparse-fuse-256.0.stderr.txt": "cedbb0af2ddeb13c45b6664a71ccbc546ce47d7cab52e3f7d369e8fbed1691d5",
+    "sparse-fuse-256.0.stdout.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

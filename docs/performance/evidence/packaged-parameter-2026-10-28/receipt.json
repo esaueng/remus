@@ -1,0 +1,2194 @@
+{
+  "schemaVersion": 1,
+  "kind": "matched-installed-WASM-full-31-feature-parameter-baseline",
+  "source": {
+    "baseline": "70f675bea4aebd35b0a36d59eaec89118c278ef6",
+    "candidate": "a82e1a27749c8ddf29c94797f6ad4ef9a0baceda",
+    "candidateScope": "Immutable a82 source before the delivery PR test-only proof follow-up; timing attribution remains a82.",
+    "sourceShaArgument": "Driver labels supplied source SHA as external; canonical source/build and package file receipts below are separate evidence."
+  },
+  "packages": {
+    "baseline": {
+      "version": "2026.1.83",
+      "tarball_sha256": "5189166cbeb20a825f80f3f7c05554955bf0f959fe2c2a04c316730799710eea",
+      "frozen_files": {
+        "LICENSE-APACHE": {
+          "bytes": 10669,
+          "sha256": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811",
+          "mode": "0o664"
+        },
+        "NOTICE": {
+          "bytes": 608,
+          "sha256": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9",
+          "mode": "0o664"
+        },
+        "package.json": {
+          "bytes": 902,
+          "sha256": "e0c30de960785acf27ec46f858c4dc7cf05341cf6669951f18362fb1e8fdd188",
+          "mode": "0o664"
+        },
+        "remus_wasm.d.ts": {
+          "bytes": 189868,
+          "sha256": "d44d62fd6fe8368f9c803781535e8d8c85b115d836cd6b5a04b313bf9e06a542",
+          "mode": "0o664"
+        },
+        "remus_wasm.js": {
+          "bytes": 421,
+          "sha256": "90e7aa4472373ea75da5d9a9a8ece929737567cab7e02b3c678d7d6f6b51bd0e",
+          "mode": "0o664"
+        },
+        "remus_wasm_bg.js": {
+          "bytes": 352256,
+          "sha256": "e73f1aa4a7033153e6eb86bad1cb20e8b8e919e439bc439b6ac734f52e871ac5",
+          "mode": "0o664"
+        },
+        "remus_wasm_bg.wasm": {
+          "bytes": 10835608,
+          "sha256": "a32699eaac02f46a61663f977ed3b5c3c7d5f44fe21c9dd43ea7c48e59918b91",
+          "mode": "0o664"
+        },
+        "remus_wasm_node.cjs": {
+          "bytes": 354387,
+          "sha256": "818fae36bfaf45d5d90e727d0e2910cc96d839ef9d0defba3d44cdc03b339daa",
+          "mode": "0o664"
+        }
+      },
+      "source_tar_installed_bytes_equal": true
+    },
+    "candidate": {
+      "version": "2026.1.84",
+      "tarball_sha256": "3478748588b4bb765ddda7e185c1f9a6adc84e1538f905b1d7d73a49ff3215d0",
+      "frozen_files": {
+        "LICENSE-APACHE": {
+          "bytes": 10669,
+          "sha256": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811",
+          "mode": "0o664"
+        },
+        "NOTICE": {
+          "bytes": 608,
+          "sha256": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9",
+          "mode": "0o664"
+        },
+        "package.json": {
+          "bytes": 902,
+          "sha256": "7cc87020cf28acbe9baa6c6164d46ea27e2d9acb5dd8ada4388cf35fa73a8630",
+          "mode": "0o664"
+        },
+        "remus_wasm.d.ts": {
+          "bytes": 189868,
+          "sha256": "d44d62fd6fe8368f9c803781535e8d8c85b115d836cd6b5a04b313bf9e06a542",
+          "mode": "0o664"
+        },
+        "remus_wasm.js": {
+          "bytes": 421,
+          "sha256": "90e7aa4472373ea75da5d9a9a8ece929737567cab7e02b3c678d7d6f6b51bd0e",
+          "mode": "0o664"
+        },
+        "remus_wasm_bg.js": {
+          "bytes": 352256,
+          "sha256": "e73f1aa4a7033153e6eb86bad1cb20e8b8e919e439bc439b6ac734f52e871ac5",
+          "mode": "0o664"
+        },
+        "remus_wasm_bg.wasm": {
+          "bytes": 10835656,
+          "sha256": "9aeb7d48af124ed8a32263e54397638c781bbc0a4f7cbe336b6c05029d841b89",
+          "mode": "0o664"
+        },
+        "remus_wasm_node.cjs": {
+          "bytes": 354387,
+          "sha256": "818fae36bfaf45d5d90e727d0e2910cc96d839ef9d0defba3d44cdc03b339daa",
+          "mode": "0o664"
+        }
+      },
+      "source_tar_installed_bytes_equal": true
+    }
+  },
+  "canonicalBuild": {
+    "baseline": {
+      "command": [
+        "cargo",
+        "xtask",
+        "wasm-build"
+      ],
+      "logSha256": "9d39a032e5bd92db2964363425ecc45c70ca269310d556c7bec63a367802399b",
+      "completionMarkersVerified": true,
+      "smokeAndInstalledTarballSuitesPassed": true,
+      "scope": "This receipt connects the existing completed canonical build to its checked source workspace and verified package bytes. The qualification driver still correctly labels --package-source-sha as externally supplied."
+    },
+    "candidate": {
+      "command": [
+        "cargo",
+        "xtask",
+        "wasm-build"
+      ],
+      "log_sha256": "562e9cce84b35d3ddfe580f17d65801e472ff1b99d8f5748f18988ef32cd0a42",
+      "source_sha": "a82e1a27749c8ddf29c94797f6ad4ef9a0baceda",
+      "tracked_generated_artifact_differences": [
+        "crates/wasm-io/pkg/package.json",
+        "crates/wasm-io/pkg/remus_wasm_io_bg.wasm",
+        "crates/wasm/pkg/package.json",
+        "crates/wasm/pkg/remus_wasm_bg.wasm"
+      ],
+      "kernel_source_unmodified": true,
+      "smoke_and_installed_tarball_suites_passed": true
+    },
+    "candidateSourceReceiptSha256": "1b063a8fc674f834b912c3b16c7af31e18ba3542dbfb533c9726eeedb773262e",
+    "candidatePackageFileVerificationSha256": "e27cc1312342d77ba01e3aea1ee21da7a54b947e13fe8706575930b5b8bbb07b"
+  },
+  "capture": {
+    "ticks": 6,
+    "warmup": 2,
+    "rebuild": "full",
+    "pattern": "unique",
+    "modes": [
+      "preview",
+      "completion"
+    ],
+    "process_order": [
+      "baseline",
+      "candidate",
+      "candidate",
+      "baseline",
+      "candidate",
+      "baseline",
+      "baseline",
+      "candidate"
+    ],
+    "cpu": 31,
+    "physical_siblings": "15,31",
+    "node": "v24.22.1",
+    "isolation": "This task runs checks/builds on CPUs0-14,16-30 and captures onCPU31; noexclusivecoreownership was established, and other host work was active.",
+    "supplied_source_sha_verification": "Externally supplied to driver; canonical source/build/package receipts are separate evidence.",
+    "source_scope": "Captures bind immutable a82e1a27749c8ddf29c94797f6ad4ef9a0baceda before the delivery PR test-only follow-up; do not attribute these timings to a later head."
+  },
+  "setup": {
+    "baseline": {
+      "processes": 8,
+      "moduleLoadMs": {
+        "n": 8,
+        "p50": 60.140178999999996,
+        "p95": 62.881684,
+        "max": 62.881684
+      },
+      "constructorMs": {
+        "n": 8,
+        "p50": 0.5458220000000011,
+        "p95": 0.5871509999999915,
+        "max": 0.5871509999999915
+      },
+      "prepareMs": {
+        "n": 8,
+        "p50": 0.1483909999999895,
+        "p95": 0.15804900000000544,
+        "max": 0.15804900000000544
+      }
+    },
+    "candidate": {
+      "processes": 8,
+      "moduleLoadMs": {
+        "n": 8,
+        "p50": 59.777152,
+        "p95": 60.049727999999995,
+        "max": 60.049727999999995
+      },
+      "constructorMs": {
+        "n": 8,
+        "p50": 0.556352000000004,
+        "p95": 0.5699180000000013,
+        "max": 0.5699180000000013
+      },
+      "prepareMs": {
+        "n": 8,
+        "p50": 0.14653699999999503,
+        "p95": 0.15413199999998994,
+        "max": 0.15413199999998994
+      }
+    }
+  },
+  "comparison": {
+    "qualified": true,
+    "totalProcesses": 16,
+    "totalTicks": 96,
+    "totalSolidInstances": 768,
+    "crossModeProcessPairs": 32,
+    "crossVariantCompletionProcessPairs": 16,
+    "exactArenaAndMeshHashes": true,
+    "actualCapturedVolumeFloat64BitsEqual": true,
+    "completeFeatureRecordsEqual": true,
+    "independentAudits": {
+      "baseline": {
+        "qualified": true,
+        "capturedRecordsMatched": 48,
+        "distinctWidths": 6,
+        "quantityOracleAbsoluteBound": 0.002,
+        "maximumAbsoluteFloorDeltaResidual": 0.0005611901614201997,
+        "maximumIndependentQuantityRereadResidual": 2.1100277081131935e-10,
+        "policy": "Residuals recorded, not assumed bit-identical across the independent mass-query history. Independent floor-delta and lettering-volume invariance gates remain unchanged.",
+        "publicFile": "baseline-independent-audit.json"
+      },
+      "candidate": {
+        "qualified": true,
+        "capturedRecordsMatched": 48,
+        "distinctWidths": 6,
+        "quantityOracleAbsoluteBound": 0.002,
+        "maximumAbsoluteFloorDeltaResidual": 0.0005611901614201997,
+        "maximumIndependentQuantityRereadResidual": 2.1100277081131935e-10,
+        "policy": "Residuals recorded, not assumed bit-identical across the independent mass-query history. Independent floor-delta and lettering-volume invariance gates remain unchanged.",
+        "publicFile": "candidate-independent-audit.json"
+      }
+    }
+  },
+  "runtime": {
+    "node": "v24.22.1",
+    "cpu": "AMD Ryzen 9 5900XT 16-Core Processor",
+    "platform": "linux",
+    "architecture": "x64"
+  },
+  "harnessHashes": {
+    "harnessSha256": "79751f89874700de56917dad0e0a5c1d46a2b0008e9aac9178b90a09ac4f4d09",
+    "recipeHarnessSha256": "68a572fe2294321a2c53893ffc0edf160e3b318e1b3395fb82602f6d1f0811a5",
+    "meshQualityHarnessSha256": "605bcfe13bb916afa6663be7b91135ecbde7ec865a786f8864c06e18a4c5f03b"
+  },
+  "fixture": {
+    "identity": "hammer-holder-opening-width-31-feature-v1",
+    "recipeSha256": "8a24356effac832b714ca6724d33feedf91c1251d2bb62096d332ed2c55c8719",
+    "source": {
+      "path": "crates/io/tests/data/shapr3d_hammer_holder.step",
+      "sha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8",
+      "faces": 160,
+      "nurbsFaces": 42
+    },
+    "documents": {
+      "base": "7a8a3fac03a2ce63eb0e84ed61fd9fc09c6454973cc6225d5122cc1e3bf05026",
+      "text": "dd59dd4c7de07fb7c63c2c8b69aac17fd4ba97244bab7ba3fcfb3638b4b0a96f"
+    },
+    "consumer": {
+      "repository": "https://github.com/esaueng/OpenZCAD",
+      "revision": "913bb9ddd015bf2e6284c60a231eaa5afe7f2106",
+      "recipeCompiler": "packages/command-system/src/growing-holder.ts",
+      "recognizer": "packages/kernel-adapter/src/opening-recognition.ts",
+      "license": "Apache-2.0"
+    },
+    "featureCount": 31
+  },
+  "policy": {
+    "linear": 0.02,
+    "angular": 0.35,
+    "measurement": 0.08,
+    "height": 58,
+    "measurementReuse": "production defaults",
+    "prefix": "Rebuild all 17 fixed features on every request from immutable exact base/text imports.",
+    "suffix": "14 features: three sketch/extrude pairs, six body placements, union, and text placement",
+    "inputToFrame": false
+  },
+  "exactRecords": [
+    {
+      "index": 0,
+      "width": 47,
+      "arenaSha256": "806f0cf2dd391c16f89f8b20e28b38a991e3b20e9c70e22d9546785d92a8455a",
+      "meshSha256": [
+        {
+          "positions": "a5ec6e5bf6ef70c1c8572a0a0fbe194650127ba96538244e916ffaac360472dc",
+          "indices": "06e493bc3095b7afa1577676d2d6aca64bb320fe2429b9dd433e795899582897",
+          "normals": "2814e723d00baa6dc9b4d406b4886ada1571a7f4fd117a4ee47b2adbe49b90f3",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "16084e93ea84b0fcfdfe508998a232e778fea0e50a2b28d3ac3029336a84d930",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "43cac2eac88806fb2b8a189c69b5034849efcab114660bf8c82ac9488845860e",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "d34b7a599c8ae53400ba88fe404b09037eef1b8cc1fa93215e9d596c50913d99",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "9756d0f6cf1b3f4abe0c7f99c3277c6cefd83fec1a5aefe201c45bbf9fce96af",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "4028fbc8e2585d2a63686843b9b902f70877393c942cb16daa599d7425f25168",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "32449273c5438ecc0add055509746432bb993e444933681a47c1a19c1af9b090",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "bcf97d53077769abb85625d4be31009e48737c2ee6c21a4581dd0869d019b283",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "volumes": [
+        50364.08950370699,
+        6.393221518248117,
+        5.326742529920282,
+        0.7201131976088323,
+        6.074200484840347,
+        6.3977672310713505,
+        6.070310730755033,
+        6.2849630909964205
+      ],
+      "volumeFloat64Bits": [
+        "cde036dd8297e840",
+        "26d663a9a8921940",
+        "31e10098954e1540",
+        "c3bb24d52a0be73f",
+        "50f23e36fb4b1840",
+        "da7c034b50971940",
+        "589a4489ff471840",
+        "3896515dcd231940"
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 1,
+      "width": 47.02,
+      "arenaSha256": "6feec794bdca629f12dd9aaa20a426a4ec0dfb8e9b7fc29d528fe89335f74f84",
+      "meshSha256": [
+        {
+          "positions": "f29091abb283a87a897ac252af033f46afe05e6b7bb0622715a2060626263ded",
+          "indices": "c89f6c3ea3c9db66dd2afc43ea8611df8f93083c1cc7e26be7d32c3978d7a394",
+          "normals": "9b5aacc71136632bb20c006d4d0615f203d098f876606fea392a015d02cd7393",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "a43df6fdf11eecf0521363fff3a46b67a6440000259e97f6c0f80cd7c9afc45a",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "b74824682e00e6232b4fefeca89b7d7c55e25564000d1d88edd2cef5074443a2",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "3dd222361ba7549cc35f648f23d24900016863d9904c67156f058eba7e0c54b5",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "5e71cb4c072f4836b23614f3f5b6b2ebb516ab5146e0aa87012026788e976bfb",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "cb2caf663861725aeceec69a2d9a884839bfd33b3b20032ee17706065e26f276",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "4e234227e58f5185d4aae870b47bc59c1e31c5da1f670bca32d70a23aa40211e",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "b28e228ac1405d26bb81dc3d38fae1324fff3436c0296ceb948ee95ca16efd38",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "volumes": [
+        50367.21225078692,
+        6.393221518248117,
+        5.326742529920282,
+        0.7201131976088323,
+        6.074200484840347,
+        6.3977672310713505,
+        6.070310730755033,
+        6.2849630909964205
+      ],
+      "volumeFloat64Bits": [
+        "8c29c2cae697e840",
+        "26d663a9a8921940",
+        "31e10098954e1540",
+        "c3bb24d52a0be73f",
+        "50f23e36fb4b1840",
+        "da7c034b50971940",
+        "589a4489ff471840",
+        "3896515dcd231940"
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 2,
+      "width": 47.04,
+      "arenaSha256": "ae6ed21878233313ee1d9e3df856599971f0953929c5e4c4e45ae833f2a1f67e",
+      "meshSha256": [
+        {
+          "positions": "bdfb3a0bccbb50f74681da8c1fbd68a353230271c973b16c2809d2a076ae44cc",
+          "indices": "8ebad47987cd1bf8a31aa84a5c64095bed0fd831e6b5cc7af7d6ebdf8eea1a8a",
+          "normals": "d236c3aa30fb35ac29a83063658420abeb2e4f3b69be3db3f8d20970c0763e61",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "07f4a3cd1fbccf566a2695116cc42cd4a99bb72d9cb9d84dc4c6d30a6f776b0d",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "01e475a8788086fddbe3ccb9f868131ec84e97b5c3e7f224b8824b83e9d8221a",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "de9dafeecde83ad73512418ce672d479af8adb913aa98442626387949d887e74",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "58b432212502586da81efd3dc23750a0d206158bdc5190b85cbf9f7e0aefd099",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "9acac72089b0f6d15b62782b5df591201c278320f113441d761c20eda701b903",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "1d51e7caedbb6b0bd8bbb31e32a7096e7ff6f6601fe98b2fcc6d5d07da6ad48f",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "f184df3a5c25de436b7e146e6951853ab690fc7b122cb37170810ef6a1ab00d7",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "volumes": [
+        50370.33499786709,
+        6.393221518248117,
+        5.326742529920282,
+        0.7201131976088323,
+        6.074200484840347,
+        6.3977672310713505,
+        6.070310730755033,
+        6.2849630909964205
+      ],
+      "volumeFloat64Bits": [
+        "6c724db84a98e840",
+        "26d663a9a8921940",
+        "31e10098954e1540",
+        "c3bb24d52a0be73f",
+        "50f23e36fb4b1840",
+        "da7c034b50971940",
+        "589a4489ff471840",
+        "3896515dcd231940"
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 3,
+      "width": 47.06,
+      "arenaSha256": "445db0a74d6da1a98d687b71173bf1420a9388a93e21b30c48a5ca8674eb93fb",
+      "meshSha256": [
+        {
+          "positions": "4387225b0d817331da024966bedb2717f3f9fec3d5601342a83702002265c6bb",
+          "indices": "009267197151748440f0ca8424c140dd012c6ef44fea3e4f13265f0c19dd3276",
+          "normals": "5cc29473c0f095bf681e3c58f24b30cb37bb935f5ce2e7c00a7e00bfed6a8396",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "0bb684e50882cfd92f61d58985fcaf5b298277fac79293ad1452b36ced3eafc3",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "f7c52ce86175c7472d709c651241e8cb6633101d5b68294a0df590cc0a18aaa9",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "ca2770d8b1a7d3d2edab305fddd7ae478c544f8cfe0bebcef247772e5620d23f",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "cbb6d28d6dc65c4fa80f77ba92e776f942d92d88aca2b7a4509759c98645b8dd",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "3d87893874a2b1571bad4430e145a2a9e8f82f1b50d331044431a91522ab3461",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "59c42b6f869870206e16f24c19859f4f8a92daf6f633411c79032efaa92a4c3f",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "70ac13d53848054d0053ac01cf412d7dfe0de611239129c117af6c338be7b212",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "volumes": [
+        50373.45774494723,
+        6.393221518248117,
+        5.326742529920282,
+        0.7201131976088323,
+        6.074200484840347,
+        6.3977672310713505,
+        6.070310730755033,
+        6.2849630909964205
+      ],
+      "volumeFloat64Bits": [
+        "48bbd8a5ae98e840",
+        "26d663a9a8921940",
+        "31e10098954e1540",
+        "c3bb24d52a0be73f",
+        "50f23e36fb4b1840",
+        "da7c034b50971940",
+        "589a4489ff471840",
+        "3896515dcd231940"
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 4,
+      "width": 47.08,
+      "arenaSha256": "576fd5ced80ad22ee13220041bd2ab60a56b361c7acdce9f05fde0a3b417f0a9",
+      "meshSha256": [
+        {
+          "positions": "ea18d02f9bd7c74f64eeeeaa37ffdc21c82864b04be445a66b9d52b2af04f2f9",
+          "indices": "568906c837e21ad41bdfad6f55aa5161aff03f9480c468c1977e6a40e27c2880",
+          "normals": "fe823c5a249abacbcfea8115dda1fbea94132ebc0cd9f705ae4c420949c7d352",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "0436ebcffcdaaab52eb2a566c23cd5fdc0cdb775d9f9eb71fc387a832c96bce7",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "83cfb1157023375fac185160aad04cb87e5b9d661592c58957966cb878c7f3db",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "6be609b50c264f98dbe8bad79835849e0e7accf60cfcebd2fd72b95adda3d8d6",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "5d5a9db0bde2bc7711f3fce9aebabecdefcbf19c33677ce75adbbe2029725677",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "78198e6bfc8ad63d832db73ccd9d772f8669fd47cc8195e4973da927e720a1ed",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "8e6df105d79a6f0046c184f969de45d835b3294b4bc84c3c78aded559e2a2717",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "9e6980129a12d91131c80ea0a050010f568bf25bf61c8451753887a3fa2fa448",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "volumes": [
+        50376.58049202727,
+        6.393221518248117,
+        5.326742529920282,
+        0.7201131976088323,
+        6.074200484840347,
+        6.3977672310713505,
+        6.070310730755033,
+        6.2849630909964205
+      ],
+      "volumeFloat64Bits": [
+        "170464931299e840",
+        "26d663a9a8921940",
+        "31e10098954e1540",
+        "c3bb24d52a0be73f",
+        "50f23e36fb4b1840",
+        "da7c034b50971940",
+        "589a4489ff471840",
+        "3896515dcd231940"
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 5,
+      "width": 47.1,
+      "arenaSha256": "8180db0577a8e3fe294e412c30750535771880b4f6a5b30f34438b379c41cba9",
+      "meshSha256": [
+        {
+          "positions": "802fac2956e40529ff420699ce57dae929b20cc971e26e203ca0aa7e92920935",
+          "indices": "50e9b35b57a9ba0109655d3f0fe3d4970310a9d2458bb33c43e0f2350c3b8e81",
+          "normals": "a50ceb7e15079d5db322259df610712970bbcec7b9f7ca89aaa38cc61dbbab00",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "d640f9410b7221e8f29bba2d8de105f0f124af3c9cbb510c7189f6256b4a28fc",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "26b61d1bf6dec4a69b08107708e6a807d9db84623c5714e59bc93cd225fef262",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "9c21bdfde7987af3575375f96d805a55bcfbef5bd189e9c5d2d5258895f3ab92",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "6b3f464ebe332b5a6d0948a32d0e696b3137ee0233e626223fd84c81af4633eb",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "f262ae58ec340b1c9e3234020c2fa25c9aebcd4b3d0f343db006a5225be33a8f",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "fbb515c0e765055bc3127fbe803445d5a0068d6be91d5c2caca65baeb91961d2",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "193860c438566ad15fa90cc43f8cc98fb332519083e560df47e2ede3fa9df418",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "volumes": [
+        50379.70323910736,
+        6.393221518248117,
+        5.326742529920282,
+        0.7201131976088323,
+        6.074200484840347,
+        6.3977672310713505,
+        6.070310730755033,
+        6.2849630909964205
+      ],
+      "volumeFloat64Bits": [
+        "ec4cef807699e840",
+        "26d663a9a8921940",
+        "31e10098954e1540",
+        "c3bb24d52a0be73f",
+        "50f23e36fb4b1840",
+        "da7c034b50971940",
+        "589a4489ff471840",
+        "3896515dcd231940"
+      ],
+      "transferredBytes": 1557440
+    }
+  ],
+  "summary": {
+    "preview": {
+      "baseline": {
+        "processes": 4,
+        "ticks": 24,
+        "retained": 16,
+        "timingsMs": {
+          "restore": {
+            "n": 16,
+            "p50": 0.0663460000005216,
+            "p95": 2.9130099999993035,
+            "max": 2.9130099999993035
+          },
+          "prefix": {
+            "n": 16,
+            "p50": 110.0325029999999,
+            "p95": 116.13755100000071,
+            "max": 116.13755100000071
+          },
+          "rebuild": {
+            "n": 16,
+            "p50": 130.76507000000038,
+            "p95": 228.8481899999997,
+            "max": 228.8481899999997
+          },
+          "validate": {
+            "n": 16,
+            "p50": 1.847154000000046,
+            "p95": 3.150598999999602,
+            "max": 3.150598999999602
+          },
+          "mesh": {
+            "n": 16,
+            "p50": 32.38939599999958,
+            "p95": 59.10653300000013,
+            "max": 59.10653300000013
+          },
+          "transfer": {
+            "n": 16,
+            "p50": 0.18292600000040693,
+            "p95": 3.082680999999866,
+            "max": 3.082680999999866
+          },
+          "observedWall": {
+            "n": 16,
+            "p50": 275.12426400000004,
+            "p95": 396.51040299999977,
+            "max": 396.51040299999977
+          },
+          "stageSum": {
+            "n": 16,
+            "p50": 270.1344560000007,
+            "p95": 393.944399,
+            "max": 393.944399
+          },
+          "previewStageSum": {
+            "n": 16,
+            "p50": 270.1344560000007,
+            "p95": 393.944399,
+            "max": 393.944399
+          }
+        },
+        "coldStageSumMs": {
+          "n": 4,
+          "p50": 2875.0837570000003,
+          "p95": 2891.0240710000003,
+          "max": 2891.0240710000003
+        },
+        "coldObservedWallMs": {
+          "n": 4,
+          "p50": 2876.435896,
+          "p95": 2896.670622,
+          "max": 2896.670622
+        },
+        "moduleLoadMs": {
+          "n": 4,
+          "p50": 60.176297000000005,
+          "p95": 62.754764,
+          "max": 62.754764
+        },
+        "memoryStart": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 1507328,
+            "p95": 1507328,
+            "max": 1507328
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 90079232,
+            "p95": 90103808,
+            "max": 90103808
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 6643768,
+            "p95": 6643840,
+            "max": 6643840
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 26255745,
+            "p95": 26255745,
+            "max": 26255745
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 22792929,
+            "p95": 22792929,
+            "max": 22792929
+          }
+        },
+        "memoryEnd": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 78000,
+            "p95": 78000,
+            "max": 78000
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 65000,
+            "p95": 65000,
+            "max": 65000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 74514432,
+            "p95": 74514432,
+            "max": 74514432
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 381120512,
+            "p95": 442359808,
+            "max": 442359808
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 6416472,
+            "p95": 6422056,
+            "max": 6422056
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 91937162,
+            "p95": 91937658,
+            "max": 91937658
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 15372498,
+            "p95": 15372994,
+            "max": 15372994
+          }
+        },
+        "sampledMemoryMaximumPerProcess": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 78000,
+            "p95": 78000,
+            "max": 78000
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 65000,
+            "p95": 65000,
+            "max": 65000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 74514432,
+            "p95": 74514432,
+            "max": 74514432
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 395034624,
+            "p95": 451911680,
+            "max": 451911680
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 29981344,
+            "p95": 34630256,
+            "max": 34630256
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 91937162,
+            "p95": 91937658,
+            "max": 91937658
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 25005585,
+            "p95": 25005585,
+            "max": 25005585
+          }
+        },
+        "arenaTrajectories": [
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ]
+        ]
+      },
+      "candidate": {
+        "processes": 4,
+        "ticks": 24,
+        "retained": 16,
+        "timingsMs": {
+          "restore": {
+            "n": 16,
+            "p50": 0.06666599999971368,
+            "p95": 0.523801000000276,
+            "max": 0.523801000000276
+          },
+          "prefix": {
+            "n": 16,
+            "p50": 109.70164699999987,
+            "p95": 116.91016200000013,
+            "max": 116.91016200000013
+          },
+          "rebuild": {
+            "n": 16,
+            "p50": 131.4647329999998,
+            "p95": 232.50961599999982,
+            "max": 232.50961599999982
+          },
+          "validate": {
+            "n": 16,
+            "p50": 1.9142509999992399,
+            "p95": 3.286816999999246,
+            "max": 3.286816999999246
+          },
+          "mesh": {
+            "n": 16,
+            "p50": 31.308352000000014,
+            "p95": 58.50829200000044,
+            "max": 58.50829200000044
+          },
+          "transfer": {
+            "n": 16,
+            "p50": 0.18095199999970646,
+            "p95": 3.081529000000046,
+            "max": 3.081529000000046
+          },
+          "observedWall": {
+            "n": 16,
+            "p50": 278.78441699999985,
+            "p95": 405.95817299999953,
+            "max": 405.95817299999953
+          },
+          "stageSum": {
+            "n": 16,
+            "p50": 273.9955979999977,
+            "p95": 398.93116299999883,
+            "max": 398.93116299999883
+          },
+          "previewStageSum": {
+            "n": 16,
+            "p50": 273.9955979999977,
+            "p95": 398.93116299999883,
+            "max": 398.93116299999883
+          }
+        },
+        "coldStageSumMs": {
+          "n": 4,
+          "p50": 2859.1428650000003,
+          "p95": 2875.5739759999988,
+          "max": 2875.5739759999988
+        },
+        "coldObservedWallMs": {
+          "n": 4,
+          "p50": 2862.074741,
+          "p95": 2879.738253,
+          "max": 2879.738253
+        },
+        "moduleLoadMs": {
+          "n": 4,
+          "p50": 59.777152,
+          "p95": 60.049727999999995,
+          "max": 60.049727999999995
+        },
+        "memoryStart": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 1507328,
+            "p95": 1507328,
+            "max": 1507328
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 90112000,
+            "p95": 90112000,
+            "max": 90112000
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 6643768,
+            "p95": 6643768,
+            "max": 6643768
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 26255841,
+            "p95": 26255841,
+            "max": 26255841
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 22793025,
+            "p95": 22793025,
+            "max": 22793025
+          }
+        },
+        "memoryEnd": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 78000,
+            "p95": 78000,
+            "max": 78000
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 65000,
+            "p95": 65000,
+            "max": 65000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 74514432,
+            "p95": 74514432,
+            "max": 74514432
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 377475072,
+            "p95": 439058432,
+            "max": 439058432
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 6416352,
+            "p95": 6418112,
+            "max": 6418112
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 91937210,
+            "p95": 91937706,
+            "max": 91937706
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 15372546,
+            "p95": 15373042,
+            "max": 15373042
+          }
+        },
+        "sampledMemoryMaximumPerProcess": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 78000,
+            "p95": 78000,
+            "max": 78000
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 65000,
+            "p95": 65000,
+            "max": 65000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 74514432,
+            "p95": 74514432,
+            "max": 74514432
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 386449408,
+            "p95": 448413696,
+            "max": 448413696
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 34769920,
+            "p95": 34770224,
+            "max": 34770224
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 91937210,
+            "p95": 91937706,
+            "max": 91937706
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 25005681,
+            "p95": 25005681,
+            "max": 25005681
+          }
+        },
+        "arenaTrajectories": [
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ]
+        ]
+      }
+    },
+    "completion": {
+      "baseline": {
+        "processes": 4,
+        "ticks": 24,
+        "retained": 16,
+        "timingsMs": {
+          "restore": {
+            "n": 16,
+            "p50": 0.06219700000019657,
+            "p95": 0.5118380000003526,
+            "max": 0.5118380000003526
+          },
+          "prefix": {
+            "n": 16,
+            "p50": 107.95465300000069,
+            "p95": 125.33050999999978,
+            "max": 125.33050999999978
+          },
+          "rebuild": {
+            "n": 16,
+            "p50": 127.98115299999972,
+            "p95": 230.46903600000041,
+            "max": 230.46903600000041
+          },
+          "validate": {
+            "n": 16,
+            "p50": 1.8479960000004212,
+            "p95": 3.192138000000341,
+            "max": 3.192138000000341
+          },
+          "mesh": {
+            "n": 16,
+            "p50": 30.10420400000021,
+            "p95": 54.95163400000001,
+            "max": 54.95163400000001
+          },
+          "transfer": {
+            "n": 16,
+            "p50": 0.17876799999976356,
+            "p95": 0.19197299999996176,
+            "max": 0.19197299999996176
+          },
+          "volume": {
+            "n": 16,
+            "p50": 17.96217699999943,
+            "p95": 60.68521000000055,
+            "max": 60.68521000000055
+          },
+          "recognize": {
+            "n": 16,
+            "p50": 141.5918389999997,
+            "p95": 151.41450900000018,
+            "max": 151.41450900000018
+          },
+          "observedWall": {
+            "n": 16,
+            "p50": 431.910073,
+            "p95": 605.8295520000001,
+            "max": 605.8295520000001
+          },
+          "stageSum": {
+            "n": 16,
+            "p50": 426.41540799999984,
+            "p95": 601.2169970000014,
+            "max": 601.2169970000014
+          },
+          "previewStageSum": {
+            "n": 16,
+            "p50": 272.114489999999,
+            "p95": 389.80728200000067,
+            "max": 389.80728200000067
+          }
+        },
+        "coldStageSumMs": {
+          "n": 4,
+          "p50": 3646.427741000001,
+          "p95": 3649.8439209999997,
+          "max": 3649.8439209999997
+        },
+        "coldObservedWallMs": {
+          "n": 4,
+          "p50": 3649.378342,
+          "p95": 3652.74013,
+          "max": 3652.74013
+        },
+        "moduleLoadMs": {
+          "n": 4,
+          "p50": 59.928799000000005,
+          "p95": 62.881684,
+          "max": 62.881684
+        },
+        "memoryStart": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 1507328,
+            "p95": 1507328,
+            "max": 1507328
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 90054656,
+            "p95": 90112000,
+            "max": 90112000
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 6643768,
+            "p95": 6643768,
+            "max": 6643768
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 26255745,
+            "p95": 26255745,
+            "max": 26255745
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 22792929,
+            "p95": 22792929,
+            "max": 22792929
+          }
+        },
+        "memoryEnd": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 78000,
+            "p95": 78000,
+            "max": 78000
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 65000,
+            "p95": 65000,
+            "max": 65000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 95748096,
+            "p95": 95748096,
+            "max": 95748096
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 364814336,
+            "p95": 417804288,
+            "max": 417804288
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 6535608,
+            "p95": 6536920,
+            "max": 6536920
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 113170330,
+            "p95": 113170826,
+            "max": 113170826
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 15372002,
+            "p95": 15372498,
+            "max": 15372498
+          }
+        },
+        "sampledMemoryMaximumPerProcess": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 78000,
+            "p95": 78000,
+            "max": 78000
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 65000,
+            "p95": 65000,
+            "max": 65000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 95748096,
+            "p95": 95748096,
+            "max": 95748096
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 364814336,
+            "p95": 417804288,
+            "max": 417804288
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 23880328,
+            "p95": 23880872,
+            "max": 23880872
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 113170330,
+            "p95": 113170826,
+            "max": 113170826
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 25005585,
+            "p95": 25005585,
+            "max": 25005585
+          }
+        },
+        "arenaTrajectories": [
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ]
+        ]
+      },
+      "candidate": {
+        "processes": 4,
+        "ticks": 24,
+        "retained": 16,
+        "timingsMs": {
+          "restore": {
+            "n": 16,
+            "p50": 0.06213800000023184,
+            "p95": 0.5086320000000342,
+            "max": 0.5086320000000342
+          },
+          "prefix": {
+            "n": 16,
+            "p50": 108.27310500000021,
+            "p95": 126.90953699999955,
+            "max": 126.90953699999955
+          },
+          "rebuild": {
+            "n": 16,
+            "p50": 129.72112500000003,
+            "p95": 231.58291199999985,
+            "max": 231.58291199999985
+          },
+          "validate": {
+            "n": 16,
+            "p50": 1.8443790000001172,
+            "p95": 3.1904859999995097,
+            "max": 3.1904859999995097
+          },
+          "mesh": {
+            "n": 16,
+            "p50": 29.484470999999758,
+            "p95": 54.781332000000475,
+            "max": 54.781332000000475
+          },
+          "transfer": {
+            "n": 16,
+            "p50": 0.1789490000001024,
+            "p95": 2.8193329999994603,
+            "max": 2.8193329999994603
+          },
+          "volume": {
+            "n": 16,
+            "p50": 17.84770000000026,
+            "p95": 60.623883000000205,
+            "max": 60.623883000000205
+          },
+          "recognize": {
+            "n": 16,
+            "p50": 140.39352299999973,
+            "p95": 151.9814919999999,
+            "max": 151.9814919999999
+          },
+          "observedWall": {
+            "n": 16,
+            "p50": 431.79945399999997,
+            "p95": 606.2899830000006,
+            "max": 606.2899830000006
+          },
+          "stageSum": {
+            "n": 16,
+            "p50": 425.1443569999983,
+            "p95": 602.4516809999996,
+            "max": 602.4516809999996
+          },
+          "previewStageSum": {
+            "n": 16,
+            "p50": 270.69435500000054,
+            "p95": 392.2878039999996,
+            "max": 392.2878039999996
+          }
+        },
+        "coldStageSumMs": {
+          "n": 4,
+          "p50": 3658.7771119999998,
+          "p95": 3734.2604699999997,
+          "max": 3734.2604699999997
+        },
+        "coldObservedWallMs": {
+          "n": 4,
+          "p50": 3660.767054,
+          "p95": 3739.4403199999997,
+          "max": 3739.4403199999997
+        },
+        "moduleLoadMs": {
+          "n": 4,
+          "p50": 59.765550000000005,
+          "p95": 60.02300699999999,
+          "max": 60.02300699999999
+        },
+        "memoryStart": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 1507328,
+            "p95": 1507328,
+            "max": 1507328
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 90079232,
+            "p95": 90112000,
+            "max": 90112000
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 6643768,
+            "p95": 6643768,
+            "max": 6643768
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 26255841,
+            "p95": 26255841,
+            "max": 26255841
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 22793025,
+            "p95": 22793025,
+            "max": 22793025
+          }
+        },
+        "memoryEnd": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 78000,
+            "p95": 78000,
+            "max": 78000
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 65000,
+            "p95": 65000,
+            "max": 65000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 95748096,
+            "p95": 95748096,
+            "max": 95748096
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 409432064,
+            "p95": 446615552,
+            "max": 446615552
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 6534392,
+            "p95": 6535608,
+            "max": 6535608
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 113170378,
+            "p95": 113170378,
+            "max": 113170378
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 15372050,
+            "p95": 15372050,
+            "max": 15372050
+          }
+        },
+        "sampledMemoryMaximumPerProcess": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 78000,
+            "p95": 78000,
+            "max": 78000
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 65000,
+            "p95": 65000,
+            "max": 65000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 95748096,
+            "p95": 95748096,
+            "max": 95748096
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 412213248,
+            "p95": 449396736,
+            "max": 449396736
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 23651592,
+            "p95": 23880328,
+            "max": 23880328
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 113170378,
+            "p95": 113170378,
+            "max": 113170378
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 25005681,
+            "p95": 25005681,
+            "max": 25005681
+          }
+        },
+        "arenaTrajectories": [
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ]
+        ]
+      }
+    }
+  },
+  "originalCaptureFiles": [
+    {
+      "file": "preview-0-baseline.json",
+      "mode": "preview",
+      "variant": "baseline",
+      "processOrdinal": 0,
+      "sha256": "86b9873879522cb812bcd81bd1f1461a025cf4128b5afcf2e3d62419beb4500f",
+      "samples": 6
+    },
+    {
+      "file": "preview-1-candidate.json",
+      "mode": "preview",
+      "variant": "candidate",
+      "processOrdinal": 1,
+      "sha256": "3cb61876f082d488a67b8313859c0d48acb57de759f58808faaa231a093b968c",
+      "samples": 6
+    },
+    {
+      "file": "preview-2-candidate.json",
+      "mode": "preview",
+      "variant": "candidate",
+      "processOrdinal": 2,
+      "sha256": "08b5e3bb9f31e94b5affd97c86aa690af69b4750854dd047064180b6746b90f8",
+      "samples": 6
+    },
+    {
+      "file": "preview-3-baseline.json",
+      "mode": "preview",
+      "variant": "baseline",
+      "processOrdinal": 3,
+      "sha256": "e90a7f4092e9295e484c7f97b734d1b9a6c054ae6600fd8119615fe7aafd5dda",
+      "samples": 6
+    },
+    {
+      "file": "preview-4-candidate.json",
+      "mode": "preview",
+      "variant": "candidate",
+      "processOrdinal": 4,
+      "sha256": "f4d15c4d8119bbca87da0a9242525877eb7b66d79470c030ee92a34bf837ace5",
+      "samples": 6
+    },
+    {
+      "file": "preview-5-baseline.json",
+      "mode": "preview",
+      "variant": "baseline",
+      "processOrdinal": 5,
+      "sha256": "ef9e0e5e1aa03faf0ab4f0d07392dccdd1716e62d0ce6340a607734d8d84ed0f",
+      "samples": 6
+    },
+    {
+      "file": "preview-6-baseline.json",
+      "mode": "preview",
+      "variant": "baseline",
+      "processOrdinal": 6,
+      "sha256": "dc4155882d331f5793464e568b4beb0bb7f5cc1ca6ceceabb7eefa5ca102b2d7",
+      "samples": 6
+    },
+    {
+      "file": "preview-7-candidate.json",
+      "mode": "preview",
+      "variant": "candidate",
+      "processOrdinal": 7,
+      "sha256": "6b72d9adafae2bb7d3dca74f733d53d63665819c45bd39eb77a1182384faa99f",
+      "samples": 6
+    },
+    {
+      "file": "completion-0-baseline.json",
+      "mode": "completion",
+      "variant": "baseline",
+      "processOrdinal": 0,
+      "sha256": "5ab5486a7eb3d152b8e938f8f37de1764885f4003174b7ced03b02179a063298",
+      "samples": 6
+    },
+    {
+      "file": "completion-1-candidate.json",
+      "mode": "completion",
+      "variant": "candidate",
+      "processOrdinal": 1,
+      "sha256": "0f1caef454b57037366a7ef33d0e0d8f7c3de5f04b7336841f246de04486f96d",
+      "samples": 6
+    },
+    {
+      "file": "completion-2-candidate.json",
+      "mode": "completion",
+      "variant": "candidate",
+      "processOrdinal": 2,
+      "sha256": "e550349ceff2884fea7b9a2678598d72cccf80a788fa9c9933ad8d97b702fab3",
+      "samples": 6
+    },
+    {
+      "file": "completion-3-baseline.json",
+      "mode": "completion",
+      "variant": "baseline",
+      "processOrdinal": 3,
+      "sha256": "57b2c1fbfd08d866b9295de54204fabc18a51467e209af48d782213ffdd959e5",
+      "samples": 6
+    },
+    {
+      "file": "completion-4-candidate.json",
+      "mode": "completion",
+      "variant": "candidate",
+      "processOrdinal": 4,
+      "sha256": "846d96b11bc3b1f49ef1c6d6cd6a810566d02b44f35c3076a1000d972ba8c7e7",
+      "samples": 6
+    },
+    {
+      "file": "completion-5-baseline.json",
+      "mode": "completion",
+      "variant": "baseline",
+      "processOrdinal": 5,
+      "sha256": "bff40d0f8cb74548d907177f415404c579c82acffc7ce06d97fc7917e109fefa",
+      "samples": 6
+    },
+    {
+      "file": "completion-6-baseline.json",
+      "mode": "completion",
+      "variant": "baseline",
+      "processOrdinal": 6,
+      "sha256": "14dd4191b2d36540b54497cda6053f6c624191346c71cab92dd7e224d612dd25",
+      "samples": 6
+    },
+    {
+      "file": "completion-7-candidate.json",
+      "mode": "completion",
+      "variant": "candidate",
+      "processOrdinal": 7,
+      "sha256": "a11a225829aa8fe0698d867ebf36acc4b8c5fa31399cdf2414efea0855fa6b99",
+      "samples": 6
+    }
+  ],
+  "portableFiles": {
+    "samples.jsonl": {
+      "bytes": 1052630,
+      "sha256": "ff947ba140a1e93db6df401eb31d8772b5093524403c592e411336a9348a009e"
+    },
+    "processes.jsonl": {
+      "bytes": 392905,
+      "sha256": "71aad31d3ca84ba513760d6a9695b55adb829156dd617227955d0a9ecdffd73e"
+    },
+    "baseline-independent-audit.json": {
+      "bytes": 33953,
+      "sha256": "d6feb18f6ab9c22299b749ed172e549cd144032452700425f3348cebe0c3c395"
+    },
+    "candidate-independent-audit.json": {
+      "bytes": 33953,
+      "sha256": "d6feb18f6ab9c22299b749ed172e549cd144032452700425f3348cebe0c3c395"
+    }
+  },
+  "preservation": "samples.jsonl retains every field/value of all96records; processes.jsonl retains every original metadata and summary object. Group by sourceFile and use the stated original encoding to reconstruct all16 original driverfiles byte-for-byte. Originalrawfiles remain local and their SHA256 values match reconstruction from the public JSONL.",
+  "memoryScope": "Recorded stage snapshots and sampled maxima only; no true temporary-allocation peaks, exclusive-core ownership, longer-session bound or browser presentation result.",
+  "originalCaptureReconstruction": {
+    "all16OriginalFileHashesMatch": true,
+    "encoding": "JSON.stringify({metadata,records,summary}, null, 2) plus one newline, grouping the public JSONL by sourceFile."
+  }
+}

@@ -108,6 +108,7 @@ fn perform_inner(
     analytic_gates: bool,
     containments: &mut FaceContainments,
 ) -> Result<(), AlgoError> {
+    let _phase = crate::perf::phase(crate::perf::PhaseKind::Ef);
     let bbox_a = crate::classifier::compute_solid_bbox(topo, solid_a)?;
     let bbox_b = crate::classifier::compute_solid_bbox(topo, solid_b)?;
     if !bbox_a

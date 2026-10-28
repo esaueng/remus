@@ -634,6 +634,7 @@ fn perform_seeded(
     junction_registry: &mut JunctionRegistry,
     permit_seed_updates: bool,
 ) -> Result<(), AlgoError> {
+    let _phase = crate::perf::phase(crate::perf::PhaseKind::Ff);
     let tol = context.tolerance;
     let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;
     let faces_b = remus_topology::explorer::solid_faces(topo, solid_b)?;
@@ -694,6 +695,7 @@ fn perform_seeded(
         let surf_a = &surfs_a[idx_a];
 
         for (idx_b, &fb) in faces_b.iter().enumerate() {
+            crate::perf::bump_ff_pair_visited();
             context.check_cancelled()?;
             let bbox_b = &bboxes_b[idx_b];
 
@@ -750,6 +752,7 @@ fn perform_seeded(
                 continue;
             }
 
+            crate::perf::bump_ff_pair_surviving();
             let surf_b = &surfs_b[idx_b];
 
             let v_range_a = v_ranges_a[idx_a];
