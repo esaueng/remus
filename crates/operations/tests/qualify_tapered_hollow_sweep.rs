@@ -282,7 +282,17 @@ fn tapered_hollow_sweep_scales_an_eccentric_hole_about_the_outer_profile_center(
     // Outer area 24 minus hole area 0.8, times integral_0^6 (1+z/6)^2 dz = 14.
     let volume = remus_operations::measure::solid_volume(&topo, solid, 0.01).unwrap();
     assert!((volume - 23.2 * 14.0).abs() < 1e-8);
-    for (x, inside) in [(1.0, false), (-1.0, true), (3.0, true), (6.0, false)] {
+    // At z=4.5 the correct void is x=[0.35,2.1], y=[-0.7,0.7].
+    // Scaling about the hole's own center instead gives x=[-0.175,1.575];
+    // x=1.85 and x=-0.1 independently distinguish those two constructions.
+    for (x, inside) in [
+        (1.0, false),
+        (1.85, false),
+        (-0.1, true),
+        (-1.0, true),
+        (3.0, true),
+        (6.0, false),
+    ] {
         let state = remus_check::classify::classify_point(
             &topo,
             solid,
