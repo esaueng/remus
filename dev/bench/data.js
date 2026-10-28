@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793217488717,
+  "lastUpdate": 1793220111455,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -137839,6 +137839,306 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 84603,
             "range": "± 413",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "171875562+petertoday@users.noreply.github.com",
+            "name": "Peter",
+            "username": "petertoday"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "70f675bea4aebd35b0a36d59eaec89118c278ef6",
+          "message": "test(operations): give the sphere-cap replay the correctness-replay budget (#1321)\n\n## Why\n\n`checks / Coverage` failed on main at d5e20f1ae ([run\n40650921158](https://github.com/esaueng/remus/actions/runs/40650921158)).\nThe failing test was\n`op_seq_81::finding_closed_sphere_cap_uses_a_contained_interior_witness`,\nwhich #1314 added: it returned `Timeout` where `ExactOk` was expected,\nwith the note \"budget exhausted before identity legs\".\n\nThe pinned replay ran its full battery under the two-minute **campaign**\nbudget. That budget is wall-clock time and is checked before the\nidentity legs. Profiling showed the time goes to the mesh oracle:\n\n| Stage (CI test profile, opt-level 1) | Time |\n|---|---|\n| fuse + topology gate | ~10 ms |\n| `battery_mesh` → `tessellate_solid` at deflection 2.09e-4 (2.67M\ntriangles) | ~9.5–11 s |\n| mass agreement + identity legs | ~2 s |\n\nThis test's CI durations on recent commits:\n\n| Commit | Test job | Coverage job |\n|---|---|---|\n| bd4d86598 | 24.7 s | 82.8 s |\n| 6bd4f9b97 | 31.0 s | 133.5 s (passed narrowly) |\n| d5e20f1ae | 29.3 s | 208.4 s → Timeout |\n\nThe Test-job times are flat, so #1317 did not slow this test. The\nCoverage job just varies enough to cross the line.\n\n## Change\n\nTest-only. A `replay_limits()` helper now provides the ten-minute\ndefault that `finding_rotated_cyl_cut_material` already used inline for\nthe same reason. The rotated-cylinder replay and the sphere-cap replay\nboth use it.\n\n- Generated campaigns keep the two-minute `DEFAULT_SEQ_TIMEOUT_MS`.\n- An explicit `OPSEQ81_SEQ_TIMEOUT_MS` still overrides the default.\n- No oracle, tolerance or assertion changes.\n\n## Verification (local)\n\n- `cargo test --profile ci-test -p remus-operations --test op_seq_81`:\n51 passed.\n- With `OPSEQ81_SEQ_TIMEOUT_MS=5000`, the replay reproduces the exact CI\nfailure signature (`Timeout`, \"budget exhausted before identity legs\").\nThat confirms the budget mechanism and shows the override still works.\n- fmt, clippy (`-D warnings`), taplo and machete pass via the pre-commit\nhook.\n- I did not run coverage-instrumented CI locally. This PR's Coverage job\nis the check for that.\n\n## Not fixed here\n\nMeshed alone, the two large sphere faces tessellate to about 159k and\n212k triangles in milliseconds. In `tessellate_solid`'s shared-edge\ncurved-face path they become 706k (3.5 s) and 1.35M (5.7 s). That\ndensity inflation is a real tessellation cost and is out of scope for\nthis test fix.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-28T20:22:33Z",
+          "tree_id": "fa29f1681380c79b9733d903fc7c5ed24f668297",
+          "url": "https://github.com/esaueng/remus/commit/70f675bea4aebd35b0a36d59eaec89118c278ef6"
+        },
+        "date": 1793220106562,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1194070,
+            "range": "± 5924",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1278734,
+            "range": "± 1143",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27740,
+            "range": "± 362",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7788501,
+            "range": "± 16223",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7787077,
+            "range": "± 36191",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7618760,
+            "range": "± 20218",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 28582,
+            "range": "± 1171",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3580633,
+            "range": "± 6971",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 30723881,
+            "range": "± 807668",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 40,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 114,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 80,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 224,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 196,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 881,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 169,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 390,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 248,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 563,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 932,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3460,
+            "range": "± 23",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 24729,
+            "range": "± 120",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 146070,
+            "range": "± 378",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 4038,
+            "range": "± 22",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 15330,
+            "range": "± 37",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 56228,
+            "range": "± 168",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5300,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 509449,
+            "range": "± 1804",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2642347,
+            "range": "± 16090",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 147500,
+            "range": "± 573",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 297935,
+            "range": "± 775",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 362497,
+            "range": "± 810",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 68009,
+            "range": "± 2195",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 35280,
+            "range": "± 227",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 21642,
+            "range": "± 108",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 128000,
+            "range": "± 2037",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 147205,
+            "range": "± 1204",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 652478,
+            "range": "± 37420",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 8073928,
+            "range": "± 167225",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 556489,
+            "range": "± 7461",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1187398,
+            "range": "± 9612",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 84743,
+            "range": "± 360",
             "unit": "ns/iter"
           }
         ]
