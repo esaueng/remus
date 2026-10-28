@@ -20,7 +20,7 @@ fn knots(n: usize, d: (f64, f64)) -> Vec<f64> {
 fn near(a: f64, b: f64) {
     assert!((a - b).abs() < 2e-10 * (1.0 + b.abs()), "{a} != {b}");
 }
-fn place(p: Point3, scale: f64, moved: bool) -> Point3 {
+pub(in crate::pave_filler) fn place(p: Point3, scale: f64, moved: bool) -> Point3 {
     if moved {
         // Orthogonal rotation with a non-axis-aligned image of every axis.
         Point3::new(
@@ -32,7 +32,7 @@ fn place(p: Point3, scale: f64, moved: bool) -> Point3 {
         Point3::new(p.x() * scale, p.y() * scale, p.z() * scale)
     }
 }
-fn section_and_surfaces(
+pub(in crate::pave_filler) fn section_and_surfaces(
     rational: bool,
     scale: f64,
     moved: bool,
@@ -115,7 +115,8 @@ fn fixture_edge(s: &NurbsSurface, a: Point2, b: Point2, reverse: bool) -> EdgeCu
     let d = s.domain_u();
     let u0 = (a.x() - d.0) / (d.1 - d.0);
     let u1 = (b.x() - d.0) / (d.1 - d.0);
-    let v = (a.y() + 2.0) / 4.0;
+    let v_domain = s.domain_v();
+    let v = (a.y() - v_domain.0) / (v_domain.1 - v_domain.0);
     let h: Vec<_> = s
         .control_points()
         .iter()
@@ -132,8 +133,8 @@ fn fixture_edge(s: &NurbsSurface, a: Point2, b: Point2, reverse: bool) -> EdgeCu
     }
     EdgeCurve::NurbsCurve(
         NurbsCurve::new(
-            2,
-            knots(2, (7.0, 11.0)),
+            s.degree_u(),
+            knots(s.degree_u(), (7.0, 11.0)),
             sub.iter()
                 .map(|p| Point3::new(p[0] / p[3], p[1] / p[3], p[2] / p[3]))
                 .collect(),
@@ -142,7 +143,12 @@ fn fixture_edge(s: &NurbsSurface, a: Point2, b: Point2, reverse: bool) -> EdgeCu
         .unwrap(),
     )
 }
-fn face(topo: &mut Topology, s: NurbsSurface, rects: &[[f64; 4]], reverse: bool) -> FaceId {
+pub(in crate::pave_filler) fn face(
+    topo: &mut Topology,
+    s: NurbsSurface,
+    rects: &[[f64; 4]],
+    reverse: bool,
+) -> FaceId {
     let domain = s.domain_u();
     let u = |x| domain.0 + (domain.1 - domain.0) * x;
     let chart: Vec<_> = rects
@@ -153,7 +159,7 @@ fn face(topo: &mut Topology, s: NurbsSurface, rects: &[[f64; 4]], reverse: bool)
 }
 /// `face` with rectangle corners in the surface's native u chart; `closed`
 /// is the wire's closure flag, which the loop inherits.
-fn face_in_chart(
+pub(in crate::pave_filler) fn face_in_chart(
     topo: &mut Topology,
     s: NurbsSurface,
     rects: &[[f64; 4]],

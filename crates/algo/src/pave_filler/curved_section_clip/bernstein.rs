@@ -206,3 +206,26 @@ pub(super) fn residual(a: &H, b: &H) -> f64 {
     }
     squared.hi.sqrt().next_up()
 }
+
+/// Whole-span speed with respect to normalized Bezier parameter. Positive
+/// weight hulls and outward products bound (X' W - X W') / W^2, including
+/// genuinely rational sections; no sampled tangent authorizes the bound.
+pub(super) fn derivative_bound(h: &H) -> f64 {
+    let weight = h[3].iter().map(|w| w.lo).fold(f64::INFINITY, f64::min);
+    if !weight.is_finite() || weight <= 0.0 {
+        return f64::INFINITY;
+    }
+    let denominator = I::exact(weight).mul(I::exact(weight));
+    let weight_derivative = derivative(&h[3]);
+    let mut squared = I::exact(0.0);
+    for coordinate in h.iter().take(3) {
+        let numerator = sub(
+            &product(&derivative(coordinate), &h[3]),
+            &product(coordinate, &weight_derivative),
+        );
+        let bound = numerator.iter().map(|x| x.abs_max()).fold(0.0, f64::max);
+        let bound = I::exact(bound).div(denominator);
+        squared = squared.add(bound.mul(bound));
+    }
+    squared.hi.sqrt().next_up()
+}
