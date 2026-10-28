@@ -2236,9 +2236,12 @@ pub(super) mod runout {
         }
         fn certified(proof: ProofResult) -> ProofBound {
             let ProofResult::Certified(bound) = proof else {
-                panic!("missing whole-interval certificate: {proof:?}");
+                panic!("missing geometric whole-interval certificate");
             };
-            assert!(bound.max_deviation <= STRICT_TOLERANCE, "{bound:?}");
+            assert!(
+                bound.max_deviation <= STRICT_TOLERANCE,
+                "geometric proof exceeds strict tolerance"
+            );
             bound
         }
 
