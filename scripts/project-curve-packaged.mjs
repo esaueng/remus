@@ -369,5 +369,186 @@ export function runProjectCurvePackaged({ BrepKernel }) {
       }
     }
   }
+  runPlanarBezierFaceProjectionPackaged({ BrepKernel });
   console.log('ok - packaged projection objects, clipping, exact and approximate images, trim refusals and scoped history continuity');
+}
+
+// The expected image is a weighted Bernstein polynomial evaluated independently
+// of either the kernel's source evaluator or its projection implementation.
+export function runPlanarBezierFaceProjectionPackaged({ BrepKernel }) {
+  const routes = ['direct', 'executeBatch', 'executeBatchV2'];
+  const apply = (m, p) => [0, 1, 2].map(i => m[4*i]*p[0] + m[4*i+1]*p[1] + m[4*i+2]*p[2] + m[4*i+3]);
+  const pose = (placed) => {
+    if (!placed) return [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
+    const c=Math.cos(0.37), s=Math.sin(0.37), d=Math.cos(0.41), t=Math.sin(0.41);
+    return [c*d,-s,c*t,12.5, s*d,c,s*t,-7.25, -t,0,d,3.125, 0,0,0,1];
+  };
+  const bernstein = (controls, weights, q) => {
+    const p=controls.length-1, numerator=[0,0,0]; let denominator=0, choose=1;
+    controls.forEach((point,i) => {
+      if (i) choose=choose*(p+1-i)/i;
+      const coefficient=choose*q**i*(1-q)**(p-i)*weights[i];
+      denominator+=coefficient;
+      point.forEach((value,axis)=>{numerator[axis]+=value*coefficient;});
+    });
+    return numerator.map(value=>value/denominator);
+  };
+  const close=(actual,expected,scale)=>assert.ok(Math.hypot(...actual.map((value,i)=>value-expected[i]))<2e-9*scale,
+    `${JSON.stringify(actual)} != ${JSON.stringify(expected)}`);
+  const makeSource=(kernel,controls,weights,domain,point)=>{
+    const count=controls.length, points=controls.map(point), knots=[...Array(count).fill(domain[0]),...Array(count).fill(domain[1])];
+    const edge=kernel.makeNurbsEdge(...points[0],...points.at(-1),count-1,Float64Array.from(knots),
+      Float64Array.from(points.flat()),Float64Array.from(weights));
+    return {edge,knots};
+  };
+  const call=(kernel,route,edge,face,options={},direction=[0,0,-1])=>{
+    if (route==='direct') return kernel.projectCurveOntoFace(edge,...direction,face,options);
+    return JSON.parse(kernel[route](JSON.stringify([{op:'projectCurveOntoFace',args:{edge,face,
+      dirX:direction[0],dirY:direction[1],dirZ:direction[2],options}}])))[0];
+  };
+  const body=(kernel,solid)=>{
+    const document=JSON.parse(new TextDecoder().decode(kernel.serializeSolids(Uint32Array.of(solid))));
+    delete document.journal; return document;
+  };
+  const logicalMemory=(kernel)=>{
+    const value=JSON.parse(kernel.checkpointMemoryStats());
+    // WASM pages are the global allocator high-water mark, not rollback state.
+    delete value.linearMemoryBytes; return value;
+  };
+  let cells=0;
+  for (const route of routes) for (const scale of [0.001,1,1000]) for (const placed of [false,true]) {
+    for (const degree of [2,8]) for (const domain of [[0,1],[10,20]]) {
+      const kernel=new BrepKernel();
+      try {
+        const matrix=pose(placed), point=p=>apply(matrix,p.map(value=>value*scale));
+        const vector=p=>[0,1,2].map(i=>matrix[4*i]*p[0]+matrix[4*i+1]*p[1]+matrix[4*i+2]*p[2]);
+        const solid=kernel.makeBox(10*scale,8*scale,4*scale);
+        const face=Array.from(kernel.getSolidFaces(solid)).find(id=>kernel.getFaceNormal(id)[2]>0.9);
+        assert.notEqual(face,undefined);kernel.transformSolid(solid,Float64Array.from(matrix));
+        const controls=Array.from({length:degree+1},(_,i)=>{
+          const q=i/degree;return [1.5+6.5*q,2+2.5*Math.sin(q*Math.PI),6+0.2*q];
+        });
+        const weights=controls.map((_,i)=>1+0.5*(i%3));
+        const {edge,knots}=makeSource(kernel,controls,weights,domain,point);
+        const beforeBody=body(kernel,solid), source=Array.from(kernel.getEdgeVertices(edge));
+        const history=JSON.parse(kernel.journalSummary()), checkpoint=kernel.checkpoint();
+        const direction=vector([0.2,-0.1,-1]);
+        const frame={origin:point([0,0,4]),xAxis:vector([1,0,0]),normal:vector([0,0,1])};
+        const options={planeFrame:frame}, args={edge,face,dirX:direction[0],dirY:direction[1],dirZ:direction[2],options};
+        const row=route==='direct' ? kernel.projectCurveOntoFace(edge,...direction,face,options)
+          : JSON.parse(kernel[route](JSON.stringify([{op:'projectCurveOntoFace',args}])))[0];
+        if (route!=='direct') assert.ok(Object.hasOwn(row,'ok'),JSON.stringify(row));
+        const result=route==='direct'?row:row.ok;
+        assert.deepEqual(result.quality,{kind:'exact'});assert.equal(result.clipped,false);assert.equal(result.edges.length,1);
+        const image=result.edges[0], curve=image.planeCurve;
+        assert.equal(image.sourceStart,domain[0]);assert.equal(image.sourceEnd,domain[1]);
+        assert.equal(curve.kind,'nurbs');assert.equal(curve.degree,degree);
+        assert.deepEqual(curve.knots,knots);assert.deepEqual(curve.weights,weights);
+        assert.equal(curve.tStart,domain[0]);assert.equal(curve.tEnd,domain[1]);
+        const yAxis=[frame.normal[1]*frame.xAxis[2]-frame.normal[2]*frame.xAxis[1],
+          frame.normal[2]*frame.xAxis[0]-frame.normal[0]*frame.xAxis[2],
+          frame.normal[0]*frame.xAxis[1]-frame.normal[1]*frame.xAxis[0]];
+        const viewControls=curve.controlPoints.map(([x,y])=>[x,y,0]);
+        for (let i=0;i<=32;i++) {
+          const q=i/32, p=bernstein(controls,weights,q);
+          const expected=point([p[0]+0.2*(p[2]-4),p[1]-0.1*(p[2]-4),4]);
+          const actual=Array.from(kernel.evaluateEdgeCurve(image.edge,domain[0]+(domain[1]-domain[0])*q));
+          close(actual,expected,scale);
+          const view=bernstein(viewControls,curve.weights,q);
+          close(frame.origin.map((value,axis)=>value+frame.xAxis[axis]*view[0]+yAxis[axis]*view[1]),expected,scale);
+          if (i%8===0) {
+            const normal=vector([0,0,1]);
+            for (const [offset,want] of [[0,'boundary'],[-0.01,'inside'],[0.01,'outside']]) {
+              const probe=actual.map((value,axis)=>value+normal[axis]*offset*scale);
+              assert.equal(kernel.classifyPoint(solid,...probe,1e-7*scale),want);
+            }
+          }
+        }
+        close(Array.from(kernel.getEdgeVertices(image.edge)).slice(0,3),point([controls[0][0]+0.2*(controls[0][2]-4),controls[0][1]-0.1*(controls[0][2]-4),4]),scale);
+        assert.deepEqual(body(kernel,solid),beforeBody);assert.deepEqual(Array.from(kernel.getEdgeVertices(edge)),source);
+        const after=JSON.parse(kernel.journalSummary());assert.deepEqual(after.slice(0,history.length),history);
+        assert.equal(after.at(-1).type,'barrier');assert.equal(after.at(-1).kind,'project_curve_onto_face');
+        assert.equal(after.at(-1).detail.affected,3);
+        kernel.restore(checkpoint);assert.deepEqual(body(kernel,solid),beforeBody);
+        assert.deepEqual(Array.from(kernel.getEdgeVertices(edge)),source);
+        assert.throws(()=>kernel.getEdgeVertices(image.edge));kernel.discardCheckpoint(checkpoint);
+        cells++;
+      } finally {kernel.free();}
+    }
+  }
+  assert.equal(cells,72);
+  for (const route of routes) for (const budget of [false,true]) for (const shared of [false,true]) {
+    const kernel=new BrepKernel();
+    try {
+      const solid=kernel.makeBox(10,8,4),face=Array.from(kernel.getSolidFaces(solid)).find(id=>kernel.getFaceNormal(id)[2]>0.9);
+      const degree=budget?8:2, controls=Array.from({length:degree+1},(_,i)=>[2+6*i/degree,(!budget&&i===1)?10:2,7]);
+      const {edge}=makeSource(kernel,controls,controls.map(()=>1),[10,20],p=>p);
+      const checkpoint=shared?kernel.checkpoint():null;
+      const snapshot=()=>({body:body(kernel,solid),source:Array.from(kernel.getEdgeVertices(edge)),
+        history:kernel.journalSummary(),memory:logicalMemory(kernel),checkpoints:kernel.checkpointCount()});
+      const before=snapshot(),options=budget?{maxControlPoints:4}:{};
+      const code=budget?'project-curve:resource-limit':'project-curve:exact-bezier-domain-unsupported';
+      if (route==='direct') assert.throws(()=>call(kernel,route,edge,face,options),error=>error.message.startsWith(`${code}:`));
+      else {
+        const row=call(kernel,route,edge,face,options);assert.ok(!Object.hasOwn(row,'ok'));
+        if (route==='executeBatch') assert.ok(row.error.startsWith(budget?'projection projection_control_points limit 4':'unsupported exact planar Bezier projection:'));
+        else {
+          assert.equal(row.error.details.kernelCode,code);
+          assert.equal(row.error.category,budget?'resource_limit':'unsupported');
+          if (budget) {assert.equal(row.error.details.limit,4);assert.equal(row.error.details.actual,9);}
+        }
+      }
+      assert.deepEqual(snapshot(),before);
+      if (shared) {kernel.restore(checkpoint);assert.deepEqual(body(kernel,solid),before.body);kernel.discardCheckpoint(checkpoint);}
+    } finally {kernel.free();}
+  }
+  for (const route of routes) for (const variant of ['tiny2d','longFrame','farFrame','rayCancellation']) {
+    const kernel = new BrepKernel();
+    try {
+      const solid = kernel.makeBox(variant === 'rayCancellation' ? 4 : 10,8,4);
+      const face = Array.from(kernel.getSolidFaces(solid)).find(id=>kernel.getFaceNormal(id)[2]>0.9);
+      if (variant === 'rayCancellation') kernel.transformSolid(solid,Float64Array.of(
+        1,0,0,-2, 0,1,0,0, 0,0,1,-4, 0,0,0,1));
+      const controls = variant === 'longFrame' ? [[2,2,10],[5,4,1e6+10],[8,2,10]]
+        : variant === 'rayCancellation' ? [[1e18,2,1e10],[1e18,4,1e10],[1e18,6,1e10]]
+        : [[2,2,7],[5,4,7],[8,2,7]];
+      const weights = variant === 'tiny2d' ? [1e-300,2e-300,1e-300]
+        : variant === 'farFrame' ? [1,2,1] : [1,1,1];
+      const {edge} = makeSource(kernel,controls,weights,[10,20],p=>p);
+      if (variant === 'tiny2d') {
+        const row = call(kernel,route,edge,face);
+        if (route !== 'direct') assert.ok(Object.hasOwn(row,'ok'),JSON.stringify(row));
+        const result = route === 'direct' ? row : row.ok;
+        assert.deepEqual(result.quality,{kind:'exact'});
+        close(Array.from(kernel.evaluateEdgeCurve(result.edges[0].edge,15)),[5,10/3,4],1);
+        close(Array.from(kernel.evaluateEdgeCurve(result.edges[0].edge,20)),[8,2,4],1);
+      }
+      const checkpoint = kernel.checkpoint();
+      const snapshot = () => ({body:body(kernel,solid),source:Array.from(kernel.getEdgeVertices(edge)),
+        history:kernel.journalSummary(),memory:logicalMemory(kernel),checkpoints:kernel.checkpointCount()});
+      const before = snapshot();
+      const options = variant === 'rayCancellation' ? {} : {planeFrame:{
+        origin:variant === 'farFrame' ? [1e12,1e12,4] : [0,0,variant === 'longFrame' ? 4.01 : 4],
+        xAxis:[1,0,0],normal:[0,0,1]}};
+      const direction = variant === 'rayCancellation' ? [-1,0,-1e-8] : [0,0,-1];
+      const code = variant === 'longFrame' ? 'project-curve:plane-frame-mismatch'
+        : 'project-curve:exact-bezier-domain-unsupported';
+      if (route === 'direct') assert.throws(()=>call(kernel,route,edge,face,options,direction),
+        error=>error.message.startsWith(`${code}:`));
+      else {
+        const row = call(kernel,route,edge,face,options,direction);
+        assert.ok(!Object.hasOwn(row,'ok'),JSON.stringify(row));
+        if (route === 'executeBatch') assert.ok(row.error.startsWith(variant === 'longFrame'
+          ? 'plane frame does not match the target plane' : 'unsupported exact planar Bezier projection:'));
+        else {
+          assert.equal(row.error.details.kernelCode,code);
+          assert.equal(row.error.category,variant === 'longFrame' ? 'invalid_input' : 'unsupported');
+        }
+      }
+      assert.deepEqual(snapshot(),before);
+      kernel.restore(checkpoint);assert.deepEqual(body(kernel,solid),before.body);
+      kernel.discardCheckpoint(checkpoint);
+    } finally { kernel.free(); }
+  }
+  console.log('ok - planar Bezier face projection:72 matrix +3 tiny3D positives;24 atomic resource/domain/numeric refusals');
 }

@@ -42,8 +42,10 @@ BOUNDARY_EXCLUDED_MANIFEST = """8fe14bd9c408d729 0562c28e114de4de c0f2a1f22c2e8a
 # that poison the compatibility wire view, and the oversized imprint fixture.
 # Keep these exact identities separate from the immutable baseline;
 # production mutations remain forbidden.
+# The P-Class 7.4 malformed-face oracle expands only the compatibility wire
+# while retaining its authoritative coedge loop; projection must refuse it.
 BOUNDARY_REVIEWED_TEST_ADDITIONS = """123048a9050f536c 5424c88caa0ce882
- dd306c6a72eab52c 52cad4163c622ec2 5ba03c532a327eb1""".split()
+ dd306c6a72eab52c 52cad4163c622ec2 5ba03c532a327eb1 b343bcb9eb949775""".split()
 BASELINE_PRESERVATION_MANIFEST = """409e26059e7657d1 4fcd3d400dabcb8c 7eb3fdf95ecd461e 2ef78a8d560c9b51 f8dac04156521ab6 c0079d093e520988 d6672a48aeae38c1 f36ef17e09585a9d 3c435d48ac3cd69f b77ddaa8423159bb 793fa734cab8252d fe75393c672bf17d""".split()
 # Reviewed one-for-one migrations keep the immutable baseline obligations while
 # allowing their implementation identity to move. Keys and values stay exact;
@@ -274,7 +276,7 @@ def validate_static_configuration() -> bool:
     )
     valid &= validate_manifest(BOUNDARY_EXCLUDED_MANIFEST, 12, "boundary-excluded")
     valid &= validate_manifest(
-        BOUNDARY_REVIEWED_TEST_ADDITIONS, 5, "boundary-reviewed-test-additions"
+        BOUNDARY_REVIEWED_TEST_ADDITIONS, 6, "boundary-reviewed-test-additions"
     )
     valid &= validate_manifest(
         BASELINE_PRESERVATION_MANIFEST,
