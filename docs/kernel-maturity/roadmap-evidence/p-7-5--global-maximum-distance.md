@@ -31,3 +31,13 @@ all cavity boundaries, stale wire authority, preparation limits, the exact
 canonical fresh and installed-package suites, including typed refusals and
 unchanged serialized geometry/history/session counts. Other curved extrema,
 wall-thickness maps and general interrogation remain open.
+
+The posed-sphere regression also covers the analytic transform producer:
+directions use only the affine matrix's linear part, matching the curve writer,
+so translated-point subtraction cannot rotate the surface frame through
+cancellation. The sphere coverage checks and tolerances remain unchanged.
+The exact numeric browser pose is checked at three scales against closed-form
+volume at two deflections, closed manifold BRep and mesh boundaries, material
+classification and maximum-distance witnesses. Topology refusals preserve the
+query-specific diagnostic prefix across the direct and both batch contracts,
+along with native topology details and checkpoint sharing.

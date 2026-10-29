@@ -2078,15 +2078,15 @@ fn sampled_transformed_nurbs(
     Ok(nurbs)
 }
 
-/// Transforms a direction vector by applying the matrix and subtracting the
-/// translation component, then normalizing.
+/// Transforms a direction with the matrix's linear part, then normalizes it.
 fn transform_direction(matrix: &Mat4, dir: Vec3) -> Result<Vec3, crate::OperationsError> {
-    let origin = matrix.mul_point(remus_math::vec::Point3::new(0.0, 0.0, 0.0));
-    let tip = matrix.mul_point(remus_math::vec::Point3::new(dir.x(), dir.y(), dir.z()));
+    // Directions use only the linear part, as in the analytic curve writer.
+    // Subtracting translated points loses unit-axis precision at large offsets.
+    let m = &matrix.0;
     let raw = Vec3::new(
-        tip.x() - origin.x(),
-        tip.y() - origin.y(),
-        tip.z() - origin.z(),
+        m[0][0].mul_add(dir.x(), m[0][1].mul_add(dir.y(), m[0][2] * dir.z())),
+        m[1][0].mul_add(dir.x(), m[1][1].mul_add(dir.y(), m[1][2] * dir.z())),
+        m[2][0].mul_add(dir.x(), m[2][1].mul_add(dir.y(), m[2][2] * dir.z())),
     );
     Ok(raw.normalize()?)
 }

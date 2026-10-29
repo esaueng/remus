@@ -130,6 +130,89 @@ fn maximum_complete_spheres_cover_separation_overlap_containment_and_coincidence
 }
 
 #[test]
+fn maximum_rigid_sphere_pose_keeps_equator_and_surface_frames_consistent() {
+    for scale in [1e-3, 1.0, 1e3] {
+        // Exact numeric matrix used by the public JavaScript pose witness.
+        let pose = Mat4([
+            [
+                0.855_056_822_336_627_7,
+                -0.361_615_431_964_962,
+                0.371_634_376_693_522_2,
+                17.0 * scale,
+            ],
+            [
+                0.331_645_042_506_888_03,
+                0.932_327_345_606_034_5,
+                0.144_143_284_324_350_3,
+                -11.0 * scale,
+            ],
+            [
+                -0.398_609_327_984_422_9,
+                0.0,
+                0.917_120_822_816_605_1,
+                9.0 * scale,
+            ],
+            [0.0, 0.0, 0.0, 1.0],
+        ]);
+        for offset in [[8.0, 6.0, 0.0], [4.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0; 3]] {
+            let mut topo = Topology::new();
+            let a = sphere_at(&mut topo, 2.0 * scale, [0.0; 3]);
+            let b = sphere_at(&mut topo, 3.0 * scale, offset.map(|x| x * scale));
+            for solid in [a, b] {
+                crate::transform::transform_solid(&mut topo, solid, &pose).unwrap();
+            }
+            if offset == [8.0, 6.0, 0.0] {
+                let adjacency = remus_topology::adjacency::AdjacencyIndex::build(&topo, a).unwrap();
+                assert!(adjacency.boundary_edges().is_empty());
+                assert!(adjacency.non_manifold_edges().is_empty());
+                let faces = remus_topology::explorer::solid_faces(&topo, a).unwrap();
+                assert_eq!(faces.len(), 2);
+                assert!(faces.iter().all(|&f| matches!(
+                    topo.face(f).unwrap().surface(),
+                    remus_topology::face::FaceSurface::Sphere(_)
+                )));
+                let mesh = crate::tessellate::tessellate_solid(&topo, a, 0.02 * scale).unwrap();
+                assert_eq!(crate::tessellate::boundary_edge_count(&mesh), 0);
+                assert_eq!(crate::tessellate::non_manifold_edge_count(&mesh), 0);
+                let expected = (4.0 / 3.0) * std::f64::consts::PI * (2.0 * scale).powi(3);
+                for deflection in [1e-5 * scale, 5e-6 * scale] {
+                    let volume = crate::measure::solid_volume(&topo, a, deflection).unwrap();
+                    assert!((volume - expected).abs() / expected <= 1e-9);
+                }
+                let options = remus_check::classify::ClassifyOptions::default();
+                assert_eq!(
+                    remus_check::classify::classify_point(
+                        &topo,
+                        a,
+                        pose.mul_point(Point3::new(0.0, 0.0, 0.0)),
+                        &options
+                    )
+                    .unwrap(),
+                    remus_check::classify::PointClassification::Inside
+                );
+                assert_eq!(
+                    remus_check::classify::classify_point(
+                        &topo,
+                        a,
+                        pose.mul_point(Point3::new(4.0 * scale, 0.0, 0.0)),
+                        &options
+                    )
+                    .unwrap(),
+                    remus_check::classify::PointClassification::Outside
+                );
+            }
+            separation(&maximum(&topo, a, a).unwrap(), 4.0 * scale, scale);
+            separation(&maximum(&topo, b, b).unwrap(), 6.0 * scale, scale);
+            separation(
+                &maximum(&topo, a, b).unwrap(),
+                (offset[0].hypot(offset[1]).hypot(offset[2]) + 5.0) * scale,
+                scale,
+            );
+        }
+    }
+}
+
+#[test]
 fn maximum_mixed_sphere_box_has_analytic_corner_and_radial_witness() {
     for scale in [1e-3, 1.0, 1e3] {
         let mut topo = Topology::new();
