@@ -15,6 +15,10 @@ use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 
 fn profile(topo: &mut Topology, scale: f64, reverse_hole: bool) -> FaceId {
+    profile_family(topo, scale, reverse_hole, true)
+}
+
+fn profile_family(topo: &mut Topology, scale: f64, reverse_hole: bool, hollow: bool) -> FaceId {
     let square = |half: f64| {
         vec![
             Point3::new(-half, -half, 0.0),
@@ -32,7 +36,7 @@ fn profile(topo: &mut Topology, scale: f64, reverse_hole: bool) -> FaceId {
     let hole = remus_topology::builder::make_polygon_wire(topo, &hole, 1e-7).unwrap();
     topo.add_face(Face::new(
         outer,
-        vec![hole],
+        if hollow { vec![hole] } else { vec![] },
         FaceSurface::Plane {
             normal: Vec3::new(0.0, 0.0, 1.0),
             d: 0.0,
@@ -311,4 +315,116 @@ fn tapered_hollow_sweep_scales_an_eccentric_hole_about_the_outer_profile_center(
             .is_valid()
     );
     assert_closed_mesh(&topo, solid, 1.0);
+}
+
+/// The same physical frusta must survive a change of native parameter labels.
+/// High-anchor cases deliberately request more rings than representable native
+/// coordinates, so a mere q -> native-u remapping cannot satisfy these oracles.
+#[test]
+fn native_domains_preserve_physical_sections_hollow_material_and_meshes() {
+    for (a, b, segments) in [
+        (0.0, 1.0, 4),
+        (10.0, 20.0, 4),
+        (-20.0, -10.0, 4),
+        (-2.0, 3.0, 4),
+        (0.0, 2.0, 4),
+        (-1.0, 1.0, 4),
+        (1e16, 1e16 + 16.0, 16),
+        (1e16, 1e16 + 64.0, 64),
+        (0.0, 1e308, 16),
+    ] {
+        for scale in [1e-3, 1.0, 1e3] {
+            for placed in [false, true] {
+                for hollow in [false, true] {
+                    for contact_mode in [
+                        SweepContactMode::Fixed,
+                        SweepContactMode::RotationMinimizing,
+                        SweepContactMode::ConstantNormal(Vec3::new(0.0, 1.0, 0.0)),
+                    ] {
+                        let mut topo = Topology::new();
+                        let input = profile_family(&mut topo, scale, true, hollow);
+                        let origin = if placed {
+                            Point3::new(3.0 * scale, -5.0 * scale, 7.0 * scale)
+                        } else {
+                            Point3::new(0.0, 0.0, 0.0)
+                        };
+                        let curve = NurbsCurve::new(
+                            1,
+                            vec![a, a, b, b],
+                            vec![origin, origin + Vec3::new(0.0, 0.0, 6.0 * scale)],
+                            vec![1.0, 1.0],
+                        )
+                        .unwrap();
+                        let original = curve.clone();
+                        let options = SweepOptions {
+                            contact_mode,
+                            segments,
+                            scale_law: Some(Box::new(|q| {
+                                assert!((0.0..=1.0).contains(&q));
+                                1.0 + q
+                            })),
+                            ..SweepOptions::default()
+                        };
+                        let solid = sweep_with_options(&mut topo, input, &curve, &options)
+                            .unwrap_or_else(|error| panic!("domain [{a},{b}], scale={scale}, placed={placed}, hollow={hollow}: {error}"));
+                        assert_eq!(curve, original);
+                        let expected = if hollow { 168.0 } else { 224.0 };
+                        let volume =
+                            remus_operations::measure::solid_volume(&topo, solid, scale * 0.01)
+                                .unwrap()
+                                / scale.powi(3);
+                        assert!(
+                            (volume - expected).abs() < expected * 1e-8,
+                            "{volume} vs {expected}"
+                        );
+                        let report =
+                            remus_operations::validate::validate_solid(&topo, solid).unwrap();
+                        assert!(report.is_valid(), "{report:?}");
+                        let vertices =
+                            remus_topology::explorer::solid_vertices(&topo, solid).unwrap();
+                        for q in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                            let radius = scale * (1.0 + q);
+                            let mut inner = 0;
+                            let mut outer = 0;
+                            for vertex in &vertices {
+                                let point = topo.vertex(*vertex).unwrap().point() - origin;
+                                if (point.z() - 6.0 * scale * q).abs() > scale * 1e-8 {
+                                    continue;
+                                }
+                                if (point.x().abs() - radius).abs() < scale * 1e-8
+                                    && (point.y().abs() - radius).abs() < scale * 1e-8
+                                {
+                                    inner += 1;
+                                }
+                                if (point.x().abs() - 2.0 * radius).abs() < scale * 1e-8
+                                    && (point.y().abs() - 2.0 * radius).abs() < scale * 1e-8
+                                {
+                                    outer += 1;
+                                }
+                            }
+                            assert_eq!(outer, 4, "outer section at q={q}, domain [{a},{b}]");
+                            assert_eq!(inner, if hollow { 4 } else { 0 }, "inner section at q={q}");
+                        }
+                        for q in [0.125, 0.375, 0.625, 0.875] {
+                            let r = scale * (1.0 + q);
+                            for (x, inside) in [(0.5, !hollow), (1.5, true), (2.5, false)] {
+                                let state = remus_check::classify::classify_point(
+                                    &topo,
+                                    solid,
+                                    origin + Vec3::new(x * r, 0.0, 6.0 * scale * q),
+                                    &remus_check::classify::ClassifyOptions::default(),
+                                )
+                                .unwrap();
+                                assert_eq!(
+                                    state == remus_check::classify::PointClassification::Inside,
+                                    inside
+                                );
+                            }
+                        }
+                        assert_closed_mesh(&topo, solid, scale);
+                    }
+                }
+            }
+        }
+    }
 }

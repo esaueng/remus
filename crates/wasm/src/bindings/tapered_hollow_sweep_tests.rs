@@ -166,3 +166,236 @@ fn tapered_hollow_sweep_scale_law_pairs_are_validated() {
         super::parse_sweep_options("rmf", vec![-1.0, 1.0, 2.0, 4.0], 4, "smooth").unwrap();
     assert!((options.scale_law.unwrap()(0.5) - 2.5).abs() < f64::EPSILON);
 }
+
+#[test]
+fn sweep_native_domains_direct_and_both_batch_contracts() {
+    for (a, b, segments) in [
+        (10.0, 20.0, 4),
+        (-20.0, -10.0, 4),
+        (-2.0, 3.0, 4),
+        (0.0, 2.0, 4),
+        (-1.0, 1.0, 4),
+        (1e16, 1e16 + 16.0, 16),
+        (1e16, 1e16 + 64.0, 64),
+        (0.0, 1e308, 16),
+    ] {
+        for route in 0..3 {
+            let mut kernel = BrepKernel::new();
+            let (profile, _) = fixture(&mut kernel);
+            let edge = kernel
+                .make_nurbs_edge_impl(
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    6.0,
+                    1,
+                    vec![a, a, b, b],
+                    vec![0.0, 0.0, 0.0, 0.0, 0.0, 6.0],
+                    vec![1.0; 2],
+                )
+                .unwrap();
+            let original = kernel.extract_nurbs_curve(edge).unwrap();
+            let handle = if route == 0 {
+                kernel
+                    .sweep_with_options(
+                        profile,
+                        edge,
+                        "fixed",
+                        vec![0.0, 1.0, 1.0, 2.0],
+                        segments,
+                        "smooth",
+                    )
+                    .unwrap()
+            } else {
+                let program = serde_json::json!([{"op":"sweepWithOptions","args":{
+                    "profile":profile,"pathEdge":edge,"contactMode":"fixed",
+                    "scaleValues":[0,1,1,2],"segments":segments}}])
+                .to_string();
+                let response = if route == 1 {
+                    kernel.execute_batch(&program)
+                } else {
+                    kernel.execute_batch_v2(&program)
+                };
+                let row: serde_json::Value = serde_json::from_str(&response).unwrap();
+                u32::try_from(row[0]["ok"].as_u64().unwrap_or_else(|| panic!("{row}"))).unwrap()
+            };
+            assert_frustum(&kernel, handle);
+            assert_eq!(kernel.extract_nurbs_curve(edge).unwrap(), original);
+        }
+    }
+}
+
+#[test]
+fn guided_native_domain_mismatch_is_typed_and_keeps_checkpoint_ownership() {
+    let mut kernel = BrepKernel::new();
+    let (profile, spine_edge) = fixture(&mut kernel);
+    let aux = kernel
+        .make_nurbs_edge_impl(
+            3.0,
+            0.0,
+            0.0,
+            3.0,
+            3.0,
+            6.0,
+            1,
+            vec![10.0, 10.0, 20.0, 20.0],
+            vec![3.0, 0.0, 0.0, 3.0, 3.0, 6.0],
+            vec![1.0; 2],
+        )
+        .unwrap();
+    let checkpoint = kernel.checkpoint().unwrap();
+    let before = counts(&kernel);
+    let memory = kernel.checkpoint_memory_stats().unwrap();
+    let history = kernel.topo().journal().snapshot();
+    let expected = "sweep_guided: unsupported configuration: main and auxiliary spines must have matching native parameter domains";
+    let error = kernel
+        .guided_sweep_impl(
+            profile,
+            (
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                &[0.0, 0.0, 0.0, 0.0, 0.0, 6.0],
+                vec![1.0, 1.0],
+            ),
+            (
+                1,
+                vec![10.0, 10.0, 20.0, 20.0],
+                &[3.0, 0.0, 0.0, 3.0, 3.0, 6.0],
+                vec![1.0, 1.0],
+            ),
+        )
+        .unwrap_err();
+    assert_eq!(error.to_string(), expected);
+    assert_eq!(kernel.checkpoint_memory_stats().unwrap(), memory);
+    let structured = serde_json::to_value(crate::error::StructuredWasmError::from(error)).unwrap();
+    assert_eq!(structured["code"], "operation_failed");
+    assert_eq!(structured["category"], "unsupported");
+    assert_eq!(structured["message"], expected);
+    for v2 in [false, true] {
+        let program = serde_json::json!([{"op":"guidedSweep", "args":{
+            "face":profile,"spineEdge":spine_edge,"auxEdge":aux}}])
+        .to_string();
+        let response = if v2 {
+            kernel.execute_batch_v2(&program)
+        } else {
+            kernel.execute_batch(&program)
+        };
+        let row: serde_json::Value = serde_json::from_str(&response).unwrap();
+        if v2 {
+            assert_eq!(row[0]["error"]["code"], "operation_failed");
+            assert_eq!(row[0]["error"]["category"], "unsupported");
+            assert_eq!(row[0]["error"]["message"], expected);
+        } else {
+            assert_eq!(row[0]["error"], expected);
+        }
+        assert_eq!(counts(&kernel), before);
+        assert_eq!(kernel.checkpoint_memory_stats().unwrap(), memory);
+        assert_eq!(kernel.topo().journal().snapshot(), history);
+        assert_eq!(kernel.checkpoint_count(), 1);
+    }
+    kernel.restore(checkpoint).unwrap();
+    assert_eq!(counts(&kernel), before);
+    kernel.discard_checkpoint(checkpoint).unwrap();
+    assert_eq!(kernel.checkpoint_count(), 0);
+}
+
+/// The law is positive at the k/64 preflight probes but refuses an actual
+/// section. A single closed profile edge forces private splitting allocations
+/// before that late refusal, so this exercises more than parser validation.
+#[test]
+fn sweep_late_refusal_preserves_shared_ownership_and_unshared_private_slot_safety() {
+    use remus_topology::wire::{OrientedEdge, Wire};
+    for checkpointed in [false, true] {
+        let mut kernel = BrepKernel::new();
+        let edge = remus_topology::builder::make_circle_edge(
+            kernel.topo_mut(),
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            1e-7,
+        )
+        .unwrap();
+        let wire = kernel
+            .topo_mut()
+            .add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+        let profile = kernel.topo_mut().add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let retained =
+            remus_operations::primitives::make_box(kernel.topo_mut(), 1.0, 1.0, 1.0).unwrap();
+        let handle = solid_id_to_u32(retained);
+        let checkpoint = checkpointed.then(|| kernel.checkpoint().unwrap());
+        let before = counts(&kernel);
+        let history = kernel.topo().journal().snapshot();
+        let memory = kernel.checkpoint_memory_stats().unwrap();
+        let slots = kernel.topo().allocated_slot_count();
+        let path = remus_math::nurbs::curve::NurbsCurve::new(
+            1,
+            vec![1e16, 1e16, 1e16 + 16.0, 1e16 + 16.0],
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 6.0)],
+            vec![1.0; 2],
+        )
+        .unwrap();
+        let options = remus_operations::sweep::SweepOptions {
+            segments: 3,
+            scale_law: Some(Box::new(|q| {
+                if (q - 1.0 / 3.0).abs() < 1e-12 {
+                    0.0
+                } else {
+                    1.0
+                }
+            })),
+            ..Default::default()
+        };
+        let error = kernel
+            .with_sweep_rollback(|kernel| {
+                kernel.with_topology_transaction(|topo| {
+                    remus_operations::sweep::sweep_with_options(topo, profile, &path, &options)
+                })
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            remus_operations::OperationsError::InvalidInput { .. }
+        ));
+        assert_eq!(counts(&kernel), before);
+        assert_eq!(kernel.topo().journal().snapshot(), history);
+        assert_eq!(kernel.resolve_solid(handle).unwrap(), retained);
+        assert_eq!(
+            kernel.resolve_face(face_id_to_u32(profile)).unwrap(),
+            profile
+        );
+        assert!(
+            (remus_operations::measure::solid_volume(kernel.topo(), retained, 0.01).unwrap() - 1.0)
+                .abs()
+                < 1e-10
+        );
+        if let Some(checkpoint) = checkpoint {
+            // No result handle was published on Err; the old checkpoint's
+            // exact document owner and all live/retired-slot metrics survive.
+            assert_eq!(kernel.checkpoint_memory_stats().unwrap(), memory);
+            kernel.restore(checkpoint).unwrap();
+            assert_eq!(kernel.resolve_solid(handle).unwrap(), retained);
+            kernel.discard_checkpoint(checkpoint).unwrap();
+        } else {
+            // Unshared calls retain existing mutation-local high-water safety:
+            // private failed allocation slots stay retired rather than reused.
+            assert!(kernel.topo().allocated_slot_count() > slots);
+            let old_memory: serde_json::Value = serde_json::from_str(&memory).unwrap();
+            let new_memory: serde_json::Value =
+                serde_json::from_str(&kernel.checkpoint_memory_stats().unwrap()).unwrap();
+            assert!(
+                new_memory["retiredSlots"].as_u64().unwrap()
+                    > old_memory["retiredSlots"].as_u64().unwrap()
+            );
+            assert_eq!(kernel.checkpoint_count(), 0);
+        }
+    }
+}

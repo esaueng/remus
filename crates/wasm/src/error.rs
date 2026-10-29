@@ -628,6 +628,14 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
                 Self::invalid_argument(message, None)
             }
             remus_operations::OperationsError::Unsupported {
+                operation: "sweep" | "sweep_guided",
+                ..
+            } => {
+                let mut structured = Self::operation_failed(message);
+                structured.category = FailureCategory::Unsupported.as_str();
+                structured
+            }
+            remus_operations::OperationsError::Unsupported {
                 operation: "revolve_with_entity_evolution",
                 ..
             } => {
