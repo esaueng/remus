@@ -43,6 +43,7 @@ import { runPackagedPreviewWorkContract } from './perf/face-drag-session/package
 import { runLinkedSketchPackaged } from './linked-sketch-packaged.mjs';
 import { runGridPatternPackaged } from './grid-pattern-packaged.mjs';
 import { runRevolveHistoryPackaged } from './revolve-history-packaged.mjs';
+import { runPlanarImprintPackaged } from './planar-imprint-packaged.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptDir, '..');
@@ -123,6 +124,7 @@ try {
   runOpenZcadConsumerRegressions({ ...packageExports, ...ioExports });
   runGridPatternPackaged(packageExports);
   runRevolveHistoryPackaged(packageExports);
+  runPlanarImprintPackaged(packageExports);
   runProjectCurvePackaged(packageExports);
   runKernelCorrectnessPackaged(packageExports);
   runNextKernelCorrectnessPackaged(packageExports);

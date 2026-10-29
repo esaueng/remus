@@ -68,8 +68,11 @@ in protected-main status checks, alongside all existing checks. The App has only
 checks write and mandatory metadata read access, installed on these six public
 repositories. Its job token is restricted to the current repository and revoked
 after use. An Actions-app check with the same name cannot satisfy either binding.
-`commit-privacy.yml` is a read-only convenience check; the protected History
-workflow publishes the authoritative identity verdict using pinned policy/code.
+The protected History workflow publishes the authoritative identity verdict using
+pinned policy/code. The former unprivileged convenience workflow is retired;
+its App-bound verdict remains required. PR audits enter directly through
+`pull_request_target`; every branch/tag push and merge-group request is retained.
+Synthetic privacy regressions run inside the required Repository Policy job.
 Read-only metadata API requests use the contents-read Actions token, while only
 check publication uses the dedicated App token.
 The audit's own `GITHUB_TOKEN` has contents read permission only.

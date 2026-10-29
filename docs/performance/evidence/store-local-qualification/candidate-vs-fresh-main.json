@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "baselineSourceSha": "70f675bea4aebd35b0a36d59eaec89118c278ef6",
+  "candidateSourceSha": "a82e1a27749c8ddf29c94797f6ad4ef9a0baceda",
+  "baselineAttestationSha256": "5043212a63f075f5559b142cba1839d76906a57436528dc48bbdd1cdbc9b96d7",
+  "candidateAttestationSha256": "469cde940294ecd9afb114b5570391aa70a53c3d6a406ae07fadbf604f3567e0",
+  "harnessSha256": "47a3f0191f0ca2219d826de982a9d4b820058781f894cba4c6f7f2ab0519b6ae",
+  "identicalHarness": true,
+  "syntheticCellsCompared": 24,
+  "syntheticFieldsCompared": [
+    "canonicalSha256",
+    "arenaSha256",
+    "volume",
+    "faces",
+    "material",
+    "mesh",
+    "welded",
+    "exactBoundaryAgreement"
+  ],
+  "syntheticDifferences": [],
+  "recipeRunsCompared": 4,
+  "recipeFieldsCompared": [
+    "canonicalSha256",
+    "arenaSha256",
+    "bbox",
+    "inventories",
+    "material",
+    "meshChecks",
+    "meshSha256",
+    "transferredBytes",
+    "exactBoundaryAgreement"
+  ],
+  "recipeDifferences": [],
+  "identicalExpectedAdoptionFailures": true,
+  "identicalSettingsAndLineageResults": true,
+  "timingsCompared": false,
+  "scope": "Bounded correctness and output comparison only; the unchanged enabled cross-drilled stored-tolerance witness still blocks blanket adoption."
+}

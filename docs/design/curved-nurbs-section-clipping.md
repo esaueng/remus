@@ -115,6 +115,12 @@ midpoint still refuses on its interior residual bound.
 
 ## Exact integration dependency
 
+The companion [bounded discovery API](ruled-section-discovery.md) can now
+derive one shared rational constant-v source and both native trace maps from
+the original ruled patches before calling this clipper. It retains the same
+whole-span and physical-trim certification. It is not exhaustive intersection
+discovery or production GFA integration; the missing handoffs below remain.
+
 `RawCurve` and `IntersectionCurveDS` currently store 3D carrier geometry and a
 parameter range, but not both authoritative section traces or per-use trim-event
 certificates. A future FF adapter must supply verified traces, consume each

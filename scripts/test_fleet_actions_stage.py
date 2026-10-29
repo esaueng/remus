@@ -5,7 +5,9 @@ import re
 import subprocess
 import unittest
 
-from fleet_workflows import ROOT, workflow_manifest, workflow_path
+from fleet_workflows import (
+    ROOT, validate_reference, workflow_calls, workflow_manifest, workflow_path,
+)
 
 
 SOURCE = "f167bb2bde923b9d8a252d3ef9f6ebb475487332"
@@ -88,6 +90,14 @@ class FleetActionsStageTests(unittest.TestCase):
                         cwd=ROOT,
                     )),
                 ):
+                    if family == "ci" and filename == "fleet-ci-v9.yml":
+                        self.assertEqual((ROOT / ".github/workflows" / previous).read_bytes(),
+                                         original(previous))
+                        matching = [(path, sha) for _caller, path, sha in workflow_calls()
+                                    if path == ".github/workflows/" + filename]
+                        self.assertEqual(len(matching), 1)
+                        validate_reference(*matching[0], content)
+                        continue
                     self.assertIn(filename, (previous, staged))
                     expected = original(previous)
                     if filename == staged:

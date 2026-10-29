@@ -270,6 +270,7 @@ Quick reference — find the right file for any task:
 | PaveFiller orchestrator | `pave_filler/mod.rs` |
 | Shared PaveFiller phase helpers | `pave_filler/helpers.rs` |
 | Isolated curved NURBS section clipping and whole-span bounds | `pave_filler/curved_section_clip.rs`, `pave_filler/curved_section_clip/bernstein.rs`, `pave_filler/curved_section_clip/tests.rs` |
+| Read-only shared ruled-section discovery with original native traces and certified physical trim windows | `pave_filler/curved_section_clip/discovery.rs` |
 | Phases VV/VE/EE/VF/EF/FF | `pave_filler/phase_*.rs` |
 | Bounded algebraic events for an actual Line/Sphere carrier pair | `pave_filler/phase_ef/line_sphere.rs` |
 | Pave block splitting + edge creation | `pave_filler/make_blocks.rs`, `make_split_edges.rs` |
@@ -499,6 +500,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Draft (taper faces) | `draft.rs` |
 | Section / Split | `section.rs`, `split.rs` |
 | Exact solid-face imprint with journal history | `imprint.rs` |
+| Bounded interior planar polygon imprint with complete construction history | `imprint/polygon.rs`, `imprint/polygon/interval.rs` |
 | Directional curve projection onto faces, solids, sketch planes (P-Class 7.4: sweep-plane sections, coaxial circles, fitted-arc cell, clipping/seams, sketch-plane maps) | `project_curve.rs` |
 | P-Class 7.4 acceptance oracles (exact cells, approximate disclosure, refusals, solid/2D paths) | `tests/qualify_project_curve.rs` |
 | Transform, Mirror, Copy | `transform.rs`, `mirror.rs`, `copy.rs` |
@@ -636,6 +638,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Source-relative live face moves preserve accepted geometry on refusal (tests) | `bindings/face_move_preview_tests.rs` |
 | Differential oracle: the modifier twins' full-copy rollback envelope kept verbatim, against the rollback scope (tests) | `bindings/modifier_detailed/envelope_oracle_tests.rs` |
 | Typed construction results (`extrudeDetailed`, `revolveDetailed`) | `bindings/construction_detailed.rs` |
+| Live planar polygon imprint, direct and both batch adapters | `bindings/construction_imprint.rs` |
 | Transform, copy, mirror, pattern | `bindings/transforms.rs` |
 | Typed affine transform results and refusals | `bindings/transform_detailed.rs` |
 | Topology query, edge/surface evaluation | `bindings/query.rs` |

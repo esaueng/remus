@@ -1,7 +1,8 @@
 //! Isolated P-Class 2.5 clipping for regular rational ruled Bezier patches.
 //!
-//! This consumes a supplied section and its two constant-v traces. It does not
-//! discover sections or invoke recognition, fitting, GFA, or the arrangement.
+//! The clipper consumes a supplied section and its two constant-v traces.
+//! The discovery companion proposes one bounded shared source before proof;
+//! neither invokes recognition, fitting, GFA, or the arrangement.
 //! Whole-span homogeneous residual and normal bounds precede trim decisions.
 
 use remus_math::compact_sort::CompactSort;
@@ -16,30 +17,46 @@ use remus_topology::face_loop::LoopId;
 use remus_topology::{Topology, TopologyError};
 
 mod bernstein;
+pub mod discovery;
 use bernstein::{H, I, V};
 #[cfg(test)]
 pub(in crate::pave_filler) mod tests;
 
+/// Typed refusal of the bounded rational ruled-section component.
 #[derive(Debug, thiserror::Error)]
-pub(super) enum ClipError {
+#[non_exhaustive]
+pub enum ClipError {
+    /// A referenced topology entity is unavailable.
     #[error(transparent)]
     Topology(#[from] TopologyError),
+    /// Geometry or charts are outside the qualified ruled-Bezier domain.
     #[error("unsupported NURBS chart, section, or boundary curve")]
     UnsupportedDomain,
+    /// A required input is nonfinite or malformed.
     #[error("non-finite or invalid clipping input")]
     InvalidInput,
+    /// A boundary has no authoritative pcurve or native edge trim.
     #[error("missing authoritative pcurve or edge trim")]
     MissingAuthority,
+    /// Physical loops do not form the qualified disjoint rectangle domain.
     #[error("disconnected, nonrectangular, touching, or nested trim loops")]
     InvalidBoundary,
+    /// Whole-span regularity or transversality could not be proved.
     #[error("regularity or transverse intersection could not be bounded")]
     UnresolvedContact,
+    /// A trim event cannot be ordered or distinguished from a contact.
     #[error("section touches a trim corner, overlaps a boundary, or has unresolved event order")]
     AmbiguousBoundary,
+    /// The entire stored curve could not be bounded on original geometry.
     #[error("original-geometry residual bound {bound} exceeds tolerance")]
-    Residual { bound: f64 },
+    Residual {
+        /// Conservative distance bound, in model units.
+        bound: f64,
+    },
+    /// The caller's deterministic section-work allowance is insufficient.
     #[error("clipping work budget exceeded")]
     WorkBudgetExceeded,
+    /// The caller cancelled the operation before completion.
     #[error("clipping cancelled")]
     Cancelled,
 }
@@ -48,35 +65,52 @@ type Result<T> = std::result::Result<T, ClipError>;
 /// The full native u domain maps affinely to the section's native domain.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct FaceTrace {
+    /// Original face whose native u domain maps to the source domain.
     pub face: FaceId,
+    /// Constant coordinate in that face's original native v chart.
     pub v: f64,
 }
+/// One crossing of a source section with an original physical boundary use.
 #[derive(Debug, Clone)]
-pub(super) struct BoundaryEvent {
+pub struct BoundaryEvent {
+    /// Original face containing this use.
     pub face: FaceId,
+    /// Original physical outer or hole loop.
     pub boundary_loop: LoopId,
+    /// Original directed boundary use, retained independently of proximity.
     pub coedge: CoedgeId,
+    /// Original trimmed 3D edge.
     pub edge: EdgeId,
+    /// Traversal direction of the original coedge.
     pub forward: bool,
+    /// Crossing coordinate in the unchanged source curve's native domain.
     pub section_parameter: f64,
+    /// Outward-rounded enclosure of the native source crossing coordinate.
     pub section_parameter_bound: [f64; 2],
+    /// Coordinate on the original use's pcurve.
     pub pcurve_parameter: f64,
+    /// Coordinate on the original 3D edge's authoritative trim.
     pub edge_parameter: f64,
     /// Evaluated, not welded; both original surfaces are checked at this event.
     pub surface_residuals: [f64; 2],
+    /// Evaluated distance to the original trimmed 3D boundary edge.
     pub boundary_residual: f64,
     chart_u: f64,
     chart_domain: (f64, f64),
 }
+/// A complete contiguous material interval of the unchanged source section.
 #[derive(Debug)]
-pub(super) struct RetainedInterval {
+pub struct RetainedInterval {
+    /// Increasing native parameters on the source curve.
     pub source_range: [f64; 2],
     /// Empty only at an interior source endpoint. Equal parameters do not
     /// identify boundary uses; every use retains its own certificate.
     pub endpoints: [Vec<BoundaryEvent>; 2],
 }
+/// Certified trim result; these records describe the topology at call time.
 #[derive(Debug)]
-pub(super) struct ClippedSection {
+pub struct ClippedSection {
+    /// Every retained material interval, in increasing native source order.
     pub intervals: Vec<RetainedInterval>,
     /// All trim events, including events bounding discarded material.
     pub events: Vec<BoundaryEvent>,
@@ -471,6 +505,19 @@ fn inside(loops: &[Rectangle], u: I, v: f64) -> Result<bool> {
     Ok(material)
 }
 
+/// Retain the authoritative stored endpoints instead of recomposing them
+/// through a rounded span. Clamping an interior map into its native domain
+/// cannot increase its distance from the exact in-domain affine image.
+fn source_parameter(domain: (f64, f64), fraction: f64) -> f64 {
+    if same(fraction, 0.0) {
+        domain.0
+    } else if same(fraction, 1.0) {
+        domain.1
+    } else {
+        (domain.0 + (domain.1 - domain.0) * fraction).clamp(domain.0, domain.1)
+    }
+}
+
 /// Read-only and atomic: a refusal cannot expose intervals or mutate topology.
 #[allow(clippy::too_many_lines)]
 pub(super) fn clip_section(
@@ -525,7 +572,7 @@ pub(super) fn clip_section(
                 let f = fraction(b.uv[0].x(), s.domain_u())?;
                 let fb = fraction_bound(b.uv[0].x(), s.domain_u());
                 let g = (traces[face].v - b.uv[0].y()) / (b.uv[1].y() - b.uv[0].y());
-                let t = t0 + (t1 - t0) * f;
+                let t = source_parameter((t0, t1), f);
                 let tb = I::exact(t0).add(I::exact(t1).sub(I::exact(t0)).mul(fb));
                 let point = section.evaluate(t);
                 let residuals = std::array::from_fn(|j| {
@@ -583,6 +630,13 @@ pub(super) fn clip_section(
     }
     events.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
     for pair in events.windows(2) {
+        // Different normalized crossings must remain different ordered
+        // native source parameters, including crossings later discarded as
+        // outside material. Multiple original uses at one cut stay valid.
+        if !same(pair[0].0, pair[1].0) && pair[0].2.section_parameter >= pair[1].2.section_parameter
+        {
+            return Err(ClipError::AmbiguousBoundary);
+        }
         if pair[0].1.hi >= pair[1].1.lo {
             let (a, b) = (&pair[0], &pair[1]);
             let same_chart_coordinate = same(a.2.chart_u, b.2.chart_u)
@@ -616,7 +670,7 @@ pub(super) fn clip_section(
             material &= inside(&loops[j], u, traces[j].v)?;
         }
         if material {
-            let range = [t0 + (t1 - t0) * w[0], t0 + (t1 - t0) * w[1]];
+            let range = [w[0], w[1]].map(|f| source_parameter((t0, t1), f));
             if range[0] >= range[1] {
                 return Err(ClipError::AmbiguousBoundary);
             }

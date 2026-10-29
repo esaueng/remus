@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+
 jobs:
   integrity:
     name: Committed packages match source
@@ -41,6 +45,9 @@ jobs:
           node-version: 24
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         if: steps.packages.outputs.changed == 'true'
+        with:
+          shared-key: wasm-package
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         if: steps.packages.outputs.changed == 'true'
         with:

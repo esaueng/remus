@@ -33,6 +33,7 @@ pub fn perform(
     tol: Tolerance,
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
+    let _phase = crate::perf::phase(crate::perf::PhaseKind::Vf);
     let verts_a = remus_topology::explorer::solid_vertices(topo, solid_a)?;
     let verts_b = remus_topology::explorer::solid_vertices(topo, solid_b)?;
     let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;

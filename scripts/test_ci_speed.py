@@ -266,6 +266,10 @@ class SpeedContractTests(unittest.TestCase):
         self.assertNotIn("github.event_name == 'pull_request'", push)
         caller = (WORKFLOWS / "benchmark.yml").read_text()
         self.assertIn('  schedule:\n    - cron: "29 6 * * *"', caller)
+        pull_request = caller.split("  pull_request:\n", 1)[1].split("  workflow_dispatch:", 1)[0]
+        self.assertIn("labeled", pull_request)
+        self.assertNotIn("paths", pull_request)
+        self.assertIn("contains(github.event.pull_request.labels.*.name, 'ci:benchmark')", benchmark)
         self.assertIn("alert-threshold: '200%'", benchmark)
         self.assertIn("fail-on-alert: false", benchmark)
 
@@ -289,6 +293,85 @@ class SpeedContractTests(unittest.TestCase):
         # Regression coverage is part of the required policy gate after the
         # redundant unprivileged PR request is retired during activation.
         self.assertIn("unittest discover -s .github/privacy -p 'test_*.py'", JOBS["repo-policy"])
+
+    def test_automatic_publishing_requires_a_qualified_protected_main_artifact(self):
+        from types import SimpleNamespace
+        caller = jobs((WORKFLOWS / 'ci.yml').read_text())['publish-package']
+        self.assertIn('needs: [checks, public-commit-metadata]', caller)
+        self.assertIn('reuse_artifact: true', caller)
+        self.assertIn('uses: ./.github/workflows/publish.yml', caller)
+        self.assertNotIn('secrets:', caller)
+        condition = re.search(r'    if: >-\n(.*?)^    uses:', caller, re.M | re.S)[1]
+        condition = ' '.join(condition.split()).replace('&&', ' and ').replace('||', ' or ')
+        condition = condition.replace('needs.public-commit-metadata', 'needs.public_commit_metadata')
+        def allowed(event='push', ref='refs/heads/main', protected=True,
+                    result='success', wasm='true', metadata='success'):
+            github = SimpleNamespace(event_name=event, ref=ref, ref_protected=protected)
+            needs = SimpleNamespace(checks=SimpleNamespace(
+                result=result, outputs=SimpleNamespace(wasm=wasm)),
+                public_commit_metadata=SimpleNamespace(result=metadata))
+            return bool(eval(condition, {'__builtins__': {}}, dict(github=github, needs=needs)))
+        self.assertTrue(allowed())
+        for changes in (
+            {'event': 'pull_request'}, {'event': 'pull_request_target'},
+            {'event': 'merge_group'}, {'event': 'workflow_dispatch'},
+            {'ref': 'refs/heads/feature'}, {'protected': False},
+            {'result': 'failure'}, {'result': 'cancelled'}, {'result': 'skipped'},
+            {'wasm': 'false'}, {'wasm': ''},
+            {'metadata': 'failure'}, {'metadata': 'cancelled'}, {'metadata': 'skipped'},
+        ):
+            with self.subTest(changes=changes):
+                self.assertFalse(allowed(**changes))
+        events = (WORKFLOWS / 'publish.yml').read_text().split('permissions:', 1)[0]
+        self.assertNotIn('  push:', events)
+        self.assertIn('  workflow_dispatch:', events)
+
+    def test_every_previous_refresh_trigger_still_gets_a_main_package_build(self):
+        spec = importlib.util.spec_from_file_location('speed_classifier', ROOT / 'scripts/classify-ci-changes.py')
+        classifier = importlib.util.module_from_spec(spec)
+        import sys
+        sys.modules[spec.name] = classifier
+        spec.loader.exec_module(classifier)
+        previous = subprocess.check_output([
+            'git', 'show', '70f675bea4aebd35b0a36d59eaec89118c278ef6:.github/workflows/publish.yml',
+        ], cwd=ROOT, text=True)
+        path_scope = previous.split('    paths:\n', 1)[1].split('  workflow_dispatch:', 1)[0]
+        paths = re.findall(r'^      - "([^"!][^"]*)"$', path_scope, re.M)
+        self.assertGreaterEqual(len(paths), 10)
+        for path in paths + ['NOTICE']:
+            path = path.replace('**', 'example.rs').replace('*', 'example')
+            with self.subTest(path=path):
+                # Main-push classification uses --full. Package-only refreshes
+                # remain independently rebuilt and byte-compared by the guard.
+                result = classifier.classify_paths([path], force_full=True)
+                self.assertTrue(result.heavy)
+                self.assertTrue(result.wasm)
+
+    def test_privileged_privacy_policy_and_scanner_bytes_are_preserved(self):
+        source = '70f675bea4aebd35b0a36d59eaec89118c278ef6'
+        for path in (
+            '.github/workflows/history-privacy.yml', '.github/privacy/policy.json',
+            '.github/privacy/blocked-history.bin', '.github/privacy/history_privacy.py',
+            '.github/privacy/commit_privacy.py',
+        ):
+            with self.subTest(path=path):
+                expected = subprocess.check_output(['git', 'show', f'{source}:{path}'], cwd=ROOT)
+                self.assertTrue((ROOT / path).read_bytes() == expected,
+                                f'Privileged policy or scanner changed: {path}')
+
+    def test_package_cache_consumers_match_the_protected_writer_inputs(self):
+        publisher = jobs((WORKFLOWS / 'publish.yml').read_text())['build-committed-package']
+        integrity = (WORKFLOWS / 'wasm-version.yml').read_text()
+        producer_env = re.search(r'^env:\n(.*?)(?=^jobs:)', STAGED, re.M | re.S)[1]
+        expected = dict(re.findall(r'^  ([A-Z_]+): (.+)$', producer_env, re.M))
+        manual_env = re.search(r'^    env:\n(.*?)(?=^    runs-on:)', publisher, re.M | re.S)[1]
+        self.assertEqual(dict(re.findall(r'^      ([A-Z_]+): (.+)$', manual_env, re.M)), expected)
+        guard_env = re.search(r'^env:\n(.*?)(?=^jobs:)', integrity, re.M | re.S)[1]
+        self.assertEqual(dict(re.findall(r'^  ([A-Z_]+): (.+)$', guard_env, re.M)), expected)
+        for content in (JOBS['wasm'], publisher, integrity):
+            self.assertIn('shared-key: wasm-package', content)
+            self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' }}", content)
+            self.assertIn('tool: wasm-pack@0.15.0', content)
 
 
 if __name__ == "__main__":

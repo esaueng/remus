@@ -74,6 +74,230 @@
 #[cfg(feature = "perf-counters")]
 use std::cell::Cell;
 
+mod phases {
+    //! Feature-only phase attribution with a caller-supplied monotonic clock.
+    //!
+    //! Counts are thread-local and bounded by the fixed phase inventory. Timings
+    //! are diagnostic, inclusive when scopes nest, and never drive kernel policy.
+    //! No system clock is read, so this also works on WASM when a host opts in.
+
+    #[derive(Clone, Copy)]
+    pub enum PhaseKind {
+        StoreImport,
+        Vv,
+        Ve,
+        Ee,
+        Vf,
+        Ef,
+        Ff,
+        Coplanar,
+        Resolve,
+        Build,
+        Assemble,
+        StoreExport,
+        BuildNway,
+    }
+
+    #[cfg(any(test, feature = "perf-counters"))]
+    const NAMES: [&str; 13] = [
+        "gfa.store_import",
+        "pave.vv",
+        "pave.ve",
+        "pave.ee",
+        "pave.vf",
+        "pave.ef",
+        "pave.ff",
+        "pave.coplanar",
+        "pave.resolve",
+        "gfa.build",
+        "gfa.assemble",
+        "gfa.store_export",
+        "gfa.build_nway",
+    ];
+
+    /// One phase's work since the last drain or counter reset.
+    #[cfg(any(test, feature = "perf-counters"))]
+    #[derive(Debug, Clone)]
+    pub struct PhaseSnapshot {
+        /// Stable label, with no model or document content.
+        pub name: &'static str,
+        /// Completed scopes, including scopes returning an error.
+        pub calls: u64,
+        /// Inclusive host milliseconds; zero when no phase clock was enabled.
+        pub duration_ms: f64,
+    }
+
+    #[cfg(any(test, feature = "perf-counters"))]
+    struct State {
+        clock: Option<fn() -> f64>,
+        epoch: u64,
+        calls: [u64; 13],
+        duration_ms: [f64; 13],
+    }
+
+    #[cfg(any(test, feature = "perf-counters"))]
+    thread_local! {
+        static STATE: std::cell::RefCell<State> = const {
+            std::cell::RefCell::new(State {
+                clock: None, epoch: 0, calls: [0; 13], duration_ms: [0.0; 13],
+            })
+        };
+    }
+
+    /// Configure diagnostic timing on this thread and clear old measurements.
+    /// Passing `None` keeps phase call counts but stops reading the host clock.
+    #[cfg(any(test, feature = "perf-counters"))]
+    pub fn configure_phase_clock(clock: Option<fn() -> f64>) {
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            state.clock = clock;
+        });
+        reset();
+    }
+
+    #[cfg(any(test, feature = "perf-counters"))]
+    pub(super) fn reset() {
+        STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            state.epoch = state.epoch.wrapping_add(1);
+            state.calls.fill(0);
+            state.duration_ms.fill(0.0);
+        });
+    }
+
+    /// Drain the fixed inventory in stable order, including only visited phases.
+    /// Draining also invalidates scopes started before the drain.
+    #[cfg(any(test, feature = "perf-counters"))]
+    #[must_use]
+    pub fn take_phases() -> Vec<PhaseSnapshot> {
+        let phases = STATE.with(|state| {
+            let state = state.borrow();
+            NAMES
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &name)| {
+                    (state.calls[i] != 0).then_some(PhaseSnapshot {
+                        name,
+                        calls: state.calls[i],
+                        duration_ms: state.duration_ms[i],
+                    })
+                })
+                .collect()
+        });
+        reset();
+        phases
+    }
+
+    pub struct PhaseSpan {
+        #[cfg(any(test, feature = "perf-counters"))]
+        phase: PhaseKind,
+        #[cfg(any(test, feature = "perf-counters"))]
+        epoch: u64,
+        #[cfg(any(test, feature = "perf-counters"))]
+        timing: Option<(fn() -> f64, f64)>,
+    }
+
+    #[inline]
+    pub fn phase(kind: PhaseKind) -> PhaseSpan {
+        #[cfg(any(test, feature = "perf-counters"))]
+        {
+            let (clock, epoch) = STATE.with(|state| {
+                let state = state.borrow();
+                (state.clock, state.epoch)
+            });
+            PhaseSpan {
+                phase: kind,
+                epoch,
+                timing: clock.map(|clock| (clock, clock())),
+            }
+        }
+        #[cfg(not(any(test, feature = "perf-counters")))]
+        {
+            let _ = kind;
+            PhaseSpan {}
+        }
+    }
+
+    impl Drop for PhaseSpan {
+        #[inline]
+        fn drop(&mut self) {
+            #[cfg(any(test, feature = "perf-counters"))]
+            {
+                let elapsed = self.timing.map_or(0.0, |(clock, start)| {
+                    let delta = clock() - start;
+                    if delta.is_finite() {
+                        delta.max(0.0)
+                    } else {
+                        0.0
+                    }
+                });
+                STATE.with(|state| {
+                    let mut state = state.borrow_mut();
+                    if state.epoch == self.epoch {
+                        let i = self.phase as usize;
+                        state.calls[i] = state.calls[i].saturating_add(1);
+                        state.duration_ms[i] = (state.duration_ms[i] + elapsed).min(f64::MAX);
+                    }
+                });
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        thread_local! { static CLOCK: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) }; }
+        fn clock() -> f64 {
+            CLOCK.get()
+        }
+
+        #[test]
+        fn nested_phases_are_inclusive_and_reset_scopes_cannot_leak() {
+            configure_phase_clock(Some(clock));
+            CLOCK.set(0.0);
+            let outer = phase(PhaseKind::Build);
+            CLOCK.set(2.0);
+            let inner = phase(PhaseKind::Assemble);
+            CLOCK.set(5.0);
+            drop(inner);
+            drop(outer);
+            let measured = take_phases();
+            assert_eq!(
+                measured
+                    .iter()
+                    .map(|p| (p.name, p.calls, p.duration_ms))
+                    .collect::<Vec<_>>(),
+                [("gfa.build", 1, 5.0), ("gfa.assemble", 1, 3.0)]
+            );
+            let stale = phase(PhaseKind::Build);
+            configure_phase_clock(None);
+            drop(stale);
+            assert!(take_phases().is_empty());
+            drop(phase(PhaseKind::Build));
+            let untimed = take_phases();
+            assert_eq!(untimed[0].calls, 1);
+            assert_eq!(untimed[0].duration_ms.to_bits(), 0.0_f64.to_bits());
+        }
+
+        #[test]
+        fn nonfinite_or_backward_clock_never_produces_invalid_timing() {
+            configure_phase_clock(Some(clock));
+            CLOCK.set(2.0);
+            let backward = phase(PhaseKind::Ve);
+            CLOCK.set(1.0);
+            drop(backward);
+            let nonfinite = phase(PhaseKind::Ee);
+            CLOCK.set(f64::NAN);
+            drop(nonfinite);
+            assert!(take_phases().iter().all(|p| p.duration_ms == 0.0));
+            configure_phase_clock(None);
+        }
+    }
+}
+pub(crate) use phases::{PhaseKind, phase};
+#[cfg(feature = "perf-counters")]
+pub use phases::{PhaseSnapshot, configure_phase_clock, take_phases};
+
 // Boolean execution is synchronous within one caller thread. Thread-local
 // counters keep the feature deterministic when the Rust test harness runs
 // unrelated boolean tests concurrently with the scaling guard.
@@ -100,6 +324,42 @@ std::thread_local! {
     static STORE_FACES_COPIED: Cell<u64> = const { Cell::new(0) };
     static JUNCTION_CELLS_COPIED: Cell<u64> = const { Cell::new(0) };
     static COPLANAR_SECTION_PROBES: Cell<u64> = const { Cell::new(0) };
+    static VE_PAIRS_VISITED: Cell<u64> = const { Cell::new(0) };
+    static EE_PAIRS_VISITED: Cell<u64> = const { Cell::new(0) };
+    static EE_PAIRS_SURVIVING: Cell<u64> = const { Cell::new(0) };
+    static FF_PAIRS_VISITED: Cell<u64> = const { Cell::new(0) };
+    static FF_PAIRS_SURVIVING: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Count candidate enumeration separately from expensive narrow-phase work.
+#[inline]
+pub(crate) fn bump_ve_pair_visited() {
+    #[cfg(feature = "perf-counters")]
+    increment(&VE_PAIRS_VISITED);
+}
+
+#[inline]
+pub(crate) fn bump_ee_pair_visited() {
+    #[cfg(feature = "perf-counters")]
+    increment(&EE_PAIRS_VISITED);
+}
+
+#[inline]
+pub(crate) fn bump_ee_pair_surviving() {
+    #[cfg(feature = "perf-counters")]
+    increment(&EE_PAIRS_SURVIVING);
+}
+
+#[inline]
+pub(crate) fn bump_ff_pair_visited() {
+    #[cfg(feature = "perf-counters")]
+    increment(&FF_PAIRS_VISITED);
+}
+
+#[inline]
+pub(crate) fn bump_ff_pair_surviving() {
+    #[cfg(feature = "perf-counters")]
+    increment(&FF_PAIRS_SURVIVING);
 }
 
 #[cfg(any(test, feature = "perf-counters"))]
@@ -410,6 +670,16 @@ pub fn take_winding_cut_projections() -> u64 {
 #[cfg(feature = "perf-counters")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PerfSnapshot {
+    /// VE Cartesian pairs visited, before bounds and endpoint rejection.
+    pub ve_pairs_visited: u64,
+    /// EE Cartesian pairs visited, including shared-edge rejection.
+    pub ee_pairs_visited: u64,
+    /// EE pairs reaching the crossing solver after bounds rejection.
+    pub ee_pairs_surviving: u64,
+    /// FF Cartesian pairs visited, before bounds rejection.
+    pub ff_pairs_visited: u64,
+    /// FF pairs passing the existing AABB gate, before carrier dispatch.
+    pub ff_pairs_surviving: u64,
     /// Pave-vertex coincidence-lookup candidate comparisons.
     pub pave_vertex_probes: u64,
     /// Same-domain polygon-intersection clips (the expensive narrow-phase).
@@ -462,6 +732,12 @@ pub struct PerfSnapshot {
 /// Reset all counters to zero. Only available with `perf-counters`.
 #[cfg(feature = "perf-counters")]
 pub fn reset() {
+    phases::reset();
+    VE_PAIRS_VISITED.set(0);
+    EE_PAIRS_VISITED.set(0);
+    EE_PAIRS_SURVIVING.set(0);
+    FF_PAIRS_VISITED.set(0);
+    FF_PAIRS_SURVIVING.set(0);
     PAVE_VERTEX_PROBES.set(0);
     SD_POLY_CLIPS.set(0);
     RAY_GEOM_BUILDS.set(0);
@@ -492,6 +768,11 @@ pub fn reset() {
 #[must_use]
 pub fn snapshot() -> PerfSnapshot {
     PerfSnapshot {
+        ve_pairs_visited: VE_PAIRS_VISITED.get(),
+        ee_pairs_visited: EE_PAIRS_VISITED.get(),
+        ee_pairs_surviving: EE_PAIRS_SURVIVING.get(),
+        ff_pairs_visited: FF_PAIRS_VISITED.get(),
+        ff_pairs_surviving: FF_PAIRS_SURVIVING.get(),
         pave_vertex_probes: PAVE_VERTEX_PROBES.get(),
         sd_poly_clips: SD_POLY_CLIPS.get(),
         ray_geom_builds: RAY_GEOM_BUILDS.get(),

@@ -1,7 +1,7 @@
 name: Benchmark
 
 # Broad kernel-perf regression tracking (complements the deterministic O(N²)
-# complexity guard in the Test job). On `main` it records a baseline + trend on
+# complexity guard in the Test job). Nightly on `main` it records a baseline + trend on
 # the gh-pages branch; on a PR it compares against that baseline and comments
 # only on a clear regression. Shared CI runners are noisy, so the alert
 # threshold is loose and a regression never fails the build — it informs.
@@ -15,8 +15,6 @@ name: Benchmark
 on:
   schedule:
     - cron: "29 6 * * *"
-  push:
-    branches: [main]
   pull_request:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
@@ -27,12 +25,12 @@ permissions: {}
 concurrency:
   group: benchmark-${{ github.ref }}-${{ github.event.action == 'labeled' && github.event.label.name != 'ci:benchmark' && github.run_id || 'selected' }}
   # Supersede an in-flight run on a PR (only the latest commit matters), but let
-  # every push to main finish so the baseline trend has no gaps.
+  # nightly main baseline finish without interrupting it for a PR update.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   checks:
-    uses: esaueng/remus/.github/workflows/fleet-benchmark-v3.yml@4e5bd846fae03e87e3d4ca1169e35b18952d4fb9
+    uses: esaueng/remus/.github/workflows/fleet-benchmark-v4.yml@4e355573ffe9b1bc0466d0a57fcc98677d5fc5eb
     permissions:
       contents: write
       pull-requests: write

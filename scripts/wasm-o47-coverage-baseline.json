@@ -973,6 +973,16 @@
       "reason": "GCS session CRUD for the B75 ellipse slice; no solid twin applicable"
     },
     {
+      "js": "gcsAddExternalCircle",
+      "rust": "gcs_add_external_circle",
+      "file": "bindings/linked_sketch.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "P-Class 6.6",
+      "reason": "Fixed external GCS circle inputs from complete construction-referenced native circles; no topology or solid result"
+    },
+    {
       "js": "gcsAddExternalLine",
       "rust": "gcs_add_external_line",
       "file": "bindings/linked_sketch.rs",
@@ -1271,6 +1281,16 @@
       "coverage": "special",
       "owner": "B18",
       "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
+    },
+    {
+      "js": "imprintPlanarPolygon",
+      "rust": "imprint_planar_polygon_js",
+      "file": "bindings/construction_imprint.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "P-Class 7.4",
+      "reason": "construction partition returns solid, both face handles and operation ID; complete native F/E/V journal, direct and both batch witnesses"
     },
     {
       "js": "interpolatePoints",

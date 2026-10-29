@@ -45,6 +45,7 @@ impl GfaShapeStore {
     ///
     /// Returns [`AlgoError`] if any topology lookup fails.
     pub fn new(source: &Topology, orig_a: SolidId, orig_b: SolidId) -> Result<Self, AlgoError> {
+        let _phase = crate::perf::phase(crate::perf::PhaseKind::StoreImport);
         let mut topo = Topology::default();
 
         let (solid_a, maps_a) = deep_copy_solid_with_maps(source, &mut topo, orig_a)?;
@@ -93,6 +94,7 @@ impl GfaShapeStore {
         faces_a: &[FaceId],
         orig_b: SolidId,
     ) -> Result<Self, AlgoError> {
+        let _phase = crate::perf::phase(crate::perf::PhaseKind::StoreImport);
         let mut topo = Topology::default();
         let (shells, maps_a) =
             deep_copy_face_groups_with_maps(source, &mut topo, &[faces_a.to_vec()])?;
@@ -140,6 +142,7 @@ impl GfaShapeStore {
         target: &mut Topology,
         solid_id: SolidId,
     ) -> Result<SolidId, AlgoError> {
+        let _phase = crate::perf::phase(crate::perf::PhaseKind::StoreExport);
         Ok(deep_copy_solid(&self.topo, target, solid_id)?.0)
     }
 
@@ -155,6 +158,7 @@ impl GfaShapeStore {
         target: &mut Topology,
         solid_id: SolidId,
     ) -> Result<(SolidId, DetHashMap<usize, FaceId>), AlgoError> {
+        let _phase = crate::perf::phase(crate::perf::PhaseKind::StoreExport);
         deep_copy_solid(&self.topo, target, solid_id)
     }
 
@@ -170,6 +174,7 @@ impl GfaShapeStore {
         target: &mut Topology,
         solid_id: SolidId,
     ) -> Result<(SolidId, DeepCopyMaps), AlgoError> {
+        let _phase = crate::perf::phase(crate::perf::PhaseKind::StoreExport);
         deep_copy_solid_with_maps(&self.topo, target, solid_id)
     }
 }
@@ -197,6 +202,7 @@ impl GfaShapeStoreN {
     ///
     /// Returns [`AlgoError`] if `origs` is empty or any topology lookup fails.
     pub fn new(source: &Topology, origs: &[SolidId]) -> Result<Self, AlgoError> {
+        let _phase = crate::perf::phase(crate::perf::PhaseKind::StoreImport);
         if origs.is_empty() {
             return Err(AlgoError::AssemblyFailed(
                 "N-way fuse store needs at least one source solid".into(),
@@ -232,6 +238,7 @@ impl GfaShapeStoreN {
         target: &mut Topology,
         solid_id: SolidId,
     ) -> Result<SolidId, AlgoError> {
+        let _phase = crate::perf::phase(crate::perf::PhaseKind::StoreExport);
         Ok(deep_copy_solid(&self.topo, target, solid_id)?.0)
     }
 }

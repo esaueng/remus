@@ -4,7 +4,7 @@
 use remus_math::frame::Frame3;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::linked_sketch::{
-    ExternalLineReference, LinkedSketchError, PlanarSketchAttachment,
+    ExternalCircleReference, ExternalLineReference, LinkedSketchError, PlanarSketchAttachment,
 };
 use remus_topology::naming::PersistentRef;
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,22 @@ pub struct ExternalLine {
     pub end: remus_sketch::PointId,
 }
 
+/// A fixed center and a true fixed-radius GCS circle from construction history.
+#[derive(Debug, Clone)]
+pub struct ExternalCircle {
+    pub reference: ExternalCircleReference,
+    pub center: remus_sketch::PointId,
+    pub circle: remus_sketch::CircleId,
+}
+
+/// Ordinary constraint handles whose external center/radius are read-only.
+#[derive(Debug, Clone, Serialize, Deserialize, tsify::Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalCircleHandles {
+    pub circle: u32,
+    pub center: u32,
+}
+
 /// Handles for ordinary GCS constraints; the two point inputs are read-only.
 #[derive(Debug, Clone, Serialize, Deserialize, tsify::Tsify)]
 #[serde(rename_all = "camelCase")]
@@ -34,12 +50,14 @@ pub struct ExternalLineHandles {
     pub end: u32,
 }
 
-/// Current attached plane and count of refreshed external lines.
+/// Current attached plane and counts of refreshed external inputs.
 #[derive(Debug, Serialize, Deserialize, tsify::Tsify)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkedSketchResolution {
     pub frame: SketchFrame,
     pub external_lines: usize,
+    #[serde(default)]
+    pub external_circles: usize,
 }
 
 fn linked_error(error: LinkedSketchError) -> StructuredWasmError {
@@ -124,6 +142,7 @@ impl BrepKernel {
         Ok(LinkedSketchResolution {
             frame: frame_json(resolved),
             external_lines: 0,
+            external_circles: 0,
         })
     }
 
@@ -210,6 +229,56 @@ impl BrepKernel {
             .map_err(StructuredWasmError::from)
     }
 
+    fn add_external_circle_impl(
+        &mut self,
+        sketch: u32,
+        edge_ref: &str,
+    ) -> Result<ExternalCircleHandles, StructuredWasmError> {
+        let state = self.linked_state(sketch)?;
+        let attachment = state
+            .attachment
+            .as_ref()
+            .ok_or_else(|| invalid("sketch has no linked attachment"))?;
+        let reference = ExternalCircleReference {
+            edge: reference(edge_ref)?,
+        };
+        let image = attachment
+            .resolve_circle(self.topo(), &reference)
+            .map_err(linked_error)?;
+        let mut next = state.clone();
+        let center_handle =
+            crate::state::next_handle(next.points.len()).map_err(StructuredWasmError::from)?;
+        let circle_handle =
+            crate::state::next_handle(next.circles.len()).map_err(StructuredWasmError::from)?;
+        let center = next
+            .sys
+            .add_point(remus_sketch::PointData {
+                x: image.center.x(),
+                y: image.center.y(),
+                fixed: true,
+            })
+            .map_err(WasmError::from)?;
+        let circle = next
+            .sys
+            .add_circle_with_fixed_radius(center, image.radius)
+            .map_err(WasmError::from)?;
+        next.points.push(Some(center));
+        next.circles.push(Some(circle));
+        next.external_circles.push(ExternalCircle {
+            reference,
+            center,
+            circle,
+        });
+        *self
+            .gcs_sketches
+            .get_mut(sketch as usize)
+            .ok_or_else(|| invalid("invalid gcs sketch handle"))? = next;
+        Ok(ExternalCircleHandles {
+            circle: circle_handle,
+            center: center_handle,
+        })
+    }
+
     fn resolve_sketch_refs_native(
         &mut self,
         sketch: u32,
@@ -247,7 +316,23 @@ impl BrepKernel {
                 data.fixed = true;
             }
         }
+        for external in &state.external_circles {
+            let image = attachment.resolve_circle(self.topo(), &external.reference)?;
+            next.sys
+                .set_fixed_circle_radius(external.circle, image.radius)
+                .map_err(WasmError::from)?;
+            let center =
+                next.sys
+                    .point_mut(external.center)
+                    .ok_or_else(|| WasmError::InvalidInput {
+                        reason: "external sketch circle center was removed".into(),
+                    })?;
+            center.x = image.center.x();
+            center.y = image.center.y();
+            center.fixed = true;
+        }
         let external_lines = state.external_lines.len();
+        let external_circles = state.external_circles.len();
         *self
             .gcs_sketches
             .get_mut(sketch as usize)
@@ -258,6 +343,7 @@ impl BrepKernel {
         Ok(LinkedSketchResolution {
             frame: frame_json(frame),
             external_lines,
+            external_circles,
         })
     }
 
@@ -331,6 +417,14 @@ impl BrepKernel {
                     )?)
                     .map_err(|e| invalid(e.to_string()))
                 })(),
+                "gcsAddExternalCircle" => (|| {
+                    let sketch = get_u32(args, "sketch")?;
+                    let reference = args["ref"]
+                        .as_str()
+                        .ok_or_else(|| invalid("ref must be a serialized persistent reference"))?;
+                    serde_json::to_value(self.add_external_circle_impl(sketch, reference)?)
+                        .map_err(|e| invalid(e.to_string()))
+                })(),
                 "gcsResolveRefs" => get_u32(args, "sketch").and_then(|sketch| {
                     serde_json::to_value(self.resolve_sketch_refs_impl(sketch)?)
                         .map_err(|e| invalid(e.to_string()))
@@ -398,6 +492,22 @@ impl BrepKernel {
     ) -> Result<tsify::Ts<LinkedSketchResolution>, JsError> {
         Ok(self
             .resolve_sketch_refs_impl(sketch)
+            .map_err(js_error)?
+            .into_ts()?)
+    }
+
+    /// Add a complete construction-linked native circle in the parallel sketch
+    /// plane. Both the center and radius are driven read-only inputs; returned
+    /// handles can be used by ordinary GCS constraints. Partial/oblique curves
+    /// and nonunique construction identity refuse atomically.
+    #[wasm_bindgen(js_name = "gcsAddExternalCircle")]
+    pub fn gcs_add_external_circle(
+        &mut self,
+        sketch: u32,
+        reference: &str,
+    ) -> Result<tsify::Ts<ExternalCircleHandles>, JsError> {
+        Ok(self
+            .add_external_circle_impl(sketch, reference)
             .map_err(js_error)?
             .into_ts()?)
     }
@@ -952,6 +1062,447 @@ mod tests {
             );
             let before_start = k.gcs_point_position_impl(sketch, ext.start).unwrap();
             assert!(before_start[0].abs() < 1e-9 && before_start[1].abs() < 1e-9);
+        }
+    }
+}
+
+#[cfg(test)]
+mod circle_tests {
+    #![allow(clippy::unwrap_used, clippy::panic, clippy::float_cmp)]
+    use super::*;
+    use remus_operations::journal_ops::{move_faces_journaled, resize_cylindrical_face_journaled};
+    use remus_topology::face::{FaceId, FaceSurface};
+    use remus_topology::journal::{EntityKey, EventDraft, EvolutionDraft};
+    use remus_topology::naming::{Resolution, resolve};
+    use serde_json::{Value, json};
+
+    #[test]
+    fn line_only_resolution_json_defaults_the_new_circle_count() {
+        let old = json!({
+            "frame": {"origin":[0.0,0.0,4.0], "xAxis":[1.0,0.0,0.0], "normal":[0.0,0.0,1.0]},
+            "externalLines": 2,
+        });
+        let result: LinkedSketchResolution = serde_json::from_value(old).unwrap();
+        assert_eq!(result.external_lines, 2);
+        assert_eq!(result.external_circles, 0);
+        let encoded = serde_json::to_value(result).unwrap();
+        assert_eq!(encoded["externalLines"], 2);
+        assert_eq!(encoded["externalCircles"], 0);
+    }
+
+    fn row(k: &mut BrepKernel, v2: bool, op: &str, args: Value) -> Value {
+        let program = json!([{"op":op,"args":args}]).to_string();
+        let text = if v2 {
+            k.execute_batch_v2(&program)
+        } else {
+            k.execute_batch(&program)
+        };
+        serde_json::from_str::<Vec<Value>>(&text).unwrap().remove(0)
+    }
+    fn call(k: &mut BrepKernel, v2: bool, op: &str, args: Value) -> Value {
+        let r = row(k, v2, op, args);
+        assert!(r.get("ok").is_some(), "{r}");
+        r["ok"].clone()
+    }
+    fn reference(k: &BrepKernel, op: remus_topology::journal::OpId, key: EntityKey) -> String {
+        let r = (0..100)
+            .map(|i| PersistentRef::operation_output(op, key.kind, i))
+            .find(|r| matches!(resolve(k.topo(),r),Resolution::Bound{entity,..}if entity==key))
+            .unwrap();
+        String::from_utf8(remus_io::naming_io::serialize_persistent_ref(&r).unwrap()).unwrap()
+    }
+    fn bore(k: &BrepKernel, solid: remus_topology::SolidId) -> FaceId {
+        remus_topology::explorer::solid_faces(k.topo(), solid)
+            .unwrap()
+            .into_iter()
+            .find(|&f| {
+                matches!(
+                    k.topo().face(f).unwrap().surface(),
+                    FaceSurface::Cylinder(_)
+                )
+            })
+            .unwrap()
+    }
+    fn setup(
+        v2: bool,
+    ) -> (
+        BrepKernel,
+        u32,
+        remus_topology::SolidId,
+        ExternalCircleHandles,
+        String,
+    ) {
+        let mut k = BrepKernel::new();
+        let boxed = remus_operations::primitives::make_box(k.topo_mut(), 10.0, 8.0, 4.0).unwrap();
+        let tool = remus_operations::primitives::make_cylinder(k.topo_mut(), 2.0, 6.0).unwrap();
+        remus_operations::transform::transform_solid(
+            k.topo_mut(),
+            tool,
+            &remus_math::mat::Mat4([
+                [1.0, 0.0, 0.0, 5.0],
+                [0.0, 1.0, 0.0, 4.0],
+                [0.0, 0.0, 1.0, -1.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]),
+        )
+        .unwrap();
+        let cut = remus_operations::boolean::boolean(
+            k.topo_mut(),
+            remus_operations::boolean::BooleanOp::Cut,
+            boxed,
+            tool,
+        )
+        .unwrap();
+        let face = bore(&k, cut);
+        let seeded = resize_cylindrical_face_journaled(k.topo_mut(), cut, face, 2.5).unwrap();
+        let top=remus_topology::explorer::solid_faces(k.topo(),seeded.solid).unwrap().into_iter().find(|&f|matches!(k.topo().face(f).unwrap().surface(),FaceSurface::Plane{normal,..}if normal.z()>0.99)).unwrap();
+        let wire = k.topo().face(top).unwrap().inner_wires()[0];
+        let edge = k.topo().wire(wire).unwrap().edges()[0].edge();
+        let face_ref = reference(&k, seeded.op, EntityKey::face(top.index()));
+        let edge_ref = reference(&k, seeded.op, EntityKey::edge(edge.index()));
+        let sketch = call(&mut k, v2, "gcsNew", json!({})).as_u64().unwrap() as u32;
+        call(
+            &mut k,
+            v2,
+            "gcsAttachToFace",
+            json!({"sketch":sketch,"ref":face_ref,"frame":{"origin":[0,0,4],"xAxis":[1,0,0],"normal":[0,0,1]}}),
+        );
+        let handles: ExternalCircleHandles = serde_json::from_value(call(
+            &mut k,
+            v2,
+            "gcsAddExternalCircle",
+            json!({"sketch":sketch,"ref":edge_ref}),
+        ))
+        .unwrap();
+        (k, sketch, seeded.solid, handles, edge_ref)
+    }
+    fn consumer(
+        k: &mut BrepKernel,
+        v2: bool,
+        sketch: u32,
+        external: &ExternalCircleHandles,
+    ) -> (u32, u32, Vec<u32>) {
+        let center = call(
+            k,
+            v2,
+            "gcsAddPoint",
+            json!({"sketch":sketch,"x":6,"y":5,"fixed":false}),
+        )
+        .as_u64()
+        .unwrap() as u32;
+        let circle = call(
+            k,
+            v2,
+            "gcsAddCircle",
+            json!({"sketch":sketch,"center":center,"radius":1}),
+        )
+        .as_u64()
+        .unwrap() as u32;
+        let constraints = [
+            json!({"type":"coincident","a":center,"b":external.center}),
+            json!({"type":"equalRadiusCircleCircle","circle1":circle,"circle2":external.circle}),
+        ]
+        .into_iter()
+        .map(|constraint| {
+            call(
+                k,
+                v2,
+                "gcsAddConstraint",
+                json!({"sketch":sketch,"constraint":constraint}),
+            )
+            .as_u64()
+            .unwrap() as u32
+        })
+        .collect();
+        (center, circle, constraints)
+    }
+    fn close(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-9, "{a} != {b}");
+    }
+
+    #[test]
+    fn linked_circle_batch_routes_drive_a_consumer_and_restore_retired_handles() {
+        for v2 in [false, true] {
+            let (mut k, sketch, solid, external, source) = setup(v2);
+            let dof = call(&mut k, v2, "gcsDof", json!({"sketch":sketch}));
+            assert_eq!(dof["numParams"], 0);
+            let (center, circle, constraints) = consumer(&mut k, v2, sketch, &external);
+            let solved = call(
+                &mut k,
+                v2,
+                "gcsSolveDetailed",
+                json!({"sketch":sketch,"maxIterations":100,"tolerance":1e-10}),
+            );
+            assert_eq!(solved["converged"], true);
+            assert_eq!(solved["numParams"], 3);
+            assert_eq!(solved["rank"], 3);
+            assert_eq!(solved["dof"], 0);
+            close(k.gcs_circle_radius_impl(sketch, circle).unwrap(), 2.5);
+            let cp = k.checkpoint_impl().unwrap();
+            let retired: ExternalCircleHandles = serde_json::from_value(call(
+                &mut k,
+                v2,
+                "gcsAddExternalCircle",
+                json!({"sketch":sketch,"ref":source}),
+            ))
+            .unwrap();
+            let face = bore(&k, solid);
+            let grown = resize_cylindrical_face_journaled(k.topo_mut(), solid, face, 3.0).unwrap();
+            call(
+                &mut k,
+                v2,
+                "gcsSolve",
+                json!({"sketch":sketch,"maxIterations":100,"tolerance":1e-10}),
+            );
+            close(k.gcs_circle_radius_impl(sketch, circle).unwrap(), 3.0);
+            let top=remus_topology::explorer::solid_faces(k.topo(),grown.solid).unwrap().into_iter().find(|&f|matches!(k.topo().face(f).unwrap().surface(),FaceSurface::Plane{normal,..}if normal.z()>0.99)).unwrap();
+            move_faces_journaled(k.topo_mut(), grown.solid, &[top], 1.0).unwrap();
+            let resolved = call(&mut k, v2, "gcsResolveRefs", json!({"sketch":sketch}));
+            assert_eq!(resolved["externalCircles"], 2);
+            assert_eq!(resolved["frame"]["origin"][2], 5.0);
+            for point in [center, external.center] {
+                let position = k.gcs_point_position_impl(sketch, point).unwrap();
+                close(position[0], 5.0);
+                close(position[1], 4.0);
+            }
+            let conflict = call(
+                &mut k,
+                v2,
+                "gcsAddConstraint",
+                json!({"sketch":sketch,"constraint":{"type":"circleRadius","circle":external.circle,"value":4}}),
+            );
+            assert_eq!(
+                call(
+                    &mut k,
+                    v2,
+                    "gcsSolve",
+                    json!({"sketch":sketch,"maxIterations":100,"tolerance":1e-10})
+                )["converged"],
+                false
+            );
+            close(
+                k.gcs_circle_radius_impl(sketch, external.circle).unwrap(),
+                3.0,
+            );
+            assert_eq!(
+                call(
+                    &mut k,
+                    v2,
+                    "gcsSolveDetailed",
+                    json!({"sketch":sketch,"maxIterations":100,"tolerance":1e-10})
+                )["rolledBack"],
+                true
+            );
+            close(
+                k.gcs_circle_radius_impl(sketch, external.circle).unwrap(),
+                3.0,
+            );
+            for constraint in constraints.into_iter().map(Value::from).chain([conflict]) {
+                call(
+                    &mut k,
+                    v2,
+                    "gcsRemoveConstraint",
+                    json!({"sketch":sketch,"constraint":constraint}),
+                );
+            }
+            assert_eq!(
+                call(&mut k, v2, "gcsDof", json!({"sketch":sketch}))["numParams"],
+                3
+            );
+            close(
+                k.gcs_circle_radius_impl(sketch, external.circle).unwrap(),
+                3.0,
+            );
+            let ellipse = k
+                .gcs_add_ellipse_impl(sketch, external.center, 2.0, 1.0, 0.0)
+                .unwrap();
+            for (op, args) in [
+                (
+                    "gcsSetPoint",
+                    json!({"sketch":sketch,"point":external.center,"x":99,"y":99}),
+                ),
+                (
+                    "gcsSetEllipse",
+                    json!({"sketch":sketch,"ellipse":ellipse,"x":99,"y":99,"a":3,"b":2,"angle":0}),
+                ),
+            ] {
+                let before = format!("{:?}", k.gcs_sketches.get(sketch as usize).unwrap());
+                let refused = row(&mut k, v2, op, args);
+                assert!(
+                    refused["error"]
+                        .to_string()
+                        .contains("linked-sketch:read_only_external_point"),
+                    "{refused}"
+                );
+                if v2 {
+                    assert_eq!(refused["error"]["category"], "invalid_input");
+                }
+                assert_eq!(
+                    format!("{:?}", k.gcs_sketches.get(sketch as usize).unwrap()),
+                    before
+                );
+            }
+            k.restore_checkpoint_impl(cp).unwrap();
+            close(
+                k.gcs_circle_radius_impl(sketch, external.circle).unwrap(),
+                2.5,
+            );
+            assert!(k.gcs_circle_radius_impl(sketch, retired.circle).is_err());
+            assert!(k.gcs_point_position_impl(sketch, retired.center).is_err());
+            assert_eq!(
+                k.gcs_sketches
+                    .get(sketch as usize)
+                    .unwrap()
+                    .sys
+                    .fixed_circle_radius_count(),
+                1
+            );
+            let next: ExternalCircleHandles = serde_json::from_value(call(
+                &mut k,
+                v2,
+                "gcsAddExternalCircle",
+                json!({"sketch":sketch,"ref":source}),
+            ))
+            .unwrap();
+            assert!(next.circle > retired.circle && next.center > retired.center);
+        }
+    }
+
+    #[test]
+    fn linked_circle_nonunique_refs_keep_each_typed_refresh_route_and_last_state() {
+        for split in [false, true] {
+            let (mut k, sketch, _, external, source) = setup(true);
+            let reference = super::reference(&source).unwrap();
+            let Resolution::Bound { entity, .. } = resolve(k.topo(), &reference) else {
+                panic!("circle")
+            };
+            let pending = k.topo_mut().journal_begin("fixture_circle_split");
+            let mut draft = EvolutionDraft::construction();
+            if split {
+                let id = k.topo().edge_id_from_index(entity.index).unwrap();
+                let copied = k.topo().edge(id).unwrap().clone();
+                let other = k.topo_mut().add_edge(copied);
+                for key in [entity, EntityKey::edge(other.index())] {
+                    draft.push(key, EventDraft::Modified { from: entity });
+                }
+            } else {
+                draft.push(entity, EventDraft::Deleted);
+            }
+            k.topo_mut()
+                .journal_record_evolution(pending, draft)
+                .unwrap();
+            let before = format!("{:?}", k.gcs_sketches.get(sketch as usize).unwrap());
+            for op in ["gcsResolveRefs", "gcsSolve", "gcsSolveDetailed", "gcsDof"] {
+                let error = row(
+                    &mut k,
+                    true,
+                    op,
+                    json!({"sketch":sketch,"maxIterations":100,"tolerance":1e-10}),
+                );
+                assert_eq!(
+                    error["error"]["category"],
+                    if split {
+                        "unsupported"
+                    } else {
+                        "invalid_input"
+                    },
+                    "{error}"
+                );
+                assert_eq!(
+                    error["error"]["details"]["kernelCode"],
+                    "linked-sketch:reference_unbound"
+                );
+                assert_eq!(
+                    error["error"]["details"]["resolution"]["status"],
+                    if split { "boundMany" } else { "dangling" }
+                );
+                assert_eq!(
+                    format!("{:?}", k.gcs_sketches.get(sketch as usize).unwrap()),
+                    before
+                );
+                let legacy = row(
+                    &mut k,
+                    false,
+                    op,
+                    json!({"sketch":sketch,"maxIterations":100,"tolerance":1e-10}),
+                );
+                assert!(
+                    legacy["error"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("linked-sketch:reference_unbound:")
+                );
+            }
+            close(
+                k.gcs_circle_radius_impl(sketch, external.circle).unwrap(),
+                2.5,
+            );
+            assert!(
+                k.gcs_solve_impl(sketch, 100, 1e-10)
+                    .unwrap_err()
+                    .to_string()
+                    .starts_with("linked-sketch:reference_unbound:")
+            );
+        }
+    }
+
+    #[test]
+    fn linked_circle_refresh_rolls_back_on_solver_or_rank_resource_failure() {
+        for op in ["gcsSolve", "gcsSolveDetailed", "gcsDof"] {
+            let (mut k, sketch, solid, external, _) = setup(true);
+            consumer(&mut k, true, sketch, &external);
+            let state = k.gcs_sketches.get(sketch as usize).unwrap().clone();
+            let mut limited = remus_sketch::GcsSystem::with_limits(remus_sketch::GcsLimits {
+                max_dense_bytes: 1,
+                max_dense_qr_work: usize::MAX,
+            });
+            for (id, data) in state.sys.points() {
+                assert_eq!(limited.add_point(*data).unwrap(), id);
+            }
+            for (id, data) in state.sys.circles() {
+                let new = if state.sys.is_circle_radius_fixed(id) {
+                    limited.add_circle_with_fixed_radius(data.center, data.radius)
+                } else {
+                    limited.add_circle(data.center, data.radius)
+                }
+                .unwrap();
+                assert_eq!(new, id);
+            }
+            for id in state.constraints.iter().flatten() {
+                assert_eq!(
+                    limited
+                        .add_constraint(state.sys.constraint(*id).unwrap().clone())
+                        .unwrap(),
+                    *id
+                );
+            }
+            k.gcs_sketches.get_mut(sketch as usize).unwrap().sys = limited;
+            let face = bore(&k, solid);
+            resize_cylindrical_face_journaled(k.topo_mut(), solid, face, 3.0).unwrap();
+            let before = format!("{:?}", k.gcs_sketches.get(sketch as usize).unwrap());
+            let error = row(
+                &mut k,
+                true,
+                op,
+                json!({"sketch":sketch,"maxIterations":100,"tolerance":1e-10}),
+            );
+            assert_eq!(error["error"]["code"], "resource_limit_exceeded", "{error}");
+            assert_eq!(
+                format!("{:?}", k.gcs_sketches.get(sketch as usize).unwrap()),
+                before
+            );
+            close(
+                k.gcs_circle_radius_impl(sketch, external.circle).unwrap(),
+                2.5,
+            );
+            assert_eq!(
+                k.gcs_sketches
+                    .get(sketch as usize)
+                    .unwrap()
+                    .sys
+                    .fixed_circle_radius_count(),
+                1
+            );
         }
     }
 }

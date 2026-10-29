@@ -13,6 +13,12 @@ use remus_operations::primitives::make_box;
 use remus_topology::Topology;
 use sha2::{Digest, Sha256};
 
+// nextest remaps binary paths when this suite runs from an archive.
+fn gauntlet_bin() -> std::ffi::OsString {
+    std::env::var_os("NEXTEST_BIN_EXE_remus_gauntlet")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_remus-gauntlet").into())
+}
+
 fn temp_dir(name: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -51,7 +57,7 @@ fn run_isolates_models_and_writes_all_outputs() {
     write_box_step(&good);
     fs::write(&bad, "not STEP").unwrap();
 
-    let status = Command::new(env!("CARGO_BIN_EXE_remus-gauntlet"))
+    let status = Command::new(gauntlet_bin())
         .args(["run", "--jobs", "2", "--output"])
         .arg(&output)
         .arg(&good)
@@ -102,7 +108,7 @@ fn run_retains_import_causes_without_names_or_messages() {
     .unwrap();
     write_box_step(&good);
 
-    let status = Command::new(env!("CARGO_BIN_EXE_remus-gauntlet"))
+    let status = Command::new(gauntlet_bin())
         .args(["run", "--jobs", "2", "--output"])
         .arg(&output)
         .args([&syntax, &encoding, &units, &missing, &good])
@@ -184,7 +190,7 @@ fn trend_command_writes_first_run_and_refuses_regression() {
     )
     .unwrap();
 
-    let first = Command::new(env!("CARGO_BIN_EXE_remus-gauntlet"))
+    let first = Command::new(gauntlet_bin())
         .args(["trend", "--scoreboard"])
         .arg(&scoreboard_path)
         .args(["--history"])
@@ -213,7 +219,7 @@ fn trend_command_writes_first_run_and_refuses_regression() {
         serde_json::to_vec(&scoreboard(49, 50)).unwrap(),
     )
     .unwrap();
-    let refused = Command::new(env!("CARGO_BIN_EXE_remus-gauntlet"))
+    let refused = Command::new(gauntlet_bin())
         .args(["trend", "--scoreboard"])
         .arg(&scoreboard_path)
         .args(["--history"])
@@ -254,7 +260,7 @@ fn zero_budget_kills_only_its_model_and_reports_resource_limit() {
     write_box_step(&first);
     write_box_step(&second);
 
-    let status = Command::new(env!("CARGO_BIN_EXE_remus-gauntlet"))
+    let status = Command::new(gauntlet_bin())
         .args(["run", "--timeout-ms", "0", "--output"])
         .arg(&output)
         .arg(&first)
@@ -299,7 +305,7 @@ fn p85_run_positional_model_passes_and_writes_slice_outputs() {
     let output = root.join("p85-results");
     write_box_step(&model);
 
-    let status = Command::new(env!("CARGO_BIN_EXE_remus-gauntlet"))
+    let status = Command::new(gauntlet_bin())
         .args(["p85-run", "--jobs", "1", "--output"])
         .arg(&output)
         .arg("--kernel-sha")
@@ -340,7 +346,7 @@ fn p85_replay_records_deterministic_bundle_for_one_fixture() {
     let sha = sha256(&bytes);
     let kernel_sha = "0123456789abcdef0123456789abcdef01234567";
 
-    let status = Command::new(env!("CARGO_BIN_EXE_remus-gauntlet"))
+    let status = Command::new(gauntlet_bin())
         .args(["p85-replay", "--model"])
         .arg(&model)
         .args(["--model-id", "replay-box", "--model-sha256"])
@@ -395,7 +401,7 @@ fn fetch_command_writes_a_verified_deterministic_sample_list() {
     )
     .unwrap();
     let output_list = root.join("models.txt");
-    let status = Command::new(env!("CARGO_BIN_EXE_remus-gauntlet"))
+    let status = Command::new(gauntlet_bin())
         .arg("fetch")
         .arg(&manifest_path)
         .args(["--cache"])

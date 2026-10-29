@@ -72,6 +72,7 @@ pub(super) fn perform_with(
     arena: &mut GfaArena,
     gate_curved: bool,
 ) -> Result<(), AlgoError> {
+    let _phase = crate::perf::phase(crate::perf::PhaseKind::Ve);
     // AABB pre-filter: skip if solids are disjoint
     let bbox_a = crate::classifier::compute_solid_bbox(topo, solid_a)?;
     let bbox_b = crate::classifier::compute_solid_bbox(topo, solid_b)?;
@@ -136,6 +137,7 @@ fn check_vertex_edge_pairs(
         let _ = super::helpers::vertex_tolerance_excess(topo, resolved_vid, tol.linear)?;
 
         for (edge_idx, &eid) in edges.iter().enumerate() {
+            crate::perf::bump_ve_pair_visited();
             // Broad-phase reject: the vertex cannot lie on an edge whose
             // (tolerance-expanded by vtol) AABB does not contain it.
             let (edge_box, edge_tolerance_excess) = &edge_data[edge_idx];
