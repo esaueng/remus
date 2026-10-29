@@ -1,0 +1,2 @@
+use std::io::{self,Read,Write};
+fn main(){let mut raw=Vec::new();io::stdin().read_to_end(&mut raw).unwrap();assert_eq!(raw.len()%24,0);let mut out=io::BufWriter::new(io::stdout().lock());for triple in raw.chunks_exact(24){let a=f64::from_bits(u64::from_le_bytes(triple[0..8].try_into().unwrap()));let b=f64::from_bits(u64::from_le_bytes(triple[8..16].try_into().unwrap()));let c=f64::from_bits(u64::from_le_bytes(triple[16..24].try_into().unwrap()));out.write_all(&a.mul_add(b,c).to_bits().to_le_bytes()).unwrap();}}

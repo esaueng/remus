@@ -1,0 +1,25 @@
+{
+  "schema": "remus-fma-predicate-proof-v1",
+  "status": "mathematical-equivalence-and-native-tests-pass",
+  "source_reference": "c754a9b7f89971691ab8867bf7d7bafcc022ad14:crates/math/src/fma.rs",
+  "baseline_source_sha256": "d0f8602fc3eadf802223a421844d4fc558445a38f6fd6625994662c18fcb8684",
+  "proof_file": "proof.txt",
+  "proof_sha256": "1ef4e0fa855098baadb67dd6f440544400dae085dbec4081c14b5974d36e7c02",
+  "standalone_source": "predicates.rs",
+  "standalone_source_sha256": "9ac6492ac72847cb8d5189767edeff0c59c96494ad27bd50d169b75ccad9c05f",
+  "native_log": "native-tests.log",
+  "native_log_sha256": "e61c38c2a8370bd1e973a2f873b3925758168df7af4f04c9f2a01a882e586d8e",
+  "native_tests": {
+    "passed": 4,
+    "failed": 0,
+    "ignored": 0,
+    "critical_cartesian_triples": 405224,
+    "all_exponent_boundary_mantissa_triples": 442368,
+    "full_width_random_triples": 2000000,
+    "random_seed": "B17F64A573ED9001"
+  },
+  "scope": "Source-independent predicate/route proof and tests only; no repository source edits or package build, no microbenchmark or whole-kernel speed claim.",
+  "tools": {
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.0\nLLVM version: 22.1.2"
+  }
+}

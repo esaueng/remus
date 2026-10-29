@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "source_base": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+  "scope": "Local working-tree qualification of the listed frozen files; immutable canonical package qualification is owned by the coordinating task.",
+  "files_sha256": {
+    "crates/operations/src/boolean/store_local.rs": "61d8f78bf1dee0537254b7dae3a69115f075ad2cecb1bdaa4ca08f7a68a183e2",
+    "crates/operations/src/boolean/store_local_tests.rs": "73937040fcc0445d5c438c87279489f1a88b3e8ca138d37084e2ace3a99f622d"
+  },
+  "integrated_math_line_sha256": "700a057b7a2889b3e418e0d25aa458b6d023340a590acd0afa916744483b0ec9",
+  "command": "taskset -c 0-14,16-30 env CARGO_BUILD_JOBS=2 RUST_MIN_STACK=536870912 cargo test -p remus-operations --profile ci-test --features perf-counters --lib boolean::store_local -- --nocapture",
+  "exit_code": 0,
+  "passed": 33,
+  "failed": 0,
+  "ignored": 0,
+  "counts_scope": "Counts below classify test functions; policy tests may also exercise recovery and each function may cover multiple operations or parameter cells.",
+  "successful_geometry_and_work_functions": [
+    "slot_through_a_drilled_plate_is_equivalent",
+    "blind_pocket_in_a_drilled_plate_is_equivalent",
+    "rotated_slot_in_a_drilled_plate_is_equivalent",
+    "edge_notch_touching_a_side_wall_is_equivalent",
+    "hole_breaking_out_of_the_plate_edge_is_equivalent",
+    "slot_into_an_existing_hole_is_equivalent",
+    "successive_slots_stay_equivalent",
+    "rib_fused_onto_a_drilled_plate_is_equivalent",
+    "boss_fused_into_a_drilled_plate_is_equivalent",
+    "boss_standing_on_a_drilled_plate_is_equivalent",
+    "lug_fused_across_a_side_wall_is_equivalent",
+    "corner_of_a_drilled_plate_intersected_is_equivalent",
+    "window_through_one_hole_intersected_is_equivalent",
+    "scaling_store_local_booleans_copy_only_touched_faces",
+    "store_local_material_survives_scale_and_placement",
+    "cross_drilled_shaft_preserves_material_with_store_local_requested",
+    "cross_drilled_store_local_preserves_stored_line_tolerances",
+    "cross_drilled_authority_and_sharing_survive_nondefault_source_edge_tolerances",
+    "kept_boundary_preserves_inherited_and_nondefault_explicit_edge_authority",
+    "kept_periodic_boundary_retains_pcurves_winding_and_shared_entities"
+  ],
+  "refusal_and_policy_functions": [
+    "shared_boundary_vertex_authority_must_match_exactly",
+    "distinct_patch_edges_cannot_collapse_onto_one_source_edge",
+    "distinct_patch_vertices_cannot_collapse_onto_one_source_vertex",
+    "coincident_distinct_kept_boundary_edges_decline",
+    "coincident_distinct_kept_boundary_vertices_decline",
+    "patch_per_use_authority_declines_instead_of_discarding_it",
+    "fuse_with_a_tool_clear_of_the_material_declines",
+    "store_local_cut_is_off_by_default_and_declines_whole_blank_cuts",
+    "cavity_blank_declines_without_mutating_inputs",
+    "nurbs_patch_declines_without_mutating_inputs",
+    "cancelled_store_local_boolean_keeps_geometry_and_history",
+    "entity_evolution_keeps_the_general_path_when_store_local_is_enabled",
+    "raised_boundary_vertex_authority_declines_without_mutation_then_falls_back_exactly"
+  ],
+  "before_fix": {
+    "source_base": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+    "evidence_kind": "Observed earlier tool output, session75897; this is a structured transcription, not a raw-log hash.",
+    "test": "boolean::store_local_tests::cross_drilled_store_local_preserves_stored_line_tolerances",
+    "ignored_test_explicitly_run": true,
+    "exit_code": 101,
+    "passed": 0,
+    "failed": 1,
+    "failed_assertion": "stored tolerance authority changed",
+    "seam_endpoints": [
+      [
+        3,
+        0,
+        0
+      ],
+      [
+        3,
+        0,
+        12
+      ]
+    ],
+    "local_stored_tolerance": null,
+    "ordinary_stored_tolerance_bits": "4502148214488346440",
+    "effective_tolerance_comparison": "passed before the stored-authority assertion"
+  },
+  "work_guards": {
+    "Cut": {
+      "small": 8,
+      "large": 8,
+      "general_large": 54
+    },
+    "Fuse": {
+      "small": 7,
+      "large": 7,
+      "general_large": 55
+    },
+    "Intersect": {
+      "small": 12,
+      "large": 12,
+      "general_large": 38
+    }
+  },
+  "raw_log_sha256": "4825ee3630ec9a4900a5aeaa7c1268de35867f30d924a3476e4c7f916e7d0fb5",
+  "portable_log_sha256": "aaa213872e2946cfcbafb7b019efd5e75efc5e2528a9be5e61a31d15fd1a0b85",
+  "normal_feature_off_suite": "Deferred to coordinating integrated full checks.",
+  "all_target_all_feature_clippy": "Deferred to coordinating normal pre-commit hook.",
+  "package_validation": "Not performed by this agent for this revision.",
+  "performance_claim": "None: work counts and correctness tests are not latency measurements.",
+  "default_enablement": "Unchanged: store-local remains opt-in."
+}

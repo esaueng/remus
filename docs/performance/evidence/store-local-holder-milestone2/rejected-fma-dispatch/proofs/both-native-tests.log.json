@@ -1,0 +1,8 @@
+{
+  "schema": "remus-lossless-text-v1",
+  "originalFile": "both-native-tests.log",
+  "encoding": "UTF-8",
+  "originalBytes": 497,
+  "originalSha256": "bb954b50b9e74a71c454e5013d9dc243efe626f54fa54849258dd903815271a3",
+  "payload": "\nrunning 5 tests\ntest tests::long_random_differential ... ignored, long-running exhaustive-style sweep; run by hand\ntest tests::emulation_matches_at_the_range_boundaries_and_falls_back_outside ... ok\ntest tests::method_and_free_forms_agree_with_mul_add ... ok\ntest tests::emulation_handles_exact_ties_both_ways ... ok\ntest tests::emulation_matches_native_fma_on_random_and_adversarial_operands ... ok\n\ntest result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.09s\n\n"
+}

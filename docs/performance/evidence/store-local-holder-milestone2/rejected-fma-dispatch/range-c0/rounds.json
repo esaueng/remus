@@ -1,0 +1,20 @@
+{
+  "schema": "remus-standalone-dispatch-micro-calibration-v1",
+  "baselineModuleSha256": "793922ab2be0166bc15bc000b842ba061fb0d9321f68671820a465bec92e12ca",
+  "manifestSha256": "2f70e5d8fd984ff635f4a041e532f6aa006bd22b14c76078fafc5fdffc2f4423",
+  "scriptSha256": "ab3a9eaf5f0963ec2d4db712050cc599eca01230062414262059faccf6950ea8",
+  "workloads": {
+    "total-mix": 64,
+    "recognition-mix": 64,
+    "preview-mix": 64,
+    "completion-mix": 64,
+    "family-zero_product_a_only": 128,
+    "family-zero_product_b_only": 128,
+    "family-zero_product_both": 128,
+    "family-finite_nonzero_zeroaddend": 64,
+    "family-finite_nonzero_unitfactor": 64,
+    "family-remaining_emulated": 64,
+    "family-remaining_fallback": 32
+  },
+  "diagnosticOnly": true
+}

@@ -1,0 +1,819 @@
+{
+  "schema": "remus-standalone-dispatch-micro-process-v1",
+  "variant": "baseline",
+  "moduleSha256": "793922ab2be0166bc15bc000b842ba061fb0d9321f68671820a465bec92e12ca",
+  "manifestSha256": "2f70e5d8fd984ff635f4a041e532f6aa006bd22b14c76078fafc5fdffc2f4423",
+  "driverSha256": "97d05a5a993b8959465f733f08f893441fb247d83206fde8f5ea869f37d71256",
+  "roundsSha256": "3b69f58011c6e73676e00bf4f7063b2583c4b14a2ccb6b3b562496b15edcbc44",
+  "node": "v24.22.1",
+  "nodeExecutableSha256": "e32e2d16081cf644f88392934288086e7662529d0d43277c34f7aad2207cfafb",
+  "affinity": "Cpus_allowed_list:\t31",
+  "startedAt": "2026-10-29T03:30:22.368Z",
+  "samples": [
+    {
+      "workload": "total-mix",
+      "index": 0,
+      "warmup": true,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "47355927",
+      "checksum": "13a17238617f7df9"
+    },
+    {
+      "workload": "total-mix",
+      "index": 1,
+      "warmup": true,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "47084934",
+      "checksum": "13a17238617f7df9"
+    },
+    {
+      "workload": "total-mix",
+      "index": 2,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "47267029",
+      "checksum": "13a17238617f7df9"
+    },
+    {
+      "workload": "total-mix",
+      "index": 3,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "47428084",
+      "checksum": "13a17238617f7df9"
+    },
+    {
+      "workload": "total-mix",
+      "index": 4,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "47540186",
+      "checksum": "13a17238617f7df9"
+    },
+    {
+      "workload": "total-mix",
+      "index": 5,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "47015052",
+      "checksum": "13a17238617f7df9"
+    },
+    {
+      "workload": "total-mix",
+      "index": 6,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "46826695",
+      "checksum": "13a17238617f7df9"
+    },
+    {
+      "workload": "total-mix",
+      "index": 7,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "47466357",
+      "checksum": "13a17238617f7df9",
+      "checkPassChecksum": "d2e358001ba03261"
+    },
+    {
+      "workload": "recognition-mix",
+      "index": 0,
+      "warmup": true,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "46047139",
+      "checksum": "0c42ac194bf3e445"
+    },
+    {
+      "workload": "recognition-mix",
+      "index": 1,
+      "warmup": true,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "45505113",
+      "checksum": "0c42ac194bf3e445"
+    },
+    {
+      "workload": "recognition-mix",
+      "index": 2,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "45898599",
+      "checksum": "0c42ac194bf3e445"
+    },
+    {
+      "workload": "recognition-mix",
+      "index": 3,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "45207971",
+      "checksum": "0c42ac194bf3e445"
+    },
+    {
+      "workload": "recognition-mix",
+      "index": 4,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "45015185",
+      "checksum": "0c42ac194bf3e445"
+    },
+    {
+      "workload": "recognition-mix",
+      "index": 5,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "46638559",
+      "checksum": "0c42ac194bf3e445"
+    },
+    {
+      "workload": "recognition-mix",
+      "index": 6,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "45340131",
+      "checksum": "0c42ac194bf3e445"
+    },
+    {
+      "workload": "recognition-mix",
+      "index": 7,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "45158527",
+      "checksum": "0c42ac194bf3e445",
+      "checkPassChecksum": "c0699841b27ee30d"
+    },
+    {
+      "workload": "preview-mix",
+      "index": 0,
+      "warmup": true,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "48117078",
+      "checksum": "f0464d5941197ef8"
+    },
+    {
+      "workload": "preview-mix",
+      "index": 1,
+      "warmup": true,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "48114494",
+      "checksum": "f0464d5941197ef8"
+    },
+    {
+      "workload": "preview-mix",
+      "index": 2,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "48545569",
+      "checksum": "f0464d5941197ef8"
+    },
+    {
+      "workload": "preview-mix",
+      "index": 3,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "48237467",
+      "checksum": "f0464d5941197ef8"
+    },
+    {
+      "workload": "preview-mix",
+      "index": 4,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "48367533",
+      "checksum": "f0464d5941197ef8"
+    },
+    {
+      "workload": "preview-mix",
+      "index": 5,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "48336484",
+      "checksum": "f0464d5941197ef8"
+    },
+    {
+      "workload": "preview-mix",
+      "index": 6,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "48082263",
+      "checksum": "f0464d5941197ef8"
+    },
+    {
+      "workload": "preview-mix",
+      "index": 7,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "48068817",
+      "checksum": "f0464d5941197ef8",
+      "checkPassChecksum": "12dc3c4d86581071"
+    },
+    {
+      "workload": "completion-mix",
+      "index": 0,
+      "warmup": true,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "52030508",
+      "checksum": "91d259b1d37a0a32"
+    },
+    {
+      "workload": "completion-mix",
+      "index": 1,
+      "warmup": true,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "44730066",
+      "checksum": "91d259b1d37a0a32"
+    },
+    {
+      "workload": "completion-mix",
+      "index": 2,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "48627315",
+      "checksum": "91d259b1d37a0a32"
+    },
+    {
+      "workload": "completion-mix",
+      "index": 3,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "47241781",
+      "checksum": "91d259b1d37a0a32"
+    },
+    {
+      "workload": "completion-mix",
+      "index": 4,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "46694134",
+      "checksum": "91d259b1d37a0a32"
+    },
+    {
+      "workload": "completion-mix",
+      "index": 5,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "46673225",
+      "checksum": "91d259b1d37a0a32"
+    },
+    {
+      "workload": "completion-mix",
+      "index": 6,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "46849539",
+      "checksum": "91d259b1d37a0a32"
+    },
+    {
+      "workload": "completion-mix",
+      "index": 7,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "46711287",
+      "checksum": "91d259b1d37a0a32",
+      "checkPassChecksum": "8646b936e5bc9010"
+    },
+    {
+      "workload": "family-zero_product_a_only",
+      "index": 0,
+      "warmup": true,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "53473189",
+      "checksum": "69217783f01babfa"
+    },
+    {
+      "workload": "family-zero_product_a_only",
+      "index": 1,
+      "warmup": true,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "49053171",
+      "checksum": "69217783f01babfa"
+    },
+    {
+      "workload": "family-zero_product_a_only",
+      "index": 2,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "38771084",
+      "checksum": "69217783f01babfa"
+    },
+    {
+      "workload": "family-zero_product_a_only",
+      "index": 3,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "51207249",
+      "checksum": "69217783f01babfa"
+    },
+    {
+      "workload": "family-zero_product_a_only",
+      "index": 4,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "50313837",
+      "checksum": "69217783f01babfa"
+    },
+    {
+      "workload": "family-zero_product_a_only",
+      "index": 5,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "50405701",
+      "checksum": "69217783f01babfa"
+    },
+    {
+      "workload": "family-zero_product_a_only",
+      "index": 6,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "50496774",
+      "checksum": "69217783f01babfa"
+    },
+    {
+      "workload": "family-zero_product_a_only",
+      "index": 7,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "50405080",
+      "checksum": "69217783f01babfa",
+      "checkPassChecksum": "0d2b1c2d59759d0a"
+    },
+    {
+      "workload": "family-zero_product_b_only",
+      "index": 0,
+      "warmup": true,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "56404259",
+      "checksum": "71a4daf80e4d3a3b"
+    },
+    {
+      "workload": "family-zero_product_b_only",
+      "index": 1,
+      "warmup": true,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "56513264",
+      "checksum": "71a4daf80e4d3a3b"
+    },
+    {
+      "workload": "family-zero_product_b_only",
+      "index": 2,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "48250532",
+      "checksum": "71a4daf80e4d3a3b"
+    },
+    {
+      "workload": "family-zero_product_b_only",
+      "index": 3,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "53079163",
+      "checksum": "71a4daf80e4d3a3b"
+    },
+    {
+      "workload": "family-zero_product_b_only",
+      "index": 4,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "58249381",
+      "checksum": "71a4daf80e4d3a3b"
+    },
+    {
+      "workload": "family-zero_product_b_only",
+      "index": 5,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "58452436",
+      "checksum": "71a4daf80e4d3a3b"
+    },
+    {
+      "workload": "family-zero_product_b_only",
+      "index": 6,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "63512977",
+      "checksum": "71a4daf80e4d3a3b"
+    },
+    {
+      "workload": "family-zero_product_b_only",
+      "index": 7,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "64056547",
+      "checksum": "71a4daf80e4d3a3b",
+      "checkPassChecksum": "a79693f1329cbd52"
+    },
+    {
+      "workload": "family-zero_product_both",
+      "index": 0,
+      "warmup": true,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "50579480",
+      "checksum": "77a27e2d18f2b4d6"
+    },
+    {
+      "workload": "family-zero_product_both",
+      "index": 1,
+      "warmup": true,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "50584299",
+      "checksum": "77a27e2d18f2b4d6"
+    },
+    {
+      "workload": "family-zero_product_both",
+      "index": 2,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "52464249",
+      "checksum": "77a27e2d18f2b4d6"
+    },
+    {
+      "workload": "family-zero_product_both",
+      "index": 3,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "52958424",
+      "checksum": "77a27e2d18f2b4d6"
+    },
+    {
+      "workload": "family-zero_product_both",
+      "index": 4,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "53051470",
+      "checksum": "77a27e2d18f2b4d6"
+    },
+    {
+      "workload": "family-zero_product_both",
+      "index": 5,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "53089473",
+      "checksum": "77a27e2d18f2b4d6"
+    },
+    {
+      "workload": "family-zero_product_both",
+      "index": 6,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "51147767",
+      "checksum": "77a27e2d18f2b4d6"
+    },
+    {
+      "workload": "family-zero_product_both",
+      "index": 7,
+      "warmup": false,
+      "rounds": 128,
+      "operations": 8388608,
+      "durationNs": "53686873",
+      "checksum": "77a27e2d18f2b4d6",
+      "checkPassChecksum": "417fa5c3f7299a73"
+    },
+    {
+      "workload": "family-finite_nonzero_zeroaddend",
+      "index": 0,
+      "warmup": true,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "39148389",
+      "checksum": "9e7a0ab2001f3184"
+    },
+    {
+      "workload": "family-finite_nonzero_zeroaddend",
+      "index": 1,
+      "warmup": true,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "47605981",
+      "checksum": "9e7a0ab2001f3184"
+    },
+    {
+      "workload": "family-finite_nonzero_zeroaddend",
+      "index": 2,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "51593601",
+      "checksum": "9e7a0ab2001f3184"
+    },
+    {
+      "workload": "family-finite_nonzero_zeroaddend",
+      "index": 3,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "35885791",
+      "checksum": "9e7a0ab2001f3184"
+    },
+    {
+      "workload": "family-finite_nonzero_zeroaddend",
+      "index": 4,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "45316646",
+      "checksum": "9e7a0ab2001f3184"
+    },
+    {
+      "workload": "family-finite_nonzero_zeroaddend",
+      "index": 5,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "46000041",
+      "checksum": "9e7a0ab2001f3184"
+    },
+    {
+      "workload": "family-finite_nonzero_zeroaddend",
+      "index": 6,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "51005256",
+      "checksum": "9e7a0ab2001f3184"
+    },
+    {
+      "workload": "family-finite_nonzero_zeroaddend",
+      "index": 7,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "58402802",
+      "checksum": "9e7a0ab2001f3184",
+      "checkPassChecksum": "c5977a7723ef04db"
+    },
+    {
+      "workload": "family-finite_nonzero_unitfactor",
+      "index": 0,
+      "warmup": true,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "47456577",
+      "checksum": "05b222a8502daf83"
+    },
+    {
+      "workload": "family-finite_nonzero_unitfactor",
+      "index": 1,
+      "warmup": true,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "46229304",
+      "checksum": "05b222a8502daf83"
+    },
+    {
+      "workload": "family-finite_nonzero_unitfactor",
+      "index": 2,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "46088919",
+      "checksum": "05b222a8502daf83"
+    },
+    {
+      "workload": "family-finite_nonzero_unitfactor",
+      "index": 3,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "47615729",
+      "checksum": "05b222a8502daf83"
+    },
+    {
+      "workload": "family-finite_nonzero_unitfactor",
+      "index": 4,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "49310157",
+      "checksum": "05b222a8502daf83"
+    },
+    {
+      "workload": "family-finite_nonzero_unitfactor",
+      "index": 5,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "42059530",
+      "checksum": "05b222a8502daf83"
+    },
+    {
+      "workload": "family-finite_nonzero_unitfactor",
+      "index": 6,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "46073650",
+      "checksum": "05b222a8502daf83"
+    },
+    {
+      "workload": "family-finite_nonzero_unitfactor",
+      "index": 7,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "40990806",
+      "checksum": "05b222a8502daf83",
+      "checkPassChecksum": "ee25d67cb29262af"
+    },
+    {
+      "workload": "family-remaining_emulated",
+      "index": 0,
+      "warmup": true,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "38343935",
+      "checksum": "967208aa3260d79a"
+    },
+    {
+      "workload": "family-remaining_emulated",
+      "index": 1,
+      "warmup": true,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "44250097",
+      "checksum": "967208aa3260d79a"
+    },
+    {
+      "workload": "family-remaining_emulated",
+      "index": 2,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "45983559",
+      "checksum": "967208aa3260d79a"
+    },
+    {
+      "workload": "family-remaining_emulated",
+      "index": 3,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "45499071",
+      "checksum": "967208aa3260d79a"
+    },
+    {
+      "workload": "family-remaining_emulated",
+      "index": 4,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "47538112",
+      "checksum": "967208aa3260d79a"
+    },
+    {
+      "workload": "family-remaining_emulated",
+      "index": 5,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "50694017",
+      "checksum": "967208aa3260d79a"
+    },
+    {
+      "workload": "family-remaining_emulated",
+      "index": 6,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "49217021",
+      "checksum": "967208aa3260d79a"
+    },
+    {
+      "workload": "family-remaining_emulated",
+      "index": 7,
+      "warmup": false,
+      "rounds": 64,
+      "operations": 4194304,
+      "durationNs": "45293973",
+      "checksum": "967208aa3260d79a",
+      "checkPassChecksum": "95f3bf08bed251bc"
+    },
+    {
+      "workload": "family-remaining_fallback",
+      "index": 0,
+      "warmup": true,
+      "rounds": 32,
+      "operations": 2097152,
+      "durationNs": "46315878",
+      "checksum": "e8ae13f1858ccb02"
+    },
+    {
+      "workload": "family-remaining_fallback",
+      "index": 1,
+      "warmup": true,
+      "rounds": 32,
+      "operations": 2097152,
+      "durationNs": "46615285",
+      "checksum": "e8ae13f1858ccb02"
+    },
+    {
+      "workload": "family-remaining_fallback",
+      "index": 2,
+      "warmup": false,
+      "rounds": 32,
+      "operations": 2097152,
+      "durationNs": "46627207",
+      "checksum": "e8ae13f1858ccb02"
+    },
+    {
+      "workload": "family-remaining_fallback",
+      "index": 3,
+      "warmup": false,
+      "rounds": 32,
+      "operations": 2097152,
+      "durationNs": "46638349",
+      "checksum": "e8ae13f1858ccb02"
+    },
+    {
+      "workload": "family-remaining_fallback",
+      "index": 4,
+      "warmup": false,
+      "rounds": 32,
+      "operations": 2097152,
+      "durationNs": "46447828",
+      "checksum": "e8ae13f1858ccb02"
+    },
+    {
+      "workload": "family-remaining_fallback",
+      "index": 5,
+      "warmup": false,
+      "rounds": 32,
+      "operations": 2097152,
+      "durationNs": "46804924",
+      "checksum": "e8ae13f1858ccb02"
+    },
+    {
+      "workload": "family-remaining_fallback",
+      "index": 6,
+      "warmup": false,
+      "rounds": 32,
+      "operations": 2097152,
+      "durationNs": "45704851",
+      "checksum": "e8ae13f1858ccb02"
+    },
+    {
+      "workload": "family-remaining_fallback",
+      "index": 7,
+      "warmup": false,
+      "rounds": 32,
+      "operations": 2097152,
+      "durationNs": "46492182",
+      "checksum": "e8ae13f1858ccb02",
+      "checkPassChecksum": "83daa7c14e881905"
+    }
+  ],
+  "scope": "Standalone loop with sampled diagnostic operands; cannot establish holder or kernel latency.",
+  "endedAt": "2026-10-29T03:30:29.122Z"
+}

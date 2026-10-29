@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "source": "d7b1544a81122c8898fc8f883b8b3f8589a3b39b",
+  "command": "taskset -c 0-14,16-30 env CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 RUST_MIN_STACK=536870912 cargo nextest run --workspace --cargo-profile ci-test --test-threads 12",
+  "exitCode": 0,
+  "passed": 9233,
+  "failed": 0,
+  "skipped": 34,
+  "slow": 2,
+  "elapsedSecondsDiagnosticOnly": 237.852,
+  "sourceCodeHashesMatchFrozenCommit": {
+    ".github/workflows/kernel-performance-contracts.yml": "9da7dcf1ddb65948d98ed1f9147d6f0bb859ffe2d15df8cb69c58b7642673701",
+    "crates/math/src/nurbs/intersection/line.rs": "700a057b7a2889b3e418e0d25aa458b6d023340a590acd0afa916744483b0ec9",
+    "crates/operations/src/boolean/store_local.rs": "61d8f78bf1dee0537254b7dae3a69115f075ad2cecb1bdaa4ca08f7a68a183e2",
+    "crates/operations/src/boolean/store_local_tests.rs": "73937040fcc0445d5c438c87279489f1a88b3e8ca138d37084e2ace3a99f622d",
+    "crates/operations/src/performance.rs": "925623d1e38315a8e20a421281d0cc87eafa9c20baa636bf2626d6a6db4753ba",
+    "crates/wasm/src/bindings/performance.rs": "96dfc12020fc283d3dc61df7b105ed2a8f64102bfa8ec7e5ddc8336bb16f1455",
+    "scripts/perf/parameter-rebuild/profile_holder.cjs": "6b86c4e71cd24d971787437c11fe51bb916e013ae013b1492ad609212e588bc9",
+    "scripts/perf/parameter-rebuild/profile_holder.test.cjs": "251080ae790686e4c7b3165eb59c9843700e212fb371e6724e657d98dd2fd539",
+    "scripts/perf/parameter-rebuild/summarize_profile.py": "e2df22f0db7eefabc0d49c8aed92ce19aafaa6ef78ca02a08333e42da7be8600",
+    "scripts/perf/parameter-rebuild/test_summarize_profile.py": "b4c96f00371746705cd6a7cc4c5b753dc27bfda2bc7c7200e5808f5678d3e7ec",
+    "scripts/performance/store-local/qualify.cjs": "17675fcbc3e3c0dbd7a432554d5f51999dcc9bff5bad94bbfbe7a6acc445b7e0",
+    "scripts/performance/store-local/qualify.test.cjs": "a8b1a3d023f14168b0626309d28a14c90aaec7dff7df7baf885f014221180ba6"
+  },
+  "rawLogSha256": "daecc4463b09edcd8e259a9ef8d35d468ab021851e4ab679d402726b989d2cea",
+  "scope": "Complete native workspace suite with existing default features and skips. Separate perf-counters/SIMD tests and actual WASM runtime/package suites are recorded independently. Source/tooling files matched the frozen commit; report-only working additions did not change compiled inputs. Raw log remains local; no browser/GPU presentation or latency claim."
+}

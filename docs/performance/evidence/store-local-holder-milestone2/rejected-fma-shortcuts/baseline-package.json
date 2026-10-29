@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "sourceSha": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+  "sourceTree": "77597af50bfc5cf2fa468e3c4f4b9e464657dec7",
+  "canonicalBuildLogSha256": "fd4ae32c4e666774c85f5ef9fa36b0846dd2a79f2b0fc1a3c3649faad8479d2e",
+  "canonicalSmokeAndInstalledSuitesPassed": true,
+  "packages": [
+    {
+      "name": "remus-wasm",
+      "version": "2026.1.84",
+      "tarball": "remus-wasm-2026.1.84.tgz",
+      "tarballSha256": "eff0f371749569dcb3b8056d12631949fc3a8227bc233ce59457a1d7683f9a20",
+      "files": [
+        {
+          "file": "LICENSE-APACHE",
+          "bytes": 10669,
+          "mode": "0o644",
+          "sourceMode": "0o664",
+          "installedMode": "0o664",
+          "sha256": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811"
+        },
+        {
+          "file": "NOTICE",
+          "bytes": 608,
+          "mode": "0o644",
+          "sourceMode": "0o664",
+          "installedMode": "0o664",
+          "sha256": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9"
+        },
+        {
+          "file": "remus_wasm_node.cjs",
+          "bytes": 357391,
+          "mode": "0o644",
+          "sourceMode": "0o664",
+          "installedMode": "0o664",
+          "sha256": "55c678cc8a235b1dd98aa63e194995fabe8918ddead5151531407ab699cc7511"
+        },
+        {
+          "file": "remus_wasm_bg.js",
+          "bytes": 355260,
+          "mode": "0o644",
+          "sourceMode": "0o664",
+          "installedMode": "0o664",
+          "sha256": "395f63a149242bb3a8f170c29eb1c3a436f742d758038a5dc49c7f655994f35d"
+        },
+        {
+          "file": "remus_wasm.js",
+          "bytes": 421,
+          "mode": "0o644",
+          "sourceMode": "0o664",
+          "installedMode": "0o664",
+          "sha256": "90e7aa4472373ea75da5d9a9a8ece929737567cab7e02b3c678d7d6f6b51bd0e"
+        },
+        {
+          "file": "package.json",
+          "bytes": 902,
+          "mode": "0o644",
+          "sourceMode": "0o664",
+          "installedMode": "0o664",
+          "sha256": "7cc87020cf28acbe9baa6c6164d46ea27e2d9acb5dd8ada4388cf35fa73a8630"
+        },
+        {
+          "file": "remus_wasm.d.ts",
+          "bytes": 191734,
+          "mode": "0o644",
+          "sourceMode": "0o664",
+          "installedMode": "0o664",
+          "sha256": "11950695edb86856fb3f245611e7f0987bc7f50c6c0242ccf27f224f20074dee"
+        },
+        {
+          "file": "remus_wasm_bg.wasm",
+          "bytes": 10877608,
+          "mode": "0o644",
+          "sourceMode": "0o664",
+          "installedMode": "0o664",
+          "sha256": "8e9c54487facde0fae7225ab9348373c6b032230de5e983988bba5e7816d0ef9"
+        }
+      ],
+      "allSourceTarInstalledBytesEqual": true
+    },
+    {
+      "name": "remus-wasm-io",
+      "version": "2026.1.84",
+      "tarball": "remus-wasm-io-2026.1.84.tgz",
+      "tarballSha256": "e932835a2e3e7b52a0e7f9f044d2a3f22b7047e7198097755696c672e5dbf40d",
+      "files": [
+        {
+          "file": "LICENSE-APACHE",
+          "bytes": 10669,
+          "mode": "0o644",
+          "sourceMode": "0o664",
+          "installedMode": "0o664",
+          "sha256": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811"
+        },
+        {
+          "file": "NOTICE",
+          "bytes": 608,
+          "mode": "0o644",
+          "sourceMode": "0o664",
+          "installedMode": "0o664",
+          "sha256": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9"
+        },
+        {
+          "file": "remus_wasm_io_node.cjs",
+          "bytes": 23994,
+          "mode": "0o644",
+          "sourceMode": "0o664",
+          "installedMode": "0o664",
+          "sha256": "fb134e228bb2e5566f9b84dbb290ae602fd896b2b19cceed9f671e3170018469"
+        },
+        {
+          "file": "remus_wasm_io_bg.js",
+          "bytes": 23681,
+          "mode": "0o644",
+          "sourceMode": "0o664",
+          "installedMode": "0o664",
+          "sha256": "845849c710d91965f6105b23e93b7acdc36824ea2acedb1f50cdcf24d7e52db9"
+        },
+        {
+          "file": "remus_wasm_io.js",
+          "bytes": 268,
+          "mode": "0o644",
+          "sourceMode": "0o664",
+          "installedMode": "0o664",
+          "sha256": "fe90ec123d3389eb4567206441963288bb342ebf7e72ad8392a9f799a6c37e9d"
+        },
+        {
+          "file": "package.json",
+          "bytes": 949,
+          "mode": "0o644",
+          "sourceMode": "0o664",
+          "installedMode": "0o664",
+          "sha256": "893db3706531b67115e7c40dfa97de044be3f6332ad400b03a65f9c94387ef33"
+        },
+        {
+          "file": "remus_wasm_io.d.ts",
+          "bytes": 5502,
+          "mode": "0o644",
+          "sourceMode": "0o664",
+          "installedMode": "0o664",
+          "sha256": "c8e79635083298bd399cbac4aff923a433dc89b7a893ffa871b1d24245c880d0"
+        },
+        {
+          "file": "remus_wasm_io_bg.wasm",
+          "bytes": 3192494,
+          "mode": "0o644",
+          "sourceMode": "0o664",
+          "installedMode": "0o664",
+          "sha256": "e6aa350178001df4caf372d92824255b945b50f954e183a313737af5195bf1ee"
+        }
+      ],
+      "allSourceTarInstalledBytesEqual": true
+    }
+  ]
+}

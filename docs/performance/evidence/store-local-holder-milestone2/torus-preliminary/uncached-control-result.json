@@ -1,0 +1,9 @@
+{
+  "control_sha256": "f1d0ed78ffbdd8cd5fe90235aa714cc68ebe525d0c92c325b4f7e77dd09e30b6",
+  "candidate_sha256": "6098b364b5c67957c811cf97c5b670f1f263b8f1854c913c5f920c5c6f80a102",
+  "fma_sha256": "d0f8602fc3eadf802223a421844d4fc558445a38f6fd6625994662c18fcb8684",
+  "control_scope": "Baseline-equivalent uncached recursive body adapted only to the new tuple-return interface; every raw evaluation computed, all reuse disabled. Not claimed as an old release binary.",
+  "control_test_exit": 101,
+  "control_test_result": "Expected failure:1788/1788 raw evaluations after output/logical-order assertions passed",
+  "restored_candidate_sha256": "6098b364b5c67957c811cf97c5b670f1f263b8f1854c913c5f920c5c6f80a102"
+}

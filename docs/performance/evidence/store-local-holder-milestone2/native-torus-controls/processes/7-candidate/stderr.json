@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "encoding": "UTF-8 lossless JSON string",
+  "originalSha256": "1a43999a482bca68f74d9246af57f2a0fc200cc54e812b1e71fb502bcaca8259",
+  "originalBytes": 811,
+  "payload": "Gnuplot not found, using plotters backend\nBenchmarking boolean/torus_notch_cut\nBenchmarking boolean/torus_notch_cut: Warming up for 500.00 ms\nBenchmarking boolean/torus_notch_cut: Collecting 10 samples in estimated 2.1853 s (385 iterations)\nBenchmarking boolean/torus_notch_cut: Analyzing\nBenchmarking boolean/torus_notch_fuse\nBenchmarking boolean/torus_notch_fuse: Warming up for 500.00 ms\nBenchmarking boolean/torus_notch_fuse: Collecting 10 samples in estimated 2.1813 s (385 iterations)\nBenchmarking boolean/torus_notch_fuse: Analyzing\nBenchmarking boolean/torus_notch_intersect\nBenchmarking boolean/torus_notch_intersect: Warming up for 500.00 ms\nBenchmarking boolean/torus_notch_intersect: Collecting 10 samples in estimated 2.1423 s (385 iterations)\nBenchmarking boolean/torus_notch_intersect: Analyzing\n"
+}

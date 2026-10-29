@@ -1,0 +1,5705 @@
+{
+  "metadata": {
+    "mode": "preview",
+    "rebuildMode": "full",
+    "pattern": "unique",
+    "ticks": 6,
+    "warmup": 2,
+    "timingStatus": "contended-smoke-excluded",
+    "timingsExcluded": true,
+    "package": {
+      "name": "remus-wasm",
+      "version": "2026.1.84",
+      "wasmBytes": 10882722,
+      "wasmSha256": "36ec3d7d0d52dfd6ea99f94bee9908802d77da952fbcca1b7eaa8f1e1f31ef21",
+      "wrapperSha256": "5bc88bb915e11be352c0410745096156bac54e951d2426b613860d8f401417e7",
+      "packageJsonSha256": "7cc87020cf28acbe9baa6c6164d46ea27e2d9acb5dd8ada4388cf35fa73a8630",
+      "suppliedSourceSha": "292f084f9165f8f31bcaeb1581324eba69835994",
+      "suppliedSourceShaVerification": "Externally supplied; not verified by the driver."
+    },
+    "fixture": {
+      "identity": "hammer-holder-opening-width-31-feature-v1",
+      "recipeSha256": "8a24356effac832b714ca6724d33feedf91c1251d2bb62096d332ed2c55c8719",
+      "source": {
+        "path": "crates/io/tests/data/shapr3d_hammer_holder.step",
+        "sha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8",
+        "faces": 160,
+        "nurbsFaces": 42
+      },
+      "documents": {
+        "base": "7a8a3fac03a2ce63eb0e84ed61fd9fc09c6454973cc6225d5122cc1e3bf05026",
+        "text": "dd59dd4c7de07fb7c63c2c8b69aac17fd4ba97244bab7ba3fcfb3638b4b0a96f"
+      },
+      "consumer": {
+        "repository": "https://github.com/esaueng/OpenZCAD",
+        "revision": "913bb9ddd015bf2e6284c60a231eaa5afe7f2106",
+        "recipeCompiler": "packages/command-system/src/growing-holder.ts",
+        "recognizer": "packages/kernel-adapter/src/opening-recognition.ts",
+        "license": "Apache-2.0"
+      },
+      "featureCount": 31
+    },
+    "harnessSha256": "79751f89874700de56917dad0e0a5c1d46a2b0008e9aac9178b90a09ac4f4d09",
+    "recipeHarnessSha256": "68a572fe2294321a2c53893ffc0edf160e3b318e1b3395fb82602f6d1f0811a5",
+    "meshQualityHarnessSha256": "605bcfe13bb916afa6663be7b91135ecbde7ec865a786f8864c06e18a4c5f03b",
+    "node": "v24.22.1",
+    "versions": {
+      "node": "24.22.1",
+      "acorn": "8.18.0",
+      "ada": "4.0.0",
+      "amaro": "1.1.11",
+      "ares": "1.34.9",
+      "brotli": "1.2.0",
+      "cldr": "48.0",
+      "icu": "78.3",
+      "llhttp": "9.4.3",
+      "merve": "1.2.2",
+      "modules": "137",
+      "napi": "10",
+      "nbytes": "0.1.4",
+      "ncrypto": "0.0.1",
+      "nghttp2": "1.70.0",
+      "nghttp3": "",
+      "ngtcp2": "",
+      "openssl": "3.5.9",
+      "simdjson": "4.6.11",
+      "simdutf": "6.4.0",
+      "sqlite": "3.53.4",
+      "tz": "2026e",
+      "undici": "7.30.1",
+      "unicode": "17.0",
+      "uv": "1.52.1",
+      "uvwasi": "0.0.23",
+      "v8": "13.6.233.17-node.58",
+      "zlib": "1.3.2.1-motley-285e94b",
+      "zstd": "1.5.7"
+    },
+    "cpu": "AMD Ryzen 9 5900XT 16-Core Processor",
+    "platform": "linux",
+    "architecture": "x64",
+    "affinity": "0",
+    "timing": {
+      "clock": "performance.now; synchronous kernel replay stage intervals",
+      "stageSum": "Sum of replay stage intervals, including in-block JavaScript, prefix validation and prefix serialization; between-stage memory probes excluded.",
+      "observedWall": "Restore through transfer (preview) or recognition (completion), including between-stage probes.",
+      "quality": "All quality, material, inventory and full arena reads are outside timings; may affect subsequent ticks.",
+      "revisit": "Previously requested width, including a refused request; does not establish a cache hit.",
+      "cold": "First tick in this module process after separately reported checkpoint setup; full mode includes all 31 geometry features; not cold application launch."
+    },
+    "policy": {
+      "linear": 0.02,
+      "angular": 0.35,
+      "measurement": 0.08,
+      "height": 58,
+      "measurementReuse": "production defaults",
+      "prefix": "Rebuild all 17 fixed features on every request from immutable exact base/text imports.",
+      "suffix": "14 features: three sketch/extrude pairs, six body placements, union, and text placement",
+      "inputToFrame": false
+    },
+    "moduleLoadMs": 0.05747899999994388,
+    "constructorMs": 3.3704009999999016,
+    "memoryBeforePrepare": {
+      "allocatedSlots": 0,
+      "retiredSlots": 0,
+      "linearMemoryBytes": 1507328,
+      "processRssBytes": 124260352,
+      "jsHeapUsedBytes": 7822744,
+      "externalBytes": 26684631,
+      "arrayBufferBytes": 22957000
+    },
+    "prepareMs": 0.30918499999995674,
+    "memoryAfterPrepare": {
+      "allocatedSlots": 0,
+      "retiredSlots": 0,
+      "linearMemoryBytes": 1507328,
+      "processRssBytes": 124260352,
+      "jsHeapUsedBytes": 7851920,
+      "externalBytes": 26685151,
+      "arrayBufferBytes": 22957480
+    },
+    "prepareMemoryDelta": {
+      "allocatedSlots": 0,
+      "retiredSlots": 0,
+      "linearMemoryBytes": 0,
+      "processRssBytes": 0,
+      "jsHeapUsedBytes": 29176,
+      "externalBytes": 520,
+      "arrayBufferBytes": 480
+    },
+    "prefixDocumentSha256": "32f286e5843825a82478470aeb3cc616f9bd65b61da76fd3e20485ea41b028fb"
+  },
+  "records": [
+    {
+      "index": 0,
+      "width": 47,
+      "cold": true,
+      "warmup": true,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 5.523548000000005,
+        "prefix": 7701.676659,
+        "rebuild": 1436.56581,
+        "validate": 18.219033999999738,
+        "mesh": 971.1094780000003,
+        "transfer": 10.461476000000403,
+        "observedWall": 10148.094258,
+        "stageSum": 10143.556005,
+        "previewStageSum": 10143.556005
+      },
+      "memoryBefore": {
+        "allocatedSlots": 0,
+        "retiredSlots": 0,
+        "linearMemoryBytes": 1507328,
+        "processRssBytes": 124260352,
+        "jsHeapUsedBytes": 7868624,
+        "externalBytes": 26685391,
+        "arrayBufferBytes": 22957720
+      },
+      "memoryAfter": {
+        "allocatedSlots": 13000,
+        "retiredSlots": 0,
+        "linearMemoryBytes": 23265280,
+        "processRssBytes": 376377344,
+        "jsHeapUsedBytes": 11450480,
+        "externalBytes": 38790203,
+        "arrayBufferBytes": 13304580
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 34000,
+          "externalBytes": 480,
+          "arrayBufferBytes": 480
+        },
+        "prefix": {
+          "allocatedSlots": 6944,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 6225920,
+          "processRssBytes": 232980480,
+          "jsHeapUsedBytes": 1779800,
+          "externalBytes": -4344292,
+          "arrayBufferBytes": -10570212
+        },
+        "rebuild": {
+          "allocatedSlots": 6056,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 917504,
+          "processRssBytes": 3407872,
+          "jsHeapUsedBytes": 935080,
+          "externalBytes": 269852,
+          "arrayBufferBytes": -647652
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 524288,
+          "jsHeapUsedBytes": -522656,
+          "externalBytes": -15088,
+          "arrayBufferBytes": -15088
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 14614528,
+          "processRssBytes": 15204352,
+          "jsHeapUsedBytes": 1245376,
+          "externalBytes": 14634496,
+          "arrayBufferBytes": 19968
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 110256,
+          "externalBytes": 1559364,
+          "arrayBufferBytes": 1559364
+        }
+      },
+      "memoryAfterStage": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 1507328,
+          "processRssBytes": 124260352,
+          "jsHeapUsedBytes": 7902624,
+          "externalBytes": 26685871,
+          "arrayBufferBytes": 22958200
+        },
+        "prefix": {
+          "allocatedSlots": 6944,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 7733248,
+          "processRssBytes": 357240832,
+          "jsHeapUsedBytes": 9682424,
+          "externalBytes": 22341579,
+          "arrayBufferBytes": 12387988
+        },
+        "rebuild": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 8650752,
+          "processRssBytes": 360648704,
+          "jsHeapUsedBytes": 10617504,
+          "externalBytes": 22611431,
+          "arrayBufferBytes": 11740336
+        },
+        "validate": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 8650752,
+          "processRssBytes": 361172992,
+          "jsHeapUsedBytes": 10094848,
+          "externalBytes": 22596343,
+          "arrayBufferBytes": 11725248
+        },
+        "mesh": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 23265280,
+          "processRssBytes": 376377344,
+          "jsHeapUsedBytes": 11340224,
+          "externalBytes": 37230839,
+          "arrayBufferBytes": 11745216
+        },
+        "transfer": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 23265280,
+          "processRssBytes": 376377344,
+          "jsHeapUsedBytes": 11450480,
+          "externalBytes": 38790203,
+          "arrayBufferBytes": 13304580
+        }
+      },
+      "validation": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "volumes": null,
+      "features": null,
+      "featureSummary": null,
+      "checkpointCount": 1,
+      "bbox": [
+        -26.5,
+        6.5,
+        4.5,
+        48.5,
+        59.5,
+        62.5
+      ],
+      "inventories": [
+        {
+          "faces": 108,
+          "counts": {
+            "cylinder": 42,
+            "nurbs": 8,
+            "torus": 14,
+            "plane": 34,
+            "cone": 2,
+            "sphere": 8
+          },
+          "radii": [
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ]
+          ]
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 2,
+            "nurbs": 4
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 4,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 6
+          },
+          "radii": []
+        },
+        {
+          "faces": 12,
+          "counts": {
+            "plane": 10,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 19,
+          "counts": {
+            "plane": 7,
+            "nurbs": 12
+          },
+          "radii": []
+        },
+        {
+          "faces": 13,
+          "counts": {
+            "plane": 4,
+            "nurbs": 9
+          },
+          "radii": []
+        },
+        {
+          "faces": 10,
+          "counts": {
+            "plane": 5,
+            "nurbs": 5
+          },
+          "radii": []
+        }
+      ],
+      "meshChecks": [
+        {
+          "vertices": 29649,
+          "triangles": 59302,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 50355.298483334656
+        },
+        {
+          "vertices": 422,
+          "triangles": 844,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.3885432491985386
+        },
+        {
+          "vertices": 393,
+          "triangles": 782,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 5.321569645186874
+        },
+        {
+          "vertices": 8,
+          "triangles": 12,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 0.7201136228248393
+        },
+        {
+          "vertices": 274,
+          "triangles": 544,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.073480788883843
+        },
+        {
+          "vertices": 638,
+          "triangles": 1276,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.3951797306077305
+        },
+        {
+          "vertices": 680,
+          "triangles": 1356,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.063210854641909
+        },
+        {
+          "vertices": 370,
+          "triangles": 740,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.277655723072674
+        }
+      ],
+      "material": [
+        {
+          "point": [
+            11,
+            49.5,
+            8
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            11,
+            18,
+            40
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            -19.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            41.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            -9.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            31.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "806f0cf2dd391c16f89f8b20e28b38a991e3b20e9c70e22d9546785d92a8455a",
+      "meshSha256": [
+        {
+          "positions": "a5ec6e5bf6ef70c1c8572a0a0fbe194650127ba96538244e916ffaac360472dc",
+          "indices": "06e493bc3095b7afa1577676d2d6aca64bb320fe2429b9dd433e795899582897",
+          "normals": "2814e723d00baa6dc9b4d406b4886ada1571a7f4fd117a4ee47b2adbe49b90f3",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "16084e93ea84b0fcfdfe508998a232e778fea0e50a2b28d3ac3029336a84d930",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "43cac2eac88806fb2b8a189c69b5034849efcab114660bf8c82ac9488845860e",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "d34b7a599c8ae53400ba88fe404b09037eef1b8cc1fa93215e9d596c50913d99",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "9756d0f6cf1b3f4abe0c7f99c3277c6cefd83fec1a5aefe201c45bbf9fce96af",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "4028fbc8e2585d2a63686843b9b902f70877393c942cb16daa599d7425f25168",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "32449273c5438ecc0add055509746432bb993e444933681a47c1a19c1af9b090",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "bcf97d53077769abb85625d4be31009e48737c2ee6c21a4581dd0869d019b283",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 1,
+      "width": 47.02,
+      "cold": false,
+      "warmup": true,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 6.545172000000093,
+        "prefix": 561.8896560000012,
+        "rebuild": 1184.7258810000003,
+        "validate": 11.457211999999345,
+        "mesh": 379.50900100000035,
+        "transfer": 0.5257559999990917,
+        "observedWall": 2153.4322900000006,
+        "stageSum": 2144.6526780000004,
+        "previewStageSum": 2144.6526780000004
+      },
+      "memoryBefore": {
+        "allocatedSlots": 13000,
+        "retiredSlots": 0,
+        "linearMemoryBytes": 23265280,
+        "processRssBytes": 391548928,
+        "jsHeapUsedBytes": 21316760,
+        "externalBytes": 40074116,
+        "arrayBufferBytes": 14587392
+      },
+      "memoryAfter": {
+        "allocatedSlots": 26000,
+        "retiredSlots": 13000,
+        "linearMemoryBytes": 33816576,
+        "processRssBytes": 404656128,
+        "jsHeapUsedBytes": 24433344,
+        "externalBytes": 50927368,
+        "arrayBufferBytes": 14889348
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 24712,
+          "externalBytes": 480,
+          "arrayBufferBytes": 480
+        },
+        "prefix": {
+          "allocatedSlots": 6944,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 1572864,
+          "jsHeapUsedBytes": 190344,
+          "externalBytes": -641988,
+          "arrayBufferBytes": -641988
+        },
+        "rebuild": {
+          "allocatedSlots": 6056,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 1048576,
+          "jsHeapUsedBytes": 797304,
+          "externalBytes": -650148,
+          "arrayBufferBytes": -650148
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 862856,
+          "externalBytes": 14736,
+          "arrayBufferBytes": 14736
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 10551296,
+          "processRssBytes": 10485760,
+          "jsHeapUsedBytes": 1127352,
+          "externalBytes": 10570808,
+          "arrayBufferBytes": 19512
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 114016,
+          "externalBytes": 1559364,
+          "arrayBufferBytes": 1559364
+        }
+      },
+      "memoryAfterStage": {
+        "restore": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 23265280,
+          "processRssBytes": 391548928,
+          "jsHeapUsedBytes": 21341472,
+          "externalBytes": 40074596,
+          "arrayBufferBytes": 14587872
+        },
+        "prefix": {
+          "allocatedSlots": 19944,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 23265280,
+          "processRssBytes": 393121792,
+          "jsHeapUsedBytes": 21531816,
+          "externalBytes": 39432608,
+          "arrayBufferBytes": 13945884
+        },
+        "rebuild": {
+          "allocatedSlots": 26000,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 23265280,
+          "processRssBytes": 394170368,
+          "jsHeapUsedBytes": 22329120,
+          "externalBytes": 38782460,
+          "arrayBufferBytes": 13295736
+        },
+        "validate": {
+          "allocatedSlots": 26000,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 23265280,
+          "processRssBytes": 394170368,
+          "jsHeapUsedBytes": 23191976,
+          "externalBytes": 38797196,
+          "arrayBufferBytes": 13310472
+        },
+        "mesh": {
+          "allocatedSlots": 26000,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 33816576,
+          "processRssBytes": 404656128,
+          "jsHeapUsedBytes": 24319328,
+          "externalBytes": 49368004,
+          "arrayBufferBytes": 13329984
+        },
+        "transfer": {
+          "allocatedSlots": 26000,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 33816576,
+          "processRssBytes": 404656128,
+          "jsHeapUsedBytes": 24433344,
+          "externalBytes": 50927368,
+          "arrayBufferBytes": 14889348
+        }
+      },
+      "validation": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "volumes": null,
+      "features": null,
+      "featureSummary": null,
+      "checkpointCount": 1,
+      "bbox": [
+        -26.51,
+        6.5,
+        4.5,
+        48.510000000000005,
+        59.5,
+        62.5
+      ],
+      "inventories": [
+        {
+          "faces": 108,
+          "counts": {
+            "cylinder": 42,
+            "nurbs": 8,
+            "torus": 14,
+            "plane": 34,
+            "cone": 2,
+            "sphere": 8
+          },
+          "radii": [
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ]
+          ]
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 2,
+            "nurbs": 4
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 4,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 6
+          },
+          "radii": []
+        },
+        {
+          "faces": 12,
+          "counts": {
+            "plane": 10,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 19,
+          "counts": {
+            "plane": 7,
+            "nurbs": 12
+          },
+          "radii": []
+        },
+        {
+          "faces": 13,
+          "counts": {
+            "plane": 4,
+            "nurbs": 9
+          },
+          "radii": []
+        },
+        {
+          "faces": 10,
+          "counts": {
+            "plane": 5,
+            "nurbs": 5
+          },
+          "radii": []
+        }
+      ],
+      "meshChecks": [
+        {
+          "vertices": 29649,
+          "triangles": 59302,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 50358.42049226428
+        },
+        {
+          "vertices": 422,
+          "triangles": 844,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.388558480686993
+        },
+        {
+          "vertices": 393,
+          "triangles": 782,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 5.321582335169481
+        },
+        {
+          "vertices": 8,
+          "triangles": 12,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 0.7201153397111568
+        },
+        {
+          "vertices": 274,
+          "triangles": 544,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.073495268845032
+        },
+        {
+          "vertices": 638,
+          "triangles": 1276,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.395194975832028
+        },
+        {
+          "vertices": 680,
+          "triangles": 1356,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.0632253112760175
+        },
+        {
+          "vertices": 370,
+          "triangles": 740,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.277670691901784
+        }
+      ],
+      "material": [
+        {
+          "point": [
+            11,
+            49.5,
+            8
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            11,
+            18,
+            40
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            -19.51,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            41.510000000000005,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            -9.510000000000002,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            31.51,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "6feec794bdca629f12dd9aaa20a426a4ec0dfb8e9b7fc29d528fe89335f74f84",
+      "meshSha256": [
+        {
+          "positions": "f29091abb283a87a897ac252af033f46afe05e6b7bb0622715a2060626263ded",
+          "indices": "c89f6c3ea3c9db66dd2afc43ea8611df8f93083c1cc7e26be7d32c3978d7a394",
+          "normals": "9b5aacc71136632bb20c006d4d0615f203d098f876606fea392a015d02cd7393",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "a43df6fdf11eecf0521363fff3a46b67a6440000259e97f6c0f80cd7c9afc45a",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "b74824682e00e6232b4fefeca89b7d7c55e25564000d1d88edd2cef5074443a2",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "3dd222361ba7549cc35f648f23d24900016863d9904c67156f058eba7e0c54b5",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "5e71cb4c072f4836b23614f3f5b6b2ebb516ab5146e0aa87012026788e976bfb",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "cb2caf663861725aeceec69a2d9a884839bfd33b3b20032ee17706065e26f276",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "4e234227e58f5185d4aae870b47bc59c1e31c5da1f670bca32d70a23aa40211e",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "b28e228ac1405d26bb81dc3d38fae1324fff3436c0296ceb948ee95ca16efd38",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 2,
+      "width": 47.04,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.09844699999848672,
+        "prefix": 446.3286389999994,
+        "rebuild": 935.8237929999996,
+        "validate": 5.746359000000666,
+        "mesh": 156.87980499999867,
+        "transfer": 3.247880000000805,
+        "observedWall": 1555.321277000001,
+        "stageSum": 1548.1249229999976,
+        "previewStageSum": 1548.1249229999976
+      },
+      "memoryBefore": {
+        "allocatedSlots": 26000,
+        "retiredSlots": 13000,
+        "linearMemoryBytes": 33816576,
+        "processRssBytes": 438136832,
+        "jsHeapUsedBytes": 44238696,
+        "externalBytes": 52233943,
+        "arrayBufferBytes": 16195923
+      },
+      "memoryAfter": {
+        "allocatedSlots": 39000,
+        "retiredSlots": 26000,
+        "linearMemoryBytes": 48037888,
+        "processRssBytes": 429490176,
+        "jsHeapUsedBytes": 14976992,
+        "externalBytes": 65108738,
+        "arrayBufferBytes": 14851748
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 21664,
+          "externalBytes": 480,
+          "arrayBufferBytes": 480
+        },
+        "prefix": {
+          "allocatedSlots": 6944,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 11993088,
+          "processRssBytes": -13365248,
+          "jsHeapUsedBytes": -30641560,
+          "externalBytes": 9737073,
+          "arrayBufferBytes": -2256015
+        },
+        "rebuild": {
+          "allocatedSlots": 6056,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 524288,
+          "jsHeapUsedBytes": 3517760,
+          "externalBytes": 61360,
+          "arrayBufferBytes": 61360
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 843840,
+          "externalBytes": 14736,
+          "arrayBufferBytes": 14736
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 2228224,
+          "processRssBytes": 4194304,
+          "jsHeapUsedBytes": -3108368,
+          "externalBytes": 1501782,
+          "arrayBufferBytes": -724100
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 104960,
+          "externalBytes": 1559364,
+          "arrayBufferBytes": 1559364
+        }
+      },
+      "memoryAfterStage": {
+        "restore": {
+          "allocatedSlots": 26000,
+          "retiredSlots": 26000,
+          "linearMemoryBytes": 33816576,
+          "processRssBytes": 438136832,
+          "jsHeapUsedBytes": 44260360,
+          "externalBytes": 52234423,
+          "arrayBufferBytes": 16196403
+        },
+        "prefix": {
+          "allocatedSlots": 32944,
+          "retiredSlots": 26000,
+          "linearMemoryBytes": 45809664,
+          "processRssBytes": 424771584,
+          "jsHeapUsedBytes": 13618800,
+          "externalBytes": 61971496,
+          "arrayBufferBytes": 13940388
+        },
+        "rebuild": {
+          "allocatedSlots": 39000,
+          "retiredSlots": 26000,
+          "linearMemoryBytes": 45809664,
+          "processRssBytes": 425295872,
+          "jsHeapUsedBytes": 17136560,
+          "externalBytes": 62032856,
+          "arrayBufferBytes": 14001748
+        },
+        "validate": {
+          "allocatedSlots": 39000,
+          "retiredSlots": 26000,
+          "linearMemoryBytes": 45809664,
+          "processRssBytes": 425295872,
+          "jsHeapUsedBytes": 17980400,
+          "externalBytes": 62047592,
+          "arrayBufferBytes": 14016484
+        },
+        "mesh": {
+          "allocatedSlots": 39000,
+          "retiredSlots": 26000,
+          "linearMemoryBytes": 48037888,
+          "processRssBytes": 429490176,
+          "jsHeapUsedBytes": 14872032,
+          "externalBytes": 63549374,
+          "arrayBufferBytes": 13292384
+        },
+        "transfer": {
+          "allocatedSlots": 39000,
+          "retiredSlots": 26000,
+          "linearMemoryBytes": 48037888,
+          "processRssBytes": 429490176,
+          "jsHeapUsedBytes": 14976992,
+          "externalBytes": 65108738,
+          "arrayBufferBytes": 14851748
+        }
+      },
+      "validation": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "volumes": null,
+      "features": null,
+      "featureSummary": null,
+      "checkpointCount": 1,
+      "bbox": [
+        -26.52,
+        6.5,
+        4.5,
+        48.519999999999996,
+        59.5,
+        62.5
+      ],
+      "inventories": [
+        {
+          "faces": 108,
+          "counts": {
+            "cylinder": 42,
+            "nurbs": 8,
+            "torus": 14,
+            "plane": 34,
+            "cone": 2,
+            "sphere": 8
+          },
+          "radii": [
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ]
+          ]
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 2,
+            "nurbs": 4
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 4,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 6
+          },
+          "radii": []
+        },
+        {
+          "faces": 12,
+          "counts": {
+            "plane": 10,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 19,
+          "counts": {
+            "plane": 7,
+            "nurbs": 12
+          },
+          "radii": []
+        },
+        {
+          "faces": 13,
+          "counts": {
+            "plane": 4,
+            "nurbs": 9
+          },
+          "radii": []
+        },
+        {
+          "faces": 10,
+          "counts": {
+            "plane": 5,
+            "nurbs": 5
+          },
+          "radii": []
+        }
+      ],
+      "meshChecks": [
+        {
+          "vertices": 29649,
+          "triangles": 59302,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 50361.54337080328
+        },
+        {
+          "vertices": 422,
+          "triangles": 844,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.388558480687082
+        },
+        {
+          "vertices": 393,
+          "triangles": 782,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 5.3215823316297275
+        },
+        {
+          "vertices": 8,
+          "triangles": 12,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 0.7201153397111293
+        },
+        {
+          "vertices": 274,
+          "triangles": 544,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.073495269383778
+        },
+        {
+          "vertices": 638,
+          "triangles": 1276,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.395194977910988
+        },
+        {
+          "vertices": 680,
+          "triangles": 1356,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.063225309531363
+        },
+        {
+          "vertices": 370,
+          "triangles": 740,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.277670689325727
+        }
+      ],
+      "material": [
+        {
+          "point": [
+            11,
+            49.5,
+            8
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            11,
+            18,
+            40
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            -19.52,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            41.519999999999996,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            -9.52,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            31.52,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "ae6ed21878233313ee1d9e3df856599971f0953929c5e4c4e45ae833f2a1f67e",
+      "meshSha256": [
+        {
+          "positions": "bdfb3a0bccbb50f74681da8c1fbd68a353230271c973b16c2809d2a076ae44cc",
+          "indices": "8ebad47987cd1bf8a31aa84a5c64095bed0fd831e6b5cc7af7d6ebdf8eea1a8a",
+          "normals": "d236c3aa30fb35ac29a83063658420abeb2e4f3b69be3db3f8d20970c0763e61",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "07f4a3cd1fbccf566a2695116cc42cd4a99bb72d9cb9d84dc4c6d30a6f776b0d",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "01e475a8788086fddbe3ccb9f868131ec84e97b5c3e7f224b8824b83e9d8221a",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "de9dafeecde83ad73512418ce672d479af8adb913aa98442626387949d887e74",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "58b432212502586da81efd3dc23750a0d206158bdc5190b85cbf9f7e0aefd099",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "9acac72089b0f6d15b62782b5df591201c278320f113441d761c20eda701b903",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "1d51e7caedbb6b0bd8bbb31e32a7096e7ff6f6601fe98b2fcc6d5d07da6ad48f",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "f184df3a5c25de436b7e146e6951853ab690fc7b122cb37170810ef6a1ab00d7",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 3,
+      "width": 47.06,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.08165399999961664,
+        "prefix": 281.3280480000012,
+        "rebuild": 399.40842599999996,
+        "validate": 5.586858000000575,
+        "mesh": 86.74425900000097,
+        "transfer": 3.13130799999999,
+        "observedWall": 780.6440860000002,
+        "stageSum": 776.2805530000023,
+        "previewStageSum": 776.2805530000023
+      },
+      "memoryBefore": {
+        "allocatedSlots": 39000,
+        "retiredSlots": 26000,
+        "linearMemoryBytes": 48037888,
+        "processRssBytes": 450990080,
+        "jsHeapUsedBytes": 36313056,
+        "externalBytes": 66430228,
+        "arrayBufferBytes": 16173238
+      },
+      "memoryAfter": {
+        "allocatedSlots": 52000,
+        "retiredSlots": 39000,
+        "linearMemoryBytes": 57409536,
+        "processRssBytes": 445837312,
+        "jsHeapUsedBytes": 21184408,
+        "externalBytes": 74559002,
+        "arrayBufferBytes": 14930364
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 21224,
+          "externalBytes": 480,
+          "arrayBufferBytes": 480
+        },
+        "prefix": {
+          "allocatedSlots": 6944,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 9371648,
+          "processRssBytes": 5505024,
+          "jsHeapUsedBytes": 3613680,
+          "externalBytes": 10088236,
+          "arrayBufferBytes": 716588
+        },
+        "rebuild": {
+          "allocatedSlots": 6056,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": -12492800,
+          "jsHeapUsedBytes": -20821768,
+          "externalBytes": -3553554,
+          "arrayBufferBytes": -3553554
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 840336,
+          "externalBytes": 14736,
+          "arrayBufferBytes": 14736
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 1835008,
+          "jsHeapUsedBytes": 1112032,
+          "externalBytes": 19512,
+          "arrayBufferBytes": 19512
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 105848,
+          "externalBytes": 1559364,
+          "arrayBufferBytes": 1559364
+        }
+      },
+      "memoryAfterStage": {
+        "restore": {
+          "allocatedSlots": 39000,
+          "retiredSlots": 39000,
+          "linearMemoryBytes": 48037888,
+          "processRssBytes": 450990080,
+          "jsHeapUsedBytes": 36334280,
+          "externalBytes": 66430708,
+          "arrayBufferBytes": 16173718
+        },
+        "prefix": {
+          "allocatedSlots": 45944,
+          "retiredSlots": 39000,
+          "linearMemoryBytes": 57409536,
+          "processRssBytes": 456495104,
+          "jsHeapUsedBytes": 39947960,
+          "externalBytes": 76518944,
+          "arrayBufferBytes": 16890306
+        },
+        "rebuild": {
+          "allocatedSlots": 52000,
+          "retiredSlots": 39000,
+          "linearMemoryBytes": 57409536,
+          "processRssBytes": 444002304,
+          "jsHeapUsedBytes": 19126192,
+          "externalBytes": 72965390,
+          "arrayBufferBytes": 13336752
+        },
+        "validate": {
+          "allocatedSlots": 52000,
+          "retiredSlots": 39000,
+          "linearMemoryBytes": 57409536,
+          "processRssBytes": 444002304,
+          "jsHeapUsedBytes": 19966528,
+          "externalBytes": 72980126,
+          "arrayBufferBytes": 13351488
+        },
+        "mesh": {
+          "allocatedSlots": 52000,
+          "retiredSlots": 39000,
+          "linearMemoryBytes": 57409536,
+          "processRssBytes": 445837312,
+          "jsHeapUsedBytes": 21078560,
+          "externalBytes": 72999638,
+          "arrayBufferBytes": 13371000
+        },
+        "transfer": {
+          "allocatedSlots": 52000,
+          "retiredSlots": 39000,
+          "linearMemoryBytes": 57409536,
+          "processRssBytes": 445837312,
+          "jsHeapUsedBytes": 21184408,
+          "externalBytes": 74559002,
+          "arrayBufferBytes": 14930364
+        }
+      },
+      "validation": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "volumes": null,
+      "features": null,
+      "featureSummary": null,
+      "checkpointCount": 1,
+      "bbox": [
+        -26.53,
+        6.5,
+        4.5,
+        48.53,
+        59.5,
+        62.5
+      ],
+      "inventories": [
+        {
+          "faces": 108,
+          "counts": {
+            "cylinder": 42,
+            "nurbs": 8,
+            "torus": 14,
+            "plane": 34,
+            "cone": 2,
+            "sphere": 8
+          },
+          "radii": [
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ]
+          ]
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 2,
+            "nurbs": 4
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 4,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 6
+          },
+          "radii": []
+        },
+        {
+          "faces": 12,
+          "counts": {
+            "plane": 10,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 19,
+          "counts": {
+            "plane": 7,
+            "nurbs": 12
+          },
+          "radii": []
+        },
+        {
+          "faces": 13,
+          "counts": {
+            "plane": 4,
+            "nurbs": 9
+          },
+          "radii": []
+        },
+        {
+          "faces": 10,
+          "counts": {
+            "plane": 5,
+            "nurbs": 5
+          },
+          "radii": []
+        }
+      ],
+      "meshChecks": [
+        {
+          "vertices": 29649,
+          "triangles": 59302,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 50364.66649167324
+        },
+        {
+          "vertices": 422,
+          "triangles": 844,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.388543249198602
+        },
+        {
+          "vertices": 393,
+          "triangles": 782,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 5.321569645186856
+        },
+        {
+          "vertices": 8,
+          "triangles": 12,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 0.720113622824841
+        },
+        {
+          "vertices": 274,
+          "triangles": 544,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.073480788883781
+        },
+        {
+          "vertices": 638,
+          "triangles": 1276,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.395179732008937
+        },
+        {
+          "vertices": 680,
+          "triangles": 1356,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.063210854805107
+        },
+        {
+          "vertices": 370,
+          "triangles": 740,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.277655723072646
+        }
+      ],
+      "material": [
+        {
+          "point": [
+            11,
+            49.5,
+            8
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            11,
+            18,
+            40
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            -19.53,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            41.53,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            -9.530000000000001,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            31.53,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "445db0a74d6da1a98d687b71173bf1420a9388a93e21b30c48a5ca8674eb93fb",
+      "meshSha256": [
+        {
+          "positions": "4387225b0d817331da024966bedb2717f3f9fec3d5601342a83702002265c6bb",
+          "indices": "009267197151748440f0ca8424c140dd012c6ef44fea3e4f13265f0c19dd3276",
+          "normals": "5cc29473c0f095bf681e3c58f24b30cb37bb935f5ce2e7c00a7e00bfed6a8396",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "0bb684e50882cfd92f61d58985fcaf5b298277fac79293ad1452b36ced3eafc3",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "f7c52ce86175c7472d709c651241e8cb6633101d5b68294a0df590cc0a18aaa9",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "ca2770d8b1a7d3d2edab305fddd7ae478c544f8cfe0bebcef247772e5620d23f",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "cbb6d28d6dc65c4fa80f77ba92e776f942d92d88aca2b7a4509759c98645b8dd",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "3d87893874a2b1571bad4430e145a2a9e8f82f1b50d331044431a91522ab3461",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "59c42b6f869870206e16f24c19859f4f8a92daf6f633411c79032efaa92a4c3f",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "70ac13d53848054d0053ac01cf412d7dfe0de611239129c117af6c338be7b212",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 4,
+      "width": 47.08,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.10185300000011921,
+        "prefix": 299.9512169999998,
+        "rebuild": 382.08973700000206,
+        "validate": 5.519619999999122,
+        "mesh": 157.54441299999962,
+        "transfer": 0.31997599999886006,
+        "observedWall": 854.4214969999994,
+        "stageSum": 845.5268159999996,
+        "previewStageSum": 845.5268159999996
+      },
+      "memoryBefore": {
+        "allocatedSlots": 52000,
+        "retiredSlots": 39000,
+        "linearMemoryBytes": 57409536,
+        "processRssBytes": 463060992,
+        "jsHeapUsedBytes": 46532400,
+        "externalBytes": 75803521,
+        "arrayBufferBytes": 16174883
+      },
+      "memoryAfter": {
+        "allocatedSlots": 65000,
+        "retiredSlots": 52000,
+        "linearMemoryBytes": 65011712,
+        "processRssBytes": 455733248,
+        "jsHeapUsedBytes": 23361824,
+        "externalBytes": 82816718,
+        "arrayBufferBytes": 15585904
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 21672,
+          "externalBytes": 480,
+          "arrayBufferBytes": 480
+        },
+        "prefix": {
+          "allocatedSlots": 6944,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 7602176,
+          "processRssBytes": -7028736,
+          "jsHeapUsedBytes": -28336000,
+          "externalBytes": 5357745,
+          "arrayBufferBytes": -2244431
+        },
+        "rebuild": {
+          "allocatedSlots": 6056,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": -561152,
+          "jsHeapUsedBytes": 3365112,
+          "externalBytes": 61360,
+          "arrayBufferBytes": 61360
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 723064,
+          "externalBytes": 14736,
+          "arrayBufferBytes": 14736
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 262144,
+          "jsHeapUsedBytes": 949744,
+          "externalBytes": 19512,
+          "arrayBufferBytes": 19512
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 105832,
+          "externalBytes": 1559364,
+          "arrayBufferBytes": 1559364
+        }
+      },
+      "memoryAfterStage": {
+        "restore": {
+          "allocatedSlots": 52000,
+          "retiredSlots": 52000,
+          "linearMemoryBytes": 57409536,
+          "processRssBytes": 463060992,
+          "jsHeapUsedBytes": 46554072,
+          "externalBytes": 75804001,
+          "arrayBufferBytes": 16175363
+        },
+        "prefix": {
+          "allocatedSlots": 58944,
+          "retiredSlots": 52000,
+          "linearMemoryBytes": 65011712,
+          "processRssBytes": 456032256,
+          "jsHeapUsedBytes": 18218072,
+          "externalBytes": 81161746,
+          "arrayBufferBytes": 13930932
+        },
+        "rebuild": {
+          "allocatedSlots": 65000,
+          "retiredSlots": 52000,
+          "linearMemoryBytes": 65011712,
+          "processRssBytes": 455471104,
+          "jsHeapUsedBytes": 21583184,
+          "externalBytes": 81223106,
+          "arrayBufferBytes": 13992292
+        },
+        "validate": {
+          "allocatedSlots": 65000,
+          "retiredSlots": 52000,
+          "linearMemoryBytes": 65011712,
+          "processRssBytes": 455471104,
+          "jsHeapUsedBytes": 22306248,
+          "externalBytes": 81237842,
+          "arrayBufferBytes": 14007028
+        },
+        "mesh": {
+          "allocatedSlots": 65000,
+          "retiredSlots": 52000,
+          "linearMemoryBytes": 65011712,
+          "processRssBytes": 455733248,
+          "jsHeapUsedBytes": 23255992,
+          "externalBytes": 81257354,
+          "arrayBufferBytes": 14026540
+        },
+        "transfer": {
+          "allocatedSlots": 65000,
+          "retiredSlots": 52000,
+          "linearMemoryBytes": 65011712,
+          "processRssBytes": 455733248,
+          "jsHeapUsedBytes": 23361824,
+          "externalBytes": 82816718,
+          "arrayBufferBytes": 15585904
+        }
+      },
+      "validation": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "volumes": null,
+      "features": null,
+      "featureSummary": null,
+      "checkpointCount": 1,
+      "bbox": [
+        -26.54,
+        6.5,
+        4.5,
+        48.54,
+        59.5,
+        62.5
+      ],
+      "inventories": [
+        {
+          "faces": 108,
+          "counts": {
+            "cylinder": 42,
+            "nurbs": 8,
+            "torus": 14,
+            "plane": 34,
+            "cone": 2,
+            "sphere": 8
+          },
+          "radii": [
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ]
+          ]
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 2,
+            "nurbs": 4
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 4,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 6
+          },
+          "radii": []
+        },
+        {
+          "faces": 12,
+          "counts": {
+            "plane": 10,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 19,
+          "counts": {
+            "plane": 7,
+            "nurbs": 12
+          },
+          "radii": []
+        },
+        {
+          "faces": 13,
+          "counts": {
+            "plane": 4,
+            "nurbs": 9
+          },
+          "radii": []
+        },
+        {
+          "faces": 10,
+          "counts": {
+            "plane": 5,
+            "nurbs": 5
+          },
+          "radii": []
+        }
+      ],
+      "meshChecks": [
+        {
+          "vertices": 29649,
+          "triangles": 59302,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 50367.78917411166
+        },
+        {
+          "vertices": 422,
+          "triangles": 844,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.388543249198722
+        },
+        {
+          "vertices": 393,
+          "triangles": 782,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 5.3215696451868
+        },
+        {
+          "vertices": 8,
+          "triangles": 12,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 0.7201136228248481
+        },
+        {
+          "vertices": 274,
+          "triangles": 544,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.073480788883934
+        },
+        {
+          "vertices": 638,
+          "triangles": 1276,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.3951797306076
+        },
+        {
+          "vertices": 680,
+          "triangles": 1356,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.063210854641783
+        },
+        {
+          "vertices": 370,
+          "triangles": 740,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.277655723072705
+        }
+      ],
+      "material": [
+        {
+          "point": [
+            11,
+            49.5,
+            8
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            11,
+            18,
+            40
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            -19.54,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            41.54,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            -9.54,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            31.54,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "576fd5ced80ad22ee13220041bd2ab60a56b361c7acdce9f05fde0a3b417f0a9",
+      "meshSha256": [
+        {
+          "positions": "ea18d02f9bd7c74f64eeeeaa37ffdc21c82864b04be445a66b9d52b2af04f2f9",
+          "indices": "568906c837e21ad41bdfad6f55aa5161aff03f9480c468c1977e6a40e27c2880",
+          "normals": "fe823c5a249abacbcfea8115dda1fbea94132ebc0cd9f705ae4c420949c7d352",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "0436ebcffcdaaab52eb2a566c23cd5fdc0cdb775d9f9eb71fc387a832c96bce7",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "83cfb1157023375fac185160aad04cb87e5b9d661592c58957966cb878c7f3db",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "6be609b50c264f98dbe8bad79835849e0e7accf60cfcebd2fd72b95adda3d8d6",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "5d5a9db0bde2bc7711f3fce9aebabecdefcbf19c33677ce75adbbe2029725677",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "78198e6bfc8ad63d832db73ccd9d772f8669fd47cc8195e4973da927e720a1ed",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "8e6df105d79a6f0046c184f969de45d835b3294b4bc84c3c78aded559e2a2717",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "9e6980129a12d91131c80ea0a050010f568bf25bf61c8451753887a3fa2fa448",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 5,
+      "width": 47.1,
+      "cold": false,
+      "warmup": false,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 0.13857300000017858,
+        "prefix": 316.1840709999997,
+        "rebuild": 318.45677299999807,
+        "validate": 5.842432000001281,
+        "mesh": 71.07662700000219,
+        "transfer": 0.2858410000008007,
+        "observedWall": 734.6197700000012,
+        "stageSum": 711.9843170000022,
+        "previewStageSum": 711.9843170000022
+      },
+      "memoryBefore": {
+        "allocatedSlots": 65000,
+        "retiredSlots": 52000,
+        "linearMemoryBytes": 65011712,
+        "processRssBytes": 485556224,
+        "jsHeapUsedBytes": 63854080,
+        "externalBytes": 84055580,
+        "arrayBufferBytes": 16824766
+      },
+      "memoryAfter": {
+        "allocatedSlots": 78000,
+        "retiredSlots": 65000,
+        "linearMemoryBytes": 74514432,
+        "processRssBytes": 478769152,
+        "jsHeapUsedBytes": 27214336,
+        "externalBytes": 92365638,
+        "arrayBufferBytes": 15632104
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 13000,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 36088,
+          "externalBytes": 480,
+          "arrayBufferBytes": 480
+        },
+        "prefix": {
+          "allocatedSlots": 6944,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 9502720,
+          "processRssBytes": -8097792,
+          "jsHeapUsedBytes": -41496488,
+          "externalBytes": 6654606,
+          "arrayBufferBytes": -2848114
+        },
+        "rebuild": {
+          "allocatedSlots": 6056,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 262144,
+          "jsHeapUsedBytes": 3042344,
+          "externalBytes": 61360,
+          "arrayBufferBytes": 61360
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 723040,
+          "externalBytes": 14736,
+          "arrayBufferBytes": 14736
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 1048576,
+          "jsHeapUsedBytes": 949440,
+          "externalBytes": 19512,
+          "arrayBufferBytes": 19512
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 105832,
+          "externalBytes": 1559364,
+          "arrayBufferBytes": 1559364
+        }
+      },
+      "memoryAfterStage": {
+        "restore": {
+          "allocatedSlots": 65000,
+          "retiredSlots": 65000,
+          "linearMemoryBytes": 65011712,
+          "processRssBytes": 485556224,
+          "jsHeapUsedBytes": 63890168,
+          "externalBytes": 84056060,
+          "arrayBufferBytes": 16825246
+        },
+        "prefix": {
+          "allocatedSlots": 71944,
+          "retiredSlots": 65000,
+          "linearMemoryBytes": 74514432,
+          "processRssBytes": 477458432,
+          "jsHeapUsedBytes": 22393680,
+          "externalBytes": 90710666,
+          "arrayBufferBytes": 13977132
+        },
+        "rebuild": {
+          "allocatedSlots": 78000,
+          "retiredSlots": 65000,
+          "linearMemoryBytes": 74514432,
+          "processRssBytes": 477720576,
+          "jsHeapUsedBytes": 25436024,
+          "externalBytes": 90772026,
+          "arrayBufferBytes": 14038492
+        },
+        "validate": {
+          "allocatedSlots": 78000,
+          "retiredSlots": 65000,
+          "linearMemoryBytes": 74514432,
+          "processRssBytes": 477720576,
+          "jsHeapUsedBytes": 26159064,
+          "externalBytes": 90786762,
+          "arrayBufferBytes": 14053228
+        },
+        "mesh": {
+          "allocatedSlots": 78000,
+          "retiredSlots": 65000,
+          "linearMemoryBytes": 74514432,
+          "processRssBytes": 478769152,
+          "jsHeapUsedBytes": 27108504,
+          "externalBytes": 90806274,
+          "arrayBufferBytes": 14072740
+        },
+        "transfer": {
+          "allocatedSlots": 78000,
+          "retiredSlots": 65000,
+          "linearMemoryBytes": 74514432,
+          "processRssBytes": 478769152,
+          "jsHeapUsedBytes": 27214336,
+          "externalBytes": 92365638,
+          "arrayBufferBytes": 15632104
+        }
+      },
+      "validation": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "volumes": null,
+      "features": null,
+      "featureSummary": null,
+      "checkpointCount": 1,
+      "bbox": [
+        -26.55,
+        6.5,
+        4.5,
+        48.55,
+        59.5,
+        62.5
+      ],
+      "inventories": [
+        {
+          "faces": 108,
+          "counts": {
+            "cylinder": 42,
+            "nurbs": 8,
+            "torus": 14,
+            "plane": 34,
+            "cone": 2,
+            "sphere": 8
+          },
+          "radii": [
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ]
+          ]
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 2,
+            "nurbs": 4
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 4,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 6
+          },
+          "radii": []
+        },
+        {
+          "faces": 12,
+          "counts": {
+            "plane": 10,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 19,
+          "counts": {
+            "plane": 7,
+            "nurbs": 12
+          },
+          "radii": []
+        },
+        {
+          "faces": 13,
+          "counts": {
+            "plane": 4,
+            "nurbs": 9
+          },
+          "radii": []
+        },
+        {
+          "faces": 10,
+          "counts": {
+            "plane": 5,
+            "nurbs": 5
+          },
+          "radii": []
+        }
+      ],
+      "meshChecks": [
+        {
+          "vertices": 29649,
+          "triangles": 59302,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 50370.909538127715
+        },
+        {
+          "vertices": 422,
+          "triangles": 844,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.388558480686933
+        },
+        {
+          "vertices": 393,
+          "triangles": 782,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 5.321582331629787
+        },
+        {
+          "vertices": 8,
+          "triangles": 12,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 0.7201153397111657
+        },
+        {
+          "vertices": 274,
+          "triangles": 544,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.0734952693835655
+        },
+        {
+          "vertices": 638,
+          "triangles": 1276,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.39519497791108
+        },
+        {
+          "vertices": 680,
+          "triangles": 1356,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.063225310479049
+        },
+        {
+          "vertices": 370,
+          "triangles": 740,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.277670689325746
+        }
+      ],
+      "material": [
+        {
+          "point": [
+            11,
+            49.5,
+            8
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            11,
+            18,
+            40
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            -19.55,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            41.55,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            -9.55,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            31.55,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "8180db0577a8e3fe294e412c30750535771880b4f6a5b30f34438b379c41cba9",
+      "meshSha256": [
+        {
+          "positions": "802fac2956e40529ff420699ce57dae929b20cc971e26e203ca0aa7e92920935",
+          "indices": "50e9b35b57a9ba0109655d3f0fe3d4970310a9d2458bb33c43e0f2350c3b8e81",
+          "normals": "a50ceb7e15079d5db322259df610712970bbcec7b9f7ca89aaa38cc61dbbab00",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "d640f9410b7221e8f29bba2d8de105f0f124af3c9cbb510c7189f6256b4a28fc",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "26b61d1bf6dec4a69b08107708e6a807d9db84623c5714e59bc93cd225fef262",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "9c21bdfde7987af3575375f96d805a55bcfbef5bd189e9c5d2d5258895f3ab92",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "6b3f464ebe332b5a6d0948a32d0e696b3137ee0233e626223fd84c81af4633eb",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "f262ae58ec340b1c9e3234020c2fa25c9aebcd4b3d0f343db006a5225be33a8f",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "fbb515c0e765055bc3127fbe803445d5a0068d6be91d5c2caca65baeb91961d2",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "193860c438566ad15fa90cc43f8cc98fb332519083e560df47e2ede3fa9df418",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "transferredBytes": 1557440
+    }
+  ],
+  "summary": {
+    "total": 6,
+    "cold": {
+      "index": 0,
+      "width": 47,
+      "cold": true,
+      "warmup": true,
+      "revisited": false,
+      "accepted": true,
+      "stagesMs": {
+        "restore": 5.523548000000005,
+        "prefix": 7701.676659,
+        "rebuild": 1436.56581,
+        "validate": 18.219033999999738,
+        "mesh": 971.1094780000003,
+        "transfer": 10.461476000000403,
+        "observedWall": 10148.094258,
+        "stageSum": 10143.556005,
+        "previewStageSum": 10143.556005
+      },
+      "memoryBefore": {
+        "allocatedSlots": 0,
+        "retiredSlots": 0,
+        "linearMemoryBytes": 1507328,
+        "processRssBytes": 124260352,
+        "jsHeapUsedBytes": 7868624,
+        "externalBytes": 26685391,
+        "arrayBufferBytes": 22957720
+      },
+      "memoryAfter": {
+        "allocatedSlots": 13000,
+        "retiredSlots": 0,
+        "linearMemoryBytes": 23265280,
+        "processRssBytes": 376377344,
+        "jsHeapUsedBytes": 11450480,
+        "externalBytes": 38790203,
+        "arrayBufferBytes": 13304580
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 34000,
+          "externalBytes": 480,
+          "arrayBufferBytes": 480
+        },
+        "prefix": {
+          "allocatedSlots": 6944,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 6225920,
+          "processRssBytes": 232980480,
+          "jsHeapUsedBytes": 1779800,
+          "externalBytes": -4344292,
+          "arrayBufferBytes": -10570212
+        },
+        "rebuild": {
+          "allocatedSlots": 6056,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 917504,
+          "processRssBytes": 3407872,
+          "jsHeapUsedBytes": 935080,
+          "externalBytes": 269852,
+          "arrayBufferBytes": -647652
+        },
+        "validate": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 524288,
+          "jsHeapUsedBytes": -522656,
+          "externalBytes": -15088,
+          "arrayBufferBytes": -15088
+        },
+        "mesh": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 14614528,
+          "processRssBytes": 15204352,
+          "jsHeapUsedBytes": 1245376,
+          "externalBytes": 14634496,
+          "arrayBufferBytes": 19968
+        },
+        "transfer": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 0,
+          "processRssBytes": 0,
+          "jsHeapUsedBytes": 110256,
+          "externalBytes": 1559364,
+          "arrayBufferBytes": 1559364
+        }
+      },
+      "memoryAfterStage": {
+        "restore": {
+          "allocatedSlots": 0,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 1507328,
+          "processRssBytes": 124260352,
+          "jsHeapUsedBytes": 7902624,
+          "externalBytes": 26685871,
+          "arrayBufferBytes": 22958200
+        },
+        "prefix": {
+          "allocatedSlots": 6944,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 7733248,
+          "processRssBytes": 357240832,
+          "jsHeapUsedBytes": 9682424,
+          "externalBytes": 22341579,
+          "arrayBufferBytes": 12387988
+        },
+        "rebuild": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 8650752,
+          "processRssBytes": 360648704,
+          "jsHeapUsedBytes": 10617504,
+          "externalBytes": 22611431,
+          "arrayBufferBytes": 11740336
+        },
+        "validate": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 8650752,
+          "processRssBytes": 361172992,
+          "jsHeapUsedBytes": 10094848,
+          "externalBytes": 22596343,
+          "arrayBufferBytes": 11725248
+        },
+        "mesh": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 23265280,
+          "processRssBytes": 376377344,
+          "jsHeapUsedBytes": 11340224,
+          "externalBytes": 37230839,
+          "arrayBufferBytes": 11745216
+        },
+        "transfer": {
+          "allocatedSlots": 13000,
+          "retiredSlots": 0,
+          "linearMemoryBytes": 23265280,
+          "processRssBytes": 376377344,
+          "jsHeapUsedBytes": 11450480,
+          "externalBytes": 38790203,
+          "arrayBufferBytes": 13304580
+        }
+      },
+      "validation": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "volumes": null,
+      "features": null,
+      "featureSummary": null,
+      "checkpointCount": 1,
+      "bbox": [
+        -26.5,
+        6.5,
+        4.5,
+        48.5,
+        59.5,
+        62.5
+      ],
+      "inventories": [
+        {
+          "faces": 108,
+          "counts": {
+            "cylinder": 42,
+            "nurbs": 8,
+            "torus": 14,
+            "plane": 34,
+            "cone": 2,
+            "sphere": 8
+          },
+          "radii": [
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ]
+          ]
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 2,
+            "nurbs": 4
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 4,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 6
+          },
+          "radii": []
+        },
+        {
+          "faces": 12,
+          "counts": {
+            "plane": 10,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 19,
+          "counts": {
+            "plane": 7,
+            "nurbs": 12
+          },
+          "radii": []
+        },
+        {
+          "faces": 13,
+          "counts": {
+            "plane": 4,
+            "nurbs": 9
+          },
+          "radii": []
+        },
+        {
+          "faces": 10,
+          "counts": {
+            "plane": 5,
+            "nurbs": 5
+          },
+          "radii": []
+        }
+      ],
+      "meshChecks": [
+        {
+          "vertices": 29649,
+          "triangles": 59302,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 50355.298483334656
+        },
+        {
+          "vertices": 422,
+          "triangles": 844,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.3885432491985386
+        },
+        {
+          "vertices": 393,
+          "triangles": 782,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 5.321569645186874
+        },
+        {
+          "vertices": 8,
+          "triangles": 12,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 0.7201136228248393
+        },
+        {
+          "vertices": 274,
+          "triangles": 544,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.073480788883843
+        },
+        {
+          "vertices": 638,
+          "triangles": 1276,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.3951797306077305
+        },
+        {
+          "vertices": 680,
+          "triangles": 1356,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.063210854641909
+        },
+        {
+          "vertices": 370,
+          "triangles": 740,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.277655723072674
+        }
+      ],
+      "material": [
+        {
+          "point": [
+            11,
+            49.5,
+            8
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            11,
+            18,
+            40
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            -19.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            41.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            -9.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            31.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "806f0cf2dd391c16f89f8b20e28b38a991e3b20e9c70e22d9546785d92a8455a",
+      "meshSha256": [
+        {
+          "positions": "a5ec6e5bf6ef70c1c8572a0a0fbe194650127ba96538244e916ffaac360472dc",
+          "indices": "06e493bc3095b7afa1577676d2d6aca64bb320fe2429b9dd433e795899582897",
+          "normals": "2814e723d00baa6dc9b4d406b4886ada1571a7f4fd117a4ee47b2adbe49b90f3",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "16084e93ea84b0fcfdfe508998a232e778fea0e50a2b28d3ac3029336a84d930",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "43cac2eac88806fb2b8a189c69b5034849efcab114660bf8c82ac9488845860e",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "d34b7a599c8ae53400ba88fe404b09037eef1b8cc1fa93215e9d596c50913d99",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "9756d0f6cf1b3f4abe0c7f99c3277c6cefd83fec1a5aefe201c45bbf9fce96af",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "4028fbc8e2585d2a63686843b9b902f70877393c942cb16daa599d7425f25168",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "32449273c5438ecc0add055509746432bb993e444933681a47c1a19c1af9b090",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "bcf97d53077769abb85625d4be31009e48737c2ee6c21a4581dd0869d019b283",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "transferredBytes": 1557440
+    },
+    "retained": {
+      "samples": 4,
+      "timingsMs": {
+        "restore": {
+          "n": 4,
+          "p50": 0.09844699999848672,
+          "p95": 0.13857300000017858,
+          "max": 0.13857300000017858
+        },
+        "prefix": {
+          "n": 4,
+          "p50": 299.9512169999998,
+          "p95": 446.3286389999994,
+          "max": 446.3286389999994
+        },
+        "rebuild": {
+          "n": 4,
+          "p50": 382.08973700000206,
+          "p95": 935.8237929999996,
+          "max": 935.8237929999996
+        },
+        "validate": {
+          "n": 4,
+          "p50": 5.586858000000575,
+          "p95": 5.842432000001281,
+          "max": 5.842432000001281
+        },
+        "mesh": {
+          "n": 4,
+          "p50": 86.74425900000097,
+          "p95": 157.54441299999962,
+          "max": 157.54441299999962
+        },
+        "transfer": {
+          "n": 4,
+          "p50": 0.31997599999886006,
+          "p95": 3.247880000000805,
+          "max": 3.247880000000805
+        },
+        "observedWall": {
+          "n": 4,
+          "p50": 780.6440860000002,
+          "p95": 1555.321277000001,
+          "max": 1555.321277000001
+        },
+        "stageSum": {
+          "n": 4,
+          "p50": 776.2805530000023,
+          "p95": 1548.1249229999976,
+          "max": 1548.1249229999976
+        },
+        "previewStageSum": {
+          "n": 4,
+          "p50": 776.2805530000023,
+          "p95": 1548.1249229999976,
+          "max": 1548.1249229999976
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 13000,
+            "p95": 13000,
+            "max": 13000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 21664,
+            "p95": 36088,
+            "max": 36088
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 480,
+            "p95": 480,
+            "max": 480
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 480,
+            "p95": 480,
+            "max": 480
+          }
+        },
+        "prefix": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 6944,
+            "p95": 6944,
+            "max": 6944
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 9371648,
+            "p95": 11993088,
+            "max": 11993088
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": -8097792,
+            "p95": 5505024,
+            "max": 5505024
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": -30641560,
+            "p95": 3613680,
+            "max": 3613680
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 6654606,
+            "p95": 10088236,
+            "max": 10088236
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": -2256015,
+            "p95": 716588,
+            "max": 716588
+          }
+        },
+        "rebuild": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 6056,
+            "p95": 6056,
+            "max": 6056
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": -561152,
+            "p95": 524288,
+            "max": 524288
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 3042344,
+            "p95": 3517760,
+            "max": 3517760
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 61360,
+            "p95": 61360,
+            "max": 61360
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 61360,
+            "p95": 61360,
+            "max": 61360
+          }
+        },
+        "validate": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 723064,
+            "p95": 843840,
+            "max": 843840
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 14736,
+            "p95": 14736,
+            "max": 14736
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 14736,
+            "p95": 14736,
+            "max": 14736
+          }
+        },
+        "mesh": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 0,
+            "p95": 2228224,
+            "max": 2228224
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 1048576,
+            "p95": 4194304,
+            "max": 4194304
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 949440,
+            "p95": 1112032,
+            "max": 1112032
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 19512,
+            "p95": 1501782,
+            "max": 1501782
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 19512,
+            "p95": 19512,
+            "max": 19512
+          }
+        },
+        "transfer": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 105832,
+            "p95": 105848,
+            "max": 105848
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 1559364,
+            "p95": 1559364,
+            "max": 1559364
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 1559364,
+            "p95": 1559364,
+            "max": 1559364
+          }
+        },
+        "volume": {
+          "allocatedSlots": null,
+          "retiredSlots": null,
+          "linearMemoryBytes": null,
+          "processRssBytes": null,
+          "jsHeapUsedBytes": null,
+          "externalBytes": null,
+          "arrayBufferBytes": null
+        },
+        "recognize": {
+          "allocatedSlots": null,
+          "retiredSlots": null,
+          "linearMemoryBytes": null,
+          "processRssBytes": null,
+          "jsHeapUsedBytes": null,
+          "externalBytes": null,
+          "arrayBufferBytes": null
+        }
+      }
+    },
+    "firstSeen": {
+      "samples": 4,
+      "timingsMs": {
+        "restore": {
+          "n": 4,
+          "p50": 0.09844699999848672,
+          "p95": 0.13857300000017858,
+          "max": 0.13857300000017858
+        },
+        "prefix": {
+          "n": 4,
+          "p50": 299.9512169999998,
+          "p95": 446.3286389999994,
+          "max": 446.3286389999994
+        },
+        "rebuild": {
+          "n": 4,
+          "p50": 382.08973700000206,
+          "p95": 935.8237929999996,
+          "max": 935.8237929999996
+        },
+        "validate": {
+          "n": 4,
+          "p50": 5.586858000000575,
+          "p95": 5.842432000001281,
+          "max": 5.842432000001281
+        },
+        "mesh": {
+          "n": 4,
+          "p50": 86.74425900000097,
+          "p95": 157.54441299999962,
+          "max": 157.54441299999962
+        },
+        "transfer": {
+          "n": 4,
+          "p50": 0.31997599999886006,
+          "p95": 3.247880000000805,
+          "max": 3.247880000000805
+        },
+        "observedWall": {
+          "n": 4,
+          "p50": 780.6440860000002,
+          "p95": 1555.321277000001,
+          "max": 1555.321277000001
+        },
+        "stageSum": {
+          "n": 4,
+          "p50": 776.2805530000023,
+          "p95": 1548.1249229999976,
+          "max": 1548.1249229999976
+        },
+        "previewStageSum": {
+          "n": 4,
+          "p50": 776.2805530000023,
+          "p95": 1548.1249229999976,
+          "max": 1548.1249229999976
+        }
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 13000,
+            "p95": 13000,
+            "max": 13000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 21664,
+            "p95": 36088,
+            "max": 36088
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 480,
+            "p95": 480,
+            "max": 480
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 480,
+            "p95": 480,
+            "max": 480
+          }
+        },
+        "prefix": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 6944,
+            "p95": 6944,
+            "max": 6944
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 9371648,
+            "p95": 11993088,
+            "max": 11993088
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": -8097792,
+            "p95": 5505024,
+            "max": 5505024
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": -30641560,
+            "p95": 3613680,
+            "max": 3613680
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 6654606,
+            "p95": 10088236,
+            "max": 10088236
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": -2256015,
+            "p95": 716588,
+            "max": 716588
+          }
+        },
+        "rebuild": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 6056,
+            "p95": 6056,
+            "max": 6056
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": -561152,
+            "p95": 524288,
+            "max": 524288
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 3042344,
+            "p95": 3517760,
+            "max": 3517760
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 61360,
+            "p95": 61360,
+            "max": 61360
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 61360,
+            "p95": 61360,
+            "max": 61360
+          }
+        },
+        "validate": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 723064,
+            "p95": 843840,
+            "max": 843840
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 14736,
+            "p95": 14736,
+            "max": 14736
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 14736,
+            "p95": 14736,
+            "max": 14736
+          }
+        },
+        "mesh": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 0,
+            "p95": 2228224,
+            "max": 2228224
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 1048576,
+            "p95": 4194304,
+            "max": 4194304
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 949440,
+            "p95": 1112032,
+            "max": 1112032
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 19512,
+            "p95": 1501782,
+            "max": 1501782
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 19512,
+            "p95": 19512,
+            "max": 19512
+          }
+        },
+        "transfer": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 105832,
+            "p95": 105848,
+            "max": 105848
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 1559364,
+            "p95": 1559364,
+            "max": 1559364
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 1559364,
+            "p95": 1559364,
+            "max": 1559364
+          }
+        },
+        "volume": {
+          "allocatedSlots": null,
+          "retiredSlots": null,
+          "linearMemoryBytes": null,
+          "processRssBytes": null,
+          "jsHeapUsedBytes": null,
+          "externalBytes": null,
+          "arrayBufferBytes": null
+        },
+        "recognize": {
+          "allocatedSlots": null,
+          "retiredSlots": null,
+          "linearMemoryBytes": null,
+          "processRssBytes": null,
+          "jsHeapUsedBytes": null,
+          "externalBytes": null,
+          "arrayBufferBytes": null
+        }
+      }
+    },
+    "revisited": {
+      "samples": 0,
+      "timingsMs": {
+        "restore": null,
+        "prefix": null,
+        "rebuild": null,
+        "validate": null,
+        "mesh": null,
+        "transfer": null,
+        "observedWall": null,
+        "stageSum": null,
+        "previewStageSum": null
+      },
+      "memoryDeltas": {
+        "restore": {
+          "allocatedSlots": null,
+          "retiredSlots": null,
+          "linearMemoryBytes": null,
+          "processRssBytes": null,
+          "jsHeapUsedBytes": null,
+          "externalBytes": null,
+          "arrayBufferBytes": null
+        },
+        "prefix": {
+          "allocatedSlots": null,
+          "retiredSlots": null,
+          "linearMemoryBytes": null,
+          "processRssBytes": null,
+          "jsHeapUsedBytes": null,
+          "externalBytes": null,
+          "arrayBufferBytes": null
+        },
+        "rebuild": {
+          "allocatedSlots": null,
+          "retiredSlots": null,
+          "linearMemoryBytes": null,
+          "processRssBytes": null,
+          "jsHeapUsedBytes": null,
+          "externalBytes": null,
+          "arrayBufferBytes": null
+        },
+        "validate": {
+          "allocatedSlots": null,
+          "retiredSlots": null,
+          "linearMemoryBytes": null,
+          "processRssBytes": null,
+          "jsHeapUsedBytes": null,
+          "externalBytes": null,
+          "arrayBufferBytes": null
+        },
+        "mesh": {
+          "allocatedSlots": null,
+          "retiredSlots": null,
+          "linearMemoryBytes": null,
+          "processRssBytes": null,
+          "jsHeapUsedBytes": null,
+          "externalBytes": null,
+          "arrayBufferBytes": null
+        },
+        "transfer": {
+          "allocatedSlots": null,
+          "retiredSlots": null,
+          "linearMemoryBytes": null,
+          "processRssBytes": null,
+          "jsHeapUsedBytes": null,
+          "externalBytes": null,
+          "arrayBufferBytes": null
+        },
+        "volume": {
+          "allocatedSlots": null,
+          "retiredSlots": null,
+          "linearMemoryBytes": null,
+          "processRssBytes": null,
+          "jsHeapUsedBytes": null,
+          "externalBytes": null,
+          "arrayBufferBytes": null
+        },
+        "recognize": {
+          "allocatedSlots": null,
+          "retiredSlots": null,
+          "linearMemoryBytes": null,
+          "processRssBytes": null,
+          "jsHeapUsedBytes": null,
+          "externalBytes": null,
+          "arrayBufferBytes": null
+        }
+      }
+    }
+  }
+}

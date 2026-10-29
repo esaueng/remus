@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "kind": "bounded-newton-arithmetic-correctness-and-deterministic-work",
+  "source": {
+    "commit": "d7b1544a81122c8898fc8f883b8b3f8589a3b39b",
+    "file": "crates/math/src/nurbs/intersection/line.rs",
+    "sha256": "700a057b7a2889b3e418e0d25aa458b6d023340a590acd0afa916744483b0ec9"
+  },
+  "testBinding": {
+    "execution": "Working-tree runs before the S1 commit; the captured tested line.rs content hash equals the immutable S1 file hash.",
+    "testedFileContentMatchesImmutableS1": true,
+    "limitations": "The logs are authentic retained files, hashed directly here. They were not reconstructed and are not presented as logs emitted from a checkout already named d7b1544a. A complete compiler-input snapshot was not captured with these particular focused runs; later immutable-source full validation and the normal commit hook supply separate evidence."
+  },
+  "runs": [
+    {
+      "label": "default",
+      "command": [
+        "taskset",
+        "-c",
+        "0-14,16-30",
+        "env",
+        "CARGO_BUILD_JOBS=2",
+        "RUST_MIN_STACK=536870912",
+        "cargo",
+        "test",
+        "--profile",
+        "ci-test",
+        "-p",
+        "remus-math",
+        "nurbs::intersection::line::",
+        "--lib",
+        "--",
+        "--nocapture"
+      ],
+      "result": {
+        "passed": 31,
+        "failed": 0,
+        "ignored": 0
+      },
+      "rawLog": {
+        "alias": "default-line-tests.log",
+        "sha256": "c45148220ed07eccf30337291c15ce90913f04541d8c65a5de499c8957792d35",
+        "bytes": 3645
+      },
+      "workProbe": {
+        "queries": 240,
+        "surfaceFamilies": 4,
+        "raysPerSurface": 60,
+        "baselineDeltaCalculations": 3685,
+        "candidateDeltaCalculations": 2394,
+        "deltaHits": 1291,
+        "residualHits": 1602,
+        "returnedRoots": 37,
+        "rootBitsAndOrderMatchCacheDisabledControl": true,
+        "totalIterationRequestCountsMatch": true
+      }
+    },
+    {
+      "label": "SIMD",
+      "command": [
+        "taskset",
+        "-c",
+        "0-14,16-30",
+        "env",
+        "CARGO_BUILD_JOBS=2",
+        "RUST_MIN_STACK=536870912",
+        "cargo",
+        "test",
+        "--profile",
+        "ci-test",
+        "-p",
+        "remus-math",
+        "--features",
+        "simd",
+        "nurbs::intersection::line::",
+        "--lib",
+        "--",
+        "--nocapture"
+      ],
+      "result": {
+        "passed": 31,
+        "failed": 0,
+        "ignored": 0
+      },
+      "rawLog": {
+        "alias": "simd-line-tests.log",
+        "sha256": "0950f7cb3000f628b14a4ea4366c4ce534517bb55deed4be707da4128c3b9bb3",
+        "bytes": 3645
+      },
+      "workProbe": {
+        "queries": 240,
+        "surfaceFamilies": 4,
+        "raysPerSurface": 60,
+        "baselineDeltaCalculations": 3685,
+        "candidateDeltaCalculations": 2394,
+        "deltaHits": 1291,
+        "residualHits": 1602,
+        "returnedRoots": 37,
+        "rootBitsAndOrderMatchCacheDisabledControl": true,
+        "totalIterationRequestCountsMatch": true
+      }
+    }
+  ],
+  "deterministicGuard": {
+    "inequality": "candidate_delta_calculations * 4 <= baseline_delta_calculations * 3",
+    "minimumReductionPercent": 25,
+    "observedReductionPercent": 35.03392130257802,
+    "timingAssertion": false
+  },
+  "independentOracles": "The selected suite retains the pre-O06 allocating/full-budget reference comparisons, closed-cylinder Cartesian roots, periodic/pole/high-degree/scaled/placed controls, narrow-bump graph oracles, far-translated misses, complete-root reach checks, and strict-final-tolerance control.",
+  "policy": {
+    "newtonOutcomeMemoized": false,
+    "convergenceDecisionsMemoized": false,
+    "clampOrBoundsDecisionsMemoized": false,
+    "remainingBudgetOrCyclesMemoized": false,
+    "existingToleranceOrRootBudgetChanged": false,
+    "fullRayUvAndPointBitsKeyed": true,
+    "nonfiniteInputsAndResultsBypass": true,
+    "additionalArithmeticEntriesPerQuery": 64,
+    "arithmeticStorageBytesUpperBound": 8192,
+    "persistentRetention": false
+  },
+  "normalSourceCommitHook": {
+    "status": "passed",
+    "reportedScope": "Normal all-target/all-feature pre-commit checks",
+    "rawLogSha256": "33678e031bee0aa192cf6edb54fcad6ee72cc2219c0a90afb018544a2699bdb1",
+    "rawLogBytes": 2444,
+    "commitShortIdInLog": "d7b1544a8"
+  },
+  "performanceScope": "Deterministic work reduction only; no native/WASM/recipe elapsed-time speedup or production tail claim."
+}

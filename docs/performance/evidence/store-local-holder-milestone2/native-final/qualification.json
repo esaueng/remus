@@ -1,0 +1,98 @@
+{
+  "schema": "remus-m2-native-qualification-v1",
+  "source": {
+    "head": "7364ab7be5e598b7c868bd63239dc831cbceb933",
+    "status": "",
+    "working_tree_sha256": "50bf94d4b63bf824ef4860fa6d6f8b244491f3a2bf5593a14dd4fb33295460be"
+  },
+  "git_tree": "e961daf35b4132dae9190bb8265e8b6e9304f22d",
+  "source_files_sha256": {
+    "Cargo.toml": "239ea846958192f846c466afe64e719f109e702e0570e4b00d1e8da653f840a2",
+    "Cargo.lock": "51b920921dfa2a0d64448d7555bc529bed4330f0d5503caf8f3593fd42b30f0c",
+    ".cargo/config.toml": "fa81c590ff19f6ed86010391d3dbb99b88a803740ecf1ec6c3db159da61c2ee8",
+    ".config/nextest.toml": "f9ac3a332fb2bfa41467b980784233c1f4dad510f4366cf716fe9c8af0552f0d",
+    "crates/math/src/fma.rs": "d0f8602fc3eadf802223a421844d4fc558445a38f6fd6625994662c18fcb8684",
+    "crates/math/src/nurbs/intersection/line.rs": "e94f6c40c1fc5371a1ca64653dd9913b0b8bc971c9fbd1cdeea85e460eac3255",
+    "crates/algo/src/classifier/torus_patch.rs": "6439e3d7b658cac1f32c6339f4c1a96347d7030d251e4f3fc33ccad5842974c7",
+    "crates/algo/src/classifier/ray_cast.rs": "b25bf7598ee95bf4f7b3fac108479e2af03b78943c7acbf54ad3b2b79cb69692",
+    "crates/algo/src/perf.rs": "b2fe7f2c5826f5291dbd81d76df5197348d597f1198cd1c559bd2a6aaf378714",
+    "crates/operations/src/performance.rs": "925623d1e38315a8e20a421281d0cc87eafa9c20baa636bf2626d6a6db4753ba",
+    "crates/operations/src/boolean/store_local.rs": "61d8f78bf1dee0537254b7dae3a69115f075ad2cecb1bdaa4ca08f7a68a183e2",
+    "crates/operations/src/boolean/store_local_tests.rs": "73937040fcc0445d5c438c87279489f1a88b3e8ca138d37084e2ace3a99f622d",
+    "scripts/performance/run.py": "11375b219deefd58d2624d531cd71912aa1dd02c26a3519f447cf2bb0089d0da",
+    "scripts/performance/complex-boolean/run.py": "0ebfe43e295af72b6883fa7e3a6b8bb6c1707819b7bacfc47272409dd415af4b",
+    "scripts/performance/complex-boolean/workloads.json": "938f217f03d3d310898132cb632b4f87ff2a28df47dc0f5bc4b3783489182096",
+    "crates/operations/examples/complex_boolean_baseline.rs": "72acdd85e9b21d63e200532cb90224b5f68ef49dbbc5988b05e7f46708468c32",
+    "scripts/check-approx-census.py": "08a8e9c78d331d4dd1dc2732fb3cfe17aa4e8e84d2e8d39dfb4c571e05ff8d8e",
+    "crates/operations/examples/approx_census.rs": "b3820a5e29cf43a5b5605442285f8453935061dd57a46626bd9cf4ce9ffdb15e",
+    "crates/operations/examples/approx_census.snapshot": "86042deb86f8ac2dcd4bdf18621314cca1f4aecf4af5143b2c414c219ebed18f",
+    "crates/operations/src/validate.rs": "035944119bda09a63169e9140e9890beb13eb7735d66a2c981ed91d2ff97f630",
+    "scripts/performance/store-local/qualify.cjs": "4b2f1fd4b679f4f70ea039819a5e006de1de32b826e75d164a0b559b41a71b22",
+    "scripts/performance/store-local/qualify.test.cjs": "ac86d701d6c0c0b3c309647a4b206968e02b5de124ada7f51706f632da01e0f9",
+    "scripts/perf/parameter-rebuild/holder_recipe.cjs": "68a572fe2294321a2c53893ffc0edf160e3b318e1b3395fb82602f6d1f0811a5",
+    "scripts/perf/parameter-rebuild/parameter_bench.cjs": "79751f89874700de56917dad0e0a5c1d46a2b0008e9aac9178b90a09ac4f4d09",
+    "scripts/perf/filleted-face-edit/wasm_edit_bench.cjs": "605bcfe13bb916afa6663be7b91135ecbde7ec865a786f8864c06e18a4c5f03b"
+  },
+  "timing_use": "No latency or cross-runtime performance claim; all smoke/census timings are diagnostic and excluded.",
+  "complex_smoke": {
+    "status": "passed",
+    "eligible_cases": 14,
+    "warmup_rows": 14,
+    "retained_rows": 14,
+    "worker_sha256": "1d275dc2c6960b8827d3057739d2ffd62c0344ad364d29e3465d64f6203a863a",
+    "receipt": "complex-qualification.json",
+    "receipt_sha256": "d0c5a26bb730e04e3d6d25c3e0aa90c6bb4ecdd235d1f0313936a83d1fe2cc7f",
+    "producer": "actual Cargo compiler-artifact from captured clean source; executable frozen and hash rechecked"
+  },
+  "approximation_census": {
+    "status": "passed",
+    "rows": 52,
+    "normalized_classifications": "All 52 equal unchanged committed snapshot; no timing equality inferred.",
+    "families": {
+      "boolean": 30,
+      "offset": 6,
+      "shell": 1,
+      "revolve": 6,
+      "fillet-rb": 2,
+      "fillet-v2": 2,
+      "fillet-variable": 1,
+      "chamfer": 1,
+      "chamfer-v2": 1,
+      "offset_face": 2
+    },
+    "binary_sha256": "3aa0b5a0f4f24825258ee22f857fbf124265ece4d67cfcfb4a0f158e89ecb111",
+    "receipt": "census-qualification.json",
+    "receipt_sha256": "9ade12d6a0d1b13a1487b3a85fb1c312343085cfe6f86cbd6e7ec24ead260cd2",
+    "normalized_rows": "census.normalized.tsv",
+    "normalized_rows_sha256": "367f9ff58f61d8ef0ebc552e32e4de5fee8c6997e02bad612ebcb626f9b198b5",
+    "snapshot_sha256": "86042deb86f8ac2dcd4bdf18621314cca1f4aecf4af5143b2c414c219ebed18f",
+    "normalizer_sha256": "08a8e9c78d331d4dd1dc2732fb3cfe17aa4e8e84d2e8d39dfb4c571e05ff8d8e",
+    "comparison_basis": "All 52 fresh normalized rows match the committed snapshot. The snapshot and normalizer bytes equal the immutable task baseline; no elapsed-time or previous-candidate result is reused."
+  },
+  "unqualified_witness": {
+    "case": "sparse-fuse-256",
+    "measurement_eligible": false,
+    "execution": "Not rerun or qualified by this smoke; remains excluded by unchanged manifest.",
+    "component_pairs": 32640,
+    "existing_component_pair_budget": 4096,
+    "validator_source_unchanged_from": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+    "validator_source_sha256": "035944119bda09a63169e9140e9890beb13eb7735d66a2c981ed91d2ff97f630"
+  },
+  "source_edits": "None; private immutable worktree remains clean.",
+  "scope_limits": [
+    "Counter-free documented native defaults: store-local requested off, pcurve and wire-area memos on; no actual route counters captured.",
+    "Complex smoke proves bounded strict/quantity/components/material/input-volume-bit gates, not full graph isomorphism or whole source identity.",
+    "Census compares result identity, face counts, exact/fallback/error classifications and revolve carrier census; legacy approximation/refusal rows remain accepted only as unchanged rows.",
+    "Canonical WASM/packages and controlled native performance captures are separate coordinating-task evidence.",
+    "Prior rejected-candidate proofs remain preserved separately and are not relabeled as final-source results."
+  ],
+  "workspace_tests": {
+    "status": "passed",
+    "passed": 9237,
+    "skipped": 34,
+    "documentation_passed": 9,
+    "store_local_feature_counter_tests_passed": 33,
+    "receipt": "workspace-tests.json",
+    "receipt_sha256": "bb985e73d642cf116dc8ea374f960f53fe4083fb79487b3da2cebe8a8af46125"
+  }
+}

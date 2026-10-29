@@ -79,3 +79,43 @@ passes; the native report records the base SHA, individual source hashes,
 toolchain/build settings and exact assertions. General imported-body, cavity,
 NURBS-pcurve, identity and lineage adoption,
 and default enablement remain open. No kernel speedup is claimed here.
+
+## Stored-authority follow-through (2026-10-28)
+
+The preceding failed-package observations are historical and retained unchanged.
+Runtime source `d7b1544a81122c8898fc8f883b8b3f8589a3b39b` repairs the splice:
+source entities are reused only at the true boundary shared with kept faces;
+patch interiors retain the GFA builder's stored authority. Boundary reuse
+follows full GFA's original-edge precedence. Ambiguity, non-injective matching,
+incompatible boundary-vertex authority and unsupported rebuilt per-use data
+decline without mutation. Kept-face pcurves and periodic winding remain intact.
+The strict witness is now a normal test and requires an actual local success.
+All 33 focused `perf-counters` tests pass, including mixed stored edge policies,
+alias guards, periodic kept authority and exact fallback after a raised boundary
+vertex forces a decline. Existing copy-work guards are unchanged.
+
+The package qualifier adds incidence/sharing preservation across all eight
+entity tables, including orphans. Equal encodings prove a concrete bijection;
+ordering ties can false-reject equivalent graphs, so this is not a complete
+general graph-isomorphism solver. Eighteen tool tests cover coincident
+degree-preserving rewires and edge/wire/loop/coedge alias changes. Actual route
+observations use the existing opt-in performance trace, separately for synthetic
+operations and holder preparation/rebuild. Missing or truncated traces are
+unavailable; `--require-route-proof on` enforces positive locality evidence.
+
+[Matched-source package qualification and holder report](../../performance/store-local-holder-rebuild-2026-10-28.md)
+bind baseline `c754a9b7` and runtime candidate `d7b1544a` to canonical builds and
+separately installed npm artifacts. The baseline still has exactly two enabled
+cross-drilled failures; the candidate passes all 24 direct/batch cells and four
+holder runs with actual-route proof required. Enabled holder preparation has
+two local successes from four attempts at each width; its suffix still uses
+the existing n-ary path. General imported-body/cavity/NURBS adoption, lineage
+adoption and default enablement remain open. Splitting, same-domain grouping,
+junction growth and assembly budgets remain separate PERF-B10 work.
+
+Final 2026-10-29 qualification at runtime `7364ab7b` and its separately installed
+canonical package repeats all 24 direct/batch cells and four holder runs with
+route proof required and no exact-content failure. All 33 focused native
+feature-counter tests and the complete 9,237-test native workspace pass. Earlier
+source observations above remain historical; default enablement and wider
+adoption are still open.

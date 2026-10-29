@@ -1,0 +1,915 @@
+{
+  "schemaVersion": 1,
+  "kind": "packaged-holder-capture-environment",
+  "sourceShas": {
+    "baseline": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+    "candidate": "292f084f9165f8f31bcaeb1581324eba69835994"
+  },
+  "captureWindow": {
+    "startedAt": "2026-10-29T01:56:50.186699+00:00",
+    "completedAt": "2026-10-29T01:58:47.325805+00:00"
+  },
+  "capturePolicy": {
+    "modes": [
+      "preview",
+      "completion"
+    ],
+    "processOrder": [
+      "baseline",
+      "candidate",
+      "candidate",
+      "baseline",
+      "candidate",
+      "baseline",
+      "baseline",
+      "candidate"
+    ],
+    "ticks": 6,
+    "warmup": 2,
+    "rebuild": "full",
+    "pattern": "unique",
+    "cpu": 31,
+    "physicalSiblings": "15,31",
+    "tracing": "off; unchanged timing driver and fresh production-default kernels",
+    "removedChildEnvironment": [
+      "NODE_OPTIONS",
+      "NODE_V8_COVERAGE"
+    ],
+    "sourceLabels": "Externally supplied; separate verified source/build/package receipts bind bytes."
+  },
+  "node": {
+    "binary": {
+      "bytes": 126879696,
+      "sha256": "e32e2d16081cf644f88392934288086e7662529d0d43277c34f7aad2207cfafb",
+      "mode": "0o755"
+    },
+    "versions": {
+      "node": "24.22.1",
+      "acorn": "8.18.0",
+      "ada": "4.0.0",
+      "amaro": "1.1.11",
+      "ares": "1.34.9",
+      "brotli": "1.2.0",
+      "cldr": "48.0",
+      "icu": "78.3",
+      "llhttp": "9.4.3",
+      "merve": "1.2.2",
+      "modules": "137",
+      "napi": "10",
+      "nbytes": "0.1.4",
+      "ncrypto": "0.0.1",
+      "nghttp2": "1.70.0",
+      "nghttp3": "",
+      "ngtcp2": "",
+      "openssl": "3.5.9",
+      "simdjson": "4.6.11",
+      "simdutf": "6.4.0",
+      "sqlite": "3.53.4",
+      "tz": "2026e",
+      "undici": "7.30.1",
+      "unicode": "17.0",
+      "uv": "1.52.1",
+      "uvwasi": "0.0.23",
+      "v8": "13.6.233.17-node.58",
+      "zlib": "1.3.2.1-motley-285e94b",
+      "zstd": "1.5.7"
+    },
+    "runtimeFlags": [],
+    "removedChildEnvironmentKeys": [
+      "NODE_OPTIONS",
+      "NODE_V8_COVERAGE"
+    ]
+  },
+  "tooling": {
+    "collector": {
+      "bytes": 16805,
+      "sha256": "acc7f42ce5522c8e0fb05e998c22f4d1fc2ca0369188579b2cd1b4416098cb71",
+      "mode": "0o664"
+    },
+    "qualifier": {
+      "bytes": 10039,
+      "sha256": "ef58e6b7da1424e649b8b7f53ec17284c6cd872fc869963330bc1bf75faa6a0f",
+      "mode": "0o664"
+    },
+    "environmentReceiptProducer": {
+      "bytes": 3668,
+      "sha256": "8a5fc347efc162d0cf17d47ad58ab96a40d1bbab6f48e548d4ca7c64c2b0ad60"
+    }
+  },
+  "harness": {
+    "sourceSha": "292f084f9165f8f31bcaeb1581324eba69835994",
+    "sourceTree": "aa02a81efe014fe30a89051ae943e0272b3fb584",
+    "files": {
+      "scripts/perf/parameter-rebuild/parameter_bench.cjs": {
+        "bytes": 11550,
+        "sha256": "79751f89874700de56917dad0e0a5c1d46a2b0008e9aac9178b90a09ac4f4d09",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/holder_recipe.cjs": {
+        "bytes": 11420,
+        "sha256": "68a572fe2294321a2c53893ffc0edf160e3b318e1b3395fb82602f6d1f0811a5",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/compare_runs.cjs": {
+        "bytes": 4522,
+        "sha256": "af99568e614caa9d8ecb13b5e45cd789e70e3e9a1b3b1af54242ef32322c38c7",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/compare_variants.cjs": {
+        "bytes": 2089,
+        "sha256": "816ab9df5257318f53a2a1311b4b68da0556588756fdeaf785ac6508a3bc80c5",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/verify_recipe.cjs": {
+        "bytes": 10750,
+        "sha256": "4c1b9bbdc3b8be1404553a1af9a63ba73a9467f937e032adc7f9cc5f551ca007",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/README.md": {
+        "bytes": 8388,
+        "sha256": "7cce2ca9a52740aaf52c03dd536457a3b806d96718fa1e04a44970f091dc34b3",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/NOTICE.md": {
+        "bytes": 2330,
+        "sha256": "d981c268ab93966219b386964938527d84a1957f0c063087ac9c14dfb36d489e",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/fixtures/recipe.json": {
+        "bytes": 10269,
+        "sha256": "8a24356effac832b714ca6724d33feedf91c1251d2bb62096d332ed2c55c8719",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/fixtures/base.arena.json": {
+        "bytes": 497925,
+        "sha256": "7a8a3fac03a2ce63eb0e84ed61fd9fc09c6454973cc6225d5122cc1e3bf05026",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/fixtures/text.arena.json": {
+        "bytes": 125722,
+        "sha256": "dd59dd4c7de07fb7c63c2c8b69aac17fd4ba97244bab7ba3fcfb3638b4b0a96f",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/fixtures/pinned-source-manifest.json": {
+        "bytes": 13267,
+        "sha256": "f5fa969c94a6da14f9f91e4d3a3fe7eeaf196ec8ce5df3e5ed388f83366d4651",
+        "mode": "0o664"
+      },
+      "scripts/perf/filleted-face-edit/wasm_edit_bench.cjs": {
+        "bytes": 17248,
+        "sha256": "605bcfe13bb916afa6663be7b91135ecbde7ec865a786f8864c06e18a4c5f03b",
+        "mode": "0o664"
+      }
+    }
+  },
+  "affinity": {
+    "workerReported": [
+      "31"
+    ],
+    "cpu": 31,
+    "physicalSiblings": "15,31"
+  },
+  "hostObservations": {
+    "beforeCapture": {
+      "observedAt": "2026-10-29T01:56:50.186720+00:00",
+      "loadAverage": [
+        20.017578125,
+        25.59716796875,
+        23.55615234375
+      ],
+      "cpuPressure": "some avg10=2.59 avg60=5.98 avg300=10.54 total=7228700521\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+      "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354590\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718777",
+      "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274975723\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243753632"
+    },
+    "afterCapture": {
+      "observedAt": "2026-10-29T01:58:47.325838+00:00",
+      "loadAverage": [
+        7.8564453125,
+        19.0126953125,
+        21.3818359375
+      ],
+      "cpuPressure": "some avg10=5.60 avg60=7.65 avg300=9.94 total=7239680132\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+      "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30355086\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24719273",
+      "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=275002641\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243774617"
+    },
+    "perProcess": [
+      {
+        "process": "preview-0-baseline",
+        "startedAt": "2026-10-29T01:56:50.344013+00:00",
+        "finishedAt": "2026-10-29T01:56:56.380507+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:56:50.344026+00:00",
+          "loadAverage": [
+            20.017578125,
+            25.59716796875,
+            23.55615234375
+          ],
+          "cpuPressure": "some avg10=2.59 avg60=5.98 avg300=10.54 total=7228700821\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354590\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718777",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274975873\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243753782"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:56:56.380519+00:00",
+          "loadAverage": [
+            17.84912109375,
+            24.95068359375,
+            23.3671875
+          ],
+          "cpuPressure": "some avg10=5.67 avg60=6.38 avg300=10.54 total=7229368835\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354600\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718787",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274977489\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243755359"
+        }
+      },
+      {
+        "process": "preview-1-candidate",
+        "startedAt": "2026-10-29T01:56:56.532086+00:00",
+        "finishedAt": "2026-10-29T01:57:02.862423+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:56:56.532100+00:00",
+          "loadAverage": [
+            17.84912109375,
+            24.95068359375,
+            23.3671875
+          ],
+          "cpuPressure": "some avg10=5.67 avg60=6.38 avg300=10.54 total=7229369071\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354600\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718787",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274977489\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243755359"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:57:02.862436+00:00",
+          "loadAverage": [
+            16.89990234375,
+            24.6357421875,
+            23.2734375
+          ],
+          "cpuPressure": "some avg10=7.20 avg60=6.71 avg300=10.53 total=7229998773\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354624\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718811",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274980156\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243757952"
+        }
+      },
+      {
+        "process": "preview-2-candidate",
+        "startedAt": "2026-10-29T01:57:03.018470+00:00",
+        "finishedAt": "2026-10-29T01:57:09.231374+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:57:03.018483+00:00",
+          "loadAverage": [
+            16.89990234375,
+            24.6357421875,
+            23.2734375
+          ],
+          "cpuPressure": "some avg10=7.20 avg60=6.71 avg300=10.53 total=7229998839\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354624\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718811",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274980156\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243757952"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:57:09.231387+00:00",
+          "loadAverage": [
+            16.18701171875,
+            24.359375,
+            23.19091796875
+          ],
+          "cpuPressure": "some avg10=7.77 avg60=6.89 avg300=10.49 total=7230563416\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354624\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718811",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274980489\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243758193"
+        }
+      },
+      {
+        "process": "preview-3-baseline",
+        "startedAt": "2026-10-29T01:57:09.384893+00:00",
+        "finishedAt": "2026-10-29T01:57:15.404235+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:57:09.384908+00:00",
+          "loadAverage": [
+            16.18701171875,
+            24.359375,
+            23.19091796875
+          ],
+          "cpuPressure": "some avg10=7.77 avg60=6.89 avg300=10.49 total=7230563945\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354624\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718811",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274981052\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243758736"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:57:15.404247+00:00",
+          "loadAverage": [
+            15.37109375,
+            24.05419921875,
+            23.09814453125
+          ],
+          "cpuPressure": "some avg10=7.99 avg60=7.03 avg300=10.44 total=7231086188\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354645\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718832",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274982044\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243759517"
+        }
+      },
+      {
+        "process": "preview-4-candidate",
+        "startedAt": "2026-10-29T01:57:15.563618+00:00",
+        "finishedAt": "2026-10-29T01:57:21.851750+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:57:15.563629+00:00",
+          "loadAverage": [
+            14.62060546875,
+            23.75439453125,
+            23.005859375
+          ],
+          "cpuPressure": "some avg10=7.99 avg60=7.03 avg300=10.44 total=7231086415\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354645\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718832",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274982044\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243759517"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:57:21.851761+00:00",
+          "loadAverage": [
+            13.85009765625,
+            23.44287109375,
+            22.90869140625
+          ],
+          "cpuPressure": "some avg10=8.16 avg60=7.13 avg300=10.39 total=7231633638\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354651\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718838",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274985987\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243761511"
+        }
+      },
+      {
+        "process": "preview-5-baseline",
+        "startedAt": "2026-10-29T01:57:22.017034+00:00",
+        "finishedAt": "2026-10-29T01:57:28.000575+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:57:22.017048+00:00",
+          "loadAverage": [
+            13.85009765625,
+            23.44287109375,
+            22.90869140625
+          ],
+          "cpuPressure": "some avg10=8.16 avg60=7.13 avg300=10.39 total=7231634314\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354651\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718838",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274986476\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243761953"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:57:28.000585+00:00",
+          "loadAverage": [
+            13.22119140625,
+            23.15283203125,
+            22.81787109375
+          ],
+          "cpuPressure": "some avg10=9.51 avg60=7.47 avg300=10.40 total=7232309738\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354652\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718838",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274987338\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243762814"
+        }
+      },
+      {
+        "process": "preview-6-baseline",
+        "startedAt": "2026-10-29T01:57:28.142820+00:00",
+        "finishedAt": "2026-10-29T01:57:34.087849+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:57:28.142832+00:00",
+          "loadAverage": [
+            13.22119140625,
+            23.15283203125,
+            22.81787109375
+          ],
+          "cpuPressure": "some avg10=9.51 avg60=7.47 avg300=10.40 total=7232310012\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354652\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718838",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274987338\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243762814"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:57:34.087860+00:00",
+          "loadAverage": [
+            12.40234375,
+            22.81787109375,
+            22.71142578125
+          ],
+          "cpuPressure": "some avg10=11.53 avg60=8.04 avg300=10.46 total=7233179324\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354652\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718839",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274987749\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243763223"
+        }
+      },
+      {
+        "process": "preview-7-candidate",
+        "startedAt": "2026-10-29T01:57:34.232749+00:00",
+        "finishedAt": "2026-10-29T01:57:40.348292+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:57:34.232760+00:00",
+          "loadAverage": [
+            12.40234375,
+            22.81787109375,
+            22.71142578125
+          ],
+          "cpuPressure": "some avg10=10.16 avg60=7.91 avg300=10.42 total=7233179342\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354652\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718839",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274987749\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243763223"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:57:40.348302+00:00",
+          "loadAverage": [
+            11.8095703125,
+            22.52197265625,
+            22.6162109375
+          ],
+          "cpuPressure": "some avg10=11.33 avg60=8.47 avg300=10.49 total=7234067346\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354652\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718839",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274987997\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243763462"
+        }
+      },
+      {
+        "process": "completion-0-baseline",
+        "startedAt": "2026-10-29T01:57:40.490594+00:00",
+        "finishedAt": "2026-10-29T01:57:48.186483+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:57:40.490605+00:00",
+          "loadAverage": [
+            11.8095703125,
+            22.52197265625,
+            22.6162109375
+          ],
+          "cpuPressure": "some avg10=11.33 avg60=8.47 avg300=10.49 total=7234067348\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354652\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718839",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274987997\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243763462"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:57:48.186500+00:00",
+          "loadAverage": [
+            10.5283203125,
+            21.89501953125,
+            22.4111328125
+          ],
+          "cpuPressure": "some avg10=10.49 avg60=8.78 avg300=10.51 total=7235005044\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354689\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718876",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274988566\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243763966"
+        }
+      },
+      {
+        "process": "completion-1-candidate",
+        "startedAt": "2026-10-29T01:57:48.336569+00:00",
+        "finishedAt": "2026-10-29T01:57:56.512047+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:57:48.336581+00:00",
+          "loadAverage": [
+            10.5283203125,
+            21.89501953125,
+            22.4111328125
+          ],
+          "cpuPressure": "some avg10=10.49 avg60=8.78 avg300=10.51 total=7235005347\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354689\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718876",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274988566\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243763966"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:57:56.512059+00:00",
+          "loadAverage": [
+            9.37060546875,
+            21.2724609375,
+            22.20263671875
+          ],
+          "cpuPressure": "some avg10=10.06 avg60=9.08 avg300=10.53 total=7235951763\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354689\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718876",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274990910\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243764921"
+        }
+      },
+      {
+        "process": "completion-2-candidate",
+        "startedAt": "2026-10-29T01:57:56.675264+00:00",
+        "finishedAt": "2026-10-29T01:58:04.978708+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:57:56.675279+00:00",
+          "loadAverage": [
+            9.37060546875,
+            21.2724609375,
+            22.20263671875
+          ],
+          "cpuPressure": "some avg10=10.06 avg60=9.08 avg300=10.53 total=7235952037\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354689\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718876",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274990910\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243764921"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:58:04.978725+00:00",
+          "loadAverage": [
+            8.8603515625,
+            20.96875,
+            22.09912109375
+          ],
+          "cpuPressure": "some avg10=9.19 avg60=9.14 avg300=10.51 total=7236777718\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354690\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718876",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274992108\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243765897"
+        }
+      },
+      {
+        "process": "completion-3-baseline",
+        "startedAt": "2026-10-29T01:58:05.155362+00:00",
+        "finishedAt": "2026-10-29T01:58:13.154807+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:58:05.155381+00:00",
+          "loadAverage": [
+            8.8603515625,
+            20.96875,
+            22.09912109375
+          ],
+          "cpuPressure": "some avg10=9.19 avg60=9.14 avg300=10.51 total=7236777823\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354690\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718876",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274992108\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243765897"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:58:13.154826+00:00",
+          "loadAverage": [
+            8.66064453125,
+            20.525390625,
+            21.94189453125
+          ],
+          "cpuPressure": "some avg10=7.94 avg60=8.92 avg300=10.43 total=7237438859\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354693\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718880",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274993607\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243767001"
+        }
+      },
+      {
+        "process": "completion-4-candidate",
+        "startedAt": "2026-10-29T01:58:13.377236+00:00",
+        "finishedAt": "2026-10-29T01:58:21.815949+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:58:13.377255+00:00",
+          "loadAverage": [
+            8.66064453125,
+            20.525390625,
+            21.94189453125
+          ],
+          "cpuPressure": "some avg10=7.94 avg60=8.92 avg300=10.43 total=7237438993\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354693\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718880",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274993607\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243767001"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:58:21.815979+00:00",
+          "loadAverage": [
+            7.943359375,
+            19.98095703125,
+            21.7490234375
+          ],
+          "cpuPressure": "some avg10=6.80 avg60=8.58 avg300=10.31 total=7237994209\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354695\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718881",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274994970\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243768159"
+        }
+      },
+      {
+        "process": "completion-5-baseline",
+        "startedAt": "2026-10-29T01:58:22.024142+00:00",
+        "finishedAt": "2026-10-29T01:58:30.064896+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:58:22.024172+00:00",
+          "loadAverage": [
+            7.943359375,
+            19.98095703125,
+            21.7490234375
+          ],
+          "cpuPressure": "some avg10=6.80 avg60=8.58 avg300=10.31 total=7237994926\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354695\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718881",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274995341\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243768413"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:58:30.064913+00:00",
+          "loadAverage": [
+            8.3486328125,
+            19.86474609375,
+            21.70166015625
+          ],
+          "cpuPressure": "some avg10=6.44 avg60=8.29 avg300=10.20 total=7238545096\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354695\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718882",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274997839\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243770545"
+        }
+      },
+      {
+        "process": "completion-6-baseline",
+        "startedAt": "2026-10-29T01:58:30.273526+00:00",
+        "finishedAt": "2026-10-29T01:58:38.327903+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:58:30.273548+00:00",
+          "loadAverage": [
+            8.3486328125,
+            19.86474609375,
+            21.70166015625
+          ],
+          "cpuPressure": "some avg10=5.46 avg60=8.05 avg300=10.14 total=7238545217\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30354695\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24718882",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=274997839\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243770545"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:58:38.327927+00:00",
+          "loadAverage": [
+            8.1220703125,
+            19.43994140625,
+            21.54345703125
+          ],
+          "cpuPressure": "some avg10=5.47 avg60=7.83 avg300=10.04 total=7239109465\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30355075\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24719261",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=275000220\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243772431"
+        }
+      },
+      {
+        "process": "completion-7-candidate",
+        "startedAt": "2026-10-29T01:58:38.552352+00:00",
+        "finishedAt": "2026-10-29T01:58:46.975069+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:58:38.552369+00:00",
+          "loadAverage": [
+            8.1220703125,
+            19.43994140625,
+            21.54345703125
+          ],
+          "cpuPressure": "some avg10=5.47 avg60=7.83 avg300=10.04 total=7239109886\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30355075\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24719261",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=275000220\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243772431"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:58:46.975086+00:00",
+          "loadAverage": [
+            7.8564453125,
+            19.0126953125,
+            21.3818359375
+          ],
+          "cpuPressure": "some avg10=5.60 avg60=7.65 avg300=9.94 total=7239679924\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=30355086\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=24719273",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=275002506\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=243774482"
+        }
+      }
+    ]
+  },
+  "rawFiles": {
+    "ready.json": {
+      "bytes": 9374,
+      "sha256": "aa97dab93766ebf46555142d23e6fcef3a1fa62e1c7d50ff65005c3217dae3d8"
+    },
+    "capture-start.json": {
+      "bytes": 1564,
+      "sha256": "ce2cfe0f860c6e03f15f81bf6938ac806abcf07a30c0ccd458dd82ed82dbd197"
+    },
+    "capture-complete.json": {
+      "bytes": 667,
+      "sha256": "92e7c717c91b6667d10933d2114c3cb94ae52114c0bfa1b620d06321a8374205"
+    },
+    "launches.json": {
+      "bytes": 37302,
+      "sha256": "84a14e1783647dd89b9bc2682bac08feb0fa3464adeaacd13a58dbd13677f996"
+    },
+    "raw/preview-0-baseline.start.json": {
+      "bytes": 1368,
+      "sha256": "999cd5e9133cb3e657bef6bfd8a6edf463e820e817403d93b3b39c74552b30ae"
+    },
+    "raw/preview-0-baseline.finish.json": {
+      "bytes": 2193,
+      "sha256": "833e1b1166192f0d8f9e6e674baa0832bbf1a0112a77a58d0d3e7636481fd939"
+    },
+    "raw/preview-0-baseline.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/preview-0-baseline.stderr": {
+      "bytes": 199,
+      "sha256": "0997039cecaa934d298b0b5e5182cafa805780a0d85a07480c182f62bcc69666"
+    },
+    "raw/preview-1-candidate.start.json": {
+      "bytes": 1370,
+      "sha256": "f98248b522953299380bc171af807acb0bc1f4de740c7e7816c648dcfe0d0c37"
+    },
+    "raw/preview-1-candidate.finish.json": {
+      "bytes": 2194,
+      "sha256": "abb4d7a9f7d9c7fad011be475ee5c84fdd4066c8d12ca2f6d2af2ae4cd7bc28f"
+    },
+    "raw/preview-1-candidate.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/preview-1-candidate.stderr": {
+      "bytes": 199,
+      "sha256": "9ad7fd33aafe4217aa6a858c8f1c5e5cc261860e7c1a612410d95ce1e7799060"
+    },
+    "raw/preview-2-candidate.start.json": {
+      "bytes": 1369,
+      "sha256": "5a986ad4d43556773e4c8d9e62d16da766627d66355e3df8683e92ed3a0d0619"
+    },
+    "raw/preview-2-candidate.finish.json": {
+      "bytes": 2194,
+      "sha256": "5be6303afe38717794d5a7d14aa8f9ab1af6193cac6b05cca4b053d95d38cb30"
+    },
+    "raw/preview-2-candidate.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/preview-2-candidate.stderr": {
+      "bytes": 199,
+      "sha256": "45fd08b6a2cb1bab60c7a844e95a484cc5250c4912798bc36e703bf3e37bfb52"
+    },
+    "raw/preview-3-baseline.start.json": {
+      "bytes": 1365,
+      "sha256": "0f574dcabf981fc5c7220fe383191c5f82aabd293f43feac4fb2d0b589750e99"
+    },
+    "raw/preview-3-baseline.finish.json": {
+      "bytes": 2192,
+      "sha256": "0a9b1a381e27fc9d1436995123ab679976fdc66fac5de9e65d58b73d5bfabb7f"
+    },
+    "raw/preview-3-baseline.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/preview-3-baseline.stderr": {
+      "bytes": 199,
+      "sha256": "0eada5424a3b4a2b737647475af0e03715a312270702896b23e3744216378b66"
+    },
+    "raw/preview-4-candidate.start.json": {
+      "bytes": 1371,
+      "sha256": "308dedc297ee0876916bf4adee3ae532612f2cadee143f3e0baf1cf30c4740a3"
+    },
+    "raw/preview-4-candidate.finish.json": {
+      "bytes": 2200,
+      "sha256": "7acbecd89530ca31fb3f720ce028fcb1845c718faf00222742a0ac571258c680"
+    },
+    "raw/preview-4-candidate.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/preview-4-candidate.stderr": {
+      "bytes": 199,
+      "sha256": "75bf3633b707bc7e45f80e6e05638fd6ac0b74767fc6d5768dd23aa98d4bcf48"
+    },
+    "raw/preview-5-baseline.start.json": {
+      "bytes": 1370,
+      "sha256": "0872e5c33d8e22cd04abc1c40d2ad1a9bdff8ecf184276b04bb6142d0aa686e8"
+    },
+    "raw/preview-5-baseline.finish.json": {
+      "bytes": 2200,
+      "sha256": "b4ef90d6f43160f03653ebef1026ff1b14312b55175fe1720a42cbc9199af394"
+    },
+    "raw/preview-5-baseline.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/preview-5-baseline.stderr": {
+      "bytes": 199,
+      "sha256": "3a6c68f105832445194e5367d8a35c9d07ba9bf93a991e58991c9d3827e1e7be"
+    },
+    "raw/preview-6-baseline.start.json": {
+      "bytes": 1370,
+      "sha256": "119cd4ef9e090f7a4315be1afbdcbd050eb348493ff00292416272b82779fa49"
+    },
+    "raw/preview-6-baseline.finish.json": {
+      "bytes": 2198,
+      "sha256": "d5e77df8b3a59410a184acc979521dc59c9c600c140631ff63e913d67e7fd77d"
+    },
+    "raw/preview-6-baseline.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/preview-6-baseline.stderr": {
+      "bytes": 199,
+      "sha256": "94a251d3931d150b2698e17472ed328ed9729cccf1426109fcb4e6ea0ff7e5dc"
+    },
+    "raw/preview-7-candidate.start.json": {
+      "bytes": 1372,
+      "sha256": "f9115a093908fa40c2eddc867915325a8092e019c1e1b354e81c4503b4099505"
+    },
+    "raw/preview-7-candidate.finish.json": {
+      "bytes": 2201,
+      "sha256": "20fa1e98b8167b7915eba357bcb90674eed99a1bff49be2a7113cc4750e78e57"
+    },
+    "raw/preview-7-candidate.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/preview-7-candidate.stderr": {
+      "bytes": 199,
+      "sha256": "f6a239f91c6ce766482c5434edc5412d16cc99cf1681808691be922f1b2cc99c"
+    },
+    "raw/completion-0-baseline.start.json": {
+      "bytes": 1381,
+      "sha256": "f4f055f05bcd271f56aa6a64b06d6511d4897e64952d19babe57a719dd89aeee"
+    },
+    "raw/completion-0-baseline.finish.json": {
+      "bytes": 2210,
+      "sha256": "2056339a36d095377fb696fc312f37c555df4793ffb14e161570e4f7c172a8b5"
+    },
+    "raw/completion-0-baseline.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/completion-0-baseline.stderr": {
+      "bytes": 217,
+      "sha256": "be642f1931207b5d2adf90a3adea22a167248fde4ba62a2b8a496710255ef4a6"
+    },
+    "raw/completion-1-candidate.start.json": {
+      "bytes": 1385,
+      "sha256": "6599cfb493018c0d9b96982f263d3ace124fde834d71783d1dc48346c3f5d214"
+    },
+    "raw/completion-1-candidate.finish.json": {
+      "bytes": 2214,
+      "sha256": "7fd12104fc88ddd00075988e11fa46ae12b8b684effdd2412c6391d515cbd6ae"
+    },
+    "raw/completion-1-candidate.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/completion-1-candidate.stderr": {
+      "bytes": 217,
+      "sha256": "e526eeb1152ee54bdaa2a206f1ffe9af8e6c5a6fa17fbc25806b9eb7613e258a"
+    },
+    "raw/completion-2-candidate.start.json": {
+      "bytes": 1385,
+      "sha256": "fd5e87a45ae5892fc0d7d028558e098fe2161a6377205385fcc91868787d71bb"
+    },
+    "raw/completion-2-candidate.finish.json": {
+      "bytes": 2207,
+      "sha256": "91d1ef8e49e7055e404c1aa39a8d0cb88f0b6aaa9c6e632c56c012a85fc8eadd"
+    },
+    "raw/completion-2-candidate.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/completion-2-candidate.stderr": {
+      "bytes": 217,
+      "sha256": "cf999518ee85382ae1780bc3154db13d1388887a93c1acff6ccd27d6a13e551e"
+    },
+    "raw/completion-3-baseline.start.json": {
+      "bytes": 1373,
+      "sha256": "699624269b3907b9749ed56839831a1f460d1e9ab3ef37757c29e30bbcbc81c2"
+    },
+    "raw/completion-3-baseline.finish.json": {
+      "bytes": 2200,
+      "sha256": "e1ea3278447b294c072183dc447c878062056ea2a8f794ac2d638c1783b48e34"
+    },
+    "raw/completion-3-baseline.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/completion-3-baseline.stderr": {
+      "bytes": 217,
+      "sha256": "052fdd14bc353dfc55401f63dfcc6bebd1fc1fbf9cd64d80ce15a5d006b0407c"
+    },
+    "raw/completion-4-candidate.start.json": {
+      "bytes": 1383,
+      "sha256": "ac66d648e62ddb19e8cbd879f55ba6fd8ee207d54a89bfcc762df4eaf4aba25e"
+    },
+    "raw/completion-4-candidate.finish.json": {
+      "bytes": 2209,
+      "sha256": "178d6f2cbc99f00153420f0bdb83f205ab210e8ab663a0b659e71719b290a520"
+    },
+    "raw/completion-4-candidate.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/completion-4-candidate.stderr": {
+      "bytes": 217,
+      "sha256": "dbac47ebd915e1a4f3c4e4ca5db4bf63cdbd67449182c5975e2321059d8198cd"
+    },
+    "raw/completion-5-baseline.start.json": {
+      "bytes": 1378,
+      "sha256": "b6e9defea33ced12de98e3814c214e611fb4fedf73da228b80c5723376e87d8a"
+    },
+    "raw/completion-5-baseline.finish.json": {
+      "bytes": 2206,
+      "sha256": "5835e075f2944fbcd1366d8ff79eaf99ca0ace648b7a0ae0c0bb51421c056959"
+    },
+    "raw/completion-5-baseline.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/completion-5-baseline.stderr": {
+      "bytes": 217,
+      "sha256": "ce325d511e705643d92a1781dc85204a7dc163e38bd799e181faf9e4af21b333"
+    },
+    "raw/completion-6-baseline.start.json": {
+      "bytes": 1380,
+      "sha256": "0b6896dd96d193f471ec9769bf12a2272fb98c051afbe0570e56943781ca8498"
+    },
+    "raw/completion-6-baseline.finish.json": {
+      "bytes": 2208,
+      "sha256": "da35636fcd186d4c73df17cb052e752127f7aa58a8cd98ba15f26fbc9133fd72"
+    },
+    "raw/completion-6-baseline.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/completion-6-baseline.stderr": {
+      "bytes": 217,
+      "sha256": "df042808a3b7593e0462dda1a36b204a3a74075787c03d5ef921122f6b397d30"
+    },
+    "raw/completion-7-candidate.start.json": {
+      "bytes": 1384,
+      "sha256": "9890c0fa320ac5af75004667021d5dac447e732be89132a1cf22b6a13713a15c"
+    },
+    "raw/completion-7-candidate.finish.json": {
+      "bytes": 2209,
+      "sha256": "1b98919f2a514028cea72b87d14e413596f70da2508d4a26e91647edbb72fd21"
+    },
+    "raw/completion-7-candidate.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/completion-7-candidate.stderr": {
+      "bytes": 217,
+      "sha256": "a726ca7cf03d3e2c37b62971f7b88e1517a787405f08674ff7b75bb82c20ade7"
+    },
+    "baseline-independent-audit.json": {
+      "bytes": 59867,
+      "sha256": "6f8bd3ce94ca2a838069e87668bc402a5df271d968b8e5cfb05884d347a1cde7"
+    },
+    "candidate-independent-audit.json": {
+      "bytes": 59867,
+      "sha256": "6f8bd3ce94ca2a838069e87668bc402a5df271d968b8e5cfb05884d347a1cde7"
+    }
+  },
+  "scope": "Original local launch/environment/stdout/stderr hashes retained; private paths and commands omitted. These raw files are not claimed reconstructable from this receipt.",
+  "hostLimitations": "The operator coordinated CPU31 and sibling15 with team work. Aggregate load/pressure observations do not prove absence of unrelated host activity.",
+  "timingScope": "Unprofiled synchronous Node kernel/transfer replay; no browser presentation or cold-application claim."
+}

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "source": "d7b1544a81122c8898fc8f883b8b3f8589a3b39b",
+  "command": "taskset -c 0-14,16-30 env CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 RUST_MIN_STACK=536870912 cargo test --workspace --profile ci-test --doc",
+  "exitCode": 0,
+  "passed": 9,
+  "failed": 0,
+  "ignored": 2,
+  "crateSummaries": 17,
+  "rawLogSha256": "1f214abd615a38c63c3d9c9fbe22fe22d6f6244d0ccc0a54ebc0659f298c50bb",
+  "scope": "Raw log remains local; aggregate results do not reconstruct the original log."
+}

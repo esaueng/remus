@@ -1,0 +1,279 @@
+{
+  "schema": "remus-sampled-operand-dispatch-workloads-v1",
+  "captureSha256": "f976d609359262ccfa2cda762752d22eba2490f9206bf08c6389dd3ebd214ded",
+  "prepareScriptSha256": "6e585176112550f0a621bfba83d707ae7d082561eb8fee4d291c19fe4f06d998",
+  "nativeOracleSourceSha256": "1bbe3ec6d6586ffe48c55beb9f3577d1b5bd2476033d14c57e7fb2a9c798688c",
+  "nativeOracleExecutableSha256": "70bfa2b4b6dd4ebd3a082a566d96249cac232e34a09cc625ebea32649365c8ea",
+  "capacity": 65536,
+  "workloads": [
+    {
+      "name": "total-mix",
+      "records": 65536,
+      "counts": {
+        "zero_product_a_only": "18445128",
+        "zero_product_b_only": "6594169",
+        "zero_product_both": "7656618",
+        "finite_nonzero_zeroaddend": "24393861",
+        "finite_nonzero_unitfactor": "178795",
+        "remaining_emulated": "73716426",
+        "remaining_fallback": "47480"
+      },
+      "allocated": {
+        "zero_product_a_only": 9225,
+        "zero_product_b_only": 3298,
+        "zero_product_both": 3830,
+        "finite_nonzero_zeroaddend": 12201,
+        "finite_nonzero_unitfactor": 89,
+        "remaining_emulated": 36869,
+        "remaining_fallback": 24
+      },
+      "inputSha256": "3bb8d74542c43f3025d9de66fe27003bfc30bab32f76115f4df5a27a26d93902",
+      "expectedSha256": "d0d6c82d6c532468750b1e5edacb3f619707fafacb8eb48abad2e0c02c0c4a88"
+    },
+    {
+      "name": "recognition-mix",
+      "records": 65536,
+      "counts": {
+        "zero_product_a_only": "1186657",
+        "zero_product_b_only": "845863",
+        "zero_product_both": "688327",
+        "finite_nonzero_zeroaddend": "3770083",
+        "finite_nonzero_unitfactor": "5868",
+        "remaining_emulated": "29876180",
+        "remaining_fallback": "8368"
+      },
+      "allocated": {
+        "zero_product_a_only": 2138,
+        "zero_product_b_only": 1524,
+        "zero_product_both": 1240,
+        "finite_nonzero_zeroaddend": 6791,
+        "finite_nonzero_unitfactor": 10,
+        "remaining_emulated": 53818,
+        "remaining_fallback": 15
+      },
+      "inputSha256": "9902441bff5d8e9590f671614d6985b29a8426a10fca36fa1b92cacd04e98e56",
+      "expectedSha256": "866a5a2056d771fc662f51fb9191a420a5eb5f6f726f1c5c7214da348ecbf880"
+    },
+    {
+      "name": "preview-mix",
+      "records": 65536,
+      "counts": {
+        "zero_product_a_only": "8477987",
+        "zero_product_b_only": "2676502",
+        "zero_product_both": "3313788",
+        "finite_nonzero_zeroaddend": "9810532",
+        "finite_nonzero_unitfactor": "78281",
+        "remaining_emulated": "20089445",
+        "remaining_fallback": "19556"
+      },
+      "allocated": {
+        "zero_product_a_only": 12495,
+        "zero_product_b_only": 3945,
+        "zero_product_both": 4884,
+        "finite_nonzero_zeroaddend": 14459,
+        "finite_nonzero_unitfactor": 115,
+        "remaining_emulated": 29609,
+        "remaining_fallback": 29
+      },
+      "inputSha256": "d27667cfa2eece4ea88d709a9e43f35a5f7946b5b78be78d6fd35de32d7afb55",
+      "expectedSha256": "a71693295396bada677777e5eee39e97a970c79b9727f5b306da63650de0b486"
+    },
+    {
+      "name": "completion-mix",
+      "records": 65536,
+      "counts": {
+        "zero_product_a_only": "9967141",
+        "zero_product_b_only": "3917667",
+        "zero_product_both": "4342830",
+        "finite_nonzero_zeroaddend": "14583329",
+        "finite_nonzero_unitfactor": "100514",
+        "remaining_emulated": "53626981",
+        "remaining_fallback": "27924"
+      },
+      "allocated": {
+        "zero_product_a_only": 7546,
+        "zero_product_b_only": 2966,
+        "zero_product_both": 3288,
+        "finite_nonzero_zeroaddend": 11040,
+        "finite_nonzero_unitfactor": 76,
+        "remaining_emulated": 40599,
+        "remaining_fallback": 21
+      },
+      "inputSha256": "676f3507cc5b9f81c0dfc10aea4b0989870b95c2f263b5599366813d2bad7c52",
+      "expectedSha256": "89da598ab9b409c4579f4dc2d31921d044b578fb0987c4129e6e844d18bf4e0d"
+    },
+    {
+      "name": "family-zero_product_a_only",
+      "records": 65536,
+      "counts": {
+        "zero_product_a_only": "18445128",
+        "zero_product_b_only": "0",
+        "zero_product_both": "0",
+        "finite_nonzero_zeroaddend": "0",
+        "finite_nonzero_unitfactor": "0",
+        "remaining_emulated": "0",
+        "remaining_fallback": "0"
+      },
+      "allocated": {
+        "zero_product_a_only": 65536,
+        "zero_product_b_only": 0,
+        "zero_product_both": 0,
+        "finite_nonzero_zeroaddend": 0,
+        "finite_nonzero_unitfactor": 0,
+        "remaining_emulated": 0,
+        "remaining_fallback": 0
+      },
+      "inputSha256": "86f805105656ce13d314d9ec24200020e5548222bec1a782d0f2e13bf3733434",
+      "expectedSha256": "d5a39cc01de3ea5cfb85bac2ec6feca6a23d200fa4afa43ddceeca72d3dc6fa8"
+    },
+    {
+      "name": "family-zero_product_b_only",
+      "records": 65536,
+      "counts": {
+        "zero_product_a_only": "0",
+        "zero_product_b_only": "6594169",
+        "zero_product_both": "0",
+        "finite_nonzero_zeroaddend": "0",
+        "finite_nonzero_unitfactor": "0",
+        "remaining_emulated": "0",
+        "remaining_fallback": "0"
+      },
+      "allocated": {
+        "zero_product_a_only": 0,
+        "zero_product_b_only": 65536,
+        "zero_product_both": 0,
+        "finite_nonzero_zeroaddend": 0,
+        "finite_nonzero_unitfactor": 0,
+        "remaining_emulated": 0,
+        "remaining_fallback": 0
+      },
+      "inputSha256": "c244bf53baf809cde2fe7d8c7082ec4e002fb9c9a96039699f83bfc8b7228b27",
+      "expectedSha256": "030e103008ba7b3b8cd9e45dc61e26130fa9d9462e7d84b05755fcdc8c60274d"
+    },
+    {
+      "name": "family-zero_product_both",
+      "records": 65536,
+      "counts": {
+        "zero_product_a_only": "0",
+        "zero_product_b_only": "0",
+        "zero_product_both": "7656618",
+        "finite_nonzero_zeroaddend": "0",
+        "finite_nonzero_unitfactor": "0",
+        "remaining_emulated": "0",
+        "remaining_fallback": "0"
+      },
+      "allocated": {
+        "zero_product_a_only": 0,
+        "zero_product_b_only": 0,
+        "zero_product_both": 65536,
+        "finite_nonzero_zeroaddend": 0,
+        "finite_nonzero_unitfactor": 0,
+        "remaining_emulated": 0,
+        "remaining_fallback": 0
+      },
+      "inputSha256": "34744b9547394a510e00160208f8e21b28c710a39a9daf4d194d4d891a0b7e92",
+      "expectedSha256": "58f14aae66b37b48cffce79242e96a280c9185b219b745851df9d2b5de4069c3"
+    },
+    {
+      "name": "family-finite_nonzero_zeroaddend",
+      "records": 65536,
+      "counts": {
+        "zero_product_a_only": "0",
+        "zero_product_b_only": "0",
+        "zero_product_both": "0",
+        "finite_nonzero_zeroaddend": "24393861",
+        "finite_nonzero_unitfactor": "0",
+        "remaining_emulated": "0",
+        "remaining_fallback": "0"
+      },
+      "allocated": {
+        "zero_product_a_only": 0,
+        "zero_product_b_only": 0,
+        "zero_product_both": 0,
+        "finite_nonzero_zeroaddend": 65536,
+        "finite_nonzero_unitfactor": 0,
+        "remaining_emulated": 0,
+        "remaining_fallback": 0
+      },
+      "inputSha256": "5cbe58012f324ba4bb29482b7d501a208b69f4d60259b2c49738f51062f3de5e",
+      "expectedSha256": "0e5f8deebada62c6fe57f80070a5bb8d7fd48e9c337b80bda905bd5cd7519f78"
+    },
+    {
+      "name": "family-finite_nonzero_unitfactor",
+      "records": 65536,
+      "counts": {
+        "zero_product_a_only": "0",
+        "zero_product_b_only": "0",
+        "zero_product_both": "0",
+        "finite_nonzero_zeroaddend": "0",
+        "finite_nonzero_unitfactor": "178795",
+        "remaining_emulated": "0",
+        "remaining_fallback": "0"
+      },
+      "allocated": {
+        "zero_product_a_only": 0,
+        "zero_product_b_only": 0,
+        "zero_product_both": 0,
+        "finite_nonzero_zeroaddend": 0,
+        "finite_nonzero_unitfactor": 65536,
+        "remaining_emulated": 0,
+        "remaining_fallback": 0
+      },
+      "inputSha256": "b556b0bb3befb82eb026ac995068be336f805f271f5060ca46ed7cd2a0f4e6be",
+      "expectedSha256": "8cd566c1d180ed878c3963089255b631ed00d345c9b539bc552c8db15fdd9656"
+    },
+    {
+      "name": "family-remaining_emulated",
+      "records": 65536,
+      "counts": {
+        "zero_product_a_only": "0",
+        "zero_product_b_only": "0",
+        "zero_product_both": "0",
+        "finite_nonzero_zeroaddend": "0",
+        "finite_nonzero_unitfactor": "0",
+        "remaining_emulated": "73716426",
+        "remaining_fallback": "0"
+      },
+      "allocated": {
+        "zero_product_a_only": 0,
+        "zero_product_b_only": 0,
+        "zero_product_both": 0,
+        "finite_nonzero_zeroaddend": 0,
+        "finite_nonzero_unitfactor": 0,
+        "remaining_emulated": 65536,
+        "remaining_fallback": 0
+      },
+      "inputSha256": "ea0245122b19461087fbdcbc1eee006f94542a42c5ff97c4db54aa7d1e710f32",
+      "expectedSha256": "e0893037a270fa5c7510168a95819278aee13b23df497a4dd499195620da70c2"
+    },
+    {
+      "name": "family-remaining_fallback",
+      "records": 65536,
+      "counts": {
+        "zero_product_a_only": "0",
+        "zero_product_b_only": "0",
+        "zero_product_both": "0",
+        "finite_nonzero_zeroaddend": "0",
+        "finite_nonzero_unitfactor": "0",
+        "remaining_emulated": "0",
+        "remaining_fallback": "47480"
+      },
+      "allocated": {
+        "zero_product_a_only": 0,
+        "zero_product_b_only": 0,
+        "zero_product_both": 0,
+        "finite_nonzero_zeroaddend": 0,
+        "finite_nonzero_unitfactor": 0,
+        "remaining_emulated": 0,
+        "remaining_fallback": 65536
+      },
+      "inputSha256": "81d466a4eb0dab3e76b4b63034c5320964621fd104b966349ffa0e4b85ff7700",
+      "expectedSha256": "a26fa8e996c77d758974892e6d27ebb56a4f6bd9864e0d3213a8ea8bd6bb3a79"
+    }
+  ],
+  "limits": [
+    "First-N actual operand samples are repeated with measured diagnostic family proportions; this is not a replay of the shipping operation stream.",
+    "Probe side effects may alter compiler call elimination and inlining; diagnostic counts are not guaranteed shipping execution counts.",
+    "Within-family value distribution is biased by bounded first samples; micro results select experiments only."
+  ]
+}

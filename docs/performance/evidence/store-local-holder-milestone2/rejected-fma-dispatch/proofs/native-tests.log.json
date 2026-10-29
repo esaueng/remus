@@ -1,0 +1,8 @@
+{
+  "schema": "remus-lossless-text-v1",
+  "originalFile": "native-tests.log",
+  "encoding": "UTF-8",
+  "originalBytes": 527,
+  "originalSha256": "e61c38c2a8370bd1e973a2f873b3925758168df7af4f04c9f2a01a882e586d8e",
+  "payload": "\nrunning 4 tests\ntest tests::unsigned_underflow_and_both_closed_endpoints ... ok\nexponent-grid triples: 442368\ntest tests::every_exponent_with_boundary_mantissas_and_both_signs ... ok\ncritical Cartesian triples: 405224\ntest tests::endpoint_neighbors_and_special_values_in_every_position ... ok\nfull-width random triples: 2000000, seed B17F64A573ED9001\ntest tests::full_width_random_bit_patterns_preserve_predicate_and_route ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s\n\n"
+}

@@ -1,0 +1,23 @@
+{
+  "sourceSha256": "6439e3d7b658cac1f32c6339f4c1a96347d7030d251e4f3fc33ccad5842974c7",
+  "baseline": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+  "normalization": "Strip whitespace and comments; rename reference functions, remove exactly two observer calls; ignore optional call trailing commas. No expression, constant, branch or comparison normalization.",
+  "oracles": {
+    "trimmed_torus_polygon": {
+      "matchesOriginalTokensExceptInstrumentationAndFormatting": true,
+      "originalNormalizedSha256": "18ba644328bea645a95cd1570baf435ccbabbd52d5c2efdfa03e24f335fbde86",
+      "referenceNormalizedSha256": "18ba644328bea645a95cd1570baf435ccbabbd52d5c2efdfa03e24f335fbde86"
+    },
+    "sample_trim_segment": {
+      "matchesOriginalTokensExceptInstrumentationAndFormatting": true,
+      "originalNormalizedSha256": "1e414f79aa467078742f83cf7fb4068f7e03a4dce87ef6d7444833b99bd9e36f",
+      "referenceNormalizedSha256": "1e414f79aa467078742f83cf7fb4068f7e03a4dce87ef6d7444833b99bd9e36f"
+    }
+  },
+  "previousReviewedSourceSha256": "6098b364b5c67957c811cf97c5b670f1f263b8f1854c913c5f920c5c6f80a102",
+  "finalSource": "7364ab7be5e598b7c868bd63239dc831cbceb933",
+  "productionPrefixMatchesPreviouslyReviewedSourceExactly": true,
+  "productionPrefixSha256": "e88423deb7437d268c3f9dabc982c34baa5a7c3dcd29eb6b65249494813d3314",
+  "finalSourceReferenceFunctionsRechecked": true,
+  "productionPrefixDefinition": "UTF-8 file text before the exact marker '\\n#[cfg(test)]\\nmod tests {'; excludes the LF immediately preceding the cfg attribute."
+}

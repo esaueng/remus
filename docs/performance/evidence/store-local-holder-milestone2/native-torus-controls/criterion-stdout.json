@@ -1,0 +1,53 @@
+{
+  "encoding": "UTF-8 original stdout strings",
+  "processes": [
+    {
+      "ordinal": 0,
+      "variant": "baseline",
+      "stdout": "boolean/torus_notch_cut time:   [5.6711 ms 5.7086 ms 5.7657 ms]\nboolean/torus_notch_fuse\n                        time:   [5.7060 ms 5.7509 ms 5.7789 ms]\nboolean/torus_notch_intersect\n                        time:   [5.5557 ms 5.5642 ms 5.5734 ms]\nFound 2 outliers among 10 measurements (20.00%)\n  1 (10.00%) high mild\n  1 (10.00%) high severe\n\n",
+      "originalSha256": "119acc34113b673e24b5708de8a3d26f133da418ade9e82dcbc187d83f6a31e2"
+    },
+    {
+      "ordinal": 1,
+      "variant": "candidate",
+      "stdout": "boolean/torus_notch_cut time:   [5.7057 ms 5.7219 ms 5.7447 ms]\nFound 2 outliers among 10 measurements (20.00%)\n  1 (10.00%) low mild\n  1 (10.00%) high mild\nboolean/torus_notch_fuse\n                        time:   [5.7302 ms 5.7623 ms 5.7879 ms]\nboolean/torus_notch_intersect\n                        time:   [5.8054 ms 5.8091 ms 5.8133 ms]\nFound 2 outliers among 10 measurements (20.00%)\n  1 (10.00%) low severe\n  1 (10.00%) high mild\n\n",
+      "originalSha256": "b83e9cc6e59c3a06002cf73a5284007b6652cdd0b339d847dbee461c270cd5b6"
+    },
+    {
+      "ordinal": 2,
+      "variant": "candidate",
+      "stdout": "boolean/torus_notch_cut time:   [5.6618 ms 5.6999 ms 5.7539 ms]\nboolean/torus_notch_fuse\n                        time:   [5.6616 ms 5.6960 ms 5.7540 ms]\nFound 1 outliers among 10 measurements (10.00%)\n  1 (10.00%) high mild\nboolean/torus_notch_intersect\n                        time:   [5.6523 ms 5.6800 ms 5.7040 ms]\nFound 1 outliers among 10 measurements (10.00%)\n  1 (10.00%) low mild\n\n",
+      "originalSha256": "d1126b54996e737c636b212fadd4bef3dd680535f814153ee32ded4ca8347304"
+    },
+    {
+      "ordinal": 3,
+      "variant": "baseline",
+      "stdout": "boolean/torus_notch_cut time:   [5.7877 ms 5.8108 ms 5.8326 ms]\nboolean/torus_notch_fuse\n                        time:   [5.7455 ms 5.7756 ms 5.8376 ms]\nboolean/torus_notch_intersect\n                        time:   [5.5789 ms 5.5905 ms 5.6104 ms]\n\n",
+      "originalSha256": "be8567ad43d682e357b784d6cd8df98c699535f5465d6a15e658dcb250b30a97"
+    },
+    {
+      "ordinal": 4,
+      "variant": "candidate",
+      "stdout": "boolean/torus_notch_cut time:   [5.6926 ms 5.7190 ms 5.7429 ms]\nboolean/torus_notch_fuse\n                        time:   [5.6440 ms 5.6573 ms 5.6741 ms]\nFound 1 outliers among 10 measurements (10.00%)\n  1 (10.00%) high mild\nboolean/torus_notch_intersect\n                        time:   [5.5412 ms 5.5585 ms 5.5811 ms]\nFound 1 outliers among 10 measurements (10.00%)\n  1 (10.00%) high severe\n\n",
+      "originalSha256": "ec5ebb0dd53a6a7b5377f7ac5416615fce1f0f44e7487a60c5a4f962670bf09c"
+    },
+    {
+      "ordinal": 5,
+      "variant": "baseline",
+      "stdout": "boolean/torus_notch_cut time:   [5.6683 ms 5.6734 ms 5.6832 ms]\nFound 1 outliers among 10 measurements (10.00%)\n  1 (10.00%) high mild\nboolean/torus_notch_fuse\n                        time:   [5.6750 ms 5.6778 ms 5.6829 ms]\nboolean/torus_notch_intersect\n                        time:   [5.5685 ms 5.5766 ms 5.5858 ms]\nFound 2 outliers among 10 measurements (20.00%)\n  1 (10.00%) low mild\n  1 (10.00%) high severe\n\n",
+      "originalSha256": "962ec6b343dc94932284e9d2c64d2d17e154a54fb0d26bf9dad16b8126e330ba"
+    },
+    {
+      "ordinal": 6,
+      "variant": "baseline",
+      "stdout": "boolean/torus_notch_cut time:   [5.7068 ms 5.7234 ms 5.7387 ms]\nboolean/torus_notch_fuse\n                        time:   [5.8829 ms 5.8880 ms 5.8947 ms]\nFound 2 outliers among 10 measurements (20.00%)\n  2 (20.00%) high mild\nboolean/torus_notch_intersect\n                        time:   [5.5678 ms 5.5776 ms 5.5908 ms]\n\n",
+      "originalSha256": "2a597b8ba017a1a2a65409850df525dd008bb0e382dbf2caffd44b96ad5200f7"
+    },
+    {
+      "ordinal": 7,
+      "variant": "candidate",
+      "stdout": "boolean/torus_notch_cut time:   [5.6661 ms 5.6894 ms 5.7057 ms]\nboolean/torus_notch_fuse\n                        time:   [5.6398 ms 5.6706 ms 5.6918 ms]\nFound 2 outliers among 10 measurements (20.00%)\n  1 (10.00%) high mild\n  1 (10.00%) high severe\nboolean/torus_notch_intersect\n                        time:   [5.5313 ms 5.5360 ms 5.5420 ms]\nFound 1 outliers among 10 measurements (10.00%)\n  1 (10.00%) high mild\n\n",
+      "originalSha256": "c55abd847ef7b3afa119f52b6e9bc6395bdca73a89243b45f7ea9c5625029d25"
+    }
+  ]
+}

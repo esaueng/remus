@@ -1,0 +1,11 @@
+Exact IEEE-754 binary64 predicate equivalence
+
+Clear the sign bit: x = bits(value) & 0x7fff_ffff_ffff_ffff. For nonnegative finite binary64 values, unsigned encodings increase monotonically with numeric value. Both sign encodings of zero map to zero. Every infinity or NaN encoding after this mask is larger than every finite bound here.
+
+Let m=FACTOR_MIN_BITS, M=FACTOR_MAX_BITS and w=M-m, with 0<m<=M<2^64. If m<=x<=M, x-m is in [0,w]. If x>M, x-m>w without wrapping. If x<m, wrapping_sub gives 2^64+x-m >=2^64-m > M-m, because M<2^64. Thus x.wrapping_sub(m)<=w iff m<=x<=M; unsigned subtraction underflow cannot create an accepted alias. The finite floating comparisons also reject all NaNs/infinities and all below-minimum values.
+
+For c, abs(c)_bits<=ADDEND_MAX_BITS includes both zero signs and subnormals, accepts exactly finite |c|<=ADDEND_MAX, and rejects infinities/NaNs. Therefore the three combined predicates have equal truth values for all 2^192 input-bit triples. This is a mathematical proof; tests below sample, not exhaust, that space.
+
+The original zero-product predicate requires a==0 or b==0. Either condition makes the emulated-range predicate false because FACTOR_MIN>0. The two branches are disjoint, so exchanging their order preserves the chosen return body, including existing signed-zero handling. This does not add any c=0/nonzero-factor or unit-factor shortcut. WebAssembly has no observable floating exception flags; no approximation, threshold, root policy or native-dispatch change is needed.
+
+Performance is unproved: integer masks/reinterpretations/subtractions may cost more than f64.abs/comparisons. Early zero-product tests add work to emulated/fallback inputs. Select using actual operand-family counts, comparable optimized WASM and leased controlled measurements.

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "source": "d7b1544a81122c8898fc8f883b8b3f8589a3b39b",
+  "sourceTree": "cc0c7d89f72f50194351011ef3084381d756084a",
+  "nativeFileHashesMatchImmutableSource": {
+    "crates/operations/src/boolean/store_local.rs": "61d8f78bf1dee0537254b7dae3a69115f075ad2cecb1bdaa4ca08f7a68a183e2",
+    "crates/operations/src/boolean/store_local_tests.rs": "73937040fcc0445d5c438c87279489f1a88b3e8ca138d37084e2ace3a99f622d",
+    "crates/math/src/nurbs/intersection/line.rs": "700a057b7a2889b3e418e0d25aa458b6d023340a590acd0afa916744483b0ec9"
+  },
+  "normalCommitHooksPassed": true,
+  "normalCommitLogSha256": "33678e031bee0aa192cf6edb54fcad6ee72cc2219c0a90afb018544a2699bdb1",
+  "evidenceFiles": {
+    "holder-profile.json": {
+      "bytes": 45864,
+      "sha256": "024473b1a2b6d8b317bb971a8a60db2dd1bb2d0bf1f577cb08341dca148c9dab"
+    },
+    "native-store-local.json": {
+      "bytes": 4786,
+      "sha256": "66f3567efd99f3718434d17c8cf2bdb53a6b50d240eccac09bd178ee4b4cf4c1"
+    },
+    "native-store-local-tests.txt": {
+      "bytes": 4215,
+      "sha256": "aaa213872e2946cfcbafb7b019efd5e75efc5e2528a9be5e61a31d15fd1a0b85"
+    },
+    "baseline-package.json": {
+      "bytes": 5141,
+      "sha256": "087b146ca8ee92d9a430e59fa7916f9398a58fbac563d2f0c8d907db8f9065db"
+    },
+    "baseline-qualification.json": {
+      "bytes": 96788,
+      "sha256": "7d54a30b1dcf28869d5d32757ce36e8b7979665467df8a4a9a12645e0acd6e8f"
+    }
+  },
+  "scope": "Native tests bind frozen file content; package build and broad validation are recorded separately. Original raw logs/profiles remain local; portable summaries do not claim to reconstruct their raw files."
+}

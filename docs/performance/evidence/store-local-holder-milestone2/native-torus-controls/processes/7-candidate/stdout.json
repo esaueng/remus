@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "encoding": "UTF-8 lossless JSON string",
+  "originalSha256": "c55abd847ef7b3afa119f52b6e9bc6395bdca73a89243b45f7ea9c5625029d25",
+  "originalBytes": 415,
+  "payload": "boolean/torus_notch_cut time:   [5.6661 ms 5.6894 ms 5.7057 ms]\nboolean/torus_notch_fuse\n                        time:   [5.6398 ms 5.6706 ms 5.6918 ms]\nFound 2 outliers among 10 measurements (20.00%)\n  1 (10.00%) high mild\n  1 (10.00%) high severe\nboolean/torus_notch_intersect\n                        time:   [5.5313 ms 5.5360 ms 5.5420 ms]\nFound 1 outliers among 10 measurements (10.00%)\n  1 (10.00%) high mild\n\n"
+}

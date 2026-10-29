@@ -1,0 +1,915 @@
+{
+  "schemaVersion": 1,
+  "kind": "packaged-holder-capture-environment",
+  "sourceShas": {
+    "baseline": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+    "candidate": "d7b1544a81122c8898fc8f883b8b3f8589a3b39b"
+  },
+  "captureWindow": {
+    "startedAt": "2026-10-29T01:23:30.812507+00:00",
+    "completedAt": "2026-10-29T01:25:28.537823+00:00"
+  },
+  "capturePolicy": {
+    "modes": [
+      "preview",
+      "completion"
+    ],
+    "processOrder": [
+      "baseline",
+      "candidate",
+      "candidate",
+      "baseline",
+      "candidate",
+      "baseline",
+      "baseline",
+      "candidate"
+    ],
+    "ticks": 6,
+    "warmup": 2,
+    "rebuild": "full",
+    "pattern": "unique",
+    "cpu": 31,
+    "physicalSiblings": "15,31",
+    "tracing": "off; unchanged timing driver and fresh production-default kernels",
+    "removedChildEnvironment": [
+      "NODE_OPTIONS",
+      "NODE_V8_COVERAGE"
+    ],
+    "sourceLabels": "Externally supplied; separate verified source/build/package receipts bind bytes."
+  },
+  "node": {
+    "binary": {
+      "bytes": 126879696,
+      "sha256": "e32e2d16081cf644f88392934288086e7662529d0d43277c34f7aad2207cfafb",
+      "mode": "0o755"
+    },
+    "versions": {
+      "node": "24.22.1",
+      "acorn": "8.18.0",
+      "ada": "4.0.0",
+      "amaro": "1.1.11",
+      "ares": "1.34.9",
+      "brotli": "1.2.0",
+      "cldr": "48.0",
+      "icu": "78.3",
+      "llhttp": "9.4.3",
+      "merve": "1.2.2",
+      "modules": "137",
+      "napi": "10",
+      "nbytes": "0.1.4",
+      "ncrypto": "0.0.1",
+      "nghttp2": "1.70.0",
+      "nghttp3": "",
+      "ngtcp2": "",
+      "openssl": "3.5.9",
+      "simdjson": "4.6.11",
+      "simdutf": "6.4.0",
+      "sqlite": "3.53.4",
+      "tz": "2026e",
+      "undici": "7.30.1",
+      "unicode": "17.0",
+      "uv": "1.52.1",
+      "uvwasi": "0.0.23",
+      "v8": "13.6.233.17-node.58",
+      "zlib": "1.3.2.1-motley-285e94b",
+      "zstd": "1.5.7"
+    },
+    "runtimeFlags": [],
+    "removedChildEnvironmentKeys": [
+      "NODE_OPTIONS",
+      "NODE_V8_COVERAGE"
+    ]
+  },
+  "tooling": {
+    "collector": {
+      "bytes": 15964,
+      "sha256": "5e0edfae3e4ae36e37df9c02890a8b5c1e6e48f574f875197e480f85a2ce4824",
+      "mode": "0o664"
+    },
+    "qualifier": {
+      "bytes": 10039,
+      "sha256": "ef58e6b7da1424e649b8b7f53ec17284c6cd872fc869963330bc1bf75faa6a0f",
+      "mode": "0o664"
+    },
+    "environmentReceiptProducer": {
+      "bytes": 3668,
+      "sha256": "8a5fc347efc162d0cf17d47ad58ab96a40d1bbab6f48e548d4ca7c64c2b0ad60"
+    }
+  },
+  "harness": {
+    "sourceSha": "d7b1544a81122c8898fc8f883b8b3f8589a3b39b",
+    "sourceTree": "cc0c7d89f72f50194351011ef3084381d756084a",
+    "files": {
+      "scripts/perf/parameter-rebuild/parameter_bench.cjs": {
+        "bytes": 11550,
+        "sha256": "79751f89874700de56917dad0e0a5c1d46a2b0008e9aac9178b90a09ac4f4d09",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/holder_recipe.cjs": {
+        "bytes": 11420,
+        "sha256": "68a572fe2294321a2c53893ffc0edf160e3b318e1b3395fb82602f6d1f0811a5",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/compare_runs.cjs": {
+        "bytes": 4522,
+        "sha256": "af99568e614caa9d8ecb13b5e45cd789e70e3e9a1b3b1af54242ef32322c38c7",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/compare_variants.cjs": {
+        "bytes": 2089,
+        "sha256": "816ab9df5257318f53a2a1311b4b68da0556588756fdeaf785ac6508a3bc80c5",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/verify_recipe.cjs": {
+        "bytes": 10750,
+        "sha256": "4c1b9bbdc3b8be1404553a1af9a63ba73a9467f937e032adc7f9cc5f551ca007",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/README.md": {
+        "bytes": 8388,
+        "sha256": "7cce2ca9a52740aaf52c03dd536457a3b806d96718fa1e04a44970f091dc34b3",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/NOTICE.md": {
+        "bytes": 2330,
+        "sha256": "d981c268ab93966219b386964938527d84a1957f0c063087ac9c14dfb36d489e",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/fixtures/recipe.json": {
+        "bytes": 10269,
+        "sha256": "8a24356effac832b714ca6724d33feedf91c1251d2bb62096d332ed2c55c8719",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/fixtures/base.arena.json": {
+        "bytes": 497925,
+        "sha256": "7a8a3fac03a2ce63eb0e84ed61fd9fc09c6454973cc6225d5122cc1e3bf05026",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/fixtures/text.arena.json": {
+        "bytes": 125722,
+        "sha256": "dd59dd4c7de07fb7c63c2c8b69aac17fd4ba97244bab7ba3fcfb3638b4b0a96f",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/fixtures/pinned-source-manifest.json": {
+        "bytes": 13267,
+        "sha256": "f5fa969c94a6da14f9f91e4d3a3fe7eeaf196ec8ce5df3e5ed388f83366d4651",
+        "mode": "0o664"
+      },
+      "scripts/perf/filleted-face-edit/wasm_edit_bench.cjs": {
+        "bytes": 17248,
+        "sha256": "605bcfe13bb916afa6663be7b91135ecbde7ec865a786f8864c06e18a4c5f03b",
+        "mode": "0o664"
+      }
+    }
+  },
+  "affinity": {
+    "workerReported": [
+      "31"
+    ],
+    "cpu": 31,
+    "physicalSiblings": "15,31"
+  },
+  "hostObservations": {
+    "beforeCapture": {
+      "observedAt": "2026-10-29T01:23:30.812523+00:00",
+      "loadAverage": [
+        2.875,
+        11.8447265625,
+        22.23681640625
+      ],
+      "cpuPressure": "some avg10=0.00 avg60=0.60 avg300=6.23 total=7031724477\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+      "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454247\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856102",
+      "ioPressure": "some avg10=0.00 avg60=0.03 avg300=0.09 total=271791626\nfull avg10=0.00 avg60=0.03 avg300=0.08 total=241675730"
+    },
+    "afterCapture": {
+      "observedAt": "2026-10-29T01:25:28.537836+00:00",
+      "loadAverage": [
+        17.98193359375,
+        12.79443359375,
+        21.2607421875
+      ],
+      "cpuPressure": "some avg10=14.84 avg60=15.09 avg300=10.75 total=7056691944\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+      "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29455803\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23857390",
+      "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.05 total=271833683\nfull avg10=0.00 avg60=0.00 avg300=0.04 total=241700231"
+    },
+    "perProcess": [
+      {
+        "process": "preview-0-baseline",
+        "startedAt": "2026-10-29T01:23:30.954490+00:00",
+        "finishedAt": "2026-10-29T01:23:36.722869+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:23:30.954508+00:00",
+          "loadAverage": [
+            2.875,
+            11.8447265625,
+            22.23681640625
+          ],
+          "cpuPressure": "some avg10=0.00 avg60=0.60 avg300=6.23 total=7031724756\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454247\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856102",
+          "ioPressure": "some avg10=0.00 avg60=0.03 avg300=0.09 total=271791626\nfull avg10=0.00 avg60=0.03 avg300=0.08 total=241675730"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:23:36.722881+00:00",
+          "loadAverage": [
+            2.96533203125,
+            11.71435546875,
+            22.138671875
+          ],
+          "cpuPressure": "some avg10=4.96 avg60=1.54 avg300=6.31 total=7032448420\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454247\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856102",
+          "ioPressure": "some avg10=0.00 avg60=0.02 avg300=0.09 total=271793114\nfull avg10=0.00 avg60=0.02 avg300=0.08 total=241676407"
+        }
+      },
+      {
+        "process": "preview-1-candidate",
+        "startedAt": "2026-10-29T01:23:36.890474+00:00",
+        "finishedAt": "2026-10-29T01:23:42.616009+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:23:36.890488+00:00",
+          "loadAverage": [
+            2.96533203125,
+            11.71435546875,
+            22.138671875
+          ],
+          "cpuPressure": "some avg10=4.96 avg60=1.54 avg300=6.31 total=7032448695\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454247\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856102",
+          "ioPressure": "some avg10=0.00 avg60=0.02 avg300=0.09 total=271793114\nfull avg10=0.00 avg60=0.02 avg300=0.08 total=241676407"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:23:42.616021+00:00",
+          "loadAverage": [
+            3.12841796875,
+            11.6025390625,
+            22.04638671875
+          ],
+          "cpuPressure": "some avg10=8.05 avg60=2.48 avg300=6.41 total=7033180895\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454247\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856102",
+          "ioPressure": "some avg10=0.00 avg60=0.02 avg300=0.08 total=271798665\nfull avg10=0.00 avg60=0.02 avg300=0.07 total=241679184"
+        }
+      },
+      {
+        "process": "preview-2-candidate",
+        "startedAt": "2026-10-29T01:23:42.754950+00:00",
+        "finishedAt": "2026-10-29T01:23:48.481265+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:23:42.754962+00:00",
+          "loadAverage": [
+            3.12841796875,
+            11.6025390625,
+            22.04638671875
+          ],
+          "cpuPressure": "some avg10=8.05 avg60=2.48 avg300=6.41 total=7033180918\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454247\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856102",
+          "ioPressure": "some avg10=0.00 avg60=0.02 avg300=0.08 total=271798665\nfull avg10=0.00 avg60=0.02 avg300=0.07 total=241679184"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:23:48.481274+00:00",
+          "loadAverage": [
+            3.03759765625,
+            11.44287109375,
+            21.9384765625
+          ],
+          "cpuPressure": "some avg10=19.13 avg60=5.13 avg300=6.90 total=7035150532\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454261\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856116",
+          "ioPressure": "some avg10=0.00 avg60=0.02 avg300=0.08 total=271799781\nfull avg10=0.00 avg60=0.02 avg300=0.07 total=241680226"
+        }
+      },
+      {
+        "process": "preview-3-baseline",
+        "startedAt": "2026-10-29T01:23:48.613538+00:00",
+        "finishedAt": "2026-10-29T01:23:54.211022+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:23:48.613548+00:00",
+          "loadAverage": [
+            3.03759765625,
+            11.44287109375,
+            21.9384765625
+          ],
+          "cpuPressure": "some avg10=19.13 avg60=5.13 avg300=6.90 total=7035151535\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454261\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856116",
+          "ioPressure": "some avg10=0.00 avg60=0.02 avg300=0.08 total=271799781\nfull avg10=0.00 avg60=0.02 avg300=0.07 total=241680226"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:23:54.211032+00:00",
+          "loadAverage": [
+            3.19482421875,
+            11.33544921875,
+            21.84716796875
+          ],
+          "cpuPressure": "some avg10=28.36 avg60=8.33 avg300=7.54 total=7037435425\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454266\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856121",
+          "ioPressure": "some avg10=0.00 avg60=0.01 avg300=0.08 total=271801205\nfull avg10=0.00 avg60=0.01 avg300=0.07 total=241681645"
+        }
+      },
+      {
+        "process": "preview-4-candidate",
+        "startedAt": "2026-10-29T01:23:54.347512+00:00",
+        "finishedAt": "2026-10-29T01:24:00.138880+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:23:54.347522+00:00",
+          "loadAverage": [
+            3.19482421875,
+            11.33544921875,
+            21.84716796875
+          ],
+          "cpuPressure": "some avg10=28.36 avg60=8.33 avg300=7.54 total=7037436807\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454266\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856121",
+          "ioPressure": "some avg10=0.00 avg60=0.01 avg300=0.08 total=271801205\nfull avg10=0.00 avg60=0.01 avg300=0.07 total=241681645"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:24:00.138890+00:00",
+          "loadAverage": [
+            3.15234375,
+            11.06005859375,
+            21.64453125
+          ],
+          "cpuPressure": "some avg10=31.92 avg60=10.99 avg300=8.13 total=7039647653\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454274\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856129",
+          "ioPressure": "some avg10=0.00 avg60=0.01 avg300=0.08 total=271803123\nfull avg10=0.00 avg60=0.01 avg300=0.07 total=241683555"
+        }
+      },
+      {
+        "process": "preview-5-baseline",
+        "startedAt": "2026-10-29T01:24:00.272256+00:00",
+        "finishedAt": "2026-10-29T01:24:05.984558+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:24:00.272265+00:00",
+          "loadAverage": [
+            3.15234375,
+            11.06005859375,
+            21.64453125
+          ],
+          "cpuPressure": "some avg10=31.92 avg60=10.99 avg300=8.13 total=7039648663\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454274\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856129",
+          "ioPressure": "some avg10=0.00 avg60=0.01 avg300=0.08 total=271803123\nfull avg10=0.00 avg60=0.01 avg300=0.07 total=241683555"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:24:05.984569+00:00",
+          "loadAverage": [
+            2.97998046875,
+            10.892578125,
+            21.533203125
+          ],
+          "cpuPressure": "some avg10=31.68 avg60=13.03 avg300=8.63 total=7041630557\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454284\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856139",
+          "ioPressure": "some avg10=0.00 avg60=0.01 avg300=0.07 total=271805638\nfull avg10=0.00 avg60=0.01 avg300=0.06 total=241685941"
+        }
+      },
+      {
+        "process": "preview-6-baseline",
+        "startedAt": "2026-10-29T01:24:06.120984+00:00",
+        "finishedAt": "2026-10-29T01:24:11.812077+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:24:06.120994+00:00",
+          "loadAverage": [
+            2.97998046875,
+            10.892578125,
+            21.533203125
+          ],
+          "cpuPressure": "some avg10=31.68 avg60=13.03 avg300=8.63 total=7041630686\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454284\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856139",
+          "ioPressure": "some avg10=0.00 avg60=0.01 avg300=0.07 total=271805638\nfull avg10=0.00 avg60=0.01 avg300=0.06 total=241685941"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:24:11.812087+00:00",
+          "loadAverage": [
+            2.9013671875,
+            10.74462890625,
+            21.42822265625
+          ],
+          "cpuPressure": "some avg10=30.84 avg60=14.80 avg300=9.11 total=7043514955\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454296\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856151",
+          "ioPressure": "some avg10=0.00 avg60=0.01 avg300=0.07 total=271807815\nfull avg10=0.00 avg60=0.01 avg300=0.06 total=241687648"
+        }
+      },
+      {
+        "process": "preview-7-candidate",
+        "startedAt": "2026-10-29T01:24:11.955035+00:00",
+        "finishedAt": "2026-10-29T01:24:17.590388+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:24:11.955045+00:00",
+          "loadAverage": [
+            2.9013671875,
+            10.74462890625,
+            21.42822265625
+          ],
+          "cpuPressure": "some avg10=30.84 avg60=14.80 avg300=9.11 total=7043515797\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454296\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856151",
+          "ioPressure": "some avg10=0.00 avg60=0.01 avg300=0.07 total=271810587\nfull avg10=0.00 avg60=0.01 avg300=0.06 total=241689423"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:24:17.590398+00:00",
+          "loadAverage": [
+            2.98974609375,
+            10.63232421875,
+            21.33447265625
+          ],
+          "cpuPressure": "some avg10=35.01 avg60=17.41 avg300=9.79 total=7046075353\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454356\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856211",
+          "ioPressure": "some avg10=0.00 avg60=0.01 avg300=0.07 total=271812098\nfull avg10=0.00 avg60=0.01 avg300=0.06 total=241690222"
+        }
+      },
+      {
+        "process": "completion-0-baseline",
+        "startedAt": "2026-10-29T01:24:17.722547+00:00",
+        "finishedAt": "2026-10-29T01:24:24.990810+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:24:17.722557+00:00",
+          "loadAverage": [
+            2.98974609375,
+            10.63232421875,
+            21.33447265625
+          ],
+          "cpuPressure": "some avg10=35.01 avg60=17.41 avg300=9.79 total=7046076272\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454356\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856211",
+          "ioPressure": "some avg10=0.00 avg60=0.01 avg300=0.07 total=271812098\nfull avg10=0.00 avg60=0.01 avg300=0.06 total=241690222"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:24:24.990820+00:00",
+          "loadAverage": [
+            2.91015625,
+            10.48876953125,
+            21.23046875
+          ],
+          "cpuPressure": "some avg10=33.60 avg60=19.05 avg300=10.31 total=7048287887\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454364\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856219",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.06 total=271813558\nfull avg10=0.00 avg60=0.00 avg300=0.06 total=241691666"
+        }
+      },
+      {
+        "process": "completion-1-candidate",
+        "startedAt": "2026-10-29T01:24:25.128411+00:00",
+        "finishedAt": "2026-10-29T01:24:32.519365+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:24:25.128420+00:00",
+          "loadAverage": [
+            2.8369140625,
+            10.34765625,
+            21.126953125
+          ],
+          "cpuPressure": "some avg10=33.60 avg60=19.05 avg300=10.31 total=7048287929\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454364\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856219",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.06 total=271813558\nfull avg10=0.00 avg60=0.00 avg300=0.06 total=241691666"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:24:32.519376+00:00",
+          "loadAverage": [
+            2.93017578125,
+            10.2421875,
+            21.03466796875
+          ],
+          "cpuPressure": "some avg10=21.87 avg60=18.23 avg300=10.36 total=7049282374\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454378\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856233",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.06 total=271816640\nfull avg10=0.00 avg60=0.00 avg300=0.06 total=241694179"
+        }
+      },
+      {
+        "process": "completion-2-candidate",
+        "startedAt": "2026-10-29T01:24:32.661057+00:00",
+        "finishedAt": "2026-10-29T01:24:40.113375+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:24:32.661068+00:00",
+          "loadAverage": [
+            2.93017578125,
+            10.2421875,
+            21.03466796875
+          ],
+          "cpuPressure": "some avg10=21.87 avg60=18.23 avg300=10.36 total=7049282479\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454378\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856233",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.06 total=271816640\nfull avg10=0.00 avg60=0.00 avg300=0.06 total=241694179"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:24:40.113390+00:00",
+          "loadAverage": [
+            3.01611328125,
+            10.13818359375,
+            20.94287109375
+          ],
+          "cpuPressure": "some avg10=15.65 avg60=17.35 avg300=10.39 total=7050186155\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454969\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856820",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.06 total=271818850\nfull avg10=0.00 avg60=0.00 avg300=0.06 total=241696379"
+        }
+      },
+      {
+        "process": "completion-3-baseline",
+        "startedAt": "2026-10-29T01:24:40.283352+00:00",
+        "finishedAt": "2026-10-29T01:24:47.797237+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:24:40.283368+00:00",
+          "loadAverage": [
+            3.25537109375,
+            10.0693359375,
+            20.8623046875
+          ],
+          "cpuPressure": "some avg10=15.65 avg60=17.35 avg300=10.39 total=7050186169\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29454969\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856820",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.06 total=271818945\nfull avg10=0.00 avg60=0.00 avg300=0.06 total=241696474"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:24:47.797250+00:00",
+          "loadAverage": [
+            3.3955078125,
+            9.98486328125,
+            20.77685546875
+          ],
+          "cpuPressure": "some avg10=10.91 avg60=16.11 avg300=10.31 total=7050814466\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29455009\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856859",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.06 total=271819673\nfull avg10=0.00 avg60=0.00 avg300=0.05 total=241697201"
+        }
+      },
+      {
+        "process": "completion-4-candidate",
+        "startedAt": "2026-10-29T01:24:47.951471+00:00",
+        "finishedAt": "2026-10-29T01:24:56.639743+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:24:47.951483+00:00",
+          "loadAverage": [
+            3.3955078125,
+            9.98486328125,
+            20.77685546875
+          ],
+          "cpuPressure": "some avg10=10.91 avg60=16.11 avg300=10.31 total=7050814765\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29455009\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23856859",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.06 total=271819673\nfull avg10=0.00 avg60=0.00 avg300=0.05 total=241697201"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:24:56.639758+00:00",
+          "loadAverage": [
+            5.884765625,
+            10.28564453125,
+            20.75830078125
+          ],
+          "cpuPressure": "some avg10=10.42 avg60=15.32 avg300=10.29 total=7051823461\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29455246\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23857096",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.06 total=271821288\nfull avg10=0.00 avg60=0.00 avg300=0.05 total=241697781"
+        }
+      },
+      {
+        "process": "completion-5-baseline",
+        "startedAt": "2026-10-29T01:24:56.811119+00:00",
+        "finishedAt": "2026-10-29T01:25:07.095409+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:24:56.811132+00:00",
+          "loadAverage": [
+            5.884765625,
+            10.28564453125,
+            20.75830078125
+          ],
+          "cpuPressure": "some avg10=10.42 avg60=15.32 avg300=10.29 total=7051849585\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29455246\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23857096",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.06 total=271821288\nfull avg10=0.00 avg60=0.00 avg300=0.05 total=241697781"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:25:07.095421+00:00",
+          "loadAverage": [
+            10.51513671875,
+            11.1328125,
+            20.921875
+          ],
+          "cpuPressure": "some avg10=12.82 avg60=15.18 avg300=10.43 total=7053344297\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29455249\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23857099",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.05 total=271825675\nfull avg10=0.00 avg60=0.00 avg300=0.05 total=241698775"
+        }
+      },
+      {
+        "process": "completion-6-baseline",
+        "startedAt": "2026-10-29T01:25:07.261721+00:00",
+        "finishedAt": "2026-10-29T01:25:17.609260+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:25:07.261733+00:00",
+          "loadAverage": [
+            10.51513671875,
+            11.1328125,
+            20.921875
+          ],
+          "cpuPressure": "some avg10=12.49 avg60=15.04 avg300=10.44 total=7053358799\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29455250\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23857101",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.05 total=271825675\nfull avg10=0.00 avg60=0.00 avg300=0.05 total=241698775"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:25:17.609272+00:00",
+          "loadAverage": [
+            14.35986328125,
+            11.93603515625,
+            21.07861328125
+          ],
+          "cpuPressure": "some avg10=14.21 avg60=15.04 avg300=10.59 total=7054965810\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29455499\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23857349",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.05 total=271830110\nfull avg10=0.00 avg60=0.00 avg300=0.05 total=241699909"
+        }
+      },
+      {
+        "process": "completion-7-candidate",
+        "startedAt": "2026-10-29T01:25:17.809968+00:00",
+        "finishedAt": "2026-10-29T01:25:28.192813+00:00",
+        "hostBefore": {
+          "observedAt": "2026-10-29T01:25:17.809981+00:00",
+          "loadAverage": [
+            14.35986328125,
+            11.93603515625,
+            21.07861328125
+          ],
+          "cpuPressure": "some avg10=14.21 avg60=15.04 avg300=10.59 total=7055001723\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29455499\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23857349",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.05 total=271830110\nfull avg10=0.00 avg60=0.00 avg300=0.05 total=241699909"
+        },
+        "hostAfter": {
+          "observedAt": "2026-10-29T01:25:28.192826+00:00",
+          "loadAverage": [
+            17.98193359375,
+            12.79443359375,
+            21.2607421875
+          ],
+          "cpuPressure": "some avg10=14.84 avg60=15.09 avg300=10.75 total=7056638478\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+          "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=29455803\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=23857390",
+          "ioPressure": "some avg10=0.00 avg60=0.00 avg300=0.05 total=271833683\nfull avg10=0.00 avg60=0.00 avg300=0.04 total=241700231"
+        }
+      }
+    ]
+  },
+  "rawFiles": {
+    "ready.json": {
+      "bytes": 9374,
+      "sha256": "0da1a0ea093c23ce91bc400afb0b6055dd5d5f4d4f8a89f311cd56ea3a35a483"
+    },
+    "capture-start.json": {
+      "bytes": 1555,
+      "sha256": "3e3fe8915b69d6186f7914f309cf29d7025d193cf4e9b54f84c01d7c27b4a0a9"
+    },
+    "capture-complete.json": {
+      "bytes": 673,
+      "sha256": "5f1200c9007b87bc7ee745c8065b023f0fe235f6c195c01bdbdb05aa857ab21a"
+    },
+    "launches.json": {
+      "bytes": 37014,
+      "sha256": "fdf9018a4eab888293de60c9a71709511ffd45677ac0a2922f2e8cb74bf06cb4"
+    },
+    "raw/preview-0-baseline.start.json": {
+      "bytes": 1340,
+      "sha256": "c55af11ec72d68acf87dc940db72ca7d3fbac6a6138aec011651bac444935d32"
+    },
+    "raw/preview-0-baseline.finish.json": {
+      "bytes": 2166,
+      "sha256": "820ec1049894580c9295dda0a08ddaf9c1595748c7a30853edf6d89dabfdb109"
+    },
+    "raw/preview-0-baseline.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/preview-0-baseline.stderr": {
+      "bytes": 199,
+      "sha256": "e26ce12485ea9a7e262ee91fae83982ff499f60c491cf7bf5c493dc952f16916"
+    },
+    "raw/preview-1-candidate.start.json": {
+      "bytes": 1352,
+      "sha256": "012eec6bdb15e4d630b92e4c7dfd4474c8524a62c9c4f657bc74138fd87afb60"
+    },
+    "raw/preview-1-candidate.finish.json": {
+      "bytes": 2179,
+      "sha256": "56a7de0fa0653150505cc140c6b3d745c1a24daccdbd7416e181f2dfc42654c1"
+    },
+    "raw/preview-1-candidate.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/preview-1-candidate.stderr": {
+      "bytes": 199,
+      "sha256": "78c9efe4832e14e62322252f1dbc74f873da49e98b9c89ed8942d95de370a226"
+    },
+    "raw/preview-2-candidate.start.json": {
+      "bytes": 1353,
+      "sha256": "1821bd1a90ba99dc282c61131ffbda921381f87ac02f638e36c56e7313b29dcd"
+    },
+    "raw/preview-2-candidate.finish.json": {
+      "bytes": 2181,
+      "sha256": "e5aa019b87ede1ce19699f14f01faf8cc657e018cf112589754391b3bdab94cf"
+    },
+    "raw/preview-2-candidate.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/preview-2-candidate.stderr": {
+      "bytes": 199,
+      "sha256": "c1076779f5a1c5793006d91c0811257377eeb9bced9c34e6c37a1f622766cb8b"
+    },
+    "raw/preview-3-baseline.start.json": {
+      "bytes": 1349,
+      "sha256": "869d8a70f2fc1fa08860a511f3acdc5466da4bf3b6a6dd6da58983b0d73f7e90"
+    },
+    "raw/preview-3-baseline.finish.json": {
+      "bytes": 2177,
+      "sha256": "a0da21686450660d1aae987e8d0d0476a7115e17dd94030e3a05425fc8de6fed"
+    },
+    "raw/preview-3-baseline.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/preview-3-baseline.stderr": {
+      "bytes": 199,
+      "sha256": "e5a37cd6ab84e89aaacf2b7c3b6a5ab374e21f2d56871e37375f42623695a0af"
+    },
+    "raw/preview-4-candidate.start.json": {
+      "bytes": 1354,
+      "sha256": "8701ee080d41f0ea5ff1bfbf7f5ba5b37f028208bdae5a873cb66ec9f2cd6af3"
+    },
+    "raw/preview-4-candidate.finish.json": {
+      "bytes": 2178,
+      "sha256": "c7c2a6a05b61187b6367ae5dc1293277d26931a1b849a0b8bdfb61964a181022"
+    },
+    "raw/preview-4-candidate.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/preview-4-candidate.stderr": {
+      "bytes": 199,
+      "sha256": "c52c68c80bcde183660a6f0d4d1a61487c2b1b108650371ff4e01fe16d95ba98"
+    },
+    "raw/preview-5-baseline.start.json": {
+      "bytes": 1346,
+      "sha256": "efb7d9d47c2563d65ffcd756663654b34775f32ecdcf1a81d1c83cff18af20fc"
+    },
+    "raw/preview-5-baseline.finish.json": {
+      "bytes": 2172,
+      "sha256": "3f915139cfbdf3ed1c92943c5b593a2439654a8b2cc93a1077ac9b111762c84c"
+    },
+    "raw/preview-5-baseline.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/preview-5-baseline.stderr": {
+      "bytes": 199,
+      "sha256": "9b88673c1a452559cddf7c0b31fd995ba84a0710fca9f31c10a302b0144163a3"
+    },
+    "raw/preview-6-baseline.start.json": {
+      "bytes": 1348,
+      "sha256": "bf101d5170c53468ea4e26981fbed9c8434cc733f3c757408e08ebfee4a957d4"
+    },
+    "raw/preview-6-baseline.finish.json": {
+      "bytes": 2176,
+      "sha256": "64e112af5bd433523bce8689091611b0eee73be0e1f93fcee257c10361384db9"
+    },
+    "raw/preview-6-baseline.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/preview-6-baseline.stderr": {
+      "bytes": 199,
+      "sha256": "1dc59d8eab581a5d1ef1b933608f3403edf4e492f95fc2942879894b13297c27"
+    },
+    "raw/preview-7-candidate.start.json": {
+      "bytes": 1355,
+      "sha256": "114434fe539146da6cd90f6f7a8a745c252736decd54b655617a0e734792b3f9"
+    },
+    "raw/preview-7-candidate.finish.json": {
+      "bytes": 2185,
+      "sha256": "25ea58ab106c9613dd38efc5fbabfee4223916006f4d1b81d0d6718c46b7d490"
+    },
+    "raw/preview-7-candidate.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/preview-7-candidate.stderr": {
+      "bytes": 199,
+      "sha256": "6e6da81bea6d90479b651a29d35ddc2b60ff874ed513ba9218a088dd307fe25a"
+    },
+    "raw/completion-0-baseline.start.json": {
+      "bytes": 1363,
+      "sha256": "bcbd2dcbc1e60be9050dd39f39c3bf769d153d4e00053eb7ed294a47e99b9d95"
+    },
+    "raw/completion-0-baseline.finish.json": {
+      "bytes": 2188,
+      "sha256": "509836c3180771ecb5bc48d423b59fe842e71c5ba170a3c09d9483328cc36b1e"
+    },
+    "raw/completion-0-baseline.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/completion-0-baseline.stderr": {
+      "bytes": 217,
+      "sha256": "b74202977c14e4e81d3389c8ad416489ec64769c0e318d9d6b43cb57a33ce450"
+    },
+    "raw/completion-1-candidate.start.json": {
+      "bytes": 1361,
+      "sha256": "7cdb79e41c765476d0d4859ea463295f389bdd092bb4d5500ab1922fc6b9e67f"
+    },
+    "raw/completion-1-candidate.finish.json": {
+      "bytes": 2188,
+      "sha256": "8b745b35731aedd1991925d6dadf4ae9f0fc1ac950c1608eea5891da4e8588a9"
+    },
+    "raw/completion-1-candidate.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/completion-1-candidate.stderr": {
+      "bytes": 217,
+      "sha256": "4e6de2bf2fe9f484fc6799f1ecf17ef9122e8a3d1e2e36a7edddfd2d70382a9c"
+    },
+    "raw/completion-2-candidate.start.json": {
+      "bytes": 1365,
+      "sha256": "dceb2458da8d937aa6c6edccda5700546abb9167a505e333b3eef452fa66e663"
+    },
+    "raw/completion-2-candidate.finish.json": {
+      "bytes": 2194,
+      "sha256": "f163600db31f4038f1adee9a932a823b81735ff093dafc0d4499f593cf81941d"
+    },
+    "raw/completion-2-candidate.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/completion-2-candidate.stderr": {
+      "bytes": 217,
+      "sha256": "4b34653d1047224f64921a216d9be9029d2d8c33b0309477d66efbdc710e89e0"
+    },
+    "raw/completion-3-baseline.start.json": {
+      "bytes": 1363,
+      "sha256": "150eef24f19a15258b09989fb5fcb28de7c8d73475df09a53b62c00b4de13541"
+    },
+    "raw/completion-3-baseline.finish.json": {
+      "bytes": 2192,
+      "sha256": "9df9c0059807d1563494f9561455eff17101a6a3ca97dd7514414af58338ec3d"
+    },
+    "raw/completion-3-baseline.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/completion-3-baseline.stderr": {
+      "bytes": 217,
+      "sha256": "c83b1b8fa939852b78b506a8d6759dc1ae69882f50690882001f374390743144"
+    },
+    "raw/completion-4-candidate.start.json": {
+      "bytes": 1367,
+      "sha256": "2d618b4534b751ae2b8819876ce8bb25e3d5dcce55167523eb4cc0d4f8cb098e"
+    },
+    "raw/completion-4-candidate.finish.json": {
+      "bytes": 2196,
+      "sha256": "25a211ac48398299567b58bb412b23ed1f05528f7a8f048b46320483e5978955"
+    },
+    "raw/completion-4-candidate.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/completion-4-candidate.stderr": {
+      "bytes": 217,
+      "sha256": "81eca4812d04464bc23c8ac4f528073800d81619f2715b64bfe63ddfaab5f62e"
+    },
+    "raw/completion-5-baseline.start.json": {
+      "bytes": 1363,
+      "sha256": "b3dcc5c3ea03db03f90f0cf0ef7da9f146f84f1b2f6571cbfc9cc5374692bbb7"
+    },
+    "raw/completion-5-baseline.finish.json": {
+      "bytes": 2186,
+      "sha256": "0842bf9c851b2c518e48e7daa995313ccbd8e32284635291fa5ea74bcc335023"
+    },
+    "raw/completion-5-baseline.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/completion-5-baseline.stderr": {
+      "bytes": 218,
+      "sha256": "912be318a8b4546d7a87e159761f28fda97c8e7484ad2a1cd20e4bba264a2f63"
+    },
+    "raw/completion-6-baseline.start.json": {
+      "bytes": 1357,
+      "sha256": "57bee0a8f9ecf8ca890cfff54452ad4709bfa032cd425f1731ecb1c854af1023"
+    },
+    "raw/completion-6-baseline.finish.json": {
+      "bytes": 2188,
+      "sha256": "f6fec155872eb3f841fccd11e3eff6e7bc6b0fa2510c0d1616eb0049415594cd"
+    },
+    "raw/completion-6-baseline.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/completion-6-baseline.stderr": {
+      "bytes": 218,
+      "sha256": "620c4f07999b9d771975a292c5b30610b198bcebaa33e58974beff15cc951c65"
+    },
+    "raw/completion-7-candidate.start.json": {
+      "bytes": 1370,
+      "sha256": "867e6847d51772a0c6e6c2d00b9cfc078f6a62e21a92e057861d502f53c716b8"
+    },
+    "raw/completion-7-candidate.finish.json": {
+      "bytes": 2201,
+      "sha256": "7167d500b4dd7942b6cb46597cb71bb606cdb952947b9ddd8ff3d0b636db7f40"
+    },
+    "raw/completion-7-candidate.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "raw/completion-7-candidate.stderr": {
+      "bytes": 218,
+      "sha256": "52e06625275ae4fd48d2e613a87483871f10e74614b9e35132faa2196279de7f"
+    },
+    "baseline-independent-audit.json": {
+      "bytes": 59867,
+      "sha256": "6f8bd3ce94ca2a838069e87668bc402a5df271d968b8e5cfb05884d347a1cde7"
+    },
+    "candidate-independent-audit.json": {
+      "bytes": 59867,
+      "sha256": "6f8bd3ce94ca2a838069e87668bc402a5df271d968b8e5cfb05884d347a1cde7"
+    }
+  },
+  "scope": "Original local launch/environment/stdout/stderr hashes retained; private paths and commands omitted. These raw files are not claimed reconstructable from this receipt.",
+  "hostLimitations": "The operator coordinated CPU31 and sibling15 with team work. Aggregate load/pressure observations do not prove absence of unrelated host activity.",
+  "timingScope": "Unprofiled synchronous Node kernel/transfer replay; no browser presentation or cold-application claim."
+}

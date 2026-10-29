@@ -1,0 +1,11 @@
+{
+  "schema": "remus-standalone-portable-reproduction-check-v1",
+  "status": "passed",
+  "timed": false,
+  "reproducerSha256": "264c1a239fe6f3afafbbc6f65268966aa2d6b01a34232d9f3ab3780976e03e49",
+  "logSha256": "3ae6020e9e4411517447068ae2044c90b5ca0284ac76b3c6fa6a52d0f21f514d",
+  "optimizedModulesReproducedExactly": 5,
+  "nativeOracleTriplesPerModule": 578952,
+  "sampledWorkloadsRegeneratedWithExactInputAndExpectedOutputHashes": 11,
+  "scope": "Local smoke of portable standalone reproducer in a fresh directory; neither canonical package qualification nor holder timing."
+}

@@ -1,0 +1,53 @@
+{
+  "schema": "remus-lossless-patch-encoding-check-v1",
+  "status": "passed",
+  "timed": false,
+  "originalPayloadSha256": "b13f5f478811ef062fae60049e4d0013d35bd4dbb4fad0a9ca311fdf108fb722",
+  "originalPayloadBytes": 7542,
+  "encodedJsonSha256": "60bfdbc812d60cf7799ab99aacc436803fcddd9407634fd8fc06e588f4147873",
+  "historicalReproducerSha256": "264c1a239fe6f3afafbbc6f65268966aa2d6b01a34232d9f3ab3780976e03e49",
+  "currentReproducerSha256": "4ece3365f69b7676cceb96cb81e84ec0a40f9f9d4a0e7ea2cfe3334c1fe9b10d",
+  "currentVerifierSha256": "d98f516b98bc2a954e9b4f647ceaf31a94a417af1dc63fe2828060cceecaaea9",
+  "sourceEquivalence": "Decoded diff applied in memory to historical source292 reconstructs the retained range-c0 source byte-for-byte. Original temporary patch/captures/reproduction logs and proof receipt are unchanged.",
+  "reconstructedSourceSha256": "1ded1b7a424a8195fbd67c778585a37bf839efd8f3c8a5da99a17a32ba340483",
+  "reconstructedSourceBytes": 25632,
+  "runtimeReproductionRepeated": false,
+  "scope": "Only evidence-container JSON encoding and decoder adapters changed; no numerical source, module, result or benchmark rerun.",
+  "encodedTestLogs": {
+    "baseline-native-tests.log.json": {
+      "originalSha256": "bb954b50b9e74a71c454e5013d9dc243efe626f54fa54849258dd903815271a3",
+      "originalBytes": 497,
+      "encodedJsonSha256": "c08d9a0b177e185a30ac785725b0fae713caa5739fce1dfaba762afd2d99ae0a"
+    },
+    "bit-range-native-tests.log.json": {
+      "originalSha256": "75434a26c0bcf1de71d9c29fa9bea4770ac2008ff0bbc14b6e37d93fd8f0ba69",
+      "originalBytes": 497,
+      "encodedJsonSha256": "135c58c8b9923b0c60c1e4c7dd5eed02fe244ccdf2a81f77fc2e08d94caf603f"
+    },
+    "both-native-tests.log.json": {
+      "originalSha256": "bb954b50b9e74a71c454e5013d9dc243efe626f54fa54849258dd903815271a3",
+      "originalBytes": 497,
+      "encodedJsonSha256": "835a9196b306483538fdfbe94338db6255269515d53c5f70bb84a9a5337c3463"
+    },
+    "native-tests.log.json": {
+      "originalSha256": "e61c38c2a8370bd1e973a2f873b3925758168df7af4f04c9f2a01a882e586d8e",
+      "originalBytes": 527,
+      "encodedJsonSha256": "add3b759706c4ba3e6e40d236840f58063fa672b19d8e4094e38a00eadd3fac0"
+    },
+    "range-c0-tests-default.log.json": {
+      "originalSha256": "28f96866cfd4956bd8db6bd3e13ebac5d14372fe193ca42995002187d2718aca",
+      "originalBytes": 954,
+      "encodedJsonSha256": "47c5802d0d1a0184c966d28555d48493dc10c737d51f1490e44efbd73daab51a"
+    },
+    "range-c0-tests-simd.log.json": {
+      "originalSha256": "a1ca529fa10299b2197bedb829b40cba723d1989085aa24f6949df4fb00c157c",
+      "originalBytes": 954,
+      "encodedJsonSha256": "d600444f4256921ce57a38161fbf969dd81fffb43b739fffcab366f13d6a0f0f"
+    },
+    "zero-first-native-tests.log.json": {
+      "originalSha256": "bb954b50b9e74a71c454e5013d9dc243efe626f54fa54849258dd903815271a3",
+      "originalBytes": 497,
+      "encodedJsonSha256": "38862848f979b9e7358f79a71993cecd3b8c9d1f17003b240e0bb966d8e4ac19"
+    }
+  }
+}

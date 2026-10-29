@@ -1,0 +1,22 @@
+{
+  "sourceSha": "7364ab7be5e598b7c868bd63239dc831cbceb933",
+  "checkedSourceFilesExactlyMatchCommit": {
+    "scripts/perf/parameter-rebuild/profile_holder.cjs": "6b86c4e71cd24d971787437c11fe51bb916e013ae013b1492ad609212e588bc9",
+    "scripts/perf/parameter-rebuild/profile_holder.test.cjs": "251080ae790686e4c7b3165eb59c9843700e212fb371e6724e657d98dd2fd539",
+    "scripts/perf/parameter-rebuild/summarize_profile.py": "e2df22f0db7eefabc0d49c8aed92ce19aafaa6ef78ca02a08333e42da7be8600",
+    "scripts/perf/parameter-rebuild/test_summarize_profile.py": "b4c96f00371746705cd6a7cc4c5b753dc27bfda2bc7c7200e5808f5678d3e7ec",
+    "scripts/performance/store-local/qualify.cjs": "4b2f1fd4b679f4f70ea039819a5e006de1de32b826e75d164a0b559b41a71b22",
+    "scripts/performance/store-local/qualify.test.cjs": "ac86d701d6c0c0b3c309647a4b206968e02b5de124ada7f51706f632da01e0f9"
+  },
+  "node": {
+    "passed": 38,
+    "failed": 0,
+    "rawLogSha256": "0f4d323af082b06c2ad2a354c81c032d4579ac7412362700a483d7425c56dd55"
+  },
+  "python": {
+    "passed": 7,
+    "failed": 0,
+    "rawLogSha256": "74c03fc16fde9a2dfeff03db0ec8f472a5a8dfed04e9e982a912b4b7f64faee3"
+  },
+  "scope": "Maintained tool contracts only; actual native and canonical/installed WASM execution are separate. Working report edits do not change the checked tools."
+}

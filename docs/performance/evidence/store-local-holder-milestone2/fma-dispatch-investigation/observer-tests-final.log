@@ -1,0 +1,17 @@
+✔ requires explicit mode and refuses measured/duplicate/unknown options (1.797484ms)
+✔ decoder preserves count precision, signed-zero and all raw operand bits (1.121643ms)
+✔ malformed headers, sums, lengths and trailing words fail closed (0.600056ms)
+✔ event snapshots exclude preceding drain and count every reset exactly once (0.904743ms)
+✔ nested windows, recipe spans and per-root calls reconcile only outer stages (2.551241ms)
+✔ refused original operation keeps its exception and inclusive math evidence (0.425435ms)
+✔ bounded witnesses retain earliest16 and collector budgets fail explicitly (0.383556ms)
+✔ initialization failure preserves receipt and refuses capture directory reuse (7.75815ms)
+✔ IEEE bit predicates distinguish priorities, nonfinite exclusions and exact range boundaries (0.293125ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 9
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 24.829436

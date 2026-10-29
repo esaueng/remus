@@ -1,0 +1,2938 @@
+{
+  "schemaVersion": 1,
+  "qualified": true,
+  "totalProcesses": 16,
+  "totalRawTicks": 96,
+  "totalRetainedTicks": 64,
+  "totalRawSolidInstances": 768,
+  "crossModePairs": 32,
+  "crossVariantCompletionPairs": 16,
+  "exactCapturedVolumeBitsAcrossVariants": true,
+  "originalDriverRawJsonReconstructable": true,
+  "reconstructionScope": "All 16 original driver JSON outputs were reconstructed byte-for-byte; launch/environment/host logs are separately retained locally.",
+  "packageMetadata": {
+    "baseline": {
+      "name": "remus-wasm",
+      "version": "2026.1.84",
+      "wasmBytes": 10877608,
+      "wasmSha256": "8e9c54487facde0fae7225ab9348373c6b032230de5e983988bba5e7816d0ef9",
+      "wrapperSha256": "55c678cc8a235b1dd98aa63e194995fabe8918ddead5151531407ab699cc7511",
+      "packageJsonSha256": "7cc87020cf28acbe9baa6c6164d46ea27e2d9acb5dd8ada4388cf35fa73a8630",
+      "suppliedSourceSha": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+      "suppliedSourceShaVerification": "Externally supplied; not verified by the driver."
+    },
+    "candidate": {
+      "name": "remus-wasm",
+      "version": "2026.1.84",
+      "wasmBytes": 10880592,
+      "wasmSha256": "34d4f4d51f2d5b23961427072e7e6510f1fd6a38877bd240d51c6596b315fb73",
+      "wrapperSha256": "9a4b4fc8c1d47e8d8289ab9f57e6e058110005981dd5020beaed29929eae1d1c",
+      "packageJsonSha256": "7cc87020cf28acbe9baa6c6164d46ea27e2d9acb5dd8ada4388cf35fa73a8630",
+      "suppliedSourceSha": "292f084f9165f8f31bcaeb1581324eba69835994",
+      "suppliedSourceShaVerification": "Externally supplied; not verified by the driver."
+    }
+  },
+  "sourceBuildPackageProofs": {
+    "baseline": {
+      "sourceSha": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+      "sourceTree": "77597af50bfc5cf2fa468e3c4f4b9e464657dec7",
+      "version": "2026.1.84",
+      "files": {
+        "LICENSE-APACHE": {
+          "bytes": 10669,
+          "sha256": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811",
+          "mode": "0o664"
+        },
+        "NOTICE": {
+          "bytes": 608,
+          "sha256": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9",
+          "mode": "0o664"
+        },
+        "remus_wasm_node.cjs": {
+          "bytes": 357391,
+          "sha256": "55c678cc8a235b1dd98aa63e194995fabe8918ddead5151531407ab699cc7511",
+          "mode": "0o664"
+        },
+        "remus_wasm_bg.js": {
+          "bytes": 355260,
+          "sha256": "395f63a149242bb3a8f170c29eb1c3a436f742d758038a5dc49c7f655994f35d",
+          "mode": "0o664"
+        },
+        "remus_wasm.js": {
+          "bytes": 421,
+          "sha256": "90e7aa4472373ea75da5d9a9a8ece929737567cab7e02b3c678d7d6f6b51bd0e",
+          "mode": "0o664"
+        },
+        "package.json": {
+          "bytes": 902,
+          "sha256": "7cc87020cf28acbe9baa6c6164d46ea27e2d9acb5dd8ada4388cf35fa73a8630",
+          "mode": "0o664"
+        },
+        "remus_wasm.d.ts": {
+          "bytes": 191734,
+          "sha256": "11950695edb86856fb3f245611e7f0987bc7f50c6c0242ccf27f224f20074dee",
+          "mode": "0o664"
+        },
+        "remus_wasm_bg.wasm": {
+          "bytes": 10877608,
+          "sha256": "8e9c54487facde0fae7225ab9348373c6b032230de5e983988bba5e7816d0ef9",
+          "mode": "0o664"
+        }
+      },
+      "receipt": {
+        "bytes": 5141,
+        "sha256": "087b146ca8ee92d9a430e59fa7916f9398a58fbac563d2f0c8d907db8f9065db",
+        "mode": "0o664"
+      },
+      "canonicalBuildLogSha256": "fd4ae32c4e666774c85f5ef9fa36b0846dd2a79f2b0fc1a3c3649faad8479d2e",
+      "tarballSha256": "eff0f371749569dcb3b8056d12631949fc3a8227bc233ce59457a1d7683f9a20",
+      "sourceChanges": [
+        "crates/wasm-io/pkg/package.json",
+        "crates/wasm-io/pkg/remus_wasm_io_bg.wasm",
+        "crates/wasm/pkg/package.json",
+        "crates/wasm/pkg/remus_wasm.d.ts",
+        "crates/wasm/pkg/remus_wasm_bg.js",
+        "crates/wasm/pkg/remus_wasm_bg.wasm",
+        "crates/wasm/pkg/remus_wasm_bg.wasm.d.ts",
+        "crates/wasm/pkg/remus_wasm_node.cjs"
+      ]
+    },
+    "candidate": {
+      "sourceSha": "292f084f9165f8f31bcaeb1581324eba69835994",
+      "sourceTree": "aa02a81efe014fe30a89051ae943e0272b3fb584",
+      "version": "2026.1.84",
+      "files": {
+        "LICENSE-APACHE": {
+          "bytes": 10669,
+          "sha256": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811",
+          "mode": "0o664"
+        },
+        "NOTICE": {
+          "bytes": 608,
+          "sha256": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9",
+          "mode": "0o664"
+        },
+        "remus_wasm_node.cjs": {
+          "bytes": 357482,
+          "sha256": "9a4b4fc8c1d47e8d8289ab9f57e6e058110005981dd5020beaed29929eae1d1c",
+          "mode": "0o664"
+        },
+        "remus_wasm_bg.js": {
+          "bytes": 355351,
+          "sha256": "ee20566f5fd349a0a622a471c29f8222ef32ff0c553b7415c5a8e67fb11c2ac3",
+          "mode": "0o664"
+        },
+        "remus_wasm.js": {
+          "bytes": 421,
+          "sha256": "90e7aa4472373ea75da5d9a9a8ece929737567cab7e02b3c678d7d6f6b51bd0e",
+          "mode": "0o664"
+        },
+        "package.json": {
+          "bytes": 902,
+          "sha256": "7cc87020cf28acbe9baa6c6164d46ea27e2d9acb5dd8ada4388cf35fa73a8630",
+          "mode": "0o664"
+        },
+        "remus_wasm.d.ts": {
+          "bytes": 191825,
+          "sha256": "d47414157bcbebae5f082791fcfbf30e5136bbec793b4df93988c3434387b70f",
+          "mode": "0o664"
+        },
+        "remus_wasm_bg.wasm": {
+          "bytes": 10880592,
+          "sha256": "34d4f4d51f2d5b23961427072e7e6510f1fd6a38877bd240d51c6596b315fb73",
+          "mode": "0o664"
+        }
+      },
+      "receipt": {
+        "bytes": 5141,
+        "sha256": "5292fdf424edd2d377a6b204f8e8c59b31e2a7dbf9a3b7da50d7b99335eb18ea",
+        "mode": "0o664"
+      },
+      "canonicalBuildLogSha256": "aaceb4bacabc2780c31b8658dfbb64ab3ed29befdb7cc74a903d44adf445e03e",
+      "tarballSha256": "f8ee709032f6f9529ac799ee0faf5f77e1bd6a4259d20a1899b3576f2e9368b8",
+      "sourceChanges": [
+        "crates/wasm-io/pkg/package.json",
+        "crates/wasm-io/pkg/remus_wasm_io_bg.wasm",
+        "crates/wasm/pkg/package.json",
+        "crates/wasm/pkg/remus_wasm.d.ts",
+        "crates/wasm/pkg/remus_wasm_bg.js",
+        "crates/wasm/pkg/remus_wasm_bg.wasm",
+        "crates/wasm/pkg/remus_wasm_bg.wasm.d.ts",
+        "crates/wasm/pkg/remus_wasm_node.cjs"
+      ]
+    }
+  },
+  "fixture": {
+    "identity": "hammer-holder-opening-width-31-feature-v1",
+    "recipeSha256": "8a24356effac832b714ca6724d33feedf91c1251d2bb62096d332ed2c55c8719",
+    "source": {
+      "path": "crates/io/tests/data/shapr3d_hammer_holder.step",
+      "sha256": "2403b4c9868cbb56292a09ec2f2d37baca16cc4b789d11e97ff8df3f1e46bef8",
+      "faces": 160,
+      "nurbsFaces": 42
+    },
+    "documents": {
+      "base": "7a8a3fac03a2ce63eb0e84ed61fd9fc09c6454973cc6225d5122cc1e3bf05026",
+      "text": "dd59dd4c7de07fb7c63c2c8b69aac17fd4ba97244bab7ba3fcfb3638b4b0a96f"
+    },
+    "consumer": {
+      "repository": "https://github.com/esaueng/OpenZCAD",
+      "revision": "913bb9ddd015bf2e6284c60a231eaa5afe7f2106",
+      "recipeCompiler": "packages/command-system/src/growing-holder.ts",
+      "recognizer": "packages/kernel-adapter/src/opening-recognition.ts",
+      "license": "Apache-2.0"
+    },
+    "featureCount": 31
+  },
+  "policy": {
+    "linear": 0.02,
+    "angular": 0.35,
+    "measurement": 0.08,
+    "height": 58,
+    "measurementReuse": "production defaults",
+    "prefix": "Rebuild all 17 fixed features on every request from immutable exact base/text imports.",
+    "suffix": "14 features: three sketch/extrude pairs, six body placements, union, and text placement",
+    "inputToFrame": false
+  },
+  "harness": {
+    "sourceSha": "292f084f9165f8f31bcaeb1581324eba69835994",
+    "sourceTree": "aa02a81efe014fe30a89051ae943e0272b3fb584",
+    "files": {
+      "scripts/perf/parameter-rebuild/parameter_bench.cjs": {
+        "bytes": 11550,
+        "sha256": "79751f89874700de56917dad0e0a5c1d46a2b0008e9aac9178b90a09ac4f4d09",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/holder_recipe.cjs": {
+        "bytes": 11420,
+        "sha256": "68a572fe2294321a2c53893ffc0edf160e3b318e1b3395fb82602f6d1f0811a5",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/compare_runs.cjs": {
+        "bytes": 4522,
+        "sha256": "af99568e614caa9d8ecb13b5e45cd789e70e3e9a1b3b1af54242ef32322c38c7",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/compare_variants.cjs": {
+        "bytes": 2089,
+        "sha256": "816ab9df5257318f53a2a1311b4b68da0556588756fdeaf785ac6508a3bc80c5",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/verify_recipe.cjs": {
+        "bytes": 10750,
+        "sha256": "4c1b9bbdc3b8be1404553a1af9a63ba73a9467f937e032adc7f9cc5f551ca007",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/README.md": {
+        "bytes": 8388,
+        "sha256": "7cce2ca9a52740aaf52c03dd536457a3b806d96718fa1e04a44970f091dc34b3",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/NOTICE.md": {
+        "bytes": 2330,
+        "sha256": "d981c268ab93966219b386964938527d84a1957f0c063087ac9c14dfb36d489e",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/fixtures/recipe.json": {
+        "bytes": 10269,
+        "sha256": "8a24356effac832b714ca6724d33feedf91c1251d2bb62096d332ed2c55c8719",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/fixtures/base.arena.json": {
+        "bytes": 497925,
+        "sha256": "7a8a3fac03a2ce63eb0e84ed61fd9fc09c6454973cc6225d5122cc1e3bf05026",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/fixtures/text.arena.json": {
+        "bytes": 125722,
+        "sha256": "dd59dd4c7de07fb7c63c2c8b69aac17fd4ba97244bab7ba3fcfb3638b4b0a96f",
+        "mode": "0o664"
+      },
+      "scripts/perf/parameter-rebuild/fixtures/pinned-source-manifest.json": {
+        "bytes": 13267,
+        "sha256": "f5fa969c94a6da14f9f91e4d3a3fe7eeaf196ec8ce5df3e5ed388f83366d4651",
+        "mode": "0o664"
+      },
+      "scripts/perf/filleted-face-edit/wasm_edit_bench.cjs": {
+        "bytes": 17248,
+        "sha256": "605bcfe13bb916afa6663be7b91135ecbde7ec865a786f8864c06e18a4c5f03b",
+        "mode": "0o664"
+      }
+    }
+  },
+  "rawRunHashes": {
+    "preview-0-baseline.json": "66ba81fc5ad36be14e5b619074bccf8eb4a8aca6957f98b309576577b2ab4d65",
+    "preview-1-candidate.json": "8a72f1527e57c8c2a3b51a036fd8a56ce10e6d5fdffff75ad8b5ba5c895df88e",
+    "preview-2-candidate.json": "eaa68eb9562c7dd26e3e91c4d28b51afec5f1b37d30c51a26319e4fc67674d69",
+    "preview-3-baseline.json": "cc1854470d420898b38b1d78c7bb9f70d6494096c10edf3d501d242165963949",
+    "preview-4-candidate.json": "fdc2af5971d7e6a801508d70696f38e9dd247bcfa4942d16df4daae6de8276b1",
+    "preview-5-baseline.json": "b2eb48effdd195f5fc1882f0d85d2d4dff0e55505e14890dbedec0a2b25b70f6",
+    "preview-6-baseline.json": "16cd949e727d2a700a633178eb3dda07cb713fea14179e0be0eafa340a8994bc",
+    "preview-7-candidate.json": "996f7a721e8be4ebc8a62104d0113b7a9bb540777fb3ea3effb30005cd8a6b21",
+    "completion-0-baseline.json": "321319acd698b6c1dfab456a55c1d49b0289ff7e5751c62d3ab6b3e24d040e16",
+    "completion-1-candidate.json": "30efe43dae4ca037cd80ccee925f6762d4e235c20e1980841d9c316332332eab",
+    "completion-2-candidate.json": "d7617b59cb788e4c95822f36a4773ad1175e30817876182c656e66b5316161d2",
+    "completion-3-baseline.json": "ea33498c58aadf0436fd3e84f4db28f3f8763bebf8be797455626c972b40fc31",
+    "completion-4-candidate.json": "d2aa71f686c22311d4b77d5ae15537cdb237811d3caa731412d8e6da7f5f9691",
+    "completion-5-baseline.json": "1af232116b5f5010764cf8f8619cc4040fd22013c9748e169073a8dedeeaabf6",
+    "completion-6-baseline.json": "bf35a2e17bd8fca5b6b4a29cd1bf966bcaaadc2fc2e4b682d8e8c2f3c61fc1b7",
+    "completion-7-candidate.json": "fdc5c43d7a9df1eb64ee9f801364d751717c09ad50195bd45c9f48b9e1ff49dd"
+  },
+  "exactRecords": [
+    {
+      "index": 0,
+      "width": 47,
+      "arenaSha256": "806f0cf2dd391c16f89f8b20e28b38a991e3b20e9c70e22d9546785d92a8455a",
+      "meshSha256": [
+        {
+          "positions": "a5ec6e5bf6ef70c1c8572a0a0fbe194650127ba96538244e916ffaac360472dc",
+          "indices": "06e493bc3095b7afa1577676d2d6aca64bb320fe2429b9dd433e795899582897",
+          "normals": "2814e723d00baa6dc9b4d406b4886ada1571a7f4fd117a4ee47b2adbe49b90f3",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "16084e93ea84b0fcfdfe508998a232e778fea0e50a2b28d3ac3029336a84d930",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "43cac2eac88806fb2b8a189c69b5034849efcab114660bf8c82ac9488845860e",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "d34b7a599c8ae53400ba88fe404b09037eef1b8cc1fa93215e9d596c50913d99",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "9756d0f6cf1b3f4abe0c7f99c3277c6cefd83fec1a5aefe201c45bbf9fce96af",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "4028fbc8e2585d2a63686843b9b902f70877393c942cb16daa599d7425f25168",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "32449273c5438ecc0add055509746432bb993e444933681a47c1a19c1af9b090",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "bcf97d53077769abb85625d4be31009e48737c2ee6c21a4581dd0869d019b283",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "volumes": [
+        50364.08950370699,
+        6.393221518248117,
+        5.326742529920282,
+        0.7201131976088323,
+        6.074200484840347,
+        6.3977672310713505,
+        6.070310730755033,
+        6.2849630909964205
+      ],
+      "volumeFloat64Bits": [
+        "cde036dd8297e840",
+        "26d663a9a8921940",
+        "31e10098954e1540",
+        "c3bb24d52a0be73f",
+        "50f23e36fb4b1840",
+        "da7c034b50971940",
+        "589a4489ff471840",
+        "3896515dcd231940"
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 1,
+      "width": 47.02,
+      "arenaSha256": "6feec794bdca629f12dd9aaa20a426a4ec0dfb8e9b7fc29d528fe89335f74f84",
+      "meshSha256": [
+        {
+          "positions": "f29091abb283a87a897ac252af033f46afe05e6b7bb0622715a2060626263ded",
+          "indices": "c89f6c3ea3c9db66dd2afc43ea8611df8f93083c1cc7e26be7d32c3978d7a394",
+          "normals": "9b5aacc71136632bb20c006d4d0615f203d098f876606fea392a015d02cd7393",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "a43df6fdf11eecf0521363fff3a46b67a6440000259e97f6c0f80cd7c9afc45a",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "b74824682e00e6232b4fefeca89b7d7c55e25564000d1d88edd2cef5074443a2",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "3dd222361ba7549cc35f648f23d24900016863d9904c67156f058eba7e0c54b5",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "5e71cb4c072f4836b23614f3f5b6b2ebb516ab5146e0aa87012026788e976bfb",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "cb2caf663861725aeceec69a2d9a884839bfd33b3b20032ee17706065e26f276",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "4e234227e58f5185d4aae870b47bc59c1e31c5da1f670bca32d70a23aa40211e",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "b28e228ac1405d26bb81dc3d38fae1324fff3436c0296ceb948ee95ca16efd38",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "volumes": [
+        50367.21225078692,
+        6.393221518248117,
+        5.326742529920282,
+        0.7201131976088323,
+        6.074200484840347,
+        6.3977672310713505,
+        6.070310730755033,
+        6.2849630909964205
+      ],
+      "volumeFloat64Bits": [
+        "8c29c2cae697e840",
+        "26d663a9a8921940",
+        "31e10098954e1540",
+        "c3bb24d52a0be73f",
+        "50f23e36fb4b1840",
+        "da7c034b50971940",
+        "589a4489ff471840",
+        "3896515dcd231940"
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 2,
+      "width": 47.04,
+      "arenaSha256": "ae6ed21878233313ee1d9e3df856599971f0953929c5e4c4e45ae833f2a1f67e",
+      "meshSha256": [
+        {
+          "positions": "bdfb3a0bccbb50f74681da8c1fbd68a353230271c973b16c2809d2a076ae44cc",
+          "indices": "8ebad47987cd1bf8a31aa84a5c64095bed0fd831e6b5cc7af7d6ebdf8eea1a8a",
+          "normals": "d236c3aa30fb35ac29a83063658420abeb2e4f3b69be3db3f8d20970c0763e61",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "07f4a3cd1fbccf566a2695116cc42cd4a99bb72d9cb9d84dc4c6d30a6f776b0d",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "01e475a8788086fddbe3ccb9f868131ec84e97b5c3e7f224b8824b83e9d8221a",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "de9dafeecde83ad73512418ce672d479af8adb913aa98442626387949d887e74",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "58b432212502586da81efd3dc23750a0d206158bdc5190b85cbf9f7e0aefd099",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "9acac72089b0f6d15b62782b5df591201c278320f113441d761c20eda701b903",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "1d51e7caedbb6b0bd8bbb31e32a7096e7ff6f6601fe98b2fcc6d5d07da6ad48f",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "f184df3a5c25de436b7e146e6951853ab690fc7b122cb37170810ef6a1ab00d7",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "volumes": [
+        50370.33499786709,
+        6.393221518248117,
+        5.326742529920282,
+        0.7201131976088323,
+        6.074200484840347,
+        6.3977672310713505,
+        6.070310730755033,
+        6.2849630909964205
+      ],
+      "volumeFloat64Bits": [
+        "6c724db84a98e840",
+        "26d663a9a8921940",
+        "31e10098954e1540",
+        "c3bb24d52a0be73f",
+        "50f23e36fb4b1840",
+        "da7c034b50971940",
+        "589a4489ff471840",
+        "3896515dcd231940"
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 3,
+      "width": 47.06,
+      "arenaSha256": "445db0a74d6da1a98d687b71173bf1420a9388a93e21b30c48a5ca8674eb93fb",
+      "meshSha256": [
+        {
+          "positions": "4387225b0d817331da024966bedb2717f3f9fec3d5601342a83702002265c6bb",
+          "indices": "009267197151748440f0ca8424c140dd012c6ef44fea3e4f13265f0c19dd3276",
+          "normals": "5cc29473c0f095bf681e3c58f24b30cb37bb935f5ce2e7c00a7e00bfed6a8396",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "0bb684e50882cfd92f61d58985fcaf5b298277fac79293ad1452b36ced3eafc3",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "f7c52ce86175c7472d709c651241e8cb6633101d5b68294a0df590cc0a18aaa9",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "ca2770d8b1a7d3d2edab305fddd7ae478c544f8cfe0bebcef247772e5620d23f",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "cbb6d28d6dc65c4fa80f77ba92e776f942d92d88aca2b7a4509759c98645b8dd",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "3d87893874a2b1571bad4430e145a2a9e8f82f1b50d331044431a91522ab3461",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "59c42b6f869870206e16f24c19859f4f8a92daf6f633411c79032efaa92a4c3f",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "70ac13d53848054d0053ac01cf412d7dfe0de611239129c117af6c338be7b212",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "volumes": [
+        50373.45774494723,
+        6.393221518248117,
+        5.326742529920282,
+        0.7201131976088323,
+        6.074200484840347,
+        6.3977672310713505,
+        6.070310730755033,
+        6.2849630909964205
+      ],
+      "volumeFloat64Bits": [
+        "48bbd8a5ae98e840",
+        "26d663a9a8921940",
+        "31e10098954e1540",
+        "c3bb24d52a0be73f",
+        "50f23e36fb4b1840",
+        "da7c034b50971940",
+        "589a4489ff471840",
+        "3896515dcd231940"
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 4,
+      "width": 47.08,
+      "arenaSha256": "576fd5ced80ad22ee13220041bd2ab60a56b361c7acdce9f05fde0a3b417f0a9",
+      "meshSha256": [
+        {
+          "positions": "ea18d02f9bd7c74f64eeeeaa37ffdc21c82864b04be445a66b9d52b2af04f2f9",
+          "indices": "568906c837e21ad41bdfad6f55aa5161aff03f9480c468c1977e6a40e27c2880",
+          "normals": "fe823c5a249abacbcfea8115dda1fbea94132ebc0cd9f705ae4c420949c7d352",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "0436ebcffcdaaab52eb2a566c23cd5fdc0cdb775d9f9eb71fc387a832c96bce7",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "83cfb1157023375fac185160aad04cb87e5b9d661592c58957966cb878c7f3db",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "6be609b50c264f98dbe8bad79835849e0e7accf60cfcebd2fd72b95adda3d8d6",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "5d5a9db0bde2bc7711f3fce9aebabecdefcbf19c33677ce75adbbe2029725677",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "78198e6bfc8ad63d832db73ccd9d772f8669fd47cc8195e4973da927e720a1ed",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "8e6df105d79a6f0046c184f969de45d835b3294b4bc84c3c78aded559e2a2717",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "9e6980129a12d91131c80ea0a050010f568bf25bf61c8451753887a3fa2fa448",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "volumes": [
+        50376.58049202727,
+        6.393221518248117,
+        5.326742529920282,
+        0.7201131976088323,
+        6.074200484840347,
+        6.3977672310713505,
+        6.070310730755033,
+        6.2849630909964205
+      ],
+      "volumeFloat64Bits": [
+        "170464931299e840",
+        "26d663a9a8921940",
+        "31e10098954e1540",
+        "c3bb24d52a0be73f",
+        "50f23e36fb4b1840",
+        "da7c034b50971940",
+        "589a4489ff471840",
+        "3896515dcd231940"
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "index": 5,
+      "width": 47.1,
+      "arenaSha256": "8180db0577a8e3fe294e412c30750535771880b4f6a5b30f34438b379c41cba9",
+      "meshSha256": [
+        {
+          "positions": "802fac2956e40529ff420699ce57dae929b20cc971e26e203ca0aa7e92920935",
+          "indices": "50e9b35b57a9ba0109655d3f0fe3d4970310a9d2458bb33c43e0f2350c3b8e81",
+          "normals": "a50ceb7e15079d5db322259df610712970bbcec7b9f7ca89aaa38cc61dbbab00",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "d640f9410b7221e8f29bba2d8de105f0f124af3c9cbb510c7189f6256b4a28fc",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "26b61d1bf6dec4a69b08107708e6a807d9db84623c5714e59bc93cd225fef262",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "9c21bdfde7987af3575375f96d805a55bcfbef5bd189e9c5d2d5258895f3ab92",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "6b3f464ebe332b5a6d0948a32d0e696b3137ee0233e626223fd84c81af4633eb",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "f262ae58ec340b1c9e3234020c2fa25c9aebcd4b3d0f343db006a5225be33a8f",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "fbb515c0e765055bc3127fbe803445d5a0068d6be91d5c2caca65baeb91961d2",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "193860c438566ad15fa90cc43f8cc98fb332519083e560df47e2ede3fa9df418",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "volumes": [
+        50379.70323910736,
+        6.393221518248117,
+        5.326742529920282,
+        0.7201131976088323,
+        6.074200484840347,
+        6.3977672310713505,
+        6.070310730755033,
+        6.2849630909964205
+      ],
+      "volumeFloat64Bits": [
+        "ec4cef807699e840",
+        "26d663a9a8921940",
+        "31e10098954e1540",
+        "c3bb24d52a0be73f",
+        "50f23e36fb4b1840",
+        "da7c034b50971940",
+        "589a4489ff471840",
+        "3896515dcd231940"
+      ],
+      "transferredBytes": 1557440
+    }
+  ],
+  "summary": {
+    "preview": {
+      "baseline": {
+        "processes": 4,
+        "rawTicks": 24,
+        "retainedTicks": 16,
+        "timingsMs": {
+          "restore": {
+            "n": 16,
+            "p50": 0.07011199999942619,
+            "p95": 2.931539999999586,
+            "max": 2.931539999999586
+          },
+          "prefix": {
+            "n": 16,
+            "p50": 117.62192099999993,
+            "p95": 129.62920099999974,
+            "max": 129.62920099999974
+          },
+          "rebuild": {
+            "n": 16,
+            "p50": 142.15527199999997,
+            "p95": 254.99611900000036,
+            "max": 254.99611900000036
+          },
+          "validate": {
+            "n": 16,
+            "p50": 2.0709029999998165,
+            "p95": 3.4805969999997615,
+            "max": 3.4805969999997615
+          },
+          "mesh": {
+            "n": 16,
+            "p50": 33.50083699999959,
+            "p95": 64.4371369999999,
+            "max": 64.4371369999999
+          },
+          "transfer": {
+            "n": 16,
+            "p50": 0.2027330000000802,
+            "p95": 3.6251600000005055,
+            "max": 3.6251600000005055
+          },
+          "observedWall": {
+            "n": 16,
+            "p50": 300.07333199999994,
+            "p95": 452.92890400000033,
+            "max": 452.92890400000033
+          },
+          "stageSum": {
+            "n": 16,
+            "p50": 294.3104209999983,
+            "p95": 448.24076500000047,
+            "max": 448.24076500000047
+          },
+          "previewStageSum": {
+            "n": 16,
+            "p50": 294.3104209999983,
+            "p95": 448.24076500000047,
+            "max": 448.24076500000047
+          }
+        },
+        "coldStageSumMs": {
+          "n": 4,
+          "p50": 3116.9090969999997,
+          "p95": 3183.4435169999997,
+          "max": 3183.4435169999997
+        },
+        "coldObservedWallMs": {
+          "n": 4,
+          "p50": 3120.095859,
+          "p95": 3185.0009809999997,
+          "max": 3185.0009809999997
+        },
+        "setupMs": {
+          "moduleLoadMs": {
+            "n": 4,
+            "p50": 64.301431,
+            "p95": 67.428741,
+            "max": 67.428741
+          },
+          "constructorMs": {
+            "n": 4,
+            "p50": 0.6144010000000009,
+            "p95": 0.6193099999999987,
+            "max": 0.6193099999999987
+          },
+          "prepareMs": {
+            "n": 4,
+            "p50": 0.1648009999999971,
+            "p95": 0.16924000000000206,
+            "max": 0.16924000000000206
+          }
+        },
+        "processMedians": [
+          {
+            "ordinal": 0,
+            "timingsMs": {
+              "restore": 0.06696699999974953,
+              "prefix": 117.23013100000026,
+              "rebuild": 142.15527199999997,
+              "validate": 2.0493530000003375,
+              "mesh": 33.50083699999959,
+              "transfer": 0.1966309999997975,
+              "observedWall": 300.07333199999994,
+              "stageSum": 294.3104209999983,
+              "previewStageSum": 294.3104209999983
+            }
+          },
+          {
+            "ordinal": 3,
+            "timingsMs": {
+              "restore": 0.07011199999942619,
+              "prefix": 125.46005299999979,
+              "rebuild": 141.08034099999986,
+              "validate": 2.0709029999998165,
+              "mesh": 32.962438999999904,
+              "transfer": 0.20445699999982025,
+              "observedWall": 298.4512160000004,
+              "stageSum": 293.2254299999986,
+              "previewStageSum": 293.2254299999986
+            }
+          },
+          {
+            "ordinal": 5,
+            "timingsMs": {
+              "restore": 0.06627500000013242,
+              "prefix": 115.05889799999932,
+              "rebuild": 140.74822399999994,
+              "validate": 2.0021029999998063,
+              "mesh": 32.70770799999991,
+              "transfer": 0.1899279999997816,
+              "observedWall": 293.3663980000001,
+              "stageSum": 288.5738220000003,
+              "previewStageSum": 288.5738220000003
+            }
+          },
+          {
+            "ordinal": 6,
+            "timingsMs": {
+              "restore": 0.06212799999957497,
+              "prefix": 113.38890300000003,
+              "rebuild": 139.62371800000074,
+              "validate": 2.026119000000108,
+              "mesh": 32.62909899999977,
+              "transfer": 0.1933950000002369,
+              "observedWall": 291.2064759999994,
+              "stageSum": 287.27714900000046,
+              "previewStageSum": 287.27714900000046
+            }
+          }
+        ],
+        "balancedBlocks": [
+          {
+            "order": "ABBA",
+            "retainedTicks": 8,
+            "timingsMs": {
+              "restore": {
+                "n": 8,
+                "p50": 0.07011199999942619,
+                "p95": 0.5616709999994782,
+                "max": 0.5616709999994782
+              },
+              "prefix": {
+                "n": 8,
+                "p50": 121.92582500000026,
+                "p95": 129.62920099999974,
+                "max": 129.62920099999974
+              },
+              "rebuild": {
+                "n": 8,
+                "p50": 142.15527199999997,
+                "p95": 254.99611900000036,
+                "max": 254.99611900000036
+              },
+              "validate": {
+                "n": 8,
+                "p50": 2.0709029999998165,
+                "p95": 3.4805969999997615,
+                "max": 3.4805969999997615
+              },
+              "mesh": {
+                "n": 8,
+                "p50": 33.50083699999959,
+                "p95": 64.4371369999999,
+                "max": 64.4371369999999
+              },
+              "transfer": {
+                "n": 8,
+                "p50": 0.20445699999982025,
+                "p95": 3.6251600000005055,
+                "max": 3.6251600000005055
+              },
+              "observedWall": {
+                "n": 8,
+                "p50": 300.07333199999994,
+                "p95": 452.92890400000033,
+                "max": 452.92890400000033
+              },
+              "stageSum": {
+                "n": 8,
+                "p50": 294.3104209999983,
+                "p95": 448.24076500000047,
+                "max": 448.24076500000047
+              },
+              "previewStageSum": {
+                "n": 8,
+                "p50": 294.3104209999983,
+                "p95": 448.24076500000047,
+                "max": 448.24076500000047
+              }
+            }
+          },
+          {
+            "order": "BAAB",
+            "retainedTicks": 8,
+            "timingsMs": {
+              "restore": {
+                "n": 8,
+                "p50": 0.06627500000013242,
+                "p95": 2.931539999999586,
+                "max": 2.931539999999586
+              },
+              "prefix": {
+                "n": 8,
+                "p50": 115.05889799999932,
+                "p95": 124.31133300000056,
+                "max": 124.31133300000056
+              },
+              "rebuild": {
+                "n": 8,
+                "p50": 140.74822399999994,
+                "p95": 248.167915,
+                "max": 248.167915
+              },
+              "validate": {
+                "n": 8,
+                "p50": 2.026119000000108,
+                "p95": 3.4457510000002003,
+                "max": 3.4457510000002003
+              },
+              "mesh": {
+                "n": 8,
+                "p50": 32.70770799999991,
+                "p95": 63.33300099999997,
+                "max": 63.33300099999997
+              },
+              "transfer": {
+                "n": 8,
+                "p50": 0.1933950000002369,
+                "p95": 3.470919000000322,
+                "max": 3.470919000000322
+              },
+              "observedWall": {
+                "n": 8,
+                "p50": 293.3663980000001,
+                "p95": 424.5796629999995,
+                "max": 424.5796629999995
+              },
+              "stageSum": {
+                "n": 8,
+                "p50": 288.5738220000003,
+                "p95": 421.46786300000076,
+                "max": 421.46786300000076
+              },
+              "previewStageSum": {
+                "n": 8,
+                "p50": 288.5738220000003,
+                "p95": 421.46786300000076,
+                "max": 421.46786300000076
+              }
+            }
+          }
+        ],
+        "memoryStart": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 1507328,
+            "p95": 1507328,
+            "max": 1507328
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 91066368,
+            "p95": 91193344,
+            "max": 91193344
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 6653216,
+            "p95": 6653216,
+            "max": 6653216
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 26342749,
+            "p95": 26342749,
+            "max": 26342749
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 22879933,
+            "p95": 22879933,
+            "max": 22879933
+          }
+        },
+        "memoryEnd": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 78000,
+            "p95": 78000,
+            "max": 78000
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 65000,
+            "p95": 65000,
+            "max": 65000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 74514432,
+            "p95": 74514432,
+            "max": 74514432
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 376827904,
+            "p95": 396316672,
+            "max": 396316672
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 6423416,
+            "p95": 6431744,
+            "max": 6431744
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 91979162,
+            "p95": 91979658,
+            "max": 91979658
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 15414498,
+            "p95": 15414994,
+            "max": 15414994
+          }
+        },
+        "sampledMemoryMaximumPerProcess": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 78000,
+            "p95": 78000,
+            "max": 78000
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 65000,
+            "p95": 65000,
+            "max": 65000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 74514432,
+            "p95": 74514432,
+            "max": 74514432
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 386150400,
+            "p95": 405815296,
+            "max": 405815296
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 29988608,
+            "p95": 34620704,
+            "max": 34620704
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 91979162,
+            "p95": 91979658,
+            "max": 91979658
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 25092589,
+            "p95": 25092589,
+            "max": 25092589
+          }
+        },
+        "arenaTrajectories": [
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ]
+        ]
+      },
+      "candidate": {
+        "processes": 4,
+        "rawTicks": 24,
+        "retainedTicks": 16,
+        "timingsMs": {
+          "restore": {
+            "n": 16,
+            "p50": 0.07244700000046578,
+            "p95": 3.340803000000051,
+            "max": 3.340803000000051
+          },
+          "prefix": {
+            "n": 16,
+            "p50": 126.34599700000035,
+            "p95": 134.3426589999999,
+            "max": 134.3426589999999
+          },
+          "rebuild": {
+            "n": 16,
+            "p50": 150.56360100000074,
+            "p95": 264.1836709999998,
+            "max": 264.1836709999998
+          },
+          "validate": {
+            "n": 16,
+            "p50": 2.013364000000365,
+            "p95": 3.3980719999999565,
+            "max": 3.3980719999999565
+          },
+          "mesh": {
+            "n": 16,
+            "p50": 36.575175999999374,
+            "p95": 66.96686799999952,
+            "max": 66.96686799999952
+          },
+          "transfer": {
+            "n": 16,
+            "p50": 0.1943780000001425,
+            "p95": 3.3811900000000605,
+            "max": 3.3811900000000605
+          },
+          "observedWall": {
+            "n": 16,
+            "p50": 318.9925540000004,
+            "p95": 457.82247199999983,
+            "max": 457.82247199999983
+          },
+          "stageSum": {
+            "n": 16,
+            "p50": 311.7996009999997,
+            "p95": 454.91019699999924,
+            "max": 454.91019699999924
+          },
+          "previewStageSum": {
+            "n": 16,
+            "p50": 311.7996009999997,
+            "p95": 454.91019699999924,
+            "max": 454.91019699999924
+          }
+        },
+        "coldStageSumMs": {
+          "n": 4,
+          "p50": 3241.318384,
+          "p95": 3298.60975,
+          "max": 3298.60975
+        },
+        "coldObservedWallMs": {
+          "n": 4,
+          "p50": 3242.8173869999996,
+          "p95": 3300.104453,
+          "max": 3300.104453
+        },
+        "setupMs": {
+          "moduleLoadMs": {
+            "n": 4,
+            "p50": 64.19395800000001,
+            "p95": 65.658806,
+            "max": 65.658806
+          },
+          "constructorMs": {
+            "n": 4,
+            "p50": 0.5926699999999983,
+            "p95": 0.6203420000000079,
+            "max": 0.6203420000000079
+          },
+          "prepareMs": {
+            "n": 4,
+            "p50": 0.1646909999999906,
+            "p95": 0.1704730000000012,
+            "max": 0.1704730000000012
+          }
+        },
+        "processMedians": [
+          {
+            "ordinal": 1,
+            "timingsMs": {
+              "restore": 0.07244700000046578,
+              "prefix": 123.47615399999995,
+              "rebuild": 149.57517400000052,
+              "validate": 2.045604999999341,
+              "mesh": 36.575175999999374,
+              "transfer": 0.1943780000001425,
+              "observedWall": 318.9925540000004,
+              "stageSum": 311.7996009999997,
+              "previewStageSum": 311.7996009999997
+            }
+          },
+          {
+            "ordinal": 2,
+            "timingsMs": {
+              "restore": 0.06446200000027602,
+              "prefix": 120.15705199999957,
+              "rebuild": 144.672149,
+              "validate": 1.980743000000075,
+              "mesh": 34.96269900000061,
+              "transfer": 0.18286600000010367,
+              "observedWall": 317.66703899999993,
+              "stageSum": 311.52420900000016,
+              "previewStageSum": 311.52420900000016
+            }
+          },
+          {
+            "ordinal": 4,
+            "timingsMs": {
+              "restore": 0.06567400000039925,
+              "prefix": 127.00326899999982,
+              "rebuild": 147.89614100000017,
+              "validate": 2.013364000000365,
+              "mesh": 34.72036200000002,
+              "transfer": 0.18859700000029989,
+              "observedWall": 313.8361099999993,
+              "stageSum": 307.1200969999991,
+              "previewStageSum": 307.1200969999991
+            }
+          },
+          {
+            "ordinal": 7,
+            "timingsMs": {
+              "restore": 0.06766799999968498,
+              "prefix": 119.87161300000025,
+              "rebuild": 150.56360100000074,
+              "validate": 1.868149999999332,
+              "mesh": 35.34012200000052,
+              "transfer": 0.19253399999979592,
+              "observedWall": 312.47595900000033,
+              "stageSum": 307.7342180000005,
+              "previewStageSum": 307.7342180000005
+            }
+          }
+        ],
+        "balancedBlocks": [
+          {
+            "order": "ABBA",
+            "retainedTicks": 8,
+            "timingsMs": {
+              "restore": {
+                "n": 8,
+                "p50": 0.07244700000046578,
+                "p95": 3.3360740000007354,
+                "max": 3.3360740000007354
+              },
+              "prefix": {
+                "n": 8,
+                "p50": 123.47615399999995,
+                "p95": 134.3426589999999,
+                "max": 134.3426589999999
+              },
+              "rebuild": {
+                "n": 8,
+                "p50": 149.57517400000052,
+                "p95": 262.8723829999999,
+                "max": 262.8723829999999
+              },
+              "validate": {
+                "n": 8,
+                "p50": 2.045604999999341,
+                "p95": 2.3559519999998884,
+                "max": 2.3559519999998884
+              },
+              "mesh": {
+                "n": 8,
+                "p50": 36.575175999999374,
+                "p95": 64.36421900000005,
+                "max": 64.36421900000005
+              },
+              "transfer": {
+                "n": 8,
+                "p50": 0.1943780000001425,
+                "p95": 2.835508000000118,
+                "max": 2.835508000000118
+              },
+              "observedWall": {
+                "n": 8,
+                "p50": 318.9925540000004,
+                "p95": 454.876045,
+                "max": 454.876045
+              },
+              "stageSum": {
+                "n": 8,
+                "p50": 311.7996009999997,
+                "p95": 450.9723469999999,
+                "max": 450.9723469999999
+              },
+              "previewStageSum": {
+                "n": 8,
+                "p50": 311.7996009999997,
+                "p95": 450.9723469999999,
+                "max": 450.9723469999999
+              }
+            }
+          },
+          {
+            "order": "BAAB",
+            "retainedTicks": 8,
+            "timingsMs": {
+              "restore": {
+                "n": 8,
+                "p50": 0.06766799999968498,
+                "p95": 3.340803000000051,
+                "max": 3.340803000000051
+              },
+              "prefix": {
+                "n": 8,
+                "p50": 127.00326899999982,
+                "p95": 130.44168699999955,
+                "max": 130.44168699999955
+              },
+              "rebuild": {
+                "n": 8,
+                "p50": 150.56360100000074,
+                "p95": 264.1836709999998,
+                "max": 264.1836709999998
+              },
+              "validate": {
+                "n": 8,
+                "p50": 1.9981870000001436,
+                "p95": 3.3980719999999565,
+                "max": 3.3980719999999565
+              },
+              "mesh": {
+                "n": 8,
+                "p50": 35.34012200000052,
+                "p95": 66.96686799999952,
+                "max": 66.96686799999952
+              },
+              "transfer": {
+                "n": 8,
+                "p50": 0.19253399999979592,
+                "p95": 3.3811900000000605,
+                "max": 3.3811900000000605
+              },
+              "observedWall": {
+                "n": 8,
+                "p50": 313.8361099999993,
+                "p95": 457.82247199999983,
+                "max": 457.82247199999983
+              },
+              "stageSum": {
+                "n": 8,
+                "p50": 307.7342180000005,
+                "p95": 454.91019699999924,
+                "max": 454.91019699999924
+              },
+              "previewStageSum": {
+                "n": 8,
+                "p50": 307.7342180000005,
+                "p95": 454.91019699999924,
+                "max": 454.91019699999924
+              }
+            }
+          }
+        ],
+        "memoryStart": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 1507328,
+            "p95": 1507328,
+            "max": 1507328
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 91037696,
+            "p95": 91123712,
+            "max": 91123712
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 6653472,
+            "p95": 6653472,
+            "max": 6653472
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 26348808,
+            "p95": 26348808,
+            "max": 26348808
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 22885992,
+            "p95": 22885992,
+            "max": 22885992
+          }
+        },
+        "memoryEnd": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 78000,
+            "p95": 78000,
+            "max": 78000
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 65000,
+            "p95": 65000,
+            "max": 65000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 74514432,
+            "p95": 74514432,
+            "max": 74514432
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 355962880,
+            "p95": 429080576,
+            "max": 429080576
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 6427248,
+            "p95": 6431504,
+            "max": 6431504
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 91982146,
+            "p95": 91982642,
+            "max": 91982642
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 15417482,
+            "p95": 15417978,
+            "max": 15417978
+          }
+        },
+        "sampledMemoryMaximumPerProcess": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 78000,
+            "p95": 78000,
+            "max": 78000
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 65000,
+            "p95": 65000,
+            "max": 65000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 74514432,
+            "p95": 74514432,
+            "max": 74514432
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 364736512,
+            "p95": 430809088,
+            "max": 430809088
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 33497720,
+            "p95": 34883824,
+            "max": 34883824
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 91982146,
+            "p95": 91982642,
+            "max": 91982642
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 25098648,
+            "p95": 25098648,
+            "max": 25098648
+          }
+        },
+        "arenaTrajectories": [
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ]
+        ]
+      }
+    },
+    "completion": {
+      "baseline": {
+        "processes": 4,
+        "rawTicks": 24,
+        "retainedTicks": 16,
+        "timingsMs": {
+          "restore": {
+            "n": 16,
+            "p50": 0.07838900000024296,
+            "p95": 0.6269949999996243,
+            "max": 0.6269949999996243
+          },
+          "prefix": {
+            "n": 16,
+            "p50": 122.19477499999994,
+            "p95": 146.15357499999936,
+            "max": 146.15357499999936
+          },
+          "rebuild": {
+            "n": 16,
+            "p50": 141.06271300000026,
+            "p95": 251.54434200000014,
+            "max": 251.54434200000014
+          },
+          "validate": {
+            "n": 16,
+            "p50": 2.00726399999985,
+            "p95": 3.4788150000003952,
+            "max": 3.4788150000003952
+          },
+          "mesh": {
+            "n": 16,
+            "p50": 34.26349400000072,
+            "p95": 61.05153999999948,
+            "max": 61.05153999999948
+          },
+          "transfer": {
+            "n": 16,
+            "p50": 0.2700199999999313,
+            "p95": 4.161584999999832,
+            "max": 4.161584999999832
+          },
+          "volume": {
+            "n": 16,
+            "p50": 19.43406899999991,
+            "p95": 66.53749799999969,
+            "max": 66.53749799999969
+          },
+          "recognize": {
+            "n": 16,
+            "p50": 154.3613260000002,
+            "p95": 166.2417290000003,
+            "max": 166.2417290000003
+          },
+          "observedWall": {
+            "n": 16,
+            "p50": 477.0607629999995,
+            "p95": 665.541451,
+            "max": 665.541451
+          },
+          "stageSum": {
+            "n": 16,
+            "p50": 468.7609480000019,
+            "p95": 660.9425110000011,
+            "max": 660.9425110000011
+          },
+          "previewStageSum": {
+            "n": 16,
+            "p50": 302.12182699999903,
+            "p95": 428.1632840000011,
+            "max": 428.1632840000011
+          }
+        },
+        "coldStageSumMs": {
+          "n": 4,
+          "p50": 4122.465833,
+          "p95": 4183.499761000001,
+          "max": 4183.499761000001
+        },
+        "coldObservedWallMs": {
+          "n": 4,
+          "p50": 4128.846542,
+          "p95": 4189.8311459999995,
+          "max": 4189.8311459999995
+        },
+        "setupMs": {
+          "moduleLoadMs": {
+            "n": 4,
+            "p50": 66.358199,
+            "p95": 67.315449,
+            "max": 67.315449
+          },
+          "constructorMs": {
+            "n": 4,
+            "p50": 0.6443380000000047,
+            "p95": 0.678522000000001,
+            "max": 0.678522000000001
+          },
+          "prepareMs": {
+            "n": 4,
+            "p50": 0.16320899999999483,
+            "p95": 0.16602400000000728,
+            "max": 0.16602400000000728
+          }
+        },
+        "processMedians": [
+          {
+            "ordinal": 0,
+            "timingsMs": {
+              "restore": 0.06659599999966304,
+              "prefix": 117.78199399999994,
+              "rebuild": 138.4514939999999,
+              "validate": 1.9619680000005246,
+              "mesh": 32.240044999999554,
+              "transfer": 0.2158980000003794,
+              "volume": 19.180005000000165,
+              "recognize": 151.01824099999976,
+              "observedWall": 465.02729699999963,
+              "stageSum": 457.52987199999916,
+              "previewStageSum": 286.93316200000027
+            }
+          },
+          {
+            "ordinal": 3,
+            "timingsMs": {
+              "restore": 0.07187599999997474,
+              "prefix": 122.19477499999994,
+              "rebuild": 138.62797200000023,
+              "validate": 2.004337999999734,
+              "mesh": 34.26349400000072,
+              "transfer": 0.2822939999996379,
+              "volume": 19.231816000000435,
+              "recognize": 151.47448000000077,
+              "observedWall": 475.0594799999999,
+              "stageSum": 468.7609480000019,
+              "previewStageSum": 297.67546500000117
+            }
+          },
+          {
+            "ordinal": 5,
+            "timingsMs": {
+              "restore": 0.07838900000024296,
+              "prefix": 118.137788,
+              "rebuild": 141.06271300000026,
+              "validate": 2.0044889999999214,
+              "mesh": 33.14697400000023,
+              "transfer": 0.2700199999999313,
+              "volume": 19.27934600000026,
+              "recognize": 151.176958,
+              "observedWall": 476.0042169999997,
+              "stageSum": 467.88213599999835,
+              "previewStageSum": 302.12182699999903
+            }
+          },
+          {
+            "ordinal": 6,
+            "timingsMs": {
+              "restore": 0.07655399999930523,
+              "prefix": 118.00482699999975,
+              "rebuild": 138.360146,
+              "validate": 2.0212900000005902,
+              "mesh": 32.71168200000011,
+              "transfer": 0.27587099999982456,
+              "volume": 19.43406899999991,
+              "recognize": 154.3613260000002,
+              "observedWall": 477.0607629999995,
+              "stageSum": 468.15058299999964,
+              "previewStageSum": 298.7920039999999
+            }
+          }
+        ],
+        "balancedBlocks": [
+          {
+            "order": "ABBA",
+            "retainedTicks": 8,
+            "timingsMs": {
+              "restore": {
+                "n": 8,
+                "p50": 0.07187599999997474,
+                "p95": 0.5725019999999859,
+                "max": 0.5725019999999859
+              },
+              "prefix": {
+                "n": 8,
+                "p50": 122.19477499999994,
+                "p95": 146.15357499999936,
+                "max": 146.15357499999936
+              },
+              "rebuild": {
+                "n": 8,
+                "p50": 138.62797200000023,
+                "p95": 247.49725800000033,
+                "max": 247.49725800000033
+              },
+              "validate": {
+                "n": 8,
+                "p50": 2.004337999999734,
+                "p95": 3.4788150000003952,
+                "max": 3.4788150000003952
+              },
+              "mesh": {
+                "n": 8,
+                "p50": 34.26349400000072,
+                "p95": 61.05153999999948,
+                "max": 61.05153999999948
+              },
+              "transfer": {
+                "n": 8,
+                "p50": 0.23965299999963463,
+                "p95": 4.161584999999832,
+                "max": 4.161584999999832
+              },
+              "volume": {
+                "n": 8,
+                "p50": 19.231816000000435,
+                "p95": 65.40060799999992,
+                "max": 65.40060799999992
+              },
+              "recognize": {
+                "n": 8,
+                "p50": 151.47448000000077,
+                "p95": 163.07587599999988,
+                "max": 163.07587599999988
+              },
+              "observedWall": {
+                "n": 8,
+                "p50": 475.0594799999999,
+                "p95": 655.0994289999999,
+                "max": 655.0994289999999
+              },
+              "stageSum": {
+                "n": 8,
+                "p50": 468.7609480000019,
+                "p95": 649.9451590000017,
+                "max": 649.9451590000017
+              },
+              "previewStageSum": {
+                "n": 8,
+                "p50": 297.67546500000117,
+                "p95": 422.2321920000004,
+                "max": 422.2321920000004
+              }
+            }
+          },
+          {
+            "order": "BAAB",
+            "retainedTicks": 8,
+            "timingsMs": {
+              "restore": {
+                "n": 8,
+                "p50": 0.07838900000024296,
+                "p95": 0.6269949999996243,
+                "max": 0.6269949999996243
+              },
+              "prefix": {
+                "n": 8,
+                "p50": 118.137788,
+                "p95": 144.42306400000052,
+                "max": 144.42306400000052
+              },
+              "rebuild": {
+                "n": 8,
+                "p50": 141.06271300000026,
+                "p95": 251.54434200000014,
+                "max": 251.54434200000014
+              },
+              "validate": {
+                "n": 8,
+                "p50": 2.0212900000005902,
+                "p95": 3.445781999999781,
+                "max": 3.445781999999781
+              },
+              "mesh": {
+                "n": 8,
+                "p50": 33.14697400000023,
+                "p95": 60.2593339999994,
+                "max": 60.2593339999994
+              },
+              "transfer": {
+                "n": 8,
+                "p50": 0.27587099999982456,
+                "p95": 3.60172700000021,
+                "max": 3.60172700000021
+              },
+              "volume": {
+                "n": 8,
+                "p50": 19.43406899999991,
+                "p95": 66.53749799999969,
+                "max": 66.53749799999969
+              },
+              "recognize": {
+                "n": 8,
+                "p50": 154.3613260000002,
+                "p95": 166.2417290000003,
+                "max": 166.2417290000003
+              },
+              "observedWall": {
+                "n": 8,
+                "p50": 477.0607629999995,
+                "p95": 665.541451,
+                "max": 665.541451
+              },
+              "stageSum": {
+                "n": 8,
+                "p50": 468.15058299999964,
+                "p95": 660.9425110000011,
+                "max": 660.9425110000011
+              },
+              "previewStageSum": {
+                "n": 8,
+                "p50": 302.12182699999903,
+                "p95": 428.1632840000011,
+                "max": 428.1632840000011
+              }
+            }
+          }
+        ],
+        "memoryStart": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 1507328,
+            "p95": 1507328,
+            "max": 1507328
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 91168768,
+            "p95": 91193344,
+            "max": 91193344
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 6653216,
+            "p95": 6653224,
+            "max": 6653224
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 26342749,
+            "p95": 26342749,
+            "max": 26342749
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 22879933,
+            "p95": 22879933,
+            "max": 22879933
+          }
+        },
+        "memoryEnd": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 78000,
+            "p95": 78000,
+            "max": 78000
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 65000,
+            "p95": 65000,
+            "max": 65000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 95748096,
+            "p95": 95748096,
+            "max": 95748096
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 419532800,
+            "p95": 445489152,
+            "max": 445489152
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 6545976,
+            "p95": 6546768,
+            "max": 6546768
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 113212330,
+            "p95": 113212826,
+            "max": 113212826
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 15414002,
+            "p95": 15414498,
+            "max": 15414498
+          }
+        },
+        "sampledMemoryMaximumPerProcess": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 78000,
+            "p95": 78000,
+            "max": 78000
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 65000,
+            "p95": 65000,
+            "max": 65000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 95748096,
+            "p95": 95748096,
+            "max": 95748096
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 419532800,
+            "p95": 445489152,
+            "max": 445489152
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 23893024,
+            "p95": 28666696,
+            "max": 28666696
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 113212330,
+            "p95": 113212826,
+            "max": 113212826
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 25092589,
+            "p95": 25092589,
+            "max": 25092589
+          }
+        },
+        "arenaTrajectories": [
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ]
+        ]
+      },
+      "candidate": {
+        "processes": 4,
+        "rawTicks": 24,
+        "retainedTicks": 16,
+        "timingsMs": {
+          "restore": {
+            "n": 16,
+            "p50": 0.08065299999998388,
+            "p95": 0.6338480000003983,
+            "max": 0.6338480000003983
+          },
+          "prefix": {
+            "n": 16,
+            "p50": 124.37858199999937,
+            "p95": 150.7006280000005,
+            "max": 150.7006280000005
+          },
+          "rebuild": {
+            "n": 16,
+            "p50": 149.97849400000086,
+            "p95": 264.25273899999956,
+            "max": 264.25273899999956
+          },
+          "validate": {
+            "n": 16,
+            "p50": 1.9854919999997946,
+            "p95": 3.4563420000004044,
+            "max": 3.4563420000004044
+          },
+          "mesh": {
+            "n": 16,
+            "p50": 34.62449699999979,
+            "p95": 63.87667000000056,
+            "max": 63.87667000000056
+          },
+          "transfer": {
+            "n": 16,
+            "p50": 0.23695799999950395,
+            "p95": 3.670748000000458,
+            "max": 3.670748000000458
+          },
+          "volume": {
+            "n": 16,
+            "p50": 22.235884000000624,
+            "p95": 71.61215900000025,
+            "max": 71.61215900000025
+          },
+          "recognize": {
+            "n": 16,
+            "p50": 180.12214099999983,
+            "p95": 192.4070589999992,
+            "max": 192.4070589999992
+          },
+          "observedWall": {
+            "n": 16,
+            "p50": 526.1368620000003,
+            "p95": 716.4614149999998,
+            "max": 716.4614149999998
+          },
+          "stageSum": {
+            "n": 16,
+            "p50": 516.5059280000005,
+            "p95": 711.2643230000003,
+            "max": 711.2643230000003
+          },
+          "previewStageSum": {
+            "n": 16,
+            "p50": 319.0735030000005,
+            "p95": 448.0469599999997,
+            "max": 448.0469599999997
+          }
+        },
+        "coldStageSumMs": {
+          "n": 4,
+          "p50": 4198.3821370000005,
+          "p95": 4328.352808000001,
+          "max": 4328.352808000001
+        },
+        "coldObservedWallMs": {
+          "n": 4,
+          "p50": 4206.116354,
+          "p95": 4334.129535,
+          "max": 4334.129535
+        },
+        "setupMs": {
+          "moduleLoadMs": {
+            "n": 4,
+            "p50": 65.781958,
+            "p95": 67.107305,
+            "max": 67.107305
+          },
+          "constructorMs": {
+            "n": 4,
+            "p50": 0.5913869999999974,
+            "p95": 0.6166149999999959,
+            "max": 0.6166149999999959
+          },
+          "prepareMs": {
+            "n": 4,
+            "p50": 0.16192600000000823,
+            "p95": 0.17000199999999666,
+            "max": 0.17000199999999666
+          }
+        },
+        "processMedians": [
+          {
+            "ordinal": 1,
+            "timingsMs": {
+              "restore": 0.07087400000000343,
+              "prefix": 123.12531399999989,
+              "rebuild": 145.9672529999998,
+              "validate": 1.9835090000005948,
+              "mesh": 33.60298599999987,
+              "transfer": 0.23336100000051374,
+              "volume": 22.14976999999999,
+              "recognize": 177.61699700000008,
+              "observedWall": 513.5350250000001,
+              "stageSum": 505.62692100000004,
+              "previewStageSum": 309.6697430000013
+            }
+          },
+          {
+            "ordinal": 2,
+            "timingsMs": {
+              "restore": 0.07047400000010384,
+              "prefix": 123.38539500000024,
+              "rebuild": 144.2401179999997,
+              "validate": 1.9886379999998098,
+              "mesh": 34.42580099999941,
+              "transfer": 0.23695799999950395,
+              "volume": 22.27219200000036,
+              "recognize": 180.12214099999983,
+              "observedWall": 523.8788340000001,
+              "stageSum": 515.7797800000008,
+              "previewStageSum": 317.74064799999996
+            }
+          },
+          {
+            "ordinal": 4,
+            "timingsMs": {
+              "restore": 0.08065299999998388,
+              "prefix": 124.28126800000064,
+              "rebuild": 147.1947420000006,
+              "validate": 1.945437000000311,
+              "mesh": 34.23638300000039,
+              "transfer": 0.23076599999967584,
+              "volume": 22.205124999999498,
+              "recognize": 178.8015660000001,
+              "observedWall": 520.8060270000005,
+              "stageSum": 511.5602520000002,
+              "previewStageSum": 314.08712899999955
+            }
+          },
+          {
+            "ordinal": 7,
+            "timingsMs": {
+              "restore": 0.07710500000030152,
+              "prefix": 124.37858199999937,
+              "rebuild": 149.97849400000086,
+              "validate": 1.9854919999997946,
+              "mesh": 34.62449699999979,
+              "transfer": 0.23250999999982014,
+              "volume": 22.109004000000823,
+              "recognize": 179.46661199999926,
+              "observedWall": 526.1368620000003,
+              "stageSum": 516.5059280000005,
+              "previewStageSum": 319.0735030000005
+            }
+          }
+        ],
+        "balancedBlocks": [
+          {
+            "order": "ABBA",
+            "retainedTicks": 8,
+            "timingsMs": {
+              "restore": {
+                "n": 8,
+                "p50": 0.07087400000000343,
+                "p95": 0.5802670000002763,
+                "max": 0.5802670000002763
+              },
+              "prefix": {
+                "n": 8,
+                "p50": 123.38539500000024,
+                "p95": 148.14598000000024,
+                "max": 148.14598000000024
+              },
+              "rebuild": {
+                "n": 8,
+                "p50": 145.9672529999998,
+                "p95": 261.9860349999999,
+                "max": 261.9860349999999
+              },
+              "validate": {
+                "n": 8,
+                "p50": 1.9886379999998098,
+                "p95": 3.4563420000004044,
+                "max": 3.4563420000004044
+              },
+              "mesh": {
+                "n": 8,
+                "p50": 34.42580099999941,
+                "p95": 63.87667000000056,
+                "max": 63.87667000000056
+              },
+              "transfer": {
+                "n": 8,
+                "p50": 0.23695799999950395,
+                "p95": 3.2245840000005046,
+                "max": 3.2245840000005046
+              },
+              "volume": {
+                "n": 8,
+                "p50": 22.235884000000624,
+                "p95": 70.4770239999998,
+                "max": 70.4770239999998
+              },
+              "recognize": {
+                "n": 8,
+                "p50": 180.12214099999983,
+                "p95": 192.4070589999992,
+                "max": 192.4070589999992
+              },
+              "observedWall": {
+                "n": 8,
+                "p50": 523.8788340000001,
+                "p95": 711.805856,
+                "max": 711.805856
+              },
+              "stageSum": {
+                "n": 8,
+                "p50": 515.7797800000008,
+                "p95": 707.7070299999996,
+                "max": 707.7070299999996
+              },
+              "previewStageSum": {
+                "n": 8,
+                "p50": 317.74064799999996,
+                "p95": 444.83105199999954,
+                "max": 444.83105199999954
+              }
+            }
+          },
+          {
+            "order": "BAAB",
+            "retainedTicks": 8,
+            "timingsMs": {
+              "restore": {
+                "n": 8,
+                "p50": 0.08065299999998388,
+                "p95": 0.6338480000003983,
+                "max": 0.6338480000003983
+              },
+              "prefix": {
+                "n": 8,
+                "p50": 124.37858199999937,
+                "p95": 150.7006280000005,
+                "max": 150.7006280000005
+              },
+              "rebuild": {
+                "n": 8,
+                "p50": 149.97849400000086,
+                "p95": 264.25273899999956,
+                "max": 264.25273899999956
+              },
+              "validate": {
+                "n": 8,
+                "p50": 1.9702829999996538,
+                "p95": 3.453377000000728,
+                "max": 3.453377000000728
+              },
+              "mesh": {
+                "n": 8,
+                "p50": 34.62449699999979,
+                "p95": 63.07868199999939,
+                "max": 63.07868199999939
+              },
+              "transfer": {
+                "n": 8,
+                "p50": 0.23250999999982014,
+                "p95": 3.670748000000458,
+                "max": 3.670748000000458
+              },
+              "volume": {
+                "n": 8,
+                "p50": 22.205124999999498,
+                "p95": 71.61215900000025,
+                "max": 71.61215900000025
+              },
+              "recognize": {
+                "n": 8,
+                "p50": 179.46661199999926,
+                "p95": 191.82375599999978,
+                "max": 191.82375599999978
+              },
+              "observedWall": {
+                "n": 8,
+                "p50": 526.1368620000003,
+                "p95": 716.4614149999998,
+                "max": 716.4614149999998
+              },
+              "stageSum": {
+                "n": 8,
+                "p50": 516.5059280000005,
+                "p95": 711.2643230000003,
+                "max": 711.2643230000003
+              },
+              "previewStageSum": {
+                "n": 8,
+                "p50": 319.0735030000005,
+                "p95": 448.0469599999997,
+                "max": 448.0469599999997
+              }
+            }
+          }
+        ],
+        "memoryStart": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 0,
+            "p95": 0,
+            "max": 0
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 1507328,
+            "p95": 1507328,
+            "max": 1507328
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 91058176,
+            "p95": 91127808,
+            "max": 91127808
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 6653416,
+            "p95": 6653424,
+            "max": 6653424
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 26348808,
+            "p95": 26348808,
+            "max": 26348808
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 22885992,
+            "p95": 22885992,
+            "max": 22885992
+          }
+        },
+        "memoryEnd": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 78000,
+            "p95": 78000,
+            "max": 78000
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 65000,
+            "p95": 65000,
+            "max": 65000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 95748096,
+            "p95": 95748096,
+            "max": 95748096
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 425742336,
+            "p95": 440500224,
+            "max": 440500224
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 6544088,
+            "p95": 6547256,
+            "max": 6547256
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 113215314,
+            "p95": 113215314,
+            "max": 113215314
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 15416986,
+            "p95": 15416986,
+            "max": 15416986
+          }
+        },
+        "sampledMemoryMaximumPerProcess": {
+          "allocatedSlots": {
+            "n": 4,
+            "p50": 78000,
+            "p95": 78000,
+            "max": 78000
+          },
+          "retiredSlots": {
+            "n": 4,
+            "p50": 65000,
+            "p95": 65000,
+            "max": 65000
+          },
+          "linearMemoryBytes": {
+            "n": 4,
+            "p50": 95748096,
+            "p95": 95748096,
+            "max": 95748096
+          },
+          "processRssBytes": {
+            "n": 4,
+            "p50": 425742336,
+            "p95": 443224064,
+            "max": 443224064
+          },
+          "jsHeapUsedBytes": {
+            "n": 4,
+            "p50": 22532504,
+            "p95": 23891520,
+            "max": 23891520
+          },
+          "externalBytes": {
+            "n": 4,
+            "p50": 113215314,
+            "p95": 113215314,
+            "max": 113215314
+          },
+          "arrayBufferBytes": {
+            "n": 4,
+            "p50": 25098648,
+            "p95": 25098648,
+            "max": 25098648
+          }
+        },
+        "arenaTrajectories": [
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ],
+          [
+            {
+              "allocated": 13000,
+              "retired": 0
+            },
+            {
+              "allocated": 26000,
+              "retired": 13000
+            },
+            {
+              "allocated": 39000,
+              "retired": 26000
+            },
+            {
+              "allocated": 52000,
+              "retired": 39000
+            },
+            {
+              "allocated": 65000,
+              "retired": 52000
+            },
+            {
+              "allocated": 78000,
+              "retired": 65000
+            }
+          ]
+        ]
+      }
+    }
+  },
+  "effects": {
+    "preview": {
+      "retainedStageP50Reduction": -0.05942426347180385,
+      "retainedObservedWallP50Reduction": -0.06304866171846446,
+      "stageP50Reductions": {
+        "restore": -0.033303856701544676,
+        "prefix": -0.07417049412073817,
+        "rebuild": -0.05914890725966737,
+        "validate": 0.02778449787337045,
+        "mesh": -0.09176902057700298,
+        "transfer": 0.04121184020329405,
+        "observedWall": -0.06304866171846446,
+        "stageSum": -0.05942426347180385,
+        "previewStageSum": -0.05942426347180385
+      },
+      "balancedBlockStageP50Reductions": [
+        {
+          "order": "ABBA",
+          "reduction": -0.05942426347180385
+        },
+        {
+          "order": "BAAB",
+          "reduction": -0.06639686118167787
+        }
+      ]
+    },
+    "completion": {
+      "retainedStageP50Reduction": -0.10185357846831211,
+      "retainedObservedWallP50Reduction": -0.10287179916324596,
+      "stageP50Reductions": {
+        "restore": -0.028881603282780777,
+        "prefix": -0.017871525194096405,
+        "rebuild": -0.06320437775785992,
+        "validate": 0.010846605130195641,
+        "mesh": -0.010536082513916023,
+        "transfer": 0.12244278201776082,
+        "volume": -0.1441702712901105,
+        "recognize": -0.1668864583347749,
+        "observedWall": -0.10287179916324596,
+        "stageSum": -0.10185357846831211,
+        "previewStageSum": -0.05610874317929215
+      },
+      "balancedBlockStageP50Reductions": [
+        {
+          "order": "ABBA",
+          "reduction": -0.10030449891486826
+        },
+        {
+          "order": "BAAB",
+          "reduction": -0.10329015226282623
+        }
+      ]
+    }
+  },
+  "limitations": [
+    "Empirical nearest-rank quantiles; 4 processes and 16 retained ticks per variant/mode do not establish tail confidence.",
+    "Module load, construction and checkpoint setup are separate; first replay is not cold application launch.",
+    "RSS/linear-memory observations are stage snapshots, not lifetime process peaks; no long-session reclamation claim.",
+    "Node kernel replay excludes application expression processing, worker/renderer and browser presentation.",
+    "Team CPU reservation/quiet-window approval is separate; unrelated host activity is not proven absent."
+  ]
+}

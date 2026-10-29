@@ -1,0 +1,26 @@
+{
+  "schema": "remus-identical-native-compiler-retry-comparison-v1",
+  "status": "passed",
+  "source": {
+    "head": "7364ab7be5e598b7c868bd63239dc831cbceb933",
+    "status": "",
+    "working_tree_sha256": "50bf94d4b63bf824ef4860fa6d6f8b244491f3a2bf5593a14dd4fb33295460be"
+  },
+  "unchanged_fields": [
+    "source",
+    "settings",
+    "environment",
+    "build_command",
+    "harness_sha256",
+    "counter_source_sha256",
+    "rustc",
+    "cargo",
+    "manifest_sha256"
+  ],
+  "first_attempt_status": "failed compiler build, no semantic smoke",
+  "retry_status": "passed14cases28records",
+  "first_attempt_run_sha256": "ddbc8f3efb00d1d77108b1359fd6f9e35315ca18cf15bdeebdb801ee44a23223",
+  "retry_run_sha256": "b612272d6f68d4be0a944658c5646b3814101405675be97c32d272b2339b34b2",
+  "source_after": "7364ab7be5e598b7c868bd63239dc831cbceb933",
+  "timing_use": "All smoke/census/test durations excluded from performance claims."
+}

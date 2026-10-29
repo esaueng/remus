@@ -1,0 +1,50 @@
+{
+  "schema": "remus-m2-native-final-portable-v1",
+  "source": "7364ab7be5e598b7c868bd63239dc831cbceb933",
+  "files": {
+    "README.md": {
+      "bytes": 3410,
+      "sha256": "04d5555634ba1ee0fdeb34749bd830167160b9b5fd0e6701bf034024a20309d1"
+    },
+    "census-qualification.json": {
+      "bytes": 9526,
+      "sha256": "9ade12d6a0d1b13a1487b3a85fb1c312343085cfe6f86cbd6e7ec24ead260cd2"
+    },
+    "census.normalized.tsv": {
+      "bytes": 4029,
+      "sha256": "367f9ff58f61d8ef0ebc552e32e4de5fee8c6997e02bad612ebcb626f9b198b5"
+    },
+    "compiler-retry-comparison.json": {
+      "bytes": 926,
+      "sha256": "8e1620e4b049c25ff7a987b6ff383376f924a9e3e68612e5f72cb1eca7a0071b"
+    },
+    "compiler-retry.json": {
+      "bytes": 2259,
+      "sha256": "eaca132a09b6f95040cb9abe88dc558598aca3ecdb7ad3d452c41ea60b318620"
+    },
+    "complex-qualification.json": {
+      "bytes": 28584,
+      "sha256": "d0c5a26bb730e04e3d6d25c3e0aa90c6bb4ecdd235d1f0313936a83d1fe2cc7f"
+    },
+    "qualification.json": {
+      "bytes": 6473,
+      "sha256": "79c38e44fdd8bd69ef7ba9e4a31ed71723f68b3adf0ac24899dff0e32630df2d"
+    },
+    "receipt-links.json": {
+      "bytes": 684,
+      "sha256": "d567a747dad7caf4f986f1b662feffe0b9dc9836ad133d36a78eebdacab69753"
+    },
+    "report.md": {
+      "bytes": 3013,
+      "sha256": "f1704b33c893069c480e48a762a6915fa3ebc52ece49485c0bf0abaa88b0c940"
+    },
+    "verify.py": {
+      "bytes": 4694,
+      "sha256": "18197b4127c9f9ac1ce6dc1884c365195a151c3379dcef1e5d8b8730466dcbcd"
+    },
+    "workspace-tests.json": {
+      "bytes": 7786,
+      "sha256": "bb985e73d642cf116dc8ea374f960f53fe4083fb79487b3da2cebe8a8af46125"
+    }
+  }
+}

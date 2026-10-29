@@ -1,0 +1,15 @@
+# Final-source native qualification
+
+Immutable source `7364ab7be5e598b7c868bd63239dc831cbceb933` stayed clean throughout every run. Actual Cargo compiler-artifact receipts, frozen executable captures, sizes, modes and SHA-256 hashes are retained for the release census and profiling-mode semantic smoke. FMA source `d0f8602fc3eadf802223a421844d4fc558445a38f6fd6625994662c18fcb8684` is byte-identical to the task baseline. Torus classifier source is `6439e3d7b658cac1f32c6339f4c1a96347d7030d251e4f3fc33ccad5842974c7`.
+
+The complete native workspace nextest command passed **9237 tests**, with 34 skipped tests reported by the runner. It used Cargo profile `ci-test` and 12 test threads. Both new torus sampling work/order regression tests ran and passed. Workspace documentation tests passed **9 tests**; feature-counter store-local qualification passed **33 tests**, including the strict cross-drilled witness, with no failures or ignored tests in that filtered run.
+
+The complex-boolean smoke passed all **14 eligible cases**: one warmup and one retained sample in one fresh process per case, **28 semantic records** in total. It used counter-free defaults: store-local requested off, pcurve and wire-area memos on, other native caches unchanged. Strict validation, closed-form quantity bounds, expected components, material probes, and input operand volume-bit preservation passed. This does not claim arbitrary graph equivalence, whole source identity or observed route counters.
+
+The required `cargo run --release --example approx_census -p remus-operations` passed. All **52 fresh normalized semantic rows** match the committed snapshot, including exact/fallback/error classifications, face counts and revolve surface census. Snapshot and normalizer bytes equal the immutable task baseline `c754a9b7f89971691ab8867bf7d7bafcc022ad14`. No result from a prior candidate or elapsed-time comparison is reused.
+
+The sparse 256-body witness remains unqualified and excluded by the unchanged manifest. It was not rerun or promoted. Its 32640 component pairs exceed the unchanged 4096 proof budget; the complete validator source equals the task baseline.
+
+The first profiling producer build crashed inside rustc/LLVM debug-info generation with SIGSEGV; no semantic smoke ran in that attempt. Its source, full Cargo output and stderr remain preserved separately. An identical-profile/source retry produced a new actual Cargo receipt and fresh case outputs; the successful retry is the smoke qualified here. No source, build profile, tolerance or proof budget was changed.
+
+Every test, smoke and census duration is diagnostic and excluded from performance claims. Builds and runs used CPUs 0-14,16-30, jobs 2 and a 512MiB Rust stack. No CPU31 captures, source edits, commits, pushes, tolerance or budget changes were performed by this qualification. Prior rejected-candidate artifacts remain separate. Canonical WASM/package qualification and controlled performance captures remain separate coordinating-task evidence.
