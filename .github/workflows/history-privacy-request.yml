@@ -4,7 +4,6 @@ on:
   push:
     branches: ["**"]
     tags: ["**"]
-  pull_request:
   merge_group:
 
 permissions:
@@ -21,7 +20,6 @@ jobs:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /.github/privacy/
-            /.github/workflows/commit-privacy.yml
             /.github/workflows/history-privacy*.yml
       - name: Synthetic privacy regression tests and audit request (no secrets)
         run: python3 -m unittest discover -s .github/privacy -p 'test_*.py'
