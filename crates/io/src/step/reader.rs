@@ -6751,16 +6751,6 @@ impl<'a> StepBuilder<'a> {
                     let reverse_matches = reverse_residuals
                         .iter()
                         .all(|residual| residual.is_finite() && *residual <= tolerance_cap);
-                    // A carrier whose natural ends are the edge's vertices is
-                    // the parameter authority Remus's own export writes (STEP
-                    // edge geometry cannot be a TRIMMED_CURVE), so its
-                    // endpoint gaps get the vertex balls a declared trim
-                    // records.
-                    if forward_matches != reverse_matches
-                        || (start_id == end_id && forward_matches && reverse_matches)
-                    {
-                        record_nurbs_balls = true;
-                    }
                     if forward_matches && !reverse_matches {
                         measured_tolerance = measured_tolerance
                             .max(forward_residuals[0])

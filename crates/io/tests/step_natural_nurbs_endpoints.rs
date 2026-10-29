@@ -155,8 +155,26 @@ fn displaced_natural_endpoints_import_with_local_diagnostics_and_unchanged_carri
             let imported = read_step_with_report(&exported, &mut round).expect("round trip");
             assert_eq!(imported.solids().len(), 1);
             assert!(imported.diagnostics().is_empty());
-            for (vertex, _) in round.vertices().iter() {
-                validate_vertex_ball(&round, vertex).expect("round-trip vertex containment");
+            // STEP carries no per-vertex tolerance, and conformant edge
+            // geometry has no TRIMMED_CURVE whose declared trim used to
+            // raise the vertex balls again on import. The read edge's own
+            // tolerance must still cover both endpoint gaps.
+            for edge_id in solid_edges(&round, imported.solids()[0]).expect("round edges") {
+                let edge = round.edge(edge_id).expect("round edge");
+                let EdgeCurve::NurbsCurve(curve) = edge.curve() else {
+                    continue;
+                };
+                let (t0, t1) = edge.strict_domain().expect("round trip trim");
+                for (vertex, parameter) in [(edge.start(), t0), (edge.end(), t1)] {
+                    let gap = (curve.evaluate(parameter)
+                        - round.vertex(vertex).expect("vertex").point())
+                    .length();
+                    assert!(
+                        edge.tolerance().is_some_and(|tolerance| gap <= tolerance),
+                        "round-trip edge tolerance {:?} does not cover its {gap} mm endpoint gap",
+                        edge.tolerance()
+                    );
+                }
             }
             assert!(
                 validate_solid(&round, imported.solids()[0])
