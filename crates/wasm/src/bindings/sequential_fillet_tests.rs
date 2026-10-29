@@ -328,7 +328,7 @@ fn bounded_tab_rollover_native_direct_detailed_both_batches_and_history() {
 #[test]
 fn audit_plate_equal_radius_fillet_is_exact_only() {
     for (y, z) in [(-4.5, 11.0), (21.5, 37.0)] {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel
             .deserialize_solid(include_bytes!(
                 "../../../operations/tests/data/audit_plate_body.arena.json"
