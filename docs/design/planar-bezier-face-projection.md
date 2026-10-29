@@ -28,7 +28,7 @@ inner wires. Its bounded authoritative Loop/Coedge list must agree exactly
 with the compatibility wire before that polygon can authorize an image. Whole-control-hull certificates must establish forward rays,
 strict image containment, finite representable mapped controls and a regular
 image. Boundary contact, partial coverage, holes, nonconvex/curved boundaries,
-multispan/unclamped carriers, nonpositive weights and unresolved arithmetic
+general multispan/unclamped carriers, nonpositive weights and unresolved arithmetic
 refuse before publication. Existing line/conic and sketch-plane routes retain
 their contracts. Solid first-hit projection is outside this increment.
 
@@ -61,3 +61,7 @@ Rust callers with exhaustive matches must add those arms. JS success schemas
 are unchanged; V2 carries `project-curve:<code>` in `details.kernelCode`, with
 resource/unsupported categories for these new refusals. Direct error prefixes
 retain the kernel code, while legacy batch retains its plain-message contract.
+
+The [stored Bézier-chain extension](planar-bezier-chain-projection.md) admits
+a bounded multispan representation without knot insertion; the single-span
+qualification above remains unchanged.

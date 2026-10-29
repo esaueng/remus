@@ -370,6 +370,7 @@ export function runProjectCurvePackaged({ BrepKernel }) {
     }
   }
   runPlanarBezierFaceProjectionPackaged({ BrepKernel });
+  runPlanarBezierChainProjectionPackaged({ BrepKernel });
   console.log('ok - packaged projection objects, clipping, exact and approximate images, trim refusals and scoped history continuity');
 }
 
@@ -551,4 +552,95 @@ export function runPlanarBezierFaceProjectionPackaged({ BrepKernel }) {
     } finally { kernel.free(); }
   }
   console.log('ok - planar Bezier face projection:72 matrix +3 tiny3D positives;24 atomic resource/domain/numeric refusals');
+}
+
+// Stored Bézier windows, without knot insertion or shared kernel evaluators
+// in the oracle. The same generated package is exercised through all routes.
+export function runPlanarBezierChainProjectionPackaged({ BrepKernel }) {
+  const bernstein = (points, weights, q) => {
+    const p = points.length - 1, numerator = [0, 0, 0];
+    let denominator = 0, choose = 1;
+    points.forEach((point, i) => {
+      if (i) choose = choose * (p + 1 - i) / i;
+      const factor = choose * q ** i * (1 - q) ** (p - i) * weights[i];
+      denominator += factor;
+      point.forEach((value, axis) => { numerator[axis] += factor * value; });
+    });
+    return numerator.map(value => value / denominator);
+  };
+  const near = (a, b, scale) => assert.ok(Math.hypot(...a.map((x, i) => x - b[i])) < 2e-9 * scale,
+    `${JSON.stringify(a)} != ${JSON.stringify(b)}`);
+  let cells = 0;
+  for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
+    for (const scale of [0.001, 1, 1000]) for (const degree of [1, 2, 8]) for (const spans of [2, 8]) {
+      const kernel = new BrepKernel();
+      try {
+        const solid = kernel.makeBox(10 * scale, 8 * scale, 4 * scale);
+        const face = Array.from(kernel.getSolidFaces(solid)).find(id => kernel.getFaceNormal(id)[2] > 0.9);
+        const count = degree * spans + 1;
+        const controls = Array.from({ length: count }, (_, i) => [1.5 + 6 * i / (count - 1), 3 + 0.4 * (i % 3), 6 + i / (count - 1)]);
+        const weights = controls.map((_, i) => 1 + 0.25 * (i % 3));
+        const breaks = Array.from({ length: spans + 1 }, (_, i) => 10 + i * i + i);
+        const knots = [...Array(degree + 1).fill(breaks[0]),
+          ...breaks.slice(1, -1).flatMap(k => Array(degree).fill(k)), ...Array(degree + 1).fill(breaks.at(-1))];
+        const points = controls.map(point => point.map(x => x * scale));
+        const edge = kernel.makeNurbsEdge(...points[0], ...points.at(-1), degree, Float64Array.from(knots), Float64Array.from(points.flat()), Float64Array.from(weights));
+        const source = Array.from(kernel.getEdgeVertices(edge)), checkpoint = kernel.checkpoint();
+        const history = JSON.parse(kernel.journalSummary());
+        const options = { maxControlPoints: 65, planeFrame: { origin: [0, 0, 4 * scale], xAxis: [1, 0, 0], normal: [0, 0, 1] } };
+        const args = { edge, face, dirX: 0.2, dirY: -0.1, dirZ: -1, options };
+        const row = route === 'direct' ? kernel.projectCurveOntoFace(edge, 0.2, -0.1, -1, face, options)
+          : JSON.parse(kernel[route](JSON.stringify([{ op: 'projectCurveOntoFace', args }])))[0];
+        if (route !== 'direct') assert.ok(Object.hasOwn(row, 'ok'), JSON.stringify(row));
+        const result = route === 'direct' ? row : row.ok;
+        assert.deepEqual(result.quality, { kind: 'exact' });
+        assert.equal(result.clipped, false); assert.equal(result.edges.length, 1);
+        const output = result.edges[0], curve = output.planeCurve;
+        assert.equal(curve.degree, degree); assert.deepEqual(curve.knots, knots); assert.deepEqual(curve.weights, weights);
+        assert.deepEqual([output.sourceStart, output.sourceEnd], [breaks[0], breaks.at(-1)]);
+        for (let span = 0; span < spans; span++) for (const q of [0, 1e-9, 0.125, 0.5, 0.875, 1 - 1e-9, 1]) {
+          const start = span * degree;
+          const p = bernstein(controls.slice(start, start + degree + 1), weights.slice(start, start + degree + 1), q);
+          const expected = [p[0] + 0.2 * (p[2] - 4), p[1] - 0.1 * (p[2] - 4), 4].map(x => x * scale);
+          const t = breaks[span] + (breaks[span + 1] - breaks[span]) * q;
+          near(Array.from(kernel.evaluateEdgeCurve(output.edge, t)), expected, scale);
+          const view = bernstein(curve.controlPoints.slice(start, start + degree + 1).map(p => [...p, 0]), weights.slice(start, start + degree + 1), q);
+          near([view[0], view[1], 4 * scale], expected, scale);
+        }
+        assert.deepEqual(Array.from(kernel.getEdgeVertices(edge)), source);
+        const after = JSON.parse(kernel.journalSummary());
+        assert.deepEqual(after.slice(0, history.length), history);
+        assert.equal(after.at(-1).kind, 'project_curve_onto_face'); assert.equal(after.at(-1).detail.affected, 3);
+        kernel.restore(checkpoint); assert.deepEqual(Array.from(kernel.getEdgeVertices(edge)), source);
+        assert.throws(() => kernel.getEdgeVertices(output.edge)); kernel.discardCheckpoint(checkpoint);
+        cells++;
+      } finally { kernel.free(); }
+    }
+    for (const variant of ['laterHull', 'laterDegenerate', 'spans', 'controls']) {
+      const kernel = new BrepKernel();
+      try {
+        const solid = kernel.makeBox(10, 8, 4), face = Array.from(kernel.getSolidFaces(solid)).find(id => kernel.getFaceNormal(id)[2] > 0.9);
+        const spans = variant === 'spans' ? 9 : 2, degree = 2, count = spans * degree + 1;
+        const points = Array.from({ length: count }, (_, i) => [2 + 5 * i / (count - 1), 3, 7]);
+        if (variant === 'laterHull') points[count - 2][1] = 12;
+        if (variant === 'laterDegenerate') points[count - 2] = [...points[count - 1]];
+        const knots = [0, 0, 0, ...Array.from({ length: spans - 1 }, (_, i) => [i + 1, i + 1]).flat(), spans, spans, spans];
+        const edge = kernel.makeNurbsEdge(...points[0], ...points.at(-1), degree, Float64Array.from(knots), Float64Array.from(points.flat()), Float64Array.from(points.map(() => 1)));
+        const checkpoint = kernel.checkpoint();
+        const snapshot = () => ({ history: kernel.journalSummary(), source: Array.from(kernel.getEdgeVertices(edge)), body: Array.from(kernel.serializeSolids(Uint32Array.of(solid))), checkpoints: kernel.checkpointCount() });
+        const before = snapshot(), options = { maxControlPoints: variant === 'controls' ? 4 : 65 };
+        const code = `project-curve:${variant === 'laterDegenerate' ? 'degenerate-image' : variant === 'laterHull' ? 'exact-bezier-domain-unsupported' : 'resource-limit'}`;
+        if (route === 'direct') assert.throws(() => kernel.projectCurveOntoFace(edge, 0, 0, -1, face, options), error => error.message.startsWith(`${code}:`));
+        else {
+          const row = JSON.parse(kernel[route](JSON.stringify([{ op: 'projectCurveOntoFace', args: { edge, face, dirX: 0, dirY: 0, dirZ: -1, options } }])))[0];
+          assert.ok(!Object.hasOwn(row, 'ok'));
+          if (route === 'executeBatchV2') assert.equal(row.error.details.kernelCode, code);
+          else assert.equal(typeof row.error, 'string');
+        }
+        assert.deepEqual(snapshot(), before); kernel.restore(checkpoint); kernel.discardCheckpoint(checkpoint);
+      } finally { kernel.free(); }
+    }
+  }
+  assert.equal(cells, 54);
+  console.log('ok - planar Bezier-chain projection:54 generated-binding matrix cells;12 atomic later-span/resource refusals');
 }

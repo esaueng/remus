@@ -2934,7 +2934,8 @@ fn unsupported_source_curves_are_refused() {
     let curve = NurbsCurve::new(
         2,
         // Single-span planar Beziers now have their own positive oracles.
-        // The unsupported remainder here is genuinely multispan.
+        // This general B-spline needs knot insertion; stored Bézier joins
+        // have their own positive oracles.
         vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
         vec![
             Point3::new(2.0, 2.0, 7.0),
@@ -4132,4 +4133,313 @@ fn exact_face_bezier_large_common_weights_keep_actual_2d_geometry() {
             (actual.x() - expected[0]).abs() < 1e-12 && (actual.y() - expected[1]).abs() < 1e-12
         );
     }
+}
+
+fn face_bezier_chain_source(
+    topo: &mut Topology,
+    degree: usize,
+    breaks: &[f64],
+    controls: &[[f64; 3]],
+    weights: &[f64],
+    placement: &Placement,
+) -> EdgeId {
+    let mut knots = vec![breaks[0]; degree + 1];
+    for &k in &breaks[1..breaks.len() - 1] {
+        knots.extend(std::iter::repeat_n(k, degree));
+    }
+    knots.extend(std::iter::repeat_n(breaks[breaks.len() - 1], degree + 1));
+    let points: Vec<_> = controls
+        .iter()
+        .map(|p| placement.p(p[0], p[1], p[2]))
+        .collect();
+    let curve = NurbsCurve::new(degree, knots, points.clone(), weights.to_vec()).unwrap();
+    make_nurbs_edge(topo, points[0], points[points.len() - 1], curve, VERTEX_TOL)
+}
+
+#[test]
+fn exact_face_bezier_chain_retains_chart_and_each_bernstein_span() {
+    for scale in [0.001, 1.0, 1000.0] {
+        for placed in [false, true] {
+            let placement = Placement {
+                scale,
+                rigid: placed.then(rigid_motion),
+            };
+            for degree in [1, 2, 3, 8] {
+                for spans in [2, 8] {
+                    let Target { mut topo, face, .. } = box_target(&placement);
+                    let count = degree * spans + 1;
+                    let controls: Vec<_> = (0..count)
+                        .map(|i| {
+                            let q = i as f64 / (count - 1) as f64;
+                            [1.5 + 6.0 * q, 3.0 + 0.4 * (i % 3) as f64, 6.0 + q]
+                        })
+                        .collect();
+                    let weights: Vec<_> = (0..count).map(|i| 1.0 + 0.25 * (i % 3) as f64).collect();
+                    // Nonuniform, exactly represented charts with unequal span widths.
+                    let breaks: Vec<_> = (0..=spans).map(|i| 10.0 + (i * i + i) as f64).collect();
+                    let edge = face_bezier_chain_source(
+                        &mut topo, degree, &breaks, &controls, &weights, &placement,
+                    );
+                    let before = Census::of(&topo);
+                    let frame = Frame3 {
+                        origin: placement.p(0.0, 0.0, 4.0),
+                        x: placement.unit(1.0, 0.0, 0.0),
+                        y: placement.unit(0.0, 1.0, 0.0),
+                        z: placement.unit(0.0, 0.0, 1.0),
+                    };
+                    let result = project_curve_onto_face(
+                        &mut topo,
+                        edge,
+                        placement.v(0.2, -0.1, -1.0),
+                        face,
+                        &ProjectCurveOptions {
+                            max_control_points: 65,
+                            plane_frame: Some(frame),
+                            ..ProjectCurveOptions::default()
+                        },
+                    )
+                    .unwrap();
+                    before.assert_only_free_edges_added(&topo, &result);
+                    assert_eq!(result.edges.len(), 1);
+                    assert_eq!(result.quality, ProjectionQuality::Exact);
+                    assert!(!result.clipped);
+                    let output = &result.edges[0];
+                    let EdgeCurve::NurbsCurve(image) = topo.edge(output.edge).unwrap().curve()
+                    else {
+                        panic!("retained NURBS")
+                    };
+                    let EdgeCurve::NurbsCurve(source) = topo.edge(edge).unwrap().curve() else {
+                        panic!("source NURBS")
+                    };
+                    assert_eq!(image.knots(), source.knots());
+                    assert_eq!(image.weights(), source.weights());
+                    assert_eq!(image.degree(), degree);
+                    assert_eq!(output.source_range, (breaks[0], breaks[spans]));
+                    for span in 0..spans {
+                        for q in [0.0, 1e-9, 0.125, 0.5, 0.875, 1.0 - 1e-9, 1.0] {
+                            let start = span * degree;
+                            let p = face_bezier_bernstein(
+                                &controls[start..=start + degree],
+                                &weights[start..=start + degree],
+                                q,
+                            );
+                            let expected = placement.p(
+                                p[0] + 0.2 * (p[2] - 4.0),
+                                p[1] - 0.1 * (p[2] - 4.0),
+                                4.0,
+                            );
+                            let t = breaks[span] + (breaks[span + 1] - breaks[span]) * q;
+                            assert!(
+                                (image.evaluate(t) - expected).length() < 2e-9 * scale,
+                                "degree={degree}, spans={spans}, span={span}, q={q}"
+                            );
+                            let uv = output.plane_curve.as_ref().unwrap().evaluate(t);
+                            assert!(
+                                (frame.origin + frame.x * uv.x() + frame.y * uv.y() - expected)
+                                    .length()
+                                    < 2e-9 * scale
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn exact_face_bezier_chain_later_span_refusals_are_atomic() {
+    for case in 0..5 {
+        let Target { mut topo, face, .. } = box_target(&UNIT);
+        let spans = if case == 3 { 9 } else { 2 };
+        let degree = 2;
+        let count = degree * spans + 1;
+        let mut controls: Vec<_> = (0..count)
+            .map(|i| [2.0 + 5.0 * i as f64 / (count - 1) as f64, 3.0, 7.0])
+            .collect();
+        if case == 0 {
+            controls[count - 2][1] = 12.0;
+        }
+        if case == 1 {
+            controls[count - 2] = controls[count - 1];
+        }
+        if case == 2 {
+            controls[count - 1][2] = 3.0;
+        }
+        let breaks: Vec<_> = (0..=spans).map(|i| i as f64).collect();
+        let source = face_bezier_chain_source(
+            &mut topo,
+            degree,
+            &breaks,
+            &controls,
+            &vec![1.0; count],
+            &UNIT,
+        );
+        let before = Census::of(&topo);
+        let ticks = topo.mutation_ticks();
+        let slots = topo.allocated_slot_count();
+        let code = match case {
+            1 => "degenerate-image",
+            3 | 4 => "resource-limit",
+            _ => "exact-bezier-domain-unsupported",
+        };
+        assert_refused(
+            project_curve_onto_face(
+                &mut topo,
+                source,
+                Vec3::new(0.0, 0.0, -1.0),
+                face,
+                &ProjectCurveOptions {
+                    max_control_points: if case == 4 { 4 } else { 65 },
+                    ..ProjectCurveOptions::default()
+                },
+            ),
+            &topo,
+            &before,
+            code,
+        );
+        assert_eq!(topo.mutation_ticks(), ticks);
+        assert_eq!(topo.allocated_slot_count(), slots);
+    }
+}
+
+#[test]
+fn exact_face_bezier_chain_discontinuous_and_partial_charts_refuse() {
+    for discontinuous in [false, true] {
+        let Target { mut topo, face, .. } = box_target(&UNIT);
+        let points: Vec<_> = (0..if discontinuous { 6 } else { 5 })
+            .map(|i| Point3::new(2.0 + i as f64, 3.0, 7.0))
+            .collect();
+        let knots = if discontinuous {
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0]
+        } else {
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 2.0]
+        };
+        let curve = NurbsCurve::new(2, knots, points.clone(), vec![1.0; points.len()]).unwrap();
+        let source = make_nurbs_edge(
+            &mut topo,
+            points[0],
+            points[points.len() - 1],
+            curve,
+            VERTEX_TOL,
+        );
+        if !discontinuous {
+            topo.edge_mut(source).unwrap().set_trim(Some((0.25, 1.75)));
+        }
+        let before = Census::of(&topo);
+        let ticks = topo.mutation_ticks();
+        assert_refused(
+            project_curve_onto_face(
+                &mut topo,
+                source,
+                Vec3::new(0.0, 0.0, -1.0),
+                face,
+                &ProjectCurveOptions::default(),
+            ),
+            &topo,
+            &before,
+            "unsupported-source-curve",
+        );
+        assert_eq!(topo.mutation_ticks(), ticks);
+    }
+}
+
+#[test]
+fn exact_face_bezier_chain_unequal_spans_and_adjacent_join_parameters() {
+    let Target { mut topo, face, .. } = box_target(&UNIT);
+    let breaks = [-1024.0, -1.0, 0.001, 1e6];
+    let controls = [
+        [2.0, 3.0, 7.0],
+        [3.0, 4.0, 7.0],
+        [4.0, 3.0, 7.0],
+        [4.5, 2.0, 7.0],
+        [5.0, 3.0, 7.0],
+        [6.0, 4.0, 7.0],
+        [7.0, 3.0, 7.0],
+    ];
+    let weights = [1.0, 2.0, 1.0, 0.5, 1.0, 2.0, 1.0];
+    let source = face_bezier_chain_source(&mut topo, 2, &breaks, &controls, &weights, &UNIT);
+    let result = project_curve_onto_face(
+        &mut topo,
+        source,
+        Vec3::new(0.0, 0.0, -1.0),
+        face,
+        &ProjectCurveOptions {
+            plane_frame: Some(Frame3 {
+                origin: Point3::new(0.0, 0.0, 4.0),
+                x: Vec3::new(1.0, 0.0, 0.0),
+                y: Vec3::new(0.0, 1.0, 0.0),
+                z: Vec3::new(0.0, 0.0, 1.0),
+            }),
+            ..ProjectCurveOptions::default()
+        },
+    )
+    .unwrap();
+    let output = &result.edges[0];
+    let EdgeCurve::NurbsCurve(image) = topo.edge(output.edge).unwrap().curve() else {
+        panic!("NURBS")
+    };
+    for span in 0..3 {
+        let (a, b) = (breaks[span], breaks[span + 1]);
+        for t in [a, a.next_up(), a + (b - a) * 0.5, b.next_down(), b] {
+            let q = (t - a) / (b - a);
+            let p = face_bezier_bernstein(
+                &controls[2 * span..=2 * span + 2],
+                &weights[2 * span..=2 * span + 2],
+                q,
+            );
+            let expected = Point3::new(p[0], p[1], 4.0);
+            assert!((image.evaluate(t) - expected).length() < 2e-9);
+            let uv = output.plane_curve.as_ref().unwrap().evaluate(t);
+            assert!((Point3::new(uv.x(), uv.y(), 4.0) - expected).length() < 2e-9);
+        }
+    }
+}
+
+#[test]
+fn exact_face_bezier_chain_later_span_reciprocal_overflow_refuses() {
+    let Target { mut topo, face, .. } = box_target(&UNIT);
+    let controls = [
+        [2.0, 3.0, 7.0],
+        [3.0, 4.0, 7.0],
+        [4.0, 3.0, 7.0],
+        [6.0, 4.0, 7.0],
+        [7.0, 3.0, 7.0],
+    ];
+    // The whole chart has unit width; only the second span has an unsafe reciprocal.
+    let points: Vec<_> = controls
+        .iter()
+        .map(|p| Point3::new(p[0], p[1], p[2]))
+        .collect();
+    let curve = NurbsCurve::new(
+        2,
+        vec![-1.0, -1.0, -1.0, -1e-310, -1e-310, 0.0, 0.0, 0.0],
+        points.clone(),
+        vec![1.0; 5],
+    )
+    .unwrap();
+    // Do not invoke the unsafe source evaluator while constructing this
+    // refusal fixture: that arithmetic is exactly what the query must avoid.
+    let start = topo.add_vertex(Vertex::new(points[0], VERTEX_TOL));
+    let end = topo.add_vertex(Vertex::new(points[4], VERTEX_TOL));
+    let mut item = Edge::new(start, end, EdgeCurve::NurbsCurve(curve));
+    item.set_trim(Some((-1.0, 0.0)));
+    let source = topo.add_edge(item);
+    let before = Census::of(&topo);
+    let ticks = topo.mutation_ticks();
+    let slots = topo.allocated_slot_count();
+    assert_refused(
+        project_curve_onto_face(
+            &mut topo,
+            source,
+            Vec3::new(0.0, 0.0, -1.0),
+            face,
+            &ProjectCurveOptions::default(),
+        ),
+        &topo,
+        &before,
+        "exact-bezier-domain-unsupported",
+    );
+    assert_eq!(topo.mutation_ticks(), ticks);
+    assert_eq!(topo.allocated_slot_count(), slots);
 }
