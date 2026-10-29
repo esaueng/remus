@@ -3160,19 +3160,34 @@ mod tests {
     #[test]
     fn exported_bodies_never_use_trimmed_edge_geometry() {
         let mut topo = Topology::new();
+        // (solid, whether its edges include a curve). The torus primitive's
+        // two seam edges are stored as lines.
         let solids = [
-            remus_operations::primitives::make_cylinder(&mut topo, 6.0, 28.0).unwrap(),
-            remus_operations::primitives::make_cone(&mut topo, 5.0, 2.0, 7.0).unwrap(),
-            remus_operations::primitives::make_sphere(&mut topo, 4.0, 16).unwrap(),
-            remus_operations::primitives::make_torus(&mut topo, 8.0, 2.0, 16).unwrap(),
+            (
+                remus_operations::primitives::make_cylinder(&mut topo, 6.0, 28.0).unwrap(),
+                true,
+            ),
+            (
+                remus_operations::primitives::make_cone(&mut topo, 5.0, 2.0, 7.0).unwrap(),
+                true,
+            ),
+            (
+                remus_operations::primitives::make_sphere(&mut topo, 4.0, 16).unwrap(),
+                true,
+            ),
+            (
+                remus_operations::primitives::make_torus(&mut topo, 8.0, 2.0, 16).unwrap(),
+                false,
+            ),
         ];
-        for solid in solids {
+        for (solid, curved) in solids {
             let step = write_step(&topo, &[solid]).unwrap();
             assert_conformant_edge_geometry(&step);
-            assert!(
+            assert_eq!(
                 edge_geometry_kinds(&step)
                     .iter()
                     .any(|(kind, _)| kind != "LINE"),
+                curved,
                 "{step}"
             );
             let mut read = Topology::new();
