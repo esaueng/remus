@@ -1401,15 +1401,30 @@ impl StepWriteContext {
             // A full turn may end on a distinct vertex at the start's
             // position. Its vertices alone cannot tell a reader the turn
             // from an empty span, so it is written as a closed edge on one
-            // VERTEX_POINT.
-            let midpoint = edge.curve().evaluate_with_endpoints(
-                f64::midpoint(range.0, range.1),
-                start_vertex.point(),
-                end_vertex.point(),
-            );
-            closed_loop |= (end_vertex.point() - start_vertex.point()).length()
-                <= endpoint_tolerance
-                && (midpoint - start_vertex.point()).length() > endpoint_tolerance;
+            // VERTEX_POINT. Only a genuine full turn qualifies: a full
+            // period of a circle or ellipse, or a curve whose ends are the
+            // same coordinates. A nearly full arc closed by a short chord
+            // keeps both vertices.
+            let full_turn = match edge.curve() {
+                EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
+                    ((range.1 - range.0).abs() - std::f64::consts::TAU).abs()
+                        <= 4.0 * f64::EPSILON * std::f64::consts::TAU
+                }
+                EdgeCurve::Line
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => {
+                    let midpoint = edge.curve().evaluate_with_endpoints(
+                        f64::midpoint(range.0, range.1),
+                        start_vertex.point(),
+                        end_vertex.point(),
+                    );
+                    start_vertex.point() == end_vertex.point()
+                        && (midpoint - start_vertex.point()).length() > endpoint_tolerance
+                }
+            };
+            closed_loop |= full_turn
+                && (end_vertex.point() - start_vertex.point()).length() <= endpoint_tolerance;
             check_conic_span_survives(
                 eid,
                 edge.curve(),
@@ -3317,6 +3332,31 @@ mod tests {
         .unwrap();
         assert_coincident_full_turn_roundtrip(EdgeCurve::NurbsCurve(closed.clone()), (0.0, 2.0));
         assert_coincident_full_turn_roundtrip(EdgeCurve::NurbsCurve(closed), (2.0, 0.0));
+    }
+
+    #[test]
+    fn nearly_full_arc_on_tolerance_coincident_vertices_keeps_both() {
+        use std::f64::consts::TAU;
+        // The ends are 6e-9 mm apart, inside the 1e-7 tolerance, but the arc
+        // stops 1e-9 rad short of a turn: it is not a closed edge.
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 6.0).unwrap();
+        let range = (0.0, TAU - 1e-9);
+        let mut topo = Topology::new();
+        let start = topo.add_vertex(Vertex::new(circle.evaluate(range.0), 1e-7));
+        let end = topo.add_vertex(Vertex::new(circle.evaluate(range.1), 1e-7));
+        let mut edge = Edge::with_tolerance(start, end, EdgeCurve::Circle(circle), Some(1e-7));
+        edge.set_trim(Some(range));
+        let edge = topo.add_edge(edge);
+        let solid = doubled_edge_solid(&mut topo, edge);
+        let step = write_step(&topo, &[solid]).unwrap();
+        let entities = step_entities(&step);
+        let (_, edge_attrs) = entities
+            .values()
+            .find(|(kind, _)| kind == "EDGE_CURVE")
+            .unwrap();
+        let refs = step_refs(edge_attrs);
+        assert_ne!(refs[0], refs[1], "the arc must keep its two vertices");
     }
 
     #[test]
