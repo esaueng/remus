@@ -334,6 +334,13 @@ impl StructuredWasmError {
         Self::new(WasmErrorCode::OperationFailed, message)
     }
 
+    /// A declared capability boundary, with no attempted approximation.
+    pub(crate) fn unsupported(message: impl Into<String>) -> Self {
+        let mut error = Self::operation_failed(message);
+        error.category = FailureCategory::Unsupported.as_str();
+        error
+    }
+
     /// An exact-only request whose only available result is approximate:
     /// category `quality_refused`, native code `exact_only_unattainable` —
     /// the same projection as `OperationsError::ExactOnlyUnattainable`.
