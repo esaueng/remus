@@ -8,6 +8,16 @@ historical predecessor-line records, retained for provenance. The
 
 ### Added
 
+* **operations,wasm:** `make_gear` / `makeGearDetailed` build involute external
+  spur gears, internal (ring) gears and straight racks as one extruded outline.
+  Involute flanks are certified cubic B-splines: results report
+  `quality: "approximate"` with a proven `flankDeviationBound` (racks are
+  exact). Dimensions, guideline warnings and typed `gear:<reason>` refusals
+  are returned as data.
+* **math:** `nurbs::hermite_fit::fit_cubic_hermite` fits a parametric curve
+  with uniform cubic Hermite spans and a proven remainder bound from a
+  caller-supplied fourth-derivative bound.
+
 * **wasm:** `getFaceDraftAngle` exposes signed carrier-local draft angles and
   outward normals; `getPlanarSolidDraft` reports constant angles for every
   planar outer/cavity face. Direct and legacy/V2 batch routes preserve the
