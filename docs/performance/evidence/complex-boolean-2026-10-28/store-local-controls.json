@@ -1,0 +1,1805 @@
+{
+  "schema": "remus-complex-boolean-store-local-controls-v1",
+  "source_base_commit": "70f675bea4aebd35b0a36d59eaec89118c278ef6",
+  "source_working_tree_sha256": "eb80f1529398934d852bc948897a743de189e2796f96ef30bdade3d1c950440d",
+  "scope": "Same-executable native counter-free setting controls on three qualified procedural fixtures; no universal adoption claim.",
+  "memo_policy": "pcurve-and-wire-area-only; other native caches retain their defaults",
+  "cpu": "AMD Ryzen 9 5900XT 16-Core Processor",
+  "cpu_affinity": 31,
+  "excluded_smt_sibling": 15,
+  "controls": "Other team builds/captures excluded from31/15; external host activity, thermal state and frequency were not fully characterized.",
+  "order": [
+    "off",
+    "on",
+    "on",
+    "off",
+    "on",
+    "off",
+    "off",
+    "on"
+  ],
+  "warmup_per_process": 2,
+  "retained_samples_per_process": 10,
+  "independent_processes_per_setting_per_case": 4,
+  "tail_percentiles": null,
+  "tail_note": "No tail-confidence claim.",
+  "native_counter_free_binary_sha256": "4c4ad66666c0a4488230298f7962f8cf144134e7fa1466b6247be30344032daa",
+  "native_route_diagnostic_binary_sha256": "557503f9d06add6fe3ed01bff409725ba9855a1124545ab841bc6f7c628fabd4",
+  "harness_sha256": {
+    "scripts/performance/complex-boolean/run.py": "1cb5726630429f65f168a8873648dde71882640c825a6e447bec829b7fb262ec",
+    "scripts/performance/complex-boolean/workloads.json": "938f217f03d3d310898132cb632b4f87ff2a28df47dc0f5bc4b3783489182096",
+    "crates/operations/examples/complex_boolean_baseline.rs": "72acdd85e9b21d63e200532cb90224b5f68ef49dbbc5988b05e7f46708468c32",
+    "scripts/performance/run.py": "11375b219deefd58d2624d531cd71912aa1dd02c26a3519f447cf2bb0089d0da"
+  },
+  "counter_source_sha256": {
+    "crates/algo/src/perf.rs": "b5b35d2c24bd06497d1f934af87bf6a76d29128adc2b15c46e9ac1333e672bbb",
+    "crates/operations/src/performance.rs": "da9d32d3bde0c3ad2a7dbd026a9859ee9111e8264f9dee57d1528db9a80bf077"
+  },
+  "comparisons": [
+    {
+      "case": {
+        "id": "slot-cut-144",
+        "scenario": "slot_cut",
+        "size": 12
+      },
+      "store_local_disabled": {
+        "samples": 40,
+        "unit": "ms",
+        "tail_percentiles": null,
+        "tail_note": "No tail-confidence claim; retain raw samples and per-process medians.",
+        "stages": {
+          "setup": {
+            "min": 69.099091,
+            "median": 74.23942,
+            "max": 88.301887,
+            "process_medians": [
+              75.1190395,
+              75.65579,
+              72.586198,
+              73.391336
+            ]
+          },
+          "preflight": {
+            "min": 120.794601,
+            "median": 142.918397,
+            "max": 172.117477,
+            "process_medians": [
+              141.580897,
+              143.1748425,
+              143.613788,
+              144.14607949999998
+            ]
+          },
+          "kernel": {
+            "min": 11.833064,
+            "median": 16.0597395,
+            "max": 18.98858,
+            "process_medians": [
+              16.1565975,
+              15.7863875,
+              16.294629,
+              15.792708999999999
+            ]
+          },
+          "qualification": {
+            "min": 355.046385,
+            "median": 405.34623999999997,
+            "max": 427.808255,
+            "process_medians": [
+              402.7818685,
+              407.7646495,
+              409.43385750000004,
+              404.0990055
+            ]
+          },
+          "teardown": {
+            "min": 4.047757,
+            "median": 7.205019500000001,
+            "max": 8.256559,
+            "process_medians": [
+              7.3281525,
+              7.1839095,
+              7.19194,
+              7.1125545
+            ]
+          },
+          "generation": {
+            "min": 83.516724,
+            "median": 90.5602535,
+            "max": 104.435967,
+            "process_medians": [
+              91.2544565,
+              91.23897299999999,
+              88.90942100000001,
+              89.4173515
+            ]
+          }
+        }
+      },
+      "store_local_enabled": {
+        "samples": 40,
+        "unit": "ms",
+        "tail_percentiles": null,
+        "tail_note": "No tail-confidence claim; retain raw samples and per-process medians.",
+        "stages": {
+          "setup": {
+            "min": 51.887723,
+            "median": 72.77273600000001,
+            "max": 85.014478,
+            "process_medians": [
+              63.4934225,
+              72.07981000000001,
+              73.5268725,
+              75.86478
+            ]
+          },
+          "preflight": {
+            "min": 97.651873,
+            "median": 141.619264,
+            "max": 150.974441,
+            "process_medians": [
+              118.84452300000001,
+              139.508893,
+              142.5097895,
+              144.5009305
+            ]
+          },
+          "kernel": {
+            "min": 7.238001,
+            "median": 9.656156,
+            "max": 10.893767,
+            "process_medians": [
+              8.3717615,
+              9.661226,
+              9.767982499999999,
+              9.649243
+            ]
+          },
+          "qualification": {
+            "min": 277.938553,
+            "median": 397.31786850000003,
+            "max": 450.677717,
+            "process_medians": [
+              304.7548655,
+              397.70878749999997,
+              396.728248,
+              405.69772
+            ]
+          },
+          "teardown": {
+            "min": 4.989248,
+            "median": 6.9630415,
+            "max": 8.842026,
+            "process_medians": [
+              5.671198,
+              6.729971,
+              7.304393,
+              7.5284965
+            ]
+          },
+          "generation": {
+            "min": 59.312347,
+            "median": 82.49369899999999,
+            "max": 95.536482,
+            "process_medians": [
+              71.8200695,
+              82.370952,
+              83.3062165,
+              85.5589635
+            ]
+          }
+        }
+      },
+      "median_of_process_kernel_medians_ms": {
+        "off": 15.97465325,
+        "on": 9.655234499999999
+      },
+      "observed_kernel_reduction_percent": 39.55903549893955
+    },
+    {
+      "case": {
+        "id": "slot-fuse-144",
+        "scenario": "slot_fuse",
+        "size": 12
+      },
+      "store_local_disabled": {
+        "samples": 40,
+        "unit": "ms",
+        "tail_percentiles": null,
+        "tail_note": "No tail-confidence claim; retain raw samples and per-process medians.",
+        "stages": {
+          "setup": {
+            "min": 54.07972,
+            "median": 82.30766750000001,
+            "max": 160.572799,
+            "process_medians": [
+              73.1791945,
+              117.1372985,
+              84.3032175,
+              71.25276
+            ]
+          },
+          "preflight": {
+            "min": 138.925119,
+            "median": 158.19865700000003,
+            "max": 274.943308,
+            "process_medians": [
+              146.2270365,
+              191.4555375,
+              160.30224099999998,
+              146.9446735
+            ]
+          },
+          "kernel": {
+            "min": 15.645616,
+            "median": 18.107067,
+            "max": 29.993528,
+            "process_medians": [
+              16.6015545,
+              21.204265499999998,
+              19.263550000000002,
+              16.678786000000002
+            ]
+          },
+          "qualification": {
+            "min": 369.949446,
+            "median": 438.358242,
+            "max": 634.331396,
+            "process_medians": [
+              408.408913,
+              547.0378065,
+              452.397675,
+              417.045726
+            ]
+          },
+          "teardown": {
+            "min": 3.082812,
+            "median": 7.555798,
+            "max": 15.799558,
+            "process_medians": [
+              7.0984324999999995,
+              10.355349,
+              7.7600285,
+              6.407025
+            ]
+          },
+          "generation": {
+            "min": 70.613376,
+            "median": 100.0063525,
+            "max": 184.553823,
+            "process_medians": [
+              90.6699115,
+              138.8034985,
+              105.389851,
+              87.79147599999999
+            ]
+          }
+        }
+      },
+      "store_local_enabled": {
+        "samples": 40,
+        "unit": "ms",
+        "tail_percentiles": null,
+        "tail_note": "No tail-confidence claim; retain raw samples and per-process medians.",
+        "stages": {
+          "setup": {
+            "min": 70.135633,
+            "median": 96.923616,
+            "max": 304.827488,
+            "process_medians": [
+              95.33070749999999,
+              100.172467,
+              121.53792250000001,
+              75.666079
+            ]
+          },
+          "preflight": {
+            "min": 101.313861,
+            "median": 174.259053,
+            "max": 460.360193,
+            "process_medians": [
+              161.2094825,
+              177.67107199999998,
+              205.1762775,
+              148.0195915
+            ]
+          },
+          "kernel": {
+            "min": 4.54126,
+            "median": 7.112890500000001,
+            "max": 17.215135,
+            "process_medians": [
+              7.548484,
+              7.283908,
+              7.183403,
+              6.014217
+            ]
+          },
+          "qualification": {
+            "min": 360.730968,
+            "median": 490.1606145,
+            "max": 880.339207,
+            "process_medians": [
+              440.65155,
+              530.529268,
+              607.831056,
+              420.2303255
+            ]
+          },
+          "teardown": {
+            "min": 6.08448,
+            "median": 9.468616,
+            "max": 26.979165,
+            "process_medians": [
+              11.867144,
+              10.830192,
+              10.2246715,
+              6.9947870000000005
+            ]
+          },
+          "generation": {
+            "min": 75.869399,
+            "median": 104.23407,
+            "max": 322.013679,
+            "process_medians": [
+              103.06577999999999,
+              108.5172325,
+              130.317711,
+              81.71990600000001
+            ]
+          }
+        }
+      },
+      "median_of_process_kernel_medians_ms": {
+        "off": 17.971168000000002,
+        "on": 7.2336555
+      },
+      "observed_kernel_reduction_percent": 59.74855112366653
+    },
+    {
+      "case": {
+        "id": "slot-intersect-144",
+        "scenario": "slot_intersect",
+        "size": 12
+      },
+      "store_local_disabled": {
+        "samples": 40,
+        "unit": "ms",
+        "tail_percentiles": null,
+        "tail_note": "No tail-confidence claim; retain raw samples and per-process medians.",
+        "stages": {
+          "setup": {
+            "min": 57.547189,
+            "median": 76.38865100000001,
+            "max": 98.608303,
+            "process_medians": [
+              81.568624,
+              79.51816600000001,
+              73.9767885,
+              75.6552935
+            ]
+          },
+          "preflight": {
+            "min": 127.085281,
+            "median": 148.795955,
+            "max": 184.645656,
+            "process_medians": [
+              152.6237615,
+              153.888519,
+              145.453122,
+              147.01277249999998
+            ]
+          },
+          "kernel": {
+            "min": 10.486517,
+            "median": 12.0080655,
+            "max": 15.834223,
+            "process_medians": [
+              12.2662635,
+              12.3992,
+              11.7530275,
+              11.902576
+            ]
+          },
+          "qualification": {
+            "min": 124.444747,
+            "median": 150.0574265,
+            "max": 174.593911,
+            "process_medians": [
+              152.30277949999999,
+              157.891416,
+              147.0414665,
+              144.605694
+            ]
+          },
+          "teardown": {
+            "min": 2.695989,
+            "median": 7.114793499999999,
+            "max": 9.423756,
+            "process_medians": [
+              7.2141815000000005,
+              6.609758,
+              7.308304,
+              7.251372
+            ]
+          },
+          "generation": {
+            "min": 69.172651,
+            "median": 88.3767685,
+            "max": 110.464982,
+            "process_medians": [
+              93.0612495,
+              92.4616005,
+              85.473341,
+              87.52888949999999
+            ]
+          }
+        }
+      },
+      "store_local_enabled": {
+        "samples": 40,
+        "unit": "ms",
+        "tail_percentiles": null,
+        "tail_note": "No tail-confidence claim; retain raw samples and per-process medians.",
+        "stages": {
+          "setup": {
+            "min": 52.03902,
+            "median": 77.2571935,
+            "max": 103.194739,
+            "process_medians": [
+              80.42004750000001,
+              79.125363,
+              70.4967555,
+              65.6790325
+            ]
+          },
+          "preflight": {
+            "min": 98.857044,
+            "median": 147.7402785,
+            "max": 166.340008,
+            "process_medians": [
+              156.05293849999998,
+              154.3293375,
+              141.656345,
+              101.32226650000001
+            ]
+          },
+          "kernel": {
+            "min": 5.894881,
+            "median": 7.957497999999999,
+            "max": 9.777415,
+            "process_medians": [
+              8.453752,
+              8.2645685,
+              7.833348,
+              6.0438735
+            ]
+          },
+          "qualification": {
+            "min": 99.578919,
+            "median": 148.5057165,
+            "max": 161.557561,
+            "process_medians": [
+              154.899942,
+              154.0317095,
+              141.6565055,
+              110.7663165
+            ]
+          },
+          "teardown": {
+            "min": 5.297021,
+            "median": 6.9846375,
+            "max": 8.186636,
+            "process_medians": [
+              7.2970835,
+              7.2403505,
+              6.518446,
+              6.160589
+            ]
+          },
+          "generation": {
+            "min": 57.933901,
+            "median": 85.7063615,
+            "max": 111.087129,
+            "process_medians": [
+              89.100278,
+              87.353082,
+              78.495852,
+              71.6162485
+            ]
+          }
+        }
+      },
+      "median_of_process_kernel_medians_ms": {
+        "off": 12.08441975,
+        "on": 8.04895825
+      },
+      "observed_kernel_reduction_percent": 33.39392029973139
+    }
+  ],
+  "separate_instrumented_route_and_phase_proof": [
+    {
+      "case_id": "slot-cut-144",
+      "mode": "off",
+      "rows": [
+        {
+          "sample": 0,
+          "warmup": true,
+          "work": {
+            "coplanar_section_probes": 0,
+            "ee_pairs_surviving": 0,
+            "ee_pairs_visited": 5328,
+            "ef_analytic_pair_scans": 0,
+            "face_split_probes": 256,
+            "ff_pairs_surviving": 8,
+            "ff_pairs_visited": 900,
+            "pave_vertex_probes": 0,
+            "sd_poly_clips": 0,
+            "store_faces_copied": 310,
+            "ve_pairs_visited": 7104,
+            "ve_projection_evals": 0,
+            "ve_sampled_probes": 0
+          },
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          },
+          "phases": [
+            {
+              "calls": 1,
+              "duration_ms": 1.1317209999999998,
+              "name": "gfa.store_import"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.21921400000000002,
+              "name": "pave.vv"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.2683770000000001,
+              "name": "pave.ve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.24968199999999974,
+              "name": "pave.ee"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.25277800000000017,
+              "name": "pave.vf"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.9224169999999998,
+              "name": "pave.ef"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.6492389999999988,
+              "name": "pave.ff"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.11573900000000048,
+              "name": "pave.coplanar"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.8862460000000008,
+              "name": "pave.resolve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 7.603162,
+              "name": "gfa.build"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 6.826373,
+              "name": "gfa.assemble"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.4116399999999985,
+              "name": "gfa.store_export"
+            }
+          ],
+          "metrics": {
+            "allocated_slots": 203148,
+            "edge_connected_components": 1,
+            "expected_volume": 200824.42631532278,
+            "faces": 154,
+            "input_operands_preserved": true,
+            "material_probes": 4,
+            "volume": 200824.42631532156,
+            "volume_bound": 0.0020082442631532277
+          }
+        },
+        {
+          "sample": 1,
+          "warmup": false,
+          "work": {
+            "coplanar_section_probes": 0,
+            "ee_pairs_surviving": 0,
+            "ee_pairs_visited": 5328,
+            "ef_analytic_pair_scans": 0,
+            "face_split_probes": 256,
+            "ff_pairs_surviving": 8,
+            "ff_pairs_visited": 900,
+            "pave_vertex_probes": 0,
+            "sd_poly_clips": 0,
+            "store_faces_copied": 310,
+            "ve_pairs_visited": 7104,
+            "ve_projection_evals": 0,
+            "ve_sampled_probes": 0
+          },
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          },
+          "phases": [
+            {
+              "calls": 1,
+              "duration_ms": 0.9169150000000172,
+              "name": "gfa.store_import"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.16936999999995805,
+              "name": "pave.vv"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.2194960000000492,
+              "name": "pave.ve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.2158679999998867,
+              "name": "pave.ee"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.20964599999990696,
+              "name": "pave.vf"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.4910710000000336,
+              "name": "pave.ef"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.392413999999917,
+              "name": "pave.ff"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.1070830000001024,
+              "name": "pave.coplanar"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.7703579999999874,
+              "name": "pave.resolve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 4.0327989999999545,
+              "name": "gfa.build"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 3.8424979999999778,
+              "name": "gfa.assemble"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.3225009999999884,
+              "name": "gfa.store_export"
+            }
+          ],
+          "metrics": {
+            "allocated_slots": 203148,
+            "edge_connected_components": 1,
+            "expected_volume": 200824.42631532278,
+            "faces": 154,
+            "input_operands_preserved": true,
+            "material_probes": 4,
+            "volume": 200824.42631532156,
+            "volume_bound": 0.0020082442631532277
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "slot-cut-144",
+      "mode": "on",
+      "rows": [
+        {
+          "sample": 0,
+          "warmup": true,
+          "work": {
+            "coplanar_section_probes": 0,
+            "ee_pairs_surviving": 0,
+            "ee_pairs_visited": 3552,
+            "ef_analytic_pair_scans": 0,
+            "face_split_probes": 256,
+            "ff_pairs_surviving": 8,
+            "ff_pairs_visited": 12,
+            "pave_vertex_probes": 0,
+            "sd_poly_clips": 0,
+            "store_faces_copied": 8,
+            "ve_pairs_visited": 5920,
+            "ve_projection_evals": 0,
+            "ve_sampled_probes": 0
+          },
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 1,
+            "store_local_successes": 1
+          },
+          "phases": [
+            {
+              "calls": 1,
+              "duration_ms": 0.7598879999999999,
+              "name": "gfa.store_import"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.04974400000000001,
+              "name": "pave.vv"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.07408999999999988,
+              "name": "pave.ve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.19113099999999994,
+              "name": "pave.ee"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.05801899999999982,
+              "name": "pave.vf"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.2090970000000003,
+              "name": "pave.ef"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.2615260000000004,
+              "name": "pave.ff"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.10046,
+              "name": "pave.coplanar"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.6231480000000005,
+              "name": "pave.resolve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 5.268746,
+              "name": "gfa.build"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.2719260000000006,
+              "name": "gfa.assemble"
+            }
+          ],
+          "metrics": {
+            "allocated_slots": 203148,
+            "edge_connected_components": 1,
+            "expected_volume": 200824.42631532278,
+            "faces": 154,
+            "input_operands_preserved": true,
+            "material_probes": 4,
+            "volume": 200824.42631532153,
+            "volume_bound": 0.0020082442631532277
+          }
+        },
+        {
+          "sample": 1,
+          "warmup": false,
+          "work": {
+            "coplanar_section_probes": 0,
+            "ee_pairs_surviving": 0,
+            "ee_pairs_visited": 3552,
+            "ef_analytic_pair_scans": 0,
+            "face_split_probes": 256,
+            "ff_pairs_surviving": 8,
+            "ff_pairs_visited": 12,
+            "pave_vertex_probes": 0,
+            "sd_poly_clips": 0,
+            "store_faces_copied": 8,
+            "ve_pairs_visited": 5920,
+            "ve_projection_evals": 0,
+            "ve_sampled_probes": 0
+          },
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 1,
+            "store_local_successes": 1
+          },
+          "phases": [
+            {
+              "calls": 1,
+              "duration_ms": 0.9213430000000926,
+              "name": "gfa.store_import"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.051578000000063184,
+              "name": "pave.vv"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.09287499999993543,
+              "name": "pave.ve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.21194100000002436,
+              "name": "pave.ee"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.0796500000000151,
+              "name": "pave.vf"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.3807319999999663,
+              "name": "pave.ef"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.4310969999999088,
+              "name": "pave.ff"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.12375399999996262,
+              "name": "pave.coplanar"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.7563709999999446,
+              "name": "pave.resolve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 3.43004899999994,
+              "name": "gfa.build"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.3537409999999,
+              "name": "gfa.assemble"
+            }
+          ],
+          "metrics": {
+            "allocated_slots": 203148,
+            "edge_connected_components": 1,
+            "expected_volume": 200824.42631532278,
+            "faces": 154,
+            "input_operands_preserved": true,
+            "material_probes": 4,
+            "volume": 200824.42631532153,
+            "volume_bound": 0.0020082442631532277
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "slot-fuse-144",
+      "mode": "off",
+      "rows": [
+        {
+          "sample": 0,
+          "warmup": true,
+          "work": {
+            "coplanar_section_probes": 0,
+            "ee_pairs_surviving": 0,
+            "ee_pairs_visited": 5328,
+            "ef_analytic_pair_scans": 0,
+            "face_split_probes": 48,
+            "ff_pairs_surviving": 4,
+            "ff_pairs_visited": 900,
+            "pave_vertex_probes": 0,
+            "sd_poly_clips": 0,
+            "store_faces_copied": 311,
+            "ve_pairs_visited": 7104,
+            "ve_projection_evals": 0,
+            "ve_sampled_probes": 0
+          },
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          },
+          "phases": [
+            {
+              "calls": 1,
+              "duration_ms": 0.957992,
+              "name": "gfa.store_import"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.197654,
+              "name": "pave.vv"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.227209,
+              "name": "pave.ve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.22780100000000014,
+              "name": "pave.ee"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.21795199999999992,
+              "name": "pave.vf"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.692872,
+              "name": "pave.ef"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.8607379999999996,
+              "name": "pave.ff"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.1150979999999997,
+              "name": "pave.coplanar"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.7499290000000007,
+              "name": "pave.resolve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 5.017491000000001,
+              "name": "gfa.build"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 5.63514,
+              "name": "gfa.assemble"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.263651000000003,
+              "name": "gfa.store_export"
+            }
+          ],
+          "metrics": {
+            "allocated_slots": 203149,
+            "edge_connected_components": 1,
+            "expected_volume": 200968.42631532278,
+            "faces": 155,
+            "input_operands_preserved": true,
+            "material_probes": 4,
+            "volume": 200968.42631532156,
+            "volume_bound": 0.002009684263153228
+          }
+        },
+        {
+          "sample": 1,
+          "warmup": false,
+          "work": {
+            "coplanar_section_probes": 0,
+            "ee_pairs_surviving": 0,
+            "ee_pairs_visited": 5328,
+            "ef_analytic_pair_scans": 0,
+            "face_split_probes": 48,
+            "ff_pairs_surviving": 4,
+            "ff_pairs_visited": 900,
+            "pave_vertex_probes": 0,
+            "sd_poly_clips": 0,
+            "store_faces_copied": 311,
+            "ve_pairs_visited": 7104,
+            "ve_projection_evals": 0,
+            "ve_sampled_probes": 0
+          },
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          },
+          "phases": [
+            {
+              "calls": 1,
+              "duration_ms": 0.9266830000000255,
+              "name": "gfa.store_import"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.17464099999995142,
+              "name": "pave.vv"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.21268300000008367,
+              "name": "pave.ve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.21537799999998697,
+              "name": "pave.ee"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.2096759999999449,
+              "name": "pave.vf"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.4642099999998663,
+              "name": "pave.ef"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.8234779999999091,
+              "name": "pave.ff"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.10296500000004016,
+              "name": "pave.coplanar"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.7303120000000263,
+              "name": "pave.resolve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 3.3281559999999217,
+              "name": "gfa.build"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 3.392947999999933,
+              "name": "gfa.assemble"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.2751019999999471,
+              "name": "gfa.store_export"
+            }
+          ],
+          "metrics": {
+            "allocated_slots": 203149,
+            "edge_connected_components": 1,
+            "expected_volume": 200968.42631532278,
+            "faces": 155,
+            "input_operands_preserved": true,
+            "material_probes": 4,
+            "volume": 200968.42631532156,
+            "volume_bound": 0.002009684263153228
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "slot-fuse-144",
+      "mode": "on",
+      "rows": [
+        {
+          "sample": 0,
+          "warmup": true,
+          "work": {
+            "coplanar_section_probes": 0,
+            "ee_pairs_surviving": 0,
+            "ee_pairs_visited": 1776,
+            "ef_analytic_pair_scans": 0,
+            "face_split_probes": 48,
+            "ff_pairs_surviving": 4,
+            "ff_pairs_visited": 6,
+            "pave_vertex_probes": 0,
+            "sd_poly_clips": 0,
+            "store_faces_copied": 7,
+            "ve_pairs_visited": 2960,
+            "ve_projection_evals": 0,
+            "ve_sampled_probes": 0
+          },
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 1,
+            "store_local_successes": 1
+          },
+          "phases": [
+            {
+              "calls": 1,
+              "duration_ms": 0.38671200000000006,
+              "name": "gfa.store_import"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.03154999999999997,
+              "name": "pave.vv"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.03708,
+              "name": "pave.ve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.09043199999999996,
+              "name": "pave.ee"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.028954999999999953,
+              "name": "pave.vf"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.5906469999999999,
+              "name": "pave.ef"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.6024290000000001,
+              "name": "pave.ff"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.04854199999999986,
+              "name": "pave.coplanar"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.315947,
+              "name": "pave.resolve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 2.675962000000001,
+              "name": "gfa.build"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.5885229999999995,
+              "name": "gfa.assemble"
+            }
+          ],
+          "metrics": {
+            "allocated_slots": 203149,
+            "edge_connected_components": 1,
+            "expected_volume": 200968.42631532278,
+            "faces": 155,
+            "input_operands_preserved": true,
+            "material_probes": 4,
+            "volume": 200968.42631532156,
+            "volume_bound": 0.002009684263153228
+          }
+        },
+        {
+          "sample": 1,
+          "warmup": false,
+          "work": {
+            "coplanar_section_probes": 0,
+            "ee_pairs_surviving": 0,
+            "ee_pairs_visited": 1776,
+            "ef_analytic_pair_scans": 0,
+            "face_split_probes": 48,
+            "ff_pairs_surviving": 4,
+            "ff_pairs_visited": 6,
+            "pave_vertex_probes": 0,
+            "sd_poly_clips": 0,
+            "store_faces_copied": 7,
+            "ve_pairs_visited": 2960,
+            "ve_projection_evals": 0,
+            "ve_sampled_probes": 0
+          },
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 1,
+            "store_local_successes": 1
+          },
+          "phases": [
+            {
+              "calls": 1,
+              "duration_ms": 0.37282600000003185,
+              "name": "gfa.store_import"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.02318400000001475,
+              "name": "pave.vv"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.038552999999978965,
+              "name": "pave.ve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.09150299999998879,
+              "name": "pave.ee"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.03105900000002748,
+              "name": "pave.vf"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.6052649999999176,
+              "name": "pave.ef"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.6166469999999435,
+              "name": "pave.ff"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.05090599999994083,
+              "name": "pave.coplanar"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.3089840000000095,
+              "name": "pave.resolve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.7687760000000026,
+              "name": "gfa.build"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.5694970000000694,
+              "name": "gfa.assemble"
+            }
+          ],
+          "metrics": {
+            "allocated_slots": 203149,
+            "edge_connected_components": 1,
+            "expected_volume": 200968.42631532278,
+            "faces": 155,
+            "input_operands_preserved": true,
+            "material_probes": 4,
+            "volume": 200968.42631532156,
+            "volume_bound": 0.002009684263153228
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "slot-intersect-144",
+      "mode": "off",
+      "rows": [
+        {
+          "sample": 0,
+          "warmup": true,
+          "work": {
+            "coplanar_section_probes": 0,
+            "ee_pairs_surviving": 0,
+            "ee_pairs_visited": 5328,
+            "ef_analytic_pair_scans": 0,
+            "face_split_probes": 256,
+            "ff_pairs_surviving": 8,
+            "ff_pairs_visited": 900,
+            "pave_vertex_probes": 0,
+            "sd_poly_clips": 0,
+            "store_faces_copied": 162,
+            "ve_pairs_visited": 7104,
+            "ve_projection_evals": 0,
+            "ve_sampled_probes": 0
+          },
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          },
+          "phases": [
+            {
+              "calls": 1,
+              "duration_ms": 0.654458,
+              "name": "gfa.store_import"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.14386199999999993,
+              "name": "pave.vv"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.15582400000000007,
+              "name": "pave.ve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.16194599999999992,
+              "name": "pave.ee"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.15684700000000018,
+              "name": "pave.vf"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.239324,
+              "name": "pave.ef"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.0639730000000003,
+              "name": "pave.ff"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.07447099999999995,
+              "name": "pave.coplanar"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.5954259999999998,
+              "name": "pave.resolve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 4.835587,
+              "name": "gfa.build"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.0995879999999989,
+              "name": "gfa.assemble"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.022242000000000317,
+              "name": "gfa.store_export"
+            }
+          ],
+          "metrics": {
+            "allocated_slots": 200496,
+            "edge_connected_components": 1,
+            "expected_volume": 120.0,
+            "faces": 6,
+            "input_operands_preserved": true,
+            "material_probes": 4,
+            "volume": 119.99999999999989,
+            "volume_bound": 1.2e-06
+          }
+        },
+        {
+          "sample": 1,
+          "warmup": false,
+          "work": {
+            "coplanar_section_probes": 0,
+            "ee_pairs_surviving": 0,
+            "ee_pairs_visited": 5328,
+            "ef_analytic_pair_scans": 0,
+            "face_split_probes": 256,
+            "ff_pairs_surviving": 8,
+            "ff_pairs_visited": 900,
+            "pave_vertex_probes": 0,
+            "sd_poly_clips": 0,
+            "store_faces_copied": 162,
+            "ve_pairs_visited": 7104,
+            "ve_projection_evals": 0,
+            "ve_sampled_probes": 0
+          },
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          },
+          "phases": [
+            {
+              "calls": 1,
+              "duration_ms": 0.9512189999999805,
+              "name": "gfa.store_import"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.17289799999997513,
+              "name": "pave.vv"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.21879399999994575,
+              "name": "pave.ve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.22899300000000267,
+              "name": "pave.ee"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.22244000000000597,
+              "name": "pave.vf"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.5467859999999973,
+              "name": "pave.ef"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.4460050000000138,
+              "name": "pave.ff"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.10471799999999121,
+              "name": "pave.coplanar"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.7959359999999833,
+              "name": "pave.resolve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 4.141464000000042,
+              "name": "gfa.build"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.11935599999998203,
+              "name": "gfa.assemble"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.02967599999999493,
+              "name": "gfa.store_export"
+            }
+          ],
+          "metrics": {
+            "allocated_slots": 200496,
+            "edge_connected_components": 1,
+            "expected_volume": 120.0,
+            "faces": 6,
+            "input_operands_preserved": true,
+            "material_probes": 4,
+            "volume": 119.99999999999989,
+            "volume_bound": 1.2e-06
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "slot-intersect-144",
+      "mode": "on",
+      "rows": [
+        {
+          "sample": 0,
+          "warmup": true,
+          "work": {
+            "coplanar_section_probes": 0,
+            "ee_pairs_surviving": 0,
+            "ee_pairs_visited": 3552,
+            "ef_analytic_pair_scans": 0,
+            "face_split_probes": 256,
+            "ff_pairs_surviving": 8,
+            "ff_pairs_visited": 12,
+            "pave_vertex_probes": 0,
+            "sd_poly_clips": 0,
+            "store_faces_copied": 8,
+            "ve_pairs_visited": 5920,
+            "ve_projection_evals": 0,
+            "ve_sampled_probes": 0
+          },
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 1,
+            "store_local_successes": 1
+          },
+          "phases": [
+            {
+              "calls": 1,
+              "duration_ms": 0.7590459999999999,
+              "name": "gfa.store_import"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.04849200000000009,
+              "name": "pave.vv"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.074411,
+              "name": "pave.ve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.1866230000000002,
+              "name": "pave.ee"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.06470200000000004,
+              "name": "pave.vf"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.208816,
+              "name": "pave.ef"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.2600639999999994,
+              "name": "pave.ff"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.09995899999999924,
+              "name": "pave.coplanar"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.6220770000000009,
+              "name": "pave.resolve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 5.210757,
+              "name": "gfa.build"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.13540700000000072,
+              "name": "gfa.assemble"
+            }
+          ],
+          "metrics": {
+            "allocated_slots": 200496,
+            "edge_connected_components": 1,
+            "expected_volume": 120.0,
+            "faces": 6,
+            "input_operands_preserved": true,
+            "material_probes": 4,
+            "volume": 119.99999999999989,
+            "volume_bound": 1.2e-06
+          }
+        },
+        {
+          "sample": 1,
+          "warmup": false,
+          "work": {
+            "coplanar_section_probes": 0,
+            "ee_pairs_surviving": 0,
+            "ee_pairs_visited": 3552,
+            "ef_analytic_pair_scans": 0,
+            "face_split_probes": 256,
+            "ff_pairs_surviving": 8,
+            "ff_pairs_visited": 12,
+            "pave_vertex_probes": 0,
+            "sd_poly_clips": 0,
+            "store_faces_copied": 8,
+            "ve_pairs_visited": 5920,
+            "ve_projection_evals": 0,
+            "ve_sampled_probes": 0
+          },
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 1,
+            "store_local_successes": 1
+          },
+          "phases": [
+            {
+              "calls": 1,
+              "duration_ms": 0.7468029999999999,
+              "name": "gfa.store_import"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.0439829999999688,
+              "name": "pave.vv"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.07476100000002361,
+              "name": "pave.ve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.18755499999997483,
+              "name": "pave.ee"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.05846100000002252,
+              "name": "pave.vf"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.1912740000000213,
+              "name": "pave.ef"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 1.2352460000000178,
+              "name": "pave.ff"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.09727399999997033,
+              "name": "pave.coplanar"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.6087709999999902,
+              "name": "pave.resolve"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 3.001056999999946,
+              "name": "gfa.build"
+            },
+            {
+              "calls": 1,
+              "duration_ms": 0.12175999999999476,
+              "name": "gfa.assemble"
+            }
+          ],
+          "metrics": {
+            "allocated_slots": 200496,
+            "edge_connected_components": 1,
+            "expected_volume": 120.0,
+            "faces": 6,
+            "input_operands_preserved": true,
+            "material_probes": 4,
+            "volume": 119.99999999999989,
+            "volume_bound": 1.2e-06
+          }
+        }
+      ]
+    }
+  ],
+  "public_contract": "Store-local remains opt-in/off by default. Face/entity ordering differs; cross-drilled stored-tolerance mismatch blocks general adoption.",
+  "raw_artifacts_sha256": {
+    "raw-samples.json": "87109e64a6fd720cf1ae23083cf95225d7fa390e09dc14721a107e026e90ab38",
+    "slot-cut-144.0.off.process.json": "c21f1949744ad947dfb7700e24c91dffc714180850af93f84c61a54f182937f6",
+    "slot-cut-144.0.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.0.off.stdout.jsonl": "484dcea8eff9dca21efa9b9a1c28a03185029bd7c5bc70bcdc0587ee6f4c1144",
+    "slot-cut-144.1.on.process.json": "dc70404311af03a107ec5da7ef0ab3e04e67298a66b4d328724606feabdc36b6",
+    "slot-cut-144.1.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.1.on.stdout.jsonl": "259aaf423a0bf73445f663a6e5ff30ed844882e21e806328ea9e42403518d536",
+    "slot-cut-144.2.on.process.json": "b3ffe958d4352f1be8bf4d6df72aaf7d26365f7a5bcf137006d20cc92d21aa54",
+    "slot-cut-144.2.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.2.on.stdout.jsonl": "7d4694e450199fd3070ba355c97e1084867ceebbf2ba60617740319aa71759b6",
+    "slot-cut-144.3.off.process.json": "af34b17e0ede00047f03cbc6dd3f6209eb4ee3423d8c1330355209894d2ad998",
+    "slot-cut-144.3.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.3.off.stdout.jsonl": "8b797cd351b84f675460d5314d8df0b0ad16added4e3464b2896dde8797f1dae",
+    "slot-cut-144.4.on.process.json": "4dccd89fc376ededc0c4fd30e71aba4cf4496645fa6530af244578d453063b76",
+    "slot-cut-144.4.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.4.on.stdout.jsonl": "283f6ffd2e56eac3b2ca42e74e1f44952949bc0cbc1526791c0e4f6e5472f13a",
+    "slot-cut-144.5.off.process.json": "5eaa33a615f2550c7a22cddf2d29c004b5a0735f233b24eefc805c021fdb6b1f",
+    "slot-cut-144.5.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.5.off.stdout.jsonl": "2fb6e05d30ef455ccac881443ddb6e64b584c47e29229a3c419e5391934401f9",
+    "slot-cut-144.6.off.process.json": "ba04a50b1e38a9df865a85161851c99fa6de8cdb9f2471cebcd74fcbd11f30d4",
+    "slot-cut-144.6.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.6.off.stdout.jsonl": "d9f389761ce569d032cb6bb067d0fec9696d68dfaa061c25d3a8f899d8b1c8b7",
+    "slot-cut-144.7.on.process.json": "9c1f6d5e366a8d60ba01349ee79bab770e70151327daca321f30abf433d9e4c0",
+    "slot-cut-144.7.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.7.on.stdout.jsonl": "ba3f85b152a372720c11a034defa9dd7e160552f6c42ed8b42a9049c432ab1d6",
+    "slot-cut-144.route-phase.off.process.json": "4cc78743d5f6c0d89e9b7689a381e999013521b33d34e88b981a3fcac80eb402",
+    "slot-cut-144.route-phase.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.route-phase.off.stdout.jsonl": "420dbde5278aca2515610a5e45c05a32495d23ad792897b39de05b17ddf62622",
+    "slot-cut-144.route-phase.on.process.json": "8c70aa23934818c0185cc69534e2a8af50aeb08beb30032b03df2fa2f161b5fb",
+    "slot-cut-144.route-phase.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.route-phase.on.stdout.jsonl": "e09e8d3166749776bc89abeca1f9706afe11a14deab62db416e088d688b4ba25",
+    "slot-fuse-144.0.off.process.json": "474677634c82bbb4f635c4d0d9539edf80959c037ad3119913ca24b00a6122dc",
+    "slot-fuse-144.0.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-fuse-144.0.off.stdout.jsonl": "cfbc61cfd73eaf5aaee1cb1f98854ffbf97e9c7e7336f6a17b3c7713c20cb41b",
+    "slot-fuse-144.1.on.process.json": "6888ed5d2c0baf646fdd61b84ceb9b463d296802efb3fa7939ff40eb39c2d1fd",
+    "slot-fuse-144.1.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-fuse-144.1.on.stdout.jsonl": "e62b4c76d122fc39d9fbc3aa350f0f67ec7a7ff46b852e06d8c00d6ab0d168d9",
+    "slot-fuse-144.2.on.process.json": "687709c38fdfa29618d2c8bf5f38ed69c3cec59571126b0f9c2de897eb6b215a",
+    "slot-fuse-144.2.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-fuse-144.2.on.stdout.jsonl": "81e3fd7235a364ecf0499ec6df5d5b31c6577d8a1e11097694b051415a524175",
+    "slot-fuse-144.3.off.process.json": "f4ecc4f818f1659534f3729c1f317e98ea890b4aed588126d07aef06b85ee44f",
+    "slot-fuse-144.3.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-fuse-144.3.off.stdout.jsonl": "50ae306541c0ef3a2d4b82ad462fd698e1e9b85e84f84752a0ae97c40a43a7e2",
+    "slot-fuse-144.4.on.process.json": "821dc5de09a0a375c5b4f6f25338721be1b743a3a9091737ecf9869bfefa2509",
+    "slot-fuse-144.4.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-fuse-144.4.on.stdout.jsonl": "554dc0a7ca0201bffea486a84cb60844c6bc786daa2e7a17e132cea9b46599c0",
+    "slot-fuse-144.5.off.process.json": "e4c8c844b054efe560d29f8315aeba72ac6226ed0db8052141bd90a793888d40",
+    "slot-fuse-144.5.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-fuse-144.5.off.stdout.jsonl": "ed73fa4e23031ec0bb46d10579d4aa669b99b932908834c307ebc0faec21ce74",
+    "slot-fuse-144.6.off.process.json": "f01e5118558530b8ec84503cc99eecfd0322ddadd06fcda3aa924446acd670fb",
+    "slot-fuse-144.6.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-fuse-144.6.off.stdout.jsonl": "1764aedc9feced756b910642d309b8dc3b6991a663cd153fa0074ee30035df66",
+    "slot-fuse-144.7.on.process.json": "5cc29e84a87cc2965f7a6db5f1da2c3e9b2f9722ec82197bf35b1d42f55d4e93",
+    "slot-fuse-144.7.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-fuse-144.7.on.stdout.jsonl": "462cfe39d7104042bb2fdb632c97137457b2e38b960bc4e5855b9e1836e607dc",
+    "slot-fuse-144.route-phase.off.process.json": "28621233b54f6002b31cb274cb50208fd0d19692c88dd635b013b65557ee288d",
+    "slot-fuse-144.route-phase.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-fuse-144.route-phase.off.stdout.jsonl": "8842a3a9d835da4637c5d81521a4594c75f76f19ca8f22afa8ee3b343491489c",
+    "slot-fuse-144.route-phase.on.process.json": "468fdd324d8d3d65b5136f42a8b91b95f7b55ba581242349f7b98cbb88f16502",
+    "slot-fuse-144.route-phase.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-fuse-144.route-phase.on.stdout.jsonl": "56554e01bd61afc155580e0d7db6aa6de35038b49c21dab51f64cc5e0468cb72",
+    "slot-intersect-144.0.off.process.json": "385c65b7d26543a71cfaaadd5ba440fca6d3b2b2272387c1de3515c00c9a26a6",
+    "slot-intersect-144.0.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-intersect-144.0.off.stdout.jsonl": "0eb29f86e4b583dba9dc2938ac89a94b8ee433c42e0d34827145d4b4ef9df574",
+    "slot-intersect-144.1.on.process.json": "2fc6d3513e9a3f18777ea3ac722d8d73a80e6da142fd88a464bb503ba38af583",
+    "slot-intersect-144.1.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-intersect-144.1.on.stdout.jsonl": "4c163bcc03ebd949ac3380aad23234f7efc45e889894de573bca94d8ed253428",
+    "slot-intersect-144.2.on.process.json": "df991ed15141025a36df2fdc78b3d8ef3959ce7c011896ee9939fd96de9d6eee",
+    "slot-intersect-144.2.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-intersect-144.2.on.stdout.jsonl": "a2338d873880c2e248a6e5c99b974f2e1b25d5d449a724adeefdc7660b8af5d4",
+    "slot-intersect-144.3.off.process.json": "b79e5e8c47107c4635133781e1cf6d136f7e66cf2d324bba0206f60b3556cead",
+    "slot-intersect-144.3.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-intersect-144.3.off.stdout.jsonl": "c732deb4ce64f9e5d6828e1d838efae378acec884b5c7ff5af4eaa9249b03186",
+    "slot-intersect-144.4.on.process.json": "b037d56d60e5b3c48afce7e0734e73f977043308bda9571b346b3fc699b89fec",
+    "slot-intersect-144.4.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-intersect-144.4.on.stdout.jsonl": "72caf147b0a24553b2a07fff8b5f98df377e6ce17e0fe11f80a0f7047cde7608",
+    "slot-intersect-144.5.off.process.json": "6fea13ba538d2fc285d98daddaa4c9c3b14b1285967efdc945251430268fc121",
+    "slot-intersect-144.5.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-intersect-144.5.off.stdout.jsonl": "e8ddb042de65838bb4d2553b8772a54d32794f7604d40647a117f1c5ec912232",
+    "slot-intersect-144.6.off.process.json": "be7a609a25138e31c3510afaa8c103aea5739063fe0af291500ae6958b2d522d",
+    "slot-intersect-144.6.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-intersect-144.6.off.stdout.jsonl": "c1a3491f5c2dd6bf8512c6fe849e639091e3f5c9212cf10393583c05753c10bd",
+    "slot-intersect-144.7.on.process.json": "e06d50130b16e71d603cef6947b3b637942ef8d7af319f37dd20ad14d79bc276",
+    "slot-intersect-144.7.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-intersect-144.7.on.stdout.jsonl": "c4e8674b8a0f608345ac4a4acb7e8bab804563e049eddb7a4b2348e27e6a8ff0",
+    "slot-intersect-144.route-phase.off.process.json": "07a518043f0c148b11d490bcdf5968eb2ea9ec7d08b299db0833aeb051c0df77",
+    "slot-intersect-144.route-phase.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-intersect-144.route-phase.off.stdout.jsonl": "ec4d23fab6ddf38f81ef8ba1a719c0ec18da9a6d0c68e1917b21795af14eb4ac",
+    "slot-intersect-144.route-phase.on.process.json": "d198c09e7bc841678d6591d52f658c7ebbb0c9f52a3e014ed40a0e0f1cfb558a",
+    "slot-intersect-144.route-phase.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-intersect-144.route-phase.on.stdout.jsonl": "e20e3fdc7396526c671f51ecb9d4fe1bb6cba428f091cdd1c1bfcc4b97d876cb"
+  },
+  "published_samples": {
+    "path": "store-local-controls-samples.jsonl",
+    "sha256": "ffff8d402b56f5cd0dba71295b3cd69a7ef14b2a14ebb4ae2e6726e2edbafda1",
+    "raw_records": 288,
+    "retained_records": 240
+  },
+  "capture_driver_sha256": "5b18d4d1043b671ff6ad1d52847571720a6060ece7e8677f7aab8262d129d4b9"
+}

@@ -29,10 +29,21 @@ class WorkflowTrustTests(unittest.TestCase):
         for event in ('push:', 'merge_group:'):
             self.assertIn(event, text)
 
-    def test_metadata_convenience_workflow_cannot_publish_a_required_check(self):
-        text = (Path(__file__).parents[1] / 'workflows' / 'commit-privacy.yml').read_text()
-        self.assertNotIn('secrets.', text)
-        self.assertNotIn('environment:', text)
-        self.assertNotRegex(text, r':\s*write\b')
-        self.assertNotIn('--publish', text)
+    def test_required_identity_verdict_is_still_published_by_trusted_policy(self):
+        workflows = Path(__file__).parents[1] / 'workflows'
+        self.assertFalse((workflows / 'commit-privacy.yml').exists())
+        text = (workflows / 'history-privacy.yml').read_text()
+        self.assertIn('python3 .github/privacy/commit_privacy.py --publish', text)
+        self.assertIn("if: always() && steps.publisher.outcome == 'success'", text)
         self.assertIn('GH_READ_TOKEN: ${{ github.token }}', text)
+        self.assertIn('GH_TOKEN: ${{ steps.publisher.outputs.token }}', text)
+
+    def test_no_branch_prefix_or_tag_is_excluded_from_push_audits(self):
+        text = (Path(__file__).parents[1] / 'workflows' / 'history-privacy-request.yml').read_text()
+        events = text.split('permissions:', 1)[0]
+        self.assertIn('branches: ["**"]', events)
+        self.assertIn('tags: ["**"]', events)
+        self.assertIn('  merge_group:', events)
+        self.assertNotIn('  pull_request:', events)
+        self.assertNotIn('paths', events)
+        self.assertNotIn('ignore', events)

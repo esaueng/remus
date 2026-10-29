@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "kind": "candidate-canonical-installed-package-correctness",
+  "source": {
+    "sha": "a82e1a27749c8ddf29c94797f6ad4ef9a0baceda",
+    "tree": "b92a6fd3063aa6cdc1d0a250749502906482aa66",
+    "trackedChanges": [
+      "crates/wasm-io/pkg/package.json",
+      "crates/wasm-io/pkg/remus_wasm_io_bg.wasm",
+      "crates/wasm/pkg/package.json",
+      "crates/wasm/pkg/remus_wasm_bg.wasm"
+    ],
+    "kernelSourceUnmodified": true,
+    "artifactChanges": "Only generated kernel/translator WASM blobs and pkg/package.json files differ from this source checkout; npm package versions are 2026.1.84."
+  },
+  "canonicalBuild": {
+    "command": [
+      "cargo",
+      "xtask",
+      "wasm-build"
+    ],
+    "logSha256": "562e9cce84b35d3ddfe580f17d65801e472ff1b99d8f5748f18988ef32cd0a42",
+    "status": "passed",
+    "xtaskCompiledFromSourceCheckoutVerified": true,
+    "entryPointAndCompletionMarkersVerified": true,
+    "smokeAndInstalledTarballSuitesPassed": true,
+    "scope": "The completed canonical build, checked source checkout and frozen verified bytes supply provenance outside the qualification driver, whose source-SHA argument remains correctly labeled externally supplied."
+  },
+  "installation": {
+    "method": "npm pack both generated packages, then npm install both local tarballs in an isolated temporary consumer",
+    "npmVersion": "11.21.1",
+    "offline": true,
+    "ignoreScripts": true,
+    "audit": false,
+    "published": false,
+    "packageVerification": "candidate-package-verification.json",
+    "sourceTarInstalledBytesAndSizesEqual": true,
+    "fileModes": "All per-file modes retained. Source/installed group-write bits can differ from npm tar normalization; executable bits agree through source, tar and installed copies."
+  },
+  "qualification": {
+    "full": {
+      "file": "candidate-full.json",
+      "exitCode": 1,
+      "directBatchCells": 24,
+      "recipeRuns": 4,
+      "exactContentFailures": 2,
+      "failedCells": [
+        {
+          "name": "cross_drilled_shaft",
+          "requestedStoreLocal": true,
+          "binding": "direct"
+        },
+        {
+          "name": "cross_drilled_shaft",
+          "requestedStoreLocal": true,
+          "binding": "batch"
+        }
+      ]
+    },
+    "positive": {
+      "file": "candidate-positive.json",
+      "exitCode": 0,
+      "directBatchCells": 20,
+      "recipeRuns": 4,
+      "exactContentFailures": 0
+    },
+    "settingsAndLineageContracts": "passed in both invocations",
+    "realWasmRuntime": true,
+    "timingsCollected": false
+  },
+  "comparisonToFreshMain": {
+    "file": "candidate-vs-fresh-main.json",
+    "baselineSourceSha": "70f675bea4aebd35b0a36d59eaec89118c278ef6",
+    "syntheticCellsIdentical": 24,
+    "recipeRunsIdentical": 4,
+    "fields": "Canonical and raw arena hashes, volume, material, counts, mesh/weld metrics; holder mesh hashes, envelope, inventories and transfer bytes; settings/lineage results; same two stored-tolerance failures.",
+    "harnessIdentical": true
+  },
+  "scopeLimits": [
+    "No blanket store-local adoption: the unchanged enabled cross-drilled stored-tolerance witness remains open.",
+    "Boundary-use content and counts do not prove arbitrary alias/incidence graph isomorphism.",
+    "JS runtime does not expose actual locality routes; native feature counters provide separate evidence.",
+    "This receipt supplies no timing or speed claim."
+  ],
+  "artifacts": {
+    "candidate-package-verification.json": "e27cc1312342d77ba01e3aea1ee21da7a54b947e13fe8706575930b5b8bbb07b",
+    "candidate-full.json": "469cde940294ecd9afb114b5570391aa70a53c3d6a406ae07fadbf604f3567e0",
+    "candidate-positive.json": "889229f86cbd4a19828ee46c892a6eb3bda0fe346be9011eccce5443f71a6833",
+    "candidate-vs-fresh-main.json": "e7af01e9990cca1fa0a5d5cfe904be4a817e4e347ffaf315a94d37f9187c908b"
+  }
+}

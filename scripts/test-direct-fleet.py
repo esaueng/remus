@@ -86,7 +86,8 @@ class DirectFleetTests(unittest.TestCase):
                 }
             },
         }
-        self.variables = {"CI_FLEET_ENABLED": "true", "CI_FLEET_TARGET": "ci-server-jane"}
+        self.variables = {"CI_FLEET_ENABLED": "true", "CI_FLEET_CI_V9_ENABLED": "true",
+                          "CI_FLEET_TARGET": "ci-server-jane"}
 
     def test_trusted_events_choose_exact_group_and_host(self):
         self.assertTrue(EXPRESSIONS)
@@ -207,7 +208,7 @@ class DirectFleetTests(unittest.TestCase):
         pooled = {name for name, block in jobs.items() if "fleet-light-runner" in block}
         self.assertEqual(pooled, {"changes", "repo-policy", "secrets-scan",
                                   "docs", "deny", "audit", "wasm-size-gate", "ci-pass"})
-        for name in ("coverage", "wasm", "w9-preflight", "test", "complexity-guards",
+        for name in ("coverage", "wasm", "wasm-runtime", "w9-preflight", "complexity-guards",
                      "wasm-no-io", "approx-census", "msrv", "fuzz-check", "render"):
             self.assertRegex(jobs[name], r"runs-on: [*&]fleet-runner")
         # Both schedules enforce the identical owner/event predicate before selecting a host.

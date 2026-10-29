@@ -10,6 +10,7 @@ pub mod batch;
 pub mod booleans;
 pub mod checkpoint;
 pub mod construction_detailed;
+pub mod construction_imprint;
 pub mod evolution;
 pub mod gcs_sketch;
 pub mod heal;

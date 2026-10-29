@@ -42,7 +42,11 @@ class OwnerRoutingTests(unittest.TestCase):
                 block = job(name)
                 self.assertIn("needs: [queue-trust, changes, repo-policy, secrets-scan]", block)
                 self.assertNotIn("needs.owner-pr", block)
-                self.assertRegex(block, r"runs-on: [*&]fleet(?:-light)?-runner")
+                if name == "test":
+                    self.assertIn("runs-on: &native-runner ubuntu-24.04", block)
+                    self.assertIn("runs-on: *native-runner", job("test-shards"))
+                else:
+                    self.assertRegex(block, r"runs-on: [*&]fleet(?:-light)?-runner")
                 self.assertIn(f"needs.changes.outputs.{flag} == 'true'", block)
         self.assertIn("cargo clippy --all-targets --all-features -- -D warnings", job("test"))
 

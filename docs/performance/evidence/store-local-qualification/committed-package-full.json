@@ -1,0 +1,3632 @@
+{
+  "schemaVersion": 1,
+  "correctnessOnly": true,
+  "package": {
+    "name": "remus-wasm",
+    "version": "2026.1.83",
+    "wasmSha256": "a32699eaac02f46a61663f977ed3b5c3c7d5f44fe21c9dd43ea7c48e59918b91",
+    "wrapperSha256": "818fae36bfaf45d5d90e727d0e2910cc96d839ef9d0defba3d44cdc03b339daa",
+    "packageJsonSha256": "93c84e3d97fa00bf47653451174dfb254506b67dc7f1037cfb8b5afa81539b97",
+    "suppliedSourceSha": null,
+    "suppliedSourceShaVerification": "Externally supplied; not verified by the driver."
+  },
+  "node": "v24.22.1",
+  "harnessSha256": "47a3f0191f0ca2219d826de982a9d4b820058781f894cba4c6f7f2ab0519b6ae",
+  "recipeHarnessSha256": "68a572fe2294321a2c53893ffc0edf160e3b318e1b3395fb82602f6d1f0811a5",
+  "meshQualityHarnessSha256": "605bcfe13bb916afa6663be7b91135ecbde7ec865a786f8864c06e18a4c5f03b",
+  "cases": [
+    {
+      "name": "cross_drilled_shaft",
+      "requestedStoreLocal": false,
+      "binding": "direct",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "9bc024720dc14f0a169d79978b76d228f79e82fd1b85710dd2f7f923ebcb6a52",
+      "volume": 320.70812376612963,
+      "faces": 4,
+      "mesh": {
+        "vertices": 1316,
+        "triangles": 2600,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 315.09437716585023
+      },
+      "welded": {
+        "triangleCount": 2600,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": 0,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            0,
+            0,
+            6
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            0,
+            2,
+            6
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            0,
+            0,
+            3
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            0,
+            4,
+            6
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "23f6c254d101a55c9ed773e01313aaee79f8e87988594afa34c560e9bd578c13"
+    },
+    {
+      "name": "cross_drilled_shaft",
+      "requestedStoreLocal": false,
+      "binding": "batch",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "9bc024720dc14f0a169d79978b76d228f79e82fd1b85710dd2f7f923ebcb6a52",
+      "volume": 320.70812376612963,
+      "faces": 4,
+      "mesh": {
+        "vertices": 1316,
+        "triangles": 2600,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 315.09437716585023
+      },
+      "welded": {
+        "triangleCount": 2600,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": 0,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            0,
+            0,
+            6
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            0,
+            2,
+            6
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            0,
+            0,
+            3
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            0,
+            4,
+            6
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "23f6c254d101a55c9ed773e01313aaee79f8e87988594afa34c560e9bd578c13"
+    },
+    {
+      "name": "cross_drilled_shaft",
+      "requestedStoreLocal": true,
+      "binding": "direct",
+      "exactBoundaryAgreement": false,
+      "canonicalSha256": "0631dd05661baaeb71e708e8ed248c45d0181244d763a58d9805271f028f3a95",
+      "volume": 320.7081237661297,
+      "faces": 4,
+      "mesh": {
+        "vertices": 1316,
+        "triangles": 2600,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 315.09437716585035
+      },
+      "welded": {
+        "triangleCount": 2600,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": 0,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            0,
+            0,
+            6
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            0,
+            2,
+            6
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            0,
+            0,
+            3
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            0,
+            4,
+            6
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "eac200197d522dbd62455551e15b5108c69edb841824aa50a67e8ec92d2d7d23"
+    },
+    {
+      "name": "cross_drilled_shaft",
+      "requestedStoreLocal": true,
+      "binding": "batch",
+      "exactBoundaryAgreement": false,
+      "canonicalSha256": "0631dd05661baaeb71e708e8ed248c45d0181244d763a58d9805271f028f3a95",
+      "volume": 320.7081237661297,
+      "faces": 4,
+      "mesh": {
+        "vertices": 1316,
+        "triangles": 2600,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 315.09437716585035
+      },
+      "welded": {
+        "triangleCount": 2600,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": 0,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            0,
+            0,
+            6
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            0,
+            2,
+            6
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            0,
+            0,
+            3
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            0,
+            4,
+            6
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "eac200197d522dbd62455551e15b5108c69edb841824aa50a67e8ec92d2d7d23"
+    },
+    {
+      "name": "nurbs_patch_fallback",
+      "requestedStoreLocal": false,
+      "binding": "direct",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "d5281898064627ab405b13bcb7a85131eff4bc4b2aa601aedc1937a53be8c637",
+      "volume": 960,
+      "faces": 10,
+      "mesh": {
+        "vertices": 16,
+        "triangles": 32,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 960.0000000000001
+      },
+      "welded": {
+        "triangleCount": 32,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": 0,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            5,
+            5,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            2,
+            2,
+            5
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            12,
+            2,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "ec139fd0cba36ce7fe0799667afda4e2c36ba753819a96be77b66a47e7b86a8c"
+    },
+    {
+      "name": "nurbs_patch_fallback",
+      "requestedStoreLocal": false,
+      "binding": "batch",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "d5281898064627ab405b13bcb7a85131eff4bc4b2aa601aedc1937a53be8c637",
+      "volume": 960,
+      "faces": 10,
+      "mesh": {
+        "vertices": 16,
+        "triangles": 32,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 960.0000000000001
+      },
+      "welded": {
+        "triangleCount": 32,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": 0,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            5,
+            5,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            2,
+            2,
+            5
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            12,
+            2,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "ec139fd0cba36ce7fe0799667afda4e2c36ba753819a96be77b66a47e7b86a8c"
+    },
+    {
+      "name": "nurbs_patch_fallback",
+      "requestedStoreLocal": true,
+      "binding": "direct",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "d5281898064627ab405b13bcb7a85131eff4bc4b2aa601aedc1937a53be8c637",
+      "volume": 960.0000000000001,
+      "faces": 10,
+      "mesh": {
+        "vertices": 16,
+        "triangles": 32,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 960.0000000000001
+      },
+      "welded": {
+        "triangleCount": 32,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": 0,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            5,
+            5,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            2,
+            2,
+            5
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            12,
+            2,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "b6c87f1b98a1219629d58fe25061ad41153b06bc6de35c28ae6d95079ff32f5d"
+    },
+    {
+      "name": "nurbs_patch_fallback",
+      "requestedStoreLocal": true,
+      "binding": "batch",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "d5281898064627ab405b13bcb7a85131eff4bc4b2aa601aedc1937a53be8c637",
+      "volume": 960.0000000000001,
+      "faces": 10,
+      "mesh": {
+        "vertices": 16,
+        "triangles": 32,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 960.0000000000001
+      },
+      "welded": {
+        "triangleCount": 32,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": 0,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            5,
+            5,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            2,
+            2,
+            5
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            12,
+            2,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "b6c87f1b98a1219629d58fe25061ad41153b06bc6de35c28ae6d95079ff32f5d"
+    },
+    {
+      "name": "cavity_fallback",
+      "requestedStoreLocal": false,
+      "binding": "direct",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "790b3227def283a03a2633c2350dac9dce7e5d2c166b15f8e13f69c8080675c9",
+      "volume": 981.9999999999995,
+      "faces": 16,
+      "mesh": {
+        "vertices": 24,
+        "triangles": 44,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 981.9999999999994
+      },
+      "welded": {
+        "triangleCount": 44,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": 2,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            5,
+            5,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            1.5,
+            1.5,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            3,
+            3,
+            3
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        }
+      ],
+      "arenaSha256": "ac14eabf296bff7725665bf48b972faf23b8c0553849ba1ee83b5ec7f94217eb"
+    },
+    {
+      "name": "cavity_fallback",
+      "requestedStoreLocal": false,
+      "binding": "batch",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "790b3227def283a03a2633c2350dac9dce7e5d2c166b15f8e13f69c8080675c9",
+      "volume": 981.9999999999995,
+      "faces": 16,
+      "mesh": {
+        "vertices": 24,
+        "triangles": 44,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 981.9999999999994
+      },
+      "welded": {
+        "triangleCount": 44,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": 2,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            5,
+            5,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            1.5,
+            1.5,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            3,
+            3,
+            3
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        }
+      ],
+      "arenaSha256": "ac14eabf296bff7725665bf48b972faf23b8c0553849ba1ee83b5ec7f94217eb"
+    },
+    {
+      "name": "cavity_fallback",
+      "requestedStoreLocal": true,
+      "binding": "direct",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "790b3227def283a03a2633c2350dac9dce7e5d2c166b15f8e13f69c8080675c9",
+      "volume": 981.9999999999995,
+      "faces": 16,
+      "mesh": {
+        "vertices": 24,
+        "triangles": 44,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 981.9999999999994
+      },
+      "welded": {
+        "triangleCount": 44,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": 2,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            5,
+            5,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            1.5,
+            1.5,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            3,
+            3,
+            3
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        }
+      ],
+      "arenaSha256": "ac14eabf296bff7725665bf48b972faf23b8c0553849ba1ee83b5ec7f94217eb"
+    },
+    {
+      "name": "cavity_fallback",
+      "requestedStoreLocal": true,
+      "binding": "batch",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "790b3227def283a03a2633c2350dac9dce7e5d2c166b15f8e13f69c8080675c9",
+      "volume": 981.9999999999995,
+      "faces": 16,
+      "mesh": {
+        "vertices": 24,
+        "triangles": 44,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 981.9999999999994
+      },
+      "welded": {
+        "triangleCount": 44,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": 2,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            5,
+            5,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            1.5,
+            1.5,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            3,
+            3,
+            3
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        }
+      ],
+      "arenaSha256": "ac14eabf296bff7725665bf48b972faf23b8c0553849ba1ee83b5ec7f94217eb"
+    },
+    {
+      "name": "slot_cut",
+      "requestedStoreLocal": false,
+      "binding": "direct",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "77019e49302a0011aa7e71ae5d8abea1e7b27a51a3d36c0617bc6945a720bcd3",
+      "volume": 39709.02664470769,
+      "faces": 19,
+      "mesh": {
+        "vertices": 340,
+        "triangles": 716,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 39731.854569457995
+      },
+      "welded": {
+        "triangleCount": 716,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": -18,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            14,
+            14,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            30,
+            12,
+            5
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            13,
+            14,
+            5
+          ],
+          "expected": "boundary",
+          "actual": "boundary"
+        },
+        {
+          "point": [
+            8,
+            8,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "579c100069e5c2a65b02ce4a2d5e3b2efed150c3a786d06760b8ee64662b8960"
+    },
+    {
+      "name": "slot_cut",
+      "requestedStoreLocal": false,
+      "binding": "batch",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "77019e49302a0011aa7e71ae5d8abea1e7b27a51a3d36c0617bc6945a720bcd3",
+      "volume": 39709.02664470769,
+      "faces": 19,
+      "mesh": {
+        "vertices": 340,
+        "triangles": 716,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 39731.854569457995
+      },
+      "welded": {
+        "triangleCount": 716,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": -18,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            14,
+            14,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            30,
+            12,
+            5
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            13,
+            14,
+            5
+          ],
+          "expected": "boundary",
+          "actual": "boundary"
+        },
+        {
+          "point": [
+            8,
+            8,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "579c100069e5c2a65b02ce4a2d5e3b2efed150c3a786d06760b8ee64662b8960"
+    },
+    {
+      "name": "slot_cut",
+      "requestedStoreLocal": true,
+      "binding": "direct",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "77019e49302a0011aa7e71ae5d8abea1e7b27a51a3d36c0617bc6945a720bcd3",
+      "volume": 39709.02664470769,
+      "faces": 19,
+      "mesh": {
+        "vertices": 340,
+        "triangles": 716,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 39731.854569457995
+      },
+      "welded": {
+        "triangleCount": 716,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": -18,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            14,
+            14,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            30,
+            12,
+            5
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            13,
+            14,
+            5
+          ],
+          "expected": "boundary",
+          "actual": "boundary"
+        },
+        {
+          "point": [
+            8,
+            8,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "a13cbadb7eb9176dc4c90e4a77404c0fea552b80ac68f34916d45f7317ab507b"
+    },
+    {
+      "name": "slot_cut",
+      "requestedStoreLocal": true,
+      "binding": "batch",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "77019e49302a0011aa7e71ae5d8abea1e7b27a51a3d36c0617bc6945a720bcd3",
+      "volume": 39709.02664470769,
+      "faces": 19,
+      "mesh": {
+        "vertices": 340,
+        "triangles": 716,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 39731.854569457995
+      },
+      "welded": {
+        "triangleCount": 716,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": -18,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            14,
+            14,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            30,
+            12,
+            5
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            13,
+            14,
+            5
+          ],
+          "expected": "boundary",
+          "actual": "boundary"
+        },
+        {
+          "point": [
+            8,
+            8,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "a13cbadb7eb9176dc4c90e4a77404c0fea552b80ac68f34916d45f7317ab507b"
+    },
+    {
+      "name": "rib_fuse",
+      "requestedStoreLocal": false,
+      "binding": "direct",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "7c678d2bb0b62fecf3b5437b9429ad60d7def589d649e0ff6b661b1832082642",
+      "volume": 39865.02664470769,
+      "faces": 20,
+      "mesh": {
+        "vertices": 340,
+        "triangles": 712,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 39887.854569457995
+      },
+      "welded": {
+        "triangleCount": 712,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": -16,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            14,
+            14,
+            11
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            14,
+            14,
+            13
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            17,
+            14,
+            11
+          ],
+          "expected": "boundary",
+          "actual": "boundary"
+        },
+        {
+          "point": [
+            8,
+            8,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "e1bf1eb75c339819adc99000eac8bd81ac5136dd9c330020e35a916bcd10bce6"
+    },
+    {
+      "name": "rib_fuse",
+      "requestedStoreLocal": false,
+      "binding": "batch",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "7c678d2bb0b62fecf3b5437b9429ad60d7def589d649e0ff6b661b1832082642",
+      "volume": 39865.02664470769,
+      "faces": 20,
+      "mesh": {
+        "vertices": 340,
+        "triangles": 712,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 39887.854569457995
+      },
+      "welded": {
+        "triangleCount": 712,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": -16,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            14,
+            14,
+            11
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            14,
+            14,
+            13
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            17,
+            14,
+            11
+          ],
+          "expected": "boundary",
+          "actual": "boundary"
+        },
+        {
+          "point": [
+            8,
+            8,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "e1bf1eb75c339819adc99000eac8bd81ac5136dd9c330020e35a916bcd10bce6"
+    },
+    {
+      "name": "rib_fuse",
+      "requestedStoreLocal": true,
+      "binding": "direct",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "7c678d2bb0b62fecf3b5437b9429ad60d7def589d649e0ff6b661b1832082642",
+      "volume": 39865.02664470769,
+      "faces": 20,
+      "mesh": {
+        "vertices": 340,
+        "triangles": 712,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 39887.854569457995
+      },
+      "welded": {
+        "triangleCount": 712,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": -16,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            14,
+            14,
+            11
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            14,
+            14,
+            13
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            17,
+            14,
+            11
+          ],
+          "expected": "boundary",
+          "actual": "boundary"
+        },
+        {
+          "point": [
+            8,
+            8,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "131ab96bb8a7f5a9ee77074013fa89a6207c502ac02051f43635d57071e5d584"
+    },
+    {
+      "name": "rib_fuse",
+      "requestedStoreLocal": true,
+      "binding": "batch",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "7c678d2bb0b62fecf3b5437b9429ad60d7def589d649e0ff6b661b1832082642",
+      "volume": 39865.02664470769,
+      "faces": 20,
+      "mesh": {
+        "vertices": 340,
+        "triangles": 712,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 39887.854569457995
+      },
+      "welded": {
+        "triangleCount": 712,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": -16,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            14,
+            14,
+            11
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            14,
+            14,
+            13
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            17,
+            14,
+            11
+          ],
+          "expected": "boundary",
+          "actual": "boundary"
+        },
+        {
+          "point": [
+            8,
+            8,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "131ab96bb8a7f5a9ee77074013fa89a6207c502ac02051f43635d57071e5d584"
+    },
+    {
+      "name": "window_intersect",
+      "requestedStoreLocal": false,
+      "binding": "direct",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "dc2456f1cc558e20164a06e164e34530e2bbf6b0a81488f37b816099167c4c5a",
+      "volume": 3497.345175425633,
+      "faces": 10,
+      "mesh": {
+        "vertices": 152,
+        "triangles": 316,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 3507.4909832086555
+      },
+      "welded": {
+        "triangleCount": 316,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": -6,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            14,
+            14,
+            5
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            30,
+            12,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            4,
+            14,
+            5
+          ],
+          "expected": "boundary",
+          "actual": "boundary"
+        },
+        {
+          "point": [
+            8,
+            8,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "8ea31308d5103267a4cd7dcf3679dd168107f8d90fb864e39a1a49d51de0e9ed"
+    },
+    {
+      "name": "window_intersect",
+      "requestedStoreLocal": false,
+      "binding": "batch",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "dc2456f1cc558e20164a06e164e34530e2bbf6b0a81488f37b816099167c4c5a",
+      "volume": 3497.345175425633,
+      "faces": 10,
+      "mesh": {
+        "vertices": 152,
+        "triangles": 316,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 3507.4909832086555
+      },
+      "welded": {
+        "triangleCount": 316,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": -6,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            14,
+            14,
+            5
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            30,
+            12,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            4,
+            14,
+            5
+          ],
+          "expected": "boundary",
+          "actual": "boundary"
+        },
+        {
+          "point": [
+            8,
+            8,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "8ea31308d5103267a4cd7dcf3679dd168107f8d90fb864e39a1a49d51de0e9ed"
+    },
+    {
+      "name": "window_intersect",
+      "requestedStoreLocal": true,
+      "binding": "direct",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "dc2456f1cc558e20164a06e164e34530e2bbf6b0a81488f37b816099167c4c5a",
+      "volume": 3497.345175425633,
+      "faces": 10,
+      "mesh": {
+        "vertices": 152,
+        "triangles": 316,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 3507.4909832086555
+      },
+      "welded": {
+        "triangleCount": 316,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": -6,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            14,
+            14,
+            5
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            30,
+            12,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            4,
+            14,
+            5
+          ],
+          "expected": "boundary",
+          "actual": "boundary"
+        },
+        {
+          "point": [
+            8,
+            8,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "8ea31308d5103267a4cd7dcf3679dd168107f8d90fb864e39a1a49d51de0e9ed"
+    },
+    {
+      "name": "window_intersect",
+      "requestedStoreLocal": true,
+      "binding": "batch",
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "dc2456f1cc558e20164a06e164e34530e2bbf6b0a81488f37b816099167c4c5a",
+      "volume": 3497.345175425633,
+      "faces": 10,
+      "mesh": {
+        "vertices": 152,
+        "triangles": 316,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "watertight": true,
+        "signedVolumeFromFloat32": 3507.4909832086555
+      },
+      "welded": {
+        "triangleCount": 316,
+        "boundaryEdges": 0,
+        "nonManifoldEdges": 0,
+        "eulerCharacteristic": -6,
+        "isWatertight": true
+      },
+      "material": [
+        {
+          "point": [
+            14,
+            14,
+            5
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            30,
+            12,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            4,
+            14,
+            5
+          ],
+          "expected": "boundary",
+          "actual": "boundary"
+        },
+        {
+          "point": [
+            8,
+            8,
+            5
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "8ea31308d5103267a4cd7dcf3679dd168107f8d90fb864e39a1a49d51de0e9ed"
+    }
+  ],
+  "recipe": [
+    {
+      "width": 47,
+      "requestedStoreLocal": false,
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "6c311f042a12b07d1ed66bcbb0b2a8cc6e8220840cdbbf95b20d5bc532df610b",
+      "bbox": [
+        -26.5,
+        6.5,
+        4.5,
+        48.5,
+        59.5,
+        62.5
+      ],
+      "inventories": [
+        {
+          "faces": 108,
+          "counts": {
+            "cylinder": 42,
+            "nurbs": 8,
+            "torus": 14,
+            "plane": 34,
+            "cone": 2,
+            "sphere": 8
+          },
+          "radii": [
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ]
+          ]
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 2,
+            "nurbs": 4
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 4,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 6
+          },
+          "radii": []
+        },
+        {
+          "faces": 12,
+          "counts": {
+            "plane": 10,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 19,
+          "counts": {
+            "plane": 7,
+            "nurbs": 12
+          },
+          "radii": []
+        },
+        {
+          "faces": 13,
+          "counts": {
+            "plane": 4,
+            "nurbs": 9
+          },
+          "radii": []
+        },
+        {
+          "faces": 10,
+          "counts": {
+            "plane": 5,
+            "nurbs": 5
+          },
+          "radii": []
+        }
+      ],
+      "meshChecks": [
+        {
+          "vertices": 29649,
+          "triangles": 59302,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 50355.298483334656
+        },
+        {
+          "vertices": 422,
+          "triangles": 844,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.3885432491985386
+        },
+        {
+          "vertices": 393,
+          "triangles": 782,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 5.321569645186874
+        },
+        {
+          "vertices": 8,
+          "triangles": 12,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 0.7201136228248393
+        },
+        {
+          "vertices": 274,
+          "triangles": 544,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.073480788883843
+        },
+        {
+          "vertices": 638,
+          "triangles": 1276,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.3951797306077305
+        },
+        {
+          "vertices": 680,
+          "triangles": 1356,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.063210854641909
+        },
+        {
+          "vertices": 370,
+          "triangles": 740,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.277655723072674
+        }
+      ],
+      "material": [
+        {
+          "point": [
+            11,
+            49.5,
+            8
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            11,
+            18,
+            40
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            -19.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            41.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            -9.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            31.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "806f0cf2dd391c16f89f8b20e28b38a991e3b20e9c70e22d9546785d92a8455a",
+      "meshSha256": [
+        {
+          "positions": "a5ec6e5bf6ef70c1c8572a0a0fbe194650127ba96538244e916ffaac360472dc",
+          "indices": "06e493bc3095b7afa1577676d2d6aca64bb320fe2429b9dd433e795899582897",
+          "normals": "2814e723d00baa6dc9b4d406b4886ada1571a7f4fd117a4ee47b2adbe49b90f3",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "16084e93ea84b0fcfdfe508998a232e778fea0e50a2b28d3ac3029336a84d930",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "43cac2eac88806fb2b8a189c69b5034849efcab114660bf8c82ac9488845860e",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "d34b7a599c8ae53400ba88fe404b09037eef1b8cc1fa93215e9d596c50913d99",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "9756d0f6cf1b3f4abe0c7f99c3277c6cefd83fec1a5aefe201c45bbf9fce96af",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "4028fbc8e2585d2a63686843b9b902f70877393c942cb16daa599d7425f25168",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "32449273c5438ecc0add055509746432bb993e444933681a47c1a19c1af9b090",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "bcf97d53077769abb85625d4be31009e48737c2ee6c21a4581dd0869d019b283",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "width": 47,
+      "requestedStoreLocal": true,
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "6c311f042a12b07d1ed66bcbb0b2a8cc6e8220840cdbbf95b20d5bc532df610b",
+      "bbox": [
+        -26.5,
+        6.5,
+        4.5,
+        48.5,
+        59.5,
+        62.5
+      ],
+      "inventories": [
+        {
+          "faces": 108,
+          "counts": {
+            "cylinder": 42,
+            "nurbs": 8,
+            "torus": 14,
+            "plane": 34,
+            "cone": 2,
+            "sphere": 8
+          },
+          "radii": [
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ]
+          ]
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 2,
+            "nurbs": 4
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 4,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 6
+          },
+          "radii": []
+        },
+        {
+          "faces": 12,
+          "counts": {
+            "plane": 10,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 19,
+          "counts": {
+            "plane": 7,
+            "nurbs": 12
+          },
+          "radii": []
+        },
+        {
+          "faces": 13,
+          "counts": {
+            "plane": 4,
+            "nurbs": 9
+          },
+          "radii": []
+        },
+        {
+          "faces": 10,
+          "counts": {
+            "plane": 5,
+            "nurbs": 5
+          },
+          "radii": []
+        }
+      ],
+      "meshChecks": [
+        {
+          "vertices": 29649,
+          "triangles": 59302,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 50355.298483334656
+        },
+        {
+          "vertices": 422,
+          "triangles": 844,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.3885432491985386
+        },
+        {
+          "vertices": 393,
+          "triangles": 782,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 5.321569645186874
+        },
+        {
+          "vertices": 8,
+          "triangles": 12,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 0.7201136228248393
+        },
+        {
+          "vertices": 274,
+          "triangles": 544,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.073480788883843
+        },
+        {
+          "vertices": 638,
+          "triangles": 1276,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.3951797306077305
+        },
+        {
+          "vertices": 680,
+          "triangles": 1356,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.063210854641909
+        },
+        {
+          "vertices": 370,
+          "triangles": 740,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.277655723072674
+        }
+      ],
+      "material": [
+        {
+          "point": [
+            11,
+            49.5,
+            8
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            11,
+            18,
+            40
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            -19.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            41.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            -9.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            31.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "806f0cf2dd391c16f89f8b20e28b38a991e3b20e9c70e22d9546785d92a8455a",
+      "meshSha256": [
+        {
+          "positions": "a5ec6e5bf6ef70c1c8572a0a0fbe194650127ba96538244e916ffaac360472dc",
+          "indices": "06e493bc3095b7afa1577676d2d6aca64bb320fe2429b9dd433e795899582897",
+          "normals": "2814e723d00baa6dc9b4d406b4886ada1571a7f4fd117a4ee47b2adbe49b90f3",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "16084e93ea84b0fcfdfe508998a232e778fea0e50a2b28d3ac3029336a84d930",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "43cac2eac88806fb2b8a189c69b5034849efcab114660bf8c82ac9488845860e",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "d34b7a599c8ae53400ba88fe404b09037eef1b8cc1fa93215e9d596c50913d99",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "9756d0f6cf1b3f4abe0c7f99c3277c6cefd83fec1a5aefe201c45bbf9fce96af",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "4028fbc8e2585d2a63686843b9b902f70877393c942cb16daa599d7425f25168",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "32449273c5438ecc0add055509746432bb993e444933681a47c1a19c1af9b090",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "bcf97d53077769abb85625d4be31009e48737c2ee6c21a4581dd0869d019b283",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "width": 49,
+      "requestedStoreLocal": false,
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "2bd9f5a29ce1698a5ec82580508b958275c53caf1c36b4c176c0c934d881f856",
+      "bbox": [
+        -27.5,
+        6.5,
+        4.5,
+        49.5,
+        59.5,
+        62.5
+      ],
+      "inventories": [
+        {
+          "faces": 108,
+          "counts": {
+            "cylinder": 42,
+            "nurbs": 8,
+            "torus": 14,
+            "plane": 34,
+            "cone": 2,
+            "sphere": 8
+          },
+          "radii": [
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ]
+          ]
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 2,
+            "nurbs": 4
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 4,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 6
+          },
+          "radii": []
+        },
+        {
+          "faces": 12,
+          "counts": {
+            "plane": 10,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 19,
+          "counts": {
+            "plane": 7,
+            "nurbs": 12
+          },
+          "radii": []
+        },
+        {
+          "faces": 13,
+          "counts": {
+            "plane": 4,
+            "nurbs": 9
+          },
+          "radii": []
+        },
+        {
+          "faces": 10,
+          "counts": {
+            "plane": 5,
+            "nurbs": 5
+          },
+          "radii": []
+        }
+      ],
+      "meshChecks": [
+        {
+          "vertices": 29649,
+          "triangles": 59302,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 50667.547016030076
+        },
+        {
+          "vertices": 422,
+          "triangles": 844,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.388543249198406
+        },
+        {
+          "vertices": 393,
+          "triangles": 782,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 5.321569645186898
+        },
+        {
+          "vertices": 8,
+          "triangles": 12,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 0.720113622824841
+        },
+        {
+          "vertices": 274,
+          "triangles": 544,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.073480788883771
+        },
+        {
+          "vertices": 638,
+          "triangles": 1276,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.395179730607552
+        },
+        {
+          "vertices": 680,
+          "triangles": 1356,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.063210854642016
+        },
+        {
+          "vertices": 370,
+          "triangles": 740,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.277655723072613
+        }
+      ],
+      "material": [
+        {
+          "point": [
+            11,
+            49.5,
+            8
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            11,
+            18,
+            40
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            -20.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            42.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            -10.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            32.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "e11b328f6e878ae06ce7b96f866d3c7c20d70313120e1654624f1aa9dab53f90",
+      "meshSha256": [
+        {
+          "positions": "c9195cfc05894fd63d6411a0061273973306c6ebb5f1372c1193e9f0512a0736",
+          "indices": "08838f1e75f1e1f7005dd926949a9b4e59b1520ccd15cc228dcb3f0afffef083",
+          "normals": "b3878204e64ade6f2f15d774754767df40e8269b815da006c9ee1d85b49a3338",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "df6c4f580ca2debb7f10cb1f8ad7f86a9a7af6dbada8adddf42e126ada5f8e3a",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "0e5caa94aae993c118ac74681775e7565ea07d12c50b17a0191a90a54f7c3b8e",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "06b76fe6dbc7ecd6f9f544a25d1d316c87598c934948c591c6bb1b9341c1573b",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "43f359005da14b21901c2d67454f2a95e60ecb9dcadc63401bdaa3fc76c94af0",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "ba059168e1131fcac36ed72bc9fecc57639e931198051ea1a121fa245748db1f",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "cfd49fa8f46ff708482f28f4d91b43cdf555d9746b5c8cb0dd1dc4723a922b6e",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "90d2ffedccf560e61b5107df88f020098cafd23617f0d92b3a6bf741c2fb7c7b",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "transferredBytes": 1557440
+    },
+    {
+      "width": 49,
+      "requestedStoreLocal": true,
+      "exactBoundaryAgreement": true,
+      "canonicalSha256": "2bd9f5a29ce1698a5ec82580508b958275c53caf1c36b4c176c0c934d881f856",
+      "bbox": [
+        -27.5,
+        6.5,
+        4.5,
+        49.5,
+        59.5,
+        62.5
+      ],
+      "inventories": [
+        {
+          "faces": 108,
+          "counts": {
+            "cylinder": 42,
+            "nurbs": 8,
+            "torus": 14,
+            "plane": 34,
+            "cone": 2,
+            "sphere": 8
+          },
+          "radii": [
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              14
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              15
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              2.5
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3.0000000000000004
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              3
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              5
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "cylinder",
+              8
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "sphere",
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              3
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              11,
+              8
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              12,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              6,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ],
+            [
+              "torus",
+              8,
+              3
+            ]
+          ]
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 2,
+            "nurbs": 4
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 4,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 6,
+          "counts": {
+            "plane": 6
+          },
+          "radii": []
+        },
+        {
+          "faces": 12,
+          "counts": {
+            "plane": 10,
+            "nurbs": 2
+          },
+          "radii": []
+        },
+        {
+          "faces": 19,
+          "counts": {
+            "plane": 7,
+            "nurbs": 12
+          },
+          "radii": []
+        },
+        {
+          "faces": 13,
+          "counts": {
+            "plane": 4,
+            "nurbs": 9
+          },
+          "radii": []
+        },
+        {
+          "faces": 10,
+          "counts": {
+            "plane": 5,
+            "nurbs": 5
+          },
+          "radii": []
+        }
+      ],
+      "meshChecks": [
+        {
+          "vertices": 29649,
+          "triangles": 59302,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 50667.547016030076
+        },
+        {
+          "vertices": 422,
+          "triangles": 844,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.388543249198406
+        },
+        {
+          "vertices": 393,
+          "triangles": 782,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 5.321569645186898
+        },
+        {
+          "vertices": 8,
+          "triangles": 12,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 0.720113622824841
+        },
+        {
+          "vertices": 274,
+          "triangles": 544,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.073480788883771
+        },
+        {
+          "vertices": 638,
+          "triangles": 1276,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.395179730607552
+        },
+        {
+          "vertices": 680,
+          "triangles": 1356,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.063210854642016
+        },
+        {
+          "vertices": 370,
+          "triangles": 740,
+          "boundaryEdges": 0,
+          "nonManifoldEdges": 0,
+          "watertight": true,
+          "signedVolumeFromFloat32": 6.277655723072613
+        }
+      ],
+      "material": [
+        {
+          "point": [
+            11,
+            49.5,
+            8
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            11,
+            18,
+            40
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            -20.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            42.5,
+            18,
+            40
+          ],
+          "expected": "inside",
+          "actual": "inside"
+        },
+        {
+          "point": [
+            -10.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        },
+        {
+          "point": [
+            32.5,
+            49.5,
+            8
+          ],
+          "expected": "outside",
+          "actual": "outside"
+        }
+      ],
+      "arenaSha256": "e11b328f6e878ae06ce7b96f866d3c7c20d70313120e1654624f1aa9dab53f90",
+      "meshSha256": [
+        {
+          "positions": "c9195cfc05894fd63d6411a0061273973306c6ebb5f1372c1193e9f0512a0736",
+          "indices": "08838f1e75f1e1f7005dd926949a9b4e59b1520ccd15cc228dcb3f0afffef083",
+          "normals": "b3878204e64ade6f2f15d774754767df40e8269b815da006c9ee1d85b49a3338",
+          "faceOffsets": "b788841febcc95ff0e66a59e05646400b38d0d652bfbb439eb0623d9db080bcf"
+        },
+        {
+          "positions": "df6c4f580ca2debb7f10cb1f8ad7f86a9a7af6dbada8adddf42e126ada5f8e3a",
+          "indices": "47b38d86f74a979c07ee890b0f41681f277a152003985553c2f402da48adabf1",
+          "normals": "e6ff5ef640f0cf689215cf583079d21c145b317fad0c850d4234c7322e3143c3",
+          "faceOffsets": "45bc05712ea98f75cffcca062a3c1046dd9d35745c7244b9ec99a4727a83b8e7"
+        },
+        {
+          "positions": "0e5caa94aae993c118ac74681775e7565ea07d12c50b17a0191a90a54f7c3b8e",
+          "indices": "73d1edf72c25dfc4770bdaa937874badcb8e7069e17470fdd3467a6f2965a76c",
+          "normals": "e28f0be38ce48ad8c9198dc0b0fc31b27fbf00d5bb5d996963059e475356f7c4",
+          "faceOffsets": "e2b875ec3479444c9a379448a7fae486a1165b4dd644b14c75e096eb4eadcd9e"
+        },
+        {
+          "positions": "06b76fe6dbc7ecd6f9f544a25d1d316c87598c934948c591c6bb1b9341c1573b",
+          "indices": "270378626d5cba0471dc6d5e9ad56d6e867e6d6b534845bcc83ee5506ef185ca",
+          "normals": "406795b6c15ead1decfaa8f521119fb3c61796c4974d991073bd005df3bb44ad",
+          "faceOffsets": "9e0e452b08d7f1d988fd0bebad7acaf34c293b40f39345024a83ce2564db4e92"
+        },
+        {
+          "positions": "43f359005da14b21901c2d67454f2a95e60ecb9dcadc63401bdaa3fc76c94af0",
+          "indices": "a3be692ba79041a0a522cddde5ca122dd13669007baaefe0c567fd1d2fb7a381",
+          "normals": "eade83283fb011e46aa6042ef33904794878d775f9f1f33ddf3a92017c1af8d5",
+          "faceOffsets": "2439ec3c89a9791149685b9c7ce4d15ce464662323d81ad1186622270d890935"
+        },
+        {
+          "positions": "ba059168e1131fcac36ed72bc9fecc57639e931198051ea1a121fa245748db1f",
+          "indices": "4f48b3f1614ad174f0c4a6b88af9d6a483ae55001c0cf03e4f60313cc2662eed",
+          "normals": "f4de48a1b903b665a8e28ca5aa9eda490c520bd4e2f6d5e979774ea7ea5c4603",
+          "faceOffsets": "64249eb244b5011f7e10bc6ed5f8b60f0916acc29fceb32fe5ecdf0bc8e62d0a"
+        },
+        {
+          "positions": "cfd49fa8f46ff708482f28f4d91b43cdf555d9746b5c8cb0dd1dc4723a922b6e",
+          "indices": "b31bc7b9d34a519513c79e171a0d8bbf8658d17ae4dee5ad7d4215b78a907841",
+          "normals": "35e0d7dbc7d94254ff6c9c606c40000e1e631d3fa7005308a9365708f31faa06",
+          "faceOffsets": "fe283098cd0e867c88578048aa99325f4037779086c3ff2e40454af44fd2fc54"
+        },
+        {
+          "positions": "90d2ffedccf560e61b5107df88f020098cafd23617f0d92b3a6bf741c2fb7c7b",
+          "indices": "2d20e289b3aa7cd8e8fed9b71631c01b6b160dac04fea9490f5e5b83a2a1c839",
+          "normals": "b98e21eddb02c10e9792144afae6aff901dd3bed3685c55d6cd6739ce2637d46",
+          "faceOffsets": "e364f5f65f453a2179f813f52dec9abf7478f43fba1b3e2cd79a685b36a6c0bc"
+        }
+      ],
+      "transferredBytes": 1557440
+    }
+  ],
+  "failures": [
+    {
+      "name": "cross_drilled_shaft",
+      "requestedStoreLocal": true,
+      "binding": "direct",
+      "reason": "Exact boundary content differs",
+      "firstDifference": {
+        "at": "root.roots.0.outer.0.outer.uses.0.tolerance",
+        "baseline": {
+          "f64": "48afbc9af2d77a3e"
+        },
+        "candidate": null
+      }
+    },
+    {
+      "name": "cross_drilled_shaft",
+      "requestedStoreLocal": true,
+      "binding": "batch",
+      "reason": "Exact boundary content differs",
+      "firstDifference": {
+        "at": "root.roots.0.outer.0.outer.uses.0.tolerance",
+        "baseline": {
+          "f64": "48afbc9af2d77a3e"
+        },
+        "candidate": null
+      }
+    }
+  ],
+  "scope": {
+    "actualStoreLocalRoute": "Not exposed by the shipped JS API; native work-count tests prove routing separately.",
+    "adoption": "Qualification of listed inputs only. Default unchanged; general imported-body, cavity, NURBS, identity and lineage adoption require separate evidence."
+  },
+  "settings": {
+    "defaultOff": true,
+    "moduleWide": true,
+    "constructorPreservesSetting": true,
+    "itemRefusalPreservesSettingAndInputs": true
+  },
+  "lineage": [
+    {
+      "op": "cutWithEntityEvolution",
+      "exactAgreement": true,
+      "baselineSha256": "e0334eba102f366da015d8b628da772208f009f5743f3373113e0b28499e6d8e"
+    },
+    {
+      "op": "cutJournaled",
+      "exactAgreement": true,
+      "baselineSha256": "4f70ae23d179ab3b52838250397d22bca51ddfcf056d24e4e16dcb85a41bc811"
+    }
+  ],
+  "recipeFixture": {
+    "identity": "hammer-holder-opening-width-31-feature-v1",
+    "recipeSha256": "8a24356effac832b714ca6724d33feedf91c1251d2bb62096d332ed2c55c8719",
+    "documentSha256": {
+      "base": "7a8a3fac03a2ce63eb0e84ed61fd9fc09c6454973cc6225d5122cc1e3bf05026",
+      "text": "dd59dd4c7de07fb7c63c2c8b69aac17fd4ba97244bab7ba3fcfb3638b4b0a96f"
+    }
+  },
+  "passed": false
+}

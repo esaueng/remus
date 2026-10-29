@@ -446,11 +446,7 @@ impl BrepKernel {
         }
         let sk = self.gcs_sketch_mut(sketch)?;
         let id = table_get(&sk.points, "gcs point", point)?;
-        if sk
-            .external_lines
-            .iter()
-            .any(|line| line.start == id || line.end == id)
-        {
+        if sk.is_external_point(id) {
             return Err(
                 remus_operations::linked_sketch::LinkedSketchError::ReadOnlyExternalPoint.into(),
             );
@@ -556,11 +552,7 @@ impl BrepKernel {
                 reason: "ellipse was removed".into(),
             })?
             .center;
-        if sk
-            .external_lines
-            .iter()
-            .any(|line| line.start == center_id || line.end == center_id)
-        {
+        if sk.is_external_point(center_id) {
             return Err(
                 remus_operations::linked_sketch::LinkedSketchError::ReadOnlyExternalPoint.into(),
             );

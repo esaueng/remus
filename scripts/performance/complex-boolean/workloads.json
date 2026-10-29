@@ -1,0 +1,31 @@
+{
+  "schema": "remus-complex-boolean-workloads-v1",
+  "name": "bounded-generic-booleans-and-generation",
+  "fixtures": "Deterministic procedural fixtures defined in complex_boolean_baseline.rs; worker hash is recorded.",
+  "cases": [
+    {"id": "slot-cut-0", "scenario": "slot_cut", "size": 0},
+    {"id": "slot-cut-36", "scenario": "slot_cut", "size": 6},
+    {"id": "slot-cut-144", "scenario": "slot_cut", "size": 12},
+    {"id": "slot-fuse-0", "scenario": "slot_fuse", "size": 0},
+    {"id": "slot-fuse-36", "scenario": "slot_fuse", "size": 6},
+    {"id": "slot-fuse-144", "scenario": "slot_fuse", "size": 12},
+    {"id": "slot-intersect-0", "scenario": "slot_intersect", "size": 0},
+    {"id": "slot-intersect-36", "scenario": "slot_intersect", "size": 6},
+    {"id": "slot-intersect-144", "scenario": "slot_intersect", "size": 12},
+    {"id": "sparse-fuse-16", "scenario": "fuse_sparse", "size": 16},
+    {"id": "sparse-fuse-64", "scenario": "fuse_sparse", "size": 64},
+    {"id": "sparse-fuse-256", "scenario": "fuse_sparse", "size": 256,
+     "measurement_eligible": false,
+     "qualification_gap": "Strict validation fails closed at its unchanged 4096 component-pair proof budget (256 components require 32640 pairs). Retained as an explicit witness; request --case sparse-fuse-256 to reproduce the rejection."},
+    {"id": "dense-fuse-8", "scenario": "fuse_dense", "size": 8},
+    {"id": "dense-fuse-16", "scenario": "fuse_dense", "size": 16},
+    {"id": "curved-half-cylinder", "scenario": "curved_half_cylinder", "size": 1}
+  ],
+  "coverage_gaps": [
+    "The 256-body disconnected fuse is not qualified for timing: the existing strict component-pair proof budget rejects it. No validator check or resource limit is weakened.",
+    "Native-only; direct and batch WASM, installed packages, browser and consumer timing are not measured.",
+    "Pattern generation, imported NURBS, cavities, tangencies, large translations and adversarial contact families need separate fixtures.",
+    "No allocation-byte, peak-RSS, long-session, undo or refusal-rate coverage in this bounded extension.",
+    "Simple procedural successes are not a complete kernel or industrial-model benchmark."
+  ]
+}

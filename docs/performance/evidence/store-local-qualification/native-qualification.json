@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "correctnessOnly": true,
+  "baseSourceSha": "70f675bea4aebd35b0a36d59eaec89118c278ef6",
+  "sourceQualification": "Base source plus the accompanying qualification and feature-counter patches; these are not committed release artifacts.",
+  "sourceFileSha256": {
+    "crates/operations/src/boolean/mod.rs": "48e2c44d46c3ab4c8b34487b462420ab28287c3623f5628e9b8cf5b945b46843",
+    "crates/operations/src/boolean/store_local.rs": "13ddb98c7aacd8ffa830cc6630d9c4c636a3961802749cb4fd5b4e8a71f4a314",
+    "crates/operations/src/boolean/store_local_tests.rs": "2e0f0da795942b054417897b14efe35ee802fa96215653913ce76f0a01938904",
+    "crates/operations/src/performance.rs": "da9d32d3bde0c3ad2a7dbd026a9859ee9111e8264f9dee57d1528db9a80bf077"
+  },
+  "toolchain": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "build": {
+    "profile": "ci-test",
+    "features": [
+      "perf-counters"
+    ],
+    "incremental": false,
+    "rustMinStackBytes": 33554432,
+    "buildJobs": 2,
+    "cpuAffinity": "0-14,16-30"
+  },
+  "normalSuite": {
+    "command": "cargo test --offline --profile ci-test -p remus-operations --features perf-counters --lib boolean::store_local_tests -- --test-threads=2",
+    "passed": 22,
+    "failed": 0,
+    "ignored": 1,
+    "routeAssertions": [
+      "supported Cut/Fuse/Intersect: one attempt, one store-local success, zero general GFA calls",
+      "cavity/NURBS direct eligibility: one attempt, zero successes"
+    ]
+  },
+  "strictWitness": {
+    "name": "boolean::store_local_tests::cross_drilled_store_local_preserves_stored_line_tolerances",
+    "ignoredByDefault": true,
+    "explicitInvocationExitCode": 101,
+    "effectiveToleranceComparison": "passed",
+    "storedToleranceComparison": "failed",
+    "generalStoredTolerance": 1e-07,
+    "enabledStoredTolerance": null,
+    "enabledEffectiveTolerance": 1e-07,
+    "generalEffectiveTolerance": 1e-07,
+    "seamEndpoints": [
+      [
+        3,
+        0,
+        0
+      ],
+      [
+        3,
+        0,
+        12
+      ]
+    ],
+    "conclusion": "Block blanket store-local adoption; no material error demonstrated on this fixture."
+  },
+  "nativeWasmContractSuite": {
+    "command": "cargo test --offline --profile ci-test -p remus-wasm --lib bindings::store_local_switch_tests -- --test-threads=2",
+    "passed": 6,
+    "failed": 0,
+    "ignored": 0,
+    "execution": "native Rust bindings; separate real-package WASM observations are in committed-package artifacts",
+    "sourceFileSha256": "3bc8c7dadd978cdfd870aca382ab1f9f18968851a22747e487f584e9397669e1"
+  }
+}

@@ -3139,3 +3139,165 @@ fn tiny_semiaxis_does_not_exempt_the_other_from_collapse() {
         (f64::MIN_POSITIVE.to_bits(), 1.0)
     );
 }
+
+#[test]
+fn fixed_circle_radius_is_not_a_removable_equation_or_solver_parameter() {
+    let mut sys = GcsSystem::new();
+    let center = sys
+        .add_point(PointData {
+            x: 5.0,
+            y: 4.0,
+            fixed: true,
+        })
+        .unwrap();
+    let external = sys.add_circle_with_fixed_radius(center, 2.5).unwrap();
+    assert_eq!(sys.dof().unwrap().num_params, 0);
+    assert_eq!(sys.constraint_count(), 0);
+    let consumer_center = sys
+        .add_point(PointData {
+            x: 6.0,
+            y: 5.0,
+            fixed: false,
+        })
+        .unwrap();
+    let consumer = sys.add_circle(consumer_center, 1.0).unwrap();
+    let same_center = sys
+        .add_constraint(Constraint::Coincident(center, consumer_center))
+        .unwrap();
+    let same_radius = sys
+        .add_constraint(Constraint::EqualRadiusCircleCircle(external, consumer))
+        .unwrap();
+    let solved = sys.solve_detailed(100, TOL).unwrap();
+    assert!(solved.converged);
+    assert_eq!((solved.num_params, solved.rank, solved.dof), (3, 3, 0));
+    assert!((sys.circle(consumer).unwrap().radius - 2.5).abs() < TOL);
+    sys.set_fixed_circle_radius(external, 3.0).unwrap();
+    assert!(sys.solve(100, TOL).unwrap().converged);
+    assert!((sys.circle(consumer).unwrap().radius - 3.0).abs() < TOL);
+    let conflict = sys
+        .add_constraint(Constraint::CircleRadius(external, 4.0))
+        .unwrap();
+    assert!(!sys.solve(100, TOL).unwrap().converged);
+    assert_eq!(
+        sys.circle(external).unwrap().radius.to_bits(),
+        3.0_f64.to_bits()
+    );
+    assert!(sys.solve_detailed(100, TOL).unwrap().rolled_back);
+    assert_eq!(
+        sys.circle(external).unwrap().radius.to_bits(),
+        3.0_f64.to_bits()
+    );
+    for constraint in [same_center, same_radius, conflict] {
+        sys.remove_constraint(constraint).unwrap();
+    }
+    assert_eq!(sys.dof().unwrap().num_params, 3);
+    assert!(sys.solve(100, TOL).unwrap().converged);
+    assert_eq!(
+        sys.circle(external).unwrap().radius.to_bits(),
+        3.0_f64.to_bits()
+    );
+    assert_eq!(sys.fixed_circle_radius_count(), 1);
+}
+
+#[test]
+fn fixed_circle_radius_metadata_clones_and_retires_with_its_entity() {
+    let mut sys = GcsSystem::new();
+    let center = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let external = sys.add_circle_with_fixed_radius(center, 2.5).unwrap();
+    let mut saved = sys.clone();
+    saved.set_fixed_circle_radius(external, 3.0).unwrap();
+    assert_eq!(
+        sys.circle(external).unwrap().radius.to_bits(),
+        2.5_f64.to_bits()
+    );
+    assert_eq!(saved.fixed_circle_radius_count(), 1);
+    let constraint = sys
+        .add_constraint(Constraint::CircleRadius(external, 2.5))
+        .unwrap();
+    assert!(matches!(
+        sys.remove_circle(external),
+        Err(SketchError::EntityInUse)
+    ));
+    assert!(sys.is_circle_radius_fixed(external));
+    sys.remove_constraint(constraint).unwrap();
+    sys.remove_circle(external).unwrap();
+    assert_eq!(sys.fixed_circle_radius_count(), 0);
+    assert!(!sys.is_circle_radius_fixed(external));
+    let ordinary = sys.add_circle(center, 4.0).unwrap();
+    assert_eq!(ordinary.index(), external.index());
+    assert_ne!(ordinary.generation(), external.generation());
+    assert!(!sys.is_circle_radius_fixed(ordinary));
+    assert!(sys.set_fixed_circle_radius(external, 99.0).is_err());
+    assert!(sys.set_fixed_circle_radius(ordinary, 99.0).is_err());
+    assert_eq!(
+        sys.circle(ordinary).unwrap().radius.to_bits(),
+        4.0_f64.to_bits()
+    );
+    for radius in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert!(saved.set_fixed_circle_radius(external, radius).is_err());
+        assert_eq!(
+            saved.circle(external).unwrap().radius.to_bits(),
+            3.0_f64.to_bits()
+        );
+    }
+    assert_eq!(saved.dof().unwrap().num_params, 0);
+}
+
+#[test]
+fn fixed_circle_radius_survives_solver_and_rank_resource_refusals() {
+    let mut sys = GcsSystem::with_limits(GcsLimits {
+        max_dense_bytes: 64,
+        max_dense_qr_work: 64,
+    });
+    let center = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let external = sys.add_circle_with_fixed_radius(center, 2.5).unwrap();
+    let free = sys
+        .add_point(PointData {
+            x: 3.0,
+            y: 4.0,
+            fixed: false,
+        })
+        .unwrap();
+    let consumer = sys.add_circle(free, 1.0).unwrap();
+    sys.add_constraint(Constraint::Coincident(center, free))
+        .unwrap();
+    sys.add_constraint(Constraint::EqualRadiusCircleCircle(external, consumer))
+        .unwrap();
+    assert!(matches!(
+        sys.solve(100, TOL),
+        Err(SketchError::ResourceLimitExceeded { .. })
+    ));
+    assert!(matches!(
+        sys.solve_detailed(100, TOL),
+        Err(SketchError::ResourceLimitExceeded { .. })
+    ));
+    assert!(matches!(
+        sys.dof(),
+        Err(SketchError::ResourceLimitExceeded { .. })
+    ));
+    assert_eq!(
+        sys.circle(external).unwrap().radius.to_bits(),
+        2.5_f64.to_bits()
+    );
+    assert_eq!(
+        sys.circle(consumer).unwrap().radius.to_bits(),
+        1.0_f64.to_bits()
+    );
+    assert_eq!(
+        (sys.point(free).unwrap().x, sys.point(free).unwrap().y),
+        (3.0, 4.0)
+    );
+    assert_eq!(sys.fixed_circle_radius_count(), 1);
+}

@@ -1,4 +1,4 @@
-//! Persistent planar sketch attachments and exact external line inputs.
+//! Persistent planar sketch attachments and exact external line/circle inputs.
 //!
 //! This bounded 6.6 slice consumes construction history, never geometry guesses.
 //! Resolving inputs does not allocate topology or publish journal records.
@@ -35,8 +35,8 @@ pub enum LinkedSketchError {
     /// Only parallel planar attachments are qualified in this slice.
     #[error("linked sketch attachment requires a parallel planar face")]
     UnsupportedAttachment,
-    /// Only straight source edges are qualified.
-    #[error("linked sketch external input requires a non-degenerate line")]
+    /// The source is not a qualified line or complete parallel native circle.
+    #[error("linked sketch external input requires a qualified line or complete circle")]
     UnsupportedCurve,
     /// Vertex lineage does not describe the resolved edge endpoints.
     #[error("linked sketch endpoint references do not match the resolved edge")]
@@ -228,6 +228,114 @@ impl PlanarSketchAttachment {
         }
         Ok(ExternalSketchLine { start, end })
     }
+
+    /// Project one complete native circle into the current parallel plane.
+    ///
+    /// A circle has no distinguished angular endpoint: changing seam phase or
+    /// stored traversal does not change the returned center/radius identity.
+    ///
+    /// # Errors
+    /// Refuses missing/nonunique/inferred identity, non-native circles,
+    /// incomplete stored domains, unsound carriers/seams, and oblique carriers
+    /// whose orthogonal images would be ellipses. Refusal never mutates topology.
+    pub fn resolve_circle(
+        &self,
+        topo: &Topology,
+        source: &ExternalCircleReference,
+    ) -> Result<ExternalSketchCircle, LinkedSketchError> {
+        let frame = self.resolve_frame(topo)?;
+        let key = one_entity(topo, &source.edge, EntityKind::Edge, "edge")?;
+        let id = topo
+            .edge_id_from_index(key.index)
+            .ok_or(LinkedSketchError::UnsupportedCurve)?;
+        let edge = topo.edge(id)?;
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            return Err(LinkedSketchError::UnsupportedCurve);
+        };
+        let tolerance = Tolerance::default();
+        let finite = |v: Vec3| v.0.into_iter().all(f64::is_finite);
+        let axes = [circle.u_axis(), circle.v_axis(), circle.normal()];
+        if !edge.is_closed()
+            || !circle.radius().is_finite()
+            || circle.radius() <= 0.0
+            || !finite(circle.center() - Point3::new(0.0, 0.0, 0.0))
+            || axes
+                .iter()
+                .any(|axis| !finite(*axis) || (axis.dot(*axis) - 1.0).abs() > tolerance.angular)
+        {
+            return Err(LinkedSketchError::UnsupportedCurve);
+        }
+        // `with_axes` and arena documents can bypass constructor frame checks.
+        // Bound accepted carrier roundoff in model units as well as angle;
+        // multiplying a tiny frame defect by a large radius must not invent a
+        // different circular image outside the unchanged linear tolerance.
+        let defect = (circle.u_axis().cross(circle.v_axis()) - circle.normal())
+            .length()
+            .max(circle.u_axis().dot(circle.v_axis()).abs())
+            .max(
+                axes.into_iter()
+                    .map(|a| (a.dot(a) - 1.0).abs())
+                    .fold(0.0, f64::max),
+            );
+        if !defect.is_finite()
+            || defect > tolerance.angular
+            || circle.radius() * (defect + 16.0 * f64::EPSILON) > tolerance.linear
+        {
+            return Err(LinkedSketchError::UnsupportedCurve);
+        }
+        let normal = circle.normal() * (1.0 / circle.normal().length());
+        // Equality of canonical directions is deliberately conservative.
+        // An angular-nearness test would silently replace an oblique ellipse
+        // projection by a circle. Antiparallel circle sense is immaterial.
+        if normal != frame.z && normal != -frame.z {
+            return Err(LinkedSketchError::UnsupportedCurve);
+        }
+        let (start, end) = edge
+            .strict_domain()
+            .map_err(|_| LinkedSketchError::UnsupportedCurve)?;
+        // strict_domain's closed-periodic invariant proves one signed full
+        // turn, including anchored subtraction roundoff. Check both ends:
+        // a closed edge shares one vertex, but each endpoint is an authority.
+        let vertex = topo.vertex(edge.start())?;
+        let vertex_tolerance = vertex.tolerance();
+        if !vertex_tolerance.is_finite()
+            || vertex_tolerance.is_sign_negative()
+            || !finite(vertex.point() - Point3::new(0.0, 0.0, 0.0))
+            || [start, end].into_iter().any(|parameter| {
+                let point = circle.evaluate(parameter);
+                !finite(point - Point3::new(0.0, 0.0, 0.0))
+                    || (point - vertex.point()).length() > vertex_tolerance
+            })
+        {
+            return Err(LinkedSketchError::UnsupportedCurve);
+        }
+        let offset = circle.center() - frame.origin;
+        let center = Point2::new(offset.dot(frame.x), offset.dot(frame.y));
+        if !center.0.into_iter().all(f64::is_finite) {
+            return Err(LinkedSketchError::UnsupportedCurve);
+        }
+        Ok(ExternalSketchCircle {
+            center,
+            radius: circle.radius(),
+        })
+    }
+}
+
+/// Construction identity for a complete circular edge; seam identity is not
+/// part of a full circle's center/radius definition.
+#[derive(Debug, Clone)]
+pub struct ExternalCircleReference {
+    /// Complete native circle edge identity.
+    pub edge: PersistentRef,
+}
+
+/// Exact circle coordinates in the attached sketch's explicit plane frame.
+#[derive(Debug, Clone, Copy)]
+pub struct ExternalSketchCircle {
+    /// Orthogonally projected center.
+    pub center: Point2,
+    /// Unchanged radius of the parallel source carrier.
+    pub radius: f64,
 }
 
 /// Construction identities for an external edge and its ordered endpoints.

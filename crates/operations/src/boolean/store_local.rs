@@ -105,6 +105,7 @@ pub(super) fn try_store_local_boolean(
     if !thread_store_local_cuts_enabled() || a == b {
         return Ok(None);
     }
+    crate::performance::bump_boolean_route(crate::performance::BooleanRoute::StoreLocalAttempt);
     let tol = context.tolerance;
     let Some((touched, untouched)) = partition(topo, a, b, tol)? else {
         return Ok(None);
@@ -149,6 +150,9 @@ pub(super) fn try_store_local_boolean(
     });
     match attempt {
         Ok(result) => {
+            crate::performance::bump_boolean_route(
+                crate::performance::BooleanRoute::StoreLocalSuccess,
+            );
             log::debug!(
                 "{op:?} built store-locally: {} of {} faces touched",
                 touched.len(),

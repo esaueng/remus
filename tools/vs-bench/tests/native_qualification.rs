@@ -15,8 +15,9 @@ use remus_vs_bench::{Report, evaluate_json};
 use serde_json::{Value, json};
 use std::process::{Command, Stdio};
 
-fn runner_bin() -> String {
-    env!("CARGO_BIN_EXE_remus-native-qualification").to_string()
+fn runner_bin() -> std::ffi::OsString {
+    std::env::var_os("NEXTEST_BIN_EXE_remus_native_qualification")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_remus-native-qualification").into())
 }
 
 fn temp_paths(tag: &str) -> (String, String) {

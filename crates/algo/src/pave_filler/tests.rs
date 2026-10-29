@@ -20,6 +20,44 @@ use remus_topology::wire::{OrientedEdge, Wire};
 use crate::ds::GfaArena;
 use crate::pave_filler::PaveFiller;
 
+#[cfg(feature = "perf-counters")]
+#[test]
+fn phase_counters_separate_pair_visits_from_geometry_work() {
+    for (offset, overlaps) in [(3.0, false), (0.5, true)] {
+        let mut topo = Topology::default();
+        let a = make_box(&mut topo, [0.0; 3], [1.0; 3]);
+        let b = make_box(&mut topo, [offset, 0.0, 0.0], [offset + 1.0, 1.0, 1.0]);
+        let mut arena = GfaArena::new();
+        crate::perf::configure_phase_clock(None);
+        crate::perf::reset();
+        PaveFiller::with_context(&mut topo, a, b, OperationContext::new())
+            .perform(&mut arena)
+            .unwrap();
+        let counts = crate::perf::snapshot();
+        assert_eq!(counts.ee_pairs_visited, 12 * 12);
+        assert_eq!(counts.ff_pairs_visited, 6 * 6);
+        assert_eq!(
+            counts.ve_pairs_visited,
+            if overlaps { 2 * 8 * 12 } else { 0 }
+        );
+        if overlaps {
+            assert!(counts.ee_pairs_surviving > 0);
+            assert!(counts.ff_pairs_surviving > 0);
+        } else {
+            assert_eq!(counts.ee_pairs_surviving, 0);
+            assert_eq!(counts.ff_pairs_surviving, 0);
+        }
+        assert!(counts.ee_pairs_surviving <= counts.ee_pairs_visited);
+        assert!(counts.ff_pairs_surviving <= counts.ff_pairs_visited);
+        let phases = crate::perf::take_phases();
+        assert_eq!(phases.len(), 7);
+        assert!(phases.iter().all(|p| p.calls == 1 && p.duration_ms == 0.0));
+        crate::perf::reset();
+        assert_eq!(crate::perf::snapshot().ff_pairs_visited, 0);
+        assert!(crate::perf::take_phases().is_empty());
+    }
+}
+
 /// Build a minimal axis-aligned box solid in the topology.
 fn make_box(topo: &mut Topology, min: [f64; 3], max: [f64; 3]) -> remus_topology::solid::SolidId {
     let [x0, y0, z0] = min;

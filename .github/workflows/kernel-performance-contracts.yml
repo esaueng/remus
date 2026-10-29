@@ -1,0 +1,34 @@
+name: Performance harness contracts
+
+on:
+  pull_request:
+    paths:
+      - scripts/performance/**
+      - crates/operations/examples/complex_boolean_baseline.rs
+      - crates/algo/src/perf.rs
+      - crates/operations/src/performance.rs
+      - scripts/perf/parameter-rebuild/holder_recipe.cjs
+      - scripts/perf/filleted-face-edit/wasm_edit_bench.cjs
+      - .github/workflows/kernel-performance-contracts.yml
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  collector:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Existing baseline collector contracts
+        run: python3 -m unittest discover -s scripts/performance -p 'test_*.py' -v
+      - name: Complex boolean collector contracts
+        run: python3 -m unittest discover -s scripts/performance/complex-boolean -p 'test_*.py' -v
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Store-local qualification comparator contracts
+        run: node --test scripts/performance/store-local/qualify.test.cjs

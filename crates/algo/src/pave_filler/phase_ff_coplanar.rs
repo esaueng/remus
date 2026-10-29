@@ -125,6 +125,7 @@ pub(super) fn perform_indexed(
     arena: &mut GfaArena,
     index: &mut ArenaFaceIndex,
 ) -> Result<(), AlgoError> {
+    let _phase = crate::perf::phase(crate::perf::PhaseKind::Coplanar);
     let faces_a = remus_topology::explorer::solid_faces(topo, solid_a)?;
     let faces_b = remus_topology::explorer::solid_faces(topo, solid_b)?;
 

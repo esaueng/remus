@@ -18,6 +18,11 @@ use crate::transform::transform_solid;
 /// contact at the patterned pair's scale.
 const MATERIAL_OVERLAP_RELATIVE_FLOOR: f64 = 1e-9;
 
+#[cfg(test)]
+thread_local! {
+    static OVERLAP_SCRATCH_CLONES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Provenance bookkeeping shared by every pattern.
 ///
 /// A pattern instance is a copy, so its faces map to the source body's faces by
@@ -486,7 +491,10 @@ fn refuse_material_overlap(
             .total_cmp(&boxes[right].min.x())
             .then_with(|| left.cmp(&right))
     });
-    let mut scratch = topo.clone();
+    // Disjoint and touching instances need only their conservative boxes.
+    // Defer copying the document until a pair needs an exact material probe;
+    // reuse that one scratch topology for every surviving pair.
+    let mut scratch = None;
     let context = remus_math::context::OperationContext::new()
         .with_fallback(remus_math::context::FallbackPolicy::ExactOnly);
 
@@ -506,8 +514,13 @@ fn refuse_material_overlap(
                 continue;
             }
 
+            let scratch = scratch.get_or_insert_with(|| {
+                #[cfg(test)]
+                OVERLAP_SCRATCH_CLONES.with(|count| count.set(count.get() + 1));
+                topo.clone()
+            });
             let intersection = match crate::boolean::boolean_with_context(
-                &mut scratch,
+                scratch,
                 crate::boolean::BooleanOp::Intersect,
                 solids[first],
                 solids[second],
@@ -517,7 +530,7 @@ fn refuse_material_overlap(
                 Err(crate::OperationsError::EmptyResult { .. }) => continue,
                 Err(error) => return Err(error),
             };
-            let overlap_volume = crate::measure::solid_volume(&scratch, intersection, 0.1)?;
+            let overlap_volume = crate::measure::solid_volume(scratch, intersection, 0.1)?;
             let pair_box = a.union(b);
             let diagonal = (pair_box.max - pair_box.min).length();
             let threshold = diagonal * diagonal * diagonal * MATERIAL_OVERLAP_RELATIVE_FLOOR;
@@ -608,9 +621,12 @@ mod tests {
             let side = 20.0 * scale;
             let solid = crate::primitives::make_box(&mut topo, side, side, side).unwrap();
             let counts_before = live_counts(&topo);
+            OVERLAP_SCRATCH_CLONES.with(|count| count.set(0));
 
             let error = linear_pattern(&mut topo, solid, Vec3::new(1.0, 0.0, 0.0), 10.0 * scale, 2)
                 .unwrap_err();
+
+            assert_eq!(OVERLAP_SCRATCH_CLONES.with(std::cell::Cell::get), 1);
 
             match error {
                 crate::OperationsError::PatternInstancesOverlap {
@@ -670,6 +686,61 @@ mod tests {
                 assert_eq!(topo.compound(compound).unwrap().solids().len(), 2);
             }
         }
+    }
+
+    #[test]
+    fn pattern_without_material_candidates_never_copies_unrelated_topology() {
+        for direction in [
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        ] {
+            for spacing in [1.0, 1.5] {
+                let mut topo = Topology::new();
+                for _ in 0..128 {
+                    crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+                }
+                let solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+                OVERLAP_SCRATCH_CLONES.with(|count| count.set(0));
+
+                let compound = linear_pattern(&mut topo, solid, direction, spacing, 10).unwrap();
+
+                assert_eq!(topo.compound(compound).unwrap().solids().len(), 10);
+                assert_eq!(
+                    OVERLAP_SCRATCH_CLONES.with(std::cell::Cell::get),
+                    0,
+                    "box-rejected pairs must not copy unrelated topology"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pattern_unresolved_material_candidates_keep_typed_refusal_and_isolation() {
+        let mut topo = Topology::new();
+        let mut solids = Vec::new();
+        // Parallel thin boxes rotated 45 degrees have overlapping AABBs in
+        // all three axes. Their perpendicular spacing exceeds their width,
+        // but this exact intersection family is currently unqualified. The
+        // optimization must retain its typed refusal, not accept the pattern.
+        for index in 0..3 {
+            let solid = crate::primitives::make_box(&mut topo, 4.0, 0.5, 1.0).unwrap();
+            let shift = f64::from(index);
+            let matrix = Mat4::translation(-shift, shift, 0.0)
+                * rotation_matrix(Vec3::new(0.0, 0.0, 1.0), std::f64::consts::FRAC_PI_4);
+            crate::transform::transform_solid(&mut topo, solid, &matrix).unwrap();
+            solids.push(solid);
+        }
+        let before = format!("{topo:?}");
+        OVERLAP_SCRATCH_CLONES.with(|count| count.set(0));
+
+        assert!(matches!(
+            refuse_material_overlap(&topo, &solids),
+            Err(crate::OperationsError::ExactOnlyUnattainable)
+        ));
+
+        assert_eq!(OVERLAP_SCRATCH_CLONES.with(std::cell::Cell::get), 1);
+        assert_eq!(format!("{topo:?}"), before, "the probe must stay isolated");
     }
 
     #[test]

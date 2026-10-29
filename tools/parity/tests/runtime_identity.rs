@@ -15,7 +15,10 @@ fn both_native_runners_identify_their_compiled_host_before_reading_stdin()
             "remus-split-io-native",
         ),
     ] {
-        let output = Command::new(path)
+        // Runtime paths point inside nextest's extracted archive.
+        let binary = std::env::var_os(format!("NEXTEST_BIN_EXE_{}", name.replace('-', "_")))
+            .unwrap_or_else(|| path.into());
+        let output = Command::new(binary)
             .arg("--runtime-identity")
             .stdin(Stdio::null())
             .output()?;

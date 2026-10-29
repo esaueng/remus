@@ -7,7 +7,8 @@ Outputs (all lowercase booleans except ``mode``):
   group that touches no second-tier path leaves it to the PR and the main
   push while ``QUEUE_RERUNS_PR_TIER`` is off.
 * ``docs`` — documentation changed: build rustdoc and the book.
-* ``full`` — run the second tier (coverage, MSRV, deny, audit). True only
+* ``full`` — run the second tier (MSRV, deny, audit, plus coverage outside
+  main pushes; main coverage is nightly). True only
   for heavy changes on non-PR events or PRs carrying the ``ci:full`` label
   (``--full``). A merge group keeps it only
   for a diff that touches a second-tier path (see ``needs_second_tier``).
@@ -69,14 +70,19 @@ PACKAGE_DIRECTORIES = ("crates/wasm/pkg/", "crates/wasm-io/pkg/")
 # 2026-09), so selecting it for every kernel PR does not lengthen the PR.
 WASM_DIRECTORIES = ("crates/", "xtask/", "tools/vs-bench/")
 # `.cargo/config.toml` defines the `cargo xtask` alias the package build runs.
-WASM_FILENAMES = {"Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"}
+WASM_FILENAMES = {
+    "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml",
+    "LICENSE-APACHE", "NOTICE", ".github/fleet-workflows.json",
+    ".github/workflows/ci.yml", ".github/workflows/publish.yml",
+    ".github/workflows/wasm-version.yml",
+}
 # Paths whose effect a merge group cannot leave to the main push: dependency
 # and toolchain inputs (Cargo Deny, Security Audit, MSRV) and the CI
 # definitions. Fuzz compile and render run in the first tier. Any other
 # heavy merge group runs the PR tier, or nothing heavy while
 # QUEUE_RERUNS_PR_TIER is off. The main push of the same squashed tree
-# still runs the second tier, so Coverage (about 40 of a queue entry's 60-70
-# minutes, 2026-10) reports after the merge instead of before it.
+# still runs dependency and MSRV checks; complete coverage runs nightly,
+# or on an explicitly selected full PR, merge-group or manual CI event.
 SECOND_TIER_DIRECTORIES = (".cargo/", ".config/", ".github/workflows/")
 SECOND_TIER_FILENAMES = {
     "Cargo.lock", "Cargo.toml", "clippy.toml", "deny.toml", "rust-toolchain.toml",
@@ -136,6 +142,7 @@ def affects_wasm(path: str) -> bool:
     return (
         normalized.startswith(WASM_DIRECTORIES)
         or normalized in WASM_FILENAMES
+        or (normalized.startswith(".github/workflows/fleet-ci-") and normalized.endswith(".yml"))
         or (normalized.startswith("scripts/") and ("wasm" in name or "w9" in name))
     )
 
@@ -173,7 +180,8 @@ def classify_paths(
         or is_agent_instruction(path)
         for path in paths
     )
-    if not lightweight:
+    package_input = any(affects_wasm(path) for path in paths)
+    if not lightweight or package_input:
         full = force_full and (
             not merge_group or any(needs_second_tier(path) for path in paths)
         )
@@ -181,7 +189,7 @@ def classify_paths(
             # CI Pass accepts every heavy-tier skip once heavy, full and wasm
             # are all false; docs still builds rustdoc for the combined tree.
             return Classification(heavy=False, docs=True, full=False, wasm=False, mode="queue")
-        wasm = full or any(affects_wasm(path) for path in paths)
+        wasm = full or package_input
         if full:
             mode = "full"
         elif force_full:

@@ -32,9 +32,9 @@ JOBS = jobs(FLEET)
 # selected. Fuzz compile and render joined tier 1 in fleet-ci-v4.yml. In
 # fleet-ci-v7.yml the complexity guards left Test for a tier-1 job of their own,
 # and the W9 preflight left the package build for a job under its selector.
-TIER1 = {"test", "complexity-guards", "approx-census", "wasm-no-io", "fuzz-check", "render"}
+TIER1 = {"test", "test-shards", "complexity-guards", "approx-census", "wasm-no-io", "fuzz-check", "render"}
 TIER2 = {"coverage", "msrv", "deny", "audit"}
-PACKAGE = {"wasm", "w9-preflight"}
+PACKAGE = {"wasm", "wasm-runtime", "w9-preflight"}
 HEAVY = TIER1 | TIER2 | PACKAGE
 ALWAYS = {"changes", "repo-policy", "secrets-scan"}
 # W1: the read-only size gate runs after the package build on wasm-affecting PRs.
@@ -102,7 +102,7 @@ class ConvergenceTests(unittest.TestCase):
         self.assertNotIn("github.event_name == 'merge_group'", metadata)
 
     def test_expensive_jobs_wait_for_both_early_gates(self):
-        for name in HEAVY | {"docs"}:
+        for name in (HEAVY | {"docs"}) - {"test-shards", "wasm-runtime"}:
             with self.subTest(name=name):
                 self.assertIn("needs: [queue-trust, changes, repo-policy, secrets-scan]", JOBS[name])
                 self.assertNotIn("always()", JOBS[name].split("    steps:", 1)[0])
@@ -137,7 +137,7 @@ class ConvergenceTests(unittest.TestCase):
                 )
         self.assertNotIn("clippy:", FLEET)
         self.assertIn("cargo clippy --all-targets --all-features -- -D warnings", JOBS["test"])
-        self.assertLess(JOBS["test"].index("cargo clippy"), JOBS["test"].index("cargo nextest run"))
+        self.assertLess(JOBS["test"].index("cargo clippy"), JOBS["test"].index("cargo nextest archive"))
         self.assertIn("FORCE_FULL: ${{ github.event_name != 'pull_request' || "
                       "contains(github.event.pull_request.labels.*.name, 'ci:full') }}",
                       JOBS["changes"])
