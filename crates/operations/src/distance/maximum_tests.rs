@@ -35,6 +35,381 @@ fn sphere_at(topo: &mut Topology, radius: f64, offset: [f64; 3]) -> SolidId {
     .unwrap();
     solid
 }
+
+fn affine_faces(topo: &mut Topology, solid: SolidId, every_face: bool) {
+    use remus_geometry::convert::certify_affine_nurbs_plane;
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::nurbs::surface::NurbsSurface;
+    use remus_math::vec::{Point2, Vec2};
+    use remus_topology::{face::FaceSurface, pcurve::PCurve};
+
+    let faces = remus_topology::explorer::solid_faces(topo, solid).unwrap();
+    for face in faces
+        .into_iter()
+        .take(if every_face { usize::MAX } else { 1 })
+    {
+        let FaceSurface::Plane { normal, .. } = *topo.face(face).unwrap().surface() else {
+            unreachable!("axis-aligned source plane required");
+        };
+        let uses: Vec<_> = topo
+            .loops_of_face(face)
+            .unwrap()
+            .iter()
+            .flat_map(|&l| topo.face_loop(l).unwrap().coedges().to_vec())
+            .collect();
+        let points: Vec<_> = uses
+            .iter()
+            .flat_map(|&c| {
+                let e = topo.edge(topo.coedge(c).unwrap().edge()).unwrap();
+                [
+                    topo.vertex(e.start()).unwrap().point(),
+                    topo.vertex(e.end()).unwrap().point(),
+                ]
+            })
+            .collect();
+        let axis = (0..3).find(|&i| normal.0[i] != 0.0).unwrap();
+        let (u, v) = if normal.0[axis] > 0.0 {
+            ((axis + 1) % 3, (axis + 2) % 3)
+        } else {
+            ((axis + 2) % 3, (axis + 1) % 3)
+        };
+        let low = std::array::from_fn::<_, 3, _>(|i| {
+            points.iter().map(|p| p.0[i]).fold(f64::INFINITY, f64::min)
+        });
+        let high = std::array::from_fn::<_, 3, _>(|i| {
+            points
+                .iter()
+                .map(|p| p.0[i])
+                .fold(f64::NEG_INFINITY, f64::max)
+        });
+        let corner = |upper_u, upper_v| {
+            let mut p = low;
+            if upper_u {
+                p[u] = high[u];
+            }
+            if upper_v {
+                p[v] = high[v];
+            }
+            Point3::new(p[0], p[1], p[2])
+        };
+        let surface = NurbsSurface::new(
+            1,
+            1,
+            vec![2.0, 2.0, 8.0, 8.0],
+            vec![-3.0, -3.0, 3.0, 3.0],
+            vec![
+                vec![corner(false, false), corner(false, true)],
+                vec![corner(true, false), corner(true, true)],
+            ],
+            vec![vec![3.0; 2]; 2],
+        )
+        .unwrap();
+        let cert = certify_affine_nurbs_plane(&surface, 1e-7).unwrap();
+        topo.face_mut(face)
+            .unwrap()
+            .set_surface(FaceSurface::Nurbs(surface));
+        for coedge in uses {
+            let usage = topo.coedge(coedge).unwrap();
+            let edge = topo.edge(usage.edge()).unwrap();
+            let a = cert
+                .parameters(topo.vertex(edge.start()).unwrap().point(), 1e-7)
+                .unwrap();
+            let b = cert
+                .parameters(topo.vertex(edge.end()).unwrap().point(), 1e-7)
+                .unwrap();
+            let delta = Vec2::new(b.0 - a.0, b.1 - a.1);
+            let span = delta.length();
+            let range = if usage.is_forward() {
+                (0.0, span)
+            } else {
+                (span, 0.0)
+            };
+            let curve = Curve2D::Line(Line2D::new(Point2::new(a.0, a.1), delta).unwrap());
+            topo.set_coedge_pcurve(coedge, PCurve::new(curve, range.0, range.1))
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn maximum_affine_nurbs_boxes_keep_global_witnesses_and_read_only_state() {
+    for scale in [1e-3, 1.0, 1e3] {
+        for placed in [false, true] {
+            for all in [false, true] {
+                let mut topo = Topology::new();
+                let a = box_at(&mut topo, [2.0 * scale, 3.0 * scale, 4.0 * scale], [0.0; 3]);
+                let b = box_at(
+                    &mut topo,
+                    [5.0 * scale, 2.0 * scale, scale],
+                    [8.0 * scale, -4.0 * scale, 2.0 * scale],
+                );
+                affine_faces(&mut topo, a, all);
+                affine_faces(&mut topo, b, true);
+                let pose = if placed {
+                    Mat4([
+                        [0.0, 0.0, 1.0, 17.0 * scale],
+                        [1.0, 0.0, 0.0, -11.0 * scale],
+                        [0.0, 1.0, 0.0, 9.0 * scale],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ])
+                } else {
+                    Mat4::identity()
+                };
+                for solid in [a, b] {
+                    crate::transform::transform_solid(&mut topo, solid, &pose).unwrap();
+                }
+                let before = remus_io::arena_io::serialize_solids(&topo, &[a, b]).unwrap();
+                let tick = topo.mutation_ticks();
+                let journal = topo.journal().len();
+                let r = maximum(&topo, a, b).unwrap();
+                separation(&r, 227.0_f64.sqrt() * scale, scale);
+                point_close(
+                    r.point_a,
+                    pose.mul_point(Point3::new(0.0, 3.0 * scale, 0.0)),
+                    scale,
+                );
+                point_close(
+                    r.point_b,
+                    pose.mul_point(Point3::new(13.0 * scale, -4.0 * scale, 3.0 * scale)),
+                    scale,
+                );
+                let rev = maximum(&topo, b, a).unwrap();
+                point_close(rev.point_a, r.point_b, scale);
+                point_close(rev.point_b, r.point_a, scale);
+                separation(
+                    &maximum(&topo, a, a).unwrap(),
+                    29.0_f64.sqrt() * scale,
+                    scale,
+                );
+                assert_eq!(
+                    remus_io::arena_io::serialize_solids(&topo, &[a, b]).unwrap(),
+                    before
+                );
+                assert_eq!(topo.mutation_ticks(), tick);
+                assert_eq!(topo.journal().len(), journal);
+                let mut context = OperationContext::new();
+                context.budgets.vertex_pairs = 0;
+                assert!(matches!(
+                    with_context(&topo, a, b, &context),
+                    Err(MaximumDistanceError::ResourceLimit { .. })
+                ));
+                let token = CancellationToken::new();
+                token.cancel();
+                let context = context.with_cancellation(token);
+                assert!(matches!(
+                    with_context(&topo, a, b, &context),
+                    Err(MaximumDistanceError::Cancelled)
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn maximum_affine_nurbs_mixes_with_complete_native_spheres() {
+    for scale in [1e-3, 1.0, 1e3] {
+        let mut topo = Topology::new();
+        let a = box_at(
+            &mut topo,
+            [2.0 * scale, 3.0 * scale, 4.0 * scale],
+            [4.0 * scale, -3.0 * scale, scale],
+        );
+        let b = sphere_at(&mut topo, 2.0 * scale, [0.0; 3]);
+        affine_faces(&mut topo, a, true);
+        let r = maximum(&topo, a, b).unwrap();
+        separation(&r, (70.0_f64.sqrt() + 2.0) * scale, scale);
+        point_close(
+            r.point_a,
+            Point3::new(6.0 * scale, -3.0 * scale, 5.0 * scale),
+            scale,
+        );
+        let rev = maximum(&topo, b, a).unwrap();
+        point_close(rev.point_b, r.point_a, scale);
+        point_close(rev.point_a, r.point_b, scale);
+    }
+}
+
+#[test]
+fn maximum_affine_nurbs_requires_exact_carriers_and_complete_curve_use_proofs() {
+    use remus_math::curves2d::{Curve2D, Line2D, NurbsCurve2D};
+    use remus_math::nurbs::surface::NurbsSurface;
+    use remus_math::vec::{Point2, Vec2};
+    use remus_topology::{face::FaceSurface, pcurve::PCurve};
+    for fault in 0..5 {
+        let mut topo = Topology::new();
+        let a = box_at(&mut topo, [2.0, 3.0, 4.0], [0.0; 3]);
+        affine_faces(&mut topo, a, true);
+        let f = remus_topology::explorer::solid_faces(&topo, a).unwrap()[0];
+        let c = topo
+            .face_loop(topo.loops_of_face(f).unwrap()[0])
+            .unwrap()
+            .coedges()[0];
+        match fault {
+            0 | 1 => {
+                let FaceSurface::Nurbs(s) = topo.face(f).unwrap().surface() else {
+                    unreachable!("fixture uses an affine NURBS carrier")
+                };
+                let mut cp = s.control_points().to_vec();
+                let mut weights = s.weights().to_vec();
+                if fault == 0 {
+                    cp[1][1].0[2] += 1e-9;
+                } else {
+                    weights[1][1] = 6.0;
+                }
+                let replacement = NurbsSurface::new(
+                    1,
+                    1,
+                    s.knots_u().to_vec(),
+                    s.knots_v().to_vec(),
+                    cp,
+                    weights,
+                )
+                .unwrap();
+                topo.face_mut(f)
+                    .unwrap()
+                    .set_surface(FaceSurface::Nurbs(replacement));
+            }
+            2 => {
+                topo.remove_coedge_pcurve(c).unwrap();
+            }
+            3 => {
+                topo.set_coedge_pcurve(
+                    c,
+                    PCurve::new(
+                        Curve2D::Line(
+                            Line2D::new(Point2::new(100.0, 100.0), Vec2::new(1.0, 0.0)).unwrap(),
+                        ),
+                        0.0,
+                        1.0,
+                    ),
+                )
+                .unwrap();
+            }
+            4 => {
+                let pc = topo.coedge_pcurve(c).unwrap().unwrap();
+                let a = pc.evaluate(pc.t_start());
+                let b = pc.evaluate(pc.t_end());
+                let midpoint =
+                    Point2::new((a.x() + b.x()) * 0.5 + 0.1, (a.y() + b.y()) * 0.5 + 0.1);
+                let curve = NurbsCurve2D::new(
+                    2,
+                    vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    vec![a, midpoint, b],
+                    vec![1.0; 3],
+                )
+                .unwrap();
+                assert!((curve.evaluate(0.0) - a).length() <= 1e-14);
+                assert!((curve.evaluate(1.0) - b).length() <= 1e-14);
+                topo.set_coedge_pcurve(c, PCurve::new(Curve2D::Nurbs(curve), 0.0, 1.0))
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let before = remus_io::arena_io::serialize_solid(&topo, a).unwrap();
+        let tick = topo.mutation_ticks();
+        assert!(
+            matches!(
+                maximum(&topo, a, a),
+                Err(MaximumDistanceError::Unsupported(_))
+            ),
+            "fault {fault}"
+        );
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&topo, a).unwrap(),
+            before
+        );
+        assert_eq!(topo.mutation_ticks(), tick);
+    }
+}
+
+#[test]
+fn maximum_affine_nurbs_oblique_exact_nets_follow_scaled_orthogonal_metric() {
+    for scale in [1.0 / 1024.0, 1.0, 1024.0] {
+        let mut topo = Topology::new();
+        let a = box_at(&mut topo, [2.0 * scale, 3.0 * scale, 4.0 * scale], [0.0; 3]);
+        let b = box_at(
+            &mut topo,
+            [5.0 * scale, 2.0 * scale, scale],
+            [8.0 * scale, -4.0 * scale, 2.0 * scale],
+        );
+        affine_faces(&mut topo, a, true);
+        affine_faces(&mut topo, b, true);
+        // Integer dyadic data stays exactly affine. Orthogonal columns have
+        // squared lengths2,2,4, so the independent farthest-axis oracle is
+        // 2*13^2 +2*7^2 +4*3^2 =472, even though no world axis is a box edge.
+        let pose = Mat4([
+            [1.0, 1.0, 0.0, 0.0],
+            [1.0, -1.0, 0.0, 0.0],
+            [0.0, 0.0, -2.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]);
+        for solid in [a, b] {
+            crate::transform::transform_solid(&mut topo, solid, &pose).unwrap();
+        }
+        let r = maximum(&topo, a, b).unwrap();
+        separation(&r, 472.0_f64.sqrt() * scale, scale);
+        point_close(
+            r.point_a,
+            pose.mul_point(Point3::new(0.0, 3.0 * scale, 0.0)),
+            scale,
+        );
+        point_close(
+            r.point_b,
+            pose.mul_point(Point3::new(13.0 * scale, -4.0 * scale, 3.0 * scale)),
+            scale,
+        );
+    }
+}
+
+#[test]
+fn maximum_affine_nurbs_holes_and_cavity_shells_keep_full_authority() {
+    for cavity in [false, true] {
+        let mut topo = Topology::new();
+        let outer = box_at(&mut topo, [8.0, 6.0, 4.0], [0.0; 3]);
+        let tool = if cavity {
+            box_at(&mut topo, [2.0, 2.0, 2.0], [3.0, 2.0, 1.0])
+        } else {
+            box_at(&mut topo, [2.0, 2.0, 6.0], [3.0, 2.0, -1.0])
+        };
+        let a = crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, outer, tool)
+            .unwrap();
+        assert_eq!(
+            topo.solid(a).unwrap().inner_shells().len(),
+            usize::from(cavity)
+        );
+        affine_faces(&mut topo, a, true);
+        assert!(
+            crate::validate::validate_solid(&topo, a)
+                .unwrap()
+                .issues
+                .iter()
+                .all(|issue| issue.severity != crate::validate::Severity::Error)
+        );
+        let before = remus_io::arena_io::serialize_solid(&topo, a).unwrap();
+        separation(&maximum(&topo, a, a).unwrap(), 116.0_f64.sqrt(), 1.0);
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&topo, a).unwrap(),
+            before
+        );
+        // Corrupt a use in a cavity when present: outer-hull dominance cannot
+        // hide unsupported inner boundaries during preparation.
+        let shell = if cavity {
+            topo.solid(a).unwrap().inner_shells()[0]
+        } else {
+            topo.solid(a).unwrap().outer_shell()
+        };
+        let f = topo.shell(shell).unwrap().faces()[0];
+        let coedge = topo
+            .face_loop(topo.loops_of_face(f).unwrap()[0])
+            .unwrap()
+            .coedges()[0];
+        topo.remove_coedge_pcurve(coedge).unwrap();
+        assert!(matches!(
+            maximum(&topo, a, a),
+            Err(MaximumDistanceError::Unsupported(_))
+        ));
+    }
+}
 fn close(actual: f64, expected: f64, scale: f64) {
     assert!(
         (actual - expected).abs() <= 1e-10 * scale,

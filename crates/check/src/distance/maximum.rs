@@ -1,5 +1,6 @@
 //! Global maximum-distance witnesses for qualified polygonal and spherical bodies.
 
+use remus_geometry::convert::certify_affine_nurbs_plane;
 use remus_math::context::OperationContext;
 use remus_math::det_hash::DetHashSet;
 use remus_math::surfaces::SphericalSurface;
@@ -91,6 +92,9 @@ impl Preparation<'_> {
 
 /// Compute a global maximum on straight-Line planar polyhedra and complete
 /// native spheres, including mixed pairs. All cavity boundaries are inspected.
+///
+/// Planar carriers may also be algebraically certified degree-one affine
+/// NURBS patches, with complete finite-domain and per-use pcurve proofs.
 ///
 /// Inputs must be valid BReps, with closed shells and simple, properly nested
 /// trim loops. Qualification here checks supported carriers and their numeric
@@ -216,6 +220,15 @@ fn prepare(
             return Err(MaximumDistanceError::InvalidGeometry("duplicate face use"));
         }
         let face = topo.face(face_id)?;
+        let affine_plane = if let FaceSurface::Nurbs(surface) = face.surface() {
+            Some(
+                certify_affine_nurbs_plane(surface, work.context.tolerance.linear).ok_or(
+                    MaximumDistanceError::Unsupported("uncertified affine NURBS plane"),
+                )?,
+            )
+        } else {
+            None
+        };
         match face.surface() {
             FaceSurface::Plane { normal, d } if !spherical => {
                 if !finite(*normal) || !d.is_finite() || length(*normal) == 0.0 {
@@ -223,6 +236,7 @@ fn prepare(
                 }
             }
             FaceSurface::Sphere(sphere) if spherical => check_sphere_frame(sphere)?,
+            FaceSurface::Nurbs(_) if affine_plane.is_some() => {}
             FaceSurface::Plane { .. }
             | FaceSurface::Sphere(_)
             | FaceSurface::Nurbs(_)
@@ -258,13 +272,37 @@ fn prepare(
             remus_topology::validation::validate_loop_connected(topo, loop_id)?;
             for &coedge_id in boundary.coedges() {
                 work.visit(1)?;
-                let edge = topo.edge(topo.coedge(coedge_id)?.edge())?;
+                let coedge = topo.coedge(coedge_id)?;
+                let edge = topo.edge(coedge.edge())?;
                 edge.strict_domain()
                     .map_err(|_| MaximumDistanceError::InvalidGeometry("invalid edge domain"))?;
                 if !spherical && !matches!(edge.curve(), EdgeCurve::Line) {
                     return Err(MaximumDistanceError::Unsupported(
                         "curved polygonal boundary",
                     ));
+                }
+                if affine_plane.is_some() {
+                    // This helper proves the entire Line2D/affine-surface
+                    // image, including the stored use's finite UV domain.
+                    // Absence and unsupported proofs never pass vacuously.
+                    let proof = remus_topology::validation::check_same_parameter_strict(
+                        topo,
+                        coedge.edge(),
+                        face_id,
+                        coedge.is_forward(),
+                        0,
+                    )
+                    .map_err(|_| {
+                        MaximumDistanceError::Unsupported("uncertified affine-plane pcurve use")
+                    })?
+                    .ok_or(MaximumDistanceError::Unsupported(
+                        "missing affine-plane pcurve use",
+                    ))?;
+                    if proof.max_deviation > work.context.tolerance.linear {
+                        return Err(MaximumDistanceError::Unresolved(
+                            "affine-plane pcurve error exceeds query tolerance",
+                        ));
+                    }
                 }
                 for vertex_id in [edge.start(), edge.end()] {
                     let point = topo.vertex(vertex_id)?.point();
@@ -276,10 +314,27 @@ fn prepare(
                             check_plane_point(*normal, *d, point, work.context)?;
                         }
                         FaceSurface::Sphere(sphere) => check_radial(sphere, point, work.context)?,
-                        FaceSurface::Nurbs(_)
-                        | FaceSurface::Cylinder(_)
-                        | FaceSurface::Cone(_)
-                        | FaceSurface::Torus(_) => unreachable!("carrier qualified above"),
+                        FaceSurface::Nurbs(_) => {
+                            let Some(plane) = affine_plane.as_ref() else {
+                                return Err(MaximumDistanceError::Unsupported(
+                                    "uncertified affine NURBS plane",
+                                ));
+                            };
+                            // An affine rectangular domain is convex, and a
+                            // Line's image is affine. Both endpoints therefore
+                            // certify membership of the complete 3D interval.
+                            if plane
+                                .parameters(point, work.context.tolerance.linear)
+                                .is_none()
+                            {
+                                return Err(MaximumDistanceError::Unresolved(
+                                    "affine-plane edge leaves its finite carrier domain",
+                                ));
+                            }
+                        }
+                        FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Torus(_) => {
+                            unreachable!("carrier qualified above")
+                        }
                     }
                     if seen_vertices.insert(vertex_id) {
                         points.push(point);

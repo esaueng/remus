@@ -37,6 +37,9 @@ pub use remus_check::distance::maximum::{MaximumDistanceError, MaximumDistanceRe
 /// Global maximum-distance witnesses for qualified planar polyhedra and
 /// complete native spheres, including mixed pairs. Reads every cavity shell.
 ///
+/// Planar faces include certified affine degree-one NURBS patches with
+/// whole-edge finite-domain and stored pcurve-use proofs.
+///
 /// Inputs require valid BReps with closed shells and simple, nested trim loops.
 ///
 /// # Errors
