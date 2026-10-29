@@ -22,6 +22,10 @@
 
 use std::path::{Path, PathBuf};
 
+/// A NURBS edge as (exact trim bits, points at ninths of its span, knot
+/// domain).
+type Signature = ((u64, u64), Vec<remus_math::vec::Point3>, (f64, f64));
+
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/data")
@@ -44,9 +48,6 @@ fn untrimmed_nurbs_area_survives_roundtrip() {
     let solids2 = remus_io::step::reader::read_step(&exported, &mut topo2).unwrap();
     assert_eq!(solids2.len(), 1);
 
-    // Each NURBS edge as (exact trim bits, points at ninths of its span,
-    // knot domain), sorted by trim.
-    type Signature = ((u64, u64), Vec<remus_math::vec::Point3>, (f64, f64));
     let edge_signatures = |topology: &remus_topology::Topology,
                            solid: remus_topology::solid::SolidId| {
         let mut signatures: Vec<Signature> = remus_topology::explorer::solid_edges(topology, solid)
