@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 function invoke(kernel, route, args) {
   if (route === 'direct') return kernel.sweepWithOptions(
     args.profile, args.pathEdge, args.contactMode ?? 'fixed', Float64Array.from(args.scaleValues),
-    args.segments, 'smooth',
+    args.segments, args.cornerMode ?? 'smooth',
   );
   const row = JSON.parse(kernel[route](JSON.stringify([{ op: 'sweepWithOptions', args }])))[0];
   assert.ok(Object.hasOwn(row, 'ok'), JSON.stringify(row));
@@ -129,6 +129,7 @@ export function runTaperedHollowSweepPackaged({ BrepKernel }) {
   console.log(`ok - tapered hollow sweeps: ${cells} direct/batch positive cells and malformed-law rollback`);
   runNativeDomainSweeps(BrepKernel);
   runNativeDomainGuidesAndRefusals(BrepKernel);
+  runNativeDomainCorners(BrepKernel);
 
 }
 
@@ -307,4 +308,70 @@ function runNativeDomainGuidesAndRefusals(BrepKernel) {
   assert.equal(guides, 27);
   assert.equal(refusals, 12);
   console.log(`ok - native-domain guides: ${guides} endpoint cells; ${refusals} typed checkpoint-ownership rollback controls`);
+}
+
+function runNativeDomainCorners(BrepKernel) {
+  let positives = 0, refusals = 0;
+  const domains = [[0, 1], [10, 20], [-2, 3], [1e6, 1e6 + 16],
+    [1e16, 1e16 + 16], [0, 1e-12], [0, 1e-16]];
+  for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
+    for (const [start, end] of domains) {
+      for (const cornerMode of end === 1e-16 ? ['miter'] : ['miter', 'round:1']) {
+        const kernel = new BrepKernel();
+        try {
+          const profile = kernel.makeFaceFromWire(kernel.makePolygonWire(Float64Array.from(
+            [-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0],
+          )));
+          const pathEdge = kernel.makeNurbsEdge(0, 0, 0, 5, 0, 5, 1,
+            Float64Array.from([start, start, start + (end - start) / 2, end, end]),
+            Float64Array.from([0, 0, 0, 0, 0, 5, 5, 0, 5]), Float64Array.from([1, 1, 1]));
+          const args = { profile, pathEdge, contactMode: 'rmf', scaleValues: [], segments: 4, cornerMode };
+          const shouldRefuse = (start > 1e15 && cornerMode === 'round:1') || end === 1e-16;
+          if (shouldRefuse) {
+            const survivor = kernel.makeBox(1, 1, 1);
+            const checkpoint = kernel.checkpoint();
+            const state = () => ({
+              survivor: Array.from(kernel.serializeSolids(Uint32Array.of(survivor))),
+              path: kernel.getNurbsCurveData(pathEdge), history: kernel.journalSummary(),
+              memory: JSON.parse(kernel.checkpointMemoryStats()), checkpoints: kernel.checkpointCount(),
+            });
+            const before = state();
+            if (route === 'direct') {
+              assert.throws(() => invoke(kernel, route, args), /native knot chart cannot resolve/);
+            } else {
+              const row = JSON.parse(kernel[route](JSON.stringify([{ op: 'sweepWithOptions', args }])))[0];
+              assert.ok(Object.hasOwn(row, 'error'));
+              if (route === 'executeBatchV2') {
+                assert.equal(row.error.category, 'unsupported');
+                assert.equal(row.error.code, 'operation_failed');
+              }
+              assert.match(route === 'executeBatchV2' ? row.error.message : row.error, /native knot chart cannot resolve/);
+            }
+            assert.deepEqual(state(), before, `${route}: corner refusal changed checkpoint-owned state`);
+            kernel.restore(checkpoint);
+            assert.equal(kernel.volume(survivor, 0.01), 1);
+            kernel.discardCheckpoint(checkpoint);
+            refusals++;
+          } else {
+            const solid = invoke(kernel, route, args);
+            const volume = kernel.volume(solid, 0.01);
+            if (cornerMode === 'miter') assert.ok(Math.abs(volume - 10) < 1e-8,
+              `${route} [${start},${end}] ${cornerMode}: volume ${volume} vs 10`);
+            else assert.ok(volume < 8 + Math.PI / 2 && volume > (8 + Math.PI / 2) * 0.999,
+              `${route} [${start},${end}] ${cornerMode}: volume ${volume}`);
+            assert.equal(kernel.validateSolid(solid), 0);
+            assert.equal(kernel.classifyPoint(solid, -0.25, 0, 5.2, 1e-7),
+              cornerMode === 'miter' ? 'inside' : 'outside');
+            assert.equal(kernel.classifyPoint(solid, 0, 0, 2.5, 1e-7), 'inside');
+            assert.equal(kernel.classifyPoint(solid, 2.5, 0, 5, 1e-7), 'inside');
+            closedMesh(kernel, solid, 1);
+            positives++;
+          }
+        } finally { kernel.free(); }
+      }
+    }
+  }
+  assert.equal(positives, 33);
+  assert.equal(refusals, 6);
+  console.log(`ok - native-domain corner modes: ${positives} physical positives, ${refusals} typed refusals`);
 }

@@ -1083,7 +1083,7 @@ fn l_shaped_path() -> NurbsCurve {
 #[test]
 fn detect_kinks_l_shaped_path() {
     let path = l_shaped_path();
-    let kinks = detect_kinks(&path);
+    let kinks = detect_kinks(&path).unwrap();
     assert_eq!(kinks.len(), 1, "L-shaped path should have one kink");
     assert!((kinks[0] - 0.5).abs() < 1e-6, "kink should be at t=0.5");
 }
@@ -1092,14 +1092,14 @@ fn detect_kinks_l_shaped_path() {
 fn detect_kinks_no_kinks_for_smooth_path() {
     // A smooth cubic NURBS with no internal knot multiplicity.
     let path = quarter_circle_xz_path(5.0);
-    let kinks = detect_kinks(&path);
+    let kinks = detect_kinks(&path).unwrap();
     assert!(kinks.is_empty(), "smooth path should have no kinks");
 }
 
 #[test]
 fn detect_kinks_straight_line_no_kinks() {
     let path = straight_z_path(5.0);
-    let kinks = detect_kinks(&path);
+    let kinks = detect_kinks(&path).unwrap();
     assert!(kinks.is_empty(), "straight line should have no kinks");
 }
 
@@ -1117,7 +1117,7 @@ fn detect_kinks_collinear_polyline_no_kinks() {
         vec![1.0, 1.0, 1.0],
     )
     .unwrap();
-    let kinks = detect_kinks(&path);
+    let kinks = detect_kinks(&path).unwrap();
     assert!(kinks.is_empty(), "collinear polyline should have no kinks");
 }
 
@@ -1646,7 +1646,11 @@ fn sweep_round_rejects_a_kink_whose_run_is_curved() {
         vec![1.0, 1.0, 1.0, 1.0, 1.0],
     )
     .unwrap();
-    assert_eq!(detect_kinks(&path).len(), 1, "path should have one kink");
+    assert_eq!(
+        detect_kinks(&path).unwrap().len(),
+        1,
+        "path should have one kink"
+    );
 
     let mut topo = Topology::new();
     let profile = make_unit_square_face(&mut topo);
@@ -2347,4 +2351,192 @@ fn native_domain_refusals_preserve_live_geometry_and_history() {
             );
         }
     }
+}
+
+/// Direct geometric oracles distinguish requested corners from the old silent
+/// Smooth fallback (which has volume8.75 for this four-segment square L).
+#[test]
+fn corner_modes_on_native_charts_build_requested_geometry_or_refuse_explicitly() {
+    for (start, end) in [
+        (0.0, 1.0),
+        (10.0, 20.0),
+        (1e6, 1e6 + 16.0),
+        (1e16, 1e16 + 16.0),
+        (0.0, 1e-12),
+        (0.0, 1e-16),
+    ] {
+        for round in [false, true] {
+            if end < 1e-15 && round {
+                continue;
+            }
+            let mut topo = Topology::new();
+            let profile = make_square(&mut topo, 1.0);
+            let curve = NurbsCurve::new(
+                1,
+                vec![start, start, start + (end - start) * 0.5, end, end],
+                vec![
+                    Point3::new(0.0, 0.0, 0.0),
+                    Point3::new(0.0, 0.0, 5.0),
+                    Point3::new(5.0, 0.0, 5.0),
+                ],
+                vec![1.0; 3],
+            )
+            .unwrap();
+            let options = SweepOptions {
+                segments: 4,
+                corner_mode: if round {
+                    SweepCornerMode::Round { radius: 1.0 }
+                } else {
+                    SweepCornerMode::Miter
+                },
+                ..Default::default()
+            };
+            let before = [
+                topo.num_vertices(),
+                topo.num_edges(),
+                topo.num_wires(),
+                topo.faces().len(),
+                topo.num_shells(),
+                topo.num_solids(),
+            ];
+            let history = topo.journal().snapshot();
+            let result = sweep_with_options(&mut topo, profile, &curve, &options);
+            // The short coarse chart cannot encode these circular-arc tangent
+            // stations; the tiny chart is still resolvable by the knot splitter.
+            if (round && start > 1e15) || end < 1e-15 {
+                let error = result.unwrap_err();
+                assert!(matches!(
+                    error,
+                    crate::OperationsError::Unsupported {
+                        operation: "sweep",
+                        ..
+                    }
+                ));
+                assert!(error.to_string().contains(if round {
+                    "rounded-corner tangent stations"
+                } else {
+                    "miter splitting"
+                }));
+                assert_eq!(
+                    [
+                        topo.num_vertices(),
+                        topo.num_edges(),
+                        topo.num_wires(),
+                        topo.faces().len(),
+                        topo.num_shells(),
+                        topo.num_solids()
+                    ],
+                    before
+                );
+                assert_eq!(topo.journal().snapshot(), history);
+                continue;
+            }
+            assert!(result.is_ok(), "[{start},{end}] round={round}: {result:?}");
+            let solid = result.unwrap();
+            let volume = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+            if round {
+                let exact = 8.0 + std::f64::consts::FRAC_PI_2;
+                assert!(
+                    volume < exact && volume > exact * 0.999,
+                    "{volume} vs {exact}"
+                );
+            } else {
+                assert!((volume - 10.0).abs() < 1e-8, "{volume} != 10");
+            }
+            let state = remus_check::classify::classify_point(
+                &topo,
+                solid,
+                Point3::new(-0.25, 0.0, 5.2),
+                &remus_check::classify::ClassifyOptions::default(),
+            )
+            .unwrap();
+            assert_eq!(
+                state == remus_check::classify::PointClassification::Inside,
+                !round
+            );
+            assert_manifold(&topo, solid);
+        }
+    }
+}
+
+#[test]
+fn coarse_general_collinear_corner_options_retain_the_exact_prism_route() {
+    for (a, b) in [(1e16, 1e16 + 16.0), (0.0, 1e-12)] {
+        for corner_mode in [
+            SweepCornerMode::Miter,
+            SweepCornerMode::Round { radius: 1.0 },
+        ] {
+            let mut topo = Topology::new();
+            let profile = make_square(&mut topo, 1.0);
+            let curve = NurbsCurve::new(
+                1,
+                vec![a, a, a + (b - a) * 0.5, b, b],
+                vec![
+                    Point3::new(0.0, 0.0, 0.0),
+                    Point3::new(0.0, 0.0, 3.0),
+                    Point3::new(0.0, 0.0, 6.0),
+                ],
+                vec![1.0; 3],
+            )
+            .unwrap();
+            let solid = sweep_with_options(
+                &mut topo,
+                profile,
+                &curve,
+                &SweepOptions {
+                    corner_mode,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!((crate::measure::solid_volume(&topo, solid, 0.01).unwrap() - 6.0).abs() < 1e-9);
+        }
+    }
+}
+
+#[test]
+fn coarse_higher_degree_join_uses_endpoint_tangents_not_distant_curvature() {
+    let a = 1e16;
+    let middle = a + 8.0;
+    let b = a + 16.0;
+    // Both one-sided derivatives at the join point along +Z. A nearest native
+    // float is a quarter of a span away, where this curve's curvature would
+    // produce visibly different directions and a false corner classification.
+    let curve = NurbsCurve::new(
+        2,
+        vec![a, a, a, middle, middle, b, b, b],
+        vec![
+            Point3::new(-2.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 2.5),
+            Point3::new(0.0, 0.0, 5.0),
+            Point3::new(0.0, 0.0, 7.5),
+            Point3::new(2.0, 0.0, 10.0),
+        ],
+        vec![1.0; 5],
+    )
+    .unwrap();
+    assert!(detect_kinks(&curve).unwrap().is_empty());
+    let mut volumes = Vec::new();
+    for corner_mode in [
+        SweepCornerMode::Smooth,
+        SweepCornerMode::Miter,
+        SweepCornerMode::Round { radius: 1.0 },
+    ] {
+        let mut topo = Topology::new();
+        let profile = make_square(&mut topo, 0.5);
+        let solid = sweep_with_options(
+            &mut topo,
+            profile,
+            &curve,
+            &SweepOptions {
+                segments: 4,
+                corner_mode,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        volumes.push(crate::measure::solid_volume(&topo, solid, 0.01).unwrap());
+        assert_manifold(&topo, solid);
+    }
+    assert!((volumes[0] - volumes[1]).abs() < 1e-9 && (volumes[0] - volumes[2]).abs() < 1e-9);
 }

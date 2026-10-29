@@ -1557,7 +1557,7 @@ fn sweep_with_options_impl(
     // kinks. A kink-free path has no corner to treat, and entering the corner
     // builder just to fall back to the smooth sweep would drop the caller's
     // scale_law (Box<dyn Fn> is not Clone).
-    if !matches!(options.corner_mode, SweepCornerMode::Smooth) && !detect_kinks(path).is_empty() {
+    if !matches!(options.corner_mode, SweepCornerMode::Smooth) && !detect_kinks(path)?.is_empty() {
         match options.corner_mode {
             SweepCornerMode::Miter => return sweep_miter(topo, profile, path, options),
             SweepCornerMode::Round { radius } => {
@@ -1943,6 +1943,73 @@ fn assemble_swept_solid(
     Ok(topo.add_solid(Solid::new(shell_id, vec![])))
 }
 
+/// Refuse a chart that cannot distinguish near-knot side probes. Moving to a
+/// distant representable neighbour could compare curvature away from the join
+/// and manufacture a kink, so there is deliberately no next_up/down fallback.
+fn unresolved_corner_chart(reason: &str) -> crate::OperationsError {
+    crate::OperationsError::Unsupported {
+        operation: "sweep",
+        reason: format!("native knot chart cannot resolve {reason}"),
+    }
+}
+
+fn corner_tangents(path: &NurbsCurve, u: f64) -> Result<(Vec3, Vec3), crate::OperationsError> {
+    let knots = path.knots();
+    let first = knots.partition_point(|&k| k < u);
+    let after = knots.partition_point(|&k| k <= u);
+    if after - first == path.degree() {
+        // At multiplicity degree the knot is interpolatory: its shared control
+        // point is first-1. One-sided endpoint derivatives are positive scalar
+        // multiples of its adjacent control-point differences (also rational:
+        // positive weights affect magnitude, not direction). Use these exact
+        // endpoint directions, never curvature sampled a distant ULP away.
+        let points = path.control_points();
+        let Some(left) = first.checked_sub(2).and_then(|i| points.get(i)) else {
+            return Err(unresolved_corner_chart("interpolatory corner tangents"));
+        };
+        let Some(join) = points.get(first - 1) else {
+            return Err(unresolved_corner_chart("interpolatory corner tangents"));
+        };
+        let Some(right) = points.get(first) else {
+            return Err(unresolved_corner_chart("interpolatory corner tangents"));
+        };
+        if let (Ok(incoming), Ok(outgoing)) =
+            ((*join - *left).normalize(), (*right - *join).normalize())
+        {
+            return Ok((incoming, outgoing));
+        }
+        // A zero endpoint derivative does not define a direction. Keep the
+        // existing near-side fallback only when that chart resolves it closely.
+    }
+    let Some(&previous) = first.checked_sub(1).and_then(|i| knots.get(i)) else {
+        return Err(unresolved_corner_chart("corner tangent probes"));
+    };
+    let Some(&next) = knots.get(after) else {
+        return Err(unresolved_corner_chart("corner tangent probes"));
+    };
+    // This is a dimensionless parameter-probe fraction, not a geometry
+    // tolerance. Keep the probe close in BOTH adjacent knot spans, regardless
+    // of chart offset/scale, and require its rounded displacement to stay close.
+    let step = (u - previous).min(next - u) * 1e-8;
+    let before = u - step;
+    let after = u + step;
+    if !step.is_finite()
+        || step <= 0.0
+        || !(previous < before && before < u && u < after && after < next)
+        || u - before > 2.0 * step
+        || after - u > 2.0 * step
+    {
+        return Err(unresolved_corner_chart("corner tangent probes"));
+    }
+    let incoming = path
+        .tangent(before)
+        .map_err(|_| unresolved_corner_chart("corner tangent evaluation"))?;
+    let outgoing = path
+        .tangent(after)
+        .map_err(|_| unresolved_corner_chart("corner tangent evaluation"))?;
+    Ok((incoming, outgoing))
+}
+
 /// Detect kink parameters in a NURBS path.
 ///
 /// A kink is an internal knot where the tangent direction changes
@@ -1951,54 +2018,30 @@ fn assemble_swept_solid(
 /// paths, every internal knot is a kink where the line direction changes.
 ///
 /// Returns the kink parameter values (not including the path endpoints).
-fn detect_kinks(path: &NurbsCurve) -> Vec<f64> {
-    /// Small epsilon for comparing knot parameter values (dimensionless).
-    const KNOT_EPS: f64 = 1e-10;
+#[allow(clippy::float_cmp)] // Knot multiplicity is exact parameter identity.
+fn detect_kinks(path: &NurbsCurve) -> Result<Vec<f64>, crate::OperationsError> {
     /// Angular threshold for tangent discontinuity detection (~1 degree).
     const KINK_ANGLE_RAD: f64 = 0.0175;
-
-    let p = path.degree();
+    let degree = path.degree();
     let knots = path.knots();
-    let (u_min, u_max) = path.domain();
-
+    let (start, end) = path.domain();
     let mut kinks = Vec::new();
     let mut i = 0;
     while i < knots.len() {
         let u = knots[i];
-
-        if u <= u_min + KNOT_EPS || u >= u_max - KNOT_EPS {
-            i += 1;
-            continue;
+        let mut multiplicity = 1;
+        while i + multiplicity < knots.len() && knots[i + multiplicity] == u {
+            multiplicity += 1;
         }
-
-        let mut mult = 1;
-        while i + mult < knots.len() && (knots[i + mult] - u).abs() < KNOT_EPS {
-            mult += 1;
-        }
-
-        // For a degree-p curve, a knot with multiplicity m gives C^(p-m)
-        // continuity. C0 (position only) occurs when m >= p. For degree 1
-        // (polyline), every internal knot has multiplicity 1 == degree,
-        // so every junction is a kink.
-        if mult >= p {
-            // Verify there's actually a tangent discontinuity by checking
-            // the tangent just before and just after the knot.
-            let eps = 1e-8;
-            if let (Ok(t_before), Ok(t_after)) = (path.tangent(u - eps), path.tangent(u + eps)) {
-                let dot = t_before.dot(t_after).clamp(-1.0, 1.0);
-                // Compare using angular threshold: if the angle between
-                // tangents exceeds ~1 degree, it's a kink.
-                let angle = dot.acos();
-                if angle > KINK_ANGLE_RAD {
-                    kinks.push(u);
-                }
+        if u > start && u < end && multiplicity >= degree {
+            let (incoming, outgoing) = corner_tangents(path, u)?;
+            if incoming.dot(outgoing).clamp(-1.0, 1.0).acos() > KINK_ANGLE_RAD {
+                kinks.push(u);
             }
         }
-
-        i += mult;
+        i += multiplicity;
     }
-
-    kinks
+    Ok(kinks)
 }
 
 /// Sweep a face along a path with miter joints at sharp corners.
@@ -2024,7 +2067,7 @@ fn sweep_miter(
 
     // Detect kinks in the path. The caller (sweep_with_options) already
     // checks for empty kinks before dispatching here.
-    let kinks = detect_kinks(path);
+    let kinks = detect_kinks(path)?;
     debug_assert!(
         !kinks.is_empty(),
         "sweep_miter should only be called when the path has kinks"
@@ -2087,7 +2130,13 @@ fn sweep_miter(
         // the remaining curve's domain starts at the split point.
         // curve_split takes a parameter in the current curve's domain.
         let split_u = kink_u - offset + remaining.domain().0;
-        let (left, right) = curve_split(&remaining, split_u)?;
+        let (left, right) = curve_split(&remaining, split_u).map_err(|error| {
+            if matches!(error, remus_math::MathError::ParameterOutOfRange { .. }) {
+                unresolved_corner_chart("miter splitting at an interior knot")
+            } else {
+                error.into()
+            }
+        })?;
         sub_paths.push(left);
         offset = kink_u;
         remaining = right;
@@ -2225,12 +2274,9 @@ fn sweep_miter(
         // the end ring at the kink point.)
         if !is_last {
             let kink_u = kinks[seg_idx];
-            let eps = 1e-8;
-
-            // Tangents on either side of the kink; the bisector plane's
-            // normal is their average.
-            let t_before = path.tangent(kink_u - eps)?;
-            let t_after = path.tangent(kink_u + eps)?;
+            // Use the same resolved side probes as dispatch; the bisector
+            // plane's normal is the average of those tangent directions.
+            let (t_before, t_after) = corner_tangents(path, kink_u)?;
             let bisector = (t_before + t_after).normalize().unwrap_or(t_before);
             let kink_point = path.evaluate(kink_u);
 
@@ -2530,7 +2576,7 @@ fn sweep_round(
         });
     }
 
-    let kinks = detect_kinks(path);
+    let kinks = detect_kinks(path)?;
     debug_assert!(
         !kinks.is_empty(),
         "sweep_round should only be called when the path has kinks"
@@ -2541,9 +2587,7 @@ fn sweep_round(
     // Resolve each kink into an arc: tangent points, centre and rotation.
     let mut corners: Vec<RoundedCorner> = Vec::with_capacity(kinks.len());
     for (j, &u_kink) in kinks.iter().enumerate() {
-        let eps = 1e-8;
-        let t_in = path.tangent(u_kink - eps)?;
-        let t_out = path.tangent(u_kink + eps)?;
+        let (t_in, t_out) = corner_tangents(path, u_kink)?;
         let angle = t_in.dot(t_out).clamp(-1.0, 1.0).acos();
         if angle >= ROUND_MAX_TURN_RAD {
             return Err(crate::OperationsError::Unsupported {
@@ -2585,6 +2629,20 @@ fn sweep_round(
             .ok_or_else(|| too_long("start side"))?;
         let u_out = param_at_distance(path, u_kink, u_after, setback)
             .ok_or_else(|| too_long("end side"))?;
+
+        // Bisection cannot manufacture native coordinates between adjacent
+        // floats. Require the actual stored parameters to reach both physical
+        // arc tangent points within the existing model tolerance; otherwise a
+        // coarse chart would leave a gap or a bridge to a different point.
+        let incoming_error = (path.evaluate(u_in) - (kink_point - t_in * setback)).length();
+        let outgoing_error = (path.evaluate(u_out) - (kink_point + t_out * setback)).length();
+        if !incoming_error.is_finite()
+            || !outgoing_error.is_finite()
+            || incoming_error > tol.linear
+            || outgoing_error > tol.linear
+        {
+            return Err(unresolved_corner_chart("rounded-corner tangent stations"));
+        }
 
         // The arc is tangent to the *lines* through the kink, so the runs it
         // replaces have to be straight. Rounding a curved run would need a
