@@ -323,6 +323,83 @@ fn maximum_affine_nurbs_requires_exact_carriers_and_complete_curve_use_proofs() 
 }
 
 #[test]
+fn maximum_affine_nurbs_unsafe_chart_roundoff_is_unresolved_and_read_only() {
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::nurbs::surface::NurbsSurface;
+    use remus_math::vec::Point2;
+    use remus_topology::{face::FaceSurface, pcurve::PCurve};
+
+    let mut topo = Topology::new();
+    let body = box_at(&mut topo, [2.0, 3.0, 4.0], [0.0; 3]);
+    affine_faces(&mut topo, body, true);
+    for face in remus_topology::explorer::solid_faces(&topo, body).unwrap() {
+        let FaceSurface::Nurbs(source) = topo.face(face).unwrap().surface() else {
+            unreachable!("fixture uses affine NURBS faces")
+        };
+        let surface = NurbsSurface::new(
+            1,
+            1,
+            vec![1e12, 1e12, 1e12 + 6.0, 1e12 + 6.0],
+            source.knots_v().to_vec(),
+            source.control_points().to_vec(),
+            source.weights().to_vec(),
+        )
+        .unwrap();
+        assert!(remus_geometry::convert::certify_affine_nurbs_plane(&surface, 1e-7).is_some());
+        topo.face_mut(face)
+            .unwrap()
+            .set_surface(FaceSurface::Nurbs(surface));
+        let uses = topo
+            .face_loop(topo.loops_of_face(face).unwrap()[0])
+            .unwrap()
+            .coedges()
+            .to_vec();
+        for coedge in uses {
+            let pcurve = topo.coedge_pcurve(coedge).unwrap().unwrap();
+            let Curve2D::Line(line) = pcurve.curve() else {
+                unreachable!("fixture uses Line2D pcurves")
+            };
+            let shifted = PCurve::new(
+                Curve2D::Line(
+                    Line2D::new(
+                        Point2::new(line.origin().x() + (1e12 - 2.0), line.origin().y()),
+                        line.direction(),
+                    )
+                    .unwrap(),
+                ),
+                pcurve.t_start(),
+                pcurve.t_end(),
+            );
+            topo.set_coedge_pcurve(coedge, shifted).unwrap();
+            let usage = topo.coedge(coedge).unwrap();
+            assert!(matches!(
+                remus_topology::validation::check_same_parameter_strict(
+                    &topo,
+                    usage.edge(),
+                    face,
+                    usage.is_forward(),
+                    0,
+                ),
+                Err(remus_topology::validation::CurveUseValidationError::SameParameterProofUnavailable { .. })
+            ));
+        }
+    }
+    let before = remus_io::arena_io::serialize_solid(&topo, body).unwrap();
+    let tick = topo.mutation_ticks();
+    let error = maximum(&topo, body, body).unwrap_err();
+    assert!(
+        matches!(error, MaximumDistanceError::Unresolved(_)),
+        "{error:?}"
+    );
+    assert_eq!(error.kernel_code(), "maximum-distance:unresolved");
+    assert_eq!(
+        remus_io::arena_io::serialize_solid(&topo, body).unwrap(),
+        before
+    );
+    assert_eq!(topo.mutation_ticks(), tick);
+}
+
+#[test]
 fn maximum_affine_nurbs_oblique_exact_nets_follow_scaled_orthogonal_metric() {
     for scale in [1.0 / 1024.0, 1.0, 1024.0] {
         let mut topo = Topology::new();
@@ -413,7 +490,7 @@ fn maximum_affine_nurbs_holes_and_cavity_shells_keep_full_authority() {
 fn close(actual: f64, expected: f64, scale: f64) {
     assert!(
         (actual - expected).abs() <= 1e-10 * scale,
-        "{actual} != {expected}"
+        "maximum-distance witness disagrees with the analytic oracle"
     );
 }
 fn point_close(actual: Point3, expected: Point3, scale: f64) {

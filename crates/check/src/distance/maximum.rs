@@ -282,7 +282,7 @@ fn prepare(
                         "curved polygonal boundary",
                     ));
                 }
-                if affine_plane.is_some() {
+                if let FaceSurface::Nurbs(surface) = face.surface() {
                     let stored = topo
                         .pcurve_oriented(coedge.edge(), face_id, coedge.is_forward())
                         .ok_or(MaximumDistanceError::Unsupported(
@@ -291,10 +291,24 @@ fn prepare(
                     // Reject other representations before the generic helper
                     // traverses their controls. Only this constant-size family
                     // belongs to the preparation budget of this query.
-                    if !matches!(stored.curve(), Curve2D::Line(_)) {
+                    let Curve2D::Line(line) = stored.curve() else {
                         return Err(MaximumDistanceError::Unsupported(
                             "uncertified affine-plane pcurve use",
                         ));
+                    };
+                    let (domain_u, domain_v) = (surface.domain_u(), surface.domain_v());
+                    for parameter in [stored.t_start(), stored.t_end()] {
+                        let uv = line.evaluate(parameter);
+                        if !parameter.is_finite()
+                            || !uv.x().is_finite()
+                            || !uv.y().is_finite()
+                            || !(domain_u.0..=domain_u.1).contains(&uv.x())
+                            || !(domain_v.0..=domain_v.1).contains(&uv.y())
+                        {
+                            return Err(MaximumDistanceError::Unsupported(
+                                "affine-plane pcurve leaves its finite carrier domain",
+                            ));
+                        }
                     }
                     // This helper proves the entire Line2D/affine-surface
                     // image, including the stored use's finite UV domain.
@@ -306,8 +320,11 @@ fn prepare(
                         coedge.is_forward(),
                         0,
                     )
-                    .map_err(|_| {
-                        MaximumDistanceError::Unsupported("uncertified affine-plane pcurve use")
+                    .map_err(|error| match error {
+                        remus_topology::validation::CurveUseValidationError::SameParameterProofUnavailable { .. } => {
+                            MaximumDistanceError::Unresolved("affine-plane pcurve proof arithmetic is unresolved")
+                        }
+                        _ => MaximumDistanceError::Unsupported("uncertified affine-plane pcurve use"),
                     })?
                     .ok_or(MaximumDistanceError::Unsupported(
                         "missing affine-plane pcurve use",

@@ -85,8 +85,9 @@ function affineDocument(kernel, solid, everyFace = true, chart = [2, 8, -3, 3]) 
       knots_v: [chart[2], chart[2], chart[3], chart[3]],
       control_points: [[corner(false, false), corner(false, true)],
         [corner(true, false), corner(true, true)]], weights: [[3, 3], [3, 3]] } };
-    const uv = p => [chart[0] + (chart[1] - chart[0]) * (p[u] - low[u]) / (high[u] - low[u]),
-      chart[2] + (chart[3] - chart[2]) * (p[v] - low[v]) / (high[v] - low[v])];
+    // Normalize first so min/max corners retain their exact native knot endpoints.
+    const uv = p => [chart[0] + (chart[1] - chart[0]) * ((p[u] - low[u]) / (high[u] - low[u])),
+      chart[2] + (chart[3] - chart[2]) * ((p[v] - low[v]) / (high[v] - low[v]))];
     for (const use of uses) {
       const edge = doc.edges[use.edge], a = uv(doc.vertices[edge.start].point), b = uv(doc.vertices[edge.end].point);
       const delta = b.map((x, i) => x - a[i]), span = Math.hypot(...delta);
