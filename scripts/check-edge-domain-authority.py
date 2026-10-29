@@ -40,7 +40,10 @@ BOUNDARY_PRODUCTION_MANIFEST = """fb55de050adbb88c 1d3d3b084411fd14 c23d815cf0a8
 BOUNDARY_EXCLUDED_MANIFEST = """8fe14bd9c408d729 0562c28e114de4de c0f2a1f22c2e8a8c 7cc937c159b16539 b01c467494ff98a6 68f26eecb04615d0 31b2abde73d32ea3 1c6bd024fe00c4b8 55c17c389fbc6426 47b8301684e04c8b 6b2da41588b0d5d7 ad568991ded2d336""".split()
 # PERF-T02/T03 test-only guard/oracle exercises. Keep these exact identities
 # separate from the immutable baseline; production mutations remain forbidden.
-BOUNDARY_REVIEWED_TEST_ADDITIONS = """123048a9050f536c 5424c88caa0ce882""".split()
+# The imprint site deliberately corrupts an oversized target wire to prove
+# imprint admission precedes authority traversal; production sites stay fixed.
+BOUNDARY_REVIEWED_TEST_ADDITIONS = """123048a9050f536c 5424c88caa0ce882
+5ba03c532a327eb1""".split()
 BASELINE_PRESERVATION_MANIFEST = """409e26059e7657d1 4fcd3d400dabcb8c 7eb3fdf95ecd461e 2ef78a8d560c9b51 f8dac04156521ab6 c0079d093e520988 d6672a48aeae38c1 f36ef17e09585a9d 3c435d48ac3cd69f b77ddaa8423159bb 793fa734cab8252d fe75393c672bf17d""".split()
 # Reviewed one-for-one migrations keep the immutable baseline obligations while
 # allowing their implementation identity to move. Keys and values stay exact;
@@ -271,7 +274,7 @@ def validate_static_configuration() -> bool:
     )
     valid &= validate_manifest(BOUNDARY_EXCLUDED_MANIFEST, 12, "boundary-excluded")
     valid &= validate_manifest(
-        BOUNDARY_REVIEWED_TEST_ADDITIONS, 2, "boundary-reviewed-test-additions"
+        BOUNDARY_REVIEWED_TEST_ADDITIONS, 3, "boundary-reviewed-test-additions"
     )
     valid &= validate_manifest(
         BASELINE_PRESERVATION_MANIFEST,

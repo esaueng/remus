@@ -99,9 +99,15 @@ export function runPlanarImprintPackaged({ BrepKernel }) {
           }
           mesh(k, result.solid, scale, 320);
           k.checkpoint(); // Share the result owner while every refusal is tested.
-          const state = () => ({ memory: JSON.parse(k.checkpointMemoryStats()), source: [...k.serializeSolids(Uint32Array.of(seeded.solid, result.solid))], history: k.journalSummary(), faces: [...k.getSolidFaces(result.solid)] });
+          const state = () => {
+            // Finish read-only serialization allocations before sampling the
+            // global WASM high-water mark. The observer is not an operation.
+            const source = [...k.serializeSolids(Uint32Array.of(seeded.solid, result.solid))];
+            const history = k.journalSummary(), faces = [...k.getSolidFaces(result.solid)];
+            return { source, history, faces, memory: JSON.parse(k.checkpointMemoryStats()) };
+          };
           for (const [target, malformed, code] of [[result.surroundFace, points.flat(), 'unsupported_imprint'], [face, [], null], [face, Array(51).fill(0), null], [face, boundary.flat(), 'unsupported_imprint']]) {
-            const snapshot = state(); refuse(k, route, target === result.surroundFace ? result.solid : seeded.solid, target, malformed, code); assert.deepEqual(state(), snapshot);
+            const snapshot = state(); assert.deepEqual(state(), snapshot, 'read-only snapshot control'); refuse(k, route, target === result.surroundFace ? result.solid : seeded.solid, target, malformed, code); assert.deepEqual(state(), snapshot);
           }
           k.restore(before); assert.equal(k.journalSummary(), history);
           assert.equal(JSON.parse(k.resolveRef(oldFace)).status, 'bound');
