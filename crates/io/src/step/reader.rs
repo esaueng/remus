@@ -13042,7 +13042,7 @@ mod tests {
             )
             .unwrap(),
         );
-        // OCCT writes the origin to 12 digits; the tie is that close to exact.
+        // The reference kernel writes the origin to 12 digits; the tie is that close to exact.
         let curve = Curve2D::Line(
             Line2D::new(Point2::new(-1.570_796_326_795, 0.0), Vec2::new(1.0, 0.0)).unwrap(),
         );
