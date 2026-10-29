@@ -152,9 +152,11 @@ fn target_points(topo: &Topology, face: FaceId) -> Result<Vec<Point3>, Operation
             "target face holes are outside the planar polygon family",
         ));
     }
-    remus_topology::validation::validate_face_loops(topo, face)?;
     let wire = topo.wire(data.outer_wire())?;
     limit("imprint_target_vertices", wire.edges().len(), MAX_TARGET)?;
+    // Admit the work before walking authority coedges. A valid loop can have
+    // arbitrarily many uses; malformed oversize loops need the same bound.
+    remus_topology::validation::validate_face_loops(topo, face)?;
     if !wire.is_closed() {
         return Err(invalid("target outer wire must be closed"));
     }
@@ -314,8 +316,8 @@ fn qualify(
     finite_points(points)?;
     let source = topo.solid(solid)?.clone();
     let (shells, owner) = owning_shell(topo, &source, face)?;
-    let original = topo.face(face)?.clone();
-    let (normal, d, normal_length) = plane(&original)?;
+    let original = topo.face(face)?;
+    let (normal, d, normal_length) = plane(original)?;
     let target = target_points(topo, face)?;
     limit(
         "imprint_segments",
@@ -360,7 +362,7 @@ fn qualify(
     }
     Ok(Qualified {
         source,
-        original,
+        original: original.clone(),
         shells,
         owner,
         ring,

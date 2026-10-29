@@ -541,6 +541,14 @@ fn bounded_ring_extremes_target_cap_and_unsupported_carriers_are_explicit() {
         let source =
             crate::extrude::extrude(&mut topo, profile, Vec3::new(0., 0., 1.), 4.).unwrap();
         let face = top(&topo, source);
+        if size == 33 {
+            // Malformed oversized authority must be refused by the O(1)
+            // admission gate before a coedge walk or Face clone is attempted.
+            let wire = topo.face(face).unwrap().outer_wire();
+            let first = topo.wire(wire).unwrap().edges()[0];
+            topo.wire_mut(wire).unwrap().edges_mut()[0] =
+                OrientedEdge::new(first.edge(), !first.is_forward());
+        }
         let before = live_state(&topo);
         let outcome = imprint_planar_polygon(&mut topo, source, face, &ring(1.));
         if size == 32 {
