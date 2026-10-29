@@ -10,17 +10,14 @@
 //! [`fma`] returns exactly the value `f64::mul_add` returns, on every target:
 //!
 //! - on everything except `wasm32` it *is* `f64::mul_add`;
-//! - on `wasm32`, finite nonzero factors with a zero addend need only one
-//!   multiplication. Multiplication of a finite operand by `±1` is exact, so
-//!   adding the signed operand to a finite addend needs only one addition;
-//! - remaining operands in a range where no intermediate can underflow or
+//! - on `wasm32`, operands in a range where no intermediate can underflow or
 //!   overflow go through `emulated_fma`: Boldo and Melquiond's emulation from
 //!   error-free transformations and one rounding to odd ("Emulation of FMA
 //!   and correctly rounded sums: proved algorithms using rounding to odd",
 //!   IEEE Transactions on Computers, 2008). A zero factor with finite
 //!   operands is an exact signed-zero product, so `a * b + c` is already the
-//!   fused result. Everything else takes `f64::mul_add`, including every
-//!   non-finite operand. The shortcuts leave zero-factor handling unchanged.
+//!   fused result. Everything else (subnormal, huge, infinite or NaN factors,
+//!   huge or non-finite addend) takes `f64::mul_add`.
 //!
 //! The correctly rounded result is unique, so a correct emulation is
 //! bit-identical to `f64::mul_add`. The tests check that against the native
@@ -65,28 +62,13 @@ pub fn fma(a: f64, b: f64, c: f64) -> f64 {
     }
 }
 
-/// The out-of-line `wasm32` body of [`fma`]: exact algebraic shortcuts or the
-/// emulation where applicable, `f64::mul_add` everywhere else. Compiled
-/// natively for the tests, which compare it with the native `mul_add`.
+/// The out-of-line `wasm32` body of [`fma`]: the emulation where it is
+/// exact, `f64::mul_add` everywhere else. Compiled natively for the tests,
+/// which compare it with the native `mul_add`.
 #[inline(never)]
 #[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
-// These exact zero/unit tests select algebraic identities, never approximate
-// geometric equality. Finite checks follow the cheap candidate tests.
-#[allow(clippy::float_cmp, clippy::suboptimal_flops)]
+#[allow(clippy::suboptimal_flops)]
 fn wasm_fma(a: f64, b: f64, c: f64) -> f64 {
-    if c == 0.0 && a != 0.0 && b != 0.0 && a.is_finite() && b.is_finite() {
-        // The exact real product is nonzero, even if rounding underflows to
-        // signed zero. Adding either zero cannot change its single rounding.
-        return a * b;
-    }
-    if a.abs() == 1.0 && b != 0.0 && b.is_finite() && c.is_finite() {
-        // Multiplication by ±1 is exact, including for subnormal operands.
-        // Negation changes only the sign bit; the addition rounds just once.
-        return if a == 1.0 { b + c } else { -b + c };
-    }
-    if b.abs() == 1.0 && a != 0.0 && a.is_finite() && c.is_finite() {
-        return if b == 1.0 { a + c } else { -a + c };
-    }
     if in_emulated_range(a, b, c) {
         emulated_fma(a, b, c)
     } else if is_zero_product(a, b, c) {
@@ -305,7 +287,7 @@ mod tests {
     #[test]
     fn emulation_matches_native_fma_on_random_and_adversarial_operands() {
         let mut rng = Rng(0x05EE_D0F0_FA11_CA5E);
-        let mut eligible = 0_u32;
+        let mut emulated = 0_u32;
         for _ in 0..1_500_000 {
             // Mostly moderate exponents (where kernel values live), with the
             // full accepted range and its edges mixed in.
@@ -318,15 +300,12 @@ mod tests {
                 a = rng.sign() * 0.0;
             }
             if in_emulated_range(a, b, c) {
-                eligible += 1;
-                // Keep checking the emulation itself even when the dispatch
-                // can now take an exact algebraic shortcut.
-                assert_eq!(emulated_fma(a, b, c).to_bits(), a.mul_add(b, c).to_bits());
+                emulated += 1;
             }
             assert_same(a, b, c);
         }
-        // Non-vacuous coverage of the emulation's accepted range.
-        assert!(eligible > 1_350_000, "only {eligible} cases were eligible");
+        // Non-vacuous: nearly every case took the emulated path.
+        assert!(emulated > 1_350_000, "only {emulated} cases were emulated");
     }
 
     #[test]
@@ -385,8 +364,8 @@ mod tests {
                 }
             }
         }
-        // Outside the range the dispatch must never take the emulation.
-        // Exact algebraic shortcuts and `mul_add` retain the same result.
+        // Outside the range (and on non-finite values) the dispatch must take
+        // `mul_add`, never the emulation.
         let outside = [
             0.0,
             -0.0,
@@ -418,187 +397,6 @@ mod tests {
             assert!(!in_emulated_range(1.0, 1.0, c));
             assert_same(1.5, 3.0, c);
         }
-    }
-
-    #[test]
-    fn zero_addend_matches_native_across_every_finite_exponent() {
-        let fractions = [0, 1, (1_u64 << 51) - 1, 1_u64 << 51, (1_u64 << 52) - 1];
-        let factors = [
-            f64::from_bits(1),
-            f64::MIN_POSITIVE,
-            0.5,
-            f64::from_bits(1.0_f64.to_bits() - 1),
-            1.0,
-            1.0 + f64::EPSILON,
-            1.5,
-            2.0,
-            f64::MAX,
-        ];
-        for biased_exponent in 0_u64..0x7ff {
-            for fraction in fractions {
-                let a = f64::from_bits((biased_exponent << 52) | fraction);
-                if a == 0.0 {
-                    continue;
-                }
-                for b in factors {
-                    for (sa, sb) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
-                        for c in [0.0, -0.0] {
-                            assert_same(sa * a, sb * b, c);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn unit_factors_match_native_across_every_finite_exponent() {
-        let fractions = [0, 1, (1_u64 << 51) - 1, 1_u64 << 51, (1_u64 << 52) - 1];
-        let addends = [
-            0.0,
-            -0.0,
-            f64::from_bits(1),
-            -f64::from_bits(1),
-            f64::MIN_POSITIVE,
-            -f64::MIN_POSITIVE,
-            1.0,
-            -1.0,
-            f64::MAX,
-            -f64::MAX,
-        ];
-        for biased_exponent in 0_u64..0x7ff {
-            for fraction in fractions {
-                let value = f64::from_bits((biased_exponent << 52) | fraction);
-                for signed_value in [value, -value] {
-                    for unit in [1.0, -1.0] {
-                        for c in addends.into_iter().chain([-signed_value, signed_value]) {
-                            assert_same(unit, signed_value, c);
-                            assert_same(signed_value, unit, c);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn exact_shortcuts_preserve_ties_underflow_overflow_and_zero_signs() {
-        let tiny = f64::from_bits(1);
-        let half_ulp = f64::from_bits((1023_u64 - 53) << 52);
-        let overflow_half_ulp = f64::from_bits((1023_u64 + 970) << 52);
-        let cases = [
-            (tiny, 0.5, 0.0, 0.0),
-            (-tiny, 0.5, 0.0, -0.0),
-            (3.0 * tiny, 0.5, -0.0, 2.0 * tiny),
-            (-3.0 * tiny, 0.5, -0.0, -2.0 * tiny),
-            (f64::MIN_POSITIVE, 0.5, 0.0, f64::MIN_POSITIVE / 2.0),
-            (
-                f64::MIN_POSITIVE,
-                f64::from_bits(1.0_f64.to_bits() - 1),
-                0.0,
-                f64::MIN_POSITIVE,
-            ),
-            (f64::MAX, 2.0, 0.0, f64::INFINITY),
-            (-f64::MAX, 2.0, -0.0, f64::NEG_INFINITY),
-            (1.0, 1.0, half_ulp, 1.0),
-            (1.0, 1.0 + f64::EPSILON, half_ulp, 1.0 + 2.0 * f64::EPSILON),
-            (-1.0, 1.0, -half_ulp, -1.0),
-            (
-                -1.0,
-                1.0 + f64::EPSILON,
-                -half_ulp,
-                -(1.0 + 2.0 * f64::EPSILON),
-            ),
-            (1.0, f64::MAX, overflow_half_ulp, f64::INFINITY),
-            (
-                1.0,
-                f64::MAX,
-                f64::from_bits(overflow_half_ulp.to_bits() - 1),
-                f64::MAX,
-            ),
-            (1.0, f64::MAX, -f64::MAX, 0.0),
-            (-1.0, f64::MAX, f64::MAX, 0.0),
-        ];
-        for (a, b, c, expected) in cases {
-            assert_eq!(a.mul_add(b, c).to_bits(), expected.to_bits());
-            assert_eq!(wasm_fma(a, b, c).to_bits(), expected.to_bits());
-            assert_eq!(wasm_fma(b, a, c).to_bits(), expected.to_bits());
-        }
-
-        // Exact zero products deliberately retain the existing multiply/add
-        // sign rule, including opposite signed zeros and unit factors.
-        for zero in [0.0, -0.0] {
-            for factor in [0.0, -0.0, 1.0, -1.0, tiny, -tiny, f64::MAX, -f64::MAX] {
-                for c in [0.0, -0.0] {
-                    assert_same(zero, factor, c);
-                    assert_same(factor, zero, c);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn shortcuts_match_native_on_random_finite_bit_patterns() {
-        let mut rng = Rng(0xF1A0_5EED_0001_0000);
-        let mut zero_addends = 0;
-        let mut unit_products = 0;
-        for _ in 0..200_000 {
-            let a = f64::from_bits(rng.next());
-            let b = f64::from_bits(rng.next());
-            if a.is_finite() && b.is_finite() {
-                for c in [0.0, -0.0] {
-                    assert_same(a, b, c);
-                }
-                zero_addends += 1;
-                for unit in [1.0, -1.0] {
-                    assert_same(unit, a, b);
-                    assert_same(a, unit, b);
-                }
-                unit_products += 1;
-            }
-        }
-        assert!(zero_addends > 199_000);
-        assert!(unit_products > 199_000);
-    }
-
-    #[test]
-    fn shortcuts_leave_nonfinite_and_nonunit_fallbacks_unchanged() {
-        let special = [
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::from_bits(0x7ff8_0000_0000_1234),
-            f64::from_bits(0xfff8_0000_0000_4321),
-            f64::from_bits(0x7ff0_0000_0000_0001),
-        ];
-        let finite = [0.0, -0.0, 1.0, -1.0, f64::from_bits(1), f64::MAX];
-        for x in special {
-            for y in finite.into_iter().chain(special) {
-                for c in finite.into_iter().chain(special) {
-                    // Nonfinite inputs keep the original mul_add fallback
-                    // and the existing NaN-equivalence test policy.
-                    assert_same(x, y, c);
-                    assert_same(y, x, c);
-                    assert_same(y, c, x);
-                }
-            }
-        }
-        for unit in [1.0_f64, -1.0] {
-            for adjacent in [
-                f64::from_bits(unit.to_bits() - 1),
-                f64::from_bits(unit.to_bits() + 1),
-            ] {
-                for other in [1.0 + f64::EPSILON, f64::MAX, f64::MIN_POSITIVE] {
-                    assert_same(adjacent, other, -(adjacent * other));
-                    assert_same(other, adjacent, -(adjacent * other));
-                }
-            }
-        }
-        // Dropping a nonzero addend after a product overflow is invalid:
-        // the original fused fallback still avoids that intermediate overflow.
-        assert_eq!(
-            wasm_fma(f64::MAX, 2.0, -f64::MAX).to_bits(),
-            f64::MAX.to_bits()
-        );
     }
 
     #[test]
