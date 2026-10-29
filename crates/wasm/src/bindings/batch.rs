@@ -250,6 +250,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         "gcsAttachToFace"
         | "gcsAddExternalLine"
         | "gcsAddExternalCircle"
+        | "gcsAddExternalEllipse"
         | "gcsResolveRefs"
         | "gcsNew"
         | "gcsAddPoint"
@@ -569,7 +570,13 @@ impl BrepKernel {
             } else {
                 Refusal::Restored
             };
-            if op == "imprintPlanarPolygon" {
+            if op == "projectCurveOntoFace" {
+                // This topology-only projection publishes handles on success;
+                // a refused item must retain checkpoint sharing as well.
+                self.with_face_projection_rollback(|kernel| {
+                    kernel.with_kernel_transaction(refusal, |kernel| kernel.dispatch_op(op, args))
+                })
+            } else if op == "imprintPlanarPolygon" {
                 // The topology-only imprint publishes new handles on success.
                 // A refusal also retains any existing checkpoint sharing.
                 self.with_imprint_rollback(|kernel| {

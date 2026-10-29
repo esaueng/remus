@@ -1,4 +1,4 @@
-//! Persistent planar sketch attachments and exact external line/circle inputs.
+//! Persistent planar sketch attachments and exact external line/conic inputs.
 //!
 //! This bounded 6.6 slice consumes construction history, never geometry guesses.
 //! Resolving inputs does not allocate topology or publish journal records.
@@ -35,8 +35,8 @@ pub enum LinkedSketchError {
     /// Only parallel planar attachments are qualified in this slice.
     #[error("linked sketch attachment requires a parallel planar face")]
     UnsupportedAttachment,
-    /// The source is not a qualified line or complete parallel native circle.
-    #[error("linked sketch external input requires a qualified line or complete circle")]
+    /// The source is outside the requested exact external-curve family.
+    #[error("linked sketch external input requires a qualified line or complete circle/ellipse")]
     UnsupportedCurve,
     /// Vertex lineage does not describe the resolved edge endpoints.
     #[error("linked sketch endpoint references do not match the resolved edge")]
@@ -319,6 +319,116 @@ impl PlanarSketchAttachment {
             radius: circle.radius(),
         })
     }
+
+    /// Project one complete native ellipse into a parallel attached plane.
+    ///
+    /// The source's explicit major axis defines the in-plane angle; no axis
+    /// matching is inferred from coordinates. Reversing either traversal or
+    /// the carrier's normal does not change the represented full ellipse.
+    ///
+    /// # Errors
+    /// Refuses incomplete/oblique/unsound carriers and unresolved construction
+    /// identity. Circular, near-circular and noncanonical swapped axes lie
+    /// outside this bounded principal-axis family and return `UnsupportedCurve`.
+    pub fn resolve_ellipse(
+        &self,
+        topo: &Topology,
+        source: &ExternalEllipseReference,
+    ) -> Result<ExternalSketchEllipse, LinkedSketchError> {
+        let frame = self.resolve_frame(topo)?;
+        let key = one_entity(topo, &source.edge, EntityKind::Edge, "edge")?;
+        let id = topo
+            .edge_id_from_index(key.index)
+            .ok_or(LinkedSketchError::UnsupportedCurve)?;
+        let edge = topo.edge(id)?;
+        let EdgeCurve::Ellipse(ellipse) = edge.curve() else {
+            return Err(LinkedSketchError::UnsupportedCurve);
+        };
+        let tolerance = Tolerance::default();
+        let a = ellipse.semi_major();
+        let b = ellipse.semi_minor();
+        let finite = |v: Vec3| v.0.into_iter().all(f64::is_finite);
+        let axes = [ellipse.u_axis(), ellipse.v_axis(), ellipse.normal()];
+        if !edge.is_closed()
+            || !a.is_finite()
+            || !b.is_finite()
+            || b <= 0.0
+            || a - b <= tolerance.linear
+            || !finite(ellipse.center() - Point3::new(0.0, 0.0, 0.0))
+            || axes.iter().any(|axis| !finite(*axis))
+        {
+            return Err(LinkedSketchError::UnsupportedCurve);
+        }
+        let defect = (ellipse.u_axis().cross(ellipse.v_axis()) - ellipse.normal())
+            .length()
+            .max(ellipse.u_axis().dot(ellipse.v_axis()).abs())
+            .max(
+                axes.into_iter()
+                    .map(|axis| (axis.dot(axis) - 1.0).abs())
+                    .fold(0.0, f64::max),
+            );
+        if !defect.is_finite()
+            || defect > tolerance.angular
+            || a * (defect + 16.0 * f64::EPSILON) > tolerance.linear
+        {
+            return Err(LinkedSketchError::UnsupportedCurve);
+        }
+        let normal = ellipse.normal() * (1.0 / ellipse.normal().length());
+        if normal != frame.z && normal != -frame.z {
+            return Err(LinkedSketchError::UnsupportedCurve);
+        }
+        let (start, end) = edge
+            .strict_domain()
+            .map_err(|_| LinkedSketchError::UnsupportedCurve)?;
+        let vertex = topo.vertex(edge.start())?;
+        let vertex_tolerance = vertex.tolerance();
+        if !vertex_tolerance.is_finite()
+            || vertex_tolerance.is_sign_negative()
+            || !finite(vertex.point() - Point3::new(0.0, 0.0, 0.0))
+            || [start, end].into_iter().any(|parameter| {
+                let point = ellipse.evaluate(parameter);
+                !finite(point - Point3::new(0.0, 0.0, 0.0))
+                    || (point - vertex.point()).length() > vertex_tolerance
+            })
+        {
+            return Err(LinkedSketchError::UnsupportedCurve);
+        }
+        let offset = ellipse.center() - frame.origin;
+        let center = Point2::new(offset.dot(frame.x), offset.dot(frame.y));
+        let angle = ellipse
+            .u_axis()
+            .dot(frame.y)
+            .atan2(ellipse.u_axis().dot(frame.x));
+        if !center.0.into_iter().all(f64::is_finite) || !angle.is_finite() {
+            return Err(LinkedSketchError::UnsupportedCurve);
+        }
+        Ok(ExternalSketchEllipse {
+            center,
+            a,
+            b,
+            angle,
+        })
+    }
+}
+
+/// Construction identity of a complete native ellipse, independent of seam.
+#[derive(Debug, Clone)]
+pub struct ExternalEllipseReference {
+    /// Complete native edge identity.
+    pub edge: PersistentRef,
+}
+
+/// Exact ellipse coordinates in the attached sketch's explicit plane frame.
+#[derive(Debug, Clone, Copy)]
+pub struct ExternalSketchEllipse {
+    /// Orthogonally projected center.
+    pub center: Point2,
+    /// Source major semiaxis.
+    pub a: f64,
+    /// Source minor semiaxis.
+    pub b: f64,
+    /// Source major-axis direction in radians, modulo the ellipse's pi symmetry.
+    pub angle: f64,
 }
 
 /// Construction identity for a complete circular edge; seam identity is not

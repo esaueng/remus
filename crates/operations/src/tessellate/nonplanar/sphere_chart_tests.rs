@@ -625,3 +625,55 @@ fn holed_hemisphere_budget_refusal_restores_the_attempt() {
     );
     assert_eq!((mesh.positions, mesh.normals, mesh.indices, map), before);
 }
+
+/// opseq81 two-sphere fuse: both hole-free sphere remainders take the
+/// stereographic hemisphere chart. Its interior grid once spread a fixed
+/// `2 * angular_segments` samples per axis over the patch's chart bounding
+/// box, ignoring the chart's up-to-twofold angular stretch and the patch's
+/// own extent, so the solid meshed at about 2.5 times the triangles it needs
+/// (112,894 here; 2,672,542 at the repro's `diag * 1e-5` deflection, where
+/// it dominated a CI timeout). Sizing the grid in arc angle keeps the mesh
+/// watertight with the same volume accuracy at well under that count.
+#[test]
+fn sphere_fuse_hemisphere_chart_grid_follows_arc_angle() {
+    let mut topo = Topology::new();
+    let small = crate::primitives::make_sphere(&mut topo, 4.5, 16).unwrap();
+    let large = crate::primitives::make_sphere(&mut topo, 5.5, 16).unwrap();
+    let placement =
+        Mat4::translation(0.0, 1.0, -4.0) * Mat4::rotation_x(std::f64::consts::FRAC_PI_4);
+    crate::transform::transform_solid(&mut topo, small, &placement).unwrap();
+    let fused =
+        crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Fuse, small, large).unwrap();
+
+    let deflection = 5e-3;
+    let mesh = super::super::tessellate_solid(&topo, fused, deflection).unwrap();
+    assert_eq!(super::super::boundary_edge_count(&mesh), 0);
+    assert_eq!(super::super::non_manifold_edge_count(&mesh), 0);
+
+    let triangles = mesh.indices.len() / 3;
+    assert!(
+        triangles < 64_000,
+        "sphere-fuse mesh has {triangles} triangles; the arc-angle grid gives about 45,000"
+    );
+
+    // Independent overlapping-sphere union volume (opseq81 bundle). An
+    // inscribed mesh loses at most `deflection` times the surface area.
+    let volume = mesh
+        .indices
+        .chunks_exact(3)
+        .map(|t| {
+            let [a, b, c] = [0, 1, 2].map(|k| {
+                let p = mesh.positions[t[k] as usize];
+                Vec3::new(p.x(), p.y(), p.z())
+            });
+            a.dot(b.cross(c))
+        })
+        .sum::<f64>()
+        / 6.0;
+    let exact = 867.071_429_497_175_1;
+    let area_bound = 4.0 * std::f64::consts::PI * (4.5_f64.powi(2) + 5.5_f64.powi(2));
+    assert!(
+        volume <= exact && exact - volume <= deflection * area_bound,
+        "mesh volume {volume} against exact {exact}"
+    );
+}

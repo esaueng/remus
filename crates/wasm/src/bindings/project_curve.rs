@@ -33,6 +33,25 @@ impl From<ProjectCurveError> for StructuredWasmError {
         use ProjectCurveError as P;
         let code = format!("project-curve:{}", error.code());
         match error {
+            P::ResourceLimit {
+                resource,
+                limit,
+                actual,
+            } => {
+                let mut structured =
+                    Self::resource_limit(error.to_string(), resource, limit, actual);
+                structured
+                    .details_mut()
+                    .insert("kernelCode".to_string(), code.into());
+                structured
+            }
+            P::ExactBezierDomainUnsupported { .. } => {
+                let mut structured = Self::unsupported(error.to_string());
+                structured
+                    .details_mut()
+                    .insert("kernelCode".to_string(), code.into());
+                structured
+            }
             P::InvalidDirection | P::InvalidOptions { .. } | P::PlaneFrameMismatch => {
                 let mut structured = Self::invalid_argument(error.to_string(), None);
                 structured
@@ -309,6 +328,25 @@ fn resolution_error(error: crate::error::WasmError, index: Option<usize>) -> Str
 }
 
 impl BrepKernel {
+    /// Face projection changes topology only and publishes result handles only
+    /// on success. Keep an already checkpoint-shared owner on refusal, before
+    /// the outer transaction or native snapshot can trigger Rc::make_mut.
+    /// An unshared call retains its existing private-slot high-water behavior.
+    pub(crate) fn with_face_projection_rollback<T, E>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let shared =
+            (std::rc::Rc::strong_count(&self.topo) > 1).then(|| std::rc::Rc::clone(&self.topo));
+        let result = operation(self);
+        if result.is_err()
+            && let Some(original) = shared
+        {
+            self.topo = original;
+        }
+        result
+    }
+
     fn project_curve_onto_face_typed(
         &mut self,
         edge: u32,
@@ -316,32 +354,34 @@ impl BrepKernel {
         face: u32,
         options: &ProjectCurveOptions,
     ) -> Result<ProjectedCurves, StructuredWasmError> {
-        let edge_id = self
-            .resolve_edge(edge)
-            .map_err(|error| resolution_error(error, None))?;
-        let face_id = self
-            .resolve_face(face)
-            .map_err(|error| resolution_error(error, None))?;
-        let options = native_options(options)?;
-        let snapshot = RollbackSnapshot::capture(self.topo_mut());
-        let result = projection::project_curve_onto_face(
-            self.topo_mut(),
-            edge_id,
-            Vec3::new(direction[0], direction[1], direction[2]),
-            face_id,
-            &options,
-        )
-        .and_then(|result| projected_curves(&result));
-        match result {
-            Ok(result) => {
-                snapshot.commit(self.topo_mut());
-                Ok(result)
+        self.with_face_projection_rollback(|kernel| {
+            let edge_id = kernel
+                .resolve_edge(edge)
+                .map_err(|error| resolution_error(error, None))?;
+            let face_id = kernel
+                .resolve_face(face)
+                .map_err(|error| resolution_error(error, None))?;
+            let options = native_options(options)?;
+            let snapshot = RollbackSnapshot::capture(kernel.topo_mut());
+            let result = projection::project_curve_onto_face(
+                kernel.topo_mut(),
+                edge_id,
+                Vec3::new(direction[0], direction[1], direction[2]),
+                face_id,
+                &options,
+            )
+            .and_then(|result| projected_curves(&result));
+            match result {
+                Ok(result) => {
+                    snapshot.commit(kernel.topo_mut());
+                    Ok(result)
+                }
+                Err(error) => {
+                    snapshot.restore(kernel.topo_mut());
+                    Err(error.into())
+                }
             }
-            Err(error) => {
-                snapshot.restore(self.topo_mut());
-                Err(error.into())
-            }
-        }
+        })
     }
 
     fn project_curves_onto_solid_typed(
@@ -999,6 +1039,153 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn face_bezier_input(kernel: &mut BrepKernel, outside: bool, degree: usize) -> (u32, u32, u32) {
+        let (solid, face) = box_top_face(kernel);
+        let points: Vec<f64> = (0..=degree)
+            .flat_map(|i| {
+                let q = i as f64 / degree as f64;
+                [
+                    2.0 + 6.0 * q,
+                    if outside && i == 1 { 10.0 } else { 2.0 },
+                    7.0,
+                ]
+            })
+            .collect();
+        let mut knots = vec![10.0; degree + 1];
+        knots.extend(vec![20.0; degree + 1]);
+        let edge = kernel
+            .make_nurbs_edge_impl(
+                2.0,
+                2.0,
+                7.0,
+                8.0,
+                2.0,
+                7.0,
+                degree as u32,
+                knots,
+                points,
+                vec![1.0; degree + 1],
+            )
+            .unwrap();
+        (solid, face, edge)
+    }
+
+    #[test]
+    fn face_bezier_refusal_preserves_checkpoint_owner_and_taxonomy() {
+        for route in 0..3 {
+            for budget in [false, true] {
+                let mut kernel = BrepKernel::new();
+                let (solid, face, edge) =
+                    face_bezier_input(&mut kernel, !budget, if budget { 8 } else { 2 });
+                let checkpoint = kernel.checkpoint().unwrap();
+                let owner = std::rc::Rc::as_ptr(&kernel.topo);
+                let before = counts(&kernel);
+                let memory = kernel.checkpoint_memory_stats().unwrap();
+                let ticks = kernel.topo.mutation_ticks();
+                let history = kernel.topo.journal().snapshot();
+                let options = super::ProjectCurveOptions {
+                    max_control_points: budget.then_some(4),
+                    ..super::ProjectCurveOptions::default()
+                };
+                let kernel_code = if budget {
+                    "project-curve:resource-limit"
+                } else {
+                    "project-curve:exact-bezier-domain-unsupported"
+                };
+                if route == 0 {
+                    let error = kernel
+                        .project_curve_onto_face_typed(edge, [0.0, 0.0, -1.0], face, &options)
+                        .unwrap_err();
+                    let error = serde_json::to_value(error).unwrap();
+                    assert_eq!(error["details"]["kernelCode"], kernel_code);
+                    assert_eq!(
+                        error["category"],
+                        if budget {
+                            "resource_limit"
+                        } else {
+                            "unsupported"
+                        }
+                    );
+                } else {
+                    let request = serde_json::json!([{"op":"projectCurveOntoFace","args":{
+                        "edge":edge,"face":face,"dirX":0,"dirY":0,"dirZ":-1,"options":options}}])
+                    .to_string();
+                    let out = if route == 2 {
+                        batch_v2(&mut kernel, &request)
+                    } else {
+                        batch(&mut kernel, &request)
+                    };
+                    assert!(out[0].get("ok").is_none());
+                    if route == 2 {
+                        assert_eq!(out[0]["error"]["details"]["kernelCode"], kernel_code);
+                        assert_eq!(
+                            out[0]["error"]["category"],
+                            if budget {
+                                "resource_limit"
+                            } else {
+                                "unsupported"
+                            }
+                        );
+                        if budget {
+                            assert_eq!(out[0]["error"]["details"]["limit"], 4);
+                            assert_eq!(out[0]["error"]["details"]["actual"], 9);
+                        }
+                    } else {
+                        let prefix = if budget {
+                            "projection projection_control_points limit 4"
+                        } else {
+                            "unsupported exact planar Bezier projection:"
+                        };
+                        assert!(
+                            out[0]["error"].as_str().unwrap().starts_with(prefix),
+                            "{out:?}"
+                        );
+                    }
+                }
+                assert_eq!(counts(&kernel), before);
+                assert_eq!(kernel.topo.mutation_ticks(), ticks);
+                assert_eq!(kernel.topo.journal().snapshot(), history);
+                assert_eq!(kernel.checkpoint_memory_stats().unwrap(), memory);
+                assert_eq!(std::rc::Rc::as_ptr(&kernel.topo), owner);
+                assert!(kernel.resolve_solid(solid).is_ok());
+                assert!(kernel.resolve_edge(edge).is_ok());
+                kernel.restore(checkpoint).unwrap();
+                kernel.discard_checkpoint(checkpoint).unwrap();
+                assert_eq!(counts(&kernel), before);
+            }
+        }
+    }
+
+    #[test]
+    fn face_bezier_success_retains_checkpoint_and_publishes_only_valid_image() {
+        let mut kernel = BrepKernel::new();
+        let (_, face, edge) = face_bezier_input(&mut kernel, false, 3);
+        let checkpoint = kernel.checkpoint().unwrap();
+        let owner = std::rc::Rc::as_ptr(&kernel.topo);
+        let before = counts(&kernel);
+        let result = kernel
+            .project_curve_onto_face_typed(
+                edge,
+                [0.0, 0.0, -1.0],
+                face,
+                &super::ProjectCurveOptions::default(),
+            )
+            .unwrap();
+        assert_ne!(std::rc::Rc::as_ptr(&kernel.topo), owner);
+        let projected = result.edges[0].edge;
+        let image = kernel
+            .topo
+            .edge(kernel.resolve_edge(projected).unwrap())
+            .unwrap();
+        assert_eq!(image.trim(), Some((10.0, 20.0)));
+        assert!(kernel.resolve_edge(edge).is_ok());
+        kernel.restore(checkpoint).unwrap();
+        assert_eq!(counts(&kernel), before);
+        assert!(kernel.resolve_edge(projected).is_err());
+        assert!(kernel.resolve_edge(edge).is_ok());
+        kernel.discard_checkpoint(checkpoint).unwrap();
     }
 
     #[test]

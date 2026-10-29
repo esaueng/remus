@@ -3301,3 +3301,187 @@ fn fixed_circle_radius_survives_solver_and_rank_resource_refusals() {
     );
     assert_eq!(sys.fixed_circle_radius_count(), 1);
 }
+
+#[test]
+fn fixed_ellipse_parameters_drive_a_free_consumer_without_removable_equations() {
+    for scale in [0.001, 1.0, 1000.0] {
+        let mut sys = GcsSystem::new();
+        let center = sys
+            .add_point(PointData {
+                x: 5.0 * scale,
+                y: 4.0 * scale,
+                fixed: true,
+            })
+            .unwrap();
+        let external = sys
+            .add_ellipse_with_fixed_parameters(center, 3.0 * scale, 2.0 * scale, 0.3)
+            .unwrap();
+        assert_eq!(sys.dof().unwrap().num_params, 0);
+        assert_eq!(sys.constraint_count(), 0);
+        assert!(sys.ellipse_mut(external).is_none());
+        let free = sys
+            .add_point(PointData {
+                x: 6.0 * scale,
+                y: 5.0 * scale,
+                fixed: false,
+            })
+            .unwrap();
+        let consumer = sys.add_ellipse(free, scale, 0.5 * scale, -0.1).unwrap();
+        let constraints = [
+            Constraint::ConcentricEllipseEllipse(external, consumer),
+            Constraint::EqualEllipseRadii(external, consumer),
+            Constraint::EllipseAngle(consumer, 0.3),
+        ]
+        .into_iter()
+        .map(|c| sys.add_constraint(c).unwrap())
+        .collect::<Vec<_>>();
+        let report = sys.solve_detailed(100, 1e-10 * scale).unwrap();
+        assert!(report.converged, "{report:?}");
+        assert_eq!((report.num_params, report.rank, report.dof), (5, 5, 0));
+        sys.set_fixed_ellipse_parameters(external, 4.0 * scale, 2.5 * scale, 0.3)
+            .unwrap();
+        assert!(sys.solve(100, 1e-10 * scale).unwrap().converged);
+        let image = sys.ellipse(consumer).unwrap();
+        assert!((image.a / scale - 4.0).abs() < 1e-7);
+        assert!((image.b / scale - 2.5).abs() < 1e-7);
+        for conflict in [
+            Constraint::EllipseAxisA(external, 9.0 * scale),
+            Constraint::EllipseAxisB(external, scale),
+            Constraint::EllipseAngle(external, 1.0),
+        ] {
+            let id = sys.add_constraint(conflict).unwrap();
+            assert!(!sys.solve(100, 1e-10 * scale).unwrap().converged);
+            assert!(sys.solve_detailed(100, 1e-10 * scale).unwrap().rolled_back);
+            let external = sys.ellipse(external).unwrap();
+            assert_eq!(
+                [external.a, external.b, external.angle].map(f64::to_bits),
+                [4.0 * scale, 2.5 * scale, 0.3].map(f64::to_bits)
+            );
+            sys.remove_constraint(id).unwrap();
+        }
+        for id in constraints {
+            sys.remove_constraint(id).unwrap();
+        }
+        assert_eq!(sys.dof().unwrap().num_params, 5);
+        assert_eq!(sys.fixed_ellipse_parameter_count(), 1);
+    }
+}
+
+#[test]
+fn fixed_ellipse_ownership_clones_and_retires_without_aliasing() {
+    let mut sys = GcsSystem::new();
+    let center = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let external = sys
+        .add_ellipse_with_fixed_parameters(center, 3.0, 2.0, 0.3)
+        .unwrap();
+    let mut saved = sys.clone();
+    saved
+        .set_fixed_ellipse_parameters(external, 4.0, 2.5, -0.2)
+        .unwrap();
+    assert_eq!(
+        sys.ellipse(external).unwrap().a.to_bits(),
+        3.0_f64.to_bits()
+    );
+    assert_eq!(saved.fixed_ellipse_parameter_count(), 1);
+    let constraint = sys
+        .add_constraint(Constraint::EllipseAxisA(external, 3.0))
+        .unwrap();
+    assert!(matches!(
+        sys.remove_ellipse(external),
+        Err(SketchError::EntityInUse)
+    ));
+    assert!(sys.are_ellipse_parameters_fixed(external));
+    sys.remove_constraint(constraint).unwrap();
+    sys.remove_ellipse(external).unwrap();
+    assert_eq!(sys.fixed_ellipse_parameter_count(), 0);
+    let ordinary = sys.add_ellipse(center, 6.0, 2.0, 0.1).unwrap();
+    assert_eq!(ordinary.index(), external.index());
+    assert_ne!(ordinary.generation(), external.generation());
+    assert!(!sys.are_ellipse_parameters_fixed(ordinary));
+    assert!(sys.ellipse_mut(ordinary).is_some());
+    assert!(
+        sys.set_fixed_ellipse_parameters(external, 1.0, 1.0, 0.0)
+            .is_err()
+    );
+    assert!(
+        sys.set_fixed_ellipse_parameters(ordinary, 1.0, 1.0, 0.0)
+            .is_err()
+    );
+    for (a, b, angle) in [
+        (0.0, 2.0, 0.0),
+        (3.0, -1.0, 0.0),
+        (f64::NAN, 2.0, 0.0),
+        (3.0, f64::INFINITY, 0.0),
+        (3.0, 2.0, f64::NAN),
+    ] {
+        assert!(
+            saved
+                .set_fixed_ellipse_parameters(external, a, b, angle)
+                .is_err()
+        );
+        let image = saved.ellipse(external).unwrap();
+        assert_eq!(
+            [image.a, image.b, image.angle].map(f64::to_bits),
+            [4.0_f64, 2.5, -0.2].map(f64::to_bits)
+        );
+    }
+    assert_eq!(saved.dof().unwrap().num_params, 0);
+}
+
+#[test]
+fn fixed_ellipse_parameters_survive_existing_resource_refusals() {
+    let mut sys = GcsSystem::with_limits(GcsLimits {
+        max_dense_bytes: 64,
+        max_dense_qr_work: 64,
+    });
+    let center = sys
+        .add_point(PointData {
+            x: 0.0,
+            y: 0.0,
+            fixed: true,
+        })
+        .unwrap();
+    let external = sys
+        .add_ellipse_with_fixed_parameters(center, 3.0, 2.0, 0.3)
+        .unwrap();
+    let free = sys
+        .add_point(PointData {
+            x: 5.0,
+            y: 4.0,
+            fixed: false,
+        })
+        .unwrap();
+    let consumer = sys.add_ellipse(free, 1.0, 0.5, -0.2).unwrap();
+    sys.add_constraint(Constraint::ConcentricEllipseEllipse(external, consumer))
+        .unwrap();
+    sys.add_constraint(Constraint::EqualEllipseRadii(external, consumer))
+        .unwrap();
+    assert!(matches!(
+        sys.solve(100, TOL),
+        Err(SketchError::ResourceLimitExceeded { .. })
+    ));
+    assert!(matches!(
+        sys.solve_detailed(100, TOL),
+        Err(SketchError::ResourceLimitExceeded { .. })
+    ));
+    assert!(matches!(
+        sys.dof(),
+        Err(SketchError::ResourceLimitExceeded { .. })
+    ));
+    let image = sys.ellipse(external).unwrap();
+    assert_eq!(
+        [image.a, image.b, image.angle].map(f64::to_bits),
+        [3.0_f64, 2.0, 0.3].map(f64::to_bits)
+    );
+    assert_eq!(sys.fixed_ellipse_parameter_count(), 1);
+    assert_eq!(
+        (sys.point(free).unwrap().x, sys.point(free).unwrap().y),
+        (5.0, 4.0)
+    );
+}

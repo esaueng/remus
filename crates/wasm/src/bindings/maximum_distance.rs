@@ -57,8 +57,10 @@ impl BrepKernel {
 #[wasm_bindgen]
 impl BrepKernel {
     /// Global maximum distance and witnesses as `[distance, ax, ay, az, bx, by, bz]`.
+    ///
     /// Supports straight-edged planar polyhedra and complete native spheres,
-    /// including mixed pairs. All cavity boundaries are qualified; unsupported
+    /// including certified affine NURBS planar faces and mixed pairs.
+    /// All cavity boundaries are qualified; unsupported
     /// geometry returns a typed refusal. This query changes no session state.
     /// Inputs require valid BReps with closed shells and simple, nested trim loops.
     ///

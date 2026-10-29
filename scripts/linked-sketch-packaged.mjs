@@ -1,4 +1,4 @@
-/** Real packaged WASM witnesses for construction-linked planar sketch lines and circles. */
+/** Real packaged WASM witnesses for construction-linked planar sketch inputs. */
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
@@ -134,6 +134,7 @@ export function runLinkedSketchPackaged({ BrepKernel }) {
     } finally { k.free(); }
   }
   runLinkedSketchCirclesPackaged({ BrepKernel });
+  runLinkedSketchEllipsesPackaged({ BrepKernel });
 }
 
 // Run the same witness against either a fresh build or an npm-installed tarball:
@@ -260,4 +261,159 @@ export function runLinkedSketchCirclesPackaged({ BrepKernel }) {
     }
   }
   console.log(`ok - linked complete circles: ${cells} direct/batch cells, fixed-radius conflicts, refresh, typed refusals and undo`);
+}
+
+/** Public construction/constraints/attachment edits; raw source edits refuse. */
+export function runLinkedSketchEllipsesPackaged({ BrepKernel }) {
+  let cells = 0;
+  for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
+    for (const scale of [0.001, 1, 1000]) for (const placement of [0, 1, 2]) {
+      for (const carrierSense of [-1, 1]) for (const attachmentSense of [-1, 1]) {
+        const k = new BrepKernel();
+        try {
+          const call = (op, args, direct) => invoke(k, route, op, args, direct);
+          const unitNormal = placement === 2 ? [0, -1, 0] : [0, 0, 1];
+          const world = ([x, y, z]) => placement === 2
+            ? [x + 3 * scale, -z - 5 * scale, y + 7 * scale]
+            : placement === 1 ? [x + 3 * scale, y - 5 * scale, z + 7 * scale] : [x, y, z];
+          const boxed = k.makeBox(10 * scale, 8 * scale, 4 * scale);
+          // Placement precedes every construction reference. Raw transforms
+          // after reference creation are deliberately tested as stale below.
+          if (placement) k.transformSolid(boxed, Float64Array.from([
+            1, 0, 0, 3 * scale, 0, placement === 2 ? 0 : 1, placement === 2 ? -1 : 0, -5 * scale,
+            0, placement === 2 ? 1 : 0, placement === 2 ? 0 : 1, 7 * scale, 0, 0, 0, 1,
+          ]));
+          const center = world([5 * scale, 4 * scale, 0]);
+          const axis = placement === 2 ? [Math.cos(0.37), 0, Math.sin(0.37)] : [Math.cos(0.37), Math.sin(0.37), 0];
+          const edge = k.makeEllipseEdgeWithRef(...center, ...unitNormal.map(n => n * carrierSense), 3 * scale, 2 * scale, ...axis);
+          const profile = k.makePlanarFaceFromWire(k.makeWire(Uint32Array.of(edge), true));
+          const source = JSON.parse(k.extrudeJournaled(profile, ...unitNormal, 4 * scale));
+          const sourceEdge = Array.from(k.getSolidEdges(source.solid)).find(e => k.getEdgeCurveType(e) === 'ELLIPSE');
+          const output = (op, kind, handle) => {
+            for (let i = 0; i < 100; i++) {
+              const resolved = JSON.parse(k.resolveOperationOutput(op, kind, i));
+              if (resolved.status === 'bound' && resolved.entities[0].handle === handle) return k.makeOperationOutputRef(op, kind, i);
+            }
+            assert.fail(`missing ellipse fixture ${kind}:${handle}`);
+          };
+          const edgeRef = output(source.op, 'edge', sourceEdge);
+          const top = solid => Array.from(k.getSolidFaces(solid)).find(f => k.getSurfaceType(f) === 'plane'
+            && k.getFaceNormal(f).reduce((sum, n, i) => sum + n * unitNormal[i], 0) > 0.99);
+          const attachment = JSON.parse(k.moveFacesJournaled(boxed, Uint32Array.of(top(boxed)), scale));
+          const faceRef = output(attachment.op, 'face', top(attachment.solid));
+          const sketch = call('gcsNew', {}, []);
+          const frame = { origin: world([0, 0, 5 * scale]), xAxis: [1, 0, 0], normal: unitNormal.map(n => n * attachmentSense) };
+          call('gcsAttachToFace', { sketch, ref: faceRef, frame }, [sketch, faceRef, frame]);
+          const external = call('gcsAddExternalEllipse', { sketch, ref: edgeRef }, [sketch, edgeRef]);
+          const params = ellipse => Array.from(call('gcsEllipseParams', { sketch, ellipse }, [sketch, ellipse]));
+          const expected = [5 * scale, attachmentSense * 4 * scale, 3 * scale, 2 * scale, attachmentSense * 0.37];
+          const check = actual => {
+            for (let i = 0; i < 4; i++) close(actual[i] / scale, expected[i] / scale);
+            close(Math.sin(actual[4] - expected[4]), 0);
+          };
+          check(params(external.ellipse));
+          assert.equal(json(call('gcsDof', { sketch }, [sketch])).numParams, 0);
+          const line = Array.from(k.getSolidEdges(source.solid)).find(e => k.getEdgeCurveType(e) === 'LINE');
+          const lineRef = output(source.op, 'edge', line);
+          refusal(k, route, 'gcsAddExternalEllipse', { sketch, ref: lineRef }, [sketch, lineRef],
+            'linked-sketch:unsupported_curve', 'unsupported');
+          refusal(k, route, 'gcsAddExternalEllipse', { sketch, ref: faceRef }, [sketch, faceRef],
+            'linked-sketch:invalid_reference_kind', 'invalid_input');
+          const inferred = k.captureSignatureRef('edge', sourceEdge, 1e-7);
+          assert.equal(JSON.parse(k.resolveRef(inferred)).provenance, 'inferred');
+          refusal(k, route, 'gcsAddExternalEllipse', { sketch, ref: inferred }, [sketch, inferred],
+            'linked-sketch:inferred_reference', 'unsupported');
+          assert.equal(call('gcsResolveRefs', { sketch }, [sketch]).externalEllipses, 1);
+          const free = call('gcsAddPoint', { sketch, x: 6 * scale, y: 5 * scale, fixed: false }, [sketch, 6 * scale, 5 * scale, false]);
+          const consumer = call('gcsAddEllipse', { sketch, center: free, a: scale, b: 0.5 * scale, angle: expected[4] }, [sketch, free, scale, 0.5 * scale, expected[4]]);
+          const constraint = value => call('gcsAddConstraint', { sketch, constraint: value }, [sketch, JSON.stringify(value)]);
+          const constraints = [
+            constraint({ type: 'concentricEllipseEllipse', ellipse1: external.ellipse, ellipse2: consumer }),
+            constraint({ type: 'equalEllipseRadii', ellipse1: external.ellipse, ellipse2: consumer }),
+            constraint({ type: 'ellipseAngle', ellipse: consumer, value: expected[4] }),
+          ];
+          const solve = op => json(call(op, { sketch, maxIterations: 100, tolerance: 1e-10 * scale }, [sketch, 100, 1e-10 * scale]));
+          const solved = solve('gcsSolveDetailed');
+          assert.equal(solved.converged, true); assert.equal(solved.numParams, 5); assert.equal(solved.rank, 5); assert.equal(solved.dof, 0);
+          check(params(consumer));
+          const cp = k.checkpoint();
+          const retired = call('gcsAddExternalEllipse', { sketch, ref: edgeRef }, [sketch, edgeRef]);
+          const moved = JSON.parse(k.moveFacesJournaled(attachment.solid, Uint32Array.of(top(attachment.solid)), scale));
+          assert.equal(k.validateSolid(moved.solid), 0);
+          const refreshed = call('gcsResolveRefs', { sketch }, [sketch]);
+          assert.equal(refreshed.externalEllipses, 2);
+          for (let i = 0; i < 3; i++) close(refreshed.frame.origin[i] / scale, world([0, 0, 6 * scale])[i] / scale);
+          check(params(external.ellipse)); check(params(consumer));
+          const before = params(external.ellipse);
+          for (const value of [
+            { type: 'ellipseAxisA', ellipse: external.ellipse, value: 9 * scale },
+            { type: 'ellipseAxisB', ellipse: external.ellipse, value: scale },
+            { type: 'ellipseAngle', ellipse: external.ellipse, value: expected[4] + 0.4 },
+          ]) {
+            const id = constraint(value);
+            assert.equal(solve('gcsSolve').converged, false);
+            assert.equal(solve('gcsSolveDetailed').rolledBack, true);
+            assert.deepEqual(params(external.ellipse), before);
+            call('gcsRemoveConstraint', { sketch, constraint: id }, [sketch, id]);
+          }
+          for (const [op, args, direct] of [
+            ['gcsSetPoint', { sketch, point: external.center, x: 99, y: 99 }, [sketch, external.center, 99, 99]],
+            ['gcsSetEllipse', { sketch, ellipse: external.ellipse, x: 99, y: 99, a: 9, b: 8, angle: 1 }, [sketch, external.ellipse, 99, 99, 9, 8, 1]],
+          ]) refusal(k, route, op, args, direct, 'linked-sketch:read_only_external_point', 'invalid_input');
+          assert.deepEqual(params(external.ellipse), before);
+          for (const id of constraints) call('gcsRemoveConstraint', { sketch, constraint: id }, [sketch, id]);
+          assert.equal(json(call('gcsDof', { sketch }, [sketch])).numParams, 5);
+          k.restore(cp);
+          assert.throws(() => params(retired.ellipse));
+          assert.throws(() => call('gcsPointPosition', { sketch, point: retired.center }, [sketch, retired.center]));
+          const next = call('gcsAddExternalEllipse', { sketch, ref: edgeRef }, [sketch, edgeRef]);
+          assert.ok(next.ellipse > retired.ellipse && next.center > retired.center);
+          check(params(next.ellipse));
+          for (const detailed of [false, true]) {
+            const restore = k.checkpoint(), saved = params(external.ellipse);
+            const matrix = Float64Array.from([1.2, 0, 0, 0, 0, 1.2, 0, 0, 0, 0, 1.2, 0, 0, 0, 0, 1]);
+            if (detailed) assert.equal(k.transformDetailed(source.solid, matrix, true).value, source.solid);
+            else k.transformSolid(source.solid, matrix);
+            const stale = JSON.parse(k.resolveRef(edgeRef));
+            assert.equal(stale.status, 'stale');
+            for (const op of ['gcsResolveRefs', 'gcsSolve', 'gcsSolveDetailed', 'gcsDof']) {
+              refusal(k, route, op, { sketch, maxIterations: 100, tolerance: 1e-10 * scale },
+                op === 'gcsResolveRefs' || op === 'gcsDof' ? [sketch] : [sketch, 100, 1e-10 * scale],
+                'linked-sketch:reference_unbound', 'invalid_input');
+              assert.deepEqual(params(external.ellipse), saved);
+            }
+            k.restore(restore);
+            assert.equal(call('gcsResolveRefs', { sketch }, [sketch]).externalEllipses, 2);
+          }
+          // A second consumer uses the fixed ellipse directly for contact
+          // and tangency, without introducing ellipse scalar parameters.
+          const u = [Math.cos(expected[4]), Math.sin(expected[4])], v = [-u[1], u[0]];
+          const addPoint = (x, y, fixed) => call('gcsAddPoint', { sketch, x, y, fixed }, [sketch, x, y, fixed]);
+          const addLine = (p1, p2) => call('gcsAddLine', { sketch, p1, p2 }, [sketch, p1, p2]);
+          const guide = addPoint(expected[0] + scale * u[0], expected[1] + scale * u[1], true);
+          const axisLine = addLine(external.center, guide);
+          const tip = [expected[0] + expected[2] * u[0], expected[1] + expected[2] * u[1]];
+          const contact = addPoint(tip[0] + 0.1 * scale * v[0], tip[1] + 0.1 * scale * v[1], false);
+          const end = addPoint(tip[0] + 0.8 * scale * v[0], tip[1] + 0.8 * scale * v[1], false);
+          const tangent = addLine(contact, end);
+          for (const value of [
+            { type: 'pointOnEllipse', point: contact, ellipse: external.ellipse },
+            { type: 'pointLineDistance', point: contact, line: axisLine, value: 0 },
+            { type: 'tangentLineEllipse', line: tangent, ellipse: external.ellipse, point: contact },
+            { type: 'distance', a: contact, b: end, value: scale },
+          ]) constraint(value);
+          const contactSolve = solve('gcsSolveDetailed');
+          assert.equal(contactSolve.converged, true); assert.equal(contactSolve.numParams, 9); assert.equal(contactSolve.rank, 9);
+          const position = point => Array.from(call('gcsPointPosition', { sketch, point }, [sketch, point]));
+          const at = position(contact), to = position(end), delta = [to[0] - at[0], to[1] - at[1]];
+          assert.ok(Math.hypot(at[0] - tip[0], at[1] - tip[1]) < 1e-7 * scale);
+          assert.ok(Math.abs(Math.hypot(...delta) / scale - 1) < 1e-7);
+          assert.ok(Math.abs((delta[0] * u[0] + delta[1] * u[1]) / scale) < 1e-7);
+          check(params(external.ellipse));
+          cells++;
+        } finally { k.free(); }
+      }
+    }
+  }
+  console.log(`ok - linked complete ellipses: ${cells} direct/batch cells, fixed parameters, attachment edits, stale-source refusals and undo`);
 }
