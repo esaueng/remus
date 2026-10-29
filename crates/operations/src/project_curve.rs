@@ -3454,6 +3454,7 @@ fn project_one_source(
 /// Qualification limits for the new whole-domain exact family, not a change
 /// to the existing line/conic or approximate routes.
 const MAX_FACE_BEZIER_DEGREE: usize = 8;
+const MAX_FACE_BEZIER_SPANS: usize = 8;
 const MAX_FACE_BEZIER_BOUNDARY_EDGES: usize = 32;
 
 fn bezier_domain(reason: &'static str) -> ProjectCurveError {
@@ -3593,6 +3594,76 @@ fn bezier_2d_evaluation_error(
     total.finite().then_some(total)
 }
 
+// Extract only already stored Bézier windows. Exact knot identities are
+// representation requirements; approximate grouping would alter the curve.
+#[allow(clippy::float_cmp)]
+fn stored_bezier_chain(curve: &NurbsCurve) -> Option<Vec<NurbsCurve>> {
+    let p = curve.degree();
+    let count = curve.control_points().len();
+    let knots = curve.knots();
+    if p == 0
+        || count < p + 1
+        || curve.weights().len() != count
+        || knots.len() != count + p + 1
+        || knots.iter().any(|k| !k.is_finite())
+    {
+        return None;
+    }
+    let (a, b) = curve.domain();
+    if a >= b || knots[..=p].iter().any(|k| *k != a) || knots[count..].iter().any(|k| *k != b) {
+        return None;
+    }
+    let mut breaks = vec![a];
+    let mut i = p + 1;
+    while i < count {
+        let knot = knots[i];
+        if knot <= *breaks.last()? || knot >= b {
+            return None;
+        }
+        let start = i;
+        while i < count && knots[i] == knot {
+            i += 1;
+        }
+        if i - start != p {
+            return None;
+        }
+        breaks.push(knot);
+    }
+    breaks.push(b);
+    let mut segments = Vec::with_capacity(breaks.len() - 1);
+    for (span, ends) in breaks.windows(2).enumerate() {
+        let start = span * p;
+        let mut knots = vec![ends[0]; p + 1];
+        knots.extend(std::iter::repeat_n(ends[1], p + 1));
+        segments.push(
+            NurbsCurve::new(
+                p,
+                knots,
+                curve.control_points().get(start..=start + p)?.to_vec(),
+                curve.weights().get(start..=start + p)?.to_vec(),
+            )
+            .ok()?,
+        );
+    }
+    Some(segments)
+}
+
+fn regular_bezier_chain_image(
+    curve: &NurbsCurve,
+    map: &AffineMap,
+    denominator: ScalarInterval,
+) -> Result<bool, ProjectCurveError> {
+    let Some(segments) = stored_bezier_chain(curve) else {
+        return Ok(false);
+    };
+    for segment in segments {
+        if !regular_nurbs_image_with_denominator(&segment, segment.domain(), map, denominator)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 // Equality here identifies retained knots and full native trims, not nearby
 // geometric points; a fuzzy match would change the represented source chart.
 #[allow(clippy::too_many_lines, clippy::float_cmp)]
@@ -3609,41 +3680,60 @@ fn project_planar_bezier(
         return Err(bezier_domain("source is not a rational Bezier carrier"));
     };
     let count = source.control_points().len();
-    if count > MAX_FACE_BEZIER_DEGREE + 1 {
+    let degree = source.degree();
+    // Preserve the original single-span degree-budget diagnostic.
+    if degree > MAX_FACE_BEZIER_DEGREE {
         return Err(ProjectCurveError::ResourceLimit {
             resource: "projection_source_control_points",
             limit: MAX_FACE_BEZIER_DEGREE + 1,
             actual: count,
         });
     }
-    let degree = source.degree();
-    if degree == 0
-        || degree > MAX_FACE_BEZIER_DEGREE
-        || count != degree + 1
-        || source.weights().len() != count
-        || source.knots().len() != 2 * count
+    if count > MAX_FACE_BEZIER_SPANS * MAX_FACE_BEZIER_DEGREE + 1 {
+        return Err(ProjectCurveError::ResourceLimit {
+            resource: "projection_source_control_points",
+            limit: MAX_FACE_BEZIER_SPANS * MAX_FACE_BEZIER_DEGREE + 1,
+            actual: count,
+        });
+    }
+    if source.weights().iter().any(|w| !w.is_finite() || *w <= 0.0)
+        || source
+            .control_points()
+            .iter()
+            .any(|p| p.0.iter().any(|v| !v.is_finite()))
     {
-        return Err(ProjectCurveError::UnsupportedSourceCurve {
+        return Err(ProjectCurveError::DegenerateSource {
+            reason: "exact Bezier projection requires finite controls and positive weights",
+        });
+    }
+    let segments =
+        stored_bezier_chain(source).ok_or_else(|| ProjectCurveError::UnsupportedSourceCurve {
             curve: edge.curve().type_tag(),
             surface: "plane",
+        })?;
+    if segments.len() > MAX_FACE_BEZIER_SPANS {
+        return Err(ProjectCurveError::ResourceLimit {
+            resource: "projection_source_spans",
+            limit: MAX_FACE_BEZIER_SPANS,
+            actual: segments.len(),
         });
     }
     let domain = source.domain();
-    let span = domain.1 - domain.0;
-    // Knot identities define a clamped single span; they are not geometric
-    // closeness tests. Do not normalize or approximate the retained chart.
-    if !span.is_finite()
-        || span <= 0.0
-        || source.knots()[..count].iter().any(|k| *k != domain.0)
-        || source.knots()[count..].iter().any(|k| *k != domain.1)
-        || edge.strict_domain().ok() != Some(domain)
-    {
+    if edge.strict_domain().ok() != Some(domain) {
         return Err(ProjectCurveError::UnsupportedSourceCurve {
             curve: edge.curve().type_tag(),
             surface: "plane",
         });
     }
-    let native_width = ScalarInterval::point(domain.1).sub(ScalarInterval::point(domain.0));
+    // Enclose every positive knot distance used by any active basis window.
+    // Full multiplicity makes each span a stored Bézier window; no rounded
+    // knot insertion is used to justify regularity or chart safety.
+    let mut native_width = ScalarInterval::point(domain.1).sub(ScalarInterval::point(domain.0));
+    for segment in &segments {
+        let (a, b) = segment.domain();
+        let width = ScalarInterval::point(b).sub(ScalarInterval::point(a));
+        native_width.lo = native_width.lo.min(width.lo);
+    }
     let basis_roundoff = bezier_basis_roundoff(native_width)
         .ok_or_else(|| bezier_domain("native chart is unsafe for curve evaluation"))?;
     let headroom = ScalarInterval::point(1.0).add(basis_roundoff.mul(ScalarInterval::point(4.0)));
@@ -3656,16 +3746,6 @@ fn project_planar_bezier(
         return Err(bezier_domain(
             "native chart has no evaluator overflow headroom",
         ));
-    }
-    if source.weights().iter().any(|w| !w.is_finite() || *w <= 0.0)
-        || source
-            .control_points()
-            .iter()
-            .any(|p| p.0.iter().any(|v| !v.is_finite()))
-    {
-        return Err(ProjectCurveError::DegenerateSource {
-            reason: "exact Bezier projection requires finite controls and positive weights",
-        });
     }
     if edge.start() == edge.end()
         || (source.control_points()[0] - source.control_points()[count - 1]).length()
@@ -3826,8 +3906,7 @@ fn project_planar_bezier(
             pivot = axis;
         }
     }
-    if !finite_bezier_homogeneous(source)
-        || !regular_nurbs_image_with_denominator(source, domain, &map, denominator)?
+    if !finite_bezier_homogeneous(source) || !regular_bezier_chain_image(source, &map, denominator)?
     {
         return Err(ProjectCurveError::DegenerateImage);
     }
@@ -3937,7 +4016,9 @@ fn project_planar_bezier(
         direction: Vec3::new(0.0, 0.0, 0.0),
         denom: 1.0,
     };
-    if !finite_bezier_homogeneous(&image) || !regular_nurbs_image(&image, domain, &identity)? {
+    if !finite_bezier_homogeneous(&image)
+        || !regular_bezier_chain_image(&image, &identity, ScalarInterval::point(1.0))?
+    {
         return Err(ProjectCurveError::DegenerateImage);
     }
     let plane_curve = frame
@@ -4013,7 +4094,7 @@ fn project_planar_bezier(
             )
             .map_err(|error| math_to_ops("exact planar Bezier frame certificate", error))?;
             if !finite_bezier_homogeneous(&emitted)
-                || !regular_nurbs_image(&emitted, domain, &identity)?
+                || !regular_bezier_chain_image(&emitted, &identity, ScalarInterval::point(1.0))?
             {
                 return Err(ProjectCurveError::DegenerateImage);
             }
