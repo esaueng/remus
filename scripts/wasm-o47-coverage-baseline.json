@@ -1273,6 +1273,16 @@
       "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
     },
     {
+      "js": "imprintPlanarPolygon",
+      "rust": "imprint_planar_polygon_js",
+      "file": "bindings/construction_imprint.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "P-Class 7.4",
+      "reason": "construction partition returns solid, both face handles and operation ID; complete native F/E/V journal, direct and both batch witnesses"
+    },
+    {
       "js": "interpolatePoints",
       "rust": "interpolate_points",
       "file": "bindings/nurbs.rs",
