@@ -56,6 +56,7 @@ pub struct ExternalLineHandles {
 pub struct LinkedSketchResolution {
     pub frame: SketchFrame,
     pub external_lines: usize,
+    #[serde(default)]
     pub external_circles: usize,
 }
 
@@ -1074,6 +1075,20 @@ mod circle_tests {
     use remus_topology::journal::{EntityKey, EventDraft, EvolutionDraft};
     use remus_topology::naming::{Resolution, resolve};
     use serde_json::{Value, json};
+
+    #[test]
+    fn line_only_resolution_json_defaults_the_new_circle_count() {
+        let old = json!({
+            "frame": {"origin":[0.0,0.0,4.0], "xAxis":[1.0,0.0,0.0], "normal":[0.0,0.0,1.0]},
+            "externalLines": 2,
+        });
+        let result: LinkedSketchResolution = serde_json::from_value(old).unwrap();
+        assert_eq!(result.external_lines, 2);
+        assert_eq!(result.external_circles, 0);
+        let encoded = serde_json::to_value(result).unwrap();
+        assert_eq!(encoded["externalLines"], 2);
+        assert_eq!(encoded["externalCircles"], 0);
+    }
 
     fn row(k: &mut BrepKernel, v2: bool, op: &str, args: Value) -> Value {
         let program = json!([{"op":op,"args":args}]).to_string();
