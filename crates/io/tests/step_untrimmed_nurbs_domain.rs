@@ -261,7 +261,20 @@ fn assert_round_trip_invariants(topology: &Topology, solid: SolidId) {
     );
 
     let exported = write_step(topology, &[solid]).expect("export recovered authority");
-    assert!(exported.contains("TRIMMED_CURVE"));
+    // The recovered authority travels in the B-spline carriers themselves:
+    // no edge geometry is a TRIMMED_CURVE, which conformant readers reject.
+    let trimmed: Vec<&str> = exported
+        .lines()
+        .filter(|line| line.contains("= TRIMMED_CURVE("))
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert!(
+        exported
+            .lines()
+            .filter(|line| line.contains("= EDGE_CURVE(") || line.contains("= SURFACE_CURVE("))
+            .all(|line| trimmed.iter().all(|id| !line.contains(&format!("{id},")))),
+        "an EDGE_CURVE or SURFACE_CURVE references a TRIMMED_CURVE"
+    );
     let mut round_topology = Topology::new();
     let round_result =
         read_step_with_report(&exported, &mut round_topology).expect("re-import exported STEP");

@@ -115,6 +115,15 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **io:** STEP export no longer uses `TRIMMED_CURVE` as edge geometry, which
+  ISO 10303-42 advanced B-reps do not allow and other CAD readers reject
+  (a cylinder's caps imported with no edges and the solid had no volume).
+  Every `EDGE_CURVE` now names its basis line, conic or B-spline, with
+  `same_sense` giving the edge's direction along it. A NURBS edge using only
+  part of its carrier exports that carrier restricted to its span, so the
+  knot domain keeps the exact parameter authority on reimport; such an edge
+  comes back with the restricted carrier. Importing `TRIMMED_CURVE` edge
+  geometry from other systems is unchanged.
 * **wasm:** malformed optional naming and journaled-extrusion arguments
   refuse before mutation in both batch APIs; omitted and null values keep
   their existing defaults.

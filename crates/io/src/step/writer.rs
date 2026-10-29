@@ -305,11 +305,14 @@ pub mod assembly {
     }
 }
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use remus_math::curves2d::{Curve2D, NurbsCurve2D};
 use remus_math::frame::Frame3;
+use remus_math::nurbs::NurbsCurve;
+use remus_math::nurbs::knot_ops::curve_split;
 use remus_math::vec::{Point2, Point3, Vec2, Vec3};
 use remus_topology::Topology;
 use remus_topology::coedge::CoedgeId;
@@ -1398,6 +1401,17 @@ impl StepWriteContext {
         let start_vp = self.write_vertex(topo, edge.start())?;
         let end_vp = self.write_vertex(topo, edge.end())?;
 
+        // ISO 10303-42 advanced B-rep edges take a line, conic, polyline,
+        // surface curve or B-spline as `edge_geometry`, never a
+        // `TRIMMED_CURVE` (readers that follow the advanced_face rules drop
+        // such edges, leaving faces without bounds). The carrier is written
+        // as-is: the vertices bound it, and `same_sense` says whether the
+        // edge runs with the carrier's parameterization (`t0 < t1`) or
+        // against it. A NURBS edge using only part of its carrier writes the
+        // carrier restricted to that span instead, so the natural knot domain
+        // carries the exact parameter authority.
+        let same_sense = authoritative_range.is_none_or(|(t0, t1)| t0 < t1);
+
         let curve_id = match edge.curve() {
             EdgeCurve::Line => {
                 let start_pt = topo.vertex(edge.start()).map_err(topo_err)?.point();
@@ -1421,7 +1435,13 @@ impl StepWriteContext {
                 self.write_entity(line, "LINE", &format!("'', #{line_origin}, #{vector})"));
                 line
             }
-            EdgeCurve::NurbsCurve(nurbs) => self.write_nurbs_curve(nurbs),
+            EdgeCurve::NurbsCurve(nurbs) => {
+                let range = authoritative_range.ok_or_else(|| IoError::InvalidTopology {
+                    reason: format!("NURBS edge {eid:?} has no exportable parameter authority"),
+                })?;
+                let carrier = nurbs_edge_carrier(topo, eid, nurbs, range)?;
+                self.write_nurbs_curve(&carrier)
+            }
             EdgeCurve::Circle(circle) => {
                 let placement =
                     self.write_axis2_placement(circle.center(), circle.normal(), circle.u_axis());
@@ -1488,23 +1508,6 @@ impl StepWriteContext {
             }
         };
 
-        let curve_id = if let Some(range) = authoritative_range {
-            let (trim_start, trim_end, forward) = step_trim_literals(edge.curve(), range)?;
-            let sense = if forward { ".T." } else { ".F." };
-            let trimmed = self.next_id();
-            self.write_entity(
-                trimmed,
-                "TRIMMED_CURVE",
-                &format!(
-                    "'', #{curve_id}, (PARAMETER_VALUE({})), (PARAMETER_VALUE({})), {sense}, .PARAMETER.)",
-                    trim_start, trim_end
-                ),
-            );
-            trimmed
-        } else {
-            curve_id
-        };
-
         let curve_id = if let Some(pcurves) = self.edge_pcurve_map.get(&key).cloned() {
             let references: Vec<String> = pcurves.iter().map(|id| format!("#{id}")).collect();
             let surface_curve = self.next_id();
@@ -1519,10 +1522,11 @@ impl StepWriteContext {
         };
 
         let edge_curve = self.next_id();
+        let sense = if same_sense { ".T." } else { ".F." };
         self.write_entity(
             edge_curve,
             "EDGE_CURVE",
-            &format!("'', #{start_vp}, #{end_vp}, #{curve_id}, .T.)"),
+            &format!("'', #{start_vp}, #{end_vp}, #{curve_id}, {sense})"),
         );
 
         self.edge_map.insert(key, edge_curve);
@@ -2157,74 +2161,75 @@ fn export_pcurve_winding(
     ))
 }
 
-fn step_trim_parameters(curve: &EdgeCurve, range: (f64, f64)) -> Result<(f64, f64), IoError> {
-    let parameters = match curve {
-        // ISO 10303-42 parameterizes a parabola with a dimensionless `u`;
-        // remus stores the corresponding tangent coordinate `t = 2 f u`.
-        EdgeCurve::Parabola(parabola) => {
-            let scale = 2.0 * parabola.focal_length();
-            (range.0 / scale, range.1 / scale)
-        }
-        EdgeCurve::Circle(_)
-        | EdgeCurve::Ellipse(_)
-        | EdgeCurve::Hyperbola(_)
-        | EdgeCurve::NurbsCurve(_) => range,
-        EdgeCurve::Line => {
+/// The NURBS carrier an `EDGE_CURVE` writes for an edge using `range`.
+///
+/// STEP edge geometry cannot be a `TRIMMED_CURVE`, so a sub-span edge's
+/// parameter authority has to live in the carrier itself. Knot insertion
+/// keeps the parameterization: the restricted carrier traces the same points
+/// at the same parameters, and its natural knot domain is exactly the edge's
+/// interval, which is what the reader recovers from a carrier whose ends
+/// meet the edge's vertices. An edge spanning its whole carrier writes the
+/// carrier unchanged, control polygon included.
+fn nurbs_edge_carrier<'a>(
+    topo: &Topology,
+    eid: EdgeId,
+    nurbs: &'a NurbsCurve,
+    range: (f64, f64),
+) -> Result<Cow<'a, NurbsCurve>, IoError> {
+    let forward = range.0 < range.1;
+    let (lo, hi) = if forward { range } else { (range.1, range.0) };
+    let (domain_start, domain_end) = nurbs.domain();
+    let split_error = |at: f64, error: remus_math::MathError| IoError::InvalidTopology {
+        reason: format!(
+            "NURBS edge {eid:?} cannot restrict its carrier [{domain_start}, {domain_end}] \
+             to [{lo}, {hi}] at {at}: {error}"
+        ),
+    };
+
+    let mut carrier = Cow::Borrowed(nurbs);
+    // `curve_split` refuses a split within its knot epsilon of either end:
+    // such a span already ends where the carrier does.
+    if lo - domain_start > CARRIER_SPLIT_EPS {
+        let (_, right) = curve_split(&carrier, lo).map_err(|error| split_error(lo, error))?;
+        carrier = Cow::Owned(right);
+    }
+    if domain_end - hi > CARRIER_SPLIT_EPS {
+        let (left, _) = curve_split(&carrier, hi).map_err(|error| split_error(hi, error))?;
+        carrier = Cow::Owned(left);
+    }
+    if matches!(carrier, Cow::Borrowed(_)) {
+        return Ok(carrier);
+    }
+
+    // The restricted carrier's ends must still be the edge's vertices, in
+    // the order `same_sense` declares.
+    let edge = topo.edge(eid).map_err(topo_err)?;
+    let start_vertex = topo.vertex(edge.start()).map_err(topo_err)?;
+    let end_vertex = topo.vertex(edge.end()).map_err(topo_err)?;
+    let tolerance = edge.effective_tolerance(start_vertex.tolerance().max(end_vertex.tolerance()));
+    let (first, last) = carrier.domain();
+    let (first_vertex, last_vertex) = if forward {
+        (start_vertex.point(), end_vertex.point())
+    } else {
+        (end_vertex.point(), start_vertex.point())
+    };
+    for (label, parameter, vertex) in [("first", first, first_vertex), ("last", last, last_vertex)]
+    {
+        let residual = (carrier.evaluate(parameter) - vertex).length();
+        if !residual.is_finite() || residual > tolerance {
             return Err(IoError::InvalidTopology {
-                reason: "a Line must not be exported through TRIMMED_CURVE".to_string(),
+                reason: format!(
+                    "NURBS edge {eid:?} restricted carrier {label} end misses its vertex by \
+                     {residual} (tolerance {tolerance})"
+                ),
             });
         }
-    };
-    if !parameters.0.is_finite()
-        || !parameters.1.is_finite()
-        || parameters.0.partial_cmp(&parameters.1) == Some(std::cmp::Ordering::Equal)
-    {
-        return Err(IoError::InvalidTopology {
-            reason: format!(
-                "curve range [{}, {}] cannot be represented as distinct finite STEP trim parameters",
-                range.0, range.1
-            ),
-        });
     }
-    Ok(parameters)
+    Ok(carrier)
 }
 
-/// Serialize authoritative trim parameters without the coordinate formatter's
-/// near-zero clamp, then prove that STEP parsing recovers the same two values.
-fn step_trim_literals(
-    curve: &EdgeCurve,
-    range: (f64, f64),
-) -> Result<(String, String, bool), IoError> {
-    let parameters = step_trim_parameters(curve, range)?;
-    let start = format!("{:.17E}", parameters.0);
-    let end = format!("{:.17E}", parameters.1);
-    let parse = |literal: &str| {
-        literal
-            .parse::<f64>()
-            .map_err(|error| IoError::InvalidTopology {
-                reason: format!(
-                    "curve range [{}, {}] produced an invalid STEP trim parameter `{literal}`: {error}",
-                    range.0, range.1
-                ),
-            })
-    };
-    let parsed_start = parse(&start)?;
-    let parsed_end = parse(&end)?;
-    if !parsed_start.is_finite()
-        || !parsed_end.is_finite()
-        || parsed_start.to_bits() != parameters.0.to_bits()
-        || parsed_end.to_bits() != parameters.1.to_bits()
-        || parsed_start.partial_cmp(&parsed_end) == Some(std::cmp::Ordering::Equal)
-    {
-        return Err(IoError::InvalidTopology {
-            reason: format!(
-                "curve range [{}, {}] cannot be serialized as distinct finite STEP trim parameters",
-                range.0, range.1
-            ),
-        });
-    }
-    Ok((start, end, parsed_start < parsed_end))
-}
+/// The knot epsilon below which `curve_split` refuses a split at a domain end.
+const CARRIER_SPLIT_EPS: f64 = 1e-15;
 
 /// Compute knot multiplicities and unique knot values from a flat knot vector.
 fn compute_knot_multiplicities(knots: &[f64]) -> (Vec<u32>, Vec<f64>) {
@@ -2299,8 +2304,97 @@ mod tests {
         assert!(error.to_string().contains("integral lift"));
     }
 
-    fn assert_trimmed_curve_roundtrip(curve: EdgeCurve, range: (f64, f64), tolerance: f64) {
-        let (_, _, expected_forward) = step_trim_literals(&curve, range).unwrap();
+    /// One entity per line of writer output, as `id -> (type, attributes)`.
+    /// A complex instance (`#n = ( A() B() … );`) is keyed by its first
+    /// partial type.
+    fn step_entities(step: &str) -> HashMap<u64, (String, String)> {
+        step.lines()
+            .filter_map(|line| {
+                let rest = line.trim().strip_prefix('#')?;
+                let (id, body) = rest.split_once('=')?;
+                let body = body.trim();
+                let body = body.strip_prefix('(').map_or(body, str::trim_start);
+                let (kind, attrs) = body.split_once('(')?;
+                Some((
+                    id.trim().parse().ok()?,
+                    (kind.trim().to_string(), attrs.to_string()),
+                ))
+            })
+            .collect()
+    }
+
+    fn step_refs(attrs: &str) -> Vec<u64> {
+        attrs
+            .split('#')
+            .skip(1)
+            .filter_map(|tail| {
+                let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+                digits.parse().ok()
+            })
+            .collect()
+    }
+
+    /// The entity type behind every `EDGE_CURVE.edge_geometry`, looking
+    /// through a `SURFACE_CURVE` to its `curve_3d`, with each edge's
+    /// `same_sense` flag.
+    fn edge_geometry_kinds(step: &str) -> Vec<(String, bool)> {
+        let entities = step_entities(step);
+        let mut kinds: Vec<(String, bool)> = entities
+            .values()
+            .filter(|(kind, _)| kind == "EDGE_CURVE")
+            .map(|(_, attrs)| {
+                let geometry = step_refs(attrs)[2];
+                let (mut kind, geometry_attrs) = entities[&geometry].clone();
+                if kind == "SURFACE_CURVE" {
+                    kind.clone_from(&entities[&step_refs(&geometry_attrs)[0]].0);
+                }
+                (kind, attrs.trim_end().ends_with(".T.);"))
+            })
+            .collect();
+        kinds.sort();
+        kinds
+    }
+
+    /// ISO 10303-42 advanced B-rep edge geometry: a line, conic, polyline or
+    /// B-spline, directly or as a `SURFACE_CURVE`'s `curve_3d`.
+    fn assert_conformant_edge_geometry(step: &str) {
+        let kinds = edge_geometry_kinds(step);
+        assert!(!kinds.is_empty(), "the export has no EDGE_CURVE");
+        for (kind, _) in &kinds {
+            assert!(
+                matches!(
+                    kind.as_str(),
+                    "LINE"
+                        | "CIRCLE"
+                        | "ELLIPSE"
+                        | "HYPERBOLA"
+                        | "PARABOLA"
+                        | "POLYLINE"
+                        | "B_SPLINE_CURVE_WITH_KNOTS"
+                        | "BOUNDED_CURVE"
+                ),
+                "EDGE_CURVE geometry must not be a {kind}"
+            );
+        }
+    }
+
+    fn assert_edge_curve_roundtrip(curve: EdgeCurve, range: (f64, f64), tolerance: f64) {
+        assert_edge_curve_roundtrip_with(curve, range, tolerance, true);
+    }
+
+    /// Write one edge (closed when its ends meet) and read it back.
+    ///
+    /// `check_span` compares the read parameter span with the written one;
+    /// it only means something where the vertex coordinates can resolve
+    /// the carrier's parameter, since conic edges recover their span from
+    /// the vertices.
+    fn assert_edge_curve_roundtrip_with(
+        curve: EdgeCurve,
+        range: (f64, f64),
+        tolerance: f64,
+        check_span: bool,
+    ) {
+        let expected_forward = range.0 < range.1;
         let expected_start = curve.evaluate_with_endpoints(
             range.0,
             Point3::new(0.0, 0.0, 0.0),
@@ -2311,15 +2405,15 @@ mod tests {
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(1.0, 0.0, 0.0),
         );
-        let expected_midpoint = curve.evaluate_with_endpoints(
-            f64::midpoint(range.0, range.1),
-            expected_start,
-            expected_end,
-        );
 
         let mut write_topo = Topology::new();
         let start = write_topo.add_vertex(Vertex::new(expected_start, tolerance));
-        let end = write_topo.add_vertex(Vertex::new(expected_end, tolerance));
+        // A full turn is a closed edge on one vertex.
+        let end = if (expected_end - expected_start).length() <= tolerance {
+            start
+        } else {
+            write_topo.add_vertex(Vertex::new(expected_end, tolerance))
+        };
         let mut edge = Edge::with_tolerance(start, end, curve, Some(tolerance));
         edge.set_trim(Some(range));
         let edge = write_topo.add_edge(edge);
@@ -2353,9 +2447,12 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(step.contains("TRIMMED_CURVE("));
-        let expected_sense = if expected_forward { ".T." } else { ".F." };
-        assert!(step.contains(&format!("{expected_sense}, .PARAMETER.)")));
+        assert_conformant_edge_geometry(&step);
+        let senses: Vec<bool> = edge_geometry_kinds(&step)
+            .into_iter()
+            .map(|(_, sense)| sense)
+            .collect();
+        assert_eq!(senses, [expected_forward]);
 
         let mut read_topo = Topology::new();
         let read_solid = crate::step::reader::read_step(&step, &mut read_topo).unwrap()[0];
@@ -2367,17 +2464,56 @@ mod tests {
         assert!((read_start - expected_start).length() <= tolerance);
         assert!((read_end - expected_end).length() <= tolerance);
         let read_range = read_edge.strict_domain().unwrap();
-        let actual_midpoint = read_edge.curve().evaluate_with_endpoints(
-            f64::midpoint(read_range.0, read_range.1),
-            read_start,
-            read_end,
-        );
         assert!(
-            (actual_midpoint - expected_midpoint).length() <= tolerance,
-            "midpoint changed by {} for {}",
-            (actual_midpoint - expected_midpoint).length(),
+            !check_span
+                || ((read_range.1 - read_range.0).abs() - (range.1 - range.0).abs()).abs()
+                    <= 1e-12 * (range.1 - range.0).abs().max(1.0),
+            "span changed from {range:?} to {read_range:?} for {}",
             read_edge.curve().type_tag()
         );
+        if expected_forward && let EdgeCurve::NurbsCurve(read_nurbs) = read_edge.curve() {
+            // The restricted carrier's knot domain is the edge's interval.
+            assert_eq!(read_range.0.to_bits(), range.0.to_bits());
+            assert_eq!(read_range.1.to_bits(), range.1.to_bits());
+            assert_eq!(read_nurbs.domain(), read_range);
+        }
+        // Same branch, same direction: the read edge traces the written one
+        // at matching fractions of its span, to within the coordinates'
+        // resolution where that is coarser than the tolerance.
+        let resolution = [expected_start.x(), expected_start.y(), expected_start.z()]
+            .into_iter()
+            .fold(0.0_f64, |scale, value| scale.max(value.abs()))
+            * 4.0
+            * f64::EPSILON;
+        let sample_tolerance = if check_span {
+            tolerance
+        } else {
+            tolerance.max(resolution)
+        };
+        for fraction in [0.25, 0.5, 0.75] {
+            let expected = curve_at(&write_topo, edge, fraction);
+            let actual = read_edge.curve().evaluate_with_endpoints(
+                read_range.0 + (read_range.1 - read_range.0) * fraction,
+                read_start,
+                read_end,
+            );
+            assert!(
+                (actual - expected).length() <= sample_tolerance,
+                "point at {fraction} changed by {} for {}",
+                (actual - expected).length(),
+                read_edge.curve().type_tag()
+            );
+        }
+    }
+
+    fn curve_at(topo: &Topology, edge: EdgeId, fraction: f64) -> Point3 {
+        let edge = topo.edge(edge).unwrap();
+        let (t0, t1) = edge.strict_domain().unwrap();
+        edge.curve().evaluate_with_endpoints(
+            t0 + (t1 - t0) * fraction,
+            topo.vertex(edge.start()).unwrap().point(),
+            topo.vertex(edge.end()).unwrap().point(),
+        )
     }
 
     fn doubled_edge_solid(topo: &mut Topology, edge: EdgeId) -> SolidId {
@@ -2735,7 +2871,7 @@ mod tests {
         ];
 
         for (curve, range) in curves {
-            assert_trimmed_curve_roundtrip(curve, range, 1e-7);
+            assert_edge_curve_roundtrip(curve, range, 1e-7);
         }
     }
 
@@ -2758,10 +2894,7 @@ mod tests {
         ];
 
         for (curve, range) in curves {
-            let (start, end, _) = step_trim_literals(&curve, range).unwrap();
-            assert_ne!(start, "0.");
-            assert_ne!(end, "0.");
-            assert_trimmed_curve_roundtrip(curve, range, 1e-7);
+            assert_edge_curve_roundtrip(curve, range, 1e-7);
         }
     }
 
@@ -2770,15 +2903,22 @@ mod tests {
         let normal = Vec3::new(0.0, 0.0, 1.0);
         let huge = 10_000_000_000_000_002.0;
 
-        assert_trimmed_curve_roundtrip(
+        assert_edge_curve_roundtrip(
             EdgeCurve::Circle(Circle3D::new(Point3::new(0.0, 0.0, 0.0), normal, huge).unwrap()),
             (0.0, 1.0),
             1e-7,
         );
-        assert_trimmed_curve_roundtrip(
+        // Coordinates here are spaced 2 mm apart, coarser than the radius-4
+        // arc, so the end vertex's angle cannot be resolved: it rounds to
+        // the same point whether the span is 1 rad or atan(2). The edge must
+        // still trace the same points to that resolution; its parameter span
+        // is not recoverable from conformant edge geometry and is not
+        // compared.
+        assert_edge_curve_roundtrip_with(
             EdgeCurve::Circle(Circle3D::new(Point3::new(huge, -huge, 0.0), normal, 4.0).unwrap()),
             (0.0, 1.0),
             1e-7,
+            false,
         );
     }
 
@@ -2836,7 +2976,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_trimmed_curve_roundtrip(EdgeCurve::NurbsCurve(curve), (0.0, 1.0), 1e-7);
+        assert_edge_curve_roundtrip(EdgeCurve::NurbsCurve(curve), (0.0, 1.0), 1e-7);
     }
 
     #[test]
@@ -2856,7 +2996,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_trimmed_curve_roundtrip(EdgeCurve::NurbsCurve(curve), (0.0, 1.0), 1e-7);
+        assert_edge_curve_roundtrip(EdgeCurve::NurbsCurve(curve), (0.0, 1.0), 1e-7);
     }
 
     #[test]
@@ -2915,7 +3055,134 @@ mod tests {
         )
         .unwrap();
 
-        assert_trimmed_curve_roundtrip(EdgeCurve::NurbsCurve(curve), (1.5, 0.5), 1e-7);
+        assert_edge_curve_roundtrip(EdgeCurve::NurbsCurve(curve), (1.5, 0.5), 1e-7);
+    }
+
+    #[test]
+    fn closed_and_partial_conic_edges_roundtrip_as_basis_curves() {
+        use std::f64::consts::{FRAC_PI_2, TAU};
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let circle =
+            || EdgeCurve::Circle(Circle3D::new(Point3::new(1.0, 2.0, 3.0), normal, 6.0).unwrap());
+        let ellipse = || {
+            EdgeCurve::Ellipse(
+                Ellipse3D::new(Point3::new(-1.0, 0.5, 0.0), normal, 5.0, 2.0).unwrap(),
+            )
+        };
+        for (curve, range) in [
+            // Full turns: one vertex, forward and reversed, anchored off zero
+            // as cylinder rims are.
+            (circle(), (-FRAC_PI_2, 3.0 * FRAC_PI_2)),
+            (circle(), (TAU, 0.0)),
+            (ellipse(), (0.0, TAU)),
+            (ellipse(), (TAU + 1.0, 1.0)),
+            // Partial arcs, as fillets and revolves make them.
+            (circle(), (0.3, 0.3 + FRAC_PI_2)),
+            (circle(), (5.0, 7.0)),
+            (ellipse(), (-0.4, 2.1)),
+        ] {
+            assert_edge_curve_roundtrip(curve, range, 1e-7);
+        }
+    }
+
+    #[test]
+    fn nurbs_edges_roundtrip_with_exact_knot_domains() {
+        let open = NurbsCurve::new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 0.4, 1.1, 2.0, 2.0, 2.0, 2.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 2.0, 0.5),
+                Point3::new(2.0, -1.0, 1.0),
+                Point3::new(3.0, 1.0, 0.0),
+                Point3::new(4.0, 0.0, -1.0),
+                Point3::new(5.0, 2.0, 0.0),
+            ],
+            vec![1.0, 0.8, 1.3, 1.0, 0.9, 1.0],
+        )
+        .unwrap();
+        // Closed: both clamped ends on one control point.
+        let closed = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(2.0, 2.0, 0.0),
+                Point3::new(4.0, -2.0, 0.0),
+                Point3::new(0.0, 0.0, 0.0),
+            ],
+            vec![1.0; 4],
+        )
+        .unwrap();
+        for (curve, range) in [
+            (open.clone(), (0.0, 2.0)),
+            (open.clone(), (0.25, 1.7)),
+            (open.clone(), (0.4, 1.1)),
+            (open.clone(), (0.0, 0.9)),
+            (open.clone(), (1.3, 2.0)),
+            (open.clone(), (1.7, 0.25)),
+            (open, (2.0, 0.0)),
+            (closed.clone(), (0.0, 2.0)),
+            (closed, (2.0, 0.0)),
+        ] {
+            assert_edge_curve_roundtrip(EdgeCurve::NurbsCurve(curve), range, 1e-7);
+        }
+    }
+
+    #[test]
+    fn whole_nurbs_carrier_is_written_unchanged() {
+        let curve = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 1.0, 0.0),
+                Point3::new(2.0, -1.0, 0.0),
+                Point3::new(3.0, 0.0, 0.0),
+            ],
+            vec![1.0; 4],
+        )
+        .unwrap();
+        let mut topo = Topology::new();
+        let edge = remus_topology::builder::make_nurbs_edge(
+            &mut topo,
+            curve.evaluate(0.0),
+            curve.evaluate(2.0),
+            curve.clone(),
+            1e-7,
+        );
+        let domain = topo.edge(edge).unwrap().strict_domain().unwrap();
+        let written = nurbs_edge_carrier(&topo, edge, &curve, domain).unwrap();
+        assert!(matches!(written, Cow::Borrowed(_)));
+        assert_eq!(written.control_points(), curve.control_points());
+    }
+
+    #[test]
+    fn exported_bodies_never_use_trimmed_edge_geometry() {
+        let mut topo = Topology::new();
+        let solids = [
+            remus_operations::primitives::make_cylinder(&mut topo, 6.0, 28.0).unwrap(),
+            remus_operations::primitives::make_cone(&mut topo, 5.0, 2.0, 7.0).unwrap(),
+            remus_operations::primitives::make_sphere(&mut topo, 4.0, 16).unwrap(),
+            remus_operations::primitives::make_torus(&mut topo, 8.0, 2.0, 16).unwrap(),
+        ];
+        for solid in solids {
+            let step = write_step(&topo, &[solid]).unwrap();
+            assert_conformant_edge_geometry(&step);
+            assert!(
+                edge_geometry_kinds(&step)
+                    .iter()
+                    .any(|(kind, _)| kind != "LINE"),
+                "{step}"
+            );
+            let mut read = Topology::new();
+            assert_eq!(
+                crate::step::reader::read_step(&step, &mut read)
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
     }
 
     #[test]
