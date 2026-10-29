@@ -11,10 +11,12 @@ import tempfile
 import textwrap
 import unittest
 
+from fleet_workflows import workflow_text
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github/workflows"
 STAGED = (WORKFLOWS / "fleet-ci-v9.yml").read_text()
-PREVIOUS = (WORKFLOWS / "fleet-ci-v7.yml").read_text()
+PREVIOUS = workflow_text("fleet-ci-v7.yml")
 
 
 def jobs(text):
