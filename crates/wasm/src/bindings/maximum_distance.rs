@@ -63,7 +63,7 @@ impl BrepKernel {
     /// # Errors
     /// Returns an error for invalid handles/boundaries, unsupported geometry,
     /// unresolved arithmetic or exhausted bounded work.
-    #[wasm_bindgen(js_name = solidToSolidMaximumDistance)]
+    #[wasm_bindgen(js_name = "solidToSolidMaximumDistance")]
     pub fn solid_to_solid_maximum_distance(&self, a: u32, b: u32) -> Result<Vec<f64>, JsError> {
         self.maximum_distance_values(a, b).map_err(|error| {
             let message = error.message().to_owned();

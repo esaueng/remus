@@ -223,7 +223,12 @@ fn prepare(
                 }
             }
             FaceSurface::Sphere(sphere) if spherical => check_sphere_frame(sphere)?,
-            _ => {
+            FaceSurface::Plane { .. }
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Torus(_) => {
                 return Err(MaximumDistanceError::Unsupported(
                     "boundary is not a supported planar polyhedron or complete native sphere",
                 ));
@@ -271,7 +276,10 @@ fn prepare(
                             check_plane_point(*normal, *d, point, work.context)?;
                         }
                         FaceSurface::Sphere(sphere) => check_radial(sphere, point, work.context)?,
-                        _ => unreachable!("carrier qualified above"),
+                        FaceSurface::Nurbs(_)
+                        | FaceSurface::Cylinder(_)
+                        | FaceSurface::Cone(_)
+                        | FaceSurface::Torus(_) => unreachable!("carrier qualified above"),
                     }
                     if seen_vertices.insert(vertex_id) {
                         points.push(point);
