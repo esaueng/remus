@@ -108,6 +108,24 @@ export interface ExternalLineHandles {
 export type FaceMaterialSense = "outward" | "inward";
 
 /**
+ * One constant-angle planar face in a solid draft report.
+ */
+export interface PlanarFaceDraftResult {
+    /**
+     * Live source face handle.
+     */
+    face: number;
+    /**
+     * Signed angle in radians.
+     */
+    angleRadians: number;
+    /**
+     * Effective outward unit normal as `[x, y, z]`.
+     */
+    outwardNormal: number[];
+}
+
+/**
  * One counted healing repair category.
  */
 export interface HealRepairDisclosure {
@@ -279,6 +297,20 @@ export interface GcsConstraintResidual {
      * survives marks where it could not.
      */
     maxResidual: number;
+}
+
+/**
+ * Signed local surface draft. Angles are radians; this is not a trim or undercut test.
+ */
+export interface DraftAngleResult {
+    /**
+     * Signed angle relative to the pull direction.
+     */
+    angleRadians: number;
+    /**
+     * Effective outward unit normal as `[x, y, z]`.
+     */
+    outwardNormal: number[];
 }
 
 /**
@@ -2401,6 +2433,15 @@ export class BrepKernel {
      */
     getFaceCurvature(face: number, u: number, v: number): any;
     /**
+     * Signed local surface-carrier draft in radians, as a JSON string
+     * `{angleRadians,outwardNormal}`. `(u,v)` does not test trimmed membership.
+     * Negative draft is not a global undercut or accessibility verdict.
+     *
+     * # Errors
+     * Refuses invalid handles, pull directions, parameters and undefined normals.
+     */
+    getFaceDraftAngle(face: number, u: number, v: number, pull_x: number, pull_y: number, pull_z: number): string;
+    /**
      * Get the edge handles of a face.
      *
      * Returns an array of edge handles (`u32[]`).
@@ -2500,6 +2541,15 @@ export class BrepKernel {
      * the shared native face, topology, sampling, or work budget is exceeded.
      */
     getOpposingPlanarFacePairs(solid: number): string;
+    /**
+     * JSON array of `{face,angleRadians,outwardNormal}` for every outer/cavity
+     * planar face in explorer order. A curved face refuses the whole report.
+     * This read-only query does not change topology, handles or checkpoints.
+     *
+     * # Errors
+     * Refuses invalid handles/pull directions, undefined normals and curved faces.
+     */
+    getPlanarSolidDraft(solid: number, pull_x: number, pull_y: number, pull_z: number): string;
     /**
      * Get the orientation of a shape.
      *
