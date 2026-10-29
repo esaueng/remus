@@ -647,6 +647,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Topology query, edge/surface evaluation | `bindings/query.rs` |
 | Measurement (volume, area, bbox, distances) | `bindings/measure.rs` |
 | Read-only global maximum-distance binding | `bindings/maximum_distance.rs` |
+| Read-only signed draft-angle queries over live session handles | `bindings/draft_analysis.rs` |
 | Tessellation & wireframe | `bindings/tessellate.rs` |
 | Exact arena document bindings (`serializeSolids`, always compiled) | `bindings/arena.rs` |
 | File I/O import/export (`#[cfg(feature = "io")]`; off in the shipped kernel package) | `bindings/io.rs` |
