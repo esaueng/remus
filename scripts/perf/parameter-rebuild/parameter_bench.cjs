@@ -83,9 +83,9 @@ function main(argv = process.argv.slice(2)) {
   const wrapper = path.join(args['kernel-pkg'], 'remus_wasm_node.cjs');
   const packageInfo = JSON.parse(packageJson);
   const loadStart = performance.now();
-  const { BrepKernel } = require(wrapper);
+  const { RemusKernel } = require(wrapper);
   const moduleLoadMs = performance.now() - loadStart;
-  const constructorStart = performance.now(), kernel = new BrepKernel();
+  const constructorStart = performance.now(), kernel = new RemusKernel();
   const constructorMs = performance.now() - constructorStart;
   const meta = { mode: args.mode, rebuildMode: args.rebuild, pattern: args.pattern, ticks: args.ticks, warmup: args.warmup,
     timingStatus: args['timing-status'], timingsExcluded: args['timing-status'] !== 'measured',

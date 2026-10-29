@@ -101,7 +101,12 @@ try {
   }
 
   const packageExports = consumerRequire('remus-wasm');
-  assert.equal(typeof packageExports.BrepKernel, 'function', 'installed BrepKernel export');
+  assert.equal(typeof packageExports.RemusKernel, 'function', 'installed RemusKernel export');
+  assert.equal(
+    packageExports.BrepKernel,
+    packageExports.RemusKernel,
+    'installed deprecated BrepKernel alias is the RemusKernel class',
+  );
   assert.equal(
     typeof packageExports.decodeEvolutionPayload,
     'function',

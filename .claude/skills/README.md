@@ -45,7 +45,7 @@ not exist. If you reintroduce an absolute path here, it will rot the same way.
 | [tessellation](tessellation/SKILL.md) | Mesh cracks at face boundaries, boundary edges or non-manifold edges appear, or you are adding a face mesher in `crates/operations/src/tessellate/`. |
 | [add-operation](add-operation/SKILL.md) | Adding or extending a modeling operation in `crates/operations`, end to end through tests and wasm exposure. |
 | [layer-boundaries](layer-boundaries/SKILL.md) | Adding a workspace dep, placing new code in a crate, adding an `EdgeCurve` or `FaceSurface` variant, or fixing a boundaries CI failure. |
-| [wasm-bindings](wasm-bindings/SKILL.md) | Adding `BrepKernel` methods, wiring `executeBatch`, building the wasm package, or debugging wasm-only failures. |
+| [wasm-bindings](wasm-bindings/SKILL.md) | Adding `RemusKernel` methods, wiring `executeBatch`, building the wasm package, or debugging wasm-only failures. |
 | [io-formats](io-formats/SKILL.md) | A STEP or other file imports wrong (dropped solids, all-NURBS, hard entity errors), verifying writer round-trips, capturing a faithful fixture, or adding a format in `crates/io`. |
 | [render-verify](render-verify/SKILL.md) | Working on `remus-render` or visually verifying a solid, including headless capture of a live viewer window. |
 | [testing](testing/SKILL.md) | Writing or placing tests, building a faithful regression fixture, handling golden mismatches, or ending a session with unverified work. |

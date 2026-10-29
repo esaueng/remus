@@ -28,8 +28,8 @@ const assertCompleteEvolution = (payload, label) => {
 // The fuse must resolve that coincident cylindrical face pair and stay
 // analytic. A mesh fallback can remain watertight, valid, and close on volume,
 // so the exact face and surface-kind assertions must not be relaxed.
-export const runOpenZcadAnalyticFlangeBooleanRegression = ({ BrepKernel }) => {
-  const kernel = new BrepKernel();
+export const runOpenZcadAnalyticFlangeBooleanRegression = ({ RemusKernel }) => {
+  const kernel = new RemusKernel();
 
   /** Revolve an axial rectangle (x = radius, z = height) a full turn about +Z. */
   const revolveAnnulus = (r0, r1, z0, z1) => {
@@ -98,7 +98,7 @@ export const runOpenZcadAnalyticFlangeBooleanRegression = ({ BrepKernel }) => {
 // outside corners. Track that face through typed evolution, widen r3 -> r4.8,
 // shrink r4.8 -> r3.8, and preserve the exact analytic topology through STEP.
 export const runOpenZcadCylindricalFaceResizeRegression = ({
-  BrepKernel,
+  RemusKernel,
   decodeEvolutionPayload,
   RemusIo,
 }) => {
@@ -115,7 +115,7 @@ export const runOpenZcadCylindricalFaceResizeRegression = ({
   const FINAL_VOLUME = WIDE_VOLUME + Math.PI * (4.8 ** 2 - 3.8 ** 2) * PLATE_T;
   const EXPECTED_FINAL_RADII = [3, 3, 3, 3, 3, 3.8, 4, 10];
 
-  const kernel = new BrepKernel();
+  const kernel = new RemusKernel();
   const translated = (solid, x, y, z) =>
     kernel.copyAndTransformSolid(solid, [1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, z, 0, 0, 0, 1]);
   const rotatedX90AndTranslated = (solid, x, y, z) =>
@@ -241,7 +241,7 @@ export const runOpenZcadCylindricalFaceResizeRegression = ({
     EXPECTED_FINAL_RADII.length,
     'STEP must encode every cylinder analytically',
   );
-  const importedKernel = new BrepKernel();
+  const importedKernel = new RemusKernel();
   const imported = Array.from(importedKernel.deserializeSolids(io.importStep(step)));
   assert.equal(imported.length, 1, 'STEP round trip must yield one bracket solid');
   assert.equal(importedKernel.validateSolid(imported[0]), 0, 'STEP bracket: closed, valid shell');
@@ -254,7 +254,7 @@ export const runOpenZcadCylindricalFaceResizeRegression = ({
   console.log('ok - OpenZCAD mounting bracket: decoded lineage, r3 -> r4.8 -> r3.8, exact STEP');
 };
 
-/** `exports` merges the kernel package (`BrepKernel`, `decodeEvolutionPayload`)
+/** `exports` merges the kernel package (`RemusKernel`, `decodeEvolutionPayload`)
  * with the translator package (`RemusIo`). */
 export const runOpenZcadConsumerRegressions = (exports) => {
   runOpenZcadAnalyticFlangeBooleanRegression(exports);
@@ -283,9 +283,9 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runZeroAreaMeshExportRegression(exports);
 };
 
-export const runWideSphereCapRegression = ({ BrepKernel, RemusIo }) => {
+export const runWideSphereCapRegression = ({ RemusKernel, RemusIo }) => {
   for (const fixture of ['wide_sphere_cap.step', 'wide_sphere_cap_with_seam.step']) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     const io = new RemusIo();
     const step = readFileSync(new URL(`../crates/io/tests/data/${fixture}`, import.meta.url));
     const solids = Array.from(kernel.deserializeSolids(io.importStep(step)));
@@ -326,7 +326,7 @@ export const runWideSphereCapRegression = ({ BrepKernel, RemusIo }) => {
   console.log('ok - wide spherical cap preserves closed-form volume and direct/batch mesh quality');
 };
 
-export const runOffsetConeSphereRegression = ({ BrepKernel }) => {
+export const runOffsetConeSphereRegression = ({ RemusKernel }) => {
   // Independent horizontal-disk overlap integral, also pinned by the native matrix.
   const overlap = 197.10640301106753;
   for (const [operation, expected] of [
@@ -334,7 +334,7 @@ export const runOffsetConeSphereRegression = ({ BrepKernel }) => {
     ['cut', 208 * Math.PI - overlap],
     ['intersect', overlap],
   ]) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     const cone = kernel.makeCone(6, 2, 12);
     const sphere = kernel.makeSphere(4, 24);
     kernel.transformSolid(
@@ -353,7 +353,7 @@ export const runOffsetConeSphereRegression = ({ BrepKernel }) => {
   console.log('ok - offset cone/sphere: exact fuse, cut, intersect against disk-overlap oracle');
 };
 
-export const runOffsetSphereCylinderRegression = ({ BrepKernel }) => {
+export const runOffsetSphereCylinderRegression = ({ RemusKernel }) => {
   // Independent horizontal-disk overlap integral, also pinned by the native matrix.
   const overlap = 294.1884259241949;
   for (const [operation, expected] of [
@@ -361,7 +361,7 @@ export const runOffsetSphereCylinderRegression = ({ BrepKernel }) => {
     ['cut', 288 * Math.PI - overlap],
     ['intersect', overlap],
   ]) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     const sphere = kernel.makeSphere(6, 24);
     const cylinder = kernel.makeCylinder(3, 20);
     kernel.transformSolid(
@@ -381,7 +381,7 @@ export const runOffsetSphereCylinderRegression = ({ BrepKernel }) => {
 };
 
 
-export const runOffsetTorusSphereRegression = ({ BrepKernel }) => {
+export const runOffsetTorusSphereRegression = ({ RemusKernel }) => {
   // Independent annulus/disk overlap integral from the native qualification matrix.
   const overlap = 56.2702148298352;
   for (const [operation, expected] of [
@@ -389,7 +389,7 @@ export const runOffsetTorusSphereRegression = ({ BrepKernel }) => {
     ['cut', 48 * Math.PI ** 2 - overlap],
     ['intersect', overlap],
   ]) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     const torus = kernel.makeTorus(6, 2, 32);
     const sphere = kernel.makeSphere(3, 24);
     kernel.transformSolid(
@@ -410,12 +410,12 @@ export const runOffsetTorusSphereRegression = ({ BrepKernel }) => {
   console.log('ok - offset torus/sphere: exact rotated fuse, cut, intersect against annulus-overlap oracle');
 };
 
-export const runBooleanScaleRegression = ({ BrepKernel }) => {
+export const runBooleanScaleRegression = ({ RemusKernel }) => {
   for (let exponent = -5; exponent <= 6; exponent += 1) {
     const scale = 10 ** exponent;
     for (const placed of [false, true]) {
       for (const [operation, expected] of [['fuse', 1.16], ['cut', 0.84], ['intersect', 0.16]]) {
-        const kernel = new BrepKernel();
+        const kernel = new RemusKernel();
         const blank = kernel.makeBox(scale, scale, scale);
         const tool = kernel.makeBox(0.4 * scale, 0.4 * scale, 2 * scale);
         kernel.transformSolid(tool, new Float64Array([1, 0, 0, 0.3 * scale, 0, 1, 0, 0.3 * scale, 0, 0, 1, -0.5 * scale, 0, 0, 0, 1]));
@@ -440,11 +440,11 @@ export const runBooleanScaleRegression = ({ BrepKernel }) => {
 };
 
 
-export const runAnisotropicBooleanRegression = ({ BrepKernel }) => {
+export const runAnisotropicBooleanRegression = ({ RemusKernel }) => {
   for (const batch of [false, true]) {
     for (const length of [1, 1e3, 1e6]) for (const width of [0.1, 0.001]) {
       for (const placed of [false, true]) for (const operation of ['fuse', 'cut', 'intersect']) {
-        const kernel = new BrepKernel();
+        const kernel = new RemusKernel();
         try {
           const invoke = (op, args) => {
             const [result] = JSON.parse(kernel.executeBatch(JSON.stringify([{ op, args }])));
@@ -488,8 +488,8 @@ export const runAnisotropicBooleanRegression = ({ BrepKernel }) => {
   console.log('ok - 36 anisotropic boolean cells in direct and batch APIs retain local material');
 };
 
-export const runSphereCylinderWallRegression = ({ BrepKernel, RemusIo }) => {
-  const kernel = new BrepKernel();
+export const runSphereCylinderWallRegression = ({ RemusKernel, RemusIo }) => {
+  const kernel = new RemusKernel();
   const io = new RemusIo();
   try {
     const cylinder = kernel.makeCylinder(15, 60);
@@ -559,13 +559,13 @@ export const runSphereCylinderWallRegression = ({ BrepKernel, RemusIo }) => {
   );
 };
 
-export const runTorusNotchRegression = ({ BrepKernel }) => {
+export const runTorusNotchRegression = ({ RemusKernel }) => {
   // Independent annular-section quadrature, recomputed in the native matrix.
   const overlap = 233.17975756277542;
   const torusVolume = 180 * Math.PI ** 2;
   for (const batch of [false, true]) for (const scale of [0.1, 1, 10]) {
     for (const placed of [false, true]) for (const operation of ['fuse', 'cut', 'intersect']) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       try {
         const invoke = (op, args) => {
           const [result] = JSON.parse(kernel.executeBatch(JSON.stringify([{ op, args }])));
@@ -605,13 +605,13 @@ export const runTorusNotchRegression = ({ BrepKernel }) => {
   console.log('ok - torus notch: 18 exact scale/placement cells through direct and batch APIs');
 };
 
-export const runTangencyBandRegression = ({ BrepKernel }) => {
+export const runTangencyBandRegression = ({ RemusKernel }) => {
   const outcomes = new Map();
   const totals = { exact: 0, refused: 0 };
   for (const batch of [false, true]) for (const scale of [0.1, 1, 10]) {
     for (const placed of [false, true]) for (const operation of ['fuse', 'cut', 'intersect']) {
       for (const epsilon of [-1e-3, -1e-5, -1e-7, -1e-9, 0, 1e-9, 1e-7, 1e-5, 1e-3]) {
-        const kernel = new BrepKernel();
+        const kernel = new RemusKernel();
         const label = `${operation} epsilon=${epsilon} scale=${scale} placed=${placed}`;
         try {
           const half = 4 + epsilon;
@@ -685,7 +685,7 @@ export const runTangencyBandRegression = ({ BrepKernel }) => {
 };
 
 
-export const runPartialCylinderResizeRegression = ({ BrepKernel, RemusIo }) => {
+export const runPartialCylinderResizeRegression = ({ RemusKernel, RemusIo }) => {
   const fixture = readFileSync(new URL('../crates/io/tests/data/jolly_fox_partial_cylinder.step', import.meta.url));
   const expectedVolume = (radius) => 73 * 41 * 8 + 12 * 30.5 * 12 + Math.PI * radius ** 2 * 12 / 4;
   const io = new RemusIo();
@@ -716,7 +716,7 @@ export const runPartialCylinderResizeRegression = ({ BrepKernel, RemusIo }) => {
   };
   try {
     for (const batch of [false, true]) for (const radius of [20, 21, 22, 28, 30.5, 32]) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       const label = `quarter cylinder r=${radius} batch=${batch}`;
       try {
         const solids = Array.from(kernel.deserializeSolids(io.importStep(fixture)));
@@ -750,7 +750,7 @@ export const runPartialCylinderResizeRegression = ({ BrepKernel, RemusIo }) => {
           [[61 - (radius + 20.5) / (2 * Math.SQRT2), 41 - (radius + 20.5) / (2 * Math.SQRT2), 14], radius > 20.5],
         ]) assert.equal(kernel.classifyPoint(result, ...point, 1e-7), inside ? 'inside' : 'outside', label);
         const step = io.exportStep(kernel.serializeSolids(Uint32Array.of(result)));
-        const round = new BrepKernel();
+        const round = new RemusKernel();
         try {
           const roundSolids = Array.from(round.deserializeSolids(io.importStep(step)));
           assert.equal(roundSolids.length, 1, label);
@@ -763,9 +763,9 @@ export const runPartialCylinderResizeRegression = ({ BrepKernel, RemusIo }) => {
 };
 
 
-export const runDirectEditHistoryRegression = ({ BrepKernel }) => {
+export const runDirectEditHistoryRegression = ({ RemusKernel }) => {
   for (const batch of [false, true]) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const source = kernel.makeBox(3, 5, 7);
       const edit = (solid, distance) => {
@@ -812,7 +812,7 @@ export const runDirectEditHistoryRegression = ({ BrepKernel }) => {
     }
   }
   for (const batch of [false, true]) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const wire = kernel.makeRegularPolygonWire(10, 500);
       const profile = kernel.makeFaceFromWire(wire);
@@ -835,7 +835,7 @@ export const runDirectEditHistoryRegression = ({ BrepKernel }) => {
     } finally { kernel.free(); }
   }
   for (const batch of [false, true]) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const translated = (solid, x, y, z) => {
         kernel.transformSolid(solid, new Float64Array([1,0,0,x,0,1,0,y,0,0,1,z,0,0,0,1]));
@@ -897,7 +897,7 @@ export const runDirectEditHistoryRegression = ({ BrepKernel }) => {
 };
 
 
-export const runSurfaceReplacementHistoryRegression = ({ BrepKernel, RemusIo }) => {
+export const runSurfaceReplacementHistoryRegression = ({ RemusKernel, RemusIo }) => {
   const fixture = readFileSync(new URL('../crates/io/tests/data/jolly_fox_partial_cylinder.step', import.meta.url));
   const expectedVolume = radius => 73 * 41 * 8 + 12 * 30.5 * 12 + Math.PI * radius ** 2 * 12 / 4;
   const kinds = [['face', 'getSolidFaces'], ['edge', 'getSolidEdges'], ['vertex', 'getSolidVertices']];
@@ -937,7 +937,7 @@ export const runSurfaceReplacementHistoryRegression = ({ BrepKernel, RemusIo }) 
     }
   };
   const checkArena = (kernel, result, refs, volume) => {
-    const restored = new BrepKernel();
+    const restored = new RemusKernel();
     try {
       restored.makeBox(1, 1, 1);
       const [solid] = restored.deserializeSolids(kernel.serializeSolids(Uint32Array.of(result)));
@@ -946,7 +946,7 @@ export const runSurfaceReplacementHistoryRegression = ({ BrepKernel, RemusIo }) 
     } finally { restored.free(); }
   };
   for (const batch of [false, true]) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const top = solid => Array.from(kernel.getSolidFaces(solid)).find(face => kernel.getFaceNormal(face)[2] > 0.9);
       const source = kernel.makeBox(3, 5, 7);
@@ -957,7 +957,7 @@ export const runSurfaceReplacementHistoryRegression = ({ BrepKernel, RemusIo }) 
       checkReferences(kernel, second.solid, refs);
       checkArena(kernel, second.solid, refs, 120);
     } finally { kernel.free(); }
-    const budgetKernel = new BrepKernel();
+    const budgetKernel = new RemusKernel();
     try {
       const wire = budgetKernel.makeRegularPolygonWire(10, 500);
       const profile = budgetKernel.makeFaceFromWire(wire);
@@ -978,7 +978,7 @@ export const runSurfaceReplacementHistoryRegression = ({ BrepKernel, RemusIo }) 
       assert.deepEqual(budgetKernel.serializeSolids(Uint32Array.of(source)), before);
     } finally { budgetKernel.free(); }
     for (const radius of [20, 22, 28]) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       const io = new RemusIo();
       try {
         const [source] = kernel.deserializeSolids(io.importStep(fixture));
@@ -991,7 +991,7 @@ export const runSurfaceReplacementHistoryRegression = ({ BrepKernel, RemusIo }) 
         assert.ok(Math.abs(JSON.parse(kernel.getAnalyticSurfaceParams(wall(source))).radius - 20.5) < 1e-9);
         checkReferences(kernel, second.solid, refs);
         checkArena(kernel, second.solid, refs, expectedVolume(radius));
-        const roundTrip = new BrepKernel();
+        const roundTrip = new RemusKernel();
         try {
           const [solid] = roundTrip.deserializeSolids(io.importStep(io.exportStep(kernel.serializeSolids(Uint32Array.of(second.solid)))));
           qualify(roundTrip, solid, expectedVolume(radius));
@@ -1018,7 +1018,7 @@ export const runSurfaceReplacementHistoryRegression = ({ BrepKernel, RemusIo }) 
 };
 
 
-export const runCylindricalRadiusHistoryRegression = ({ BrepKernel, RemusIo }) => {
+export const runCylindricalRadiusHistoryRegression = ({ RemusKernel, RemusIo }) => {
   const kinds = [['face', 'getSolidFaces'], ['edge', 'getSolidEdges'], ['vertex', 'getSolidVertices']];
   const wall = (kernel, solid) => Array.from(kernel.getSolidFaces(solid)).find(face => kernel.getSurfaceType(face) === 'cylinder');
   const resize = (kernel, solid, radius, batch) => {
@@ -1054,7 +1054,7 @@ export const runCylindricalRadiusHistoryRegression = ({ BrepKernel, RemusIo }) =
   };
   const fixture = readFileSync(new URL('../crates/io/tests/data/jolly_fox_partial_cylinder.step', import.meta.url));
   for (const batch of [false, true]) for (const [type, radius] of [['boss', 3], ['boss', 8], ['bore', 2], ['bore', 5], ['quarter', 22]]) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     const io = new RemusIo();
     try {
       let source;
@@ -1079,7 +1079,7 @@ export const runCylindricalRadiusHistoryRegression = ({ BrepKernel, RemusIo }) =
       qualifyRefs(kernel, second.solid, firstRefs, false);
       qualifyRefs(kernel, second.solid, refs, true);
       qualify(kernel, source, sourceVolume);
-      const restored = new BrepKernel();
+      const restored = new RemusKernel();
       try {
         restored.makeBox(1, 1, 1);
         const [solid] = restored.deserializeSolids(kernel.serializeSolids(Uint32Array.of(second.solid)));
@@ -1087,7 +1087,7 @@ export const runCylindricalRadiusHistoryRegression = ({ BrepKernel, RemusIo }) =
         qualifyRefs(restored, solid, refs, true);
         qualifyRefs(restored, solid, firstRefs, false);
       } finally { restored.free(); }
-      const roundTrip = new BrepKernel();
+      const roundTrip = new RemusKernel();
       try {
         const [solid] = roundTrip.deserializeSolids(io.importStep(io.exportStep(kernel.serializeSolids(Uint32Array.of(second.solid)))));
         qualify(roundTrip, solid, expected(finalRadius));
@@ -1105,7 +1105,7 @@ export const runCylindricalRadiusHistoryRegression = ({ BrepKernel, RemusIo }) =
 };
 
 
-export const runDraftHistoryRegression = ({ BrepKernel, RemusIo }) => {
+export const runDraftHistoryRegression = ({ RemusKernel, RemusIo }) => {
   const kinds = [['face','getSolidFaces'], ['edge','getSolidEdges'], ['vertex','getSolidVertices']];
   const wall = (kernel, solid) => Array.from(kernel.getSolidFaces(solid)).find(face =>
     kernel.getSurfaceType(face) === 'plane' && kernel.getFaceNormal(face)[0] > 0.9);
@@ -1147,7 +1147,7 @@ export const runDraftHistoryRegression = ({ BrepKernel, RemusIo }) => {
     assert.ok(Math.abs(independent-volume)<Math.abs(volume)*2e-3);
   };
   for (const batch of [false,true]) for (const bore of [false,true]) for (const scale of [0.001,1,1000]) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     const io = new RemusIo();
     try {
       let source = kernel.makeBox(10*scale,10*scale,10*scale);
@@ -1166,14 +1166,14 @@ export const runDraftHistoryRegression = ({ BrepKernel, RemusIo }) => {
       qualify(kernel,second.solid,secondVolume,scale);
       qualify(kernel,source,sourceVolume,scale);
       checkRefs(kernel,second.solid,refs);
-      const restored=new BrepKernel();
+      const restored=new RemusKernel();
       try {
         restored.makeBox(1,1,1);
         const [solid]=restored.deserializeSolids(kernel.serializeSolids(Uint32Array.of(second.solid)));
         qualify(restored,solid,secondVolume,scale);
         checkRefs(restored,solid,refs);
       } finally { restored.free(); }
-      const roundTrip=new BrepKernel();
+      const roundTrip=new RemusKernel();
       try {
         const importSolid = solid => io.importStep(io.exportStep(kernel.serializeSolids(Uint32Array.of(solid))));
         if (bore && scale === 1000) {
@@ -1199,7 +1199,7 @@ export const runDraftHistoryRegression = ({ BrepKernel, RemusIo }) => {
   console.log('ok - draft history: degree units, successive plain/bored edits at three scales, all refs, arena, qualified STEP or explicit large-bore sampling refusal, rollback');
 };
 
-export const runDefeatureHistoryRegression = ({BrepKernel, RemusIo}) => {
+export const runDefeatureHistoryRegression = ({RemusKernel, RemusIo}) => {
   const kinds = [['face','getSolidFaces'],['edge','getSolidEdges'],['vertex','getSolidVertices']];
   const refs = (kernel, result, selectedKinds=kinds) => selectedKinds.flatMap(([kind,query]) => Array.from(kernel[query](result.solid), (_,index) => ({kind,ref:kernel.makeOperationOutputRef(result.op,kind,index)})));
   const checkRefs = (kernel, solid, references, allowDeleted, selectedKinds=kinds) => {
@@ -1221,7 +1221,7 @@ export const runDefeatureHistoryRegression = ({BrepKernel, RemusIo}) => {
     assert.equal(JSON.parse(kernel.meshQuality(solid,0.005*scale)).isWatertight,true);
   };
   for(const batch of [false,true]) for(const type of ['bore','chamfer','fillet','rim','cone']) for(const scale of [0.001,1,10]) {
-    const kernel=new BrepKernel(), io=new RemusIo();
+    const kernel=new RemusKernel(), io=new RemusIo();
     try {
       const move=(solid,x,y,z)=>{kernel.transformSolid(solid,new Float64Array([1,0,0,x,0,1,0,y,0,0,1,z,0,0,0,1]));return solid;};
       let source, anchor, expected;
@@ -1272,7 +1272,7 @@ export const runDefeatureHistoryRegression = ({BrepKernel, RemusIo}) => {
       const outputRefs=refs(kernel,result);
       checkRefs(kernel,result.solid,outputRefs,false);
       if(['bore','chamfer','fillet'].includes(type)) {
-        const draftKernel=new BrepKernel();
+        const draftKernel=new RemusKernel();
         try {
           const [solid]=draftKernel.deserializeSolids(kernel.serializeSolids(Uint32Array.of(result.solid)));
           const wall=Array.from(draftKernel.getSolidFaces(solid)).find(face=>draftKernel.getFaceNormal(face)[0]>0.9);
@@ -1281,7 +1281,7 @@ export const runDefeatureHistoryRegression = ({BrepKernel, RemusIo}) => {
           checkRefs(draftKernel,next.solid,outputRefs,false);
         } finally {draftKernel.free();}
       }
-      const restored=new BrepKernel();
+      const restored=new RemusKernel();
       try {
         restored.makeBox(1,1,1);
         const [solid]=restored.deserializeSolids(kernel.serializeSolids(Uint32Array.of(result.solid)));
@@ -1289,12 +1289,12 @@ export const runDefeatureHistoryRegression = ({BrepKernel, RemusIo}) => {
         checkRefs(restored,solid,outputRefs,false);
         if(oldRefs)checkRefs(restored,solid,oldRefs,true,kinds.slice(0,1));
       } finally {restored.free();}
-      const roundTrip=new BrepKernel();
+      const roundTrip=new RemusKernel();
       try {
         const [solid]=roundTrip.deserializeSolids(io.importStep(io.exportStep(kernel.serializeSolids(Uint32Array.of(result.solid)))));
         qualify(roundTrip,solid,expected,scale);
       } finally {roundTrip.free();}
-      const imported=new BrepKernel();
+      const imported=new RemusKernel();
       try {
         const [solid]=imported.deserializeSolids(io.importStep(io.exportStep(kernel.serializeSolids(Uint32Array.of(source)))));
         const selection=Array.from(imported.getSolidFaces(solid)).filter(face=>{
@@ -1319,7 +1319,7 @@ export const runDefeatureHistoryRegression = ({BrepKernel, RemusIo}) => {
   console.log('ok - defeature history: 30 direct/batch scale cells, retained/merged/deleted refs, arena/STEP, rollback');
 };
 
-export const runHealingHistoryRegression = ({ BrepKernel, RemusIo }) => {
+export const runHealingHistoryRegression = ({ RemusKernel, RemusIo }) => {
   const kinds = [['face', 'getSolidFaces'], ['edge', 'getSolidEdges'], ['vertex', 'getSolidVertices']];
   const references = (kernel, result) => kinds.flatMap(([kind, query]) =>
     Array.from(kernel[query](result.solid), (_, index) => ({ kind, ref: kernel.makeOperationOutputRef(result.op, kind, index) })));
@@ -1339,7 +1339,7 @@ export const runHealingHistoryRegression = ({ BrepKernel, RemusIo }) => {
     }
   };
   for (const scale of [0.001, 1, 10]) for (const batch of [false, true]) for (const pipeline of [false, true]) {
-    const kernel = new BrepKernel(), io = new RemusIo(), restored = new BrepKernel(), imported = new BrepKernel();
+    const kernel = new RemusKernel(), io = new RemusIo(), restored = new RemusKernel(), imported = new RemusKernel();
     try {
       const source = kernel.makeBox(10 * scale, 10 * scale, 10 * scale);
       const document = JSON.parse(new TextDecoder().decode(kernel.serializeSolids(Uint32Array.of(source))));
@@ -1384,10 +1384,10 @@ export const runHealingHistoryRegression = ({ BrepKernel, RemusIo }) => {
   console.log('ok - healing history: 12 direct/batch cells, repeated repairs, arena, later draft, STEP import, rollback');
 };
 
-export const runUnifyHistoryRegression = ({ BrepKernel }) => {
+export const runUnifyHistoryRegression = ({ RemusKernel }) => {
   const kinds = [['face', 'getSolidFaces'], ['edge', 'getSolidEdges'], ['vertex', 'getSolidVertices']];
   for (const scale of [0.001, 1, 10]) for (const batch of [false, true]) {
-    const kernel = new BrepKernel(), restored = new BrepKernel();
+    const kernel = new RemusKernel(), restored = new RemusKernel();
     try {
       const cube = kernel.makeBox(10 * scale, 10 * scale, 10 * scale);
       const document = JSON.parse(new TextDecoder().decode(kernel.serializeSolids(Uint32Array.of(cube))));
@@ -1454,10 +1454,10 @@ export const runUnifyHistoryRegression = ({ BrepKernel }) => {
   console.log('ok - unify history: six direct/batch scale cells, merged/deleted references, legacy import, arena and later draft');
 };
 
-export const runSewingHistoryRegression = ({ BrepKernel }) => {
+export const runSewingHistoryRegression = ({ RemusKernel }) => {
   const kinds = [['face', 'getSolidFaces'], ['edge', 'getSolidEdges'], ['vertex', 'getSolidVertices']];
   for (const operator of ['sew_shells', 'fix_wireframe']) for (const scale of [0.001, 1, 10]) for (const batch of [false, true]) {
-    const kernel = new BrepKernel(), restored = new BrepKernel();
+    const kernel = new RemusKernel(), restored = new RemusKernel();
     try {
       const cube = kernel.makeBox(10 * scale, 10 * scale, 10 * scale);
       const document = JSON.parse(new TextDecoder().decode(kernel.serializeSolids(Uint32Array.of(cube))));
@@ -1543,12 +1543,12 @@ export const runSewingHistoryRegression = ({ BrepKernel }) => {
   console.log('ok - sewing/wireframe history: twelve direct/batch scale cells, merged edge/vertex references, legacy import, arena and later draft');
 };
 
-export const runInnerWireHistoryRegression = ({ BrepKernel }) => {
+export const runInnerWireHistoryRegression = ({ RemusKernel }) => {
   const kinds = [['face', 'getSolidFaces'], ['edge', 'getSolidEdges'], ['vertex', 'getSolidVertices']];
   for (const scale of [0.001, 1, 10]) for (const batch of [false, true]) {
-    const kernel = new BrepKernel(), restored = new BrepKernel();
+    const kernel = new RemusKernel(), restored = new RemusKernel();
     try {
-      const refusal = new BrepKernel();
+      const refusal = new RemusKernel();
       try {
         const box = refusal.makeBox(10 * scale, 10 * scale, 10 * scale), tool = refusal.makeCylinder(scale, 10 * scale);
         refusal.transformSolid(tool, Float64Array.of(1,0,0,5*scale,0,1,0,5*scale,0,0,1,0,0,0,0,1));
@@ -1641,9 +1641,9 @@ export const runInnerWireHistoryRegression = ({ BrepKernel }) => {
 };
 
 
-export const runSplitVertexRefusalRegression = ({ BrepKernel }) => {
+export const runSplitVertexRefusalRegression = ({ RemusKernel }) => {
   for (const scale of [0.001, 1, 10]) for (const batch of [false, true]) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const cube = kernel.makeBox(scale, scale, scale);
       const document = JSON.parse(new TextDecoder().decode(kernel.serializeSolids(Uint32Array.of(cube))));
@@ -1688,7 +1688,7 @@ export const runSplitVertexRefusalRegression = ({ BrepKernel }) => {
   }
 };
 
-export const runBlendResizeHistoryRegression = ({ BrepKernel, RemusIo }) => {
+export const runBlendResizeHistoryRegression = ({ RemusKernel, RemusIo }) => {
   const kinds = [['face', 'getSolidFaces'], ['edge', 'getSolidEdges'], ['vertex', 'getSolidVertices']];
   const band = (kernel, solid) => Array.from(kernel.getSolidFaces(solid)).find(face => kernel.getSurfaceType(face) === 'cylinder');
   const edit = (kernel, solid, expectedRadius, newRadius, batch) => {
@@ -1714,7 +1714,7 @@ export const runBlendResizeHistoryRegression = ({ BrepKernel, RemusIo }) => {
     }
   };
   for (const batch of [false, true]) {
-    const kernel = new BrepKernel(), io = new RemusIo();
+    const kernel = new RemusKernel(), io = new RemusIo();
     try {
       const box = kernel.makeBox(10, 10, 10);
       const fillet = kernel.filletWithEvolution(box, Uint32Array.of(kernel.getSolidEdges(box)[0]), 1);
@@ -1731,14 +1731,14 @@ export const runBlendResizeHistoryRegression = ({ BrepKernel, RemusIo }) => {
         assert.ok(Math.abs(kernel.volume(solid, 0.01) - expected) < expected * 1e-6);
         assert.equal(JSON.parse(kernel.meshQuality(solid, 0.01)).isWatertight, true);
       }
-      const restored = new BrepKernel();
+      const restored = new RemusKernel();
       try {
         restored.makeBox(1, 1, 1);
         const [copy] = restored.deserializeSolids(kernel.serializeSolids(Uint32Array.of(solid)));
         const next = edit(restored, copy, radius, 1.25, batch);
         checkRefs(restored, next.solid, refs);
       } finally { restored.free(); }
-      const roundtrip = new BrepKernel();
+      const roundtrip = new RemusKernel();
       try {
         const [copy] = roundtrip.deserializeSolids(io.importStep(io.exportStep(kernel.serializeSolids(Uint32Array.of(solid)))));
         assert.ok(Math.abs(roundtrip.volume(copy, 0.01) - kernel.volume(solid, 0.01)) < 1e-5);
@@ -1775,7 +1775,7 @@ export const runBlendResizeHistoryRegression = ({ BrepKernel, RemusIo }) => {
         assert.equal(JSON.parse(target.meshQuality(result, 0.01)).isWatertight, true);
       };
       checkRemoval(kernel, removed.solid);
-      const afterRemoval = new BrepKernel();
+      const afterRemoval = new RemusKernel();
       try {
         afterRemoval.makeBox(1, 1, 1);
         const [copy] = afterRemoval.deserializeSolids(kernel.serializeSolids(Uint32Array.of(removed.solid)));
@@ -1795,10 +1795,10 @@ export const runBlendResizeHistoryRegression = ({ BrepKernel, RemusIo }) => {
 // the consumer regression pins the shipped packages' bytes). The exported
 // meshes must carry only finite, nonzero-area facets, be closed and
 // consistently oriented, and agree with the exact B-rep volume.
-export const runZeroAreaMeshExportRegression = ({ BrepKernel, RemusIo }) => {
+export const runZeroAreaMeshExportRegression = ({ RemusKernel, RemusIo }) => {
   const io = new RemusIo();
   try {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const plate = kernel.makeBox(80, 40, 8);
       const bore = kernel.makeCylinder(5, 16);

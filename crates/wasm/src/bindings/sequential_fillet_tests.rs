@@ -10,9 +10,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
-fn run(kernel: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn run(kernel: &mut RemusKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let json = serde_json::Value::Array(ops.to_vec()).to_string();
     serde_json::from_str(&kernel.execute_batch(&json)).unwrap()
 }
@@ -29,7 +29,7 @@ fn ok_handle(out: &serde_json::Value) -> u32 {
 }
 
 /// The edge of `solid` whose endpoints both satisfy `at`, as a batch handle.
-fn edge_where(kernel: &mut BrepKernel, solid: u32, at: impl Fn(f64, f64, f64) -> bool) -> u32 {
+fn edge_where(kernel: &mut RemusKernel, solid: u32, at: impl Fn(f64, f64, f64) -> bool) -> u32 {
     let out = run(
         kernel,
         &[op("solidEdges", serde_json::json!({"solid": solid}))],
@@ -59,7 +59,7 @@ fn edge_where(kernel: &mut BrepKernel, solid: u32, at: impl Fn(f64, f64, f64) ->
 fn fillet_top_edge_after_vertical_edge_fillet() {
     let (dx, dy, dz) = (9.5, 12.5, 8.5);
     let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let out = run(
         &mut kernel,
         &[op(
@@ -128,7 +128,7 @@ fn fillet_top_edge_after_vertical_edge_fillet() {
 fn fillet_vertical_edge_larger_than_earlier_top_fillet() {
     let (dx, dy, dz) = (9.5, 12.5, 8.5);
     let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let out = run(
         &mut kernel,
         &[op(
@@ -164,7 +164,7 @@ fn fillet_vertical_edge_larger_than_earlier_top_fillet() {
         "no validation errors"
     );
 
-    let volume = |kernel: &mut BrepKernel, solid: u32| {
+    let volume = |kernel: &mut RemusKernel, solid: u32| {
         let out = run(
             kernel,
             &[op(
@@ -179,7 +179,7 @@ fn fillet_vertical_edge_larger_than_earlier_top_fillet() {
     assert!(after < before, "a convex fillet removes material");
 }
 
-fn bounded_tab_source(kernel: &mut BrepKernel) -> (u32, Vec<u32>) {
+fn bounded_tab_source(kernel: &mut RemusKernel) -> (u32, Vec<u32>) {
     let solid = kernel
         .deserialize_solid(include_bytes!(
             "../../../operations/tests/data/rollover_tabbed_source.arena.json"
@@ -207,7 +207,7 @@ fn bounded_tab_source(kernel: &mut BrepKernel) -> (u32, Vec<u32>) {
 #[test]
 fn bounded_tab_rollover_native_direct_detailed_both_batches_and_history() {
     for surface in ["direct", "detailed", "batch", "batchV2", "history"] {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let (source, seeds) = bounded_tab_source(&mut kernel);
         let other = kernel.make_box_solid(2.0, 3.0, 5.0).unwrap();
         let before = kernel.serialize_solid(source).unwrap();

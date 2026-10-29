@@ -11,7 +11,7 @@ the existing per-face mesh cache: a face move still creates new B-Rep handles,
 but unchanged mesh dependencies can reuse their previous work.
 
 Native callers opt in with `remus_operations::tessellate::enable_mesh_reuse()`.
-`BrepKernel` enables it by default, so existing grouped/ungrouped solid
+`RemusKernel` enables it by default, so existing grouped/ungrouped solid
 meshing calls benefit without changing the application. The ordinary API
 still returns an owned complete mesh; this change makes its CPU construction
 incremental, rather than introducing a GPU or worker-transfer delta format.

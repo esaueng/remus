@@ -13,7 +13,7 @@
 //! ```
 #![allow(clippy::print_stdout, clippy::expect_used, clippy::unwrap_used)]
 
-use remus_wasm::kernel::BrepKernel;
+use remus_wasm::kernel::RemusKernel;
 
 fn ok_u32(result: &str) -> u32 {
     let value: serde_json::Value = serde_json::from_str(result).unwrap();
@@ -21,7 +21,7 @@ fn ok_u32(result: &str) -> u32 {
     u32::try_from(ok).unwrap()
 }
 
-fn drilled_plate(kernel: &mut BrepKernel) -> u32 {
+fn drilled_plate(kernel: &mut RemusKernel) -> u32 {
     let mut plate = ok_u32(
         &kernel.execute_batch(r#"[{"op":"makeBox","args":{"width":100,"height":100,"depth":10}}]"#),
     );
@@ -43,7 +43,7 @@ fn drilled_plate(kernel: &mut BrepKernel) -> u32 {
 
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_default();
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let plate = drilled_plate(&mut kernel);
     if mode != "full" {
         println!("setup plate={plate}");

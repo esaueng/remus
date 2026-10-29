@@ -283,8 +283,8 @@ function assertRecipeRoutes(stages, enabled, required) {
     }
   }
 }
-function runCase(BrepKernel, fixture, enabled, binding, requireRouteProof) {
-  const kernel = new BrepKernel();
+function runCase(RemusKernel, fixture, enabled, binding, requireRouteProof) {
+  const kernel = new RemusKernel();
   try {
     kernel.setStoreLocalCuts(false);
     let blank, tool;
@@ -336,13 +336,13 @@ function batch(kernel, op, args = {}) {
   assert(Object.hasOwn(rows[0], 'ok'), `${op}: ${JSON.stringify(rows)}`);
   return rows[0].ok;
 }
-function settingsContract(BrepKernel) {
-  const first = new BrepKernel(), second = new BrepKernel();
+function settingsContract(RemusKernel) {
+  const first = new RemusKernel(), second = new RemusKernel();
   try {
     assert.equal(first.storeLocalCutsEnabled(), false, 'Store-local default changed');
     batch(first, 'setStoreLocalCuts', { enabled: true });
     assert.equal(second.storeLocalCutsEnabled(), true, 'Setting was not shared across kernels');
-    const third = new BrepKernel();
+    const third = new RemusKernel();
     try { assert.equal(third.storeLocalCutsEnabled(), true, 'Constructor reset module setting'); } finally { third.free(); }
     const solid = second.makeBox(10, 10, 10), before = sha256(second.serializeSolids(Uint32Array.of(solid)));
     const failed = JSON.parse(second.executeBatchV2(JSON.stringify([
@@ -356,8 +356,8 @@ function settingsContract(BrepKernel) {
     return { defaultOff: true, moduleWide: true, constructorPreservesSetting: true, itemRefusalPreservesSettingAndInputs: true };
   } finally { first.setStoreLocalCuts(false); second.free(); first.free(); }
 }
-function lineageContract(BrepKernel, op, enabled) {
-  const kernel = new BrepKernel();
+function lineageContract(RemusKernel, op, enabled) {
+  const kernel = new RemusKernel();
   try {
     kernel.setStoreLocalCuts(false);
     const blank = plate(kernel), tool = move(kernel, kernel.makeBox(2, 6, 20), 13, 11, -5);
@@ -378,7 +378,7 @@ function lineageContract(BrepKernel, op, enabled) {
 function main(argv = process.argv.slice(2)) {
   const args = options(argv), directory = args['kernel-pkg'];
   const wrapper = path.join(directory, 'remus_wasm_node.cjs');
-  const { BrepKernel } = require(wrapper);
+  const { RemusKernel } = require(wrapper);
   const packageJson = fs.readFileSync(path.join(directory, 'package.json'));
   const result = { schemaVersion: 1, correctnessOnly: true, package: { name: JSON.parse(packageJson).name, version: JSON.parse(packageJson).version,
     wasmSha256: sha256(fs.readFileSync(path.join(directory, 'remus_wasm_bg.wasm'))), wrapperSha256: sha256(fs.readFileSync(wrapper)), packageJsonSha256: sha256(packageJson),
@@ -390,19 +390,19 @@ function main(argv = process.argv.slice(2)) {
     requireRouteProof: args['require-route-proof'] === 'on',
     incidence: 'Matching boundary-ordered graph encodings establish a bijection preserving endpoint, use, wire, loop, face, shell and root aliases. Indistinguishable ordering ties may reject isomorphic graphs; this is not a complete graph-isomorphism solver. Attributes and journal semantics remain separate contracts.',
     adoption: 'Qualification of listed inputs only. Default unchanged; general imported-body, cavity, NURBS, identity and lineage adoption require separate evidence.' } };
-  result.settings = settingsContract(BrepKernel);
+  result.settings = settingsContract(RemusKernel);
   result.lineage = [];
   for (const op of ['cutWithEntityEvolution', 'cutJournaled']) {
-    const baseline = lineageContract(BrepKernel, op, false), candidate = lineageContract(BrepKernel, op, true);
+    const baseline = lineageContract(RemusKernel, op, false), candidate = lineageContract(RemusKernel, op, true);
     assert.deepEqual(candidate, baseline, `${op}: lineage contract changed`);
     result.lineage.push({ op, exactAgreement: true, baselineSha256: sha256(JSON.stringify(baseline)) });
   }
   const selected = args.cases ? args.cases.split(',') : cases.map(fixture => fixture.name);
   assert(selected.length && new Set(selected).size === selected.length && selected.every(name => cases.some(fixture => fixture.name === name)), 'Unknown, empty or duplicate --cases');
   for (const fixture of cases.filter(fixture => selected.includes(fixture.name))) {
-    const baseline = runCase(BrepKernel, fixture, false, 'direct', args['require-route-proof'] === 'on');
+    const baseline = runCase(RemusKernel, fixture, false, 'direct', args['require-route-proof'] === 'on');
     for (const enabled of [false, true]) for (const binding of ['direct', 'batch']) {
-      const checked = runCase(BrepKernel, fixture, enabled, binding, args['require-route-proof'] === 'on');
+      const checked = runCase(RemusKernel, fixture, enabled, binding, args['require-route-proof'] === 'on');
       const difference = firstDifference(baseline.canonical, checked.canonical);
       if (difference) result.failures.push({ name: fixture.name, requestedStoreLocal: enabled, binding, reason: 'Exact boundary or incidence content differs', firstDifference: difference });
       assert(Math.abs(checked.volume - baseline.volume) <= Math.max(1, baseline.volume) * 1e-9, `${fixture.name}: volume differs`);
@@ -416,7 +416,7 @@ function main(argv = process.argv.slice(2)) {
     for (const width of [47, 49]) {
       let baseline;
       for (const enabled of [false, true]) {
-        const kernel = new BrepKernel();
+        const kernel = new RemusKernel();
         try {
           kernel.setStoreLocalCuts(enabled);
           const prepared = observeBoolean(kernel, () => recipe.prepare(kernel, data, { checkpoint: false }));

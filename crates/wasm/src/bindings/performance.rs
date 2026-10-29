@@ -2,7 +2,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
@@ -35,7 +35,7 @@ fn linear_memory_bytes(pages: usize) -> u64 {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Accounted live/retained topology bytes and unique NURBS payload bytes.
     /// Excludes allocator overhead, session sketches, pcurves, journals, caches
     /// and GPU data. Includes retired slots. Values are estimates, not RSS.
@@ -169,9 +169,9 @@ mod tests {
     #[test]
     #[allow(clippy::unwrap_used)]
     fn measurement_diagnostics_and_explicit_disable_survive_new_kernel() {
-        let kernel = super::BrepKernel::new();
+        let kernel = super::RemusKernel::new();
         kernel.set_measurement_reuse_enabled(false);
-        let next = super::BrepKernel::new();
+        let next = super::RemusKernel::new();
         let json: serde_json::Value =
             serde_json::from_str(&next.measurement_reuse_stats().unwrap()).unwrap();
         assert_eq!(json["reuse"]["enabled"], false);

@@ -16,14 +16,14 @@ function bits(value) {
 }
 
 function replay(kernelDirectory, runDirectory) {
-  const { BrepKernel } = require(path.join(path.resolve(kernelDirectory), 'remus_wasm_node.cjs'));
+  const { RemusKernel } = require(path.join(path.resolve(kernelDirectory), 'remus_wasm_node.cjs'));
   const run = JSON.parse(fs.readFileSync(path.join(runDirectory, 'results.json'), 'utf8'));
   const rows = [];
   for (const [index, saved] of [run.source, ...run.records].entries()) {
     assert.equal(path.basename(saved.artifacts.arena.file), saved.artifacts.arena.file);
     const document = fs.readFileSync(path.join(runDirectory, saved.artifacts.arena.file));
     assert.equal(sha256(document), saved.arenaSha256);
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const roots = kernel.deserializeSolids(document);
       assert.equal(roots.length, 1);

@@ -72,9 +72,9 @@ pub fn transaction_probe_fault(stage: u8) { remus_operations::transaction_fault:
 pub fn transaction_probe_failed() -> i32 {
     remus_operations::transaction_fault::failed().map_or(-1, |id| id.index() as i32)
 }
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     #[wasm_bindgen(js_name = "transactionProbeState")]
     pub fn transaction_probe_state(&self) -> String {
         remus_topology::transaction_probe::logical_state(self.topo())

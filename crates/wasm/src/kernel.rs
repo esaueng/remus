@@ -1,6 +1,6 @@
-//! The `BrepKernel` — a WASM-exposed modeling context.
+//! The `RemusKernel` — a WASM-exposed modeling context.
 //!
-//! JavaScript consumers create a single `BrepKernel` instance and call
+//! JavaScript consumers create a single `RemusKernel` instance and call
 //! methods on it to build and query geometry. All topological state is
 //! owned by the kernel; JS only holds opaque `u32` handles.
 
@@ -40,7 +40,7 @@ use crate::state::{CheckpointStore, GcsSketchState, HandleStore, SketchState};
 /// invokes methods to create, transform, and query geometry.
 #[cfg_attr(feature = "workflow-probes", derive(Debug))]
 #[wasm_bindgen]
-pub struct BrepKernel {
+pub struct RemusKernel {
     pub(crate) topo: Rc<Topology>,
     pub(crate) assemblies: crate::state::HandleStore<crate::state::AssemblyState>,
     pub(crate) sketches: crate::state::HandleStore<SketchState>,
@@ -61,7 +61,7 @@ pub struct BrepKernel {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Create a new, empty kernel.
     #[wasm_bindgen(constructor)]
     #[must_use]
@@ -91,7 +91,7 @@ impl BrepKernel {
     }
 }
 
-impl BrepKernel {
+impl RemusKernel {
     /// Fresh session stores around an independently owned document. Unlike
     /// the public constructor, document copies preserve module cache settings.
     pub(crate) fn from_document_topology(topology: Topology) -> Self {
@@ -110,7 +110,7 @@ impl BrepKernel {
     }
 }
 
-impl Default for BrepKernel {
+impl Default for RemusKernel {
     fn default() -> Self {
         Self::new()
     }
@@ -132,7 +132,7 @@ pub(crate) enum Refusal {
     Restored,
 }
 
-impl BrepKernel {
+impl RemusKernel {
     /// Returns a mutable reference to the topology, cloning if shared
     /// with any checkpoints (copy-on-write).
     pub(crate) fn topo_mut(&mut self) -> &mut Topology {
@@ -1598,23 +1598,23 @@ pub(crate) mod test_fixtures {
     #![allow(clippy::unwrap_used, dead_code)]
     use super::*;
 
-    pub fn kernel_with_box() -> (BrepKernel, u32) {
-        let mut k = BrepKernel::new();
+    pub fn kernel_with_box() -> (RemusKernel, u32) {
+        let mut k = RemusKernel::new();
         let id = remus_operations::primitives::make_box(k.topo_mut(), 1.0, 1.0, 1.0).unwrap();
         #[allow(clippy::cast_possible_truncation)]
         (k, id.index() as u32)
     }
 
-    pub fn kernel_with_two_boxes() -> (BrepKernel, u32, u32) {
-        let mut k = BrepKernel::new();
+    pub fn kernel_with_two_boxes() -> (RemusKernel, u32, u32) {
+        let mut k = RemusKernel::new();
         let a = remus_operations::primitives::make_box(k.topo_mut(), 2.0, 2.0, 2.0).unwrap();
         let b = remus_operations::primitives::make_box(k.topo_mut(), 1.0, 1.0, 1.0).unwrap();
         #[allow(clippy::cast_possible_truncation)]
         (k, a.index() as u32, b.index() as u32)
     }
 
-    pub fn kernel_with_cylinder() -> (BrepKernel, u32) {
-        let mut k = BrepKernel::new();
+    pub fn kernel_with_cylinder() -> (RemusKernel, u32) {
+        let mut k = RemusKernel::new();
         let id = remus_operations::primitives::make_cylinder(k.topo_mut(), 1.0, 2.0).unwrap();
         #[allow(clippy::cast_possible_truncation)]
         (k, id.index() as u32)
@@ -1631,7 +1631,7 @@ mod batch_tests {
 
     #[test]
     fn batch_single_op() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let result = kernel
             .execute_batch(r#"[{"op": "makeBox", "args": {"width": 1, "height": 1, "depth": 1}}]"#);
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
@@ -1643,7 +1643,7 @@ mod batch_tests {
 
     #[test]
     fn batch_multiple_ops() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let result = kernel.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 2, "height": 2, "depth": 2}},
@@ -1660,7 +1660,7 @@ mod batch_tests {
 
     #[test]
     fn batch_error_doesnt_stop_rest() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let result = kernel.execute_batch(
             r#"[
                 {"op": "unknownOp", "args": {}},
@@ -1674,7 +1674,7 @@ mod batch_tests {
 
     #[test]
     fn batch_invalid_json() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let result = kernel.execute_batch("not valid json");
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(
@@ -1687,7 +1687,7 @@ mod batch_tests {
 
     #[test]
     fn batch_missing_op_field() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let result = kernel.execute_batch(r#"[{"args": {"width": 1}}]"#);
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(parsed[0]["error"].as_str().unwrap().contains("op"));
@@ -1695,7 +1695,7 @@ mod batch_tests {
 
     #[test]
     fn batch_boolean_ops() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let result = kernel.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 2, "height": 2, "depth": 2}},
@@ -1711,7 +1711,7 @@ mod batch_tests {
 
     #[test]
     fn batch_bounding_box() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let result = kernel.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 2, "height": 4, "depth": 6}},
@@ -1727,7 +1727,7 @@ mod batch_tests {
 
     #[test]
     fn batch_copy_solid() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let result = kernel.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 1, "height": 1, "depth": 1}},
@@ -1746,14 +1746,14 @@ mod tangent_arc_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
-    fn get_edge(k: &BrepKernel, handle: u32) -> &Edge {
+    fn get_edge(k: &RemusKernel, handle: u32) -> &Edge {
         let id = k.resolve_edge(handle).unwrap();
         k.topo.edge(id).unwrap()
     }
 
     #[test]
     fn semicircle() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let eid = k
             .make_tangent_arc_3d_impl(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0)
             .unwrap();
@@ -1771,7 +1771,7 @@ mod tangent_arc_tests {
 
     #[test]
     fn quarter_circle() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let eid = k
             .make_tangent_arc_3d_impl(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0)
             .unwrap();
@@ -1794,7 +1794,7 @@ mod tangent_arc_tests {
 
     #[test]
     fn tilted_3d_arc() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let eid = k
             .make_tangent_arc_3d_impl(1.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 1.0)
             .unwrap();
@@ -1807,7 +1807,7 @@ mod tangent_arc_tests {
 
     #[test]
     fn collinear_fallback() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let eid = k
             .make_tangent_arc_3d_impl(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 5.0, 0.0, 0.0)
             .unwrap();
@@ -1816,7 +1816,7 @@ mod tangent_arc_tests {
 
     #[test]
     fn large_arc_gt_pi() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let eid = k
             .make_tangent_arc_3d_impl(1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0)
             .unwrap();
@@ -1825,7 +1825,7 @@ mod tangent_arc_tests {
 
     #[test]
     fn coincident_points_error() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let err = k
             .make_tangent_arc_3d_impl(1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 1.0, 2.0, 3.0)
             .unwrap_err();
@@ -1834,7 +1834,7 @@ mod tangent_arc_tests {
 
     #[test]
     fn zero_tangent_error() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let err = k
             .make_tangent_arc_3d_impl(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
             .unwrap_err();
@@ -1843,7 +1843,7 @@ mod tangent_arc_tests {
 
     #[test]
     fn batch_tangent_arc_returns_strictly_trimmed_edge() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let output = kernel.execute_batch(
             r#"[{"op":"makeTangentArc3d","args":{"startX":1,"startY":0,"startZ":0,"tangentX":0,"tangentY":1,"tangentZ":0,"endX":0,"endY":1,"endZ":0}}]"#,
         );
@@ -1864,7 +1864,7 @@ mod lift_curve2d_tests {
 
     #[test]
     fn line2d_on_xy_plane() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let eid = k
             .lift_curve2d_to_plane_impl(
                 0,
@@ -1895,7 +1895,7 @@ mod lift_curve2d_tests {
 
     #[test]
     fn circle2d_quarter_arc_xy() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let eid = k
             .lift_curve2d_to_plane_impl(
                 1,
@@ -1927,7 +1927,7 @@ mod lift_curve2d_tests {
 
     #[test]
     fn circle2d_on_xz_plane() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let eid = k
             .lift_curve2d_to_plane_impl(
                 1,
@@ -1959,7 +1959,7 @@ mod lift_curve2d_tests {
 
     #[test]
     fn circle2d_full_circle() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let eid = k
             .lift_curve2d_to_plane_impl(
                 1,
@@ -1985,7 +1985,7 @@ mod lift_curve2d_tests {
 
     #[test]
     fn ellipse2d_with_rotation() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let eid = k
             .lift_curve2d_to_plane_impl(
                 2,
@@ -2013,7 +2013,7 @@ mod lift_curve2d_tests {
 
     #[test]
     fn ellipse2d_full() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let eid = k
             .lift_curve2d_to_plane_impl(
                 2,
@@ -2038,7 +2038,7 @@ mod lift_curve2d_tests {
 
     #[test]
     fn nurbs2d_degree1_line() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let eid = k
             .lift_curve2d_to_plane_impl(
                 3,
@@ -2070,7 +2070,7 @@ mod lift_curve2d_tests {
 
     #[test]
     fn nurbs2d_subspan_keeps_caller_parameter_authority() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let handle = kernel
             .lift_curve2d_to_plane_impl(
                 3,
@@ -2091,13 +2091,13 @@ mod lift_curve2d_tests {
         let edge_id = kernel.resolve_edge(handle).unwrap();
         let edge = kernel.topo().edge(edge_id).unwrap();
         assert_eq!(edge.strict_domain().unwrap(), (0.25, 0.75));
-        let midpoint = BrepKernel::curve_point(edge.curve(), 0.5);
+        let midpoint = RemusKernel::curve_point(edge.curve(), 0.5);
         assert!((midpoint - Point3::new(2.0, 0.0, 0.0)).length() < 1e-12);
     }
 
     #[test]
     fn invalid_curve_type() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let err = k
             .lift_curve2d_to_plane_impl(
                 5,
@@ -2120,7 +2120,7 @@ mod lift_curve2d_tests {
 
     #[test]
     fn wrong_param_count() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let err = k
             .lift_curve2d_to_plane_impl(
                 1,
@@ -2202,7 +2202,7 @@ mod json_brep_trim_tests {
 
     #[test]
     fn json_brep_import_preserves_authoritative_trim_and_interior() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel
             .from_brep_impl(&circle_brep(serde_json::json!([
                 0.0,
@@ -2213,13 +2213,13 @@ mod json_brep_trim_tests {
         let edges = remus_topology::explorer::solid_edges(kernel.topo(), solid_id).unwrap();
         let edge = kernel.topo().edge(edges[0]).unwrap();
         assert_eq!(edge.strict_domain().unwrap(), (0.0, std::f64::consts::TAU));
-        let midpoint = BrepKernel::curve_point(edge.curve(), std::f64::consts::PI);
+        let midpoint = RemusKernel::curve_point(edge.curve(), std::f64::consts::PI);
         assert!((midpoint - Point3::new(-1.0, 0.0, 0.0)).length() < 1e-12);
     }
 
     #[test]
     fn json_brep_invalid_trim_is_atomic() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let before = (
             kernel.topo().num_vertices(),
             kernel.topo().num_edges(),
@@ -2246,7 +2246,7 @@ mod json_brep_trim_tests {
 
     #[test]
     fn json_brep_normalizes_finite_legacy_line_trims() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.from_brep_impl(&legacy_line_brep()).unwrap();
         let solid = kernel.resolve_solid(solid).unwrap();
         let edges = remus_topology::explorer::solid_edges(kernel.topo(), solid).unwrap();
@@ -2326,7 +2326,7 @@ mod json_brep_id_tests {
         serde_json::json!({"vertices": vertices, "edges": edges, "faces": faces})
     }
 
-    fn counts(kernel: &BrepKernel) -> [usize; 5] {
+    fn counts(kernel: &RemusKernel) -> [usize; 5] {
         let topo = kernel.topo();
         [
             topo.num_vertices(),
@@ -2337,7 +2337,7 @@ mod json_brep_id_tests {
         ]
     }
 
-    fn volume(kernel: &mut BrepKernel, solid: u32) -> f64 {
+    fn volume(kernel: &mut RemusKernel, solid: u32) -> f64 {
         let out = kernel.execute_batch(
             &serde_json::json!([{"op": "volume", "args": {"solid": solid}}]).to_string(),
         );
@@ -2396,7 +2396,7 @@ mod json_brep_id_tests {
 
     #[test]
     fn cube_document_imports_closed_with_unit_volume() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.from_brep_impl(&cube_brep().to_string()).unwrap();
         assert!((volume(&mut kernel, solid) - 1.0).abs() < 1e-9);
     }
@@ -2580,7 +2580,7 @@ mod json_brep_id_tests {
             "orientations": [false, false, false, false]
         }]);
 
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.from_brep_impl(&doc.to_string()).unwrap();
         let solid = kernel.resolve_solid(solid).unwrap();
         let faces = remus_topology::explorer::solid_faces(kernel.topo(), solid).unwrap();
@@ -2615,10 +2615,10 @@ mod json_brep_id_tests {
 mod workflow_probes {
     use wasm_bindgen::prelude::*;
 
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
     #[wasm_bindgen]
-    impl BrepKernel {
+    impl RemusKernel {
         /// Snapshot every logical session field, including vacant handle slots,
         /// sketches, assemblies, checkpoints, and the poison flag.
         ///
@@ -2638,7 +2638,7 @@ mod workflow_probes {
 
         #[test]
         fn snapshot_detects_non_geometry_state_changes() {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let mut before = kernel.workflow_state_snapshot();
             assert!(kernel.sketches.push(SketchState::default()).is_ok());
             let mut after = kernel.workflow_state_snapshot();
@@ -2668,7 +2668,7 @@ mod kernel_correctness_tests {
 
     #![allow(clippy::unwrap_used)]
 
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
     #[test]
     fn constructors_retain_content_keyed_nurbs_area_readings() {
@@ -2701,7 +2701,7 @@ mod kernel_correctness_tests {
             vec![vec![1.0; 2]; 2],
         )
         .unwrap();
-        let mut first = BrepKernel::new();
+        let mut first = RemusKernel::new();
         measure::set_thread_nurbs_area_memo_limits(3, 4096);
         let face = make_nurbs_face(first.topo_mut(), surface.clone(), 1e-7).unwrap();
         let area = first.face_area(face.index() as u32, 0.05).unwrap();
@@ -2710,7 +2710,7 @@ mod kernel_correctness_tests {
         let reuse_before = measure::measurement_reuse_stats();
         assert_eq!(reuse_before.area_entries, 1);
 
-        let mut second = BrepKernel::new();
+        let mut second = RemusKernel::new();
         let after_constructor = measure::thread_nurbs_area_memo_stats().unwrap();
         assert_eq!(after_constructor.len, before.len);
         assert_eq!(after_constructor.misses, before.misses);
@@ -2739,8 +2739,8 @@ mod kernel_correctness_tests {
         assert_eq!(after.len, before.len);
     }
 
-    fn journaled_box(width: f64) -> (BrepKernel, u32, String) {
-        let mut kernel = BrepKernel::new();
+    fn journaled_box(width: f64) -> (RemusKernel, u32, String) {
+        let mut kernel = RemusKernel::new();
         let outer = kernel.make_box_solid(width, 3.0, 4.0).unwrap();
         let inner = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let result: serde_json::Value =
@@ -2782,7 +2782,7 @@ mod kernel_correctness_tests {
 
     #[test]
     fn deleting_solid_keeps_shared_sheet_measurable_and_serializable() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
         let face = kernel.get_solid_faces(solid).unwrap()[0];
         let sheet = kernel.make_sheet_body(vec![face]).unwrap();

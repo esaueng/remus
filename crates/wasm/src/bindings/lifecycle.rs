@@ -3,7 +3,7 @@
 use wasm_bindgen::prelude::*;
 
 use crate::error::WasmError;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 #[derive(Debug, thiserror::Error)]
 enum LifecycleError {
@@ -13,7 +13,7 @@ enum LifecycleError {
     DeleteSolid(#[from] remus_topology::DeleteSolidError),
 }
 
-impl BrepKernel {
+impl RemusKernel {
     fn delete_solid_impl(&mut self, solid: u32) -> Result<(), LifecycleError> {
         let solid_id = self.resolve_solid(solid)?;
         if let Some((assembly_index, _)) = self.assemblies.iter().find(|(_, assembly)| {
@@ -35,7 +35,7 @@ impl BrepKernel {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Retire a solid handle and its unshared topology subtree.
     ///
     /// The handle becomes permanently invalid. This does not compact the
@@ -59,7 +59,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use crate::error::WasmError;
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
     fn identity_matrix() -> Vec<f64> {
         vec![
@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn delete_solid_invalidates_handle_without_reusing_its_slot() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let stale = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
 
         kernel.delete_solid(stale).unwrap();
@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn delete_solid_rejects_live_compound_reference_atomically() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let compound = kernel.make_compound(vec![solid]).unwrap();
 
@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn delete_solid_rejects_live_assembly_reference_atomically() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let assembly = kernel.assembly_new("assembly").unwrap();
         kernel
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn restored_assembly_tombstones_do_not_pin_retained_solids() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let checkpoint = kernel.checkpoint().unwrap();
         let retired = kernel.assembly_new("retired").unwrap();
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn restore_does_not_revive_retired_solid() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let retired = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let checkpoint = kernel.checkpoint().unwrap();
 
@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn fuse_all_does_not_pin_inputs_in_a_hidden_compound() {
         for batch in [false, true] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let solid = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
             let result = if batch {
                 let output: serde_json::Value = serde_json::from_str(&kernel.execute_batch(
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn failed_batch_fuse_all_does_not_allocate_a_compound() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let output: serde_json::Value = serde_json::from_str(
             &kernel.execute_batch(r#"[{"op":"fuseAll","args":{"solids":[]}}]"#),
         )

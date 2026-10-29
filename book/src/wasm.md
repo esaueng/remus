@@ -6,9 +6,9 @@ repository publishes nothing to npm — see
 independent model:
 
 ```javascript
-import { BrepKernel } from 'remus-wasm';
+import { RemusKernel } from 'remus-wasm';
 
-const kernel = new BrepKernel();
+const kernel = new RemusKernel();
 const box = kernel.makeBox(20, 10, 5);
 const volume = kernel.volume(box, 0.05);
 const inertia = kernel.inertiaTensor(box); // row-major 3x3, about the CoM

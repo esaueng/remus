@@ -4,7 +4,7 @@ use remus_operations::distance::MaximumDistanceError;
 use wasm_bindgen::prelude::*;
 
 use crate::error::StructuredWasmError;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 fn failure(error: MaximumDistanceError) -> StructuredWasmError {
     let code = error.kernel_code();
@@ -32,7 +32,7 @@ fn failure(error: MaximumDistanceError) -> StructuredWasmError {
     structured.with_detail("kernelCode", code)
 }
 
-impl BrepKernel {
+impl RemusKernel {
     pub(crate) fn maximum_distance_values(
         &self,
         a: u32,
@@ -55,7 +55,7 @@ impl BrepKernel {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Global maximum distance and witnesses as `[distance, ax, ay, az, bx, by, bz]`.
     ///
     /// Supports straight-edged planar polyhedra and complete native spheres,
@@ -84,10 +84,10 @@ impl BrepKernel {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
     use serde_json::{Value, json};
 
-    fn call(kernel: &mut BrepKernel, v2: bool, op: &str, args: Value) -> Value {
+    fn call(kernel: &mut RemusKernel, v2: bool, op: &str, args: Value) -> Value {
         let input = json!([{ "op":op,"args":args }]).to_string();
         let output = if v2 {
             kernel.execute_batch_v2(&input)
@@ -101,7 +101,7 @@ mod tests {
     #[allow(deprecated)] // Deliberate mismatch of compatibility and authoritative boundaries.
     fn maximum_distance_topology_refusals_keep_query_code_and_topology_details() {
         for v2 in [false, true] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let solid = u32::try_from(
                 call(
                     &mut kernel,
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn maximum_distance_batch_oracles_and_read_only_session_contract() {
         for v2 in [false, true] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let a = call(
                 &mut kernel,
                 v2,

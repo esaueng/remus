@@ -763,9 +763,9 @@ export function installPackage(packageDir, temporaryRoot, label) {
 }
 
 function batchObservation(c, modulePath) {
-  const { BrepKernel } = createRequire(import.meta.url)(modulePath);
+  const { RemusKernel } = createRequire(import.meta.url)(modulePath);
   const initStarted = performance.now();
-  const kernel = new BrepKernel();
+  const kernel = new RemusKernel();
   const coldInitMs = performance.now() - initStarted;
   try {
     const batchStarted = performance.now();
@@ -840,9 +840,9 @@ function finalizeBatchObservation(c, responses, coldInitMs, batchDurationMs) {
 
 export function directObservation(c, modulePath) {
   const mod = createRequire(import.meta.url)(modulePath);
-  const { BrepKernel } = mod;
+  const { RemusKernel } = mod;
   const initStarted = performance.now();
-  const kernel = new BrepKernel();
+  const kernel = new RemusKernel();
   const coldInitMs = performance.now() - initStarted;
   try {
     const batchStarted = performance.now();

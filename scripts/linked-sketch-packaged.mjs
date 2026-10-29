@@ -34,9 +34,9 @@ function refusal(k, route, op, args, direct, kernelCode, category) {
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-8, `${a} != ${b}`);
 const json = value => typeof value === 'string' ? JSON.parse(value) : value;
 
-export function runLinkedSketchPackaged({ BrepKernel }) {
+export function runLinkedSketchPackaged({ RemusKernel }) {
   for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
-    const k = new BrepKernel();
+    const k = new RemusKernel();
     try {
       // Establish references using only public APIs: the first journaled face
       // move creates a 10 x 8 x 4 box with full construction F/E/V history.
@@ -133,8 +133,8 @@ export function runLinkedSketchPackaged({ BrepKernel }) {
       console.log(`ok - linked planar sketch ${route}: construction identity, edit/undo, typed refusals, refresh-first rollback`);
     } finally { k.free(); }
   }
-  runLinkedSketchCirclesPackaged({ BrepKernel });
-  runLinkedSketchEllipsesPackaged({ BrepKernel });
+  runLinkedSketchCirclesPackaged({ RemusKernel });
+  runLinkedSketchEllipsesPackaged({ RemusKernel });
 }
 
 // Run the same witness against either a fresh build or an npm-installed tarball:
@@ -146,11 +146,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
 }
 
 /** Full-circle witnesses over the real direct and both batch API exports. */
-export function runLinkedSketchCirclesPackaged({ BrepKernel }) {
+export function runLinkedSketchCirclesPackaged({ RemusKernel }) {
   let cells = 0;
   for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const scale of [0.001, 1, 1000]) for (const placement of [0, 1, 2]) {
-      const k = new BrepKernel();
+      const k = new RemusKernel();
       try {
         const call = (op, args, direct) => invoke(k, route, op, args, direct);
         const radius = circle => call('gcsCircleRadius', { sketch, circle }, [sketch, circle]);
@@ -264,12 +264,12 @@ export function runLinkedSketchCirclesPackaged({ BrepKernel }) {
 }
 
 /** Public construction/constraints/attachment edits; raw source edits refuse. */
-export function runLinkedSketchEllipsesPackaged({ BrepKernel }) {
+export function runLinkedSketchEllipsesPackaged({ RemusKernel }) {
   let cells = 0;
   for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const scale of [0.001, 1, 1000]) for (const placement of [0, 1, 2]) {
       for (const carrierSense of [-1, 1]) for (const attachmentSense of [-1, 1]) {
-        const k = new BrepKernel();
+        const k = new RemusKernel();
         try {
           const call = (op, args, direct) => invoke(k, route, op, args, direct);
           const unitNormal = placement === 2 ? [0, -1, 0] : [0, 0, 1];

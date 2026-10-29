@@ -31,10 +31,10 @@ function refuse(k, route, op, args, code) {
 }
 const state=(k,solids)=>({geometry:Array.from(k.serializeSolids(Uint32Array.from(solids))),
   journal:k.journalSummary(),memory:k.checkpointMemoryStats(),checkpoints:k.checkpointCount()});
-export function runDraftAnalysisPackaged({BrepKernel}) {
+export function runDraftAnalysisPackaged({RemusKernel}) {
   let fixtures=0;
   for (const route of routes) for (const scale of [1e-3,1,1e3]) for (const angle of [0,0.37]) {
-    const k=new BrepKernel();
+    const k=new RemusKernel();
     try {
       const solid=k.makeBox(2*scale,3*scale,4*scale);
       const c=Math.cos(angle),s=Math.sin(angle);
@@ -74,7 +74,7 @@ export function runDraftAnalysisPackaged({BrepKernel}) {
     } finally {k.free();}
   }
   for (const route of routes) {
-    const k=new BrepKernel();
+    const k=new RemusKernel();
     try {
       const solid=k.makeCylinder(1,2,16),before=state(k,[solid]);
       refuse(k,route,'getPlanarSolidDraft',{solid,pullX:0,pullY:0,pullZ:1},'draft-analysis:non-planar-face');
@@ -83,7 +83,7 @@ export function runDraftAnalysisPackaged({BrepKernel}) {
     } finally {k.free();}
   }
   for (const route of routes) {
-    const k=new BrepKernel();
+    const k=new RemusKernel();
     try {
       const sphere=k.makeSphere(2,16), faces=Array.from(k.getSolidFaces(sphere));
       const before=state(k,[sphere]);
@@ -101,7 +101,7 @@ export function runDraftAnalysisPackaged({BrepKernel}) {
     } finally {k.free();}
   }
   for (const route of routes) {
-    const k=new BrepKernel();
+    const k=new RemusKernel();
     try {
       const outer=k.makeBox(4,4,4),inner=k.makeBox(2,2,2);
       k.transformSolid(inner,[1,0,0,1,0,1,0,1,0,0,1,1,0,0,0,1]);

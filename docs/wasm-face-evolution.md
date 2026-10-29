@@ -6,7 +6,7 @@ The pre-hardening contract is pinned to Remus fork revision
 `17892b81301d13f429f594d01071196ce8170d65` (the refreshed `origin/main` used
 as this work's branch base).
 
-At that revision, `BrepKernel.filletWithEvolution(solid, edges, radius)` was
+At that revision, `RemusKernel.filletWithEvolution(solid, edges, radius)` was
 declared as returning `any` and returned a JavaScript string at runtime. Parsing
 that string produced:
 

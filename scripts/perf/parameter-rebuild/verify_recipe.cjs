@@ -39,8 +39,8 @@ function retainedNurbsCarriersMatch(base, result, width, expectedCount = 8) {
 
 function verify(packageDirectory, capturedRuns = null) {
   const data = recipe.fixture();
-  const { BrepKernel } = require(path.join(path.resolve(packageDirectory), 'remus_wasm_node.cjs'));
-  const kernel = new BrepKernel(), rows = [], previous = new Map();
+  const { RemusKernel } = require(path.join(path.resolve(packageDirectory), 'remus_wasm_node.cjs'));
+  const kernel = new RemusKernel(), rows = [], previous = new Map();
   try {
     const prefix = recipe.prepare(kernel, data);
     let referenceMass, referenceFeatures, referenceTextVolumes;
@@ -81,12 +81,12 @@ function verify(packageDirectory, capturedRuns = null) {
     }
     // A completely new kernel reconstructs from the immutable fixtures; all
     // reachable arena fields must match the previous owner, not just volume.
-    const fresh = new BrepKernel();
+    const fresh = new RemusKernel();
     try {
       const fixed = recipe.prepare(fresh, data), result = recipe.rebuild(fresh, data, fixed, 47);
       assert.equal(recipe.sha256(fresh.serializeSolids(Uint32Array.from(result.roots))), previous.get(47));
     } finally { fresh.free(); }
-    const full = new BrepKernel(), fullReplay = [];
+    const full = new RemusKernel(), fullReplay = [];
     try {
       const empty = full.checkpoint();
       for (const width of [46, 47, 49, 47, 46]) {

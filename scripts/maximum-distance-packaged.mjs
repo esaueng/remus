@@ -99,11 +99,11 @@ function affineDocument(kernel, solid, everyFace = true, chart = [2, 8, -3, 3]) 
 }
 const importDocument = (kernel, doc) => kernel.deserializeSolids(Buffer.from(JSON.stringify(doc)))[0];
 
-export function runAffineMaximumDistancePackaged({ BrepKernel }) {
+export function runAffineMaximumDistancePackaged({ RemusKernel }) {
   let fixtures = 0;
   for (const route of routes) for (const scale of [1e-3, 1, 1e3]) for (const placed of [false, true]) {
     for (const all of [false, true]) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       try {
         const sourceA = kernel.makeBox(2 * scale, 3 * scale, 4 * scale);
         const sourceB = kernel.makeBox(5 * scale, 2 * scale, scale);
@@ -130,7 +130,7 @@ export function runAffineMaximumDistancePackaged({ BrepKernel }) {
     }
   }
   for (const route of routes) for (const fault of ['near-affine', 'weights', 'missing', 'outside', 'bowed', 'chart-roundoff']) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const source = kernel.makeBox(2, 3, 4);
       const doc = affineDocument(kernel, source, true,
@@ -159,7 +159,7 @@ export function runAffineMaximumDistancePackaged({ BrepKernel }) {
     } finally { kernel.free(); }
   }
   for (const route of routes) for (const scale of [1e-3, 1, 1e3]) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const source = kernel.makeBox(2 * scale, 3 * scale, 4 * scale);
       kernel.transformSolid(source, translation(4 * scale, -3 * scale, scale));
@@ -176,7 +176,7 @@ export function runAffineMaximumDistancePackaged({ BrepKernel }) {
     } finally { kernel.free(); }
   }
   for (const route of routes) for (const scale of [1 / 1024, 1, 1024]) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const x = kernel.makeBox(2 * scale, 3 * scale, 4 * scale);
       const y = kernel.makeBox(5 * scale, 2 * scale, scale);
@@ -193,7 +193,7 @@ export function runAffineMaximumDistancePackaged({ BrepKernel }) {
     } finally { kernel.free(); }
   }
   for (const route of routes) for (const cavity of [false, true]) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const outer = kernel.makeBox(8, 6, 4), tool = kernel.makeBox(2, 2, cavity ? 2 : 6);
       kernel.transformSolid(tool, translation(3, 2, cavity ? 1 : -1));
@@ -217,12 +217,12 @@ export function runAffineMaximumDistancePackaged({ BrepKernel }) {
   return fixtures;
 }
 
-export function runMaximumDistancePackaged({ BrepKernel }) {
+export function runMaximumDistancePackaged({ RemusKernel }) {
   let fixtures = 0;
   for (const route of routes) for (const scale of [1e-3, 1, 1e3]) for (const placed of [false, true]) {
     const matrix = pose(scale, placed);
     {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       try {
         const a = kernel.makeBox(2 * scale, 3 * scale, 4 * scale);
         const b = kernel.makeBox(5 * scale, 2 * scale, scale);
@@ -243,7 +243,7 @@ export function runMaximumDistancePackaged({ BrepKernel }) {
       } finally { kernel.free(); }
     }
     for (const offset of [[8, 6, 0], [4, 0, 0], [1, 0, 0], [0, 0, 0]]) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       try {
         const a = kernel.makeSphere(2 * scale, 16), b = kernel.makeSphere(3 * scale, 16);
         kernel.transformSolid(b, translation(...offset.map(x => x * scale)));
@@ -259,7 +259,7 @@ export function runMaximumDistancePackaged({ BrepKernel }) {
       } finally { kernel.free(); }
     }
     {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       try {
         const sphere = kernel.makeSphere(2 * scale, 16), box = kernel.makeBox(2 * scale, 3 * scale, 4 * scale);
         kernel.transformSolid(box, translation(4 * scale, -3 * scale, scale));
@@ -279,7 +279,7 @@ export function runMaximumDistancePackaged({ BrepKernel }) {
   }
   for (const route of routes) {
     for (const scale of [1e-3,1,1e3]) {
-      const kernel=new BrepKernel();
+      const kernel=new RemusKernel();
       try {
         const outer=kernel.makeBox(8*scale,6*scale,4*scale),tool=kernel.makeBox(2*scale,2*scale,6*scale);
         kernel.transformSolid(tool,translation(3*scale,2*scale,-scale));
@@ -291,7 +291,7 @@ export function runMaximumDistancePackaged({ BrepKernel }) {
         fixtures+=1;
       } finally {kernel.free();}
     }
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const box = kernel.makeBox(2, 3, 4), cylinder = kernel.makeCylinder(1, 2, 16);
       const before = state(kernel, [box, cylinder]);
@@ -305,7 +305,7 @@ export function runMaximumDistancePackaged({ BrepKernel }) {
     } finally { kernel.free(); }
   }
   console.log(`Maximum-distance packaged witnesses passed (${fixtures} fixtures; direct/legacy/V2)`);
-  runAffineMaximumDistancePackaged({ BrepKernel });
+  runAffineMaximumDistancePackaged({ RemusKernel });
   return fixtures;
 }
 

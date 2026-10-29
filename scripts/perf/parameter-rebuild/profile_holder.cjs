@@ -144,8 +144,8 @@ async function main(argv = process.argv.slice(2)) {
       capture.source.receiptVerification = 'External attestation retained verbatim; not interpreted or independently validated by this profiler.';
     }
     const recipe = require('./holder_recipe.cjs');
-    const { BrepKernel } = require(path.join(args['kernel-pkg'], 'remus_wasm_node.cjs'));
-    observer = observe(recipe, BrepKernel);
+    const { RemusKernel } = require(path.join(args['kernel-pkg'], 'remus_wasm_node.cjs'));
+    observer = observe(recipe, RemusKernel);
     session = new inspector.Session(); session.connect();
     await post(session, 'Profiler.enable');
     await post(session, 'Profiler.setSamplingInterval', { interval: args['sample-interval-us'] });
