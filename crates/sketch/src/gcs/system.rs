@@ -38,6 +38,8 @@ pub struct GcsSystem {
     fixed_circle_radii: HashSet<CircleId>,
     arcs: GenArena<ArcData>,
     ellipses: GenArena<EllipseData>,
+    /// All three scalar parameters owned by external ellipse geometry.
+    fixed_ellipse_parameters: HashSet<EllipseId>,
     constraints: GenArena<ConstraintEntry>,
     /// Internal constraints auto-added by `add_arc` (center–end distance).
     /// Keyed by `ArcId` so they can be removed with the arc.
@@ -60,6 +62,7 @@ impl Clone for GcsSystem {
             fixed_circle_radii: self.fixed_circle_radii.clone(),
             arcs: self.arcs.clone(),
             ellipses: self.ellipses.clone(),
+            fixed_ellipse_parameters: self.fixed_ellipse_parameters.clone(),
             constraints: self.constraints.clone(),
             arc_internal_constraints: self.arc_internal_constraints.clone(),
             param_map: self.param_map.clone(),
@@ -181,6 +184,7 @@ impl GcsSystem {
             fixed_circle_radii: HashSet::new(),
             arcs: GenArena::new(),
             ellipses: GenArena::new(),
+            fixed_ellipse_parameters: HashSet::new(),
             constraints: GenArena::new(),
             arc_internal_constraints: HashMap::new(),
             param_map: Vec::new(),
@@ -461,6 +465,67 @@ impl GcsSystem {
         }))
     }
 
+    /// Add an ellipse whose semiaxes and angle are excluded from the solver.
+    /// The center retains its own fixed/free status. No removable constraint
+    /// implements this ownership; failed solves cannot move these scalars.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::add_ellipse`].
+    pub fn add_ellipse_with_fixed_parameters(
+        &mut self,
+        center: PointId,
+        a: f64,
+        b: f64,
+        angle: f64,
+    ) -> Result<EllipseId, SketchError> {
+        let id = self.add_ellipse(center, a, b, angle)?;
+        self.fixed_ellipse_parameters.insert(id);
+        Ok(id)
+    }
+
+    /// Refresh an externally owned ellipse's scalars without unlocking it.
+    ///
+    /// # Errors
+    /// Refuses stale/ordinary ellipses and non-finite/non-positive semiaxes
+    /// or a non-finite angle. Refusal preserves all previous scalars.
+    pub fn set_fixed_ellipse_parameters(
+        &mut self,
+        id: EllipseId,
+        a: f64,
+        b: f64,
+        angle: f64,
+    ) -> Result<(), SketchError> {
+        let ellipse = self
+            .ellipses
+            .get_mut(id)
+            .ok_or(SketchError::InvalidHandle)?;
+        if !(self.fixed_ellipse_parameters.contains(&id)
+            && a.is_finite()
+            && a > 0.0
+            && b.is_finite()
+            && b > 0.0
+            && angle.is_finite())
+        {
+            return Err(SketchError::InvalidValue);
+        }
+        ellipse.a = a;
+        ellipse.b = b;
+        ellipse.angle = angle;
+        Ok(())
+    }
+
+    /// Whether a live ellipse's scalar parameters are externally owned.
+    #[must_use]
+    pub fn are_ellipse_parameters_fixed(&self, id: EllipseId) -> bool {
+        self.fixed_ellipse_parameters.contains(&id)
+    }
+
+    /// Live ownership records; bounded by the number of live ellipses.
+    #[must_use]
+    pub fn fixed_ellipse_parameter_count(&self) -> usize {
+        self.fixed_ellipse_parameters.len()
+    }
+
     /// Get an ellipse by handle.
     #[must_use]
     pub fn ellipse(&self, id: EllipseId) -> Option<&EllipseData> {
@@ -469,7 +534,12 @@ impl GcsSystem {
 
     /// Get a mutable reference to an ellipse (for drag/edit sequences between
     /// solves: move the center, reshape the axes, or rotate, then re-solve).
+    /// Externally owned scalar parameters return `None`; their owner uses
+    /// [`Self::set_fixed_ellipse_parameters`] for controlled refresh.
     pub fn ellipse_mut(&mut self, id: EllipseId) -> Option<&mut EllipseData> {
+        if self.fixed_ellipse_parameters.contains(&id) {
+            return None;
+        }
         self.ellipses.get_mut(id)
     }
 
@@ -490,8 +560,10 @@ impl GcsSystem {
                 return Err(SketchError::EntityInUse);
             }
         }
+        let removed = self.ellipses.remove(id).ok_or(SketchError::InvalidHandle)?;
+        self.fixed_ellipse_parameters.remove(&id);
         self.dirty = true;
-        self.ellipses.remove(id).ok_or(SketchError::InvalidHandle)
+        Ok(removed)
     }
 
     /// Number of ellipses.
@@ -1952,6 +2024,9 @@ impl GcsSystem {
         }
 
         for (id, _) in self.ellipses.iter() {
+            if self.fixed_ellipse_parameters.contains(&id) {
+                continue;
+            }
             let idx = self.param_map.len();
             self.param_map.push(ParamRef::EllipseA(id));
             self.param_index.insert(ParamRef::EllipseA(id), idx);

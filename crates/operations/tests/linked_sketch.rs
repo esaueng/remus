@@ -14,6 +14,269 @@ use remus_topology::face::FaceSurface;
 use remus_topology::journal::{EntityKey, EventDraft, EvolutionDraft, OpId};
 use remus_topology::naming::{PersistentRef, Resolution, resolve};
 
+mod ellipse_inputs {
+    use super::*;
+    use remus_math::curves::Ellipse3D;
+    use remus_operations::linked_sketch::ExternalEllipseReference;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+
+    fn add_source(
+        topo: &mut Topology,
+        ellipse: Ellipse3D,
+        start: f64,
+        end: f64,
+    ) -> (remus_topology::EdgeId, ExternalEllipseReference) {
+        add_source_with_vertex_tolerance(topo, ellipse, start, end, 1e-7)
+    }
+
+    fn add_source_with_vertex_tolerance(
+        topo: &mut Topology,
+        ellipse: Ellipse3D,
+        start: f64,
+        end: f64,
+        vertex_tolerance: f64,
+    ) -> (remus_topology::EdgeId, ExternalEllipseReference) {
+        let pending = topo.journal_begin("ellipse_fixture");
+        let vertex = topo.add_vertex(Vertex::new(ellipse.evaluate(start), vertex_tolerance));
+        let mut edge =
+            Edge::with_tolerance(vertex, vertex, EdgeCurve::Ellipse(ellipse), Some(1e-7));
+        edge.set_trim(Some((start, end)));
+        let edge = topo.add_edge(edge);
+        let mut draft = EvolutionDraft::construction();
+        for key in [
+            EntityKey::vertex(vertex.index()),
+            EntityKey::edge(edge.index()),
+        ] {
+            draft.push(key, EventDraft::Generated { sources: vec![] });
+        }
+        let op = topo.journal_record_evolution(pending, draft).unwrap();
+        (
+            edge,
+            ExternalEllipseReference {
+                edge: reference(topo, op, EntityKey::edge(edge.index())),
+            },
+        )
+    }
+
+    #[test]
+    fn complete_ellipse_images_preserve_native_axes_sense_and_signed_seams() {
+        for scale in [0.001, 1.0, 1000.0] {
+            for normal_sign in [-1.0, 1.0] {
+                for attachment_sign in [-1.0, 1.0] {
+                    for axis_sign in [-1.0, 1.0] {
+                        for (start, span) in [
+                            (0.0, std::f64::consts::TAU),
+                            (0.37, std::f64::consts::TAU),
+                            (7.0, -std::f64::consts::TAU),
+                        ] {
+                            let (mut topo, solid, base, _) = fixture(scale);
+                            let mut frame = base.resolve_frame(&topo).unwrap();
+                            frame.y = frame.y * attachment_sign;
+                            frame.z = frame.z * attachment_sign;
+                            let attachment =
+                                PlanarSketchAttachment::new(&topo, base.reference().clone(), frame)
+                                    .unwrap();
+                            let angle = 0.37_f64;
+                            let normal = Vec3::new(0.0, 0.0, normal_sign);
+                            let u = Vec3::new(angle.cos(), angle.sin(), 0.0) * axis_sign;
+                            let ellipse = Ellipse3D::with_axes(
+                                Point3::new(5.0 * scale, 4.0 * scale, -scale),
+                                normal,
+                                3.0 * scale,
+                                2.0 * scale,
+                                u,
+                                normal.cross(u),
+                            )
+                            .unwrap();
+                            let (_, source) =
+                                add_source(&mut topo, ellipse.clone(), start, start + span);
+                            let ticks = topo.mutation_ticks();
+                            let image = attachment.resolve_ellipse(&topo, &source).unwrap();
+                            assert_eq!(topo.mutation_ticks(), ticks);
+                            assert!((image.center.x() / scale - 5.0).abs() < 1e-9);
+                            assert!(
+                                (image.center.y() / scale - 4.0 * attachment_sign).abs() < 1e-9
+                            );
+                            assert_eq!(image.a.to_bits(), (3.0 * scale).to_bits());
+                            assert_eq!(image.b.to_bits(), (2.0 * scale).to_bits());
+                            assert!((image.angle - angle * attachment_sign).sin().abs() < 1e-12);
+                            // Independent implicit ellipse equation on projected native points.
+                            for t in [0.0_f64, 0.41, 1.7, 3.9, 5.8] {
+                                let point = ellipse.evaluate(t) - frame.origin;
+                                let x = point.dot(frame.x) - image.center.x();
+                                let y = point.dot(frame.y) - image.center.y();
+                                let u = x * image.angle.cos() + y * image.angle.sin();
+                                let v = -x * image.angle.sin() + y * image.angle.cos();
+                                assert!(
+                                    ((u / image.a).powi(2) + (v / image.b).powi(2) - 1.0).abs()
+                                        < 1e-12
+                                );
+                            }
+                            let top = solid_faces(&topo, solid).unwrap().into_iter().find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Plane { normal, .. } if normal.z() > 0.99)).unwrap();
+                            move_faces_journaled(&mut topo, solid, &[top], scale).unwrap();
+                            let after = attachment.resolve_ellipse(&topo, &source).unwrap();
+                            assert_eq!(image.center, after.center);
+                            assert_eq!(image.a.to_bits(), after.a.to_bits());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ellipse_noncanonical_axes_unsound_frames_and_incomplete_ranges_refuse() {
+        for (a, b, normal, u, v, start, end) in [
+            (
+                2.0,
+                3.0,
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                0.0,
+                std::f64::consts::TAU,
+            ),
+            (
+                3.0,
+                3.0,
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                0.0,
+                std::f64::consts::TAU,
+            ),
+            (
+                3.0,
+                3.0 - 5e-8,
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                0.0,
+                std::f64::consts::TAU,
+            ),
+            (
+                3.0,
+                2.0,
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                0.0,
+                std::f64::consts::PI,
+            ),
+            (
+                3.0,
+                2.0,
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                0.0,
+                2.0 * std::f64::consts::TAU,
+            ),
+            (
+                3.0,
+                2.0,
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, -1.0, 0.0),
+                0.0,
+                std::f64::consts::TAU,
+            ),
+            (
+                3.0,
+                2.0,
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(1.01, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                0.0,
+                std::f64::consts::TAU,
+            ),
+            (
+                3.0,
+                2.0,
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 0.0, -1.0),
+                0.0,
+                std::f64::consts::TAU,
+            ),
+            (
+                f64::INFINITY,
+                2.0,
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                0.0,
+                std::f64::consts::TAU,
+            ),
+            // Angular roundoff cannot consume more than the linear model budget.
+            (
+                1e7,
+                2e6,
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(1.0 + 1e-13, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                0.0,
+                std::f64::consts::TAU,
+            ),
+        ] {
+            let (mut topo, _, attachment, _) = fixture(1.0);
+            let ellipse =
+                Ellipse3D::with_axes(Point3::new(0.0, 0.0, 0.0), normal, a, b, u, v).unwrap();
+            let (_, source) = add_source(&mut topo, ellipse, start, end);
+            let ticks = topo.mutation_ticks();
+            assert!(matches!(
+                attachment.resolve_ellipse(&topo, &source),
+                Err(LinkedSketchError::UnsupportedCurve)
+            ));
+            assert_eq!(topo.mutation_ticks(), ticks);
+        }
+    }
+
+    #[test]
+    fn ellipse_seam_endpoints_and_construction_identity_are_authoritative() {
+        let (mut topo, _, attachment, line) = fixture(1.0);
+        let ellipse = Ellipse3D::new(
+            Point3::new(1.0, 2.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+            2.0,
+        )
+        .unwrap();
+        // The start endpoint matches exactly; the opposite endpoint is wrong.
+        let (id, source) =
+            add_source_with_vertex_tolerance(&mut topo, ellipse, 0.0, std::f64::consts::TAU, 0.0);
+        assert!(topo.edge(id).unwrap().strict_domain().is_ok());
+        assert!(matches!(
+            attachment.resolve_ellipse(&topo, &source),
+            Err(LinkedSketchError::UnsupportedCurve)
+        ));
+        let pending = topo.journal_begin("fixture_missing_ellipse_trim");
+        topo.edge_mut(id).unwrap().set_trim(None);
+        let key = EntityKey::edge(id.index());
+        let mut draft = EvolutionDraft::construction();
+        draft.push(key, EventDraft::Modified { from: key });
+        topo.journal_record_evolution(pending, draft).unwrap();
+        assert!(matches!(
+            attachment.resolve_ellipse(&topo, &source),
+            Err(LinkedSketchError::UnsupportedCurve)
+        ));
+        assert!(matches!(
+            attachment.resolve_ellipse(&topo, &ExternalEllipseReference { edge: line.edge }),
+            Err(LinkedSketchError::UnsupportedCurve)
+        ));
+        assert!(matches!(
+            attachment.resolve_ellipse(
+                &topo,
+                &ExternalEllipseReference {
+                    edge: attachment.reference().clone()
+                }
+            ),
+            Err(LinkedSketchError::InvalidReferenceKind("edge"))
+        ));
+    }
+}
+
 fn reference(topo: &Topology, op: OpId, key: EntityKey) -> PersistentRef {
     (0..100)
         .map(|index| PersistentRef::operation_output(op, key.kind, index))

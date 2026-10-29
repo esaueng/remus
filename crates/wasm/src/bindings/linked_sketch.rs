@@ -4,7 +4,8 @@
 use remus_math::frame::Frame3;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::linked_sketch::{
-    ExternalCircleReference, ExternalLineReference, LinkedSketchError, PlanarSketchAttachment,
+    ExternalCircleReference, ExternalEllipseReference, ExternalLineReference, LinkedSketchError,
+    PlanarSketchAttachment,
 };
 use remus_topology::naming::PersistentRef;
 use serde::{Deserialize, Serialize};
@@ -33,6 +34,22 @@ pub struct ExternalCircle {
     pub circle: remus_sketch::CircleId,
 }
 
+/// A fixed center and three externally owned ellipse scalar parameters.
+#[derive(Debug, Clone)]
+pub struct ExternalEllipse {
+    pub reference: ExternalEllipseReference,
+    pub center: remus_sketch::PointId,
+    pub ellipse: remus_sketch::EllipseId,
+}
+
+/// Ordinary constraint handles whose ellipse geometry is read-only.
+#[derive(Debug, Clone, Serialize, Deserialize, tsify::Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalEllipseHandles {
+    pub ellipse: u32,
+    pub center: u32,
+}
+
 /// Ordinary constraint handles whose external center/radius are read-only.
 #[derive(Debug, Clone, Serialize, Deserialize, tsify::Tsify)]
 #[serde(rename_all = "camelCase")]
@@ -58,6 +75,8 @@ pub struct LinkedSketchResolution {
     pub external_lines: usize,
     #[serde(default)]
     pub external_circles: usize,
+    #[serde(default)]
+    pub external_ellipses: usize,
 }
 
 fn linked_error(error: LinkedSketchError) -> StructuredWasmError {
@@ -143,6 +162,7 @@ impl BrepKernel {
             frame: frame_json(resolved),
             external_lines: 0,
             external_circles: 0,
+            external_ellipses: 0,
         })
     }
 
@@ -279,6 +299,56 @@ impl BrepKernel {
         })
     }
 
+    fn add_external_ellipse_impl(
+        &mut self,
+        sketch: u32,
+        edge_ref: &str,
+    ) -> Result<ExternalEllipseHandles, StructuredWasmError> {
+        let state = self.linked_state(sketch)?;
+        let attachment = state
+            .attachment
+            .as_ref()
+            .ok_or_else(|| invalid("sketch has no linked attachment"))?;
+        let reference = ExternalEllipseReference {
+            edge: reference(edge_ref)?,
+        };
+        let image = attachment
+            .resolve_ellipse(self.topo(), &reference)
+            .map_err(linked_error)?;
+        let mut next = state.clone();
+        let center_handle =
+            crate::state::next_handle(next.points.len()).map_err(StructuredWasmError::from)?;
+        let ellipse_handle =
+            crate::state::next_handle(next.ellipses.len()).map_err(StructuredWasmError::from)?;
+        let center = next
+            .sys
+            .add_point(remus_sketch::PointData {
+                x: image.center.x(),
+                y: image.center.y(),
+                fixed: true,
+            })
+            .map_err(WasmError::from)?;
+        let ellipse = next
+            .sys
+            .add_ellipse_with_fixed_parameters(center, image.a, image.b, image.angle)
+            .map_err(WasmError::from)?;
+        next.points.push(Some(center));
+        next.ellipses.push(Some(ellipse));
+        next.external_ellipses.push(ExternalEllipse {
+            reference,
+            center,
+            ellipse,
+        });
+        *self
+            .gcs_sketches
+            .get_mut(sketch as usize)
+            .ok_or_else(|| invalid("invalid gcs sketch handle"))? = next;
+        Ok(ExternalEllipseHandles {
+            ellipse: ellipse_handle,
+            center: center_handle,
+        })
+    }
+
     fn resolve_sketch_refs_native(
         &mut self,
         sketch: u32,
@@ -331,8 +401,24 @@ impl BrepKernel {
             center.y = image.center.y();
             center.fixed = true;
         }
+        for external in &state.external_ellipses {
+            let image = attachment.resolve_ellipse(self.topo(), &external.reference)?;
+            next.sys
+                .set_fixed_ellipse_parameters(external.ellipse, image.a, image.b, image.angle)
+                .map_err(WasmError::from)?;
+            let center =
+                next.sys
+                    .point_mut(external.center)
+                    .ok_or_else(|| WasmError::InvalidInput {
+                        reason: "external sketch ellipse center was removed".into(),
+                    })?;
+            center.x = image.center.x();
+            center.y = image.center.y();
+            center.fixed = true;
+        }
         let external_lines = state.external_lines.len();
         let external_circles = state.external_circles.len();
+        let external_ellipses = state.external_ellipses.len();
         *self
             .gcs_sketches
             .get_mut(sketch as usize)
@@ -344,6 +430,7 @@ impl BrepKernel {
             frame: frame_json(frame),
             external_lines,
             external_circles,
+            external_ellipses,
         })
     }
 
@@ -425,6 +512,14 @@ impl BrepKernel {
                     serde_json::to_value(self.add_external_circle_impl(sketch, reference)?)
                         .map_err(|e| invalid(e.to_string()))
                 })(),
+                "gcsAddExternalEllipse" => (|| {
+                    let sketch = get_u32(args, "sketch")?;
+                    let reference = args["ref"]
+                        .as_str()
+                        .ok_or_else(|| invalid("ref must be a serialized persistent reference"))?;
+                    serde_json::to_value(self.add_external_ellipse_impl(sketch, reference)?)
+                        .map_err(|e| invalid(e.to_string()))
+                })(),
                 "gcsResolveRefs" => get_u32(args, "sketch").and_then(|sketch| {
                     serde_json::to_value(self.resolve_sketch_refs_impl(sketch)?)
                         .map_err(|e| invalid(e.to_string()))
@@ -447,6 +542,472 @@ fn direct_message(error: StructuredWasmError) -> String {
 
 fn js_error(error: StructuredWasmError) -> JsError {
     JsError::new(&direct_message(error))
+}
+
+#[cfg(test)]
+mod ellipse_tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::float_cmp
+    )]
+    use super::*;
+    use remus_math::mat::Mat4;
+    use remus_operations::journal_ops::{
+        begin_scoped, extrude_journaled, move_faces_journaled, solid_entity_keys,
+    };
+    use remus_topology::builder::{make_ellipse_edge_with_ref, make_planar_face_from_wire};
+    use remus_topology::explorer::{solid_edges, solid_faces};
+    use remus_topology::face::{FaceId, FaceSurface};
+    use remus_topology::journal::{EntityKey, EventDraft, EvolutionDraft, OpId};
+    use remus_topology::naming::{Resolution, resolve};
+    use remus_topology::solid::SolidId;
+    use remus_topology::wire::{OrientedEdge, Wire};
+    use serde_json::{Value, json};
+
+    struct Fixture {
+        k: BrepKernel,
+        sketch: u32,
+        source_solid: SolidId,
+        attachment_solid: SolidId,
+        attachment_face: FaceId,
+        source: String,
+        second_source: String,
+        external: ExternalEllipseHandles,
+    }
+
+    fn row(k: &mut BrepKernel, v2: bool, op: &str, args: Value) -> Value {
+        let program = json!([{"op":op,"args":args}]).to_string();
+        let text = if v2 {
+            k.execute_batch_v2(&program)
+        } else {
+            k.execute_batch(&program)
+        };
+        serde_json::from_str::<Vec<Value>>(&text).unwrap().remove(0)
+    }
+    fn call(k: &mut BrepKernel, v2: bool, op: &str, args: Value) -> Value {
+        let result = row(k, v2, op, args);
+        assert!(result.get("ok").is_some(), "{result}");
+        result["ok"].clone()
+    }
+    fn output(k: &BrepKernel, op: OpId, key: EntityKey) -> String {
+        let reference = (0..100).map(|i| PersistentRef::operation_output(op, key.kind, i))
+            .find(|r| matches!(resolve(k.topo(),r), Resolution::Bound { entity, .. } if entity == key)).unwrap();
+        String::from_utf8(remus_io::naming_io::serialize_persistent_ref(&reference).unwrap())
+            .unwrap()
+    }
+    fn fixture(v2: bool) -> Fixture {
+        let mut k = BrepKernel::new();
+        let boxed = remus_operations::primitives::make_box(k.topo_mut(), 10.0, 8.0, 4.0).unwrap();
+        let edge = make_ellipse_edge_with_ref(
+            k.topo_mut(),
+            Point3::new(5.0, 4.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            3.0,
+            2.0,
+            Vec3::new(0.37_f64.cos(), 0.37_f64.sin(), 0.0),
+            1e-7,
+        )
+        .unwrap();
+        let wire = k
+            .topo_mut()
+            .add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+        let face = make_planar_face_from_wire(k.topo_mut(), wire).unwrap();
+        let seeded = extrude_journaled(k.topo_mut(), face, Vec3::new(0.0, 0.0, 1.0), 4.0).unwrap();
+        let source_edge = solid_edges(k.topo(), seeded.solid)
+            .unwrap()
+            .into_iter()
+            .find(|&e| {
+                matches!(
+                    k.topo().edge(e).unwrap().curve(),
+                    remus_topology::edge::EdgeCurve::Ellipse(_)
+                )
+            })
+            .unwrap();
+        let source = output(&k, seeded.op, EntityKey::edge(source_edge.index()));
+        let second_edge = solid_edges(k.topo(), seeded.solid)
+            .unwrap()
+            .into_iter()
+            .find(|&e| {
+                e != source_edge
+                    && matches!(
+                        k.topo().edge(e).unwrap().curve(),
+                        remus_topology::edge::EdgeCurve::Ellipse(_)
+                    )
+            })
+            .unwrap();
+        let second_source = output(&k, seeded.op, EntityKey::edge(second_edge.index()));
+        let top = solid_faces(k.topo(), boxed).unwrap().into_iter().find(|&f| matches!(k.topo().face(f).unwrap().surface(), FaceSurface::Plane { normal, .. } if normal.z() > 0.99)).unwrap();
+        let attachment = move_faces_journaled(k.topo_mut(), boxed, &[top], 1.0).unwrap();
+        let top = solid_faces(k.topo(), attachment.solid).unwrap().into_iter().find(|&f| matches!(k.topo().face(f).unwrap().surface(), FaceSurface::Plane { normal, .. } if normal.z() > 0.99)).unwrap();
+        let face_ref = output(&k, attachment.op, EntityKey::face(top.index()));
+        let sketch = call(&mut k, v2, "gcsNew", json!({})).as_u64().unwrap() as u32;
+        call(
+            &mut k,
+            v2,
+            "gcsAttachToFace",
+            json!({"sketch":sketch,"ref":face_ref,"frame":{"origin":[0,0,5],"xAxis":[1,0,0],"normal":[0,0,1]}}),
+        );
+        let external = serde_json::from_value(call(
+            &mut k,
+            v2,
+            "gcsAddExternalEllipse",
+            json!({"sketch":sketch,"ref":source}),
+        ))
+        .unwrap();
+        Fixture {
+            k,
+            sketch,
+            source_solid: seeded.solid,
+            attachment_solid: attachment.solid,
+            attachment_face: top,
+            source,
+            second_source,
+            external,
+        }
+    }
+    fn params(f: &Fixture) -> [f64; 5] {
+        f.k.gcs_ellipse_params_impl(f.sketch, f.external.ellipse)
+            .unwrap()
+    }
+
+    // A native caller owns this explicit construction operation. Public raw
+    // transforms do not acquire this history merely by preserving handles.
+    fn authoritative_growth(f: &mut Fixture) {
+        let keys = solid_entity_keys(f.k.topo(), f.source_solid).unwrap();
+        let pending = begin_scoped(
+            f.k.topo_mut(),
+            "fixture_native_similarity",
+            &[f.source_solid],
+        )
+        .unwrap();
+        remus_operations::transform::transform_solid(
+            f.k.topo_mut(),
+            f.source_solid,
+            &Mat4([
+                [1.2, 0.0, 0.0, 1.0],
+                [0.0, 1.2, 0.0, -1.0],
+                [0.0, 0.0, 1.2, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]),
+        )
+        .unwrap();
+        assert_eq!(solid_entity_keys(f.k.topo(), f.source_solid).unwrap(), keys);
+        let mut draft = EvolutionDraft::construction();
+        for key in keys {
+            draft.push(key, EventDraft::Modified { from: key });
+        }
+        f.k.topo_mut()
+            .journal_record_evolution(pending, draft)
+            .unwrap();
+    }
+
+    #[test]
+    fn linked_ellipse_batches_constraints_read_only_inputs_and_undo() {
+        for v2 in [false, true] {
+            let mut f = fixture(v2);
+            assert_eq!(
+                call(&mut f.k, v2, "gcsDof", json!({"sketch":f.sketch}))["numParams"],
+                0
+            );
+            let free = call(
+                &mut f.k,
+                v2,
+                "gcsAddPoint",
+                json!({"sketch":f.sketch,"x":6,"y":5,"fixed":false}),
+            );
+            let consumer = call(
+                &mut f.k,
+                v2,
+                "gcsAddEllipse",
+                json!({"sketch":f.sketch,"center":free,"a":1,"b":0.5,"angle":0}),
+            );
+            for constraint in [
+                json!({"type":"concentricEllipseEllipse","ellipse1":f.external.ellipse,"ellipse2":consumer}),
+                json!({"type":"equalEllipseRadii","ellipse1":f.external.ellipse,"ellipse2":consumer}),
+                json!({"type":"ellipseAngle","ellipse":consumer,"value":0.37}),
+            ] {
+                call(
+                    &mut f.k,
+                    v2,
+                    "gcsAddConstraint",
+                    json!({"sketch":f.sketch,"constraint":constraint}),
+                );
+            }
+            let solved = call(
+                &mut f.k,
+                v2,
+                "gcsSolveDetailed",
+                json!({"sketch":f.sketch,"maxIterations":100,"tolerance":1e-10}),
+            );
+            assert_eq!(solved["converged"], true);
+            assert_eq!(solved["numParams"], 5);
+            assert_eq!(solved["rank"], 5);
+            let cp = f.k.checkpoint_impl().unwrap();
+            let retired: ExternalEllipseHandles = serde_json::from_value(call(
+                &mut f.k,
+                v2,
+                "gcsAddExternalEllipse",
+                json!({"sketch":f.sketch,"ref":f.source}),
+            ))
+            .unwrap();
+            authoritative_growth(&mut f);
+            let result = call(
+                &mut f.k,
+                v2,
+                "gcsSolve",
+                json!({"sketch":f.sketch,"maxIterations":100,"tolerance":1e-10}),
+            );
+            assert_eq!(result["converged"], true);
+            let expected = [7.0_f64, 3.8, 3.6, 2.4, 0.37];
+            for (got, want) in params(&f).into_iter().zip(expected) {
+                assert!((got - want).abs() < 1e-9, "{got} vs {want}");
+            }
+            let consumer =
+                f.k.gcs_ellipse_params_impl(f.sketch, consumer.as_u64().unwrap() as u32)
+                    .unwrap();
+            for (got, want) in consumer.into_iter().zip(expected) {
+                assert!((got - want).abs() < 1e-8);
+            }
+            let before = params(&f);
+            let set = row(
+                &mut f.k,
+                v2,
+                "gcsSetEllipse",
+                json!({"sketch":f.sketch,"ellipse":f.external.ellipse,"x":99,"y":99,"a":9,"b":8,"angle":1}),
+            );
+            if v2 {
+                assert_eq!(set["error"]["category"], "invalid_input");
+                assert_eq!(
+                    set["error"]["details"]["kernelCode"],
+                    "linked-sketch:read_only_external_point"
+                );
+            } else {
+                assert!(
+                    set["error"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("linked-sketch:read_only_external_point:")
+                );
+            }
+            assert_eq!(params(&f).map(f64::to_bits), before.map(f64::to_bits));
+            f.k.restore_checkpoint_impl(cp).unwrap();
+            assert!(
+                f.k.gcs_ellipse_params_impl(f.sketch, retired.ellipse)
+                    .is_err()
+            );
+            assert!(
+                f.k.gcs_point_position_impl(f.sketch, retired.center)
+                    .is_err()
+            );
+            let next: ExternalEllipseHandles = serde_json::from_value(call(
+                &mut f.k,
+                v2,
+                "gcsAddExternalEllipse",
+                json!({"sketch":f.sketch,"ref":f.source}),
+            ))
+            .unwrap();
+            assert!(next.ellipse > retired.ellipse && next.center > retired.center);
+            assert_eq!(
+                f.k.gcs_sketches
+                    .get(f.sketch as usize)
+                    .unwrap()
+                    .sys
+                    .fixed_ellipse_parameter_count(),
+                2
+            );
+            let moved = move_faces_journaled(
+                f.k.topo_mut(),
+                f.attachment_solid,
+                &[f.attachment_face],
+                1.0,
+            )
+            .unwrap();
+            assert!(
+                remus_operations::validate::validate_solid(f.k.topo(), moved.solid)
+                    .unwrap()
+                    .is_valid()
+            );
+            let refreshed = call(&mut f.k, v2, "gcsResolveRefs", json!({"sketch":f.sketch}));
+            assert_eq!(refreshed["externalEllipses"], 2);
+            assert_eq!(refreshed["frame"]["origin"][2], 6.0);
+        }
+    }
+
+    #[test]
+    fn linked_ellipse_refresh_is_atomic_for_mixed_failures_and_unjournaled_growth() {
+        for split in [false, true] {
+            let mut f = fixture(true);
+            let retired: ExternalEllipseHandles = serde_json::from_value(call(
+                &mut f.k,
+                true,
+                "gcsAddExternalEllipse",
+                json!({"sketch":f.sketch,"ref":f.second_source}),
+            ))
+            .unwrap();
+            let before = params(&f);
+            // This typed journal failure occurs after the first input could
+            // refresh. Separate construction refs ensure only the second fails.
+            let second =
+                f.k.gcs_sketches
+                    .get(f.sketch as usize)
+                    .unwrap()
+                    .external_ellipses[1]
+                    .reference
+                    .edge
+                    .clone();
+            authoritative_growth(&mut f);
+            let Resolution::Bound { entity, .. } = resolve(f.k.topo(), &second) else {
+                panic!()
+            };
+            let pending = f.k.topo_mut().journal_begin("fixture_ellipse_refusal");
+            let mut draft = EvolutionDraft::construction();
+            if split {
+                let id = f.k.topo().edge_id_from_index(entity.index).unwrap();
+                let copy = f.k.topo().edge(id).unwrap().clone();
+                let new = f.k.topo_mut().add_edge(copy);
+                draft.push(entity, EventDraft::Modified { from: entity });
+                draft.push(
+                    EntityKey::edge(new.index()),
+                    EventDraft::Modified { from: entity },
+                );
+            } else {
+                draft.push(entity, EventDraft::Deleted);
+            }
+            f.k.topo_mut()
+                .journal_record_evolution(pending, draft)
+                .unwrap();
+            let state = f.k.gcs_sketches.get(f.sketch as usize).unwrap();
+            let refreshed_first = state
+                .attachment
+                .as_ref()
+                .unwrap()
+                .resolve_ellipse(f.k.topo(), &state.external_ellipses[0].reference)
+                .unwrap();
+            assert!((refreshed_first.a - 3.6).abs() < 1e-12);
+            for op in ["gcsResolveRefs", "gcsSolve", "gcsSolveDetailed", "gcsDof"] {
+                let result = row(
+                    &mut f.k,
+                    true,
+                    op,
+                    json!({"sketch":f.sketch,"maxIterations":100,"tolerance":1e-10}),
+                );
+                assert_eq!(
+                    result["error"]["details"]["kernelCode"],
+                    "linked-sketch:reference_unbound"
+                );
+                assert_eq!(
+                    result["error"]["details"]["resolution"]["status"],
+                    if split { "boundMany" } else { "dangling" }
+                );
+                assert_eq!(params(&f).map(f64::to_bits), before.map(f64::to_bits));
+                assert_eq!(
+                    f.k.gcs_ellipse_params_impl(f.sketch, retired.ellipse)
+                        .unwrap()
+                        .map(f64::to_bits),
+                    before.map(f64::to_bits)
+                );
+            }
+        }
+        let mut f = fixture(true);
+        let before = params(&f);
+        remus_operations::transform::transform_solid(
+            f.k.topo_mut(),
+            f.source_solid,
+            &Mat4([
+                [1.2, 0.0, 0.0, 0.0],
+                [0.0, 1.2, 0.0, 0.0],
+                [0.0, 0.0, 1.2, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]),
+        )
+        .unwrap();
+        let refused = row(&mut f.k, true, "gcsResolveRefs", json!({"sketch":f.sketch}));
+        assert_eq!(refused["error"]["details"]["resolution"]["status"], "stale");
+        assert_eq!(params(&f).map(f64::to_bits), before.map(f64::to_bits));
+    }
+
+    #[test]
+    fn linked_ellipse_resource_errors_restore_pre_refresh_state() {
+        for op in ["gcsSolve", "gcsSolveDetailed", "gcsDof"] {
+            let mut f = fixture(true);
+            let state = f.k.gcs_sketches.get(f.sketch as usize).unwrap().clone();
+            let mut limited = remus_sketch::GcsSystem::with_limits(remus_sketch::GcsLimits {
+                max_dense_bytes: 1,
+                max_dense_qr_work: usize::MAX,
+            });
+            for point in state.points.iter().flatten() {
+                assert_eq!(
+                    limited
+                        .add_point(*state.sys.point(*point).unwrap())
+                        .unwrap(),
+                    *point
+                );
+            }
+            for id in state.ellipses.iter().flatten() {
+                let ellipse = state.sys.ellipse(*id).unwrap();
+                assert_eq!(
+                    limited
+                        .add_ellipse_with_fixed_parameters(
+                            ellipse.center,
+                            ellipse.a,
+                            ellipse.b,
+                            ellipse.angle
+                        )
+                        .unwrap(),
+                    *id
+                );
+            }
+            f.k.gcs_sketches.get_mut(f.sketch as usize).unwrap().sys = limited;
+            let free = call(
+                &mut f.k,
+                true,
+                "gcsAddPoint",
+                json!({"sketch":f.sketch,"x":8,"y":9,"fixed":false}),
+            );
+            call(
+                &mut f.k,
+                true,
+                "gcsAddConstraint",
+                json!({"sketch":f.sketch,"constraint":{"type":"fixX","point":free,"value":7}}),
+            );
+            let before = params(&f);
+            authoritative_growth(&mut f);
+            let result = row(
+                &mut f.k,
+                true,
+                op,
+                json!({"sketch":f.sketch,"maxIterations":100,"tolerance":1e-10}),
+            );
+            assert_eq!(
+                result["error"]["code"], "resource_limit_exceeded",
+                "{result}"
+            );
+            assert_eq!(result["error"]["category"], "resource_limit");
+            assert_eq!(params(&f).map(f64::to_bits), before.map(f64::to_bits));
+            assert_eq!(
+                f.k.gcs_sketches
+                    .get(f.sketch as usize)
+                    .unwrap()
+                    .sys
+                    .fixed_ellipse_parameter_count(),
+                1
+            );
+            assert_eq!(
+                f.k.gcs_point_position_impl(f.sketch, free.as_u64().unwrap() as u32)
+                    .unwrap(),
+                [8.0, 9.0]
+            );
+        }
+    }
+
+    #[test]
+    fn old_linked_resolution_json_defaults_the_ellipse_count() {
+        let result:LinkedSketchResolution=serde_json::from_value(json!({"frame":{"origin":[0,0,4],"xAxis":[1,0,0],"normal":[0,0,1]},"externalLines":2,"externalCircles":3})).unwrap();
+        assert_eq!(result.external_ellipses, 0);
+        assert_eq!(serde_json::to_value(result).unwrap()["externalCircles"], 3);
+    }
 }
 
 #[wasm_bindgen]
@@ -508,6 +1069,22 @@ impl BrepKernel {
     ) -> Result<tsify::Ts<ExternalCircleHandles>, JsError> {
         Ok(self
             .add_external_circle_impl(sketch, reference)
+            .map_err(js_error)?
+            .into_ts()?)
+    }
+
+    /// Add a complete construction-linked native ellipse in the parallel sketch
+    /// plane. Both the center and three scalar parameters are driven read-only inputs; returned
+    /// handles can be used by ordinary GCS constraints. Partial/oblique curves
+    /// and nonunique construction identity refuse atomically.
+    #[wasm_bindgen(js_name = "gcsAddExternalEllipse")]
+    pub fn gcs_add_external_ellipse(
+        &mut self,
+        sketch: u32,
+        reference: &str,
+    ) -> Result<tsify::Ts<ExternalEllipseHandles>, JsError> {
+        Ok(self
+            .add_external_ellipse_impl(sketch, reference)
             .map_err(js_error)?
             .into_ts()?)
     }
