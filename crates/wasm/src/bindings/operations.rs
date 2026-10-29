@@ -1133,7 +1133,9 @@ impl BrepKernel {
             path_weights,
         )?;
 
-        let solid_id = self.with_topology_transaction(|topo| sweep(topo, face_id, &path_curve))?;
+        let solid_id = self.with_sweep_rollback(|kernel| {
+            kernel.with_topology_transaction(|topo| sweep(topo, face_id, &path_curve))
+        })?;
 
         Ok(solid_id_to_u32(solid_id))
     }
@@ -1152,8 +1154,9 @@ impl BrepKernel {
     pub fn sweep_wire(&mut self, profile: u32, path_edge: u32) -> Result<u32, JsError> {
         let wire_id = self.resolve_wire(profile)?;
         let path_curve = self.extract_nurbs_curve(path_edge)?;
-        let solid_id =
-            self.with_topology_transaction(|topo| sweep_wire(topo, wire_id, &path_curve))?;
+        let solid_id = self.with_sweep_rollback(|kernel| {
+            kernel.with_topology_transaction(|topo| sweep_wire(topo, wire_id, &path_curve))
+        })?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -1250,8 +1253,10 @@ impl BrepKernel {
             weights,
         )?;
 
-        let solid_id = self.with_topology_transaction(|topo| {
-            remus_operations::sweep::sweep_smooth(topo, face_id, &path_curve)
+        let solid_id = self.with_sweep_rollback(|kernel| {
+            kernel.with_topology_transaction(|topo| {
+                remus_operations::sweep::sweep_smooth(topo, face_id, &path_curve)
+            })
         })?;
         Ok(solid_id_to_u32(solid_id))
     }
@@ -1731,7 +1736,9 @@ impl BrepKernel {
         let path_curve = remus_math::nurbs::fitting::interpolate(&points, degree)?;
 
         let face_id = self.resolve_face(face)?;
-        let solid_id = self.with_topology_transaction(|topo| sweep(topo, face_id, &path_curve))?;
+        let solid_id = self.with_sweep_rollback(|kernel| {
+            kernel.with_topology_transaction(|topo| sweep(topo, face_id, &path_curve))
+        })?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -1825,6 +1832,8 @@ impl BrepKernel {
     ///
     /// `contact_mode`: "rmf" (default), "fixed", or "constantNormal:x,y,z"
     /// `scale_values`: flat `[t0,s0,t1,s1,...]` pairs for piecewise-linear scale law.
+    /// The law is evaluated at normalized path progress in `[0,1]`, independently
+    /// of the NURBS path's native parameter domain.
     /// Parameters must be finite and strictly increasing, their adjacent spans
     /// finite, and scales finite and positive. Empty pairs select unit scale.
     /// Qualified linear tapers use XY straight-edge profiles, including holes,
@@ -1850,8 +1859,10 @@ impl BrepKernel {
         let options = parse_sweep_options(contact_mode, scale_values, segments, corner_mode)
             .map_err(|error| JsError::new(&error))?;
 
-        let result = self.with_topology_transaction(|topo| {
-            remus_operations::sweep::sweep_with_options(topo, face_id, &path_curve, &options)
+        let result = self.with_sweep_rollback(|kernel| {
+            kernel.with_topology_transaction(|topo| {
+                remus_operations::sweep::sweep_with_options(topo, face_id, &path_curve, &options)
+            })
         })?;
         Ok(solid_id_to_u32(result))
     }
@@ -1860,8 +1871,9 @@ impl BrepKernel {
     /// profile so its up-vector tracks an auxiliary spine.
     ///
     /// The spine and auxiliary spine are each passed as raw NURBS data
-    /// (`degree`, `knots`, flat `control_points`, `weights`). Returns a solid
-    /// handle (`u32`).
+    /// (`degree`, `knots`, flat `control_points`, `weights`). Their original
+    /// native domains must match exactly; both curves are sampled at the same
+    /// normalized progress across that domain. Returns a solid handle (`u32`).
     ///
     /// # Errors
     ///
@@ -2701,6 +2713,30 @@ type RawNurbs<'a> = (u32, Vec<f64>, &'a [f64], Vec<f64>);
 /// inside `run_transacted`, so a refusal after the operation has allocated
 /// (placed profile copies, side faces) leaves the session unchanged.
 impl BrepKernel {
+    /// Sweep callbacks only change topology and publish their result handle
+    /// after success. If a checkpoint already shares the entry document, keep
+    /// that exact owner on refusal as well as its geometry/history. Otherwise
+    /// retain the existing mutation-local rollback and private-slot high-water
+    /// behavior. No extra COW copy is introduced on the unshared fast path or
+    /// on a successful checkpoint-backed call.
+    ///
+    /// Callers must not change session stores or expose private handles on Err.
+    /// Each callback retains its existing Exact/Restored transaction policy.
+    pub(crate) fn with_sweep_rollback<T, E>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let shared =
+            (std::rc::Rc::strong_count(&self.topo) > 1).then(|| std::rc::Rc::clone(&self.topo));
+        let result = operation(self);
+        if result.is_err()
+            && let Some(original) = shared
+        {
+            self.topo = original;
+        }
+        result
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn multi_section_sweep_impl(
         &mut self,
@@ -2738,8 +2774,10 @@ impl BrepKernel {
             .zip(params.iter())
             .map(|(&h, &p)| self.resolve_face(h).map(|f| (f, p)))
             .collect::<Result<_, _>>()?;
-        let solid_id = run_transacted(self.topo_mut(), |topo| {
-            remus_operations::sweep::multi_section_sweep(topo, &spine, &sections, ruled)
+        let solid_id = self.with_sweep_rollback(|kernel| {
+            run_transacted(kernel.topo_mut(), |topo| {
+                remus_operations::sweep::multi_section_sweep(topo, &spine, &sections, ruled)
+            })
         })?;
         Ok(solid_id_to_u32(solid_id))
     }
@@ -2793,8 +2831,10 @@ impl BrepKernel {
         let spine = raw_nurbs_curve(spine, "spine")?;
         let aux = raw_nurbs_curve(aux, "aux")?;
         let face_id = self.resolve_face(face)?;
-        let solid = run_transacted(self.topo_mut(), |topo| {
-            remus_operations::sweep::sweep_guided(topo, face_id, &spine, aux)
+        let solid = self.with_sweep_rollback(|kernel| {
+            run_transacted(kernel.topo_mut(), |topo| {
+                remus_operations::sweep::sweep_guided(topo, face_id, &spine, aux)
+            })
         })?;
         Ok(solid_id_to_u32(solid))
     }

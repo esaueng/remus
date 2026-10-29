@@ -566,7 +566,18 @@ impl BrepKernel {
             } else {
                 Refusal::Restored
             };
-            self.with_kernel_transaction(refusal, |kernel| kernel.dispatch_op(op, args))
+            if matches!(
+                op,
+                "sweep" | "sweepWire" | "sweepWithOptions" | "multiSectionSweep" | "guidedSweep"
+            ) {
+                // These arms only change topology and expose a result handle
+                // on success. Restore checkpoint sharing on a refused item.
+                self.with_sweep_rollback(|kernel| {
+                    kernel.with_kernel_transaction(refusal, |kernel| kernel.dispatch_op(op, args))
+                })
+            } else {
+                self.with_kernel_transaction(refusal, |kernel| kernel.dispatch_op(op, args))
+            }
         }
     }
 }

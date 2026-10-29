@@ -5,6 +5,8 @@
 //! point. Uses rotation-minimizing frames (double-reflection method) to avoid
 //! Frenet-frame singularities on straight segments and inflection points.
 
+use std::borrow::Cow;
+
 use remus_math::compact_sort::CompactSort;
 use remus_math::mat::Mat4;
 use remus_math::nurbs::curve::NurbsCurve;
@@ -29,6 +31,148 @@ struct Frame {
     right: Vec3,
 }
 
+/// A clamped single span has only two distinct endpoint knots. Replacing
+/// those blocks with 0/1 is an exact affine chart change: control points and
+/// weights are unchanged. It avoids both quantized native sample stations and
+/// underflow in derivatives of curves whose native span is enormous. Leave
+/// unit charts and general knot vectors untouched (no interior-knot rounding).
+#[allow(clippy::float_cmp)] // Knot/domain identity is exact, not geometric proximity.
+fn sweep_path(path: &NurbsCurve) -> Result<Cow<'_, NurbsCurve>, crate::OperationsError> {
+    let (start, end) = path.domain();
+    if !start.is_finite() || !end.is_finite() || end <= start {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "sweep path requires a finite increasing native domain".into(),
+        });
+    }
+    if start == 0.0 && end == 1.0 {
+        return Ok(Cow::Borrowed(path));
+    }
+    let block = path.degree() + 1;
+    if path.control_points().len() == block
+        && path.knots()[..block].iter().all(|&u| u == start)
+        && path.knots()[block..].iter().all(|&u| u == end)
+    {
+        let knots = std::iter::repeat_n(0.0, block)
+            .chain(std::iter::repeat_n(1.0, block))
+            .collect();
+        return Ok(Cow::Owned(NurbsCurve::new(
+            path.degree(),
+            knots,
+            path.control_points().to_vec(),
+            path.weights().to_vec(),
+        )?));
+    }
+    Ok(Cow::Borrowed(path))
+}
+
+/// Map normalized progress to a curve's retained native chart. Endpoints are
+/// copied exactly; opposite-sign spans that overflow subtraction use a convex
+/// combination instead. Actual station order is checked by `sample_parameters`.
+fn native_parameter(path: &NurbsCurve, q: f64) -> f64 {
+    parameter_at(path.domain(), q)
+}
+
+fn parameter_at((start, end): (f64, f64), q: f64) -> f64 {
+    if q <= 0.0 {
+        start
+    } else if q >= 1.0 {
+        end
+    } else if (end - start).is_finite() {
+        start + (end - start) * q
+    } else {
+        start * (1.0 - q) + end * q
+    }
+}
+
+fn sample_parameters(
+    path: &NurbsCurve,
+    segments: usize,
+    closed: bool,
+) -> Result<Vec<f64>, crate::OperationsError> {
+    interval_parameters(path.domain(), segments, closed)
+}
+
+fn interval_parameters(
+    domain: (f64, f64),
+    segments: usize,
+    closed: bool,
+) -> Result<Vec<f64>, crate::OperationsError> {
+    let count = segments.saturating_add(usize::from(!closed));
+    let limit = isize::MAX as usize / size_of::<Frame>();
+    if count > limit {
+        return Err(remus_math::MathError::ResourceLimitExceeded {
+            resource: "sweep parameter samples",
+            limit,
+            actual: count,
+        }
+        .into());
+    }
+    // Check endpoint-adjacent stations before allocating: coarse charts (or a
+    // count beyond f64's integer resolution) can alias before the full walk.
+    if segments > 1 {
+        #[allow(clippy::cast_precision_loss)]
+        let first = parameter_at(domain, 1.0 / segments as f64);
+        #[allow(clippy::cast_precision_loss)]
+        let last = parameter_at(domain, (segments - 1) as f64 / segments as f64);
+        let (start, end) = domain;
+        if first <= start || last >= end {
+            return Err(unresolved_path_samples());
+        }
+    }
+    let mut parameters = Vec::with_capacity(count);
+    for k in 0..count {
+        #[allow(clippy::cast_precision_loss)]
+        let q = k as f64 / segments as f64;
+        let u = parameter_at(domain, q);
+        if !u.is_finite() || parameters.last().is_some_and(|previous| u <= *previous) {
+            return Err(unresolved_path_samples());
+        }
+        parameters.push(u);
+    }
+    Ok(parameters)
+}
+
+fn unresolved_path_samples() -> crate::OperationsError {
+    crate::OperationsError::Unsupported {
+        operation: "sweep",
+        reason: "requested sample stations cannot be resolved in the native path domain".into(),
+    }
+}
+
+/// Keep failed evaluation numerics out of topology, including contact modes
+/// that retain their historical tangent fallback at a stationary point.
+fn validate_frames(frames: &[Frame]) -> Result<(), crate::OperationsError> {
+    for frame in frames {
+        let p = frame.origin;
+        let vectors = [frame.tangent, frame.up, frame.right];
+        if ![p.x(), p.y(), p.z()].into_iter().all(f64::is_finite)
+            || vectors
+                .iter()
+                .any(|v| ![v.x(), v.y(), v.z()].into_iter().all(f64::is_finite))
+        {
+            return Err(crate::OperationsError::Unsupported {
+                operation: "sweep",
+                reason: "native path sampling produced non-finite geometry".into(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Native parameter labels define the guide correspondence. Near-equal labels
+/// are not a certificate of the same correspondence, so no model tolerance is
+/// applied to this API identity check.
+#[allow(clippy::float_cmp)]
+fn check_guide_domain(path: &NurbsCurve, aux: &NurbsCurve) -> Result<(), crate::OperationsError> {
+    if path.domain() != aux.domain() {
+        return Err(crate::OperationsError::Unsupported {
+            operation: "sweep_guided",
+            reason: "main and auxiliary spines must have matching native parameter domains".into(),
+        });
+    }
+    Ok(())
+}
+
 /// Compute rotation-minimizing frames along a NURBS path.
 ///
 /// Samples the path at evenly-spaced parameter values across its domain and
@@ -44,21 +188,15 @@ fn compute_frames(
     initial_up: Vec3,
     is_closed: bool,
 ) -> Result<Vec<Frame>, crate::OperationsError> {
-    let frame_count = if is_closed {
-        num_segments
-    } else {
-        num_segments + 1
-    };
-
-    let (u0, u1) = path.domain();
-    let mut samples = Vec::with_capacity(frame_count);
-    for k in 0..frame_count {
-        #[allow(clippy::cast_precision_loss)]
-        let t_param = u0 + (u1 - u0) * (k as f64) / (num_segments as f64);
-        samples.push((path.evaluate(t_param), path.tangent(t_param)?));
+    let parameters = sample_parameters(path, num_segments, is_closed)?;
+    let mut samples = Vec::with_capacity(parameters.len());
+    for u in parameters {
+        samples.push((path.evaluate(u), path.tangent(u)?));
     }
 
-    Ok(frames_from_samples(&samples, initial_up))
+    let frames = frames_from_samples(&samples, initial_up);
+    validate_frames(&frames)?;
+    Ok(frames)
 }
 
 /// Build rotation-minimizing frames from an ordered `(origin, tangent)` sample
@@ -542,8 +680,8 @@ fn try_straight_extrude(
         _ => return Ok(None),
     };
 
-    let start = path.evaluate(0.0);
-    let end = path.evaluate(1.0);
+    let start = path.evaluate(native_parameter(path, 0.0));
+    let end = path.evaluate(native_parameter(path, 1.0));
     let chord = end - start;
     let length = chord.length();
     if length < tol.linear {
@@ -558,7 +696,7 @@ fn try_straight_extrude(
     for k in 1..STRAIGHT_SAMPLES {
         #[allow(clippy::cast_precision_loss)]
         let t = k as f64 / STRAIGHT_SAMPLES as f64;
-        let v = path.evaluate(t) - start;
+        let v = path.evaluate(native_parameter(path, t)) - start;
         let along = v.dot(dir);
         let perp = (v - dir * along).length();
         if perp > tol.linear * 100.0 || along < -tol.linear || along > length + tol.linear {
@@ -606,6 +744,15 @@ pub fn sweep(
     profile: FaceId,
     path: &NurbsCurve,
 ) -> Result<SolidId, crate::OperationsError> {
+    let path = sweep_path(path)?;
+    remus_topology::transaction::run_transacted(topo, |topo| sweep_impl(topo, profile, &path))
+}
+
+fn sweep_impl(
+    topo: &mut Topology,
+    profile: FaceId,
+    path: &NurbsCurve,
+) -> Result<SolidId, crate::OperationsError> {
     let tol = Tolerance::new();
 
     if path.control_points().len() < 2 {
@@ -624,14 +771,15 @@ pub fn sweep(
     let inner_wire_ids: Vec<remus_topology::wire::WireId> = face_data.inner_wires().to_vec();
 
     let start_end_coincide = tol.approx_eq(
-        (path.evaluate(1.0) - path.evaluate(0.0)).length_squared(),
+        (path.evaluate(native_parameter(path, 1.0)) - path.evaluate(native_parameter(path, 0.0)))
+            .length_squared(),
         0.0,
     );
     let is_closed = if start_end_coincide {
         // Distinguish closed loop (midpoint differs from start) from degenerate
         // (all control points coincident, truly zero arc length).
-        let mid = path.evaluate(0.5);
-        let mid_dist_sq = (mid - path.evaluate(0.0)).length_squared();
+        let mid = path.evaluate(native_parameter(path, 0.5));
+        let mid_dist_sq = (mid - path.evaluate(native_parameter(path, 0.0))).length_squared();
         if tol.approx_eq(mid_dist_sq, 0.0) {
             return Err(crate::OperationsError::InvalidInput {
                 reason: "sweep path has zero length (start and end coincide)".into(),
@@ -683,7 +831,7 @@ pub fn sweep(
     // Ensure CCW winding relative to the path direction at t=0.
     // CW-wound profiles (e.g. from brepjs) make `edge_dir.cross(path_dir)` point
     // inward instead of outward, producing inside-out side faces.
-    let path_tangent_0 = path.tangent(0.0)?;
+    let path_tangent_0 = path.tangent(native_parameter(path, 0.0))?;
     if crate::winding::ensure_ccw_positions(&mut input_positions, path_tangent_0) {
         // Positions were reversed → boundary normal flips with them.
         input_normal = -input_normal;
@@ -973,6 +1121,17 @@ pub fn sweep_smooth(
     profile: FaceId,
     path: &NurbsCurve,
 ) -> Result<SolidId, crate::OperationsError> {
+    let path = sweep_path(path)?;
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        sweep_smooth_impl(topo, profile, &path)
+    })
+}
+
+fn sweep_smooth_impl(
+    topo: &mut Topology,
+    profile: FaceId,
+    path: &NurbsCurve,
+) -> Result<SolidId, crate::OperationsError> {
     let tol = Tolerance::new();
 
     if path.control_points().len() < 2 {
@@ -987,12 +1146,13 @@ pub fn sweep_smooth(
 
     // Detect closed vs degenerate paths.
     let start_end_coincide_smooth = tol.approx_eq(
-        (path.evaluate(1.0) - path.evaluate(0.0)).length_squared(),
+        (path.evaluate(native_parameter(path, 1.0)) - path.evaluate(native_parameter(path, 0.0)))
+            .length_squared(),
         0.0,
     );
     let is_closed = if start_end_coincide_smooth {
-        let mid = path.evaluate(0.5);
-        let mid_dist_sq = (mid - path.evaluate(0.0)).length_squared();
+        let mid = path.evaluate(native_parameter(path, 0.5));
+        let mid_dist_sq = (mid - path.evaluate(native_parameter(path, 0.0))).length_squared();
         if tol.approx_eq(mid_dist_sq, 0.0) {
             return Err(crate::OperationsError::InvalidInput {
                 reason: "sweep path has zero length".into(),
@@ -1039,7 +1199,7 @@ pub fn sweep_smooth(
         .unwrap_or(Vec3::new(0.0, 0.0, 1.0));
 
     // Ensure CCW winding relative to path direction (same fix as sweep()).
-    let path_tangent_0 = path.tangent(0.0)?;
+    let path_tangent_0 = path.tangent(native_parameter(path, 0.0))?;
     if crate::winding::ensure_ccw_positions(&mut input_positions, path_tangent_0) {
         input_normal = -input_normal;
     }
@@ -1304,7 +1464,8 @@ pub struct SweepOptions {
     /// Auxiliary spine (guide curve). When set, the profile is oriented so its
     /// up-vector points toward this curve at each path parameter — a guided
     /// (two-rail) sweep — overriding `contact_mode`. Sampled at the same
-    /// parameter as the main path.
+    /// normalized progress as the main path, which must have exactly the same
+    /// native parameter domain before internal chart normalization.
     pub aux_spine: Option<NurbsCurve>,
 }
 
@@ -1336,7 +1497,9 @@ fn validate_scales(scales: &[f64]) -> Result<(), crate::OperationsError> {
 
 /// Sweep a face along a path with advanced options.
 ///
-/// Supports scaling laws (tapered sweep) and multiple contact modes.
+/// Supports scaling laws (tapered sweep) and multiple contact modes. Scale laws
+/// receive normalized progress in `[0, 1]`, independent of the native path
+/// domain. Auxiliary guides must have exactly the same original native domain.
 ///
 /// # Errors
 ///
@@ -1361,8 +1524,13 @@ pub fn sweep_with_options(
             .collect();
         validate_scales(&sampled)?;
     }
+    if let Some(aux) = options.aux_spine.as_ref() {
+        check_guide_domain(path, aux)?;
+    }
+    let path = sweep_path(path)?;
+    let aux = options.aux_spine.as_ref().map(sweep_path).transpose()?;
     remus_topology::transaction::run_transacted(topo, |topo| {
-        sweep_with_options_impl(topo, profile, path, options)
+        sweep_with_options_impl(topo, profile, &path, options, aux.as_deref())
     })
 }
 
@@ -1375,6 +1543,7 @@ fn sweep_with_options_impl(
     profile: FaceId,
     path: &NurbsCurve,
     options: &SweepOptions,
+    aux_spine: Option<&NurbsCurve>,
 ) -> Result<SolidId, crate::OperationsError> {
     let tol = Tolerance::new();
 
@@ -1401,12 +1570,13 @@ fn sweep_with_options_impl(
     // Detect closed paths — delegate to basic sweep for now since advanced
     // options (scale laws, contact modes) with closed paths needs more work.
     let start_end_coincide_opts = tol.approx_eq(
-        (path.evaluate(1.0) - path.evaluate(0.0)).length_squared(),
+        (path.evaluate(native_parameter(path, 1.0)) - path.evaluate(native_parameter(path, 0.0)))
+            .length_squared(),
         0.0,
     );
     if start_end_coincide_opts {
-        let mid = path.evaluate(0.5);
-        let mid_dist_sq = (mid - path.evaluate(0.0)).length_squared();
+        let mid = path.evaluate(native_parameter(path, 0.5));
+        let mid_dist_sq = (mid - path.evaluate(native_parameter(path, 0.0))).length_squared();
         if tol.approx_eq(mid_dist_sq, 0.0) {
             return Err(crate::OperationsError::InvalidInput {
                 reason: "sweep path has zero length (start and end coincide)".into(),
@@ -1419,13 +1589,13 @@ fn sweep_with_options_impl(
     // Only when no scale law or guide spine applies, since either makes the
     // result non-prismatic.
     if options.scale_law.is_none()
-        && options.aux_spine.is_none()
+        && aux_spine.is_none()
         && let Some(solid) = try_straight_extrude(topo, profile, path)?
     {
         return Ok(solid);
     }
 
-    let path_tangent_0 = path.tangent(0.0)?;
+    let path_tangent_0 = path.tangent(native_parameter(path, 0.0))?;
     let SweptProfile {
         positions: input_positions,
         inner_wire_ids: inner_wire_ids_opts,
@@ -1440,18 +1610,18 @@ fn sweep_with_options_impl(
     };
 
     // Compute frames based on contact mode (open paths only at this point).
-    let frames: Vec<Frame> = if let Some(aux) = options.aux_spine.as_ref() {
+    let parameters = sample_parameters(path, num_segments, false)?;
+    let frames: Vec<Frame> = if let Some(aux) = aux_spine {
+        let aux_parameters = sample_parameters(aux, num_segments, false)?;
         // Guided (two-rail) sweep: orient the profile so its up-vector points
         // toward the auxiliary spine at each path parameter. The tangent still
         // follows the main path, so this overrides `contact_mode`.
         let mut out = Vec::with_capacity(num_segments + 1);
         let mut prev_up: Option<Vec3> = None;
-        for k in 0..=num_segments {
-            #[allow(clippy::cast_precision_loss)]
-            let t = k as f64 / num_segments as f64;
-            let origin = path.evaluate(t);
-            let tangent = path.tangent(t).unwrap_or(path_tangent_0);
-            let guide_dir = aux.evaluate(t) - origin;
+        for (&u, aux_u) in parameters.iter().zip(aux_parameters) {
+            let origin = path.evaluate(u);
+            let tangent = path.tangent(u).unwrap_or(path_tangent_0);
+            let guide_dir = aux.evaluate(aux_u) - origin;
             // Where the guide momentarily coincides with the spine the up-vector
             // is undefined; carry the previous frame's up (re-orthogonalized) so
             // orientation stays continuous instead of snapping to a world axis.
@@ -1482,30 +1652,26 @@ fn sweep_with_options_impl(
                 let up = orthogonalize(input_normal, tangent0);
                 let right = tangent0.cross(up);
 
-                (0..=num_segments)
-                    .map(|k| {
-                        #[allow(clippy::cast_precision_loss)]
-                        let t = k as f64 / num_segments as f64;
-                        Frame {
-                            origin: path.evaluate(t),
-                            tangent: path.tangent(t).unwrap_or(tangent0),
-                            up,
-                            right,
-                        }
+                parameters
+                    .iter()
+                    .map(|&u| Frame {
+                        origin: path.evaluate(u),
+                        tangent: path.tangent(u).unwrap_or(tangent0),
+                        up,
+                        right,
                     })
                     .collect()
             }
             SweepContactMode::ConstantNormal(normal_dir) => {
                 // Constant normal: up vector stays aligned to normal_dir
-                (0..=num_segments)
-                    .map(|k| {
-                        #[allow(clippy::cast_precision_loss)]
-                        let t = k as f64 / num_segments as f64;
-                        let tangent = path.tangent(t).unwrap_or(Vec3::new(0.0, 0.0, 1.0));
+                parameters
+                    .iter()
+                    .map(|&u| {
+                        let tangent = path.tangent(u).unwrap_or(Vec3::new(0.0, 0.0, 1.0));
                         let up = orthogonalize(normal_dir, tangent);
                         let right = tangent.cross(up);
                         Frame {
-                            origin: path.evaluate(t),
+                            origin: path.evaluate(u),
                             tangent,
                             up,
                             right,
@@ -1516,6 +1682,7 @@ fn sweep_with_options_impl(
         }
     };
 
+    validate_frames(&frames)?;
     let scales: Vec<f64> = (0..=num_segments)
         .map(|k| {
             #[allow(clippy::cast_precision_loss)]
@@ -1974,6 +2141,7 @@ fn sweep_miter(
             (sub_path.control_points().len() * 2).max(4)
         };
 
+        let sub_parameters = sample_parameters(sub_path, num_segments, false)?;
         let sub_frames = match options.contact_mode {
             SweepContactMode::RotationMinimizing => {
                 compute_frames(sub_path, num_segments, up_hint, false)?
@@ -1981,25 +2149,19 @@ fn sweep_miter(
             SweepContactMode::Fixed => {
                 let up = orthogonalize(input_normal, sub_tangent_0);
                 let right = sub_tangent_0.cross(up);
-                (0..=num_segments)
-                    .map(|k| {
-                        let (u0, u1) = sub_path.domain();
-                        #[allow(clippy::cast_precision_loss)]
-                        let t = u0 + (u1 - u0) * (k as f64 / num_segments as f64);
-                        Frame {
-                            origin: sub_path.evaluate(t),
-                            tangent: sub_path.tangent(t).unwrap_or(sub_tangent_0),
-                            up,
-                            right,
-                        }
+                sub_parameters
+                    .iter()
+                    .map(|&t| Frame {
+                        origin: sub_path.evaluate(t),
+                        tangent: sub_path.tangent(t).unwrap_or(sub_tangent_0),
+                        up,
+                        right,
                     })
                     .collect()
             }
-            SweepContactMode::ConstantNormal(normal_dir) => (0..=num_segments)
-                .map(|k| {
-                    let (u0, u1) = sub_path.domain();
-                    #[allow(clippy::cast_precision_loss)]
-                    let t = u0 + (u1 - u0) * (k as f64 / num_segments as f64);
+            SweepContactMode::ConstantNormal(normal_dir) => sub_parameters
+                .iter()
+                .map(|&t| {
                     let tangent = sub_path.tangent(t).unwrap_or(Vec3::new(0.0, 0.0, 1.0));
                     let up = orthogonalize(normal_dir, tangent);
                     let right = tangent.cross(up);
@@ -2012,6 +2174,8 @@ fn sweep_miter(
                 })
                 .collect(),
         };
+
+        validate_frames(&sub_frames)?;
 
         // Decompose profile offsets in the profile's own basis (as the other
         // sweep variants do), not the segment frame's basis: a segment whose
@@ -2492,9 +2656,10 @@ fn sweep_round(
         } else {
             corners[i].u_in
         };
-        for k in 0..=run_segments {
-            #[allow(clippy::cast_precision_loss)]
-            let u = run_start + (run_end - run_start) * (k as f64 / run_segments as f64);
+        for (k, u) in interval_parameters((run_start, run_end), run_segments, false)?
+            .into_iter()
+            .enumerate()
+        {
             if k == 0 && !samples.is_empty() {
                 continue;
             }
@@ -2549,6 +2714,8 @@ fn sweep_round(
             })
             .collect(),
     };
+
+    validate_frames(&frames)?;
 
     // Reject a corner the profile cannot turn: every ring point must stay on the
     // outboard side of the rotation axis, or the arc folds the solid through
@@ -2626,7 +2793,8 @@ fn sweep_round(
 /// swing rotation). The placed profiles are then lofted — ruled (planar bands)
 /// or smooth (NURBS).
 ///
-/// `sections` pairs each profile face with its spine parameter in `[0, 1]`.
+/// `sections` pairs each profile face with normalized progress in `[0, 1]`
+/// across the spine's complete native parameter domain.
 ///
 /// # Errors
 ///
@@ -2635,6 +2803,18 @@ fn sweep_round(
 /// control points; propagates loft errors otherwise. Sections may be planar or
 /// non-planar (they are joined by [`crate::loft::loft`], which supports both).
 pub fn multi_section_sweep(
+    topo: &mut Topology,
+    spine: &NurbsCurve,
+    sections: &[(FaceId, f64)],
+    ruled: bool,
+) -> Result<SolidId, crate::OperationsError> {
+    let spine = sweep_path(spine)?;
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        multi_section_sweep_impl(topo, &spine, sections, ruled)
+    })
+}
+
+fn multi_section_sweep_impl(
     topo: &mut Topology,
     spine: &NurbsCurve,
     sections: &[(FaceId, f64)],
@@ -2664,7 +2844,7 @@ pub fn multi_section_sweep(
     // Dense rotation-minimizing frame for twist-free orientation; the exact
     // origin/tangent per section is taken directly from the spine.
     let dense_segments: usize = 64;
-    let t_start = spine.tangent(0.0)?;
+    let t_start = spine.tangent(native_parameter(spine, 0.0))?;
     let initial_up = orthogonalize(pick_reference_axis(t_start), t_start);
     let dense = compute_frames(spine, dense_segments, initial_up, false)?;
 
@@ -2677,10 +2857,11 @@ pub fn multi_section_sweep(
     for (face_id, p) in ordered {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let idx = ((p * dense_segments as f64).round() as usize).min(dense_segments);
-        let tangent = spine.tangent(p)?;
+        let u = native_parameter(spine, p);
+        let tangent = spine.tangent(u)?;
         let up = orthogonalize(dense[idx].up, tangent);
         let frame = Frame {
-            origin: spine.evaluate(p),
+            origin: spine.evaluate(u),
             tangent,
             up,
             right: tangent.cross(up),
