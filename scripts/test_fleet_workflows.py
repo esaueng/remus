@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from fleet_workflows import (
     FAMILIES, ROOT, PREFIX, parse_reference, validate_calls, validate_reference,
@@ -17,6 +18,7 @@ from test_jane_helper_workflows import STAGE
 from test_fleet_actions_stage import FleetActionsStageTests
 
 CI_V4_LANDED = '9e5b65b9e00f004d83eb583ab3934c863ad7956d'
+CI_V9_LANDED = '4e355573ffe9b1bc0466d0a57fcc98677d5fc5eb'
 
 
 def historical_workflow(family, text):
@@ -343,16 +345,29 @@ class FleetWorkflowTests(unittest.TestCase):
                                                carries_reviewed_updates(active.name))
                 main_file = main_manifest[family]
                 allowed = {f"fleet-{family}{suffix}.yml" for suffix in ("", "-v2", "-v3", "-v4")}
-                allowed.update({'fleet-ci-v6.yml', 'fleet-ci-v7.yml'} if family == 'ci'
+                allowed.update({'fleet-ci-v6.yml', 'fleet-ci-v7.yml', 'fleet-ci-v9.yml'} if family == 'ci'
                                else {STAGE['workflows'][family]['staged']})
                 self.assertIn(main_file, allowed)
                 main_active = subprocess.check_output(
                     ["git", "show", f"origin/main:.github/workflows/{main_file}"], cwd=ROOT, text=True,
                 )
+                if family == 'ci' and main_file == 'fleet-ci-v9.yml':
+                    # The historical v2 proof still runs below; additionally bind
+                    # active v9 to its separately reviewed, landed definition.
+                    validate_reference('.github/workflows/' + main_file,
+                                       CI_V9_LANDED, main_active.encode())
                 assert_reviewed_workflow_delta(strip_refresh_deltas(strip_v3_deltas(staged)),
                                                strip_refresh_deltas(strip_v3_deltas(
                                                    revert_ci_v4_tier_move(historical_workflow(family, main_active)))),
                                                carries_reviewed_updates(main_file))
+
+    def test_historical_stage_proof_accepts_v9_after_main_activation(self):
+        # Model the post-activation main manifest even while a staging PR still
+        # sees v7 on origin/main. The staged v9 file already exists on main.
+        activated = {**main_workflow_manifest(), 'ci': 'fleet-ci-v9.yml'}
+        with mock.patch(__name__ + '.main_workflow_manifest', return_value=activated):
+            self.test_staged_v2_only_changes_reviewed_action_dependencies()
+
     def test_staged_ci_v4_only_moves_fuzz_and_render_into_tier_one(self):
         expected = subprocess.check_output(
             ["git", "show", f"{V3_LANDED}:.github/workflows/fleet-ci-v3.yml"], cwd=ROOT, text=True,
