@@ -1,5 +1,10 @@
 //! Exact solid-face imprint with construction-derived journal history.
 
+mod polygon;
+pub use polygon::{
+    PlanarPolygonImprintResult, imprint_planar_polygon, imprint_planar_polygon_with_context,
+};
+
 use remus_algo::gfa::{EdgeEvent, EntityEvolution};
 use remus_topology::Topology;
 use remus_topology::journal::{EventDraft, OpId};

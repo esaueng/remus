@@ -324,6 +324,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "resizeCylindricalFace"
         | "extrude"
         | "extrudeDetailed"
+        | "imprintPlanarPolygon"
         | "revolve"
         | "revolveDetailed"
         | "sweep"
@@ -567,7 +568,15 @@ impl BrepKernel {
             } else {
                 Refusal::Restored
             };
-            self.with_kernel_transaction(refusal, |kernel| kernel.dispatch_op(op, args))
+            if op == "imprintPlanarPolygon" {
+                // The topology-only imprint publishes new handles on success.
+                // A refusal also retains any existing checkpoint sharing.
+                self.with_imprint_rollback(|kernel| {
+                    kernel.with_kernel_transaction(refusal, |kernel| kernel.dispatch_op(op, args))
+                })
+            } else {
+                self.with_kernel_transaction(refusal, |kernel| kernel.dispatch_op(op, args))
+            }
         }
     }
 }
@@ -1722,6 +1731,7 @@ impl BrepKernel {
                 .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(solid)))
             }
+            "imprintPlanarPolygon" => self.imprint_planar_polygon_args(args),
             // O4.7 construction twins: the `ok` value is the same typed
             // envelope the direct `*Detailed` method returns, from the same
             // body, so a refusal is data here too. Direction/distance
