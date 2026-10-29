@@ -18,6 +18,8 @@ mod arrangement_prod;
 mod arrangement_cyl;
 #[cfg(test)]
 mod closed_form_split_tests;
+#[cfg(test)]
+mod closed_loops_separation_tests;
 mod containment;
 mod conversion;
 mod edge_splitting;
@@ -8900,10 +8902,22 @@ pub fn interior_point_3d(sub_face: &SplitSubFace, frame: Option<&PlaneFrame>) ->
 /// loop nested inside another (a re-bored opening) or two overlapping loops
 /// (a deepened pocket) need the wire builder's arrangement instead.
 ///
-/// The test is deliberately conservative — outlines are sampled through the
-/// face frame and compared by 2D bounding box. Disjoint boxes prove disjoint
-/// discs; anything closer falls through to the generic path unchanged. A
-/// single loop passes vacuously, which is the behaviour this gate replaced.
+/// The test is deliberately conservative — anything it cannot prove separate
+/// falls through to the generic path unchanged. A circle (a section, or an
+/// inner wire made of arcs of one circle) is compared as its disc: two discs
+/// are disjoint exactly when their centres lie farther apart than the sum of
+/// their radii, and a disc lies inside the convex outer outline when its
+/// centre is inside and farther from the outline than its radius. Every other
+/// outline is compared by 2D bounding box, where disjoint boxes prove disjoint
+/// discs. A single loop passes vacuously, which is the behaviour this gate
+/// replaced.
+///
+/// Boxes alone are not enough for circles. A disc's box reaches past the disc
+/// at the four diagonal corners, so two discs on a 45° diagonal of each other
+/// have overlapping boxes while the discs stay well apart: a flange's bolt
+/// hole at 45° beside the r24 hub opening of its rim cap (box corner at
+/// 21 < 24 on both axes, disc gap 7) fell to the wire builder, which wove the
+/// holes into one sub-face and failed the cut.
 fn plane_closed_loops_separate(
     sections: &[SectionEdge],
     frame: &PlaneFrame,
@@ -9025,33 +9039,99 @@ fn plane_closed_loops_separate(
     let Some(hole_boxes) = hole_boxes else {
         return false;
     };
+    let section_discs: Vec<Option<Disc>> = sections
+        .iter()
+        .map(|section| circle_disc(&section.curve_3d, frame))
+        .collect();
+    let hole_discs: Vec<Option<Disc>> = inner_wires
+        .iter()
+        .map(|wire| wire_circle_disc(wire, frame, tol))
+        .collect();
     let overlaps = |a: Bounds, b: Bounds| {
         a.1 + tol >= b.0 && b.1 + tol >= a.0 && a.3 + tol >= b.2 && b.3 + tol >= a.2
     };
-    for (index, &bounds) in boxes.iter().enumerate() {
-        let corners = [
-            Point2::new(bounds.0, bounds.2),
-            Point2::new(bounds.0, bounds.3),
-            Point2::new(bounds.1, bounds.2),
-            Point2::new(bounds.1, bounds.3),
-        ];
-        if corners.iter().any(|&corner| {
-            !super::classify_2d::point_in_polygon_2d(corner, &outer)
-                || super::classify_2d::distance_to_polygon_boundary(corner, &outer) <= tol
-        }) {
+    // Discs when both outlines are circles, boxes otherwise.
+    let interact = |a: (Bounds, Option<Disc>), b: (Bounds, Option<Disc>)| match (a.1, b.1) {
+        (Some(a), Some(b)) => !discs_separate(a, b, tol),
+        _ => overlaps(a.0, b.0),
+    };
+    for (index, (&bounds, &disc)) in boxes.iter().zip(&section_discs).enumerate() {
+        let inside_outer = disc.map_or_else(
+            || {
+                [
+                    Point2::new(bounds.0, bounds.2),
+                    Point2::new(bounds.0, bounds.3),
+                    Point2::new(bounds.1, bounds.2),
+                    Point2::new(bounds.1, bounds.3),
+                ]
+                .iter()
+                .all(|&corner| point_strictly_inside_polygon(corner, 0.0, &outer, tol))
+            },
+            |(center, radius)| point_strictly_inside_polygon(center, radius, &outer, tol),
+        );
+        if !inside_outer {
             return false;
         }
-        if hole_boxes.iter().any(|&hole| overlaps(bounds, hole)) {
+        if hole_boxes
+            .iter()
+            .zip(&hole_discs)
+            .any(|(&hole, &hole_disc)| interact((bounds, disc), (hole, hole_disc)))
+        {
             return false;
         }
         if boxes[index + 1..]
             .iter()
-            .any(|&other| overlaps(bounds, other))
+            .zip(&section_discs[index + 1..])
+            .any(|(&other, &other_disc)| interact((bounds, disc), (other, other_disc)))
         {
             return false;
         }
     }
     true
+}
+
+/// A closed circle's projection onto a plane face: centre and radius in the
+/// face frame. A circle tilted off the face plane projects to an ellipse
+/// INSIDE this disc, so the disc stays a sound outer bound either way.
+type Disc = (Point2, f64);
+
+fn circle_disc(curve: &EdgeCurve, frame: &PlaneFrame) -> Option<Disc> {
+    let EdgeCurve::Circle(circle) = curve else {
+        return None;
+    };
+    Some((frame.project(circle.center()), circle.radius()))
+}
+
+/// The disc an inner wire bounds when every one of its edges is an arc of the
+/// same circle (a hole opened by one full circle, or by arcs split at seam or
+/// junction vertices). `None` for any other outline.
+fn wire_circle_disc(wire: &[OrientedPCurveEdge], frame: &PlaneFrame, tol: f64) -> Option<Disc> {
+    let (first, rest) = wire.split_first()?;
+    let EdgeCurve::Circle(reference) = &first.curve_3d else {
+        return None;
+    };
+    rest.iter()
+        .all(|edge| {
+            matches!(&edge.curve_3d, EdgeCurve::Circle(circle)
+                if (circle.center() - reference.center()).length() <= tol
+                    && (circle.radius() - reference.radius()).abs() <= tol)
+        })
+        .then(|| circle_disc(&first.curve_3d, frame))
+        .flatten()
+}
+
+/// Whether two discs are disjoint with more than `tol` between them.
+fn discs_separate(a: Disc, b: Disc, tol: f64) -> bool {
+    let gap = (a.0.x() - b.0.x()).hypot(a.0.y() - b.0.y());
+    gap > a.1 + b.1 + tol
+}
+
+/// Whether the disc of `radius` about `point` (a bare point for 0) lies
+/// inside `polygon` with more than `tol` to spare. Exact for the convex
+/// sampled outline the caller has already established.
+fn point_strictly_inside_polygon(point: Point2, radius: f64, polygon: &[Point2], tol: f64) -> bool {
+    super::classify_2d::point_in_polygon_2d(point, polygon)
+        && super::classify_2d::distance_to_polygon_boundary(point, polygon) > radius + tol
 }
 
 /// Whether two planar line segments cross strictly inside both spans.
