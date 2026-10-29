@@ -257,6 +257,30 @@ class SpeedContractTests(unittest.TestCase):
         self.assertIn("name: committed-wasm-package", write)
         self.assertNotIn("current_main", write)
 
+    def test_publisher_requires_explicit_environment_secret_forwarding(self):
+        caller_jobs = jobs((WORKFLOWS / "ci.yml").read_text())
+        secret_jobs = {name for name, block in caller_jobs.items()
+                       if re.search(r"^    secrets:", block, re.M)}
+        self.assertEqual(secret_jobs, {"publish-package"})
+        caller = caller_jobs["publish-package"]
+        bindings = re.findall(r"^      ([\w-]+): ([^\n]+)$",
+                              caller.split("    secrets:\n", 1)[1], re.M)
+        self.assertEqual(bindings, [("REMUS_BOT_PRIVATE_KEY", "${{ secrets.REMUS_BOT_PRIVATE_KEY }}")])
+        self.assertNotIn("secrets: inherit", caller)
+        publisher = (WORKFLOWS / "publish.yml").read_text()
+        interface = publisher.split("  workflow_call:\n", 1)[1].split("  workflow_dispatch:", 1)[0]
+        declared = interface.split("    secrets:\n", 1)[1]
+        self.assertEqual(re.findall(r"^      ([\w-]+):$", declared, re.M),
+                         ["REMUS_BOT_PRIVATE_KEY"])
+        self.assertIn("        required: true", declared)
+        # The environment, rather than the build or test workers, holds the value.
+        for name, block in jobs(publisher).items():
+            if name == "sync-committed-package":
+                self.assertIn("environment: remus-bot", block)
+            else:
+                self.assertNotIn("environment:", block)
+                self.assertNotIn("secrets.", block)
+
     def test_benchmark_baseline_updates_only_on_nightly_or_main_dispatch(self):
         benchmark = (WORKFLOWS / "fleet-benchmark-v4.yml").read_text()
         push = re.search(r"auto-push: (.+)", benchmark)[1]
@@ -300,7 +324,7 @@ class SpeedContractTests(unittest.TestCase):
         self.assertIn('needs: [checks, public-commit-metadata]', caller)
         self.assertIn('reuse_artifact: true', caller)
         self.assertIn('uses: ./.github/workflows/publish.yml', caller)
-        self.assertNotIn('secrets:', caller)
+        self.assertNotIn('secrets: inherit', caller)
         condition = re.search(r'    if: >-\n(.*?)^    uses:', caller, re.M | re.S)[1]
         condition = ' '.join(condition.split()).replace('&&', ' and ').replace('||', ' or ')
         condition = condition.replace('needs.public-commit-metadata', 'needs.public_commit_metadata')

@@ -104,3 +104,7 @@ jobs:
       contents: read
     with:
       reuse_artifact: true
+    # Environment-only secrets still need an explicit reusable-workflow binding.
+    # The clean writer resolves this key inside the protected remus-bot environment.
+    secrets:
+      REMUS_BOT_PRIVATE_KEY: ${{ secrets.REMUS_BOT_PRIVATE_KEY }}
