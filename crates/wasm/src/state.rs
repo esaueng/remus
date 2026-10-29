@@ -79,6 +79,7 @@ pub struct GcsSketchState {
     /// Persistent planar attachment and fixed construction-derived inputs.
     pub(crate) attachment: Option<remus_operations::linked_sketch::PlanarSketchAttachment>,
     pub(crate) external_lines: Vec<crate::bindings::linked_sketch::ExternalLine>,
+    pub(crate) external_circles: Vec<crate::bindings::linked_sketch::ExternalCircle>,
     /// The persistent constraint system.
     pub sys: remus_sketch::GcsSystem,
     /// JS handle → point id.
@@ -178,6 +179,16 @@ pub fn next_handle(len: usize) -> Result<u32, crate::error::WasmError> {
 }
 
 impl GcsSketchState {
+    pub(crate) fn is_external_point(&self, point: remus_sketch::PointId) -> bool {
+        self.external_lines
+            .iter()
+            .any(|line| line.start == point || line.end == point)
+            || self
+                .external_circles
+                .iter()
+                .any(|circle| circle.center == point)
+    }
+
     pub(crate) fn restore(&mut self, snapshot: &Self) {
         fn restore_table<T: Copy>(current: &mut Vec<Option<T>>, saved: &[Option<T>]) {
             current.resize(current.len().max(saved.len()), None);
@@ -188,6 +199,7 @@ impl GcsSketchState {
         self.sys = snapshot.sys.clone();
         self.attachment.clone_from(&snapshot.attachment);
         self.external_lines.clone_from(&snapshot.external_lines);
+        self.external_circles.clone_from(&snapshot.external_circles);
         restore_table(&mut self.points, &snapshot.points);
         restore_table(&mut self.lines, &snapshot.lines);
         restore_table(&mut self.circles, &snapshot.circles);

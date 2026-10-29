@@ -248,6 +248,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         // is taken here, so batch behavior matches direct behavior verbatim.
         "gcsAttachToFace"
         | "gcsAddExternalLine"
+        | "gcsAddExternalCircle"
         | "gcsResolveRefs"
         | "gcsNew"
         | "gcsAddPoint"
