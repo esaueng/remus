@@ -127,39 +127,6 @@ pub fn drain() -> Vec<Phase> {
     TRACE.with(|trace| std::mem::take(&mut trace.borrow_mut().phases))
 }
 
-#[cfg(test)]
-mod trace_tests {
-    use super::{BooleanRoute, bump_boolean_route, configure, drain};
-
-    #[test]
-    fn route_observations_are_opt_in_bounded_and_drained() {
-        configure(None);
-        bump_boolean_route(BooleanRoute::StoreLocalAttempt);
-        assert!(drain().is_empty());
-        configure(Some(|| 42.0));
-        bump_boolean_route(BooleanRoute::StoreLocalAttempt);
-        bump_boolean_route(BooleanRoute::GeneralGfa);
-        let declined = drain();
-        assert_eq!(declined.len(), 2);
-        assert_eq!(declined[0].name, "boolean.route.store_local_attempt");
-        assert_eq!(declined[1].name, "boolean.route.general_gfa");
-        assert!(
-            declined
-                .iter()
-                .all(|p| p.start_ms.to_bits() == 42.0_f64.to_bits()
-                    && p.duration_ms.to_bits() == 0.0_f64.to_bits())
-        );
-        assert!(drain().is_empty());
-        for _ in 0..4097 {
-            bump_boolean_route(BooleanRoute::StoreLocalSuccess);
-        }
-        assert_eq!(drain().len(), 4096);
-        bump_boolean_route(BooleanRoute::LocalCutSuccess);
-        configure(None);
-        assert!(drain().is_empty());
-    }
-}
-
 /// A synchronous phase guard. Drop it before yielding or starting unrelated work.
 pub struct Span {
     name: &'static str,
@@ -244,5 +211,38 @@ mod tests {
                 assert!(phases.iter().any(|p| p.name == required && p.calls == 1));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use super::{BooleanRoute, bump_boolean_route, configure, drain};
+
+    #[test]
+    fn route_observations_are_opt_in_bounded_and_drained() {
+        configure(None);
+        bump_boolean_route(BooleanRoute::StoreLocalAttempt);
+        assert!(drain().is_empty());
+        configure(Some(|| 42.0));
+        bump_boolean_route(BooleanRoute::StoreLocalAttempt);
+        bump_boolean_route(BooleanRoute::GeneralGfa);
+        let declined = drain();
+        assert_eq!(declined.len(), 2);
+        assert_eq!(declined[0].name, "boolean.route.store_local_attempt");
+        assert_eq!(declined[1].name, "boolean.route.general_gfa");
+        assert!(
+            declined
+                .iter()
+                .all(|p| p.start_ms.to_bits() == 42.0_f64.to_bits()
+                    && p.duration_ms.to_bits() == 0.0_f64.to_bits())
+        );
+        assert!(drain().is_empty());
+        for _ in 0..4097 {
+            bump_boolean_route(BooleanRoute::StoreLocalSuccess);
+        }
+        assert_eq!(drain().len(), 4096);
+        bump_boolean_route(BooleanRoute::LocalCutSuccess);
+        configure(None);
+        assert!(drain().is_empty());
     }
 }
