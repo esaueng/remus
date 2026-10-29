@@ -3436,6 +3436,39 @@ export class BrepKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * Signed local surface-carrier draft in radians, as a JSON string
+     * `{angleRadians,outwardNormal}`. `(u,v)` does not test trimmed membership.
+     * Negative draft is not a global undercut or accessibility verdict.
+     *
+     * # Errors
+     * Refuses invalid handles, pull directions, parameters and undefined normals.
+     * @param {number} face
+     * @param {number} u
+     * @param {number} v
+     * @param {number} pull_x
+     * @param {number} pull_y
+     * @param {number} pull_z
+     * @returns {string}
+     */
+    getFaceDraftAngle(face, u, v, pull_x, pull_y, pull_z) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_getFaceDraftAngle(this.__wbg_ptr, face, u, v, pull_x, pull_y, pull_z);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Get the edge handles of a face.
      *
      * Returns an array of edge handles (`u32[]`).
@@ -3667,6 +3700,37 @@ export class BrepKernel {
         let deferred2_1;
         try {
             const ret = wasm.brepkernel_getOpposingPlanarFacePairs(this.__wbg_ptr, solid);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * JSON array of `{face,angleRadians,outwardNormal}` for every outer/cavity
+     * planar face in explorer order. A curved face refuses the whole report.
+     * This read-only query does not change topology, handles or checkpoints.
+     *
+     * # Errors
+     * Refuses invalid handles/pull directions, undefined normals and curved faces.
+     * @param {number} solid
+     * @param {number} pull_x
+     * @param {number} pull_y
+     * @param {number} pull_z
+     * @returns {string}
+     */
+    getPlanarSolidDraft(solid, pull_x, pull_y, pull_z) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.brepkernel_getPlanarSolidDraft(this.__wbg_ptr, solid, pull_x, pull_y, pull_z);
             var ptr1 = ret[0];
             var len1 = ret[1];
             if (ret[3]) {
