@@ -32,7 +32,11 @@ class OwnerRoutingTests(unittest.TestCase):
             ["git", "show", f"{match[2]}:.github/workflows/{match[1]}"],
             cwd=ROOT, text=True)
         self.assertEqual(pinned, CI, "Update the immutable pin after changing the callee")
-        self.assertNotIn("secrets:", CALLER)
+        # Only the qualified main publisher forwards its named environment key.
+        # Unprivileged checks must never inherit credentials from the caller.
+        for name, block in test_ci_speed.jobs(CALLER).items():
+            if name != "publish-package":
+                self.assertNotIn("secrets:", block, name)
         self.assertNotIn("select-runner.yml", CI)
 
     def test_native_checks_keep_hosted_fallback(self):

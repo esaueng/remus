@@ -13,6 +13,10 @@ on:
         description: Consume this CI run's qualified package artifact on protected main
         type: boolean
         default: false
+    secrets:
+      REMUS_BOT_PRIVATE_KEY:
+        description: App key resolved by the protected remus-bot writer environment
+        required: true
   workflow_dispatch:
     inputs:
       sync_package:
