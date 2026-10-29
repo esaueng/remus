@@ -2933,13 +2933,16 @@ fn unsupported_source_curves_are_refused() {
     let Target { mut topo, face, .. } = box_target(&UNIT);
     let curve = NurbsCurve::new(
         2,
-        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        // Single-span planar Beziers now have their own positive oracles.
+        // The unsupported remainder here is genuinely multispan.
+        vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
         vec![
             Point3::new(2.0, 2.0, 7.0),
-            Point3::new(5.0, 6.0, 7.0),
+            Point3::new(4.0, 6.0, 7.0),
+            Point3::new(6.0, 6.0, 7.0),
             Point3::new(8.0, 2.0, 7.0),
         ],
-        vec![1.0, 1.0, 1.0],
+        vec![1.0; 4],
     )
     .expect("nurbs");
     let edge = make_nurbs_edge(
@@ -3183,4 +3186,950 @@ fn stale_handles_surface_as_topology_errors() {
         ),
         "{error:?}"
     );
+}
+
+// Independent rational Bernstein oracle: neither de Boor evaluation nor any
+// projection helper computes the expected geometry.
+fn face_bezier_bernstein(controls: &[[f64; 3]], weights: &[f64], q: f64) -> [f64; 3] {
+    let degree = controls.len() - 1;
+    let mut numerator = [0.0; 3];
+    let mut denominator = 0.0;
+    let mut choose = 1_u64;
+    for (i, (point, weight)) in controls.iter().zip(weights).enumerate() {
+        if i > 0 {
+            choose = choose * (degree + 1 - i) as u64 / i as u64;
+        }
+        let coefficient = choose as f64
+            * q.powi(i32::try_from(i).unwrap())
+            * (1.0 - q).powi(i32::try_from(degree - i).unwrap())
+            * weight;
+        denominator += coefficient;
+        for axis in 0..3 {
+            numerator[axis] += point[axis] * coefficient;
+        }
+    }
+    numerator.map(|x| x / denominator)
+}
+
+fn face_bezier_source(
+    topo: &mut Topology,
+    controls: &[[f64; 3]],
+    weights: &[f64],
+    domain: (f64, f64),
+    placement: &Placement,
+) -> EdgeId {
+    let count = controls.len();
+    let mut knots = vec![domain.0; count];
+    knots.extend(vec![domain.1; count]);
+    let points: Vec<_> = controls
+        .iter()
+        .map(|p| placement.p(p[0], p[1], p[2]))
+        .collect();
+    let curve = NurbsCurve::new(count - 1, knots, points.clone(), weights.to_vec()).unwrap();
+    make_nurbs_edge(topo, points[0], points[count - 1], curve, VERTEX_TOL)
+}
+
+#[test]
+fn exact_face_bezier_weighted_bernstein_native_chart_matrix() {
+    use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
+    let mut cells = 0;
+    for scale in [0.001, 1.0, 1000.0] {
+        for placed in [false, true] {
+            let placement = Placement {
+                scale,
+                rigid: placed.then(rigid_motion),
+            };
+            for degree in [1, 2, 3, 8] {
+                for domain in [(0.0, 1.0), (10.0, 20.0), (-3.0, 2.0)] {
+                    let mut topo = Topology::new();
+                    let solid =
+                        make_box(&mut topo, 10.0 * scale, 8.0 * scale, 4.0 * scale).unwrap();
+                    placement.place(&mut topo, solid);
+                    let face =
+                        face_containing(&topo, solid, placement.p(5.0, 4.0, 4.0), 10.0 * scale);
+                    let controls: Vec<_> = (0..=degree)
+                        .map(|i| {
+                            let q = i as f64 / degree as f64;
+                            [1.5 + 6.5 * q, 2.0 + 2.5 * (q * PI).sin(), 6.0 + 0.2 * q]
+                        })
+                        .collect();
+                    let weights: Vec<_> =
+                        (0..=degree).map(|i| 1.0 + (i % 3) as f64 * 0.5).collect();
+                    let source =
+                        face_bezier_source(&mut topo, &controls, &weights, domain, &placement);
+                    let source_points = topo_edge_points(&topo, source);
+                    let before = Census::of(&topo);
+                    let frame = Frame3 {
+                        origin: placement.p(0.0, 0.0, 4.0),
+                        x: placement.unit(1.0, 0.0, 0.0),
+                        y: placement.unit(0.0, 1.0, 0.0),
+                        z: placement.unit(0.0, 0.0, 1.0),
+                    };
+                    let result = project_curve_onto_face(
+                        &mut topo,
+                        source,
+                        placement.v(0.2, -0.1, -1.0),
+                        face,
+                        &ProjectCurveOptions {
+                            plane_frame: Some(frame),
+                            ..ProjectCurveOptions::default()
+                        },
+                    )
+                    .unwrap();
+                    assert_eq!(result.quality, ProjectionQuality::Exact);
+                    assert!(!result.clipped);
+                    before.assert_only_free_edges_added(&topo, &result);
+                    assert_eq!(topo_edge_points(&topo, source), source_points);
+                    let projected = &result.edges[0];
+                    assert_eq!(projected.source_range, domain);
+                    let output = topo.edge(projected.edge).unwrap();
+                    assert_eq!(output.trim(), Some(domain));
+                    let EdgeCurve::NurbsCurve(image) = output.curve() else {
+                        panic!("exact retained NURBS expected")
+                    };
+                    let EdgeCurve::NurbsCurve(original) = topo.edge(source).unwrap().curve() else {
+                        panic!("source")
+                    };
+                    assert_eq!(image.degree(), degree);
+                    assert_eq!(image.knots(), original.knots());
+                    assert_eq!(image.weights(), weights);
+                    let curve2d = projected.plane_curve.as_ref().unwrap();
+                    for i in 0..=64 {
+                        let q = i as f64 / 64.0;
+                        let p = face_bezier_bernstein(&controls, &weights, q);
+                        let expected =
+                            placement.p(p[0] + 0.2 * (p[2] - 4.0), p[1] - 0.1 * (p[2] - 4.0), 4.0);
+                        let u = domain.0 + (domain.1 - domain.0) * q;
+                        let actual = image.evaluate(u);
+                        assert!(
+                            (actual - expected).length() < 2e-9 * scale,
+                            "degree={degree} domain={domain:?} q={q} scale={scale} placed={placed}"
+                        );
+                        let uv = curve2d.evaluate(u);
+                        let reconstructed = frame.origin + frame.x * uv.x() + frame.y * uv.y();
+                        assert!((reconstructed - expected).length() < 2e-9 * scale);
+                        if i % 8 == 0 {
+                            let normal = placement.unit(0.0, 0.0, 1.0);
+                            for (point, want) in [
+                                (actual, PointClassification::OnBoundary),
+                                (
+                                    actual - normal * (0.01 * scale),
+                                    PointClassification::Inside,
+                                ),
+                                (
+                                    actual + normal * (0.01 * scale),
+                                    PointClassification::Outside,
+                                ),
+                            ] {
+                                assert_eq!(
+                                    classify_point(
+                                        &topo,
+                                        solid,
+                                        point,
+                                        &ClassifyOptions::default()
+                                    )
+                                    .unwrap(),
+                                    want
+                                );
+                            }
+                        }
+                    }
+                    cells += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cells, 72);
+}
+
+#[test]
+fn exact_face_bezier_hull_certificate_catches_between_sample_excursion() {
+    let Target { mut topo, face, .. } = box_target(&UNIT);
+    let peak = 0.5_f64 + 1.0 / 64.0;
+    let ceiling = 8.0 + 1e-6;
+    let y0 = ceiling - peak * peak;
+    let controls = [
+        [2.0, y0, 7.0],
+        [5.0, y0 + peak, 7.0],
+        [8.0, ceiling - (1.0 - peak).powi(2), 7.0],
+    ];
+    for i in 0..=32 {
+        assert!(face_bezier_bernstein(&controls, &[1.0; 3], i as f64 / 32.0)[1] < 8.0);
+    }
+    assert!(face_bezier_bernstein(&controls, &[1.0; 3], peak)[1] > 8.0);
+    let edge = face_bezier_source(&mut topo, &controls, &[1.0; 3], (0.0, 1.0), &UNIT);
+    let before = Census::of(&topo);
+    let ticks = topo.mutation_ticks();
+    let slots = topo.allocated_slot_count();
+    assert_refused(
+        project_curve_onto_face(
+            &mut topo,
+            edge,
+            Vec3::new(0.0, 0.0, -1.0),
+            face,
+            &ProjectCurveOptions::default(),
+        ),
+        &topo,
+        &before,
+        "exact-bezier-domain-unsupported",
+    );
+    assert_eq!(topo.mutation_ticks(), ticks);
+    assert_eq!(topo.allocated_slot_count(), slots);
+}
+
+#[test]
+fn exact_face_bezier_budget_forward_and_domain_refusals_are_atomic() {
+    for (controls, weights, direction, options, code) in [
+        (
+            vec![[2.0, 2.0, 7.0], [5.0, 5.0, 7.0], [8.0, 2.0, 7.0]],
+            vec![1.0; 3],
+            Vec3::new(1.0, 0.0, 0.0),
+            ProjectCurveOptions::default(),
+            "grazing-direction",
+        ),
+        (
+            vec![[2.0, 2.0, 1.0], [5.0, 5.0, 1.0], [8.0, 2.0, 1.0]],
+            vec![1.0; 3],
+            Vec3::new(0.0, 0.0, -1.0),
+            ProjectCurveOptions::default(),
+            "exact-bezier-domain-unsupported",
+        ),
+        (
+            vec![[2.0, 2.0, 5.0], [2.0, 2.0, 6.0], [2.0, 2.0, 7.0]],
+            vec![1.0; 3],
+            Vec3::new(0.0, 0.0, -1.0),
+            ProjectCurveOptions::default(),
+            "degenerate-image",
+        ),
+        (
+            (0..9).map(|i| [2.0 + i as f64 * 0.5, 2.0, 7.0]).collect(),
+            vec![1.0; 9],
+            Vec3::new(0.0, 0.0, -1.0),
+            ProjectCurveOptions {
+                max_control_points: 4,
+                ..ProjectCurveOptions::default()
+            },
+            "resource-limit",
+        ),
+    ] {
+        let Target { mut topo, face, .. } = box_target(&UNIT);
+        let edge = face_bezier_source(&mut topo, &controls, &weights, (10.0, 20.0), &UNIT);
+        let before = Census::of(&topo);
+        let ticks = topo.mutation_ticks();
+        let slots = topo.allocated_slot_count();
+        let error = assert_refused(
+            project_curve_onto_face(&mut topo, edge, direction, face, &options),
+            &topo,
+            &before,
+            code,
+        );
+        if code == "resource-limit" {
+            assert!(matches!(
+                error,
+                ProjectCurveError::ResourceLimit {
+                    resource: "projection_control_points",
+                    limit: 4,
+                    actual: 9
+                }
+            ));
+        }
+        assert_eq!(topo.mutation_ticks(), ticks);
+        assert_eq!(topo.allocated_slot_count(), slots);
+    }
+    let Target { mut topo, face, .. } = bored_plate_target(&UNIT);
+    let edge = face_bezier_source(
+        &mut topo,
+        &[[1.0, 1.0, 7.0], [2.0, 2.0, 7.0], [3.0, 1.0, 7.0]],
+        &[1.0; 3],
+        (0.0, 1.0),
+        &UNIT,
+    );
+    let before = Census::of(&topo);
+    assert_refused(
+        project_curve_onto_face(
+            &mut topo,
+            edge,
+            Vec3::new(0.0, 0.0, -1.0),
+            face,
+            &ProjectCurveOptions::default(),
+        ),
+        &topo,
+        &before,
+        "exact-bezier-domain-unsupported",
+    );
+}
+
+#[test]
+fn exact_face_bezier_polygon_budget_and_oriented_uses() {
+    use remus_topology::builder::make_polygon_wire;
+    use remus_topology::face::Face;
+    for count in [3, 4, 32, 33] {
+        for clockwise in [false, true] {
+            for reversed in [false, true] {
+                let mut topo = Topology::new();
+                let mut polygon: Vec<_> = (0..count)
+                    .map(|i| {
+                        let angle = TAU * i as f64 / count as f64;
+                        Point3::new(5.0 + 4.0 * angle.cos(), 4.0 + 4.0 * angle.sin(), 4.0)
+                    })
+                    .collect();
+                if clockwise {
+                    polygon.reverse();
+                }
+                let wire = make_polygon_wire(&mut topo, &polygon, VERTEX_TOL).unwrap();
+                let surface = FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 4.0,
+                };
+                let face = topo.add_face(if reversed {
+                    Face::new_reversed(wire, vec![], surface)
+                } else {
+                    Face::new(wire, vec![], surface)
+                });
+                let controls = [[4.8, 3.8, 7.0], [5.0, 4.2, 7.0], [5.2, 3.8, 7.0]];
+                let weights = [1.0, 2.5, 1.0];
+                let edge = face_bezier_source(&mut topo, &controls, &weights, (-3.0, 2.0), &UNIT);
+                let before = Census::of(&topo);
+                let result = project_curve_onto_face(
+                    &mut topo,
+                    edge,
+                    Vec3::new(0.0, 0.0, -1.0),
+                    face,
+                    &ProjectCurveOptions::default(),
+                );
+                if count == 33 {
+                    let error = assert_refused(result, &topo, &before, "resource-limit");
+                    assert!(matches!(
+                        error,
+                        ProjectCurveError::ResourceLimit {
+                            resource: "projection_face_edges",
+                            limit: 32,
+                            actual: 33
+                        }
+                    ));
+                } else {
+                    let result = result.unwrap();
+                    before.assert_only_free_edges_added(&topo, &result);
+                    let EdgeCurve::NurbsCurve(image) =
+                        topo.edge(result.edges[0].edge).unwrap().curve()
+                    else {
+                        panic!("NURBS")
+                    };
+                    for i in 0..=32 {
+                        let q = i as f64 / 32.0;
+                        let expected = face_bezier_bernstein(&controls, &weights, q);
+                        let actual = image.evaluate(-3.0 + 5.0 * q);
+                        assert!(
+                            (actual - Point3::new(expected[0], expected[1], 4.0)).length() < 1e-11
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn exact_face_bezier_source_budget_bad_weights_and_nonrepresentability() {
+    for case in 0..3 {
+        let Target { mut topo, face, .. } = box_target(&UNIT);
+        let count = if case == 0 { 10 } else { 3 };
+        let controls: Vec<_> = (0..count)
+            .map(|i| {
+                [
+                    2.0 + 6.0 * i as f64 / (count - 1) as f64,
+                    2.0,
+                    if case == 2 { 1e308 } else { 7.0 },
+                ]
+            })
+            .collect();
+        let edge = face_bezier_source(&mut topo, &controls, &vec![1.0; count], (0.0, 1.0), &UNIT);
+        if case == 1 {
+            let EdgeCurve::NurbsCurve(curve) = topo.edge(edge).unwrap().curve() else {
+                panic!("source")
+            };
+            let mut data = serde_json::to_value(curve).unwrap();
+            data["weights"] = serde_json::json!([1.0, -1.0, 1.0]);
+            let invalid: NurbsCurve = serde_json::from_value(data).unwrap();
+            topo.edge_mut(edge)
+                .unwrap()
+                .set_curve(EdgeCurve::NurbsCurve(invalid));
+            topo.edge_mut(edge).unwrap().set_trim(Some((0.0, 1.0)));
+        }
+        let before = Census::of(&topo);
+        let ticks = topo.mutation_ticks();
+        let slots = topo.allocated_slot_count();
+        let code = match case {
+            0 => "resource-limit",
+            1 => "degenerate-source",
+            _ => "degenerate-image",
+        };
+        let error = assert_refused(
+            project_curve_onto_face(
+                &mut topo,
+                edge,
+                Vec3::new(0.0, 0.0, -1.0),
+                face,
+                &ProjectCurveOptions::default(),
+            ),
+            &topo,
+            &before,
+            code,
+        );
+        if case == 0 {
+            assert!(matches!(
+                error,
+                ProjectCurveError::ResourceLimit {
+                    resource: "projection_source_control_points",
+                    limit: 9,
+                    actual: 10
+                }
+            ));
+        }
+        assert_eq!(topo.mutation_ticks(), ticks);
+        assert_eq!(topo.allocated_slot_count(), slots);
+    }
+}
+
+#[test]
+fn exact_face_bezier_remote_source_does_not_loosen_plane_frame() {
+    let Target { mut topo, face, .. } = box_target(&UNIT);
+    let edge = face_bezier_source(
+        &mut topo,
+        &[[2.0, 2.0, 1e10], [5.0, 4.0, 1e10], [8.0, 2.0, 1e10]],
+        &[1.0; 3],
+        (0.0, 1.0),
+        &UNIT,
+    );
+    let before = Census::of(&topo);
+    let frame = Frame3 {
+        origin: Point3::new(0.0, 0.0, 104.0),
+        x: Vec3::new(1.0, 0.0, 0.0),
+        y: Vec3::new(0.0, 1.0, 0.0),
+        z: Vec3::new(0.0, 0.0, 1.0),
+    };
+    assert_refused(
+        project_curve_onto_face(
+            &mut topo,
+            edge,
+            Vec3::new(0.0, 0.0, -1.0),
+            face,
+            &ProjectCurveOptions {
+                plane_frame: Some(frame),
+                ..ProjectCurveOptions::default()
+            },
+        ),
+        &topo,
+        &before,
+        "plane-frame-mismatch",
+    );
+    let result = project_curve_onto_face(
+        &mut topo,
+        edge,
+        Vec3::new(0.0, 0.0, -1.0),
+        face,
+        &ProjectCurveOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(result.quality, ProjectionQuality::Exact);
+    let EdgeCurve::NurbsCurve(image) = topo.edge(result.edges[0].edge).unwrap().curve() else {
+        panic!("image")
+    };
+    assert!((image.evaluate(0.5) - Point3::new(5.0, 3.0, 4.0)).length() < 1e-11);
+}
+
+#[test]
+fn exact_face_bezier_long_source_cannot_loosen_target_frame() {
+    let Target { mut topo, face, .. } = box_target(&UNIT);
+    let edge = face_bezier_source(
+        &mut topo,
+        &[[2.0, 2.0, 10.0], [5.0, 4.0, 1e6 + 10.0], [8.0, 2.0, 10.0]],
+        &[1.0; 3],
+        (0.0, 1.0),
+        &UNIT,
+    );
+    let before = Census::of(&topo);
+    let frame = Frame3 {
+        origin: Point3::new(0.0, 0.0, 4.01),
+        x: Vec3::new(1.0, 0.0, 0.0),
+        y: Vec3::new(0.0, 1.0, 0.0),
+        z: Vec3::new(0.0, 0.0, 1.0),
+    };
+    assert_refused(
+        project_curve_onto_face(
+            &mut topo,
+            edge,
+            Vec3::new(0.0, 0.0, -1.0),
+            face,
+            &ProjectCurveOptions {
+                plane_frame: Some(frame),
+                ..ProjectCurveOptions::default()
+            },
+        ),
+        &topo,
+        &before,
+        "plane-frame-mismatch",
+    );
+}
+
+#[test]
+fn exact_face_bezier_long_source_cannot_loosen_endpoint_consistency() {
+    let Target { mut topo, face, .. } = box_target(&UNIT);
+    let edge = face_bezier_source(
+        &mut topo,
+        &[[2.0, 2.0, 10.0], [5.0, 4.0, 1e6 + 10.0], [8.0, 2.0, 10.0]],
+        &[1.0; 3],
+        (0.0, 1.0),
+        &UNIT,
+    );
+    let start = topo.edge(edge).unwrap().start();
+    topo.vertex_mut(start)
+        .unwrap()
+        .set_point(Point3::new(2.001, 2.0, 10.0));
+    let before = Census::of(&topo);
+    let ticks = topo.mutation_ticks();
+    let slots = topo.allocated_slot_count();
+    assert_refused(
+        project_curve_onto_face(
+            &mut topo,
+            edge,
+            Vec3::new(0.0, 0.0, -1.0),
+            face,
+            &ProjectCurveOptions::default(),
+        ),
+        &topo,
+        &before,
+        "degenerate-source",
+    );
+    assert_eq!(topo.mutation_ticks(), ticks);
+    assert_eq!(topo.allocated_slot_count(), slots);
+}
+
+#[test]
+fn exact_face_bezier_tiny_weights_2d_evaluator_agrees_or_refuses() {
+    let Target { mut topo, face, .. } = box_target(&UNIT);
+    let controls = [[2.0, 2.0, 7.0], [5.0, 4.0, 7.0], [8.0, 2.0, 7.0]];
+    let weights = [1e-300, 2e-300, 1e-300];
+    let edge = face_bezier_source(&mut topo, &controls, &weights, (10.0, 20.0), &UNIT);
+    let result = project_curve_onto_face(
+        &mut topo,
+        edge,
+        Vec3::new(0.0, 0.0, -1.0),
+        face,
+        &ProjectCurveOptions::default(),
+    )
+    .unwrap();
+    let EdgeCurve::NurbsCurve(image) = topo.edge(result.edges[0].edge).unwrap().curve() else {
+        panic!("3D NURBS")
+    };
+    assert_eq!(image.weights(), weights);
+    for q in [0.0, 0.5, 1.0] {
+        let p = face_bezier_bernstein(&controls, &weights, q);
+        assert!((image.evaluate(10.0 + 10.0 * q) - Point3::new(p[0], p[1], 4.0)).length() < 1e-12);
+    }
+    let before = Census::of(&topo);
+    let frame = Frame3 {
+        origin: Point3::new(0.0, 0.0, 4.0),
+        x: Vec3::new(1.0, 0.0, 0.0),
+        y: Vec3::new(0.0, 1.0, 0.0),
+        z: Vec3::new(0.0, 0.0, 1.0),
+    };
+    let result = project_curve_onto_face(
+        &mut topo,
+        edge,
+        Vec3::new(0.0, 0.0, -1.0),
+        face,
+        &ProjectCurveOptions {
+            plane_frame: Some(frame),
+            ..ProjectCurveOptions::default()
+        },
+    );
+    match result {
+        Err(error) => {
+            assert_eq!(error.code(), "exact-bezier-domain-unsupported");
+            assert_eq!(Census::of(&topo), before);
+        }
+        Ok(result) => {
+            let curve = result.edges[0].plane_curve.as_ref().unwrap();
+            for q in [0.5, 1.0] {
+                let expected = face_bezier_bernstein(&controls, &weights, q);
+                let actual = curve.evaluate(10.0 + 10.0 * q);
+                assert!(
+                    (actual.x() - expected[0]).abs() < 1e-12
+                        && (actual.y() - expected[1]).abs() < 1e-12,
+                    "actual emitted PCurve disagrees at q={q}: {actual:?} vs {expected:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn exact_face_bezier_small_evaluator_safe_weights_retain_2d_geometry() {
+    let Target { mut topo, face, .. } = box_target(&UNIT);
+    let controls = [[2.0, 2.0, 7.0], [5.0, 4.0, 7.0], [8.0, 2.0, 7.0]];
+    let weights = [8.0 * f64::EPSILON, 16.0 * f64::EPSILON, 8.0 * f64::EPSILON];
+    let edge = face_bezier_source(&mut topo, &controls, &weights, (10.0, 20.0), &UNIT);
+    let frame = Frame3 {
+        origin: Point3::new(0.0, 0.0, 4.0),
+        x: Vec3::new(1.0, 0.0, 0.0),
+        y: Vec3::new(0.0, 1.0, 0.0),
+        z: Vec3::new(0.0, 0.0, 1.0),
+    };
+    let result = project_curve_onto_face(
+        &mut topo,
+        edge,
+        Vec3::new(0.0, 0.0, -1.0),
+        face,
+        &ProjectCurveOptions {
+            plane_frame: Some(frame),
+            ..ProjectCurveOptions::default()
+        },
+    )
+    .unwrap();
+    let curve = result.edges[0].plane_curve.as_ref().unwrap();
+    let Curve2D::Nurbs(nurbs) = curve.curve() else {
+        panic!("2D NURBS")
+    };
+    assert_eq!(nurbs.weights(), weights);
+    for i in 0..=32 {
+        let q = i as f64 / 32.0;
+        let p = face_bezier_bernstein(&controls, &weights, q);
+        let actual = curve.evaluate(10.0 + 10.0 * q);
+        assert!((actual.x() - p[0]).abs() < 1e-12 && (actual.y() - p[1]).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn exact_face_bezier_unresolvable_native_chart_is_refused() {
+    let Target { mut topo, face, .. } = box_target(&UNIT);
+    let span = 1e-310;
+    let points = vec![
+        Point3::new(2.0, 2.0, 7.0),
+        Point3::new(5.0, 4.0, 7.0),
+        Point3::new(8.0, 2.0, 7.0),
+    ];
+    let curve = NurbsCurve::new(
+        2,
+        vec![0.0, 0.0, 0.0, span, span, span],
+        points.clone(),
+        vec![1.0; 3],
+    )
+    .unwrap();
+    for u in [span * 0.5, span] {
+        match std::panic::catch_unwind(|| curve.evaluate(u)) {
+            Err(_) => {}
+            Ok(point) => assert!(point.0.iter().any(|x| !x.is_finite())),
+        }
+    }
+    let start = topo.add_vertex(Vertex::new(points[0], VERTEX_TOL));
+    let end = topo.add_vertex(Vertex::new(points[2], VERTEX_TOL));
+    let mut item = Edge::new(start, end, EdgeCurve::NurbsCurve(curve));
+    item.set_trim(Some((0.0, span)));
+    let edge = topo.add_edge(item);
+    let before = Census::of(&topo);
+    assert_refused(
+        project_curve_onto_face(
+            &mut topo,
+            edge,
+            Vec3::new(0.0, 0.0, -1.0),
+            face,
+            &ProjectCurveOptions::default(),
+        ),
+        &topo,
+        &before,
+        "exact-bezier-domain-unsupported",
+    );
+}
+
+#[test]
+fn exact_face_bezier_ray_cancellation_cannot_forge_inside_hull() {
+    let mut topo = Topology::new();
+    let solid = make_box(&mut topo, 4.0, 8.0, 4.0).unwrap();
+    transform_solid(&mut topo, solid, &Mat4::translation(-2.0, 0.0, -4.0)).unwrap();
+    let face = face_containing(&topo, solid, Point3::new(0.0, 4.0, 0.0), 10.0);
+    // FMA evaluates the cancelled ray/plane numerator independently. The true
+    // projected x is well outside [-2,2]; naive x-z/1e-8
+    // rounds both large operands to the same float and spuriously returns0.
+    let projected_x = 1e18_f64.mul_add(1e-8, -1e10) / 1e-8;
+    assert!(projected_x > 2.0);
+    assert_eq!((1e18_f64 - 1e10 / 1e-8).to_bits(), 0.0_f64.to_bits());
+    let edge = face_bezier_source(
+        &mut topo,
+        &[[1e18, 2.0, 1e10], [1e18, 4.0, 1e10], [1e18, 6.0, 1e10]],
+        &[1.0; 3],
+        (0.0, 1.0),
+        &UNIT,
+    );
+    let before = Census::of(&topo);
+    let ticks = topo.mutation_ticks();
+    let slots = topo.allocated_slot_count();
+    assert_refused(
+        project_curve_onto_face(
+            &mut topo,
+            edge,
+            Vec3::new(-1.0, 0.0, -1e-8),
+            face,
+            &ProjectCurveOptions::default(),
+        ),
+        &topo,
+        &before,
+        "exact-bezier-domain-unsupported",
+    );
+    assert_eq!(topo.mutation_ticks(), ticks);
+    assert_eq!(topo.allocated_slot_count(), slots);
+}
+
+#[test]
+fn exact_face_bezier_original_nonaxis_ray_cannot_be_normalized_into_face() {
+    use remus_topology::face::Face;
+    let mut topo = Topology::new();
+    let polygon = [
+        Point3::new(-501.0, 499.0, 0.0),
+        Point3::new(499.0, -501.0, 0.0),
+        Point3::new(501.0, -499.0, 0.0),
+        Point3::new(-499.0, 501.0, 0.0),
+    ];
+    let wire = remus_topology::builder::make_polygon_wire(&mut topo, &polygon, VERTEX_TOL).unwrap();
+    let face = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ));
+    let offset = 1e18_f64.mul_add(1e-8, -1e10) / 1e-8;
+    assert!(
+        2.0 * offset > 2.0,
+        "original ray lies outside the x+y strip"
+    );
+    let controls = [
+        [1e18, 1e18, 1e10],
+        [1e18 - 128.0, 1e18 + 128.0, 1e10],
+        [1e18 - 256.0, 1e18 + 256.0, 1e10],
+    ];
+    let edge = face_bezier_source(&mut topo, &controls, &[1.0; 3], (0.0, 1.0), &UNIT);
+    let before = Census::of(&topo);
+    assert_refused(
+        project_curve_onto_face(
+            &mut topo,
+            edge,
+            Vec3::new(-1.0, -1.0, -1e-8),
+            face,
+            &ProjectCurveOptions::default(),
+        ),
+        &topo,
+        &before,
+        "exact-bezier-domain-unsupported",
+    );
+}
+
+#[test]
+fn exact_face_bezier_exact_power_of_two_ray_and_plane_scales_agree() {
+    use remus_topology::face::Face;
+    let mut images = Vec::new();
+    for plane_scale in [1.0, 4.0] {
+        for ray_scale in [1.0, 2.0] {
+            let mut topo = Topology::new();
+            let points = [
+                Point3::new(0.0, 0.0, 4.0),
+                Point3::new(10.0, 0.0, 4.0),
+                Point3::new(10.0, 8.0, 4.0),
+                Point3::new(0.0, 8.0, 4.0),
+            ];
+            let wire =
+                remus_topology::builder::make_polygon_wire(&mut topo, &points, VERTEX_TOL).unwrap();
+            let face = topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, plane_scale),
+                    d: 4.0 * plane_scale,
+                },
+            ));
+            let controls = [[2.0, 2.0, 7.0], [5.0, 5.0, 8.0], [8.0, 2.0, 7.0]];
+            let weights = [1.0, 2.0, 1.0];
+            let edge = face_bezier_source(&mut topo, &controls, &weights, (10.0, 20.0), &UNIT);
+            let result = project_curve_onto_face(
+                &mut topo,
+                edge,
+                Vec3::new(0.2, -0.1, -1.0) * ray_scale,
+                face,
+                &ProjectCurveOptions::default(),
+            )
+            .unwrap();
+            let EdgeCurve::NurbsCurve(image) = topo.edge(result.edges[0].edge).unwrap().curve()
+            else {
+                panic!("NURBS")
+            };
+            let samples: Vec<_> = (0..=32)
+                .map(|i| image.evaluate(10.0 + 10.0 * i as f64 / 32.0))
+                .collect();
+            for (i, p) in samples.iter().enumerate() {
+                let source = face_bezier_bernstein(&controls, &weights, i as f64 / 32.0);
+                let expected = Point3::new(
+                    source[0] + 0.2 * (source[2] - 4.0),
+                    source[1] - 0.1 * (source[2] - 4.0),
+                    4.0,
+                );
+                assert!((*p - expected).length() < 1e-11);
+            }
+            images.push(samples);
+        }
+    }
+    assert!(images.iter().all(|samples| *samples == images[0]));
+}
+
+#[test]
+fn exact_face_bezier_rejects_a_shadow_larger_than_authoritative_loop() {
+    use remus_topology::face::Face;
+    let mut topo = Topology::new();
+    let small = [
+        Point3::new(0.0, 0.0, 4.0),
+        Point3::new(4.0, 0.0, 4.0),
+        Point3::new(4.0, 4.0, 4.0),
+        Point3::new(0.0, 4.0, 4.0),
+    ];
+    let wire = remus_topology::builder::make_polygon_wire(&mut topo, &small, VERTEX_TOL).unwrap();
+    let face = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 4.0,
+        },
+    ));
+    let large = [
+        Point3::new(0.0, 0.0, 4.0),
+        Point3::new(10.0, 0.0, 4.0),
+        Point3::new(10.0, 8.0, 4.0),
+        Point3::new(0.0, 8.0, 4.0),
+    ];
+    let enlarged =
+        remus_topology::builder::make_polygon_wire(&mut topo, &large, VERTEX_TOL).unwrap();
+    let shadow = topo.wire(enlarged).unwrap().clone();
+    *topo.wire_mut(wire).unwrap() = shadow;
+    assert!(matches!(
+        remus_topology::validation::validate_face_loops(&topo, face),
+        Err(remus_topology::TopologyError::LoopWireMismatch { .. })
+    ));
+    // Every projected control is inside the shadow, but outside the actual
+    // Loop/Coedge region x in[0,4]. No certificate may use that shadow alone.
+    let edge = face_bezier_source(
+        &mut topo,
+        &[[6.0, 2.0, 7.0], [7.0, 3.0, 7.0], [8.0, 2.0, 7.0]],
+        &[1.0; 3],
+        (0.0, 1.0),
+        &UNIT,
+    );
+    let before = Census::of(&topo);
+    let ticks = topo.mutation_ticks();
+    let slots = topo.allocated_slot_count();
+    let error = assert_refused(
+        project_curve_onto_face(
+            &mut topo,
+            edge,
+            Vec3::new(0.0, 0.0, -1.0),
+            face,
+            &ProjectCurveOptions::default(),
+        ),
+        &topo,
+        &before,
+        "operations",
+    );
+    assert!(matches!(
+        error,
+        ProjectCurveError::Operations(OperationsError::Topology(
+            remus_topology::TopologyError::LoopWireMismatch { .. }
+        ))
+    ));
+    assert_eq!(topo.mutation_ticks(), ticks);
+    assert_eq!(topo.allocated_slot_count(), slots);
+}
+
+#[test]
+fn exact_face_bezier_far_in_plane_frame_evaluation_agrees_or_refuses() {
+    let Target { mut topo, face, .. } = box_target(&UNIT);
+    let edge = face_bezier_source(
+        &mut topo,
+        &[[2.0, 2.0, 7.0], [5.0, 4.0, 7.0], [8.0, 2.0, 7.0]],
+        &[1.0, 2.0, 1.0],
+        (0.0, 1.0),
+        &UNIT,
+    );
+    let frame = Frame3 {
+        origin: Point3::new(1e12, 1e12, 4.0),
+        x: Vec3::new(1.0, 0.0, 0.0),
+        y: Vec3::new(0.0, 1.0, 0.0),
+        z: Vec3::new(0.0, 0.0, 1.0),
+    };
+    let before = Census::of(&topo);
+    let ticks = topo.mutation_ticks();
+    let slots = topo.allocated_slot_count();
+    match project_curve_onto_face(
+        &mut topo,
+        edge,
+        Vec3::new(0.0, 0.0, -1.0),
+        face,
+        &ProjectCurveOptions {
+            plane_frame: Some(frame),
+            ..ProjectCurveOptions::default()
+        },
+    ) {
+        Err(error) => {
+            assert_eq!(error.code(), "exact-bezier-domain-unsupported");
+            assert_eq!(Census::of(&topo), before);
+            assert_eq!(topo.mutation_ticks(), ticks);
+            assert_eq!(topo.allocated_slot_count(), slots);
+        }
+        Ok(result) => {
+            let curve = result.edges[0].plane_curve.as_ref().unwrap();
+            let point = curve.evaluate(0.5);
+            let actual = frame.origin + frame.x * point.x() + frame.y * point.y();
+            assert!(
+                (actual - Point3::new(5.0, 10.0 / 3.0, 4.0)).length() < 1e-6,
+                "actual far-frame reconstruction disagrees: {actual:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn exact_face_bezier_large_common_weights_keep_actual_2d_geometry() {
+    let Target { mut topo, face, .. } = box_target(&UNIT);
+    let controls = [[2.0, 2.0, 7.0], [5.0, 4.0, 7.0], [8.0, 2.0, 7.0]];
+    let scale = f64::MAX / 28.0 * (1.0 - 1e-12);
+    let weights = [scale, 2.0 * scale, scale];
+    let edge = face_bezier_source(&mut topo, &controls, &weights, (10.0, 20.0), &UNIT);
+    let frame = Frame3 {
+        origin: Point3::new(0.0, 0.0, 4.0),
+        x: Vec3::new(1.0, 0.0, 0.0),
+        y: Vec3::new(0.0, 1.0, 0.0),
+        z: Vec3::new(0.0, 0.0, 1.0),
+    };
+    let result = project_curve_onto_face(
+        &mut topo,
+        edge,
+        Vec3::new(0.0, 0.0, -1.0),
+        face,
+        &ProjectCurveOptions {
+            plane_frame: Some(frame),
+            ..ProjectCurveOptions::default()
+        },
+    )
+    .unwrap();
+    let curve = result.edges[0].plane_curve.as_ref().unwrap();
+    let Curve2D::Nurbs(nurbs) = curve.curve() else {
+        panic!("2D NURBS")
+    };
+    assert_eq!(nurbs.weights(), weights);
+    for i in 0..=32 {
+        let q = i as f64 / 32.0;
+        let expected = face_bezier_bernstein(&controls, &[1.0, 2.0, 1.0], q);
+        let actual = curve.evaluate(10.0 + 10.0 * q);
+        assert!(
+            (actual.x() - expected[0]).abs() < 1e-12 && (actual.y() - expected[1]).abs() < 1e-12
+        );
+    }
 }

@@ -76,7 +76,8 @@ pub struct ProjectCurveOptions {
     /// non-positive values are refused as
     /// [`ProjectCurveError::InvalidOptions`].
     pub approximation_tolerance: Option<f64>,
-    /// Control-point budget per approximate edge (minimum 4).
+    /// Control-point budget per approximate edge or exact planar Bézier
+    /// image (minimum 4). Existing line/conic routes do not consume it.
     pub max_control_points: usize,
     /// Frame for 2D output on planar targets. Its `z` must be parallel to
     /// the target plane normal and its origin must lie on that plane.
@@ -167,6 +168,22 @@ pub enum ProjectCurveError {
     InvalidOptions {
         /// What is wrong.
         reason: String,
+    },
+    /// A newly supported exact Bézier projection exceeds its bounded work.
+    #[error("projection {resource} limit {limit} exceeded by {actual}")]
+    ResourceLimit {
+        /// Bounded resource name.
+        resource: &'static str,
+        /// Maximum accepted count.
+        limit: usize,
+        /// Requested count.
+        actual: usize,
+    },
+    /// The whole-domain planar Bézier certificate cannot establish its domain.
+    #[error("unsupported exact planar Bezier projection: {reason}")]
+    ExactBezierDomainUnsupported {
+        /// Qualification boundary, without a sampled or fitted fallback.
+        reason: &'static str,
     },
     /// The source edge has zero length or invalid geometry.
     #[error("degenerate source edge: {reason}")]
@@ -264,6 +281,8 @@ impl ProjectCurveError {
         match self {
             Self::InvalidDirection => "invalid-direction",
             Self::InvalidOptions { .. } => "invalid-options",
+            Self::ResourceLimit { .. } => "resource-limit",
+            Self::ExactBezierDomainUnsupported { .. } => "exact-bezier-domain-unsupported",
             Self::DegenerateSource { .. } => "degenerate-source",
             Self::UnsupportedSourceCurve { .. } => "unsupported-source-curve",
             Self::UnsupportedTargetSurface { .. } => "unsupported-target-surface",
@@ -3432,6 +3451,614 @@ fn project_one_source(
     build_pieces(topo, source, direction, faces, &candidates, &seams, &runs)
 }
 
+/// Qualification limits for the new whole-domain exact family, not a change
+/// to the existing line/conic or approximate routes.
+const MAX_FACE_BEZIER_DEGREE: usize = 8;
+const MAX_FACE_BEZIER_BOUNDARY_EDGES: usize = 32;
+
+fn bezier_domain(reason: &'static str) -> ProjectCurveError {
+    ProjectCurveError::ExactBezierDomainUnsupported { reason }
+}
+
+fn point_intervals(point: Point3) -> [ScalarInterval; 3] {
+    std::array::from_fn(|i| ScalarInterval::point(point.0[i]))
+}
+
+/// Signed edge halfspace with outward arithmetic; no sampling decides a
+/// polygon's convexity or the rational curve's complete containment.
+fn bezier_halfspace(a: Point3, b: Point3, point: Point3, normal: Vec3) -> ScalarInterval {
+    bezier_halfspace_bounds(a, b, point_intervals(point), normal)
+}
+
+fn bezier_halfspace_bounds(
+    a: Point3,
+    b: Point3,
+    point: [ScalarInterval; 3],
+    normal: Vec3,
+) -> ScalarInterval {
+    let edge: [ScalarInterval; 3] =
+        std::array::from_fn(|i| ScalarInterval::point(b.0[i]).sub(ScalarInterval::point(a.0[i])));
+    let offset: [ScalarInterval; 3] =
+        std::array::from_fn(|i| point[i].sub(ScalarInterval::point(a.0[i])));
+    interval_dot(
+        [
+            edge[1].mul(offset[2]).sub(edge[2].mul(offset[1])),
+            edge[2].mul(offset[0]).sub(edge[0].mul(offset[2])),
+            edge[0].mul(offset[1]).sub(edge[1].mul(offset[0])),
+        ],
+        normal,
+    )
+}
+
+/// Keep the retained homogeneous representation evaluable without changing
+/// its weights. A finite absolute sum bounds every positive-basis convex
+/// combination used by the curve evaluator.
+fn finite_bezier_homogeneous(curve: &NurbsCurve) -> bool {
+    let mut sums = [ScalarInterval::point(0.0); 4];
+    for (point, weight) in curve.control_points().iter().zip(curve.weights()) {
+        for (axis, sum) in sums.iter_mut().take(3).enumerate() {
+            *sum = sum.add(
+                ScalarInterval::point(point.0[axis].abs()).mul(ScalarInterval::point(*weight)),
+            );
+        }
+        sums[3] = sums[3].add(ScalarInterval::point(*weight));
+    }
+    sums.into_iter().all(ScalarInterval::finite)
+}
+
+// Degree 8's positive basis recurrence and homogeneous arithmetic fit within
+// 16*(degree+1)^2 rounding steps. Use that maximum for this bounded family.
+const FACE_BEZIER_EVAL_OPS: f64 = 1296.0;
+
+fn bezier_gamma(operations: f64) -> ScalarInterval {
+    let product = ScalarInterval::point(operations).mul(ScalarInterval::point(f64::EPSILON));
+    product.div(ScalarInterval::point(1.0).sub(product))
+}
+
+fn bezier_basis_roundoff(width: ScalarInterval) -> Option<ScalarInterval> {
+    let inverse = ScalarInterval::point(1.0).div(width);
+    if !width.finite() || width.lo <= 0.0 || !inverse.finite() {
+        return None;
+    }
+    // Subnormal temporaries can be multiplied by a knot distance at the next
+    // step. Bound that amplification and inverse-width subtraction effects.
+    let tiny = ScalarInterval::point(f64::from_bits(1));
+    let underflow = tiny
+        .mul(width)
+        .add(tiny.mul(inverse))
+        .mul(ScalarInterval::point(FACE_BEZIER_EVAL_OPS));
+    let error = bezier_gamma(FACE_BEZIER_EVAL_OPS).add(underflow);
+    error.finite().then_some(error)
+}
+
+/// Absolute error of the actual 2D evaluator and world reconstruction.
+/// Positive basis weights bound the true denominator below by the minimum
+/// weight; absolute homogeneous sums retain a bound across cancellation.
+fn bezier_2d_evaluation_error(
+    curve: &NurbsCurve2D,
+    frame: &Frame3,
+    width: ScalarInterval,
+) -> Option<ScalarInterval> {
+    let beta = bezier_basis_roundoff(width)?;
+    let tiny =
+        ScalarInterval::point(f64::from_bits(1)).mul(ScalarInterval::point(FACE_BEZIER_EVAL_OPS));
+    let mut weight_sum = ScalarInterval::point(0.0);
+    let mut absolute = [ScalarInterval::point(0.0); 2];
+    let mut magnitude = [0.0_f64; 2];
+    let mut minimum = f64::INFINITY;
+    for (control, weight) in curve.control_points().iter().zip(curve.weights()) {
+        minimum = minimum.min(*weight);
+        let weight = ScalarInterval::point(*weight);
+        weight_sum = weight_sum.add(weight);
+        for axis in 0..2 {
+            let value = control.0[axis].abs();
+            magnitude[axis] = magnitude[axis].max(value);
+            absolute[axis] = absolute[axis].add(weight.mul(ScalarInterval::point(value)));
+        }
+    }
+    // Finite exact sums alone do not prevent rounded contractions overflowing
+    // near the largest float. Keep the same margin used for chart arithmetic.
+    let headroom = ScalarInterval::point(1.0).add(beta.mul(ScalarInterval::point(4.0)));
+    if !weight_sum.mul(headroom).finite() || absolute.iter().any(|sum| !sum.mul(headroom).finite())
+    {
+        return None;
+    }
+    let denominator_error = beta.mul(weight_sum).add(tiny);
+    let lower = ScalarInterval::point(minimum).sub(denominator_error);
+    if !lower.finite() || lower.lo <= f64::EPSILON {
+        return None;
+    }
+    let error: [ScalarInterval; 2] = std::array::from_fn(|axis| {
+        let maximum = ScalarInterval::point(magnitude[axis]);
+        let numerator = beta
+            .mul(absolute[axis])
+            .add(tiny.mul(ScalarInterval::point(1.0).add(maximum)));
+        let quotient = numerator.add(maximum.mul(denominator_error)).div(lower);
+        quotient.add(beta.mul(maximum.add(quotient))).add(tiny)
+    });
+    let world_gamma = bezier_gamma(32.0);
+    let mut total = ScalarInterval::point(0.0);
+    for axis in 0..3 {
+        let x = ScalarInterval::point(frame.x.0[axis].abs());
+        let y = ScalarInterval::point(frame.y.0[axis].abs());
+        let world_magnitude = ScalarInterval::point(frame.origin.0[axis].abs())
+            .add(x.mul(ScalarInterval::point(magnitude[0]).add(error[0])))
+            .add(y.mul(ScalarInterval::point(magnitude[1]).add(error[1])));
+        total = total
+            .add(x.mul(error[0]))
+            .add(y.mul(error[1]))
+            .add(world_gamma.mul(world_magnitude))
+            .add(tiny);
+    }
+    total.finite().then_some(total)
+}
+
+// Equality here identifies retained knots and full native trims, not nearby
+// geometric points; a fuzzy match would change the represented source chart.
+#[allow(clippy::too_many_lines, clippy::float_cmp)]
+fn project_planar_bezier(
+    topo: &mut Topology,
+    source_id: EdgeId,
+    direction: Vec3,
+    direction_raw: Vec3,
+    face: FaceId,
+    options: &ProjectCurveOptions,
+) -> Result<ProjectedCurves, ProjectCurveError> {
+    let edge = topo.edge(source_id).map_err(OperationsError::from)?;
+    let EdgeCurve::NurbsCurve(source) = edge.curve() else {
+        return Err(bezier_domain("source is not a rational Bezier carrier"));
+    };
+    let count = source.control_points().len();
+    if count > MAX_FACE_BEZIER_DEGREE + 1 {
+        return Err(ProjectCurveError::ResourceLimit {
+            resource: "projection_source_control_points",
+            limit: MAX_FACE_BEZIER_DEGREE + 1,
+            actual: count,
+        });
+    }
+    let degree = source.degree();
+    if degree == 0
+        || degree > MAX_FACE_BEZIER_DEGREE
+        || count != degree + 1
+        || source.weights().len() != count
+        || source.knots().len() != 2 * count
+    {
+        return Err(ProjectCurveError::UnsupportedSourceCurve {
+            curve: edge.curve().type_tag(),
+            surface: "plane",
+        });
+    }
+    let domain = source.domain();
+    let span = domain.1 - domain.0;
+    // Knot identities define a clamped single span; they are not geometric
+    // closeness tests. Do not normalize or approximate the retained chart.
+    if !span.is_finite()
+        || span <= 0.0
+        || source.knots()[..count].iter().any(|k| *k != domain.0)
+        || source.knots()[count..].iter().any(|k| *k != domain.1)
+        || edge.strict_domain().ok() != Some(domain)
+    {
+        return Err(ProjectCurveError::UnsupportedSourceCurve {
+            curve: edge.curve().type_tag(),
+            surface: "plane",
+        });
+    }
+    let native_width = ScalarInterval::point(domain.1).sub(ScalarInterval::point(domain.0));
+    let basis_roundoff = bezier_basis_roundoff(native_width)
+        .ok_or_else(|| bezier_domain("native chart is unsafe for curve evaluation"))?;
+    let headroom = ScalarInterval::point(1.0).add(basis_roundoff.mul(ScalarInterval::point(4.0)));
+    if !native_width.mul(headroom).finite()
+        || !ScalarInterval::point(1.0)
+            .div(native_width)
+            .mul(headroom)
+            .finite()
+    {
+        return Err(bezier_domain(
+            "native chart has no evaluator overflow headroom",
+        ));
+    }
+    if source.weights().iter().any(|w| !w.is_finite() || *w <= 0.0)
+        || source
+            .control_points()
+            .iter()
+            .any(|p| p.0.iter().any(|v| !v.is_finite()))
+    {
+        return Err(ProjectCurveError::DegenerateSource {
+            reason: "exact Bezier projection requires finite controls and positive weights",
+        });
+    }
+    if edge.start() == edge.end()
+        || (source.control_points()[0] - source.control_points()[count - 1]).length()
+            <= linear_tol()
+    {
+        return Err(bezier_domain("closed Bezier sources are not qualified"));
+    }
+    let data = topo.face(face).map_err(OperationsError::from)?;
+    if !data.inner_wires().is_empty() {
+        return Err(bezier_domain(
+            "whole-hull projection requires a hole-free face",
+        ));
+    }
+    let wire = topo
+        .wire(data.outer_wire())
+        .map_err(OperationsError::from)?;
+    let boundary = wire.edges();
+    if boundary.len() > MAX_FACE_BEZIER_BOUNDARY_EDGES {
+        return Err(ProjectCurveError::ResourceLimit {
+            resource: "projection_face_edges",
+            limit: MAX_FACE_BEZIER_BOUNDARY_EDGES,
+            actual: boundary.len(),
+        });
+    }
+    if boundary.len() < 3 || !wire.is_closed() {
+        return Err(bezier_domain(
+            "target requires a closed convex line polygon",
+        ));
+    }
+    // The wire is a compatibility shadow. Bound the authoritative use list
+    // before validating it, then require exact Loop/Coedge agreement so a
+    // stale enlarged shadow cannot authorize an outside image.
+    let loop_ids = topo.loops_of_face(face).ok_or(OperationsError::Topology(
+        remus_topology::TopologyError::LoopWireMismatch { face },
+    ))?;
+    if loop_ids.len() != 1 {
+        return Err(
+            OperationsError::Topology(remus_topology::TopologyError::LoopWireMismatch { face })
+                .into(),
+        );
+    }
+    let uses = topo
+        .face_loop(loop_ids[0])
+        .map_err(OperationsError::from)?
+        .coedges()
+        .len();
+    if uses > MAX_FACE_BEZIER_BOUNDARY_EDGES {
+        return Err(ProjectCurveError::ResourceLimit {
+            resource: "projection_face_edges",
+            limit: MAX_FACE_BEZIER_BOUNDARY_EDGES,
+            actual: uses,
+        });
+    }
+    remus_topology::validation::validate_face_loops(topo, face).map_err(OperationsError::from)?;
+    let mut polygon = Vec::with_capacity(boundary.len());
+    for (i, oriented) in boundary.iter().enumerate() {
+        let item = topo.edge(oriented.edge()).map_err(OperationsError::from)?;
+        let next = boundary[(i + 1) % boundary.len()];
+        let next_item = topo.edge(next.edge()).map_err(OperationsError::from)?;
+        if !matches!(item.curve(), EdgeCurve::Line)
+            || item.trim().is_some_and(|range| range != (0.0, 1.0))
+            || oriented.oriented_end(item) != next.oriented_start(next_item)
+        {
+            return Err(bezier_domain(
+                "target boundary must be an ordered cycle of complete lines",
+            ));
+        }
+        let point = topo
+            .vertex(oriented.oriented_start(item))
+            .map_err(OperationsError::from)?
+            .point();
+        if point.0.iter().any(|v| !v.is_finite()) {
+            return Err(bezier_domain("target boundary has non-finite coordinates"));
+        }
+        polygon.push(point);
+    }
+    let TargetGeom::Plane { normal, delta } = resolve_target(topo, face)? else {
+        return Err(bezier_domain("target must use a native plane"));
+    };
+    // Only the target's extent controls target/frame tolerances. Neither a
+    // distant source nor a long projected-away source may loosen those checks.
+    let scale = polygon
+        .iter()
+        .map(|p| (*p - polygon[0]).length())
+        .fold(0.0_f64, f64::max);
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(bezier_domain("model extent is not representable"));
+    }
+    validate_options(options, scale)?;
+    if count > options.max_control_points {
+        return Err(ProjectCurveError::ResourceLimit {
+            resource: "projection_control_points",
+            limit: options.max_control_points,
+            actual: count,
+        });
+    }
+    let frame = validate_plane_frame(options, &TargetGeom::Plane { normal, delta }, scale)?;
+    let bound = 1e-7 * scale;
+    let plane_residual = |point: Point3| {
+        interval_dot(point_intervals(point), normal).sub(ScalarInterval::point(delta))
+    };
+    for point in &polygon {
+        let residual = plane_residual(*point);
+        if !residual.finite() || residual.lo < -bound || residual.hi > bound {
+            return Err(bezier_domain(
+                "target vertices do not resolve on their plane",
+            ));
+        }
+    }
+    let turn = bezier_halfspace(polygon[0], polygon[1], polygon[2], normal);
+    let sign = if turn.finite() && turn.lo > 0.0 {
+        1.0
+    } else if turn.finite() && turn.hi < 0.0 {
+        -1.0
+    } else {
+        return Err(bezier_domain("target convexity does not resolve"));
+    };
+    for i in 0..polygon.len() {
+        let j = (i + 1) % polygon.len();
+        for (k, point) in polygon.iter().enumerate() {
+            if k != i && k != j {
+                let side = bezier_halfspace(polygon[i], polygon[j], *point, normal)
+                    .mul(ScalarInterval::point(sign));
+                if !side.finite() || side.lo <= 0.0 {
+                    return Err(bezier_domain("target polygon is not strictly convex"));
+                }
+            }
+        }
+    }
+    if normal.dot(direction).abs() <= GRAZE_PLANE {
+        return Err(ProjectCurveError::GrazingDirection);
+    }
+    // Preserve the represented input ray and plane ratios. Normalizing each
+    // component independently can move a distant image by model units.
+    let FaceSurface::Plane {
+        normal: carrier_normal,
+        d: carrier_delta,
+    } = data.surface()
+    else {
+        return Err(bezier_domain("target must use a native plane"));
+    };
+    let map = AffineMap::new(*carrier_normal, *carrier_delta, direction_raw);
+    let denominator = interval_dot(
+        std::array::from_fn(|axis| ScalarInterval::point(direction_raw.0[axis])),
+        *carrier_normal,
+    );
+    if !map.denom.is_finite()
+        || !denominator.finite()
+        || (denominator.lo <= 0.0 && denominator.hi >= 0.0)
+    {
+        return Err(bezier_domain(
+            "original ray/plane denominator is unresolved",
+        ));
+    }
+    let mut pivot = 0;
+    for axis in 1..3 {
+        if carrier_normal.0[axis].abs() > carrier_normal.0[pivot].abs() {
+            pivot = axis;
+        }
+    }
+    if !finite_bezier_homogeneous(source)
+        || !regular_nurbs_image_with_denominator(source, domain, &map, denominator)?
+    {
+        return Err(ProjectCurveError::DegenerateImage);
+    }
+    let start_vertex = topo.vertex(edge.start()).map_err(OperationsError::from)?;
+    let end_vertex = topo.vertex(edge.end()).map_err(OperationsError::from)?;
+    let source_start = start_vertex.point();
+    let source_end = end_vertex.point();
+    let start_tolerance = start_vertex.tolerance();
+    let end_tolerance = end_vertex.tolerance();
+    if source_start
+        .0
+        .iter()
+        .chain(&source_end.0)
+        .any(|v| !v.is_finite())
+        || !start_tolerance.is_finite()
+        || !end_tolerance.is_finite()
+        || start_tolerance.is_sign_negative()
+        || end_tolerance.is_sign_negative()
+        || (source_start - source.control_points()[0]).length() > start_tolerance.min(linear_tol())
+        || (source_end - source.control_points()[count - 1]).length()
+            > end_tolerance.min(linear_tol())
+    {
+        return Err(ProjectCurveError::DegenerateSource {
+            reason: "source vertices disagree with its full native trim",
+        });
+    }
+    let mut points = Vec::with_capacity(count);
+    for point in source.control_points() {
+        let lambda = ScalarInterval::point(*carrier_delta)
+            .sub(interval_dot(point_intervals(*point), *carrier_normal))
+            .div(denominator);
+        if !lambda.finite() || lambda.lo <= 0.0 {
+            return Err(bezier_domain(
+                "forward rays are not certified over the whole source hull",
+            ));
+        }
+        let mut bounds: [ScalarInterval; 3] = std::array::from_fn(|axis| {
+            if direction_raw.0[axis] == 0.0 {
+                ScalarInterval::point(point.0[axis])
+            } else {
+                ScalarInterval::point(point.0[axis])
+                    .add(lambda.mul(ScalarInterval::point(direction_raw.0[axis])))
+            }
+        });
+        // Recover the dominant normal coordinate from the same exact plane
+        // equation. This removes dependency inflation for representable axis
+        // projections; the other coordinates still enclose the original ray.
+        let mut pivot_bounds = ScalarInterval::point(*carrier_delta);
+        let mut image = map.apply(*point);
+        let mut pivot_value = *carrier_delta;
+        for axis in 0..3 {
+            if axis != pivot && carrier_normal.0[axis] != 0.0 {
+                pivot_bounds = pivot_bounds
+                    .sub(bounds[axis].mul(ScalarInterval::point(carrier_normal.0[axis])));
+                pivot_value = (-carrier_normal.0[axis]).mul_add(image.0[axis], pivot_value);
+            }
+        }
+        bounds[pivot] = pivot_bounds.div(ScalarInterval::point(carrier_normal.0[pivot]));
+        image.0[pivot] = pivot_value / carrier_normal.0[pivot];
+        let error = (0..3).fold(ScalarInterval::point(0.0), |sum, axis| {
+            let residual = bounds[axis].sub(ScalarInterval::point(image.0[axis]));
+            sum.add(ScalarInterval::point(
+                residual.lo.abs().max(residual.hi.abs()),
+            ))
+        });
+        if image.0.iter().any(|v| !v.is_finite())
+            || bounds.iter().any(|coordinate| !coordinate.finite())
+            || !error.finite()
+            || error.hi > bound
+        {
+            return Err(bezier_domain(
+                "original ray image is not representable within target tolerance",
+            ));
+        }
+        let residual = plane_residual(image);
+        if !residual.finite() || residual.lo < -bound || residual.hi > bound {
+            return Err(bezier_domain(
+                "mapped controls do not resolve on the target plane",
+            ));
+        }
+        for i in 0..polygon.len() {
+            let next = polygon[(i + 1) % polygon.len()];
+            for side in [
+                bezier_halfspace_bounds(polygon[i], next, bounds, normal),
+                bezier_halfspace(polygon[i], next, image, normal),
+            ] {
+                let side = side.mul(ScalarInterval::point(sign));
+                if !side.finite() || side.lo <= 0.0 {
+                    return Err(bezier_domain(
+                        "mapped control hull is not strictly inside the target",
+                    ));
+                }
+            }
+        }
+        points.push(image);
+    }
+    let image = NurbsCurve::new(
+        degree,
+        source.knots().to_vec(),
+        points,
+        source.weights().to_vec(),
+    )
+    .map_err(|error| math_to_ops("exact planar Bezier image", error))?;
+    let identity = AffineMap {
+        normal: Vec3::new(0.0, 0.0, 0.0),
+        delta: 0.0,
+        direction: Vec3::new(0.0, 0.0, 0.0),
+        denom: 1.0,
+    };
+    if !finite_bezier_homogeneous(&image) || !regular_nurbs_image(&image, domain, &identity)? {
+        return Err(ProjectCurveError::DegenerateImage);
+    }
+    let plane_curve = frame
+        .as_ref()
+        .map(|frame| -> Result<_, ProjectCurveError> {
+            // The current 2D evaluator falls back to its first control when
+            // the raw denominator is below machine epsilon. Positive Bezier
+            // bases partition unity; this conservative floor leaves a factor
+            // four margin for this bounded degree, without rescaling weights.
+            // The normalized-weight 3D evaluator does not need this restriction.
+            if image.weights().iter().any(|w| *w < 4.0 * f64::EPSILON) {
+                return Err(bezier_domain(
+                    "retained weights are unsafe for optional 2D evaluation",
+                ));
+            }
+            let controls: Vec<_> = image
+                .control_points()
+                .iter()
+                .map(|p| sketch_to_2d(frame, *p))
+                .collect();
+            let mut representation_error = 0.0_f64;
+            for (point, control) in image.control_points().iter().zip(&controls) {
+                let reconstructed = frame.origin + frame.x * control.x() + frame.y * control.y();
+                if !reconstructed.0.iter().all(|v| v.is_finite())
+                    || (reconstructed - *point).length() > bound
+                {
+                    return Err(ProjectCurveError::PlaneFrameMismatch);
+                }
+                let mut error = ScalarInterval::point(0.0);
+                for axis in 0..3 {
+                    let coordinate = ScalarInterval::point(frame.origin.0[axis])
+                        .add(
+                            ScalarInterval::point(frame.x.0[axis])
+                                .mul(ScalarInterval::point(control.x())),
+                        )
+                        .add(
+                            ScalarInterval::point(frame.y.0[axis])
+                                .mul(ScalarInterval::point(control.y())),
+                        )
+                        .sub(ScalarInterval::point(point.0[axis]));
+                    if !coordinate.finite() {
+                        return Err(bezier_domain(
+                            "optional2D control reconstruction is unresolved",
+                        ));
+                    }
+                    error = error.add(ScalarInterval::point(
+                        coordinate.lo.abs().max(coordinate.hi.abs()),
+                    ));
+                }
+                if !error.finite() {
+                    return Err(bezier_domain(
+                        "optional2D control reconstruction is unresolved",
+                    ));
+                }
+                representation_error = representation_error.max(error.hi);
+            }
+            let curve = NurbsCurve2D::new(
+                degree,
+                image.knots().to_vec(),
+                controls,
+                image.weights().to_vec(),
+            )
+            .map_err(|error| math_to_ops("exact planar Bezier frame image", error))?;
+            let emitted = NurbsCurve::new(
+                degree,
+                image.knots().to_vec(),
+                curve
+                    .control_points()
+                    .iter()
+                    .map(|p| Point3::new(p.x(), p.y(), 0.0))
+                    .collect(),
+                image.weights().to_vec(),
+            )
+            .map_err(|error| math_to_ops("exact planar Bezier frame certificate", error))?;
+            if !finite_bezier_homogeneous(&emitted)
+                || !regular_nurbs_image(&emitted, domain, &identity)?
+            {
+                return Err(ProjectCurveError::DegenerateImage);
+            }
+            let evaluation_error = bezier_2d_evaluation_error(&curve, frame, native_width)
+                .ok_or_else(|| bezier_domain("optional2D evaluation roundoff is unresolved"))?;
+            if ScalarInterval::point(representation_error)
+                .add(evaluation_error)
+                .hi
+                > bound
+            {
+                return Err(bezier_domain(
+                    "optional2D evaluation exceeds target tolerance",
+                ));
+            }
+            Ok(PCurve::new(Curve2D::Nurbs(curve), domain.0, domain.1))
+        })
+        .transpose()?;
+    // All domain, arithmetic, frame and resource checks precede publication.
+    let pending = topo.journal_begin("project_curve_onto_face");
+    let start = topo.add_vertex(Vertex::new(image.control_points()[0], linear_tol()));
+    let end = topo.add_vertex(Vertex::new(image.control_points()[count - 1], linear_tol()));
+    let mut edge = Edge::new(start, end, EdgeCurve::NurbsCurve(image));
+    edge.set_trim(Some(domain));
+    let edge = topo.add_edge(edge);
+    topo.journal_record_barrier(
+        pending,
+        vec![
+            EntityKey::vertex(start.index()),
+            EntityKey::vertex(end.index()),
+            EntityKey::edge(edge.index()),
+        ],
+    );
+    Ok(ProjectedCurves {
+        edges: vec![ProjectedEdge {
+            edge,
+            face,
+            source_range: domain,
+            plane_curve,
+        }],
+        face,
+        quality: ProjectionQuality::Exact,
+        clipped: false,
+    })
+}
+
 /// Face-level projection: compute, then commit free edges.
 fn project_face_inner(
     topo: &mut Topology,
@@ -3441,6 +4068,17 @@ fn project_face_inner(
     options: &ProjectCurveOptions,
 ) -> Result<ProjectedCurves, ProjectCurveError> {
     let direction = validate_direction(direction_raw)?;
+    // This whole-domain exact family has no clipping/first-hit subdivision.
+    // Preflight its bounded borrowed data before resolve_source clones it.
+    if matches!(
+        topo.edge(source_id).map_err(OperationsError::from)?.curve(),
+        EdgeCurve::NurbsCurve(_)
+    ) && matches!(
+        topo.face(face).map_err(OperationsError::from)?.surface(),
+        FaceSurface::Plane { .. }
+    ) {
+        return project_planar_bezier(topo, source_id, direction, direction_raw, face, options);
+    }
     let source = resolve_source(topo, source_id)?;
     let target = resolve_target(topo, face)?;
     let extent = target_extent(topo, face, &target)?;
@@ -4507,6 +5145,17 @@ fn regular_nurbs_image(
     trim: (f64, f64),
     map: &AffineMap,
 ) -> Result<bool, ProjectCurveError> {
+    regular_nurbs_image_with_denominator(curve, trim, map, ScalarInterval::point(map.denom))
+}
+
+// Existing routes retain their point denominator. The new face family also
+// encloses the original unnormalized ray/plane dot product for regularity.
+fn regular_nurbs_image_with_denominator(
+    curve: &NurbsCurve,
+    trim: (f64, f64),
+    map: &AffineMap,
+    denominator: ScalarInterval,
+) -> Result<bool, ProjectCurveError> {
     let trim = (trim.0.min(trim.1), trim.0.max(trim.1));
     let p = curve.degree();
     let domain = curve.domain();
@@ -4549,7 +5198,7 @@ fn regular_nurbs_image(
                 let dot = (0..3).fold(ScalarInterval::point(0.0), |sum, axis| {
                     sum.add(vector[axis].mul(ScalarInterval::point(map.normal.0[axis])))
                 });
-                let distance = dot.div(ScalarInterval::point(map.denom));
+                let distance = dot.div(denominator);
                 std::array::from_fn(|axis| {
                     vector[axis]
                         .sub(distance.mul(ScalarInterval::point(map.direction.0[axis])))

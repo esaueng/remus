@@ -17,7 +17,8 @@ surface extension, is not covered here.
 | Line segment | exact (line) | exact (conic) | refused |
 | Circle / arc | exact (circle or ellipse) | exact if coaxial, else approximate on request | refused |
 | Ellipse | exact (ellipse or circle) | refused | refused |
-| NURBS, parabola, hyperbola | refused for faces; exact on sketch planes (§3.3) | refused | refused |
+| Positive-weight clamped single-span Bezier, degree 1–8 | exact whole component on a qualified convex all-Line face ([bounded contract](planar-bezier-face-projection.md)) | refused | refused |
+| Remaining NURBS, parabola, hyperbola | refused for faces; exact on sketch planes (§3.3) | refused | refused |
 
 "Approximate on request" means `allow_approximate = true`, within the
 certified cylinder-slab trim cell in §6; unqualified trims refuse. The default
@@ -415,6 +416,8 @@ Every refusal leaves the topology unchanged (§3.2). Codes are API.
 
 | Code | Variant | Condition | Test |
 |---|---|---|---|
+| `resource-limit` | `ResourceLimit { resource, limit, actual }` | new exact face family: source CP 9, boundary 32, or caller control budget exceeded | planar Bezier resource controls |
+| `exact-bezier-domain-unsupported` | `ExactBezierDomainUnsupported { reason }` | new exact face family: unqualified chart, hull, forward ray, arithmetic or optional 2D evaluator | [bounded contract](planar-bezier-face-projection.md) |
 | `invalid-direction` | `InvalidDirection` | `d` zero or non-finite | `invalid_direction_is_refused`, `sketch_plane_refusals` |
 | `invalid-options` | `InvalidOptions` | tolerance `≤ 0`, non-finite or `< 1e-9·scale`; `max_control_points < 4` | `invalid_options_are_refused` |
 | `degenerate-source` | `DegenerateSource` | segment shorter than `Tolerance::linear`; invalid source geometry | `zero_length_source_is_refused`, solid atomicity |
