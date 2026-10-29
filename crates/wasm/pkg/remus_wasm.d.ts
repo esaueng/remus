@@ -65,6 +65,16 @@ export interface SolidProjection {
 }
 
 /**
+ * Current attached plane and counts of refreshed external inputs.
+ */
+export interface LinkedSketchResolution {
+    frame: SketchFrame;
+    externalLines: number;
+    externalCircles?: number;
+    externalEllipses?: number;
+}
+
+/**
  * Disclosed projection quality; approximate deviation is a sampled maximum.
  */
 export type ProjectionQuality = { kind: "exact" } | { kind: "approximate"; maxDeviation: number };
@@ -78,6 +88,15 @@ export type ProjectionQuality = { kind: "exact" } | { kind: "approximate"; maxDe
  * descending source intervals; the control net is never reversed.
  */
 export type PlaneCurve2d = { kind: "line"; start: [number, number]; end: [number, number] } | { kind: "circle"; center: [number, number]; radius: number; startAngle: number; endAngle: number } | { kind: "ellipse"; center: [number, number]; semiMajor: number; semiMinor: number; rotation: number; startAngle: number; endAngle: number } | { kind: "nurbs"; tStart: number; tEnd: number; degree: number; knots: number[]; controlPoints: [number, number][]; weights: number[] };
+
+/**
+ * Handles for ordinary GCS constraints; the two point inputs are read-only.
+ */
+export interface ExternalLineHandles {
+    line: number;
+    start: number;
+    end: number;
+}
 
 /**
  * Material side for `faceMaterialSense`: `"outward"` (boss-like) or
@@ -174,6 +193,22 @@ export interface ProjectCurveOptions {
     approximationTolerance?: number;
     maxControlPoints?: number;
     planeFrame?: SketchFrame;
+}
+
+/**
+ * Ordinary constraint handles whose ellipse geometry is read-only.
+ */
+export interface ExternalEllipseHandles {
+    ellipse: number;
+    center: number;
+}
+
+/**
+ * Ordinary constraint handles whose external center/radius are read-only.
+ */
+export interface ExternalCircleHandles {
+    circle: number;
+    center: number;
 }
 
 /**
@@ -1577,7 +1612,8 @@ export class BrepKernel {
      */
     draftJournaled(solid: number, faces: Uint32Array, pull_direction: Float64Array, neutral_point: Float64Array, angle_degrees: number): string;
     /**
-     * Drain up to 4096 completed phase events as JSON.
+     * Drain up to 4096 phase and boolean-route events as JSON. Route
+     * observations have zero duration and names beginning `boolean.route.`.
      *
      * # Errors
      * Returns an error if events cannot be serialized.
@@ -2121,6 +2157,24 @@ export class BrepKernel {
      */
     gcsAddEllipse(sketch: number, center: number, a: number, b: number, angle: number): number;
     /**
+     * Add a complete construction-linked native circle in the parallel sketch
+     * plane. Both the center and radius are driven read-only inputs; returned
+     * handles can be used by ordinary GCS constraints. Partial/oblique curves
+     * and nonunique construction identity refuse atomically.
+     */
+    gcsAddExternalCircle(sketch: number, reference: string): ExternalCircleHandles;
+    /**
+     * Add a complete construction-linked native ellipse in the parallel sketch
+     * plane. Both the center and three scalar parameters are driven read-only inputs; returned
+     * handles can be used by ordinary GCS constraints. Partial/oblique curves
+     * and nonunique construction identity refuse atomically.
+     */
+    gcsAddExternalEllipse(sketch: number, reference: string): ExternalEllipseHandles;
+    /**
+     * Add a fixed external line whose returned handles can be constrained to.
+     */
+    gcsAddExternalLine(sketch: number, reference: string, start_ref: string, end_ref: string): ExternalLineHandles;
+    /**
      * Add a line through two existing points. Returns a line handle.
      */
     gcsAddLine(sketch: number, p1: number, p2: number): number;
@@ -2129,6 +2183,12 @@ export class BrepKernel {
      * Returns a point handle.
      */
     gcsAddPoint(sketch: number, x: number, y: number, fixed: boolean): number;
+    /**
+     * Attach an existing GCS sketch to one construction-resolved planar face.
+     * Frame axes must be unit and perpendicular; this slice supports parallel
+     * plane moves. The reference uses the existing versioned JSON codec.
+     */
+    gcsAttachToFace(sketch: number, reference: string, frame: SketchFrame): LinkedSketchResolution;
     /**
      * Current radius of a circle.
      */
@@ -2162,6 +2222,11 @@ export class BrepKernel {
      */
     gcsRemoveConstraint(sketch: number, constraint: number): void;
     /**
+     * Atomically refresh every external input; a failed rebind preserves all
+     * previous coordinates. Solve and detailed solve refresh automatically.
+     */
+    gcsResolveRefs(sketch: number): LinkedSketchResolution;
+    /**
      * Move an ellipse's center to `(x, y)` and set its semiaxes and
      * orientation without solving (e.g. while dragging). `a` and `b` must
      * be positive and finite; `angle` is finite radians.
@@ -2188,8 +2253,12 @@ export class BrepKernel {
      * unchanged. Two differences matter:
      *
      * - **Transactional.** A solve that fails to reach `tolerance` is rolled
-     *   back: the pre-solve points and radii are restored and `rolledBack` is
-     *   set. `gcsSolve` still publishes whatever iterate it stopped on.
+     *   back: the pre-solver free points and radii are restored and `rolledBack`
+     *   is set. Linked external inputs refresh first; a successful refresh
+     *   remains current even when the solve does not converge. The rollback
+     *   baseline and `publishedMaxResidual` use those refreshed fixed inputs.
+     *   A thrown refresh or solver error restores the entire pre-call sketch.
+     *   `gcsSolve` still publishes whatever iterate it stopped on.
      * - **Measured.** Returns convergence, iteration count, residuals, DOF,
      *   rank, parameter and equation counts, a per-constraint residual keyed
      *   by the `gcsAddConstraint` handle, and an overall classification.
@@ -2551,8 +2620,9 @@ export class BrepKernel {
      * profile so its up-vector tracks an auxiliary spine.
      *
      * The spine and auxiliary spine are each passed as raw NURBS data
-     * (`degree`, `knots`, flat `control_points`, `weights`). Returns a solid
-     * handle (`u32`).
+     * (`degree`, `knots`, flat `control_points`, `weights`). Their original
+     * native domains must match exactly; both curves are sampled at the same
+     * normalized progress across that domain. Returns a solid handle (`u32`).
      *
      * # Errors
      *
@@ -2594,6 +2664,13 @@ export class BrepKernel {
      * construction-derived journal entry.
      */
     imprint(target: number, tool: number): string;
+    /**
+     * Partition one planar convex solid face with a strictly interior convex
+     * 3--16 point ring. `points` is flat world `[x,y,z,...]` data.
+     * Returns JSON `{solid,innerFace,surroundFace,op}`. Both patches retain
+     * the original plane and material, with exact construction lineage.
+     */
+    imprintPlanarPolygon(solid: number, face: number, points: Float64Array): string;
     /**
      * Compute the uniform-density inertia tensor about the center of mass.
      *
@@ -4166,6 +4243,20 @@ export class BrepKernel {
      */
     solidToSolidDistance(a: number, b: number): Float64Array;
     /**
+     * Global maximum distance and witnesses as `[distance, ax, ay, az, bx, by, bz]`.
+     *
+     * Supports straight-edged planar polyhedra and complete native spheres,
+     * including certified affine NURBS planar faces and mixed pairs.
+     * All cavity boundaries are qualified; unsupported
+     * geometry returns a typed refusal. This query changes no session state.
+     * Inputs require valid BReps with closed shells and simple, nested trim loops.
+     *
+     * # Errors
+     * Returns an error for invalid handles/boundaries, unsupported geometry,
+     * unresolved arithmetic or exhausted bounded work.
+     */
+    solidToSolidMaximumDistance(a: number, b: number): Float64Array;
+    /**
      * Split a solid into two halves along a plane.
      *
      * Returns `[positive_solid_handle, negative_solid_handle]`.
@@ -4275,6 +4366,14 @@ export class BrepKernel {
      *
      * `contact_mode`: "rmf" (default), "fixed", or "constantNormal:x,y,z"
      * `scale_values`: flat `[t0,s0,t1,s1,...]` pairs for piecewise-linear scale law.
+     * The law is evaluated at normalized path progress in `[0,1]`, independently
+     * of the NURBS path's native parameter domain.
+     * Parameters must be finite and strictly increasing, their adjacent spans
+     * finite, and scales finite and positive. Empty pairs select unit scale.
+     * Qualified linear tapers use XY straight-edge profiles, including holes,
+     * +Z straight paths and fixed contact. Intermediate law breakpoints must
+     * coincide with section rings. General initial roll/profile placement
+     * remains unqualified.
      * `corner_mode`: "smooth" (default), "miter", or "round:&lt;radius&gt;"
      *   (e.g. `"round:2.5"` — rounding a corner needs a radius).
      * Returns a solid handle.
