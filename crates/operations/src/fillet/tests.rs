@@ -1911,29 +1911,317 @@ fn sequential_fillet_equal_radius_rounds_corner_as_sphere() {
     let vol_first = crate::measure::solid_volume(&topo, first, 0.01).unwrap();
     assert!(vol < vol_first, "a convex fillet removes material");
 
-    // The corner cap is the ball surface: every point one radius from the
-    // ball centre, which sits on the earlier band's axis one radius down.
+    // The corner cap is the ball itself, an exact sphere centred on the
+    // earlier band's axis one radius down, bounded by three great circles.
     let centre = Point3::new(dx - 1.0, 1.0, dz - 1.0);
-    let cap = remus_topology::explorer::solid_faces(&topo, second)
+    let caps = exact_sphere_caps(&topo, second);
+    assert_eq!(caps.len(), 1, "one exact sphere corner");
+    let (cap, sphere) = &caps[0];
+    assert!((sphere.center() - centre).length() < 1e-9);
+    assert!((sphere.radius() - 1.0).abs() < 1e-12);
+    assert_great_circle_boundary(&topo, *cap, sphere);
+
+    // The same body as blending all three corner edges at once.
+    let mut direct_topo = Topology::new();
+    let solid = crate::primitives::make_box(&mut direct_topo, dx, dy, dz).unwrap();
+    let edges = [
+        box_vertical_edge(&direct_topo, solid, dx),
+        box_top_edge(&direct_topo, solid, dx, dz),
+        find_line_edge(
+            &direct_topo,
+            solid,
+            Point3::new(0.0, 0.0, dz),
+            Point3::new(dx, 0.0, dz),
+        ),
+    ];
+    let direct = crate::blend_ops::fillet_cascade(&mut direct_topo, solid, &edges, 1.0)
+        .unwrap()
+        .solid;
+    assert_eq!(
+        counts,
+        solid_entity_counts(&direct_topo, direct).unwrap(),
+        "same topology as the three-edge corner blend"
+    );
+    assert_eq!(
+        surface_census(&topo, second),
+        surface_census(&direct_topo, direct)
+    );
+    let direct_vol = crate::measure::solid_volume(&direct_topo, direct, 0.01).unwrap();
+    assert!(
+        (vol - direct_vol).abs() < 1e-3,
+        "sequential {vol} should match all-at-once {direct_vol}"
+    );
+}
+
+/// Every sphere face of `solid`, after asserting no face of it is NURBS.
+fn exact_sphere_caps(
+    topo: &Topology,
+    solid: SolidId,
+) -> Vec<(FaceId, remus_math::surfaces::SphericalSurface)> {
+    solid_faces(topo, solid)
         .unwrap()
         .into_iter()
-        .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Nurbs(_)))
-        .expect("one lofted corner cap");
-    let FaceSurface::Nurbs(surface) = topo.face(cap).unwrap().surface() else {
-        unreachable!()
-    };
-    let (u0, u1) = (surface.knots_u()[0], *surface.knots_u().last().unwrap());
-    let (v0, v1) = (surface.knots_v()[0], *surface.knots_v().last().unwrap());
-    let mut worst = 0.0f64;
-    for i in 0..=16 {
-        for j in 0..=16 {
-            let u = u0 + (u1 - u0) * f64::from(i) / 16.0;
-            let v = v0 + (v1 - v0) * f64::from(j) / 16.0;
-            let p = remus_math::traits::ParametricSurface::evaluate(surface, u, v);
-            worst = worst.max(((p - centre).length() - 1.0).abs());
-        }
+        .filter_map(|f| match topo.face(f).unwrap().surface() {
+            FaceSurface::Nurbs(_) => panic!("face {} is an approximate NURBS patch", f.index()),
+            FaceSurface::Sphere(sphere) => Some((f, sphere.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `cap` is a spherical triangle: three circle edges, each a great circle of
+/// `sphere`.
+fn assert_great_circle_boundary(
+    topo: &Topology,
+    cap: FaceId,
+    sphere: &remus_math::surfaces::SphericalSurface,
+) {
+    let wire = topo.wire(topo.face(cap).unwrap().outer_wire()).unwrap();
+    assert_eq!(wire.edges().len(), 3, "a three-sided sphere patch");
+    for oe in wire.edges() {
+        let EdgeCurve::Circle(circle) = topo.edge(oe.edge()).unwrap().curve() else {
+            panic!("sphere patch edge must be a circle");
+        };
+        assert!((circle.center() - sphere.center()).length() < 1e-9);
+        assert!((circle.radius() - sphere.radius()).abs() < 1e-9);
     }
-    assert!(worst < 1e-3, "corner cap strays {worst} from the ball");
+}
+
+/// The straight edge of `solid` between `a` and `b`, either way round.
+fn find_line_edge(topo: &Topology, solid: SolidId, a: Point3, b: Point3) -> EdgeId {
+    solid_edge_ids(topo, solid)
+        .into_iter()
+        .find(|&e| {
+            let (p, q) = edge_endpoints(topo, e);
+            matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Line)
+                && (((p - a).length() < 1e-6 && (q - b).length() < 1e-6)
+                    || ((p - b).length() < 1e-6 && (q - a).length() < 1e-6))
+        })
+        .unwrap_or_else(|| panic!("no straight edge {a:?} -> {b:?}"))
+}
+
+/// An L-step blank, `w` wide: a step `d1` deep and `h1` tall in front of a
+/// wall reaching back to `d2` and up to `h2`, fused from two boxes.
+fn l_step_blank(topo: &mut Topology, (w, d1, d2, h1, h2): (f64, f64, f64, f64, f64)) -> SolidId {
+    let step = crate::primitives::make_box(topo, w, d1 + 1.0, h1).unwrap();
+    let wall = crate::primitives::make_box(topo, w, d2 - d1, h2).unwrap();
+    crate::transform::transform_solid(
+        topo,
+        wall,
+        &remus_math::mat::Mat4::translation(0.0, d1, 0.0),
+    )
+    .unwrap();
+    crate::boolean::boolean(topo, crate::boolean::BooleanOp::Fuse, step, wall).unwrap()
+}
+
+/// The audit-plate fillet order on an L-step: R1 on the concave step/wall
+/// edge, R1 on both of the step's side top edges (which run on over the
+/// concave band and up the wall's vertical edges), then R1 on the step's
+/// front top edge. That last chain runs over the side bands' front arcs and
+/// down the front vertical edges, and its two arc stretches have no torus:
+/// they are sphere triangles, the same corners blending the front edges
+/// together with the side top edges gives.
+#[test]
+fn sequential_l_step_front_fillet_rounds_band_ends_as_spheres() {
+    let dims = (12.0, 8.0, 11.0, 4.0, 9.0);
+    let (w, d1, _, h1, _) = dims;
+    let p = Point3::new;
+    let mut topo = Topology::new();
+    let blank = l_step_blank(&mut topo, dims);
+    let concave = find_line_edge(&topo, blank, p(0.0, d1, h1), p(w, d1, h1));
+    let stepped = crate::blend_ops::fillet_cascade(&mut topo, blank, &[concave], 1.0)
+        .unwrap()
+        .solid;
+    let side_edges = |topo: &Topology| {
+        [
+            find_line_edge(topo, stepped, p(0.0, 0.0, h1), p(0.0, d1 - 1.0, h1)),
+            find_line_edge(topo, stepped, p(w, 0.0, h1), p(w, d1 - 1.0, h1)),
+        ]
+    };
+    let sides = side_edges(&topo);
+    let banded = crate::blend_ops::fillet_cascade(&mut topo, stepped, &sides, 1.0)
+        .unwrap()
+        .solid;
+    let front = find_line_edge(&topo, banded, p(1.0, 0.0, h1), p(w - 1.0, 0.0, h1));
+    let result = crate::blend_ops::fillet_cascade(&mut topo, banded, &[front], 1.0)
+        .unwrap()
+        .solid;
+    assert_fully_valid(&topo, result, "L-step front fillet after the side bands");
+
+    let caps = exact_sphere_caps(&topo, result);
+    assert_eq!(caps.len(), 2, "one exact sphere corner per side band");
+    for (cap, sphere) in &caps {
+        let c = sphere.center();
+        assert!(
+            ((c.x() - 1.0).abs() < 1e-9 || (c.x() - (w - 1.0)).abs() < 1e-9)
+                && (c.y() - 1.0).abs() < 1e-9
+                && (c.z() - (h1 - 1.0)).abs() < 1e-9,
+            "ball centre {c:?} must sit on a side band's axis"
+        );
+        assert!((sphere.radius() - 1.0).abs() < 1e-12);
+        assert_great_circle_boundary(&topo, *cap, sphere);
+    }
+
+    // Closed form: the concave band adds its section along the full width;
+    // each side band removes its section along the step's top and the wall's
+    // vertical edge, plus a torus quarter turn about the concave band; the
+    // front chain removes its section along the front edge and both front
+    // verticals, plus π/12 more than the side bands already took at each
+    // sphere corner.
+    let (w, d1, _, h1, h2) = dims;
+    let (section, inset) = quarter_fillet_section(1.0);
+    let side = section * ((d1 - 1.0) + (h2 - (h1 + 1.0)))
+        + section * std::f64::consts::FRAC_PI_2 * (1.0 + inset);
+    let front_chain = section * ((w - 2.0) + 2.0 * (h1 - 1.0)) + std::f64::consts::FRAC_PI_6;
+    let expected = 708.0 + section * w - 2.0 * side - front_chain;
+    let vol = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+    assert!(
+        (vol - expected).abs() < 1e-3,
+        "volume {vol} should match closed form {expected}"
+    );
+
+    // The same body as filleting the side and front edges together, the
+    // front verticals the sequential chain reaches included.
+    let mut direct_topo = Topology::new();
+    let blank = l_step_blank(&mut direct_topo, dims);
+    let concave = find_line_edge(&direct_topo, blank, p(0.0, d1, h1), p(w, d1, h1));
+    let stepped = crate::blend_ops::fillet_cascade(&mut direct_topo, blank, &[concave], 1.0)
+        .unwrap()
+        .solid;
+    let [left, right] = side_edges(&direct_topo);
+    let edges = [
+        left,
+        right,
+        find_line_edge(&direct_topo, stepped, p(0.0, 0.0, h1), p(w, 0.0, h1)),
+        find_line_edge(&direct_topo, stepped, p(0.0, 0.0, 0.0), p(0.0, 0.0, h1)),
+        find_line_edge(&direct_topo, stepped, p(w, 0.0, 0.0), p(w, 0.0, h1)),
+    ];
+    let direct = crate::blend_ops::fillet_cascade(&mut direct_topo, stepped, &edges, 1.0)
+        .unwrap()
+        .solid;
+    assert_eq!(
+        solid_entity_counts(&topo, result).unwrap(),
+        solid_entity_counts(&direct_topo, direct).unwrap(),
+        "same topology as filleting the remaining edges at once"
+    );
+    assert_eq!(
+        surface_census(&topo, result),
+        surface_census(&direct_topo, direct)
+    );
+    let direct_vol = crate::measure::solid_volume(&direct_topo, direct, 0.01).unwrap();
+    assert!(
+        (vol - direct_vol).abs() < 1e-3,
+        "sequential {vol} should match all-at-once {direct_vol}"
+    );
+}
+
+/// The audit plate: an L-step part with through holes whose step side top
+/// edges, concave step/wall edge and wall vertical edges already carry R1
+/// fillets. Returns the body and the straight top edge, 54.5 long, at
+/// height `z` on the front plane `y`.
+fn audit_plate(topo: &mut Topology, y: f64, z: f64) -> (SolidId, EdgeId) {
+    let solid = remus_io::arena_io::deserialize_solid(
+        include_bytes!("../../tests/data/audit_plate_body.arena.json"),
+        topo,
+    )
+    .unwrap();
+    let edge = find_line_edge(topo, solid, Point3::new(1.0, y, z), Point3::new(55.5, y, z));
+    (solid, edge)
+}
+
+/// The audit plate's step front top edge and upper front top edge at the
+/// earlier bands' radius. Each chain runs over two band arcs whose torus
+/// would have no ring; both corners are exact sphere triangles, so the
+/// result is all-exact, and the removed material matches the closed form.
+#[test]
+fn audit_plate_equal_radius_fillets_are_exact() {
+    // (front plane, height, straight chain length): the step's front edge
+    // runs on down both front verticals, the upper one back along both top
+    // side edges.
+    for (y, z, straight) in [
+        (-4.5, 11.0, 54.5 + 2.0 * 10.0),
+        (21.5, 37.0, 54.5 + 2.0 * 28.5),
+    ] {
+        let mut topo = Topology::new();
+        let (input, edge) = audit_plate(&mut topo, y, z);
+        let before = crate::measure::solid_volume(&topo, input, 0.01).unwrap();
+        assert!((before - 44_820.27).abs() < 0.01, "fixture volume {before}");
+        assert_fully_valid(&topo, input, "audit plate fixture");
+
+        let result = crate::blend_ops::fillet_cascade(&mut topo, input, &[edge], 1.0)
+            .unwrap()
+            .solid;
+        assert_fully_valid(&topo, result, "audit plate R1 fillet");
+        let caps = exact_sphere_caps(&topo, result);
+        assert_eq!(caps.len(), 2, "edge at y={y}: two exact sphere corners");
+        for (cap, sphere) in &caps {
+            assert!((sphere.radius() - 1.0).abs() < 1e-12);
+            assert_great_circle_boundary(&topo, *cap, sphere);
+        }
+        assert_eq!(solid_entity_counts(&topo, result).unwrap(), (29, 71, 44));
+
+        let (section, _) = quarter_fillet_section(1.0);
+        let removed = section * straight + std::f64::consts::FRAC_PI_6;
+        let vol = crate::measure::solid_volume(&topo, result, 0.01).unwrap();
+        assert!(
+            (before - vol - removed).abs() < 2e-3,
+            "edge at y={y}: removed {} should match closed form {removed}",
+            before - vol
+        );
+
+        // Deterministic: a fresh run serializes to the same bytes.
+        let mut again = Topology::new();
+        let (input, edge) = audit_plate(&mut again, y, z);
+        let repeat = crate::blend_ops::fillet_cascade(&mut again, input, &[edge], 1.0)
+            .unwrap()
+            .solid;
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&topo, result).unwrap(),
+            remus_io::arena_io::serialize_solid(&again, repeat).unwrap()
+        );
+    }
+}
+
+/// Between half the band radius and the band radius the arc stretch needs a
+/// spindle torus, so the engine lofts it. The audit reported such results
+/// removing less material than R0.49 does; that was the volume reading, not
+/// the shape. With a NURBS face present `solid_volume` measures the closed
+/// whole-solid mesh, and this plate's through holes bias that mesh by about
+/// 2000 × deflection mm³. Measured at one deflection on both bodies, the
+/// removal is the closed form.
+#[test]
+fn audit_plate_spindle_range_fillet_removes_closed_form_material() {
+    let r = 0.8;
+    let mut topo = Topology::new();
+    let (input, edge) = audit_plate(&mut topo, -4.5, 11.0);
+    let result = crate::blend_ops::fillet_cascade(&mut topo, input, &[edge], r)
+        .unwrap()
+        .solid;
+    assert_fully_valid(&topo, result, "audit plate R0.8 fillet");
+    let mesh_volume = |solid: SolidId| {
+        let mesh = crate::tessellate::tessellate_solid(&topo, solid, 0.001).unwrap();
+        mesh.indices
+            .chunks(3)
+            .map(|t| {
+                let [a, b, c] = [0, 1, 2].map(|i| {
+                    let p = mesh.positions[t[i] as usize];
+                    Vec3::new(p.x(), p.y(), p.z())
+                });
+                a.dot(b.cross(c)) / 6.0
+            })
+            .sum::<f64>()
+    };
+    let removed = mesh_volume(input) - mesh_volume(result);
+
+    // Straight runs along the front edge and both verticals, plus the
+    // section swept a quarter turn about each side band's axis.
+    let (section, inset) = quarter_fillet_section(r);
+    let expected =
+        section * (54.5 + 2.0 * 10.0) + 2.0 * section * std::f64::consts::FRAC_PI_2 * (1.0 - inset);
+    assert!(
+        (removed - expected).abs() < 0.05,
+        "R{r} removes {removed}, closed form {expected}"
+    );
 }
 
 /// The removed area and its centroid's inset from the corner, per unit length,

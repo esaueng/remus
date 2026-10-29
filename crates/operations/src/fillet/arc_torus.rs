@@ -7,7 +7,9 @@
 //! earlier fillet leaves where its band meets an end face: a later fillet
 //! whose tangent chain runs across that arc rounds it with this torus, whose
 //! ring radius is the band's radius plus the new one beside a concave band
-//! and minus it beside a convex one.
+//! and minus it beside a convex one. When that ring radius is zero (a convex
+//! band met at its own radius) the ball's centre does not move and the
+//! stripe is a sphere triangle instead.
 
 use remus_math::curves::Circle3D;
 use remus_math::surfaces::ToroidalSurface;
@@ -23,20 +25,47 @@ pub struct ArcTorus {
     pub seams: [(Circle3D, Point3, Point3); 4],
 }
 
-/// The torus a radius-`radius` fillet sweeps along `edge`, or `None` when the
-/// edge is not a circle in a plane beside a coaxial cylinder, the torus would
-/// not be a ring torus, or the stripe's contacts do not lie on it.
-///
-/// `corners` are the stripe's contact points `[c1_start, c2_start, c2_end,
-/// c1_end]`, the `1` contacts on `surf1`.
-pub fn arc_stripe_torus(
+/// The sphere patch a radius-`radius` fillet sweeps along `edge` when the
+/// ball's centre stays put: the edge is the arc a convex band of the same
+/// radius leaves on an end plane, so the torus [`arc_stripe_torus`] would
+/// build has zero ring radius. Both plane contacts then sit at the arc's
+/// centre and the stripe is the spherical triangle between that pole and the
+/// two band contacts, bounded by three great circles: the band's contact
+/// circle and the two end sections.
+pub struct ArcSphere {
+    pub centre: Point3,
+    /// The plane contacts' shared point.
+    pub pole: Point3,
+    /// The band contacts at the stripe's start and end.
+    pub band: [Point3; 2],
+}
+
+/// The plane/coaxial-cylinder stripe both exact arc carriers start from.
+struct ArcStation {
+    /// The arc's centre, on the plane.
+    origin: Point3,
+    axis: Vec3,
+    /// The arc's (and its coaxial band's) radius.
+    band_radius: f64,
+    /// The plane contacts' distance from the arc's axis.
+    ring: f64,
+    /// The band contacts' circle centre, one radius off the plane.
+    centre: Point3,
+    plane: [Point3; 2],
+    band: [Point3; 2],
+    eps: f64,
+}
+
+/// Qualify `edge` as a circle in a plane beside a coaxial cylinder whose
+/// stripe contacts sit where a rolling ball of `radius` puts them.
+fn arc_station(
     edge: &EdgeCurve,
     surf1: &FaceSurface,
     surf2: &FaceSurface,
     corners: [Point3; 4],
     radius: f64,
     tol: Tolerance,
-) -> Option<ArcTorus> {
+) -> Option<ArcStation> {
     let EdgeCurve::Circle(spine) = edge else {
         return None;
     };
@@ -71,9 +100,8 @@ pub fn arc_stripe_torus(
     // circle one radius off the plane.
     let ring = (ps - o).length();
     let height = (cs - o).dot(axis);
-    let centre = o + axis * height;
-    let radial = |p: Point3, from: Point3| {
-        let offset = p - from;
+    let radial = |p: Point3| {
+        let offset = p - o;
         offset - axis * offset.dot(axis)
     };
     if [ps, pe].iter().any(|&p| (p - o).dot(axis).abs() > eps)
@@ -81,13 +109,55 @@ pub fn arc_stripe_torus(
         || ((ce - o).dot(axis) - height).abs() > eps
         || [cs, ce]
             .iter()
-            .any(|&p| (radial(p, o).length() - a).abs() > eps)
+            .any(|&p| (radial(p).length() - a).abs() > eps)
         || (height.abs() - radius).abs() > eps
         || ((ring - a).abs() - radius).abs() > eps
-        || ring <= radius + eps
     {
         return None;
     }
+    Some(ArcStation {
+        origin: o,
+        axis,
+        band_radius: a,
+        ring,
+        centre: o + axis * height,
+        plane: [ps, pe],
+        band: [cs, ce],
+        eps,
+    })
+}
+
+/// The torus a radius-`radius` fillet sweeps along `edge`, or `None` when the
+/// edge is not a circle in a plane beside a coaxial cylinder, the torus would
+/// not be a ring torus, or the stripe's contacts do not lie on it.
+///
+/// `corners` are the stripe's contact points `[c1_start, c2_start, c2_end,
+/// c1_end]`, the `1` contacts on `surf1`.
+pub fn arc_stripe_torus(
+    edge: &EdgeCurve,
+    surf1: &FaceSurface,
+    surf2: &FaceSurface,
+    corners: [Point3; 4],
+    radius: f64,
+    tol: Tolerance,
+) -> Option<ArcTorus> {
+    let ArcStation {
+        origin: o,
+        axis,
+        band_radius: a,
+        ring,
+        centre,
+        plane: [ps, pe],
+        band: [cs, ce],
+        eps,
+    } = arc_station(edge, surf1, surf2, corners, radius, tol)?;
+    if ring <= radius + eps {
+        return None;
+    }
+    let radial = |p: Point3, from: Point3| {
+        let offset = p - from;
+        offset - axis * offset.dot(axis)
+    };
     let torus = ToroidalSurface::with_axis(centre, ring, radius, axis).ok()?;
 
     // Each end section is the quarter circle about that station's ball
@@ -118,6 +188,54 @@ pub fn arc_stripe_torus(
             start,
             end,
         ],
+    })
+}
+
+/// The sphere patch of a radius-`radius` fillet along `edge`, or `None`
+/// unless the stripe qualifies as for [`arc_stripe_torus`] with a ring radius
+/// of zero: a convex band of radius `radius` met by an end plane.
+///
+/// `band_mid` is a band-side contact from an interior station; it pins the
+/// contact arc to the short great-circle arc between the band contacts,
+/// which is the one the sphere cap's boundary mints.
+pub fn arc_stripe_sphere(
+    edge: &EdgeCurve,
+    surf1: &FaceSurface,
+    surf2: &FaceSurface,
+    corners: [Point3; 4],
+    band_mid: Point3,
+    radius: f64,
+    tol: Tolerance,
+) -> Option<ArcSphere> {
+    let station = arc_station(edge, surf1, surf2, corners, radius, tol)?;
+    let eps = station.eps;
+    if station.ring > eps {
+        return None;
+    }
+    let centre = station.centre;
+    let [ps, pe] = station.plane;
+    let [cs, ce] = station.band;
+    if [ps, pe, cs, ce, band_mid]
+        .iter()
+        .any(|&p| ((p - centre).length() - radius).abs() > eps)
+        || ((band_mid - centre).dot(station.axis)).abs() > eps
+    {
+        return None;
+    }
+    // The contact arc must be the short arc from `cs` to `ce` through
+    // `band_mid`, well clear of a half turn.
+    let (ds, de, dm) = (cs - centre, ce - centre, band_mid - centre);
+    let normal = ds.cross(de);
+    if normal.length() <= radius * radius * 1e-6
+        || ds.cross(dm).dot(normal) <= 0.0
+        || dm.cross(de).dot(normal) <= 0.0
+    {
+        return None;
+    }
+    Some(ArcSphere {
+        centre,
+        pole: ps,
+        band: [cs, ce],
     })
 }
 
