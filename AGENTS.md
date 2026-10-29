@@ -281,6 +281,7 @@ Quick reference — find the right file for any task:
 | Isolated exact-event UV arrangement and cylinder-strip quotient | `builder/face_splitter/arrangement.rs`, `builder/face_splitter/arrangement/` (geometry, regions, periodic) |
 | Production UV arrangement dispatch and guards | `builder/face_splitter/arrangement_prod.rs` |
 | Closed-form oracles for the splitter's periodic-lateral and sphere-collar shortcuts (tests) | `builder/face_splitter/closed_form_split_tests.rs` |
+| Closed-form oracles for the plane multi-loop gate: circles compared as discs against each other, inner-wire openings and the outer outline (tests) | `builder/face_splitter/closed_loops_separation_tests.rs` |
 | Bounded cylinder arrangement adapter | `builder/face_splitter/arrangement_cyl.rs` |
 | Closed-form oracles for the rim-chain splitter, the orphaned-rim detector and the cone-lateral dispatch (tests) | `builder/face_splitter/rim_chain_oracle_tests.rs` |
 | Closed-form oracles for the O2.3b arrangement engine: intersections, tangent order, ray crossing, distance, work budgets, periodic quotient (tests) | `builder/face_splitter/arrangement/oracle_tests.rs` |
