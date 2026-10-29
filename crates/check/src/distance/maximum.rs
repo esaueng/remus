@@ -2,6 +2,7 @@
 
 use remus_geometry::convert::certify_affine_nurbs_plane;
 use remus_math::context::OperationContext;
+use remus_math::curves2d::Curve2D;
 use remus_math::det_hash::DetHashSet;
 use remus_math::surfaces::SphericalSurface;
 use remus_math::vec::{Point3, Vec3};
@@ -282,6 +283,19 @@ fn prepare(
                     ));
                 }
                 if affine_plane.is_some() {
+                    let stored = topo
+                        .pcurve_oriented(coedge.edge(), face_id, coedge.is_forward())
+                        .ok_or(MaximumDistanceError::Unsupported(
+                            "missing affine-plane pcurve use",
+                        ))?;
+                    // Reject other representations before the generic helper
+                    // traverses their controls. Only this constant-size family
+                    // belongs to the preparation budget of this query.
+                    if !matches!(stored.curve(), Curve2D::Line(_)) {
+                        return Err(MaximumDistanceError::Unsupported(
+                            "uncertified affine-plane pcurve use",
+                        ));
+                    }
                     // This helper proves the entire Line2D/affine-surface
                     // image, including the stored use's finite UV domain.
                     // Absence and unsupported proofs never pass vacuously.
