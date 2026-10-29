@@ -206,6 +206,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "projectSilhouettes"
         | "solidEdges"
         | "solidToSolidDistance"
+        | "solidToSolidMaximumDistance"
         | "sheetArea"
         | "sheetBoundingBox"
         | "sheetCenterOfArea"
@@ -1583,6 +1584,11 @@ impl BrepKernel {
                     result.point_b.y(),
                     result.point_b.z(),
                 ]))
+            }
+            "solidToSolidMaximumDistance" => {
+                let a = get_u32(args, "solidA")?;
+                let b = get_u32(args, "solidB")?;
+                Ok(serde_json::json!(self.maximum_distance_values(a, b)?))
             }
             "copySolid" => {
                 let s = get_u32(args, "solid")?;

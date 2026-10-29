@@ -9,6 +9,7 @@
 pub(crate) mod analytic;
 pub(crate) mod edge;
 pub mod face_bounds;
+pub mod maximum;
 pub mod prepared;
 
 pub use edge::point_to_edge;

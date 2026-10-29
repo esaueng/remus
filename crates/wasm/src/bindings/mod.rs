@@ -18,6 +18,7 @@ pub mod heal;
 pub mod io;
 pub mod lifecycle;
 pub mod linked_sketch;
+pub mod maximum_distance;
 pub mod measure;
 pub mod modifier_detailed;
 pub mod naming;

@@ -1637,8 +1637,8 @@ pub(crate) fn transform_face_surface_recorded(
                 let new_sph = remus_math::surfaces::SphericalSurface::with_frame(
                     new_center,
                     sph_clone.radius() * sx,
-                    transform_direction(matrix, sph_clone.z_axis())?,
-                    transform_direction(matrix, sph_clone.x_axis())?,
+                    transform_sphere_direction(matrix, sph_clone.z_axis())?,
+                    transform_sphere_direction(matrix, sph_clone.x_axis())?,
                 )?;
                 // The moved frame is kept, so only a reflection (which
                 // rebuilds `y = z × x` on the other side) negates `u`.
@@ -2087,6 +2087,19 @@ fn transform_direction(matrix: &Mat4, dir: Vec3) -> Result<Vec3, crate::Operatio
         tip.x() - origin.x(),
         tip.y() - origin.y(),
         tip.z() - origin.z(),
+    );
+    Ok(raw.normalize()?)
+}
+
+/// Keep a native sphere frame aligned with its equatorial circle after placement.
+fn transform_sphere_direction(matrix: &Mat4, dir: Vec3) -> Result<Vec3, crate::OperationsError> {
+    // Directions use only the linear part, as in the analytic curve writer.
+    // Subtracting translated points loses unit-axis precision at large offsets.
+    let m = &matrix.0;
+    let raw = Vec3::new(
+        m[0][0].mul_add(dir.x(), m[0][1].mul_add(dir.y(), m[0][2] * dir.z())),
+        m[1][0].mul_add(dir.x(), m[1][1].mul_add(dir.y(), m[1][2] * dir.z())),
+        m[2][0].mul_add(dir.x(), m[2][1].mul_add(dir.y(), m[2][2] * dir.z())),
     );
     Ok(raw.normalize()?)
 }

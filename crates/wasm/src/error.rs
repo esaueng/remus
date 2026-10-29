@@ -334,6 +334,13 @@ impl StructuredWasmError {
         Self::new(WasmErrorCode::OperationFailed, message)
     }
 
+    /// A declared capability boundary, with no attempted approximation.
+    pub(crate) fn unsupported(message: impl Into<String>) -> Self {
+        let mut error = Self::operation_failed(message);
+        error.category = FailureCategory::Unsupported.as_str();
+        error
+    }
+
     /// An exact-only request whose only available result is approximate:
     /// category `quality_refused`, native code `exact_only_unattainable` —
     /// the same projection as `OperationsError::ExactOnlyUnattainable`.
@@ -355,6 +362,13 @@ impl StructuredWasmError {
     /// Attach one structured detail field.
     pub(crate) fn with_detail(mut self, key: &str, value: impl Into<Value>) -> Self {
         self.details.insert(key.to_string(), value.into());
+        self
+    }
+
+    /// Replace only the human message for a scoped error projection.
+    /// Wire code, category and native detail fields remain intact.
+    pub(crate) fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = message.into();
         self
     }
 

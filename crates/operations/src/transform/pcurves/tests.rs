@@ -181,12 +181,12 @@ fn chart_maps_are_exact_images_of_the_transform() {
     }
 }
 
-/// Only the pcurves move: every carrier is rebuilt exactly as before B130
-/// (booleans are tuned on where those frames put the seam). Sphere and torus
-/// frames are carried, so a rigid motion leaves their pcurves bit-exact.
+/// Only the pcurves move: carriers retain their producer's frame arithmetic.
+/// Cylinder, cone and torus keep the legacy seam placement; sphere axes use
+/// the translation-free correction. Carried rigid charts remain bit-exact.
 #[test]
 fn carriers_keep_their_frames_and_only_pcurves_move() {
-    use crate::transform::{scaled_radius, transform_direction};
+    use crate::transform::{scaled_radius, transform_direction, transform_sphere_direction};
     for (what, matrix) in matrices() {
         for (carrier, surface, corners) in carriers().into_iter().skip(1) {
             let mut topo = Topology::new();
@@ -217,8 +217,8 @@ fn carriers_keep_their_frames_and_only_pcurves_move() {
                     SphericalSurface::with_frame(
                         matrix.mul_point(old.center()),
                         old.radius() * sx,
-                        transform_direction(&matrix, old.z_axis()).unwrap(),
-                        transform_direction(&matrix, old.x_axis()).unwrap(),
+                        transform_sphere_direction(&matrix, old.z_axis()).unwrap(),
+                        transform_sphere_direction(&matrix, old.x_axis()).unwrap(),
                     )
                     .unwrap(),
                 ),

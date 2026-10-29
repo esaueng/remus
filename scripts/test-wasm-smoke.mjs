@@ -20,6 +20,7 @@ import { runPlanarImprintPackaged } from './planar-imprint-packaged.mjs';
 import { runProjectCurvePackaged } from './project-curve-packaged.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
 import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
+import { runMaximumDistancePackaged } from './maximum-distance-packaged.mjs';
 import { runWasmParserReferencesPackaged } from './wasm-parser-refs-packaged.mjs';
 import { runVariableFilletInputPackaged } from './variable-fillet-input-packaged.mjs';
 import { runVariableFilletBoundariesPackaged } from './variable-fillet-boundaries-packaged.mjs';
@@ -1759,6 +1760,7 @@ runRevolveHistoryPackaged({ BrepKernel });
 runPlanarImprintPackaged({ BrepKernel });
 runProjectCurvePackaged({ BrepKernel });
 runNextKernelCorrectnessPackaged({ BrepKernel });
+runMaximumDistancePackaged({ BrepKernel });
 
 runKernelCorrectnessPackaged({ BrepKernel });
 runOpseqF5Packaged({ BrepKernel });

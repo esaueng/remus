@@ -148,10 +148,8 @@ fn complete_sphere_accepts_certified_circle_partitions_and_legacy_lines() {
                 let mut topo = Topology::new();
                 let solid = make_sphere(&mut topo, radius, segments).unwrap();
                 if placed {
-                    // Keep each rigid placement's native carrier frame.
-                    // Applying translation while the axes are coordinate
-                    // directions avoids the established writer's cancellation
-                    // on a combined large translation/rotation below.
+                    // Exercise translation and rotation as separate rigid placements;
+                    // the next regression also covers their combined large pose.
                     let translation = Mat4::translation(13.0 * radius, -7.0 * radius, 3.0 * radius);
                     let rotation = Mat4::rotation_z(0.43) * Mat4::rotation_x(0.71);
                     crate::transform::transform_solid(&mut topo, solid, &translation).unwrap();
@@ -203,14 +201,45 @@ fn complete_sphere_circle_certificate_preserves_existing_equator_allowance() {
     use remus_math::mat::Mat4;
     let mut topo = Topology::new();
     let solid = make_sphere(&mut topo, 1000.0, 8).unwrap();
-    // The existing sphere-frame writer subtracts translated unit points;
-    // this combined pose exceeds the inherited equator roundoff certificate.
-    // Circle support must not silently widen that pre-existing gate.
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let original_frames: Vec<_> = faces
+        .iter()
+        .map(|&face| {
+            let FaceSurface::Sphere(sphere) = topo.face(face).unwrap().surface() else {
+                panic!("native sphere face expected");
+            };
+            sphere.clone()
+        })
+        .collect();
     let placement = Mat4::translation(13_000.0, -7000.0, 3000.0)
         * Mat4::rotation_z(0.43)
         * Mat4::rotation_x(0.71);
     crate::transform::transform_solid(&mut topo, solid, &placement).unwrap();
-    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+    assert!(full_sphere_primitive(&topo, &faces));
+
+    // Recreate the former writer's cancellation independently of production
+    // helpers. This deliberate bad frame must still exceed the unchanged
+    // equator certificate for both Circle and legacy Line boundaries.
+    let translated_origin = placement.mul_point(Point3::new(0.0, 0.0, 0.0));
+    let legacy_direction = |axis: Vec3| {
+        let tip = placement.mul_point(Point3::new(axis.x(), axis.y(), axis.z()));
+        (tip - translated_origin).normalize().unwrap()
+    };
+    for (&face, original) in faces.iter().zip(original_frames) {
+        let FaceSurface::Sphere(current) = topo.face(face).unwrap().surface() else {
+            panic!("native sphere face expected");
+        };
+        let bad_frame = remus_math::surfaces::SphericalSurface::with_frame(
+            current.center(),
+            current.radius(),
+            legacy_direction(original.z_axis()),
+            legacy_direction(original.x_axis()),
+        )
+        .unwrap();
+        topo.face_mut(face)
+            .unwrap()
+            .set_surface(FaceSurface::Sphere(bad_frame));
+    }
     assert!(!full_sphere_primitive(&topo, &faces));
     for edge in remus_topology::explorer::solid_edges(&topo, solid).unwrap() {
         topo.edge_mut(edge).unwrap().set_curve(EdgeCurve::Line);

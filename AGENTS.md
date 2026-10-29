@@ -429,6 +429,7 @@ Quick reference — find the right file for any task:
 | Point-to-surface distance (all analytic types) | `distance/analytic.rs` |
 | Edge-to-edge distance | `distance/edge.rs` |
 | Point-to-solid, solid-to-solid distance | `distance/mod.rs` |
+| Bounded global maximum-distance witnesses for planar polyhedra and complete spheres | `distance/maximum.rs` |
 | Conservative face bounds for distance pruning | `distance/face_bounds.rs` |
 | Operation-local prepared context for repeated point-to-solid distance (`PreparedDistanceSolid`, `DistanceScratch`, `DistanceOptions`) | `distance/prepared.rs` |
 | Non-finite geometry detection | `validate/finite.rs` |
@@ -518,6 +519,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Bounded opt-in exact-content memo of single-face bounding boxes (the move's swept-region refusal), and its bit-identity tests | `measure/face_box_memo.rs`, `measure/face_box_memo/tests.rs` |
 | Bounded opt-in host-clock phase timings | `performance.rs` |
 | Distance queries | `distance.rs` |
+| Independent global maximum-distance oracles (tests) | `distance/maximum_tests.rs` |
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
 | Differential oracle for the interior grid's boundary scans: the `(i + 1) % n` indexed containment and clearance loops kept verbatim (tests) | `tessellate/nonplanar/polygon_scan_oracle_tests.rs` |
 | Interior grid samples reused at emission: meshes with the reuse on and off compared bit for bit (tests) | `tessellate/nonplanar/interior_sample_tests.rs` |
@@ -643,6 +645,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Typed affine transform results and refusals | `bindings/transform_detailed.rs` |
 | Topology query, edge/surface evaluation | `bindings/query.rs` |
 | Measurement (volume, area, bbox, distances) | `bindings/measure.rs` |
+| Read-only global maximum-distance binding | `bindings/maximum_distance.rs` |
 | Tessellation & wireframe | `bindings/tessellate.rs` |
 | Exact arena document bindings (`serializeSolids`, always compiled) | `bindings/arena.rs` |
 | File I/O import/export (`#[cfg(feature = "io")]`; off in the shipped kernel package) | `bindings/io.rs` |

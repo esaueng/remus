@@ -29,6 +29,41 @@ use remus_topology::Topology;
 use remus_topology::face::FaceId;
 use remus_topology::solid::SolidId;
 
+#[cfg(test)]
+mod maximum_tests;
+
+pub use remus_check::distance::maximum::{MaximumDistanceError, MaximumDistanceResult};
+
+/// Global maximum-distance witnesses for qualified planar polyhedra and
+/// complete native spheres, including mixed pairs. Reads every cavity shell.
+///
+/// Inputs require valid BReps with closed shells and simple, nested trim loops.
+///
+/// # Errors
+/// Refuses unsupported/invalid geometry, unresolved finite arithmetic,
+/// cancellation or exhausted work budgets; never substitutes sampled extrema.
+pub fn solid_to_solid_maximum_distance(
+    topo: &Topology,
+    solid_a: SolidId,
+    solid_b: SolidId,
+) -> Result<MaximumDistanceResult, MaximumDistanceError> {
+    remus_check::distance::maximum::solid_to_solid(topo, solid_a, solid_b)
+}
+
+/// Context-aware maximum-distance query. The existing vertex-pair budget
+/// bounds candidate comparisons; preparation is bounded separately.
+///
+/// # Errors
+/// Returns the same errors as [`solid_to_solid_maximum_distance`].
+pub fn solid_to_solid_maximum_distance_with_context(
+    topo: &Topology,
+    solid_a: SolidId,
+    solid_b: SolidId,
+    context: &remus_math::context::OperationContext,
+) -> Result<MaximumDistanceResult, MaximumDistanceError> {
+    remus_check::distance::maximum::solid_to_solid_with_context(topo, solid_a, solid_b, context)
+}
+
 /// Result of a distance computation.
 #[derive(Debug, Clone)]
 pub struct DistanceResult {
