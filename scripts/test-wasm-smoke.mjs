@@ -21,6 +21,7 @@ import { runProjectCurvePackaged } from './project-curve-packaged.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
 import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-packaged.mjs';
 import { runMaximumDistancePackaged } from './maximum-distance-packaged.mjs';
+import { runDraftAnalysisPackaged } from './draft-analysis-packaged.mjs';
 import { runWasmParserReferencesPackaged } from './wasm-parser-refs-packaged.mjs';
 import { runVariableFilletInputPackaged } from './variable-fillet-input-packaged.mjs';
 import { runVariableFilletBoundariesPackaged } from './variable-fillet-boundaries-packaged.mjs';
@@ -1761,6 +1762,7 @@ runPlanarImprintPackaged({ BrepKernel });
 runProjectCurvePackaged({ BrepKernel });
 runNextKernelCorrectnessPackaged({ BrepKernel });
 runMaximumDistancePackaged({ BrepKernel });
+runDraftAnalysisPackaged({ BrepKernel });
 
 runKernelCorrectnessPackaged({ BrepKernel });
 runOpseqF5Packaged({ BrepKernel });

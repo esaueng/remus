@@ -11,6 +11,7 @@ pub mod booleans;
 pub mod checkpoint;
 pub mod construction_detailed;
 pub mod construction_imprint;
+pub mod draft_analysis;
 pub mod evolution;
 pub mod gcs_sketch;
 pub mod heal;
