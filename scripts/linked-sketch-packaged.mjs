@@ -379,7 +379,7 @@ export function runLinkedSketchEllipsesPackaged({ BrepKernel }) {
             for (const op of ['gcsResolveRefs', 'gcsSolve', 'gcsSolveDetailed', 'gcsDof']) {
               refusal(k, route, op, { sketch, maxIterations: 100, tolerance: 1e-10 * scale },
                 op === 'gcsResolveRefs' || op === 'gcsDof' ? [sketch] : [sketch, 100, 1e-10 * scale],
-                'linked-sketch:reference_unbound', 'unsupported');
+                'linked-sketch:reference_unbound', 'invalid_input');
               assert.deepEqual(params(external.ellipse), saved);
             }
             k.restore(restore);
