@@ -1743,7 +1743,8 @@ class BrepKernel {
         }
     }
     /**
-     * Drain up to 4096 completed phase events as JSON.
+     * Drain up to 4096 phase and boolean-route events as JSON. Route
+     * observations have zero duration and names beginning `boolean.route.`.
      *
      * # Errors
      * Returns an error if events cannot be serialized.
@@ -2883,6 +2884,63 @@ class BrepKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Add a complete construction-linked native circle in the parallel sketch
+     * plane. Both the center and radius are driven read-only inputs; returned
+     * handles can be used by ordinary GCS constraints. Partial/oblique curves
+     * and nonunique construction identity refuse atomically.
+     * @param {number} sketch
+     * @param {string} reference
+     * @returns {ExternalCircleHandles}
+     */
+    gcsAddExternalCircle(sketch, reference) {
+        const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_gcsAddExternalCircle(this.__wbg_ptr, sketch, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Add a complete construction-linked native ellipse in the parallel sketch
+     * plane. Both the center and three scalar parameters are driven read-only inputs; returned
+     * handles can be used by ordinary GCS constraints. Partial/oblique curves
+     * and nonunique construction identity refuse atomically.
+     * @param {number} sketch
+     * @param {string} reference
+     * @returns {ExternalEllipseHandles}
+     */
+    gcsAddExternalEllipse(sketch, reference) {
+        const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_gcsAddExternalEllipse(this.__wbg_ptr, sketch, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Add a fixed external line whose returned handles can be constrained to.
+     * @param {number} sketch
+     * @param {string} reference
+     * @param {string} start_ref
+     * @param {string} end_ref
+     * @returns {ExternalLineHandles}
+     */
+    gcsAddExternalLine(sketch, reference, start_ref, end_ref) {
+        const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(start_ref, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(end_ref, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_gcsAddExternalLine(this.__wbg_ptr, sketch, ptr0, len0, ptr1, len1, ptr2, len2);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Add a line through two existing points. Returns a line handle.
      * @param {number} sketch
      * @param {number} p1
@@ -2911,6 +2969,24 @@ class BrepKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Attach an existing GCS sketch to one construction-resolved planar face.
+     * Frame axes must be unit and perpendicular; this slice supports parallel
+     * plane moves. The reference uses the existing versioned JSON codec.
+     * @param {number} sketch
+     * @param {string} reference
+     * @param {SketchFrame} frame
+     * @returns {LinkedSketchResolution}
+     */
+    gcsAttachToFace(sketch, reference, frame) {
+        const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.brepkernel_gcsAttachToFace(this.__wbg_ptr, sketch, ptr0, len0, frame);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Current radius of a circle.
@@ -2998,6 +3074,19 @@ class BrepKernel {
         }
     }
     /**
+     * Atomically refresh every external input; a failed rebind preserves all
+     * previous coordinates. Solve and detailed solve refresh automatically.
+     * @param {number} sketch
+     * @returns {LinkedSketchResolution}
+     */
+    gcsResolveRefs(sketch) {
+        const ret = wasm.brepkernel_gcsResolveRefs(this.__wbg_ptr, sketch);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Move an ellipse's center to `(x, y)` and set its semiaxes and
      * orientation without solving (e.g. while dragging). `a` and `b` must
      * be positive and finite; `angle` is finite radians.
@@ -3055,8 +3144,12 @@ class BrepKernel {
      * unchanged. Two differences matter:
      *
      * - **Transactional.** A solve that fails to reach `tolerance` is rolled
-     *   back: the pre-solve points and radii are restored and `rolledBack` is
-     *   set. `gcsSolve` still publishes whatever iterate it stopped on.
+     *   back: the pre-solver free points and radii are restored and `rolledBack`
+     *   is set. Linked external inputs refresh first; a successful refresh
+     *   remains current even when the solve does not converge. The rollback
+     *   baseline and `publishedMaxResidual` use those refreshed fixed inputs.
+     *   A thrown refresh or solver error restores the entire pre-call sketch.
+     *   `gcsSolve` still publishes whatever iterate it stopped on.
      * - **Measured.** Returns convergence, iteration count, residuals, DOF,
      *   rank, parameter and equation counts, a per-constraint residual keyed
      *   by the `gcsAddConstraint` handle, and an overall classification.
@@ -3868,8 +3961,9 @@ class BrepKernel {
      * profile so its up-vector tracks an auxiliary spine.
      *
      * The spine and auxiliary spine are each passed as raw NURBS data
-     * (`degree`, `knots`, flat `control_points`, `weights`). Returns a solid
-     * handle (`u32`).
+     * (`degree`, `knots`, flat `control_points`, `weights`). Their original
+     * native domains must match exactly; both curves are sampled at the same
+     * normalized progress across that domain. Returns a solid handle (`u32`).
      *
      * # Errors
      *
@@ -3996,6 +4090,36 @@ class BrepKernel {
             return getStringFromWasm0(ptr1, len1);
         } finally {
             wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Partition one planar convex solid face with a strictly interior convex
+     * 3--16 point ring. `points` is flat world `[x,y,z,...]` data.
+     * Returns JSON `{solid,innerFace,surroundFace,op}`. Both patches retain
+     * the original plane and material, with exact construction lineage.
+     * @param {number} solid
+     * @param {number} face
+     * @param {Float64Array} points
+     * @returns {string}
+     */
+    imprintPlanarPolygon(solid, face, points) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArrayF64ToWasm0(points, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.brepkernel_imprintPlanarPolygon(this.__wbg_ptr, solid, face, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
         }
     }
     /**
@@ -7569,6 +7693,29 @@ class BrepKernel {
         return v1;
     }
     /**
+     * Global maximum distance and witnesses as `[distance, ax, ay, az, bx, by, bz]`.
+     * Supports straight-edged planar polyhedra and complete native spheres,
+     * including mixed pairs. All cavity boundaries are qualified; unsupported
+     * geometry returns a typed refusal. This query changes no session state.
+     * Inputs require valid BReps with closed shells and simple, nested trim loops.
+     *
+     * # Errors
+     * Returns an error for invalid handles/boundaries, unsupported geometry,
+     * unresolved arithmetic or exhausted bounded work.
+     * @param {number} a
+     * @param {number} b
+     * @returns {Float64Array}
+     */
+    solidToSolidMaximumDistance(a, b) {
+        const ret = wasm.brepkernel_solidToSolidMaximumDistance(this.__wbg_ptr, a, b);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
      * Split a solid into two halves along a plane.
      *
      * Returns `[positive_solid_handle, negative_solid_handle]`.
@@ -7806,6 +7953,14 @@ class BrepKernel {
      *
      * `contact_mode`: "rmf" (default), "fixed", or "constantNormal:x,y,z"
      * `scale_values`: flat `[t0,s0,t1,s1,...]` pairs for piecewise-linear scale law.
+     * The law is evaluated at normalized path progress in `[0,1]`, independently
+     * of the NURBS path's native parameter domain.
+     * Parameters must be finite and strictly increasing, their adjacent spans
+     * finite, and scales finite and positive. Empty pairs select unit scale.
+     * Qualified linear tapers use XY straight-edge profiles, including holes,
+     * +Z straight paths and fixed contact. Intermediate law breakpoints must
+     * coincide with section rings. General initial roll/profile placement
+     * remains unqualified.
      * `corner_mode`: "smooth" (default), "miter", or "round:&lt;radius&gt;"
      *   (e.g. `"round:2.5"` — rounding a corner needs a radius).
      * Returns a solid handle.
