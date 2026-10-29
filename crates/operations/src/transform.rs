@@ -1637,8 +1637,8 @@ pub(crate) fn transform_face_surface_recorded(
                 let new_sph = remus_math::surfaces::SphericalSurface::with_frame(
                     new_center,
                     sph_clone.radius() * sx,
-                    transform_direction(matrix, sph_clone.z_axis())?,
-                    transform_direction(matrix, sph_clone.x_axis())?,
+                    transform_sphere_direction(matrix, sph_clone.z_axis())?,
+                    transform_sphere_direction(matrix, sph_clone.x_axis())?,
                 )?;
                 // The moved frame is kept, so only a reflection (which
                 // rebuilds `y = z × x` on the other side) negates `u`.
@@ -2078,8 +2078,21 @@ fn sampled_transformed_nurbs(
     Ok(nurbs)
 }
 
-/// Transforms a direction with the matrix's linear part, then normalizes it.
+/// Transforms a direction vector by applying the matrix and subtracting the
+/// translation component, then normalizing.
 fn transform_direction(matrix: &Mat4, dir: Vec3) -> Result<Vec3, crate::OperationsError> {
+    let origin = matrix.mul_point(remus_math::vec::Point3::new(0.0, 0.0, 0.0));
+    let tip = matrix.mul_point(remus_math::vec::Point3::new(dir.x(), dir.y(), dir.z()));
+    let raw = Vec3::new(
+        tip.x() - origin.x(),
+        tip.y() - origin.y(),
+        tip.z() - origin.z(),
+    );
+    Ok(raw.normalize()?)
+}
+
+/// Keep a native sphere frame aligned with its equatorial circle after placement.
+fn transform_sphere_direction(matrix: &Mat4, dir: Vec3) -> Result<Vec3, crate::OperationsError> {
     // Directions use only the linear part, as in the analytic curve writer.
     // Subtracting translated points loses unit-axis precision at large offsets.
     let m = &matrix.0;

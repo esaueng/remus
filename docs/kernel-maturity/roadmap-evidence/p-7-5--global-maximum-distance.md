@@ -33,7 +33,7 @@ unchanged serialized geometry/history/session counts. Other curved extrema,
 wall-thickness maps and general interrogation remain open.
 
 The posed-sphere regression also covers the analytic transform producer:
-directions use only the affine matrix's linear part, matching the curve writer,
+native sphere directions use the affine matrix's linear part, matching the curve writer,
 so translated-point subtraction cannot rotate the surface frame through
 cancellation. The sphere coverage checks and tolerances remain unchanged.
 The exact numeric browser pose is checked at three scales against closed-form
