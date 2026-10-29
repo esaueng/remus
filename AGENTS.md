@@ -270,6 +270,7 @@ Quick reference — find the right file for any task:
 | PaveFiller orchestrator | `pave_filler/mod.rs` |
 | Shared PaveFiller phase helpers | `pave_filler/helpers.rs` |
 | Isolated curved NURBS section clipping and whole-span bounds | `pave_filler/curved_section_clip.rs`, `pave_filler/curved_section_clip/bernstein.rs`, `pave_filler/curved_section_clip/tests.rs` |
+| Read-only shared ruled-section discovery with original native traces and certified physical trim windows | `pave_filler/curved_section_clip/discovery.rs` |
 | Phases VV/VE/EE/VF/EF/FF | `pave_filler/phase_*.rs` |
 | Bounded algebraic events for an actual Line/Sphere carrier pair | `pave_filler/phase_ef/line_sphere.rs` |
 | Pave block splitting + edge creation | `pave_filler/make_blocks.rs`, `make_split_edges.rs` |
@@ -549,6 +550,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Validation | `validate.rs` |
 | Assembly management | `assembly.rs` |
 | 2D sketch constraint solver | `sketch.rs` |
+| Persistent planar sketch attachments and external line inputs | `linked_sketch.rs` |
 | Evolution tracking | `evolution.rs` |
 | Result-aware edge/vertex evolution induced from an exact face map (typed unresolved reasons, F/E/V completeness) | `boundary_evolution.rs` |
 | Compound operations | `compound_ops.rs` |
@@ -662,6 +664,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Sequential fillet onto an earlier blend band (contract test) | `bindings/sequential_fillet_tests.rs` |
 | Entity-evolution and journal bindings | `bindings/evolution.rs` |
 | Typed persistent GCS sketch bindings | `bindings/gcs_sketch.rs` |
+| Linked planar GCS attachment and fixed external lines | `bindings/linked_sketch.rs` |
 | Faces with inner (hole) wires — validation & construction | `holed_face.rs` |
 | `log` → JS `console` bridge | `logging.rs` |
 | Panic capture for post-mortem diagnosis | `panics.rs` |
@@ -678,6 +681,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Growing-holder recipe `volume` contract (B54: closed-form −5440 width step through `executeBatch`) | `bindings/growing_holder_volume_tests.rs` |
 | Store-local boolean switch (`setStoreLocalCuts` / `storeLocalCutsEnabled`, direct and batch) contract tests | `bindings/store_local_switch_tests.rs` |
 | Sweep bindings refuse atomically (`multiSectionSweep` direct and batch; kernel review WASM-6) | `bindings/sweep_transaction_tests.rs` |
+| Direct and both batch contracts for the bounded P-Class 7.1 hollow taper | `bindings/tapered_hollow_sweep_tests.rs` |
 | WASM contract tests for the mixed-notch L-bracket boundary | `bindings/mixed_notch_tests.rs` |
 
 ### L4: wasm-io (`crates/wasm-io/src/`)

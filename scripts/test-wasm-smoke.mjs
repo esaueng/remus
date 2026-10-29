@@ -22,6 +22,7 @@ import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-pack
 import { runWasmParserReferencesPackaged } from './wasm-parser-refs-packaged.mjs';
 import { runVariableFilletInputPackaged } from './variable-fillet-input-packaged.mjs';
 import { runVariableFilletBoundariesPackaged } from './variable-fillet-boundaries-packaged.mjs';
+import { runTaperedHollowSweepPackaged } from './tapered-hollow-sweep-packaged.mjs';
 import { runOpseqF5Packaged } from './opseq-f5-packaged.mjs';
 import { runOpseqF6Packaged } from './opseq-f6-packaged.mjs';
 import { runOpseqOffsetWallPackaged } from './opseq-offset-wall-packaged.mjs';
@@ -41,6 +42,7 @@ import { runOpseqTorusPropertiesPackaged } from './opseq-torus-properties-packag
 import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
 import { runBoundedTabRolloverPackaged } from './bounded-tab-rollover-packaged.mjs';
 import { runPackagedPreviewWorkContract } from './perf/face-drag-session/packaged_contract.cjs';
+import { runLinkedSketchPackaged } from './linked-sketch-packaged.mjs';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
@@ -90,6 +92,7 @@ runWasmRayNurbsPackaged({ BrepKernel });
 runWasmParserReferencesPackaged({ BrepKernel });
 runVariableFilletInputPackaged({ BrepKernel });
 runVariableFilletBoundariesPackaged({ BrepKernel });
+runTaperedHollowSweepPackaged({ BrepKernel });
 runOpseqF3Packaged({ BrepKernel });
 runOpseqF17Packaged({ BrepKernel });
 runOpseqSphereCapPackaged({ BrepKernel });
@@ -1764,5 +1767,7 @@ runOpseqF10Packaged({ BrepKernel });
 runOpseqF13Packaged({ BrepKernel });
 
 runWasmRayTorusPackaged({ BrepKernel });
+
+runLinkedSketchPackaged({ BrepKernel });
 
 console.log('\nAll smoke tests passed');

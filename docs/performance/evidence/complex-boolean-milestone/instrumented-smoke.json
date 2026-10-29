@@ -1,0 +1,484 @@
+{
+  "schema": "remus-complex-boolean-smoke-receipt-v1",
+  "runs": [
+    {
+      "run_status": "passed",
+      "base_commit": "70f675bea4aebd35b0a36d59eaec89118c278ef6",
+      "dirty_working_tree_sha256": "2886f9f39fd7974129b9266d7b53170dadf541e853732cfaacdc5e3d6715de55",
+      "native_binary_sha256": "557503f9d06add6fe3ed01bff409725ba9855a1124545ab841bc6f7c628fabd4",
+      "binary_source_equivalence": "Externally supplied executable; source equivalence is not established",
+      "settings": {
+        "store_local_requested": false,
+        "content_memos": true,
+        "phase_clock": false,
+        "perf_counters": true
+      },
+      "cases": [
+        "slot-cut-0",
+        "slot-cut-36",
+        "slot-cut-144",
+        "slot-fuse-0",
+        "slot-fuse-36",
+        "slot-fuse-144",
+        "slot-intersect-0",
+        "slot-intersect-36",
+        "slot-intersect-144",
+        "sparse-fuse-16",
+        "sparse-fuse-64",
+        "dense-fuse-8",
+        "dense-fuse-16",
+        "curved-half-cylinder"
+      ],
+      "raw_records": 28,
+      "warmup_records": 14,
+      "timings_excluded": true,
+      "correctness_only": "Development smoke on contended build cores; no performance claim.",
+      "max_absolute_volume_residual": 1.2223608791828156e-09,
+      "strict_validation_and_material_and_input_gates": "passed",
+      "routes": [
+        {
+          "case_id": "slot-cut-0",
+          "sample": 0,
+          "warmup": true,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "slot-cut-0",
+          "sample": 1,
+          "warmup": false,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "slot-cut-36",
+          "sample": 0,
+          "warmup": true,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "slot-cut-36",
+          "sample": 1,
+          "warmup": false,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "slot-cut-144",
+          "sample": 0,
+          "warmup": true,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "slot-cut-144",
+          "sample": 1,
+          "warmup": false,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "slot-fuse-0",
+          "sample": 0,
+          "warmup": true,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "slot-fuse-0",
+          "sample": 1,
+          "warmup": false,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "slot-fuse-36",
+          "sample": 0,
+          "warmup": true,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "slot-fuse-36",
+          "sample": 1,
+          "warmup": false,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "slot-fuse-144",
+          "sample": 0,
+          "warmup": true,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "slot-fuse-144",
+          "sample": 1,
+          "warmup": false,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "slot-intersect-0",
+          "sample": 0,
+          "warmup": true,
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "slot-intersect-0",
+          "sample": 1,
+          "warmup": false,
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "slot-intersect-36",
+          "sample": 0,
+          "warmup": true,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "slot-intersect-36",
+          "sample": 1,
+          "warmup": false,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "slot-intersect-144",
+          "sample": 0,
+          "warmup": true,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "slot-intersect-144",
+          "sample": 1,
+          "warmup": false,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "sparse-fuse-16",
+          "sample": 0,
+          "warmup": true,
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "sparse-fuse-16",
+          "sample": 1,
+          "warmup": false,
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "sparse-fuse-64",
+          "sample": 0,
+          "warmup": true,
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "sparse-fuse-64",
+          "sample": 1,
+          "warmup": false,
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "dense-fuse-8",
+          "sample": 0,
+          "warmup": true,
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 1,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "dense-fuse-8",
+          "sample": 1,
+          "warmup": false,
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 1,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "dense-fuse-16",
+          "sample": 0,
+          "warmup": true,
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 1,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "dense-fuse-16",
+          "sample": 1,
+          "warmup": false,
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 1,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "curved-half-cylinder",
+          "sample": 0,
+          "warmup": true,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        },
+        {
+          "case_id": "curved-half-cylinder",
+          "sample": 1,
+          "warmup": false,
+          "routes": {
+            "general_gfa_calls": 1,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 0,
+            "store_local_successes": 0
+          }
+        }
+      ],
+      "artifact_sha256": {
+        "samples.jsonl": "c7de3a35fdfa61d0a2da2a593ce586a063a38483e2f463b681593fa55191edc6",
+        "summary.json": "f04e43a07af1304778a75e1f823676d1a8a0e3013eeb290fe5dd495255d8b9c1"
+      }
+    },
+    {
+      "run_status": "passed",
+      "base_commit": "70f675bea4aebd35b0a36d59eaec89118c278ef6",
+      "dirty_working_tree_sha256": "2c934c0aaf836dc645d8b8a5c382d80cccfbb9f2fa25cfadf20f44ef94b30b95",
+      "native_binary_sha256": "557503f9d06add6fe3ed01bff409725ba9855a1124545ab841bc6f7c628fabd4",
+      "binary_source_equivalence": "Externally supplied executable; source equivalence is not established",
+      "settings": {
+        "store_local_requested": true,
+        "content_memos": true,
+        "phase_clock": true,
+        "perf_counters": true
+      },
+      "cases": [
+        "slot-cut-36",
+        "slot-fuse-36",
+        "slot-intersect-36"
+      ],
+      "raw_records": 6,
+      "warmup_records": 3,
+      "timings_excluded": true,
+      "correctness_only": "Development smoke on contended build cores; no performance claim.",
+      "max_absolute_volume_residual": 1.4551915228366852e-10,
+      "strict_validation_and_material_and_input_gates": "passed",
+      "routes": [
+        {
+          "case_id": "slot-cut-36",
+          "sample": 0,
+          "warmup": true,
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 1,
+            "store_local_successes": 1
+          }
+        },
+        {
+          "case_id": "slot-cut-36",
+          "sample": 1,
+          "warmup": false,
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 1,
+            "store_local_successes": 1
+          }
+        },
+        {
+          "case_id": "slot-fuse-36",
+          "sample": 0,
+          "warmup": true,
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 1,
+            "store_local_successes": 1
+          }
+        },
+        {
+          "case_id": "slot-fuse-36",
+          "sample": 1,
+          "warmup": false,
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 1,
+            "store_local_successes": 1
+          }
+        },
+        {
+          "case_id": "slot-intersect-36",
+          "sample": 0,
+          "warmup": true,
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 1,
+            "store_local_successes": 1
+          }
+        },
+        {
+          "case_id": "slot-intersect-36",
+          "sample": 1,
+          "warmup": false,
+          "routes": {
+            "general_gfa_calls": 0,
+            "local_cut_successes": 0,
+            "nary_calls": 0,
+            "store_local_attempts": 1,
+            "store_local_successes": 1
+          }
+        }
+      ],
+      "artifact_sha256": {
+        "samples.jsonl": "a33b9bd41fab2c37634445b00170535da51728c9806431e848138e0ac9f6f208",
+        "summary.json": "8d2b29883f9b7d7654f9c934be972752e3264854c5e151f11e4c6248a292dfa9"
+      }
+    }
+  ]
+}

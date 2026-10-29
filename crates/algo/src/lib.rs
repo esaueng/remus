@@ -43,5 +43,12 @@ pub use builder::pcurve_compute::{
 };
 pub use builder::plane_frame::PlaneFrame;
 pub use builder::split_types::sub_trim;
+pub use pave_filler::curved_section_clip::discovery::{
+    RuledFaceSection, RuledSurfaceTrace, discover_ruled_face_section,
+};
+pub use pave_filler::curved_section_clip::{
+    BoundaryEvent as RuledSectionBoundaryEvent, ClipError as RuledSectionError,
+    ClippedSection as RuledSectionClipping, RetainedInterval as RuledSectionInterval,
+};
 pub(crate) mod ds;
 pub(crate) mod pave_filler;

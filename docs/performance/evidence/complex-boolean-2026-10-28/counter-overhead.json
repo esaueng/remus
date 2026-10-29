@@ -1,0 +1,685 @@
+{
+  "schema": "remus-complex-boolean-counter-overhead-v1",
+  "scope": "Native instrumentation overhead observations; not a kernel optimization speedup.",
+  "source_base_commit": "70f675bea4aebd35b0a36d59eaec89118c278ef6",
+  "source_working_tree_sha256": "eb80f1529398934d852bc948897a743de189e2796f96ef30bdade3d1c950440d",
+  "memo_policy": "pcurve-and-wire-area-only; other native caches retain their defaults",
+  "cpu": "AMD Ryzen 9 5900XT 16-Core Processor",
+  "cpu_affinity": 31,
+  "excluded_smt_sibling": 15,
+  "controls": "Other team builds/captures excluded from31/15; external host activity, thermal state and frequency were not fully characterized.",
+  "order": [
+    "off",
+    "on",
+    "on",
+    "off",
+    "on",
+    "off",
+    "off",
+    "on"
+  ],
+  "warmup_per_process": 2,
+  "retained_samples_per_process": 10,
+  "independent_processes_per_variant_per_case": 4,
+  "tail_percentiles": null,
+  "tail_note": "Only medians and observed spread; no tail-confidence claim.",
+  "harness_sha256": {
+    "scripts/performance/complex-boolean/run.py": "1cb5726630429f65f168a8873648dde71882640c825a6e447bec829b7fb262ec",
+    "scripts/performance/complex-boolean/workloads.json": "938f217f03d3d310898132cb632b4f87ff2a28df47dc0f5bc4b3783489182096",
+    "crates/operations/examples/complex_boolean_baseline.rs": "72acdd85e9b21d63e200532cb90224b5f68ef49dbbc5988b05e7f46708468c32",
+    "scripts/performance/run.py": "11375b219deefd58d2624d531cd71912aa1dd02c26a3519f447cf2bb0089d0da"
+  },
+  "counter_source_sha256": {
+    "crates/algo/src/perf.rs": "b5b35d2c24bd06497d1f934af87bf6a76d29128adc2b15c46e9ac1333e672bbb",
+    "crates/operations/src/performance.rs": "da9d32d3bde0c3ad2a7dbd026a9859ee9111e8264f9dee57d1528db9a80bf077"
+  },
+  "builds": {
+    "off": {
+      "native_binary_sha256": "4c4ad66666c0a4488230298f7962f8cf144134e7fa1466b6247be30344032daa",
+      "native_features": [],
+      "native_profile": {
+        "opt_level": "3",
+        "debuginfo": 2,
+        "debug_assertions": false,
+        "overflow_checks": true,
+        "test": false
+      },
+      "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.0\nLLVM version: 22.1.2",
+      "cargo": "cargo 1.96.0 (30a34c682 2026-05-25)",
+      "build_command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--profile",
+        "profiling",
+        "-p",
+        "remus-operations",
+        "--example",
+        "complex_boolean_baseline",
+        "--message-format=json",
+        "--offline"
+      ],
+      "cargo_artifact_receipt_sha256": "129c600dcd1a8adcb5bfeeaefe3b749006932b334c5243dd23f5278f3b802e28",
+      "raw_build_log_sha256": "14f860257da7157630d88e6bde657e1015d3b3982e9688a2277bf54ad0137c82",
+      "source_binding": "Actual Cargo artifact receipt, unchanged source identity and frozen executable hash verified before/after capture"
+    },
+    "on": {
+      "native_binary_sha256": "557503f9d06add6fe3ed01bff409725ba9855a1124545ab841bc6f7c628fabd4",
+      "native_features": [
+        "perf-counters"
+      ],
+      "native_profile": {
+        "opt_level": "3",
+        "debuginfo": 2,
+        "debug_assertions": false,
+        "overflow_checks": true,
+        "test": false
+      },
+      "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.0\nLLVM version: 22.1.2",
+      "cargo": "cargo 1.96.0 (30a34c682 2026-05-25)",
+      "build_command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--profile",
+        "profiling",
+        "-p",
+        "remus-operations",
+        "--example",
+        "complex_boolean_baseline",
+        "--message-format=json",
+        "--features",
+        "perf-counters",
+        "--offline"
+      ],
+      "cargo_artifact_receipt_sha256": "1bdceb9a1de8a9d4dbc9c39706aecd96fbbacf447c27274d7c0ad3bb1d305e73",
+      "raw_build_log_sha256": "12b51042fd74e9185e798b9879f21cc95bc676dd60eada46d4964580cdd4b9ed",
+      "source_binding": "Actual Cargo artifact receipt, unchanged source identity and frozen executable hash verified before/after capture"
+    }
+  },
+  "comparisons": [
+    {
+      "case": {
+        "id": "slot-cut-0",
+        "scenario": "slot_cut",
+        "size": 0
+      },
+      "counter_free": {
+        "samples": 40,
+        "unit": "ms",
+        "tail_percentiles": null,
+        "tail_note": "No tail-confidence claim; retain raw samples and per-process medians.",
+        "stages": {
+          "setup": {
+            "min": 0.017894,
+            "median": 0.01854,
+            "max": 0.027101,
+            "process_medians": [
+              0.018700500000000002,
+              0.018779999999999998,
+              0.0184095,
+              0.0183945
+            ]
+          },
+          "preflight": {
+            "min": 0.009909,
+            "median": 0.010109,
+            "max": 0.017453,
+            "process_medians": [
+              0.010164,
+              0.01019,
+              0.010059,
+              0.010074
+            ]
+          },
+          "kernel": {
+            "min": 0.955577,
+            "median": 0.977349,
+            "max": 1.06274,
+            "process_medians": [
+              0.9704364999999999,
+              1.0106665,
+              0.9741124999999999,
+              0.9708615
+            ]
+          },
+          "qualification": {
+            "min": 0.092415,
+            "median": 0.094494,
+            "max": 0.124736,
+            "process_medians": [
+              0.094589,
+              0.0973295,
+              0.0934015,
+              0.093778
+            ]
+          },
+          "teardown": {
+            "min": 0.002985,
+            "median": 0.011046,
+            "max": 0.016812,
+            "process_medians": [
+              0.011306,
+              0.012889500000000002,
+              0.010755,
+              0.01075
+            ]
+          },
+          "generation": {
+            "min": 0.974072,
+            "median": 0.995619,
+            "max": 1.089841,
+            "process_medians": [
+              0.989252,
+              1.0295375,
+              0.9926925,
+              0.9893415
+            ]
+          }
+        }
+      },
+      "instrumented_clock_off": {
+        "samples": 40,
+        "unit": "ms",
+        "tail_percentiles": null,
+        "tail_note": "No tail-confidence claim; retain raw samples and per-process medians.",
+        "stages": {
+          "setup": {
+            "min": 0.019928,
+            "median": 0.020669,
+            "max": 0.021691,
+            "process_medians": [
+              0.020719,
+              0.020704,
+              0.0207045,
+              0.020564
+            ]
+          },
+          "preflight": {
+            "min": 0.009728,
+            "median": 0.010009,
+            "max": 0.01031,
+            "process_medians": [
+              0.009944,
+              0.010029,
+              0.009944000000000001,
+              0.0101095
+            ]
+          },
+          "kernel": {
+            "min": 0.962992,
+            "median": 0.9829239999999999,
+            "max": 1.039766,
+            "process_medians": [
+              0.9755860000000001,
+              0.981306,
+              0.9902535,
+              0.983811
+            ]
+          },
+          "qualification": {
+            "min": 0.093156,
+            "median": 0.094679,
+            "max": 0.104648,
+            "process_medians": [
+              0.09400800000000001,
+              0.09487899999999999,
+              0.0950295,
+              0.094574
+            ]
+          },
+          "teardown": {
+            "min": 0.002835,
+            "median": 0.011567000000000001,
+            "max": 0.016161,
+            "process_medians": [
+              0.0107205,
+              0.011797499999999999,
+              0.012669,
+              0.0109765
+            ]
+          },
+          "generation": {
+            "min": 0.983601,
+            "median": 1.0036585,
+            "max": 1.060495,
+            "process_medians": [
+              0.996481,
+              1.0019555,
+              1.011038,
+              1.0043395
+            ]
+          }
+        }
+      },
+      "median_of_process_kernel_medians_ms": {
+        "off": 0.972487,
+        "on": 0.9825585
+      },
+      "observed_counter_overhead_percent": 1.0356436641312472
+    },
+    {
+      "case": {
+        "id": "slot-cut-144",
+        "scenario": "slot_cut",
+        "size": 12
+      },
+      "counter_free": {
+        "samples": 40,
+        "unit": "ms",
+        "tail_percentiles": null,
+        "tail_note": "No tail-confidence claim; retain raw samples and per-process medians.",
+        "stages": {
+          "setup": {
+            "min": 49.682401,
+            "median": 53.7007675,
+            "max": 65.465418,
+            "process_medians": [
+              58.318168,
+              55.542553,
+              53.173731000000004,
+              52.324585
+            ]
+          },
+          "preflight": {
+            "min": 95.168105,
+            "median": 98.09080349999999,
+            "max": 102.864363,
+            "process_medians": [
+              99.2504225,
+              98.77593,
+              96.0899845,
+              97.985259
+            ]
+          },
+          "kernel": {
+            "min": 11.286972,
+            "median": 11.9014585,
+            "max": 13.263009,
+            "process_medians": [
+              12.019286000000001,
+              11.9205895,
+              11.6178165,
+              11.816823
+            ]
+          },
+          "qualification": {
+            "min": 273.704504,
+            "median": 281.89644050000004,
+            "max": 291.387815,
+            "process_medians": [
+              284.98838450000005,
+              285.166877,
+              275.0960515,
+              281.316373
+            ]
+          },
+          "teardown": {
+            "min": 2.535887,
+            "median": 5.389049,
+            "max": 7.153392,
+            "process_medians": [
+              5.765316,
+              5.4272715,
+              5.5434465,
+              5.1083785
+            ]
+          },
+          "generation": {
+            "min": 61.157919,
+            "median": 65.96098,
+            "max": 77.424921,
+            "process_medians": [
+              70.5112025,
+              67.4631425,
+              64.56421850000001,
+              64.0700635
+            ]
+          }
+        }
+      },
+      "instrumented_clock_off": {
+        "samples": 40,
+        "unit": "ms",
+        "tail_percentiles": null,
+        "tail_note": "No tail-confidence claim; retain raw samples and per-process medians.",
+        "stages": {
+          "setup": {
+            "min": 48.456924,
+            "median": 55.246632500000004,
+            "max": 65.735739,
+            "process_medians": [
+              61.242078500000005,
+              60.331255999999996,
+              53.682168000000004,
+              51.2158125
+            ]
+          },
+          "preflight": {
+            "min": 95.592468,
+            "median": 100.2727005,
+            "max": 110.158622,
+            "process_medians": [
+              100.279539,
+              102.420689,
+              100.077557,
+              96.5096575
+            ]
+          },
+          "kernel": {
+            "min": 11.309604,
+            "median": 12.082261,
+            "max": 16.078334,
+            "process_medians": [
+              12.2520415,
+              12.478715000000001,
+              11.831555999999999,
+              11.548977
+            ]
+          },
+          "qualification": {
+            "min": 275.317656,
+            "median": 285.5621645,
+            "max": 317.091387,
+            "process_medians": [
+              285.93308149999996,
+              292.86658750000004,
+              285.3226315,
+              277.28517250000004
+            ]
+          },
+          "teardown": {
+            "min": 4.79978,
+            "median": 5.6911249999999995,
+            "max": 8.127565,
+            "process_medians": [
+              6.108135000000001,
+              6.208449,
+              5.559176000000001,
+              5.1138435
+            ]
+          },
+          "generation": {
+            "min": 60.066566,
+            "median": 67.2378705,
+            "max": 78.806945,
+            "process_medians": [
+              73.8293295,
+              73.95869400000001,
+              65.49445800000001,
+              62.608629
+            ]
+          }
+        }
+      },
+      "median_of_process_kernel_medians_ms": {
+        "off": 11.868706249999999,
+        "on": 12.04179875
+      },
+      "observed_counter_overhead_percent": 1.4583940014523566
+    }
+  ],
+  "phase_diagnostic": {
+    "case_id": "slot-cut-144",
+    "timing_status": "instrumented-phase-clock; separate diagnostic, inclusive scopes",
+    "rows": [
+      {
+        "sample": 0,
+        "warmup": true,
+        "work": {
+          "coplanar_section_probes": 0,
+          "ee_pairs_surviving": 0,
+          "ee_pairs_visited": 5328,
+          "ef_analytic_pair_scans": 0,
+          "face_split_probes": 256,
+          "ff_pairs_surviving": 8,
+          "ff_pairs_visited": 900,
+          "pave_vertex_probes": 0,
+          "sd_poly_clips": 0,
+          "store_faces_copied": 310,
+          "ve_pairs_visited": 7104,
+          "ve_projection_evals": 0,
+          "ve_sampled_probes": 0
+        },
+        "routes": {
+          "general_gfa_calls": 1,
+          "local_cut_successes": 0,
+          "nary_calls": 0,
+          "store_local_attempts": 0,
+          "store_local_successes": 0
+        },
+        "phases": [
+          {
+            "calls": 1,
+            "duration_ms": 0.607499,
+            "name": "gfa.store_import"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 0.12226099999999995,
+            "name": "pave.vv"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 0.14490399999999992,
+            "name": "pave.ve"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 0.15060499999999988,
+            "name": "pave.ee"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 0.14748899999999998,
+            "name": "pave.vf"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 1.1795319999999998,
+            "name": "pave.ef"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 1.001083,
+            "name": "pave.ff"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 0.0705429999999998,
+            "name": "pave.coplanar"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 0.5697269999999999,
+            "name": "pave.resolve"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 4.563312,
+            "name": "gfa.build"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 4.502967999999999,
+            "name": "gfa.assemble"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 0.7946339999999985,
+            "name": "gfa.store_export"
+          }
+        ],
+        "metrics": {
+          "allocated_slots": 203148,
+          "edge_connected_components": 1,
+          "expected_volume": 200824.42631532278,
+          "faces": 154,
+          "input_operands_preserved": true,
+          "material_probes": 4,
+          "volume": 200824.42631532156,
+          "volume_bound": 0.0020082442631532277
+        }
+      },
+      {
+        "sample": 1,
+        "warmup": false,
+        "work": {
+          "coplanar_section_probes": 0,
+          "ee_pairs_surviving": 0,
+          "ee_pairs_visited": 5328,
+          "ef_analytic_pair_scans": 0,
+          "face_split_probes": 256,
+          "ff_pairs_surviving": 8,
+          "ff_pairs_visited": 900,
+          "pave_vertex_probes": 0,
+          "sd_poly_clips": 0,
+          "store_faces_copied": 310,
+          "ve_pairs_visited": 7104,
+          "ve_projection_evals": 0,
+          "ve_sampled_probes": 0
+        },
+        "routes": {
+          "general_gfa_calls": 1,
+          "local_cut_successes": 0,
+          "nary_calls": 0,
+          "store_local_attempts": 0,
+          "store_local_successes": 0
+        },
+        "phases": [
+          {
+            "calls": 1,
+            "duration_ms": 0.7137400000000298,
+            "name": "gfa.store_import"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 0.11556799999999612,
+            "name": "pave.vv"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 0.14504499999998188,
+            "name": "pave.ve"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 0.1528690000000097,
+            "name": "pave.ee"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 0.14994299999995064,
+            "name": "pave.vf"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 1.0903830000000312,
+            "name": "pave.ef"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 1.0095699999999965,
+            "name": "pave.ff"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 0.07039300000002413,
+            "name": "pave.coplanar"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 0.5814899999999739,
+            "name": "pave.resolve"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 2.8644389999999476,
+            "name": "gfa.build"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 3.011006000000009,
+            "name": "gfa.assemble"
+          },
+          {
+            "calls": 1,
+            "duration_ms": 1.0114239999999768,
+            "name": "gfa.store_export"
+          }
+        ],
+        "metrics": {
+          "allocated_slots": 203148,
+          "edge_connected_components": 1,
+          "expected_volume": 200824.42631532278,
+          "faces": 154,
+          "input_operands_preserved": true,
+          "material_probes": 4,
+          "volume": 200824.42631532156,
+          "volume_bound": 0.0020082442631532277
+        }
+      }
+    ]
+  },
+  "raw_artifacts_sha256": {
+    "phase-diagnostic.process.json": "cb032c13849e1ef8a54dbb1efb8e579dbcfb963ba3ee348d330094b515136bbb",
+    "phase-diagnostic.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "phase-diagnostic.stdout.jsonl": "6cb3282edfeccd730fd34b6f641626848f745ecab502f240646d463566107fe7",
+    "raw-samples.json": "e4e09dd497e79016c4448c525d1ca4e2fc6b839320be2925cefcd5f6d2a171b6",
+    "slot-cut-0.0.off.process.json": "8c98114404dfc84ca95dea2eb7fde4c1dd50e4dacac84ff9a560999bf6af1015",
+    "slot-cut-0.0.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-0.0.off.stdout.jsonl": "fcbc0f41a59ade943de9b6a8f1c970fc67f29702c65575439eb0b118513a85b7",
+    "slot-cut-0.1.on.process.json": "84670655621fa8e0a22b540185e1690ba60cd09ea4a620c214a6968b115a6501",
+    "slot-cut-0.1.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-0.1.on.stdout.jsonl": "2897c78403551e15639efefded4177d32e7c982851ece5e7dd7d0f8af8695855",
+    "slot-cut-0.2.on.process.json": "acb895057062e16148bc59178a4730bd9dd5232a22233e1d50b598f76f121dfb",
+    "slot-cut-0.2.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-0.2.on.stdout.jsonl": "84b85265eda71f74071f5bf9ba1d8aab7c696fd2da8cdfd8082e5dfb21bbcf15",
+    "slot-cut-0.3.off.process.json": "21767cd9adaa1b492f134657b6e97b1a12ca9080eb4e1886540ccbf3fac8b022",
+    "slot-cut-0.3.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-0.3.off.stdout.jsonl": "e54287bdd65fddbaa3b2255694dd583ca5f2a659830152ecdf1a5cad42304194",
+    "slot-cut-0.4.on.process.json": "731fec9c4bf3c8325a31fff6a039b9cb61ff7c09c1162976e785caa452f0439b",
+    "slot-cut-0.4.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-0.4.on.stdout.jsonl": "fea83c7a6e6296544ee52a4ec9eaf63c82d6e1f2c44f146596e2a4a4f537aecd",
+    "slot-cut-0.5.off.process.json": "61731635a9d536565be663efc268bc9ac822b5bee62d27ee6b2850da547611dd",
+    "slot-cut-0.5.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-0.5.off.stdout.jsonl": "ed013aa72f430b27c2b083a6886a59a3d49787754ba0765a8798d6db0d5301f6",
+    "slot-cut-0.6.off.process.json": "7b1a954de03aee709d0407deb95ad7c606b00a3d937c1d4b856ba0989ac760a4",
+    "slot-cut-0.6.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-0.6.off.stdout.jsonl": "e2fe08793822b533759fed6f7405a1d74926e09f20311f47d813193dd23f2e83",
+    "slot-cut-0.7.on.process.json": "aae02d9875603befcc588ea60b0d4a9f821ceb3c14d452608279098839b19880",
+    "slot-cut-0.7.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-0.7.on.stdout.jsonl": "12a22104f70d8d2e697bee805500a9712914d7d5bce718ce2fcbd48ad756e08d",
+    "slot-cut-144.0.off.process.json": "08147fc1a76cc4f709b76353f32d0c7006715d64452a78b6e77da2579c18800f",
+    "slot-cut-144.0.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.0.off.stdout.jsonl": "f7a9e2f6d727164dfb16f57de8e288abd5402671914f7eb7ed0f038b0fee966d",
+    "slot-cut-144.1.on.process.json": "53368d57dce8c1ad351a939dcdea13bceacfc9d33374ae3fbd54ce8f31b60198",
+    "slot-cut-144.1.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.1.on.stdout.jsonl": "e5fd7a3a7e10df64246e422bfe3f02eee1d1752746813d92095fea27b420f3fa",
+    "slot-cut-144.2.on.process.json": "9a45ea0945e9382cef452b56a4b91675eec7789aa763ac0e2260963255f8be4c",
+    "slot-cut-144.2.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.2.on.stdout.jsonl": "34226d9335909b6e98c778bb070f2a06abb669d0c48b5045f72e8c8eb16b1262",
+    "slot-cut-144.3.off.process.json": "06dbe2b2760250efa5a55961abc7137bf3035f0cabe4e84b5888294cee214236",
+    "slot-cut-144.3.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.3.off.stdout.jsonl": "8cc6901df0ad39f1c925d8985b05bb5732ea0f83d4e750974d3e9e4531e971cd",
+    "slot-cut-144.4.on.process.json": "d5bec2ff2ff914553ba630ff26b4b2beeb99121f32deb79acea82868f1feb7e4",
+    "slot-cut-144.4.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.4.on.stdout.jsonl": "e532de4ec010d49dcf0a3ba7ff172111744795fcc0e0cccb28c442c5519cc3ee",
+    "slot-cut-144.5.off.process.json": "21c037cef246efed632a4859ce33f26f9909ed0a6d6cc0c81e5b093088ec46de",
+    "slot-cut-144.5.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.5.off.stdout.jsonl": "9265e0096688ab4796cdb0d16b6e151983a929ea84c271f5bc3ea20a31a7a3fe",
+    "slot-cut-144.6.off.process.json": "50790dd1a944debc84e4a16d748cb4984033109eda50174e6495f922020c4bc1",
+    "slot-cut-144.6.off.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.6.off.stdout.jsonl": "c0dd9dcf6345097c51fb00f7a7fdb25f7d400191915a5e62c693c05f5d03933c",
+    "slot-cut-144.7.on.process.json": "0afcf09900b01cd22ac89726bea75549f85f762ac9c813c79606b8cc0da5ce31",
+    "slot-cut-144.7.on.stderr.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "slot-cut-144.7.on.stdout.jsonl": "84ebbc3f57739d44013220e579849e7759789727ebca27a88a3c09838833d8d7"
+  },
+  "published_samples": {
+    "path": "counter-overhead-samples.jsonl",
+    "sha256": "28cf9a6cab195fe433a5f6b8b072da293db27ed2ed67d857453040ef7a9340e0",
+    "raw_records": 192,
+    "retained_records": 160
+  },
+  "capture_driver_sha256": "8329fc23d6a65e3c7134dc716e1081552004cc388c257c7d4e2d7a968147e140"
+}

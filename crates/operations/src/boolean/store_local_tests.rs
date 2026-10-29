@@ -118,6 +118,11 @@ fn assert_sound(topo: &Topology, solid: SolidId, label: &str) {
         0,
         "{label}: open mesh"
     );
+    assert_eq!(
+        crate::tessellate::non_manifold_edge_count(&mesh),
+        0,
+        "{label}: non-manifold mesh"
+    );
 }
 
 /// Cut store-locally and through the general GFA; the two must be the same
@@ -144,10 +149,19 @@ fn assert_equivalent_op(
     let general_result = boolean(&mut general, op, blank, tool).unwrap();
     let mut local = topo.clone();
     let built = BUILT.with(std::cell::Cell::get);
+    #[cfg(feature = "perf-counters")]
+    let _ = crate::performance::take_boolean_routes();
     set_thread_store_local_cuts(true);
     let local_result = boolean(&mut local, op, blank, tool);
     set_thread_store_local_cuts(false);
     let local_result = local_result.unwrap();
+    #[cfg(feature = "perf-counters")]
+    {
+        let routes = crate::performance::take_boolean_routes();
+        assert_eq!(routes.store_local_successes, 1, "{label}: {routes:?}");
+        assert_eq!(routes.store_local_attempts, 1, "{label}: {routes:?}");
+        assert_eq!(routes.general_gfa_calls, 0, "{label}: {routes:?}");
+    }
     assert_eq!(
         BUILT.with(std::cell::Cell::get),
         built + 1,
@@ -176,6 +190,7 @@ fn assert_equivalent_op(
         "{label}: volume {v_local} vs GFA {v_general}"
     );
     assert_sound(&local, local_result, label);
+    assert_sound(&general, general_result, label);
     (local, local_result)
 }
 
@@ -462,5 +477,321 @@ fn store_local_cut_is_off_by_default_and_declines_whole_blank_cuts() {
         BUILT.with(std::cell::Cell::get),
         built,
         "took a cut touching every face"
+    );
+}
+
+/// Membership checks are independent of the differential geometry dump: two
+/// equally wrong solids must not qualify merely because their volumes match.
+#[test]
+fn store_local_material_survives_scale_and_placement() {
+    use remus_check::classify::{ClassifyOptions, PointClassification, PreparedSolid};
+    use remus_math::vec::Point3;
+
+    let cases = [
+        (
+            BooleanOp::Cut,
+            (2.0, 6.0, 20.0),
+            (13.0, 11.0, -5.0),
+            [
+                ((14.0, 14.0, 5.0), PointClassification::Outside),
+                ((30.0, 12.0, 5.0), PointClassification::Inside),
+                ((8.0, 8.0, 5.0), PointClassification::Outside),
+                ((13.0, 14.0, 5.0), PointClassification::OnBoundary),
+            ],
+        ),
+        (
+            BooleanOp::Fuse,
+            (6.0, 3.0, 4.0),
+            (11.0, 12.5, 8.0),
+            [
+                ((14.0, 14.0, 11.0), PointClassification::Inside),
+                ((14.0, 14.0, 13.0), PointClassification::Outside),
+                ((8.0, 8.0, 5.0), PointClassification::Outside),
+                ((17.0, 14.0, 11.0), PointClassification::OnBoundary),
+            ],
+        ),
+        (
+            BooleanOp::Intersect,
+            (20.0, 20.0, 20.0),
+            (4.0, 4.0, -5.0),
+            [
+                ((14.0, 14.0, 5.0), PointClassification::Inside),
+                ((30.0, 12.0, 5.0), PointClassification::Outside),
+                ((8.0, 8.0, 5.0), PointClassification::Outside),
+                ((4.0, 14.0, 5.0), PointClassification::OnBoundary),
+            ],
+        ),
+    ];
+    for scale in [0.5, 1.0, 2.0] {
+        let matrix = Mat4::translation(128.0, -64.0, 32.0) * Mat4::scale(scale, scale, scale);
+        for (op, (dx, dy, dz), (x, y, z), probes) in cases {
+            let mut topo = Topology::new();
+            let plate = drilled_plate(&mut topo, 3);
+            let tool = make_box(&mut topo, dx, dy, dz).unwrap();
+            let tool = placed(&mut topo, tool, &Mat4::translation(x, y, z));
+            placed(&mut topo, plate, &matrix);
+            placed(&mut topo, tool, &matrix);
+            let label = format!("{op:?} scale={scale}");
+            let (local, result) = assert_equivalent_op(&topo, op, plate, tool, &label);
+            let prepared = PreparedSolid::prepare(&local, result).unwrap();
+            let options = ClassifyOptions {
+                tolerance: scale * 1e-7,
+                ..ClassifyOptions::default()
+            };
+            for ((x, y, z), expected) in probes {
+                let point = matrix.mul_point(Point3::new(x, y, z));
+                assert_eq!(
+                    prepared.classify_point(point, &options).unwrap(),
+                    expected,
+                    "{label}: {point:?}"
+                );
+            }
+        }
+    }
+}
+
+fn assert_direct_decline_leaves_inputs_unchanged(
+    topo: &mut Topology,
+    blank: SolidId,
+    tool: SolidId,
+    label: &str,
+) {
+    let before = format!("{topo:?}");
+    let context = remus_math::context::OperationContext::new();
+    let built = BUILT.with(std::cell::Cell::get);
+    for op in [BooleanOp::Cut, BooleanOp::Fuse, BooleanOp::Intersect] {
+        #[cfg(feature = "perf-counters")]
+        let _ = crate::performance::take_boolean_routes();
+        set_thread_store_local_cuts(true);
+        let attempt = super::store_local::try_store_local_boolean(topo, op, blank, tool, &context);
+        set_thread_store_local_cuts(false);
+        #[cfg(feature = "perf-counters")]
+        {
+            let routes = crate::performance::take_boolean_routes();
+            assert_eq!(routes.store_local_attempts, 1, "{label}: {op:?} {routes:?}");
+            assert_eq!(
+                routes.store_local_successes, 0,
+                "{label}: {op:?} {routes:?}"
+            );
+        }
+        assert!(
+            attempt.unwrap().is_none(),
+            "{label}: {op:?} did not decline"
+        );
+        assert_eq!(BUILT.with(std::cell::Cell::get), built, "{label}: {op:?}");
+        assert_eq!(
+            format!("{topo:?}"),
+            before,
+            "{label}: {op:?} changed input state"
+        );
+    }
+}
+
+#[test]
+fn cavity_blank_declines_without_mutating_inputs() {
+    let mut topo = Topology::new();
+    let outer = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let inner = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+    let inner = placed(&mut topo, inner, &Mat4::translation(4.0, 4.0, 4.0));
+    let hollow = boolean(&mut topo, BooleanOp::Cut, outer, inner).unwrap();
+    assert_eq!(topo.solid(hollow).unwrap().inner_shells().len(), 1);
+    let tool = make_box(&mut topo, 1.0, 1.0, 20.0).unwrap();
+    let tool = placed(&mut topo, tool, &Mat4::translation(1.0, 1.0, -5.0));
+    assert_direct_decline_leaves_inputs_unchanged(&mut topo, hollow, tool, "cavity");
+}
+
+#[test]
+fn nurbs_patch_declines_without_mutating_inputs() {
+    let mut topo = Topology::new();
+    let blank = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    crate::heal::convert_to_bspline(&mut topo, blank).unwrap();
+    assert!(
+        remus_topology::explorer::solid_faces(&topo, blank)
+            .unwrap()
+            .iter()
+            .all(|&face| matches!(
+                topo.face(face).unwrap().surface(),
+                remus_topology::face::FaceSurface::Nurbs(_)
+            ))
+    );
+    let tool = make_box(&mut topo, 2.0, 2.0, 20.0).unwrap();
+    let tool = placed(&mut topo, tool, &Mat4::translation(4.0, 4.0, -5.0));
+    assert_direct_decline_leaves_inputs_unchanged(&mut topo, blank, tool, "NURBS patch");
+}
+
+#[test]
+fn cancelled_store_local_boolean_keeps_geometry_and_history() {
+    use remus_math::context::{CancellationToken, FallbackPolicy, OperationContext};
+
+    let mut topo = Topology::new();
+    let plate = drilled_plate(&mut topo, 3);
+    let tool = make_box(&mut topo, 2.0, 6.0, 20.0).unwrap();
+    let tool = placed(&mut topo, tool, &Mat4::translation(13.0, 11.0, -5.0));
+    let input = (canonical(&topo, plate), canonical(&topo, tool));
+    let history = format!("{:?}", topo.journal());
+    let counts = (
+        topo.num_vertices(),
+        topo.num_edges(),
+        topo.num_faces(),
+        topo.num_solids(),
+    );
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let context = OperationContext::new()
+        .with_fallback(FallbackPolicy::ExactOnly)
+        .with_cancellation(cancellation);
+    set_thread_store_local_cuts(true);
+    let refused = super::boolean_with_context(&mut topo, BooleanOp::Cut, plate, tool, &context);
+    set_thread_store_local_cuts(false);
+    assert!(matches!(
+        refused,
+        Err(crate::OperationsError::Math(
+            remus_math::MathError::Cancelled
+        ))
+    ));
+    assert_eq!((canonical(&topo, plate), canonical(&topo, tool)), input);
+    assert_eq!(format!("{:?}", topo.journal()), history);
+    assert_eq!(
+        (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_faces(),
+            topo.num_solids()
+        ),
+        counts
+    );
+    // Cancellation does not leave a sticky failure or consume the operands.
+    assert_equivalent(&topo, plate, tool, "after cancellation");
+}
+
+#[test]
+fn entity_evolution_keeps_the_general_path_when_store_local_is_enabled() {
+    let mut topo = Topology::new();
+    let plate = drilled_plate(&mut topo, 3);
+    let tool = make_box(&mut topo, 2.0, 6.0, 20.0).unwrap();
+    let tool = placed(&mut topo, tool, &Mat4::translation(13.0, 11.0, -5.0));
+    let mut general = topo.clone();
+    let (expected, evolution) =
+        super::boolean_with_entity_evolution(&mut general, BooleanOp::Cut, plate, tool).unwrap();
+    let built = BUILT.with(std::cell::Cell::get);
+    set_thread_store_local_cuts(true);
+    let actual = super::boolean_with_entity_evolution(&mut topo, BooleanOp::Cut, plate, tool);
+    set_thread_store_local_cuts(false);
+    let (actual, actual_evolution) = actual.unwrap();
+    assert_eq!(
+        BUILT.with(std::cell::Cell::get),
+        built,
+        "evolution bypassed the general path"
+    );
+    assert_eq!(actual, expected, "evolution output numbering changed");
+    assert_eq!(canonical(&topo, actual), canonical(&general, expected));
+    assert_eq!(format!("{actual_evolution:?}"), format!("{evolution:?}"));
+}
+
+#[test]
+fn cross_drilled_shaft_preserves_material_with_store_local_requested() {
+    use remus_check::classify::{ClassifyOptions, PointClassification, PreparedSolid};
+    use remus_math::vec::Point3;
+
+    let mut topo = Topology::new();
+    let shaft = make_cylinder(&mut topo, 3.0, 12.0).unwrap();
+    let tool = make_cylinder(&mut topo, 1.0, 10.0).unwrap();
+    let tool = placed(
+        &mut topo,
+        tool,
+        &(Mat4::translation(-5.0, 0.0, 6.0) * Mat4::rotation_y(std::f64::consts::FRAC_PI_2)),
+    );
+    let source = (canonical(&topo, shaft), canonical(&topo, tool));
+    let mut general = topo.clone();
+    let expected = boolean(&mut general, BooleanOp::Cut, shaft, tool).unwrap();
+    set_thread_store_local_cuts(true);
+    let result = boolean(&mut topo, BooleanOp::Cut, shaft, tool);
+    set_thread_store_local_cuts(false);
+    let result = result.unwrap();
+    // A request is not proof of locality: this case may decline to the
+    // general path. It still must preserve the geometry and material.
+    assert_eq!(canonical(&topo, result), canonical(&general, expected));
+    assert_eq!(counts(&topo, result), counts(&general, expected));
+    assert_eq!(
+        line_tolerance_inventory(&topo, result, false),
+        line_tolerance_inventory(&general, expected, false)
+    );
+    assert_eq!((canonical(&topo, shaft), canonical(&topo, tool)), source);
+    assert_sound(&topo, result, "cross-drilled shaft");
+    let prepared = PreparedSolid::prepare(&topo, result).unwrap();
+    for (point, expected) in [
+        (Point3::new(0.0, 0.0, 6.0), PointClassification::Outside),
+        (Point3::new(0.0, 2.0, 6.0), PointClassification::Inside),
+        (Point3::new(0.0, 0.0, 3.0), PointClassification::Inside),
+        (Point3::new(0.0, 4.0, 6.0), PointClassification::Outside),
+    ] {
+        assert_eq!(
+            prepared
+                .classify_point(point, &ClassifyOptions::default())
+                .unwrap(),
+            expected,
+            "{point:?}"
+        );
+    }
+}
+
+fn line_tolerance_inventory(
+    topo: &Topology,
+    solid: SolidId,
+    stored: bool,
+) -> Vec<(String, Option<u64>)> {
+    let mut lines: Vec<_> = remus_topology::explorer::solid_edges(topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter_map(|id| {
+            let edge = topo.edge(id).unwrap();
+            if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
+                return None;
+            }
+            let start = topo.vertex(edge.start()).unwrap();
+            let end = topo.vertex(edge.end()).unwrap();
+            let mut endpoints = [format!("{:?}", start.point()), format!("{:?}", end.point())];
+            endpoints.sort();
+            let tolerance = if stored {
+                edge.tolerance()
+            } else {
+                Some(edge.effective_tolerance(start.tolerance().max(end.tolerance())))
+            };
+            Some((format!("{endpoints:?}"), tolerance.map(f64::to_bits)))
+        })
+        .collect();
+    lines.sort();
+    lines
+}
+
+/// Exact stored authority is a stronger contract than current material and
+/// effective tube equality. Keep the failed adoption gate reproducible without
+/// changing the default or accepting inherited/explicit tolerance normalization.
+#[test]
+#[ignore = "open: store-local cross-drilled shaft changes stored seam-edge tolerance (inherited vs explicit)"]
+fn cross_drilled_store_local_preserves_stored_line_tolerances() {
+    let mut topo = Topology::new();
+    let shaft = make_cylinder(&mut topo, 3.0, 12.0).unwrap();
+    let tool = make_cylinder(&mut topo, 1.0, 10.0).unwrap();
+    let tool = placed(
+        &mut topo,
+        tool,
+        &(Mat4::translation(-5.0, 0.0, 6.0) * Mat4::rotation_y(std::f64::consts::FRAC_PI_2)),
+    );
+    let mut general = topo.clone();
+    let expected = boolean(&mut general, BooleanOp::Cut, shaft, tool).unwrap();
+    set_thread_store_local_cuts(true);
+    let result = boolean(&mut topo, BooleanOp::Cut, shaft, tool);
+    set_thread_store_local_cuts(false);
+    let result = result.unwrap();
+    assert_eq!(
+        line_tolerance_inventory(&topo, result, false),
+        line_tolerance_inventory(&general, expected, false),
+        "effective tolerance changed too"
+    );
+    assert_eq!(
+        line_tolerance_inventory(&topo, result, true),
+        line_tolerance_inventory(&general, expected, true),
+        "stored tolerance authority changed"
     );
 }

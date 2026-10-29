@@ -140,6 +140,7 @@ pub(super) fn perform_with_context(
     arena: &mut GfaArena,
     budget: &mut VertexPairBudget,
 ) -> Result<(), AlgoError> {
+    let _phase = crate::perf::phase(crate::perf::PhaseKind::Vv);
     context.check_cancelled()?;
     let tol = context.tolerance;
     // AABB pre-filter: skip if solids are disjoint

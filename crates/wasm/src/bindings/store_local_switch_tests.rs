@@ -3,7 +3,7 @@
 //!
 //! The switch is off by default and toggles the thread's setting, and a slot
 //! cut, a rib fuse and a window intersect on a drilled plate each give the
-//! same solid either way: the same volume and the same face and edge counts. Which path ran, and
+//! same solid either way: volume, counts, material probes and a closed manifold mesh. Which path ran, and
 //! that its result equals the general boolean's face by face, is pinned by
 //! the operations crate's store-local oracle tests.
 
@@ -104,7 +104,9 @@ fn store_local_switch_is_off_by_default_and_toggles() {
 /// switch off and on; both results must have the same counts and volume,
 /// which is returned.
 fn same_solid_both_ways(op: &str, size: (f64, f64, f64), at: (f64, f64, f64)) -> f64 {
+    let _restore = RestoreSwitch(remus_operations::boolean::thread_store_local_cuts_enabled());
     let mut kernel = BrepKernel::new();
+    kernel.set_store_local_cuts(false);
     let plate = drilled_plate(&mut kernel);
     let tool = handle(&call(
         &mut kernel,
@@ -118,19 +120,70 @@ fn same_solid_both_ways(op: &str, size: (f64, f64, f64), at: (f64, f64, f64)) ->
         op,
         json!({"solidA": plate, "solidB": tool}),
     ));
+    let inputs = kernel.serialize_solids(&[plate, tool]).unwrap();
     call(&mut kernel, "setStoreLocalCuts", json!({"enabled": true}));
     let local = handle(&call(
         &mut kernel,
         op,
         json!({"solidA": plate, "solidB": tool}),
     ));
+    // Successful direct bindings run the same native work as the batch arm.
+    // Error paths below stay in executeBatch because JsError is not native.
+    let direct = match op {
+        "cut" => kernel.cut(plate, tool).unwrap(),
+        "fuse" => kernel.fuse(plate, tool).unwrap(),
+        "intersect" => kernel.intersect_solids(plate, tool).unwrap(),
+        _ => panic!("unexpected operation {op}"),
+    };
     call(&mut kernel, "setStoreLocalCuts", json!({"enabled": false}));
+    assert_eq!(kernel.serialize_solids(&[plate, tool]).unwrap(), inputs);
 
     assert_eq!(
         counts(&mut kernel, local),
         counts(&mut kernel, general),
         "{op}: counts"
     );
+    assert_eq!(counts(&mut kernel, direct), counts(&mut kernel, general));
+    for solid in [general, local, direct] {
+        let id = kernel.resolve_solid(solid).unwrap();
+        let report = remus_operations::validate::validate_solid(kernel.topo(), id).unwrap();
+        assert!(report.is_valid(), "{op}: {report:?}");
+        let mesh = remus_operations::tessellate::tessellate_solid(kernel.topo(), id, 0.05).unwrap();
+        assert_eq!(remus_operations::tessellate::boundary_edge_count(&mesh), 0);
+        assert_eq!(
+            remus_operations::tessellate::non_manifold_edge_count(&mesh),
+            0
+        );
+        let probes = match op {
+            "cut" => [
+                ((14.0, 14.0, 5.0), "outside"),
+                ((30.0, 12.0, 5.0), "inside"),
+                ((13.0, 14.0, 5.0), "boundary"),
+            ],
+            "fuse" => [
+                ((14.0, 14.0, 11.0), "inside"),
+                ((14.0, 14.0, 13.0), "outside"),
+                ((17.0, 14.0, 11.0), "boundary"),
+            ],
+            "intersect" => [
+                ((14.0, 14.0, 5.0), "inside"),
+                ((30.0, 12.0, 5.0), "outside"),
+                ((4.0, 14.0, 5.0), "boundary"),
+            ],
+            _ => unreachable!(),
+        };
+        for ((x, y, z), expected) in probes.into_iter().chain([((8.0, 8.0, 5.0), "outside")]) {
+            assert_eq!(
+                call(
+                    &mut kernel,
+                    "classifyPoint",
+                    json!({"solid":solid,"x":x,"y":y,"z":z})
+                ),
+                json!(expected),
+                "{op}: ({x}, {y}, {z})"
+            );
+        }
+    }
     let volume = |kernel: &mut BrepKernel, solid: u32| {
         call(
             kernel,
@@ -178,4 +231,113 @@ fn window_intersect_gives_the_same_solid_with_the_switch_on() {
         (measured - expected).abs() < 1e-6 * expected,
         "volume {measured}"
     );
+}
+
+struct RestoreSwitch(bool);
+
+impl Drop for RestoreSwitch {
+    fn drop(&mut self) {
+        remus_operations::boolean::set_thread_store_local_cuts(self.0);
+    }
+}
+
+#[test]
+fn store_local_setting_is_shared_across_kernels_and_survives_item_refusal() {
+    let _restore = RestoreSwitch(remus_operations::boolean::thread_store_local_cuts_enabled());
+    let mut first = BrepKernel::new();
+    first.set_store_local_cuts(false);
+    call(&mut first, "setStoreLocalCuts", json!({"enabled":true}));
+    // Constructing another kernel does not silently reset this module setting.
+    let mut second = BrepKernel::new();
+    assert!(second.store_local_cuts_enabled());
+    let blank = handle(&call(
+        &mut second,
+        "makeBox",
+        json!({"width":10,"height":10,"depth":10}),
+    ));
+    let inputs = second.serialize_solids(&[blank]).unwrap();
+    let refused: Value = serde_json::from_str(
+        &second.execute_batch_v2(
+            &json!([
+                {"op":"setStoreLocalCuts","args":{"enabled":"invalid"}},
+                {"op":"cut","args":{"solidA":blank,"solidB":u32::MAX}},
+                {"op":"storeLocalCutsEnabled","args":{}},
+            ])
+            .to_string(),
+        ),
+    )
+    .unwrap();
+    assert!(refused[0]["error"].is_object(), "{refused}");
+    assert!(refused[1]["error"].is_object(), "{refused}");
+    assert_eq!(refused[2]["ok"], true);
+    assert_eq!(second.serialize_solids(&[blank]).unwrap(), inputs);
+    assert!(first.store_local_cuts_enabled());
+    second.set_store_local_cuts(false);
+    assert_eq!(call(&mut first, "storeLocalCutsEnabled", json!({})), false);
+}
+
+#[test]
+fn store_local_switch_preserves_evolution_journal_and_reference_contracts() {
+    let _restore = RestoreSwitch(remus_operations::boolean::thread_store_local_cuts_enabled());
+    for op in ["cutWithEntityEvolution", "cutJournaled"] {
+        let run = |enabled: bool| {
+            let mut kernel = BrepKernel::new();
+            kernel.set_store_local_cuts(false);
+            let plate = drilled_plate(&mut kernel);
+            let tool = handle(&call(
+                &mut kernel,
+                "makeBox",
+                json!({"width":2,"height":6,"depth":20}),
+            ));
+            translated(&mut kernel, tool, 13.0, 11.0, -5.0);
+            let source_faces: Vec<u32> = [plate, tool]
+                .into_iter()
+                .flat_map(|solid| {
+                    call(&mut kernel, "getSolidFaces", json!({"solid":solid}))
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(handle)
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let inputs = kernel.face_content_digests_impl(&source_faces).unwrap();
+            call(&mut kernel, "setStoreLocalCuts", json!({"enabled":enabled}));
+            let output = call(&mut kernel, op, json!({"solidA":plate,"solidB":tool}));
+            // Journaled operations legitimately extend the operands' history.
+            // Their exact geometric content must remain unchanged.
+            assert_eq!(
+                kernel.face_content_digests_impl(&source_faces).unwrap(),
+                inputs
+            );
+            let solid = handle(&output["solid"]);
+            let material = call(
+                &mut kernel,
+                "classifyPoint",
+                json!({"solid":solid,"x":14,"y":14,"z":5}),
+            );
+            assert_eq!(material, "outside");
+            let resolved = if op == "cutJournaled" {
+                let reference = call(
+                    &mut kernel,
+                    "makeOperationOutputRef",
+                    json!({"op":output["op"],"kind":"face","index":0}),
+                );
+                let resolved = call(&mut kernel, "resolveRef", json!({"ref":reference["ref"]}));
+                assert_eq!(resolved["status"], "bound", "{resolved}");
+                assert_eq!(resolved["provenance"], "construction", "{resolved}");
+                resolved
+            } else {
+                Value::Null
+            };
+            let history = call(&mut kernel, "journalSummary", json!({}));
+            let geometry = kernel.serialize_solids(&[solid]).unwrap();
+            kernel.set_store_local_cuts(false);
+            (output, history, resolved, geometry)
+        };
+        // These entry points intentionally retain the general path and its
+        // entity ordering. Turning on plain-boolean locality cannot silently
+        // alter construction-derived history or persistent-reference targets.
+        assert_eq!(run(false), run(true), "{op}: switch changed its contract");
+    }
 }

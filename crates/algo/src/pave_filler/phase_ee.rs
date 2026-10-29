@@ -33,6 +33,7 @@ pub fn perform(
     tol: Tolerance,
     arena: &mut GfaArena,
 ) -> Result<(), AlgoError> {
+    let _phase = crate::perf::phase(crate::perf::PhaseKind::Ee);
     let edges_a = remus_topology::explorer::solid_edges(topo, solid_a)?;
     let edges_b = remus_topology::explorer::solid_edges(topo, solid_b)?;
 
@@ -42,6 +43,7 @@ pub fn perform(
 
     for (idx_a, (&ea_id, ea_data)) in edges_a.iter().zip(data_a.iter()).enumerate() {
         for (idx_b, (&eb_id, eb_data)) in edges_b.iter().zip(data_b.iter()).enumerate() {
+            crate::perf::bump_ee_pair_visited();
             // Avoid duplicates when both edges are in both solids
             if ea_id == eb_id {
                 continue;
@@ -62,6 +64,7 @@ pub fn perform(
                 continue;
             }
 
+            crate::perf::bump_ee_pair_surviving();
             let crossings =
                 find_edge_edge_crossings(topo, ea_id, ea_data, eb_id, eb_data, tol, acceptance)?;
 

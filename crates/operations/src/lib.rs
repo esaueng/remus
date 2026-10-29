@@ -28,6 +28,7 @@ use remus_math::vec::{Point3, Vec3};
 
 pub mod extrude;
 pub mod helix;
+pub mod linked_sketch;
 pub mod loft;
 pub mod pipe;
 pub mod primitives;

@@ -21,6 +21,7 @@ import { runNextKernelCorrectnessPackaged } from './kernel-correctness-next-pack
 import { runWasmParserReferencesPackaged } from './wasm-parser-refs-packaged.mjs';
 import { runVariableFilletInputPackaged } from './variable-fillet-input-packaged.mjs';
 import { runVariableFilletBoundariesPackaged } from './variable-fillet-boundaries-packaged.mjs';
+import { runTaperedHollowSweepPackaged } from './tapered-hollow-sweep-packaged.mjs';
 import { runWasmRayNurbsPackaged } from './wasm-ray-nurbs-packaged.mjs';
 import { runOpseqF5Packaged } from './opseq-f5-packaged.mjs';
 import { runOpseqF6Packaged } from './opseq-f6-packaged.mjs';
@@ -39,6 +40,7 @@ import { runOpseqTorusPropertiesPackaged } from './opseq-torus-properties-packag
 import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
 import { runBoundedTabRolloverPackaged } from './bounded-tab-rollover-packaged.mjs';
 import { runPackagedPreviewWorkContract } from './perf/face-drag-session/packaged_contract.cjs';
+import { runLinkedSketchPackaged } from './linked-sketch-packaged.mjs';
 import { runGridPatternPackaged } from './grid-pattern-packaged.mjs';
 import { runRevolveHistoryPackaged } from './revolve-history-packaged.mjs';
 
@@ -127,6 +129,7 @@ try {
   runWasmParserReferencesPackaged(packageExports);
   runVariableFilletInputPackaged(packageExports);
   runVariableFilletBoundariesPackaged(packageExports);
+  runTaperedHollowSweepPackaged(packageExports);
   runWasmRayNurbsPackaged(packageExports);
   runOpseqF5Packaged(packageExports);
   runOpseqF6Packaged(packageExports);
@@ -135,6 +138,8 @@ try {
   runOpseqF10Packaged(packageExports);
   runOpseqF13Packaged(packageExports);
   runWasmRayTorusPackaged(packageExports);
+  runLinkedSketchPackaged(packageExports);
+
   console.log('\nInstalled-tarball consumer regressions passed');
 } finally {
   rmSync(temporaryRoot, { recursive: true, force: true });

@@ -1,0 +1,17 @@
+
+running 1 test
+test boolean::store_local_tests::cross_drilled_store_local_preserves_stored_line_tolerances ... FAILED
+
+failures:
+
+failures:
+    boolean::store_local_tests::cross_drilled_store_local_preserves_stored_line_tolerances
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1693 filtered out; finished in 0.01s
+
+
+thread 'boolean::store_local_tests::cross_drilled_store_local_preserves_stored_line_tolerances' (9) panicked at crates/operations/src/boolean/store_local_tests.rs:792:5:
+assertion `left == right` failed: stored tolerance authority changed
+  left: [("[\"Position([-2.999998227168305, -3.611479140922751e-16, 5.000001909492181])\", \"Position([2.999998227168305, 7.23960104286349e-16, 5.000001909492181])\"]", Some(4502148214488346440)), ("[\"Position([3.0, 0.0, 0.0])\", \"Position([3.0, 0.0, 12.0])\"]", None)]
+ right: [("[\"Position([-2.999998227168305, -3.611479140922751e-16, 5.000001909492181])\", \"Position([2.999998227168305, 7.23960104286349e-16, 5.000001909492181])\"]", Some(4502148214488346440)), ("[\"Position([3.0, 0.0, 0.0])\", \"Position([3.0, 0.0, 12.0])\"]", Some(4502148214488346440))]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

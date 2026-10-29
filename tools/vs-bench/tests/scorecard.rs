@@ -219,7 +219,9 @@ fn malformed_and_incomplete_jobs_fail_closed() {
 }
 
 fn cli(input: &Value) -> (i32, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_remus-vs-bench"))
+    let binary = std::env::var_os("NEXTEST_BIN_EXE_remus_vs_bench")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_remus-vs-bench").into());
+    let mut child = Command::new(binary)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

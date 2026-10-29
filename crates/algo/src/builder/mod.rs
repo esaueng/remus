@@ -400,6 +400,7 @@ impl Builder {
     ///
     /// Returns [`AlgoError`] if topology lookups or classification fails.
     pub fn perform(&mut self) -> Result<(), AlgoError> {
+        let _phase = crate::perf::phase(crate::perf::PhaseKind::Build);
         self.build_face_ranks()?;
         self.fill_images()?;
         self.classify_sub_faces(None)?;
@@ -795,6 +796,7 @@ impl Builder {
     /// Returns [`AlgoError`] if face selection produces no faces or
     /// assembly fails.
     pub fn build_result(mut self, op: BooleanOp) -> Result<(Topology, SolidId), AlgoError> {
+        let _phase = crate::perf::phase(crate::perf::PhaseKind::Assemble);
         let selected = bop::select_faces(
             &self.sub_faces,
             op,
@@ -833,6 +835,7 @@ impl Builder {
     /// fails, no face survives, or an intersect assembles to anything but
     /// one solid with one shell.
     pub(crate) fn build_patch(mut self, op: BooleanOp) -> Result<PatchFaces, AlgoError> {
+        let _phase = crate::perf::phase(crate::perf::PhaseKind::Assemble);
         let selected = bop::select_faces(
             &self.sub_faces,
             op,
@@ -1108,6 +1111,7 @@ impl Builder {
         &mut self,
         full_a: (&Topology, SolidId),
     ) -> Result<(), AlgoError> {
+        let _phase = crate::perf::phase(crate::perf::PhaseKind::Build);
         self.build_face_ranks()?;
         self.fill_images()?;
         self.classify_sub_faces(Some(full_a))
@@ -1379,6 +1383,7 @@ pub fn build_fuse_n(
     tol: Tolerance,
     context: &OperationContext,
 ) -> Result<(Topology, SolidId), AlgoError> {
+    let _phase = crate::perf::phase(crate::perf::PhaseKind::BuildNway);
     // Ascending rival sources of each source, when the caller pruned pairs.
     let rivals: Option<Vec<Vec<usize>>> = candidate_pairs.map(|pairs| {
         let mut rivals = vec![Vec::new(); sources.len()];

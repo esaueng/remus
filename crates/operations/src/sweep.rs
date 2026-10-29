@@ -149,18 +149,27 @@ fn profile_basis(input_normal: Vec3) -> (Vec3, Vec3, Vec3) {
 /// Falls back to a world-axis-based vector if the projection is degenerate.
 fn orthogonalize(v: Vec3, tangent: Vec3) -> Vec3 {
     let projected = v - tangent * tangent.dot(v);
-    projected.normalize().unwrap_or_else(|_| {
-        // Fallback: pick a world axis that isn't parallel to the tangent.
-        let candidate = if tangent.x().abs() < 0.9 {
-            Vec3::new(1.0, 0.0, 0.0)
-        } else {
-            Vec3::new(0.0, 1.0, 0.0)
-        };
-        let proj2 = candidate - tangent * tangent.dot(candidate);
-        // This should always succeed since candidate is chosen to not be
-        // parallel to tangent.
-        proj2.normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0))
-    })
+    // A normalized tangent can have length 1 +/- one rounding unit. For
+    // exactly parallel inputs the subtraction above then leaves a tiny
+    // *parallel* residual; normalizing it would collapse the frame's right
+    // vector. Detect exact collinearity independently before that subtraction
+    // is allowed to choose the up-vector. Non-collinear frames keep the
+    // existing projection arithmetic.
+    if v.cross(tangent).length_squared() > 0.0
+        && let Ok(up) = projected.normalize()
+    {
+        return up;
+    }
+    // Fallback: pick a world axis that isn't parallel to the tangent.
+    let candidate = if tangent.x().abs() < 0.9 {
+        Vec3::new(1.0, 0.0, 0.0)
+    } else {
+        Vec3::new(0.0, 1.0, 0.0)
+    };
+    let proj2 = candidate - tangent * tangent.dot(candidate);
+    // This should always succeed since candidate is chosen to not be
+    // parallel to tangent.
+    proj2.normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0))
 }
 
 /// Transform a profile vertex from its original position to a frame location.
@@ -185,6 +194,16 @@ fn transform_point(
     frame.origin + frame.right * local_r + frame.up * local_u + frame.tangent * local_t
 }
 
+/// Scale every boundary about the same frame origin. Scale is dimensionless;
+/// a model-space linear tolerance must not suppress a requested scale change.
+fn scale_about_frame(point: Point3, frame: &Frame, scale: f64) -> Point3 {
+    if scale.to_bits() == 1.0_f64.to_bits() {
+        point
+    } else {
+        frame.origin + (point - frame.origin) * scale
+    }
+}
+
 /// Data from sweeping a single wire through frames.
 struct SweptWireData {
     ring_verts: Vec<Vec<VertexId>>,
@@ -207,6 +226,7 @@ fn sweep_wire_through_frames(
     initial_up: Vec3,
     initial_tangent: Vec3,
     frames: &[Frame],
+    scales: Option<&[f64]>,
     num_segments: usize,
     is_closed: bool,
 ) -> Result<SweptWireData, crate::OperationsError> {
@@ -223,13 +243,19 @@ fn sweep_wire_through_frames(
         verts.push(vid);
     }
 
-    let positions: Vec<Point3> = verts
+    let mut positions: Vec<Point3> = verts
         .iter()
         .map(|&vid| topo.vertex(vid).map(remus_topology::vertex::Vertex::point))
         .collect::<Result<_, _>>()?;
+    // This helper builds inner boundaries only. Normalize their winding in
+    // the profile basis before creating ring edges, so both caps and walls
+    // use the same material-side orientation for either stored hole winding.
+    if crate::winding::newell_normal(&positions).dot(initial_tangent) > 0.0 {
+        positions.reverse();
+    }
 
     let mut ring_verts: Vec<Vec<VertexId>> = Vec::with_capacity(num_segments + 1);
-    for frame in frames {
+    for (ring_index, frame) in frames.iter().enumerate() {
         let ring: Vec<VertexId> = positions
             .iter()
             .map(|&pos| {
@@ -241,7 +267,11 @@ fn sweep_wire_through_frames(
                     initial_tangent,
                     frame,
                 );
-                topo.add_vertex(Vertex::new(transformed, tol.linear))
+                let scale = scales.map_or(1.0, |values| values[ring_index]);
+                topo.add_vertex(Vertex::new(
+                    scale_about_frame(transformed, frame, scale),
+                    tol.linear,
+                ))
             })
             .collect();
         ring_verts.push(ring);
@@ -752,6 +782,7 @@ pub fn sweep(
             initial_up,
             initial_tangent,
             &frames,
+            None,
             num_segments,
             is_closed,
         )?);
@@ -1085,6 +1116,7 @@ pub fn sweep_smooth(
             initial_up,
             initial_tangent,
             &frames,
+            None,
             num_segments,
             is_closed,
         )?);
@@ -1259,6 +1291,13 @@ pub struct SweepOptions {
     pub corner_mode: SweepCornerMode,
     /// Scale function: maps path parameter `t ∈ [0, 1]` to a scale factor.
     /// `None` means uniform scale (1.0 everywhere).
+    /// The function is sampled at section rings; a nonlinear law between
+    /// rings has no continuous approximation-error certificate. Straight-path
+    /// polygonal tapers are qualified on +Z paths with XY profiles and fixed
+    /// contact for linear laws, or piecewise-linear laws whose breakpoints
+    /// coincide with section rings. All outer and inner boundaries scale
+    /// about the same profile centroid. General initial roll and profile
+    /// placement remain unqualified.
     pub scale_law: Option<Box<dyn Fn(f64) -> f64 + Send + Sync>>,
     /// Number of path segments (0 = auto from control point count).
     pub segments: usize,
@@ -1603,7 +1642,7 @@ fn assemble_swept_solid(
         let ring: Vec<VertexId> = input_positions
             .iter()
             .map(|&pos| {
-                let mut transformed = transform_point(
+                let transformed = transform_point(
                     pos,
                     centroid,
                     initial_right,
@@ -1611,13 +1650,10 @@ fn assemble_swept_solid(
                     initial_tangent,
                     frame,
                 );
-                // Apply scaling relative to frame origin
-                if (scale - 1.0).abs() > tol.linear {
-                    let offset = transformed - frame.origin;
-                    transformed = frame.origin
-                        + Vec3::new(offset.x() * scale, offset.y() * scale, offset.z() * scale);
-                }
-                topo.add_vertex(Vertex::new(transformed, tol.linear))
+                topo.add_vertex(Vertex::new(
+                    scale_about_frame(transformed, frame, scale),
+                    tol.linear,
+                ))
             })
             .collect();
         ring_verts.push(ring);
@@ -1660,6 +1696,7 @@ fn assemble_swept_solid(
             initial_up,
             initial_tangent,
             frames,
+            Some(scales),
             num_segments,
             false,
         )?);
@@ -2100,6 +2137,7 @@ fn sweep_miter(
                 initial_up,
                 initial_tangent,
                 &sub_frames,
+                None,
                 num_segments,
                 false,
             )?);
