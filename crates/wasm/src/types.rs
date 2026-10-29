@@ -1299,3 +1299,25 @@ pub enum FaceMaterialSense {
     /// the axis or centre.
     Inward,
 }
+
+/// Signed local surface draft. Angles are radians; this is not a trim or undercut test.
+#[derive(serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftAngleResult {
+    /// Signed angle relative to the pull direction.
+    pub angle_radians: f64,
+    /// Effective outward unit normal as `[x, y, z]`.
+    pub outward_normal: Vec<f64>,
+}
+
+/// One constant-angle planar face in a solid draft report.
+#[derive(serde::Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanarFaceDraftResult {
+    /// Live source face handle.
+    pub face: u32,
+    /// Signed angle in radians.
+    pub angle_radians: f64,
+    /// Effective outward unit normal as `[x, y, z]`.
+    pub outward_normal: Vec<f64>,
+}

@@ -6,6 +6,14 @@ historical predecessor-line records, retained for provenance. The
 
 ## Unreleased
 
+### Added
+
+* **wasm:** `getFaceDraftAngle` exposes signed carrier-local draft angles and
+  outward normals; `getPlanarSolidDraft` reports constant angles for every
+  planar outer/cavity face. Direct and legacy/V2 batch routes preserve the
+  native query's radians, typed refusals and read-only state contract. Carrier
+  samples do not test trimmed membership or global undercut/accessibility.
+
 ### Versioning
 
 * Adopt the `YYYY.RELEASE.PATCH` Remus scheme, beginning at `2026.1.0`.

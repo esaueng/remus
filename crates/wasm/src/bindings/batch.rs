@@ -221,6 +221,8 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "getBlendRegion"
         | "getSolidFaces"
         | "getFaceNormal"
+        | "getFaceDraftAngle"
+        | "getPlanarSolidDraft"
         | "getFaceCurvature"
         | "getFaceMinRadius"
         | "getEdgeParamSpan"
@@ -2641,6 +2643,30 @@ impl BrepKernel {
                     other => other.normal(0.0, 0.0),
                 };
                 Ok(serde_json::json!([normal.x(), normal.y(), normal.z()]))
+            }
+            "getFaceDraftAngle" => {
+                let result = self.face_draft_result(
+                    get_u32(args, "face")?,
+                    get_f64(args, "u")?,
+                    get_f64(args, "v")?,
+                    Vec3::new(
+                        get_f64(args, "pullX")?,
+                        get_f64(args, "pullY")?,
+                        get_f64(args, "pullZ")?,
+                    ),
+                )?;
+                Ok(serde_json::json!(result))
+            }
+            "getPlanarSolidDraft" => {
+                let result = self.planar_draft_result(
+                    get_u32(args, "solid")?,
+                    Vec3::new(
+                        get_f64(args, "pullX")?,
+                        get_f64(args, "pullY")?,
+                        get_f64(args, "pullZ")?,
+                    ),
+                )?;
+                Ok(serde_json::json!(result))
             }
             "getFaceCurvature" => {
                 // Principal curvatures at (u, v) on a face's surface, sorted
