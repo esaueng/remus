@@ -1,0 +1,152 @@
+{
+  "schemaVersion": 1,
+  "kind": "native-torus-notch-criterion-build",
+  "startedAt": "2026-10-29T03:46:02.683154+00:00",
+  "sourceSha": "7364ab7be5e598b7c868bd63239dc831cbceb933",
+  "sourceTree": "e961daf35b4132dae9190bb8265e8b6e9304f22d",
+  "trackedChanges": [],
+  "sourceFiles": {
+    "Cargo.toml": {
+      "bytes": 4232,
+      "sha256": "239ea846958192f846c466afe64e719f109e702e0570e4b00d1e8da653f840a2",
+      "mode": "0o664"
+    },
+    "Cargo.lock": {
+      "bytes": 95105,
+      "sha256": "51b920921dfa2a0d64448d7555bc529bed4330f0d5503caf8f3593fd42b30f0c",
+      "mode": "0o664"
+    },
+    "crates/operations/Cargo.toml": {
+      "bytes": 2069,
+      "sha256": "c4a8db969b3bc81f4091e8248afb1366ad3c5383eabd87a5547d63472249f238",
+      "mode": "0o664"
+    },
+    "crates/operations/benches/boolean_tracking.rs": {
+      "bytes": 5823,
+      "sha256": "1625f74b11807f3b7528518c42d4e9f0c00ca82229aaa5c7fe9910ff9aedc782",
+      "mode": "0o664"
+    },
+    "crates/math/src/fma.rs": {
+      "bytes": 16864,
+      "sha256": "d0f8602fc3eadf802223a421844d4fc558445a38f6fd6625994662c18fcb8684",
+      "mode": "0o664"
+    }
+  },
+  "tools": {
+    "rustc": {
+      "version": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.0\nLLVM version: 22.1.2",
+      "file": {
+        "bytes": 646032,
+        "sha256": "ba4b837efb6612dfa8d941c5a72b8a50d1d03a0f36216743b173949aa8d9eb75",
+        "mode": "0o755"
+      }
+    },
+    "cargo": {
+      "version": "cargo 1.96.0 (30a34c682 2026-05-25)",
+      "file": {
+        "bytes": 42865872,
+        "sha256": "f30f9fd1b1d0b8fd10dc33219eb4cd4bec3543f40e434ac71f5a03fd0359063f",
+        "mode": "0o755"
+      }
+    }
+  },
+  "command": [
+    "cargo",
+    "bench",
+    "--profile",
+    "profiling",
+    "-p",
+    "remus-operations",
+    "--bench",
+    "boolean_tracking",
+    "--no-run",
+    "--message-format=json"
+  ],
+  "environment": {
+    "CARGO_BUILD_JOBS": "2",
+    "RUST_MIN_STACK": "536870912",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_TARGET_DIR": "immutable-candidate-worktree/target"
+  },
+  "affinity": "0-14,16-30",
+  "timingStarted": false,
+  "requestedFilter": "torus_notch_",
+  "coverage": "Native analytic primitive controls; closure includes setup+boolean. This does not prove coverage of exact imported holder NURBS carriers or WASM latency.",
+  "baselineReceiptSha256": "aec3cf1c2d5ddf85746ef500a9eab3b906341059489e65689939c50c7ef8170f",
+  "unchangedBenchCargoLockProfileFmaAndToolInputs": true,
+  "completedAt": "2026-10-29T03:52:10.764120+00:00",
+  "buildExitedZero": true,
+  "cargoBuildFinishedSuccess": true,
+  "noRunBuildOnly": true,
+  "sourceFilesUnchanged": true,
+  "sourceTrackedChangesPreserved": true,
+  "producerRawJson": {
+    "bytes": 1095,
+    "sha256": "abb38745ccd7e53e8821011ce037489b640da7acc572097c906f2875b4c12cdd",
+    "mode": "0o664"
+  },
+  "cargoMessages": {
+    "bytes": 128386,
+    "sha256": "3f5407a3e137f6c365e3bfde080733244fe66b9b0708ea05e270a2c7e62454e0",
+    "mode": "0o664"
+  },
+  "stderr": {
+    "bytes": 4728,
+    "sha256": "ae1ecee8c78ef91b44e307548be326132df32111c1555c807d8494131a49ca04",
+    "mode": "0o664"
+  },
+  "producer": {
+    "package": "remus-operations",
+    "targetName": "boolean_tracking",
+    "kind": [
+      "bench"
+    ],
+    "crateTypes": [
+      "bin"
+    ],
+    "features": [],
+    "profile": {
+      "opt_level": "3",
+      "debuginfo": 2,
+      "debug_assertions": false,
+      "overflow_checks": true,
+      "test": true
+    },
+    "fresh": false,
+    "sourcePath": "crates/operations/benches/boolean_tracking.rs",
+    "executableRelativeToWorktree": "target/profiling/deps/boolean_tracking-361816841f8ec9e8"
+  },
+  "fingerprint": {
+    "file": {
+      "bytes": 1565,
+      "sha256": "78c7e574d69c23c473c1b6829b6fd7687af448e86a384edf1e8d8279f9b43556",
+      "mode": "0o664"
+    },
+    "rustflags": [],
+    "profileId": 15381347167402631063,
+    "features": "[]"
+  },
+  "frozenExecutable": {
+    "name": "boolean_tracking",
+    "bytes": 256894744,
+    "sha256": "3379236325cda435520107422f8d5e905a83d288196758ad8fe6f9030694fff5",
+    "mode": "0o775"
+  },
+  "cargoExecutableBeforeAfterCopyEqual": true,
+  "plannedCases": [
+    "boolean/torus_notch_cut",
+    "boolean/torus_notch_fuse",
+    "boolean/torus_notch_intersect"
+  ],
+  "boundaries": "Each Criterion iteration constructs freshTopology,torus(10,3,32),box(8,8,8),translates tool(6,-4,-4),then performs boolean; setup/drop included.",
+  "sourceGroupPolicy": {
+    "samples": 10,
+    "warmupMs": 500,
+    "measurementMs": 2000
+  },
+  "limitations": [
+    "Native analytic primitive control, not a full-holder or WASM result.",
+    "No measured helper-route coverage is established by this build.",
+    "No timing run, speedup claim, or cross-kernel comparison has occurred."
+  ]
+}

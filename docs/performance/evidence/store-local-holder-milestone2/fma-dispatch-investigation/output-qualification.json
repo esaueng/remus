@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "kind": "untimed-diagnostic-output-qualification",
+  "qualified": true,
+  "timingClaimsExcluded": true,
+  "canonicalRuntimeSuitesPassed": false,
+  "observedProcesses": 2,
+  "observedRawTicks": 12,
+  "observedRetainedTicks": 8,
+  "observedSolidInstances": 96,
+  "crossModePairs": 1,
+  "referencePreviewComparisons": 8,
+  "referenceCompletionComparisons": 8,
+  "exactArenaMeshQualityQuantityBitsMaterialInventoriesAndFullFeatures": true,
+  "referenceScope": "All16 frozen driver outputs from c754 baseline and rejected292f candidate; only semantic outputs compared, no timing comparison.",
+  "referenceSummarySha256": "c4f24dd7879fbb6f229e6a3255517e890eb2bd5838dd9d96a5df940f6889db0a",
+  "references": [
+    {
+      "name": "preview-0-baseline.json",
+      "sha256": "66ba81fc5ad36be14e5b619074bccf8eb4a8aca6957f98b309576577b2ab4d65",
+      "mode": "preview",
+      "sourceSha": "c754a9b7f89971691ab8867bf7d7bafcc022ad14"
+    },
+    {
+      "name": "preview-1-candidate.json",
+      "sha256": "8a72f1527e57c8c2a3b51a036fd8a56ce10e6d5fdffff75ad8b5ba5c895df88e",
+      "mode": "preview",
+      "sourceSha": "292f084f9165f8f31bcaeb1581324eba69835994"
+    },
+    {
+      "name": "preview-2-candidate.json",
+      "sha256": "eaa68eb9562c7dd26e3e91c4d28b51afec5f1b37d30c51a26319e4fc67674d69",
+      "mode": "preview",
+      "sourceSha": "292f084f9165f8f31bcaeb1581324eba69835994"
+    },
+    {
+      "name": "preview-3-baseline.json",
+      "sha256": "cc1854470d420898b38b1d78c7bb9f70d6494096c10edf3d501d242165963949",
+      "mode": "preview",
+      "sourceSha": "c754a9b7f89971691ab8867bf7d7bafcc022ad14"
+    },
+    {
+      "name": "preview-4-candidate.json",
+      "sha256": "fdc2af5971d7e6a801508d70696f38e9dd247bcfa4942d16df4daae6de8276b1",
+      "mode": "preview",
+      "sourceSha": "292f084f9165f8f31bcaeb1581324eba69835994"
+    },
+    {
+      "name": "preview-5-baseline.json",
+      "sha256": "b2eb48effdd195f5fc1882f0d85d2d4dff0e55505e14890dbedec0a2b25b70f6",
+      "mode": "preview",
+      "sourceSha": "c754a9b7f89971691ab8867bf7d7bafcc022ad14"
+    },
+    {
+      "name": "preview-6-baseline.json",
+      "sha256": "16cd949e727d2a700a633178eb3dda07cb713fea14179e0be0eafa340a8994bc",
+      "mode": "preview",
+      "sourceSha": "c754a9b7f89971691ab8867bf7d7bafcc022ad14"
+    },
+    {
+      "name": "preview-7-candidate.json",
+      "sha256": "996f7a721e8be4ebc8a62104d0113b7a9bb540777fb3ea3effb30005cd8a6b21",
+      "mode": "preview",
+      "sourceSha": "292f084f9165f8f31bcaeb1581324eba69835994"
+    },
+    {
+      "name": "completion-0-baseline.json",
+      "sha256": "321319acd698b6c1dfab456a55c1d49b0289ff7e5751c62d3ab6b3e24d040e16",
+      "mode": "completion",
+      "sourceSha": "c754a9b7f89971691ab8867bf7d7bafcc022ad14"
+    },
+    {
+      "name": "completion-1-candidate.json",
+      "sha256": "30efe43dae4ca037cd80ccee925f6762d4e235c20e1980841d9c316332332eab",
+      "mode": "completion",
+      "sourceSha": "292f084f9165f8f31bcaeb1581324eba69835994"
+    },
+    {
+      "name": "completion-2-candidate.json",
+      "sha256": "d7617b59cb788e4c95822f36a4773ad1175e30817876182c656e66b5316161d2",
+      "mode": "completion",
+      "sourceSha": "292f084f9165f8f31bcaeb1581324eba69835994"
+    },
+    {
+      "name": "completion-3-baseline.json",
+      "sha256": "ea33498c58aadf0436fd3e84f4db28f3f8763bebf8be797455626c972b40fc31",
+      "mode": "completion",
+      "sourceSha": "c754a9b7f89971691ab8867bf7d7bafcc022ad14"
+    },
+    {
+      "name": "completion-4-candidate.json",
+      "sha256": "d2aa71f686c22311d4b77d5ae15537cdb237811d3caa731412d8e6da7f5f9691",
+      "mode": "completion",
+      "sourceSha": "292f084f9165f8f31bcaeb1581324eba69835994"
+    },
+    {
+      "name": "completion-5-baseline.json",
+      "sha256": "1af232116b5f5010764cf8f8619cc4040fd22013c9748e169073a8dedeeaabf6",
+      "mode": "completion",
+      "sourceSha": "c754a9b7f89971691ab8867bf7d7bafcc022ad14"
+    },
+    {
+      "name": "completion-6-baseline.json",
+      "sha256": "bf35a2e17bd8fca5b6b4a29cd1bf966bcaaadc2fc2e4b682d8e8c2f3c61fc1b7",
+      "mode": "completion",
+      "sourceSha": "c754a9b7f89971691ab8867bf7d7bafcc022ad14"
+    },
+    {
+      "name": "completion-7-candidate.json",
+      "sha256": "fdc5c43d7a9df1eb64ee9f801364d751717c09ad50195bd45c9f48b9e1ff49dd",
+      "mode": "completion",
+      "sourceSha": "292f084f9165f8f31bcaeb1581324eba69835994"
+    }
+  ],
+  "observedRawDriverHashes": {
+    "preview": "e337619806e238628212c07fe76b3f27805d3a7496c5cdde42775d6ae1a2c31d",
+    "completion": "66a194ee12161dc59e9519c72da0f44aeb268753a77e56cc2fb1c56901b9cad2"
+  },
+  "limitations": [
+    "Original diagnostic counters can affect compiler optimization; output equality does not prove identical shipping call mix.",
+    "The diagnostic optimized build deferred canonical package runtime suites.",
+    "Observer elapsed fields are explicitly excluded; no speedup/tail/browser/native claim."
+  ]
+}

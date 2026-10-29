@@ -1,0 +1,26 @@
+{
+  "source": "292f084f9165f8f31bcaeb1581324eba69835994",
+  "storeLocal": {
+    "passed": 33,
+    "failed": 0,
+    "ignored": 0,
+    "rawLogSha256": "1bd19e7aa2f519146cc3deade26ea763e2c960e11aa667f164b1f2e7d7be410a",
+    "portableLogSha256": "9e6cf73908707b84b238318af2365be4665c8c1ed15809fa3cf3a1213759bd7a",
+    "normalization": "Only absolute task checkout prefix replaced with <repo>."
+  },
+  "docs": {
+    "passed": 9,
+    "failed": 0,
+    "crateSummaries": 17
+  },
+  "normalSourceCommitHooks": {
+    "passed": true,
+    "rawLogSha256": "da9f5336bbe7117ec07ce57d36482ac91ad0f9742980acfbd301e13184732bb5"
+  },
+  "privacy": {
+    "scopedAuditedCheckouts": 11,
+    "needAttention": 0,
+    "verifyPassed": true
+  },
+  "scope": "Source/input/log hashes are retained in separate receipts. Original logs stay local; summaries do not reconstruct them."
+}

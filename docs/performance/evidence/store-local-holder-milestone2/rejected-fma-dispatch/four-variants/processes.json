@@ -1,0 +1,164 @@
+{
+  "schema": "remus-standalone-fma-dispatch-balanced-v1",
+  "scope": "Micro only; sampled diagnostic operands, not whole kernel or holder latency.",
+  "plan": [
+    [
+      "baseline",
+      "zero-first",
+      "bit-range",
+      "both",
+      "both",
+      "bit-range",
+      "zero-first",
+      "baseline"
+    ],
+    [
+      "zero-first",
+      "baseline",
+      "both",
+      "bit-range",
+      "bit-range",
+      "both",
+      "baseline",
+      "zero-first"
+    ]
+  ],
+  "before": {
+    "at": "2026-10-29T03:26:12Z",
+    "loadavg": "38.31 33.68 17.15 14/3133 2903571",
+    "cpuPressure": "some avg10=13.65 avg60=23.34 avg300=22.04 total=7386714187\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+    "meminfo": {
+      "MemAvailable": "21102460 kB",
+      "SwapTotal": "20970996 kB",
+      "SwapFree": "19106576 kB"
+    }
+  },
+  "driverSha256": "d1b904b0cebe80336e3be62d861fa73cdf2e49e790e27bd0fbd2396f5dea2320",
+  "workloadsManifestSha256": "2f70e5d8fd984ff635f4a041e532f6aa006bd22b14c76078fafc5fdffc2f4423",
+  "cpuLease": "CPU31; SMT sibling15 reserved by coordinator; no exclusive-host claim",
+  "processes": [
+    {
+      "block": 0,
+      "position": 0,
+      "variant": "baseline",
+      "file": "block-0-position-0-baseline.json",
+      "sha256": "7f22da94e02abdf417cf960a301d74345ff5e0154163e2259a215f4f9206b000"
+    },
+    {
+      "block": 0,
+      "position": 1,
+      "variant": "zero-first",
+      "file": "block-0-position-1-zero-first.json",
+      "sha256": "8bcf1a5c7e10e08de53bca318b11ddee7eed65fffee5cfe76ca87e242b7cf782"
+    },
+    {
+      "block": 0,
+      "position": 2,
+      "variant": "bit-range",
+      "file": "block-0-position-2-bit-range.json",
+      "sha256": "77cadabb62574232661dab36138fd6f60375488ac8740a009bb2826ec4ca4e27"
+    },
+    {
+      "block": 0,
+      "position": 3,
+      "variant": "both",
+      "file": "block-0-position-3-both.json",
+      "sha256": "b79b9e609c826898d638f97a3a16216c3d642a0dc95c9ddfe19d36b747200a44"
+    },
+    {
+      "block": 0,
+      "position": 4,
+      "variant": "both",
+      "file": "block-0-position-4-both.json",
+      "sha256": "b2e4e0c51819e88caf78cd38709bd17703dbaf476f4b3937e66c650027901ec9"
+    },
+    {
+      "block": 0,
+      "position": 5,
+      "variant": "bit-range",
+      "file": "block-0-position-5-bit-range.json",
+      "sha256": "59aed7ba06cfa67132ca520837b670b32e724a77d39b07ed6af0b169c7d563a7"
+    },
+    {
+      "block": 0,
+      "position": 6,
+      "variant": "zero-first",
+      "file": "block-0-position-6-zero-first.json",
+      "sha256": "b8ba11e69b86327cfb17135b7fe082e8510d702ac35bb5e483a616a260cd8036"
+    },
+    {
+      "block": 0,
+      "position": 7,
+      "variant": "baseline",
+      "file": "block-0-position-7-baseline.json",
+      "sha256": "3d34cc46a1e42a840a7cb1fdfcb05f8168b392b5edaf64f23c78b9d43b2465dc"
+    },
+    {
+      "block": 1,
+      "position": 0,
+      "variant": "zero-first",
+      "file": "block-1-position-0-zero-first.json",
+      "sha256": "7f596123202b82518baa370e1ae8f989ac2961c66f329484b4f1fae629bd4e7a"
+    },
+    {
+      "block": 1,
+      "position": 1,
+      "variant": "baseline",
+      "file": "block-1-position-1-baseline.json",
+      "sha256": "05c582c5d8886edf562aeef6a65b42eac9067378f4c4b0cec36e27e7d845c1d0"
+    },
+    {
+      "block": 1,
+      "position": 2,
+      "variant": "both",
+      "file": "block-1-position-2-both.json",
+      "sha256": "82ac948d31242bdbe549c694989c2bc66957328794b5a0a33e050f16ccff01b6"
+    },
+    {
+      "block": 1,
+      "position": 3,
+      "variant": "bit-range",
+      "file": "block-1-position-3-bit-range.json",
+      "sha256": "e3d8df3b02434cb53e92e7dc0c8bd4cef05466f35441b079298ef121a833c780"
+    },
+    {
+      "block": 1,
+      "position": 4,
+      "variant": "bit-range",
+      "file": "block-1-position-4-bit-range.json",
+      "sha256": "137921d541f502a9ea08ef7e2f14589ead059a4726e3314d7e07a47ceaf81941"
+    },
+    {
+      "block": 1,
+      "position": 5,
+      "variant": "both",
+      "file": "block-1-position-5-both.json",
+      "sha256": "09556d83365e76dc9ebca1ab8a3a7f1a19ce762d3cab532b41961289bd15ffa9"
+    },
+    {
+      "block": 1,
+      "position": 6,
+      "variant": "baseline",
+      "file": "block-1-position-6-baseline.json",
+      "sha256": "6b1d853d63844510909fdeab5fa0f21671b761758a292c5ddc53d949b84d9809"
+    },
+    {
+      "block": 1,
+      "position": 7,
+      "variant": "zero-first",
+      "file": "block-1-position-7-zero-first.json",
+      "sha256": "5824a5e4d7412a9d5ac572ab27b9adf6239ab0a518b00dea605e4f27edae964e"
+    }
+  ],
+  "after": {
+    "at": "2026-10-29T03:27:55Z",
+    "loadavg": "26.51 30.18 17.55 39/3121 2911173",
+    "cpuPressure": "some avg10=17.57 avg60=12.52 avg300=17.85 total=7395016961\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+    "meminfo": {
+      "MemAvailable": "21274236 kB",
+      "SwapTotal": "20970996 kB",
+      "SwapFree": "19108184 kB"
+    }
+  },
+  "roundsSha256": "e2c880dc963afb2d1a79d66621f7f1582278b26702c21bf2cd37c46e64a41341"
+}

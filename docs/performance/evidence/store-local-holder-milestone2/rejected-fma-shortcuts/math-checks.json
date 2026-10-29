@@ -1,0 +1,173 @@
+{
+  "schema": "remus-final-math-checks-v1",
+  "status": "passed",
+  "source_hashes": {
+    "crates/math/src/fma.rs": "d2488ab8afd1d7f70b18bb49dc9a8b3bfbbfbd89af0a693a1402c98d01d56254",
+    "crates/math/src/nurbs/intersection/line.rs": "e94f6c40c1fc5371a1ca64653dd9913b0b8bc971c9fbd1cdeea85e460eac3255"
+  },
+  "runs": [
+    {
+      "name": "default-line",
+      "command": [
+        "taskset",
+        "-c",
+        "0-14,16-30",
+        "env",
+        "CARGO_BUILD_JOBS=2",
+        "RUST_MIN_STACK=536870912",
+        "cargo",
+        "test",
+        "-p",
+        "remus-math",
+        "--profile",
+        "ci-test",
+        "--lib",
+        "nurbs::intersection::line",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "raw_log": "remus-m2-final-default-line.log",
+      "raw_log_sha256": "ab4b0fe62af5c121e3904e9d4c4159a8f15074a45072dbdbefad8725d4b3be11",
+      "raw_log_bytes": 3122,
+      "elapsed_diagnostic_seconds": 24.240559101104736,
+      "test_counts": {
+        "passed": 27,
+        "failed": 0,
+        "ignored": 0
+      }
+    },
+    {
+      "name": "default-fma",
+      "command": [
+        "taskset",
+        "-c",
+        "0-14,16-30",
+        "env",
+        "CARGO_BUILD_JOBS=2",
+        "RUST_MIN_STACK=536870912",
+        "cargo",
+        "test",
+        "-p",
+        "remus-math",
+        "--profile",
+        "ci-test",
+        "--lib",
+        "fma::",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "raw_log": "remus-m2-final-default-fma.log",
+      "raw_log_sha256": "8a8666f9f9a374eddcdac10030af93f6e26ce9e051a2886646ffda5d894aea6a",
+      "raw_log_bytes": 1077,
+      "elapsed_diagnostic_seconds": 0.2292330265045166,
+      "test_counts": {
+        "passed": 9,
+        "failed": 0,
+        "ignored": 1
+      }
+    },
+    {
+      "name": "simd-line",
+      "command": [
+        "taskset",
+        "-c",
+        "0-14,16-30",
+        "env",
+        "CARGO_BUILD_JOBS=2",
+        "RUST_MIN_STACK=536870912",
+        "cargo",
+        "test",
+        "-p",
+        "remus-math",
+        "--profile",
+        "ci-test",
+        "--lib",
+        "--features",
+        "simd",
+        "nurbs::intersection::line",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "raw_log": "remus-m2-final-simd-line.log",
+      "raw_log_sha256": "dc3f0ffad68e754e6e33e5c849c5b5f6502533dce48d7dd6cb3fe88b3ff6733a",
+      "raw_log_bytes": 3122,
+      "elapsed_diagnostic_seconds": 23.628357410430908,
+      "test_counts": {
+        "passed": 27,
+        "failed": 0,
+        "ignored": 0
+      }
+    },
+    {
+      "name": "simd-fma",
+      "command": [
+        "taskset",
+        "-c",
+        "0-14,16-30",
+        "env",
+        "CARGO_BUILD_JOBS=2",
+        "RUST_MIN_STACK=536870912",
+        "cargo",
+        "test",
+        "-p",
+        "remus-math",
+        "--profile",
+        "ci-test",
+        "--lib",
+        "--features",
+        "simd",
+        "fma::",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "raw_log": "remus-m2-final-simd-fma.log",
+      "raw_log_sha256": "38083897b7178c23e2c5f1802a11e9ff93201031dab691defd04e768d4db02e6",
+      "raw_log_bytes": 1077,
+      "elapsed_diagnostic_seconds": 0.23312044143676758,
+      "test_counts": {
+        "passed": 9,
+        "failed": 0,
+        "ignored": 1
+      }
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "taskset",
+        "-c",
+        "0-14,16-30",
+        "env",
+        "CARGO_BUILD_JOBS=2",
+        "RUST_MIN_STACK=536870912",
+        "cargo",
+        "clippy",
+        "-p",
+        "remus-math",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "raw_log": "remus-m2-final-clippy.log",
+      "raw_log_sha256": "9114e799b60d346d13abdde7ec3bbc3225e1216a409f2dfe2d7dd6dd7f3ecbfa",
+      "raw_log_bytes": 186,
+      "elapsed_diagnostic_seconds": 8.517761707305908
+    }
+  ],
+  "binding_limit": "Working-tree checks bound to the listed source content; parent will bind this content to the final immutable source snapshot.",
+  "sources_unchanged": true,
+  "baseline_proof": {
+    "commit": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+    "line_byte_identical": true,
+    "public_fma_dispatch_byte_identical": true,
+    "public_fma_dispatch_sha256": "6b87ed81761b9960999ae8fda7dc523bbc827bf501c469d6ce42e9e178f77335",
+    "native_dispatch": "f64::mul_add unchanged; no native Jacobian/residual/delta cache remains"
+  },
+  "retained_ignored_test": "fma::tests::long_random_differential: long-running exhaustive-style sweep; run by hand (existing unchanged ignored test)"
+}

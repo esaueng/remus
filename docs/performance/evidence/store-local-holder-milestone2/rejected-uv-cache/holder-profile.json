@@ -1,0 +1,1360 @@
+{
+  "schemaVersion": 1,
+  "kind": "current-main-holder-diagnostic-attribution",
+  "diagnosticOnly": true,
+  "timingClaimsExcluded": true,
+  "source": {
+    "sha": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+    "tree": "77597af50bfc5cf2fa468e3c4f4b9e464657dec7",
+    "canonicalBuildLogSha256": "fd4ae32c4e666774c85f5ef9fa36b0846dd2a79f2b0fc1a3c3649faad8479d2e",
+    "canonicalSmokeAndInstalledSuitesPassed": true,
+    "binding": "External canonical source/tar/installed receipt plus independent before/after verification of all 8 installed kernel files; source label is not inferred by the profiler."
+  },
+  "package": {
+    "name": "remus-wasm",
+    "version": "2026.1.84",
+    "tarball": "remus-wasm-2026.1.84.tgz",
+    "tarballSha256": "eff0f371749569dcb3b8056d12631949fc3a8227bc233ce59457a1d7683f9a20",
+    "files": [
+      {
+        "file": "LICENSE-APACHE",
+        "bytes": 10669,
+        "mode": "0o644",
+        "sourceMode": "0o664",
+        "installedMode": "0o664",
+        "sha256": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811"
+      },
+      {
+        "file": "NOTICE",
+        "bytes": 608,
+        "mode": "0o644",
+        "sourceMode": "0o664",
+        "installedMode": "0o664",
+        "sha256": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9"
+      },
+      {
+        "file": "remus_wasm_node.cjs",
+        "bytes": 357391,
+        "mode": "0o644",
+        "sourceMode": "0o664",
+        "installedMode": "0o664",
+        "sha256": "55c678cc8a235b1dd98aa63e194995fabe8918ddead5151531407ab699cc7511"
+      },
+      {
+        "file": "remus_wasm_bg.js",
+        "bytes": 355260,
+        "mode": "0o644",
+        "sourceMode": "0o664",
+        "installedMode": "0o664",
+        "sha256": "395f63a149242bb3a8f170c29eb1c3a436f742d758038a5dc49c7f655994f35d"
+      },
+      {
+        "file": "remus_wasm.js",
+        "bytes": 421,
+        "mode": "0o644",
+        "sourceMode": "0o664",
+        "installedMode": "0o664",
+        "sha256": "90e7aa4472373ea75da5d9a9a8ece929737567cab7e02b3c678d7d6f6b51bd0e"
+      },
+      {
+        "file": "package.json",
+        "bytes": 902,
+        "mode": "0o644",
+        "sourceMode": "0o664",
+        "installedMode": "0o664",
+        "sha256": "7cc87020cf28acbe9baa6c6164d46ea27e2d9acb5dd8ada4388cf35fa73a8630"
+      },
+      {
+        "file": "remus_wasm.d.ts",
+        "bytes": 191734,
+        "mode": "0o644",
+        "sourceMode": "0o664",
+        "installedMode": "0o664",
+        "sha256": "11950695edb86856fb3f245611e7f0987bc7f50c6c0242ccf27f224f20074dee"
+      },
+      {
+        "file": "remus_wasm_bg.wasm",
+        "bytes": 10877608,
+        "mode": "0o644",
+        "sourceMode": "0o664",
+        "installedMode": "0o664",
+        "sha256": "8e9c54487facde0fae7225ab9348373c6b032230de5e983988bba5e7816d0ef9"
+      }
+    ],
+    "allSourceTarInstalledBytesEqual": true
+  },
+  "mappingQualification": {
+    "exactShippingBytes": true,
+    "shippingSha256": "8e9c54487facde0fae7225ab9348373c6b032230de5e983988bba5e7816d0ef9",
+    "namedSha256": "1bad7d2542038f6d27974a2f0e6e2b1f38795dc755c0ad4de535384148a79f63",
+    "shippingBytes": 10877608,
+    "functionNames": 7514,
+    "sections": [
+      {
+        "kind": 1,
+        "customName": null,
+        "bytes": 4136
+      },
+      {
+        "kind": 2,
+        "customName": null,
+        "bytes": 2811
+      },
+      {
+        "kind": 3,
+        "customName": null,
+        "bytes": 7806
+      },
+      {
+        "kind": 4,
+        "customName": null,
+        "bytes": 11
+      },
+      {
+        "kind": 5,
+        "customName": null,
+        "bytes": 3
+      },
+      {
+        "kind": 6,
+        "customName": null,
+        "bytes": 25
+      },
+      {
+        "kind": 7,
+        "customName": null,
+        "bytes": 12637
+      },
+      {
+        "kind": 9,
+        "customName": null,
+        "bytes": 2497
+      },
+      {
+        "kind": 12,
+        "customName": null,
+        "bytes": 2
+      },
+      {
+        "kind": 10,
+        "customName": null,
+        "bytes": 10482551
+      },
+      {
+        "kind": 11,
+        "customName": null,
+        "bytes": 364845
+      },
+      {
+        "kind": 0,
+        "customName": "name",
+        "bytes": 634289
+      },
+      {
+        "kind": 0,
+        "customName": "producers",
+        "bytes": 124
+      },
+      {
+        "kind": 0,
+        "customName": "target_features",
+        "bytes": 116
+      }
+    ]
+  },
+  "rawRustWasmSha256": "57bd5b7f1c18b0118332fd38d4cb7865f124fcf12b1d6b2ae49b9691d435f4d7",
+  "symbolTools": {
+    "wasmBindgen": "0.2.126",
+    "wasmOpt": "117",
+    "binaryenWorkers": 2,
+    "affinity": "0-14,16-30",
+    "arguments": [
+      "--target",
+      "nodejs",
+      "--keep-debug",
+      "-Oz",
+      "--enable-simd",
+      "-g",
+      "--symbolmap"
+    ]
+  },
+  "profiles": {
+    "preview": {
+      "startedAt": "2026-10-29T00:47:44.028Z",
+      "endedAt": "2026-10-29T00:47:51.156Z",
+      "options": {
+        "mode": "preview",
+        "rebuild": "full",
+        "pattern": "unique",
+        "ticks": 6,
+        "warmup": 2,
+        "sampleIntervalUs": 500
+      },
+      "retainedTicks": [
+        2,
+        3,
+        4,
+        5
+      ],
+      "totalCpuSamples": 8156,
+      "includedCpuSamples": 2520,
+      "excludedCpuSamples": 5636,
+      "unmappedAncestrySamples": 0,
+      "methodIntervals": [
+        {
+          "phase": "rebuild",
+          "method": "fuseAll",
+          "calls": 4,
+          "diagnosticSumMs": 558.407,
+          "diagnosticMeanPerRetainedTickMs": 139.60175
+        },
+        {
+          "phase": "prefix",
+          "method": "intersectDetailed",
+          "calls": 16,
+          "diagnosticSumMs": 372.863,
+          "diagnosticMeanPerRetainedTickMs": 93.21575
+        },
+        {
+          "phase": "mesh",
+          "method": "tessellateSolidGroupedBinary",
+          "calls": 32,
+          "diagnosticSumMs": 213.468,
+          "diagnosticMeanPerRetainedTickMs": 53.367
+        },
+        {
+          "phase": "rebuild",
+          "method": "unifyFacesChecked",
+          "calls": 4,
+          "diagnosticSumMs": 164.935,
+          "diagnosticMeanPerRetainedTickMs": 41.23375
+        },
+        {
+          "phase": "prefix",
+          "method": "deserializeSolids",
+          "calls": 20,
+          "diagnosticSumMs": 145.65,
+          "diagnosticMeanPerRetainedTickMs": 36.4125
+        },
+        {
+          "phase": "rebuild",
+          "method": "copyAndTransformSolid",
+          "calls": 56,
+          "diagnosticSumMs": 20.001,
+          "diagnosticMeanPerRetainedTickMs": 5.00025
+        },
+        {
+          "phase": "prefix",
+          "method": "serializeSolids",
+          "calls": 4,
+          "diagnosticSumMs": 17.625,
+          "diagnosticMeanPerRetainedTickMs": 4.40625
+        },
+        {
+          "phase": "prefix",
+          "method": "validateSolid",
+          "calls": 44,
+          "diagnosticSumMs": 11.74,
+          "diagnosticMeanPerRetainedTickMs": 2.935
+        },
+        {
+          "phase": "validate",
+          "method": "validateSolid",
+          "calls": 32,
+          "diagnosticSumMs": 10.47,
+          "diagnosticMeanPerRetainedTickMs": 2.6175
+        },
+        {
+          "phase": "rebuild",
+          "method": "makeCircleArc3d",
+          "calls": 40,
+          "diagnosticSumMs": 9.881,
+          "diagnosticMeanPerRetainedTickMs": 2.47025
+        },
+        {
+          "phase": "prefix",
+          "method": "unifyFaces",
+          "calls": 16,
+          "diagnosticSumMs": 5.908,
+          "diagnosticMeanPerRetainedTickMs": 1.477
+        },
+        {
+          "phase": "prefix",
+          "method": "getSolidFaces",
+          "calls": 44,
+          "diagnosticSumMs": 5.671,
+          "diagnosticMeanPerRetainedTickMs": 1.41775
+        },
+        {
+          "phase": "rebuild",
+          "method": "extrude",
+          "calls": 12,
+          "diagnosticSumMs": 4.3790000000000004,
+          "diagnosticMeanPerRetainedTickMs": 1.0947500000000001
+        },
+        {
+          "phase": "prefix",
+          "method": "copyAndTransformSolid",
+          "calls": 16,
+          "diagnosticSumMs": 1.002,
+          "diagnosticMeanPerRetainedTickMs": 0.2505
+        },
+        {
+          "phase": "restore",
+          "method": "restore",
+          "calls": 4,
+          "diagnosticSumMs": 0.359,
+          "diagnosticMeanPerRetainedTickMs": 0.08975
+        },
+        {
+          "phase": "prefix",
+          "method": "makeBox",
+          "calls": 16,
+          "diagnosticSumMs": 0.264,
+          "diagnosticMeanPerRetainedTickMs": 0.066
+        },
+        {
+          "phase": "rebuild",
+          "method": "makePlanarFaceFromWire",
+          "calls": 12,
+          "diagnosticSumMs": 0.118,
+          "diagnosticMeanPerRetainedTickMs": 0.0295
+        },
+        {
+          "phase": "rebuild",
+          "method": "makeWire",
+          "calls": 12,
+          "diagnosticSumMs": 0.099,
+          "diagnosticMeanPerRetainedTickMs": 0.02475
+        },
+        {
+          "phase": "rebuild",
+          "method": "makeLineEdge",
+          "calls": 48,
+          "diagnosticSumMs": 0.039,
+          "diagnosticMeanPerRetainedTickMs": 0.00975
+        }
+      ],
+      "cpu": {
+        "rebuild/fuseAll": {
+          "samples": 927,
+          "unmappedAncestrySamples": 0,
+          "leaf": [
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 249,
+              "share": 0.2686084142394822
+            },
+            {
+              "name": "fma",
+              "samples": 87,
+              "share": 0.09385113268608414
+            },
+            {
+              "name": "remus_algo::builder::face_splitter::arrangement_regions_from_inputs::h6a08e8c2080da4f5",
+              "samples": 61,
+              "share": 0.06580366774541532
+            },
+            {
+              "name": "compiler_builtins[3552e40272914b90]::math::libm_math::atan::atan",
+              "samples": 48,
+              "share": 0.05177993527508091
+            },
+            {
+              "name": "compiler_builtins[3552e40272914b90]::math::libm_math::cos::cos",
+              "samples": 44,
+              "share": 0.04746494066882417
+            },
+            {
+              "name": "compiler_builtins[3552e40272914b90]::math::libm_math::sin::sin",
+              "samples": 42,
+              "share": 0.045307443365695796
+            },
+            {
+              "name": "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+              "samples": 35,
+              "share": 0.037756202804746494
+            },
+            {
+              "name": "remus_math::nurbs::curve::NurbsCurve::evaluate::h3009e2803053b0ad",
+              "samples": 30,
+              "share": 0.032362459546925564
+            }
+          ],
+          "inclusiveSelected": [
+            {
+              "name": "remus_algo::gfa::fuse_n_with_context_impl::hb94cb2419264a0ae",
+              "samples": 898,
+              "share": 0.9687162891046386
+            },
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 249,
+              "share": 0.2686084142394822
+            },
+            {
+              "name": "remus_algo::classifier::ray_cast::collect_face_geoms::h621567ed00a7b517",
+              "samples": 242,
+              "share": 0.26105717367853293
+            },
+            {
+              "name": "remus_algo::classifier::torus_patch::trimmed_torus_polygon::h19e13af08cc71904",
+              "samples": 236,
+              "share": 0.2545846817691478
+            },
+            {
+              "name": "remus_algo::pave_filler::phase_ef::perform_inner::h994725644b5ebd92",
+              "samples": 182,
+              "share": 0.19633225458468176
+            }
+          ]
+        },
+        "prefix/intersectDetailed": {
+          "samples": 606,
+          "unmappedAncestrySamples": 0,
+          "leaf": [
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 170,
+              "share": 0.28052805280528054
+            },
+            {
+              "name": "compiler_builtins[3552e40272914b90]::math::libm_math::atan::atan",
+              "samples": 32,
+              "share": 0.052805280528052806
+            },
+            {
+              "name": "compiler_builtins[3552e40272914b90]::math::libm_math::cos::cos",
+              "samples": 28,
+              "share": 0.0462046204620462
+            },
+            {
+              "name": "fma",
+              "samples": 20,
+              "share": 0.033003300330033
+            },
+            {
+              "name": "compiler_builtins[3552e40272914b90]::math::libm_math::sin::sin",
+              "samples": 17,
+              "share": 0.028052805280528052
+            },
+            {
+              "name": "compiler_builtins[3552e40272914b90]::math::libm_math::rem_pio2::rem_pio2",
+              "samples": 14,
+              "share": 0.0231023102310231
+            },
+            {
+              "name": "remus_algo::builder::face_splitter::arrangement_regions_from_inputs::h6a08e8c2080da4f5",
+              "samples": 13,
+              "share": 0.02145214521452145
+            },
+            {
+              "name": "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+              "samples": 12,
+              "share": 0.019801980198019802
+            }
+          ],
+          "inclusiveSelected": [
+            {
+              "name": "remus_algo::pave_filler::phase_ef::perform_inner::h994725644b5ebd92",
+              "samples": 203,
+              "share": 0.334983498349835
+            },
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 170,
+              "share": 0.28052805280528054
+            },
+            {
+              "name": "remus_algo::classifier::ray_cast::collect_face_geoms::h621567ed00a7b517",
+              "samples": 10,
+              "share": 0.0165016501650165
+            }
+          ]
+        },
+        "rebuild/unifyFacesChecked": {
+          "samples": 290,
+          "unmappedAncestrySamples": 0,
+          "leaf": [
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 116,
+              "share": 0.4
+            },
+            {
+              "name": "remus_math::nurbs::surface::NurbsSurface::contract_first_order::heec76c2fedf73b2c",
+              "samples": 43,
+              "share": 0.1482758620689655
+            },
+            {
+              "name": "remus_math::nurbs::basis::ders_basis_funs_first_into::hf5f65a0e917f966a",
+              "samples": 28,
+              "share": 0.09655172413793103
+            },
+            {
+              "name": "remus_check::properties::face_integrator::CylinderRowNormal::add::h6db16c3efedeb51d",
+              "samples": 14,
+              "share": 0.04827586206896552
+            },
+            {
+              "name": "remus_check::properties::face_integrator::integrate_parametric::h4e63a20fff767583",
+              "samples": 14,
+              "share": 0.04827586206896552
+            },
+            {
+              "name": "remus_check::properties::face_cache::memoized::hd0ca9d6751d5e7bb",
+              "samples": 10,
+              "share": 0.034482758620689655
+            },
+            {
+              "name": "remus_math::nurbs::surface::DerivativeScratch::span_hinted_point_and_partials_from::he0f73ac76b31be8d",
+              "samples": 9,
+              "share": 0.03103448275862069
+            },
+            {
+              "name": "remus_math::nurbs::surface::NurbsSurface::first_order_into::h4ecce75270adfb43",
+              "samples": 8,
+              "share": 0.027586206896551724
+            }
+          ],
+          "inclusiveSelected": [
+            {
+              "name": "remus_operations::measure::volume::shell_signed_volume::hd9ed1fb4cda58d34",
+              "samples": 273,
+              "share": 0.9413793103448276
+            },
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 116,
+              "share": 0.4
+            }
+          ]
+        }
+      },
+      "summary": {
+        "file": "preview-summary-v2.json",
+        "bytes": 296229,
+        "sha256": "2fff3d782581aa250a813e23b4a8f005753b5e5a407d2179df260c79b781b4cc"
+      },
+      "harness": {
+        "profile_holder.cjs": {
+          "bytes": 10875,
+          "sha256": "6b86c4e71cd24d971787437c11fe51bb916e013ae013b1492ad609212e588bc9"
+        },
+        "parameter_bench.cjs": {
+          "bytes": 11550,
+          "sha256": "79751f89874700de56917dad0e0a5c1d46a2b0008e9aac9178b90a09ac4f4d09"
+        },
+        "holder_recipe.cjs": {
+          "bytes": 11420,
+          "sha256": "68a572fe2294321a2c53893ffc0edf160e3b318e1b3395fb82602f6d1f0811a5"
+        },
+        "../filleted-face-edit/wasm_edit_bench.cjs": {
+          "bytes": 17248,
+          "sha256": "605bcfe13bb916afa6663be7b91135ecbde7ec865a786f8864c06e18a4c5f03b"
+        },
+        "fixtures/recipe.json": {
+          "bytes": 10269,
+          "sha256": "8a24356effac832b714ca6724d33feedf91c1251d2bb62096d332ed2c55c8719"
+        },
+        "fixtures/base.arena.json": {
+          "bytes": 497925,
+          "sha256": "7a8a3fac03a2ce63eb0e84ed61fd9fc09c6454973cc6225d5122cc1e3bf05026"
+        },
+        "fixtures/text.arena.json": {
+          "bytes": 125722,
+          "sha256": "dd59dd4c7de07fb7c63c2c8b69aac17fd4ba97244bab7ba3fcfb3638b4b0a96f"
+        },
+        "fixtures/pinned-source-manifest.json": {
+          "bytes": 13267,
+          "sha256": "f5fa969c94a6da14f9f91e4d3a3fe7eeaf196ec8ce5df3e5ed388f83366d4651"
+        }
+      },
+      "summarizerSha256": "e2df22f0db7eefabc0d49c8aed92ce19aafaa6ef78ca02a08333e42da7be8600"
+    },
+    "completion": {
+      "startedAt": "2026-10-29T00:48:10.461Z",
+      "endedAt": "2026-10-29T00:48:20.889Z",
+      "options": {
+        "mode": "completion",
+        "rebuild": "full",
+        "pattern": "unique",
+        "ticks": 6,
+        "warmup": 2,
+        "sampleIntervalUs": 500
+      },
+      "retainedTicks": [
+        2,
+        3,
+        4,
+        5
+      ],
+      "totalCpuSamples": 12895,
+      "includedCpuSamples": 4720,
+      "excludedCpuSamples": 8175,
+      "unmappedAncestrySamples": 0,
+      "methodIntervals": [
+        {
+          "phase": "recognize",
+          "method": "recognizeFeatures",
+          "calls": 32,
+          "diagnosticSumMs": 883.652,
+          "diagnosticMeanPerRetainedTickMs": 220.913
+        },
+        {
+          "phase": "rebuild",
+          "method": "fuseAll",
+          "calls": 4,
+          "diagnosticSumMs": 659.249,
+          "diagnosticMeanPerRetainedTickMs": 164.81225
+        },
+        {
+          "phase": "prefix",
+          "method": "intersectDetailed",
+          "calls": 16,
+          "diagnosticSumMs": 438.812,
+          "diagnosticMeanPerRetainedTickMs": 109.703
+        },
+        {
+          "phase": "mesh",
+          "method": "tessellateSolidGroupedBinary",
+          "calls": 32,
+          "diagnosticSumMs": 241.502,
+          "diagnosticMeanPerRetainedTickMs": 60.3755
+        },
+        {
+          "phase": "prefix",
+          "method": "deserializeSolids",
+          "calls": 20,
+          "diagnosticSumMs": 212.426,
+          "diagnosticMeanPerRetainedTickMs": 53.1065
+        },
+        {
+          "phase": "rebuild",
+          "method": "unifyFacesChecked",
+          "calls": 4,
+          "diagnosticSumMs": 185.821,
+          "diagnosticMeanPerRetainedTickMs": 46.45525
+        },
+        {
+          "phase": "volume",
+          "method": "volume",
+          "calls": 32,
+          "diagnosticSumMs": 146.656,
+          "diagnosticMeanPerRetainedTickMs": 36.664
+        },
+        {
+          "phase": "rebuild",
+          "method": "copyAndTransformSolid",
+          "calls": 56,
+          "diagnosticSumMs": 31.109,
+          "diagnosticMeanPerRetainedTickMs": 7.77725
+        },
+        {
+          "phase": "prefix",
+          "method": "serializeSolids",
+          "calls": 4,
+          "diagnosticSumMs": 18.241,
+          "diagnosticMeanPerRetainedTickMs": 4.56025
+        },
+        {
+          "phase": "prefix",
+          "method": "validateSolid",
+          "calls": 44,
+          "diagnosticSumMs": 18.091,
+          "diagnosticMeanPerRetainedTickMs": 4.52275
+        },
+        {
+          "phase": "prefix",
+          "method": "getSolidFaces",
+          "calls": 44,
+          "diagnosticSumMs": 15.926,
+          "diagnosticMeanPerRetainedTickMs": 3.9815
+        },
+        {
+          "phase": "validate",
+          "method": "validateSolid",
+          "calls": 32,
+          "diagnosticSumMs": 12.469,
+          "diagnosticMeanPerRetainedTickMs": 3.11725
+        },
+        {
+          "phase": "prefix",
+          "method": "unifyFaces",
+          "calls": 16,
+          "diagnosticSumMs": 7.196,
+          "diagnosticMeanPerRetainedTickMs": 1.799
+        },
+        {
+          "phase": "rebuild",
+          "method": "makeLineEdge",
+          "calls": 48,
+          "diagnosticSumMs": 4.937,
+          "diagnosticMeanPerRetainedTickMs": 1.23425
+        },
+        {
+          "phase": "prefix",
+          "method": "copyAndTransformSolid",
+          "calls": 16,
+          "diagnosticSumMs": 1.258,
+          "diagnosticMeanPerRetainedTickMs": 0.3145
+        },
+        {
+          "phase": "restore",
+          "method": "restore",
+          "calls": 4,
+          "diagnosticSumMs": 0.9380000000000001,
+          "diagnosticMeanPerRetainedTickMs": 0.23450000000000001
+        },
+        {
+          "phase": "rebuild",
+          "method": "makeCircleArc3d",
+          "calls": 40,
+          "diagnosticSumMs": 0.87,
+          "diagnosticMeanPerRetainedTickMs": 0.2175
+        },
+        {
+          "phase": "rebuild",
+          "method": "makeWire",
+          "calls": 12,
+          "diagnosticSumMs": 0.741,
+          "diagnosticMeanPerRetainedTickMs": 0.18525
+        },
+        {
+          "phase": "rebuild",
+          "method": "extrude",
+          "calls": 12,
+          "diagnosticSumMs": 0.481,
+          "diagnosticMeanPerRetainedTickMs": 0.12025
+        },
+        {
+          "phase": "prefix",
+          "method": "makeBox",
+          "calls": 16,
+          "diagnosticSumMs": 0.407,
+          "diagnosticMeanPerRetainedTickMs": 0.10175
+        },
+        {
+          "phase": "rebuild",
+          "method": "makePlanarFaceFromWire",
+          "calls": 12,
+          "diagnosticSumMs": 0.153,
+          "diagnosticMeanPerRetainedTickMs": 0.03825
+        }
+      ],
+      "cpu": {
+        "recognize/recognizeFeatures": {
+          "samples": 1499,
+          "unmappedAncestrySamples": 0,
+          "leaf": [
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 672,
+              "share": 0.4482988659106071
+            },
+            {
+              "name": "remus_math::nurbs::basis::ders_basis_funs_first_into::hf5f65a0e917f966a",
+              "samples": 107,
+              "share": 0.0713809206137425
+            },
+            {
+              "name": "remus_math::nurbs::surface::NurbsSurface::contract_position::h767202f41dffd24c",
+              "samples": 82,
+              "share": 0.05470313542361575
+            },
+            {
+              "name": "remus_math::nurbs::surface::NurbsSurface::contract_first_order::heec76c2fedf73b2c",
+              "samples": 76,
+              "share": 0.050700466977985324
+            },
+            {
+              "name": "remus_math::nurbs::intersection::line::refine_line_surface_point::hb7744042e712de18",
+              "samples": 66,
+              "share": 0.044029352901934625
+            },
+            {
+              "name": "fma",
+              "samples": 33,
+              "share": 0.022014676450967312
+            },
+            {
+              "name": "remus_math::nurbs::intersection::line::intersect_line_nurbs_with_grid::h7b0a1da75ce81d5a",
+              "samples": 30,
+              "share": 0.0200133422281521
+            },
+            {
+              "name": "remus_check::classify::graze::ray_segment_distance_sq::h13b8ddabf2498ba8",
+              "samples": 27,
+              "share": 0.01801200800533689
+            }
+          ],
+          "inclusiveSelected": [
+            {
+              "name": "remus_operations::query::EdgeRelationContext::concavity_and_angle::hce4f4ab0e9b77fbf",
+              "samples": 1211,
+              "share": 0.8078719146097398
+            },
+            {
+              "name": "remus_check::classify::prepared::PreparedSolid::classify_point::h9ca48f0a9954f2d3",
+              "samples": 1191,
+              "share": 0.7945296864576384
+            },
+            {
+              "name": "remus_check::classify::prepared::PreparedSolid::count_ray_crossings::h5b77e1fc245a68af",
+              "samples": 1033,
+              "share": 0.6891260840560374
+            },
+            {
+              "name": "remus_math::nurbs::intersection::line::intersect_line_nurbs_with_grid::h7b0a1da75ce81d5a",
+              "samples": 821,
+              "share": 0.5476984656437625
+            },
+            {
+              "name": "remus_math::nurbs::intersection::line::refine_line_surface_point::hb7744042e712de18",
+              "samples": 743,
+              "share": 0.49566377585056703
+            },
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 672,
+              "share": 0.4482988659106071
+            },
+            {
+              "name": "remus_math::nurbs::surface::DerivativeScratch::evaluate_and_partials_from::h8ac2aef653fda531",
+              "samples": 299,
+              "share": 0.19946631087391595
+            },
+            {
+              "name": "remus_operations::measure::area::face_area::hf7eceb318bd3b4a2",
+              "samples": 196,
+              "share": 0.13075383589059372
+            }
+          ]
+        },
+        "recognize/recognizeFeatures/root-0": {
+          "samples": 374,
+          "unmappedAncestrySamples": 0,
+          "leaf": [
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 136,
+              "share": 0.36363636363636365
+            },
+            {
+              "name": "fma",
+              "samples": 21,
+              "share": 0.05614973262032086
+            },
+            {
+              "name": "remus_operations::query::EdgeRelationContext::prepare::h7318fc2b88daebed",
+              "samples": 14,
+              "share": 0.0374331550802139
+            },
+            {
+              "name": "remus_math::analytic_intersection::intersect_line_torus::h2a710e91add724a9",
+              "samples": 13,
+              "share": 0.034759358288770054
+            },
+            {
+              "name": "remus_math::nurbs::surface::NurbsSurface::contract_first_order::heec76c2fedf73b2c",
+              "samples": 11,
+              "share": 0.029411764705882353
+            },
+            {
+              "name": "remus_math::nurbs::basis::ders_basis_funs_into::h9a3850a5917a9d16",
+              "samples": 10,
+              "share": 0.026737967914438502
+            },
+            {
+              "name": "<dlmalloc[e7770d3bef70d9dc]::dlmalloc::Dlmalloc<dlmalloc[e7770d3bef70d9dc]::sys::System>>::malloc",
+              "samples": 8,
+              "share": 0.0213903743315508
+            },
+            {
+              "name": "remus_check::properties::face_integrator::boundary_area::gauss_panel::h9ab7daeb5d9d7d39",
+              "samples": 7,
+              "share": 0.01871657754010695
+            }
+          ],
+          "inclusiveSelected": [
+            {
+              "name": "remus_operations::query::EdgeRelationContext::concavity_and_angle::hce4f4ab0e9b77fbf",
+              "samples": 183,
+              "share": 0.4893048128342246
+            },
+            {
+              "name": "remus_check::classify::prepared::PreparedSolid::classify_point::h9ca48f0a9954f2d3",
+              "samples": 172,
+              "share": 0.45989304812834225
+            },
+            {
+              "name": "remus_check::classify::prepared::PreparedSolid::count_ray_crossings::h5b77e1fc245a68af",
+              "samples": 159,
+              "share": 0.42513368983957217
+            },
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 136,
+              "share": 0.36363636363636365
+            },
+            {
+              "name": "remus_operations::measure::area::face_area::hf7eceb318bd3b4a2",
+              "samples": 133,
+              "share": 0.35561497326203206
+            },
+            {
+              "name": "remus_math::nurbs::intersection::line::intersect_line_nurbs_with_grid::h7b0a1da75ce81d5a",
+              "samples": 49,
+              "share": 0.13101604278074866
+            },
+            {
+              "name": "remus_math::nurbs::intersection::line::refine_line_surface_point::hb7744042e712de18",
+              "samples": 36,
+              "share": 0.0962566844919786
+            },
+            {
+              "name": "remus_math::nurbs::surface::DerivativeScratch::evaluate_and_partials_from::h8ac2aef653fda531",
+              "samples": 12,
+              "share": 0.03208556149732621
+            }
+          ]
+        },
+        "recognize/recognizeFeatures/root-5": {
+          "samples": 376,
+          "unmappedAncestrySamples": 0,
+          "leaf": [
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 164,
+              "share": 0.43617021276595747
+            },
+            {
+              "name": "remus_math::nurbs::basis::ders_basis_funs_first_into::hf5f65a0e917f966a",
+              "samples": 41,
+              "share": 0.10904255319148937
+            },
+            {
+              "name": "remus_math::nurbs::surface::NurbsSurface::contract_position::h767202f41dffd24c",
+              "samples": 25,
+              "share": 0.06648936170212766
+            },
+            {
+              "name": "remus_math::nurbs::intersection::line::refine_line_surface_point::hb7744042e712de18",
+              "samples": 20,
+              "share": 0.05319148936170213
+            },
+            {
+              "name": "remus_math::nurbs::surface::NurbsSurface::contract_first_order::heec76c2fedf73b2c",
+              "samples": 19,
+              "share": 0.05053191489361702
+            },
+            {
+              "name": "remus_check::classify::graze::ray_segment_distance_sq::h13b8ddabf2498ba8",
+              "samples": 10,
+              "share": 0.026595744680851064
+            },
+            {
+              "name": "remus_math::nurbs::surface::DerivativeScratch::evaluate_and_partials_from::h8ac2aef653fda531",
+              "samples": 10,
+              "share": 0.026595744680851064
+            },
+            {
+              "name": "remus_math::nurbs::intersection::line::intersect_line_nurbs_with_grid::h7b0a1da75ce81d5a",
+              "samples": 7,
+              "share": 0.018617021276595744
+            }
+          ],
+          "inclusiveSelected": [
+            {
+              "name": "remus_operations::query::EdgeRelationContext::concavity_and_angle::hce4f4ab0e9b77fbf",
+              "samples": 348,
+              "share": 0.925531914893617
+            },
+            {
+              "name": "remus_check::classify::prepared::PreparedSolid::classify_point::h9ca48f0a9954f2d3",
+              "samples": 344,
+              "share": 0.9148936170212766
+            },
+            {
+              "name": "remus_check::classify::prepared::PreparedSolid::count_ray_crossings::h5b77e1fc245a68af",
+              "samples": 302,
+              "share": 0.8031914893617021
+            },
+            {
+              "name": "remus_math::nurbs::intersection::line::intersect_line_nurbs_with_grid::h7b0a1da75ce81d5a",
+              "samples": 263,
+              "share": 0.699468085106383
+            },
+            {
+              "name": "remus_math::nurbs::intersection::line::refine_line_surface_point::hb7744042e712de18",
+              "samples": 243,
+              "share": 0.6462765957446809
+            },
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 164,
+              "share": 0.43617021276595747
+            },
+            {
+              "name": "remus_math::nurbs::surface::DerivativeScratch::evaluate_and_partials_from::h8ac2aef653fda531",
+              "samples": 109,
+              "share": 0.2898936170212766
+            },
+            {
+              "name": "remus_operations::measure::area::face_area::hf7eceb318bd3b4a2",
+              "samples": 18,
+              "share": 0.047872340425531915
+            }
+          ]
+        },
+        "rebuild/fuseAll": {
+          "samples": 1105,
+          "unmappedAncestrySamples": 0,
+          "leaf": [
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 265,
+              "share": 0.2398190045248869
+            },
+            {
+              "name": "fma",
+              "samples": 113,
+              "share": 0.10226244343891402
+            },
+            {
+              "name": "compiler_builtins[3552e40272914b90]::math::libm_math::sin::sin",
+              "samples": 60,
+              "share": 0.05429864253393665
+            },
+            {
+              "name": "compiler_builtins[3552e40272914b90]::math::libm_math::cos::cos",
+              "samples": 57,
+              "share": 0.051583710407239816
+            },
+            {
+              "name": "remus_algo::builder::face_splitter::arrangement_regions_from_inputs::h6a08e8c2080da4f5",
+              "samples": 57,
+              "share": 0.051583710407239816
+            },
+            {
+              "name": "remus_math::nurbs::curve::NurbsCurve::evaluate::h3009e2803053b0ad",
+              "samples": 53,
+              "share": 0.04796380090497738
+            },
+            {
+              "name": "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+              "samples": 49,
+              "share": 0.044343891402714934
+            },
+            {
+              "name": "compiler_builtins[3552e40272914b90]::math::libm_math::atan::atan",
+              "samples": 46,
+              "share": 0.0416289592760181
+            }
+          ],
+          "inclusiveSelected": [
+            {
+              "name": "remus_algo::gfa::fuse_n_with_context_impl::hb94cb2419264a0ae",
+              "samples": 1078,
+              "share": 0.9755656108597285
+            },
+            {
+              "name": "remus_algo::classifier::ray_cast::collect_face_geoms::h621567ed00a7b517",
+              "samples": 308,
+              "share": 0.27873303167420815
+            },
+            {
+              "name": "remus_algo::classifier::torus_patch::trimmed_torus_polygon::h19e13af08cc71904",
+              "samples": 304,
+              "share": 0.2751131221719457
+            },
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 265,
+              "share": 0.2398190045248869
+            },
+            {
+              "name": "remus_algo::pave_filler::phase_ef::perform_inner::h994725644b5ebd92",
+              "samples": 211,
+              "share": 0.19095022624434388
+            }
+          ]
+        },
+        "prefix/intersectDetailed": {
+          "samples": 711,
+          "unmappedAncestrySamples": 0,
+          "leaf": [
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 193,
+              "share": 0.2714486638537271
+            },
+            {
+              "name": "compiler_builtins[3552e40272914b90]::math::libm_math::cos::cos",
+              "samples": 39,
+              "share": 0.05485232067510549
+            },
+            {
+              "name": "compiler_builtins[3552e40272914b90]::math::libm_math::atan::atan",
+              "samples": 31,
+              "share": 0.04360056258790436
+            },
+            {
+              "name": "fma",
+              "samples": 30,
+              "share": 0.04219409282700422
+            },
+            {
+              "name": "compiler_builtins[3552e40272914b90]::math::libm_math::sin::sin",
+              "samples": 28,
+              "share": 0.03938115330520394
+            },
+            {
+              "name": "compiler_builtins[3552e40272914b90]::math::libm_math::rem_pio2::rem_pio2",
+              "samples": 16,
+              "share": 0.02250351617440225
+            },
+            {
+              "name": "remus_math::nurbs::basis::basis_funs_into::hc8d234c377b4fe9f",
+              "samples": 16,
+              "share": 0.02250351617440225
+            },
+            {
+              "name": "remus_math::surfaces::ToroidalSurface::project_point::h92ba31b635d3039e",
+              "samples": 11,
+              "share": 0.015471167369901548
+            }
+          ],
+          "inclusiveSelected": [
+            {
+              "name": "remus_algo::pave_filler::phase_ef::perform_inner::h994725644b5ebd92",
+              "samples": 225,
+              "share": 0.31645569620253167
+            },
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 193,
+              "share": 0.2714486638537271
+            },
+            {
+              "name": "remus_algo::classifier::ray_cast::collect_face_geoms::h621567ed00a7b517",
+              "samples": 15,
+              "share": 0.02109704641350211
+            }
+          ]
+        },
+        "rebuild/unifyFacesChecked": {
+          "samples": 320,
+          "unmappedAncestrySamples": 0,
+          "leaf": [
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 119,
+              "share": 0.371875
+            },
+            {
+              "name": "remus_math::nurbs::surface::NurbsSurface::contract_first_order::heec76c2fedf73b2c",
+              "samples": 55,
+              "share": 0.171875
+            },
+            {
+              "name": "remus_math::nurbs::basis::ders_basis_funs_first_into::hf5f65a0e917f966a",
+              "samples": 37,
+              "share": 0.115625
+            },
+            {
+              "name": "remus_check::properties::face_integrator::CylinderRowNormal::add::h6db16c3efedeb51d",
+              "samples": 20,
+              "share": 0.0625
+            },
+            {
+              "name": "remus_check::properties::face_cache::memoized::hd0ca9d6751d5e7bb",
+              "samples": 16,
+              "share": 0.05
+            },
+            {
+              "name": "remus_check::properties::face_integrator::integrate_parametric::h4e63a20fff767583",
+              "samples": 12,
+              "share": 0.0375
+            },
+            {
+              "name": "remus_math::nurbs::surface::NurbsSurface::find_span_hinted_u::h00f7844687a0ea2d",
+              "samples": 8,
+              "share": 0.025
+            },
+            {
+              "name": "remus_math::nurbs::surface::NurbsSurface::first_order_into::h4ecce75270adfb43",
+              "samples": 8,
+              "share": 0.025
+            }
+          ],
+          "inclusiveSelected": [
+            {
+              "name": "remus_operations::measure::volume::shell_signed_volume::hd9ed1fb4cda58d34",
+              "samples": 305,
+              "share": 0.953125
+            },
+            {
+              "name": "remus_math::fma::wasm_fma::h0436896cc4f5260b",
+              "samples": 119,
+              "share": 0.371875
+            }
+          ]
+        }
+      },
+      "summary": {
+        "file": "completion-summary-v2.json",
+        "bytes": 604496,
+        "sha256": "96a568073bb1b096d46b1ecf03e2d5079d956bcd8526aa8dc590a9334cab447b"
+      },
+      "harness": {
+        "profile_holder.cjs": {
+          "bytes": 10875,
+          "sha256": "6b86c4e71cd24d971787437c11fe51bb916e013ae013b1492ad609212e588bc9"
+        },
+        "parameter_bench.cjs": {
+          "bytes": 11550,
+          "sha256": "79751f89874700de56917dad0e0a5c1d46a2b0008e9aac9178b90a09ac4f4d09"
+        },
+        "holder_recipe.cjs": {
+          "bytes": 11420,
+          "sha256": "68a572fe2294321a2c53893ffc0edf160e3b318e1b3395fb82602f6d1f0811a5"
+        },
+        "../filleted-face-edit/wasm_edit_bench.cjs": {
+          "bytes": 17248,
+          "sha256": "605bcfe13bb916afa6663be7b91135ecbde7ec865a786f8864c06e18a4c5f03b"
+        },
+        "fixtures/recipe.json": {
+          "bytes": 10269,
+          "sha256": "8a24356effac832b714ca6724d33feedf91c1251d2bb62096d332ed2c55c8719"
+        },
+        "fixtures/base.arena.json": {
+          "bytes": 497925,
+          "sha256": "7a8a3fac03a2ce63eb0e84ed61fd9fc09c6454973cc6225d5122cc1e3bf05026"
+        },
+        "fixtures/text.arena.json": {
+          "bytes": 125722,
+          "sha256": "dd59dd4c7de07fb7c63c2c8b69aac17fd4ba97244bab7ba3fcfb3638b4b0a96f"
+        },
+        "fixtures/pinned-source-manifest.json": {
+          "bytes": 13267,
+          "sha256": "f5fa969c94a6da14f9f91e4d3a3fe7eeaf196ec8ce5df3e5ed388f83366d4651"
+        }
+      },
+      "summarizerSha256": "e2df22f0db7eefabc0d49c8aed92ce19aafaa6ef78ca02a08333e42da7be8600"
+    }
+  },
+  "rawArtifacts": {
+    "preview/capture.json": {
+      "bytes": 5464,
+      "sha256": "c51451e68bf759a7407eb4dfbe1ecc198d2628b7965e0e9018a01ef97ba4bf6f"
+    },
+    "preview/initial-receipt.json": {
+      "bytes": 1998,
+      "sha256": "d7602b45bafe60c8b07fd3a4851b66c6486710cb5512fb5114ecbecf1af3bb5e"
+    },
+    "preview/run.json": {
+      "bytes": 142902,
+      "sha256": "1959f84d143ab9ecda82bed9059a36abcd69cff6bae73c107232d531f8952ee5"
+    },
+    "preview/methods.json": {
+      "bytes": 445896,
+      "sha256": "fb37ec9c3033632efc913f933d27b3a0472b357180995772d515c973458853ea"
+    },
+    "preview/profile.cpuprofile": {
+      "bytes": 1258743,
+      "sha256": "19bd98ff09c3769c1e555a8b30b07fa0be17213f53ae8afc6bd31e35cd0f606d"
+    },
+    "preview/supplied-package-receipt.json": {
+      "bytes": 5141,
+      "sha256": "087b146ca8ee92d9a430e59fa7916f9398a58fbac563d2f0c8d907db8f9065db"
+    },
+    "preview.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "preview.stderr": {
+      "bytes": 199,
+      "sha256": "4be7d3454991a982c4d53af0738672c33b159d4419622725811dc33c732bd4dc"
+    },
+    "completion/capture.json": {
+      "bytes": 5467,
+      "sha256": "bc678b0f0f369a63428a2d166c088dee16baf869ca45ce014beeb68c37dcdb46"
+    },
+    "completion/initial-receipt.json": {
+      "bytes": 2001,
+      "sha256": "7d48b9750292728e323858af60b219a7c6681acf0c7801983693bf1a24c20e9b"
+    },
+    "completion/run.json": {
+      "bytes": 210993,
+      "sha256": "e96d827e6ed086ebe72f072437b494e2ed7bb10b04e3b627a0de1ceb139e1ed4"
+    },
+    "completion/methods.json": {
+      "bytes": 469804,
+      "sha256": "39192856f71cf0f0bfe9bf4037a0959da513c077df4979eee62ce64bc8994398"
+    },
+    "completion/profile.cpuprofile": {
+      "bytes": 1762746,
+      "sha256": "81a98b6eeeaa071f0bbd1257ee255bebe38dcc59822d4f2c17e763233bf7add1"
+    },
+    "completion/supplied-package-receipt.json": {
+      "bytes": 5141,
+      "sha256": "087b146ca8ee92d9a430e59fa7916f9398a58fbac563d2f0c8d907db8f9065db"
+    },
+    "completion.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "completion.stderr": {
+      "bytes": 218,
+      "sha256": "03677805dfb8b5b5b1e6530f407039c90a31677798b49c88eeef2c4e012199a6"
+    },
+    "independent-audit.json": {
+      "bytes": 56906,
+      "sha256": "861f2a1d8706384cfd6cfdad2de8f341a9cc6f7e50a44ff015e3cff71fd38ae4"
+    },
+    "compare-runs.json": {
+      "bytes": 159,
+      "sha256": "7e0eb3d2644a333a9e8514fcfaa3f6060904ad9b3a8e21633062f2b71bb74acd"
+    },
+    "runs.json": {
+      "bytes": 382596,
+      "sha256": "3ccb5e848e15ff5b90a495d893ada1718be11d0123d0e9975b02ffa17b44e8f2"
+    },
+    "function-map.txt": {
+      "bytes": 676613,
+      "sha256": "7e2792535047079b7e5f2d5a1d077588553504b0ac293911c0233763d9d02af2"
+    },
+    "named-optimized.wasm": {
+      "bytes": 11511901,
+      "sha256": "1bad7d2542038f6d27974a2f0e6e2b1f38795dc755c0ad4de535384148a79f63"
+    },
+    "package-verification.json": {
+      "bytes": 5141,
+      "sha256": "087b146ca8ee92d9a430e59fa7916f9398a58fbac563d2f0c8d907db8f9065db"
+    }
+  },
+  "rawScope": "Original local raw hashes retained; the raw CPU profiles and captures are not published here and are not claimed reconstructable from this summary.",
+  "shares": "Count-based descriptive samples; inclusive shares overlap and must not be added.",
+  "host": "Team CPU31/SMT15 lease was coordinated. Outside-core builds and name generation overlapped these diagnostics; unrelated host activity was not fully characterized. No production timing or regression comparison is made.",
+  "sampleScope": "Retained public kernel calls and prepare/rebuild/extract spans; in-stage JavaScript outside these windows is unassigned.",
+  "samePackageQualification": {
+    "pairedModes": {
+      "qualified": true,
+      "records": 6,
+      "rebuildMode": "full",
+      "pattern": "unique",
+      "arenaAndMeshBytesMatch": true,
+      "timingsComparedAsSpeedup": false
+    },
+    "independentQualified": true,
+    "capturedAuditQualified": true,
+    "distinctCapturedWidths": 6,
+    "capturedRecordsMatched": 12,
+    "all42CarriersRetained": true,
+    "quantityOracleAbsoluteBound": 0.002,
+    "maximumAnalyticVolumeResidual": 0.0005611901614201997,
+    "maximumIndependentCapturedVolumeRereadDifference": 2.1100277081131935e-10
+  },
+  "validation": "Known phase inventory enforced; source/profile/clock/raw-hash checks passed. Earlier derived summary values are unchanged."
+}

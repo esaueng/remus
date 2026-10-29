@@ -1,0 +1,1013 @@
+{
+  "schema": "remus-standalone-fma-dispatch-summary-v1",
+  "processesSha256": "09016e0ec4827266d6b84bb1839c36324743080c8918714ba6ffcc4dba6a07ca",
+  "workloads": {
+    "total-mix": {
+      "baseline": {
+        "processMedianNsPerOperation": [
+          8.5460684299469,
+          8.403970003128052,
+          8.48762035369873,
+          11.123091578483582
+        ],
+        "medianNsPerOperation": 8.516844391822815,
+        "blockMedians": {
+          "0": 8.475019216537476,
+          "1": 9.805355966091156
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "13a17238617f7df9"
+        ],
+        "changeFraction": 0.0,
+        "blockChangeFractions": {
+          "0": 0.0,
+          "1": 0.0
+        }
+      },
+      "zero-first": {
+        "processMedianNsPerOperation": [
+          9.06426751613617,
+          8.995644688606262,
+          9.29133939743042,
+          12.301036477088928
+        ],
+        "medianNsPerOperation": 9.177803456783295,
+        "blockMedians": {
+          "0": 9.029956102371216,
+          "1": 10.796187937259674
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "13a17238617f7df9"
+        ],
+        "changeFraction": 0.07760609852107647,
+        "blockChangeFractions": {
+          "0": 0.06547913009458206,
+          "1": 0.10105007656988785
+        }
+      },
+      "bit-range": {
+        "processMedianNsPerOperation": [
+          8.65848696231842,
+          8.81346869468689,
+          8.859483480453491,
+          11.56518542766571
+        ],
+        "medianNsPerOperation": 8.83647608757019,
+        "blockMedians": {
+          "0": 8.735977828502655,
+          "1": 10.2123344540596
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "13a17238617f7df9"
+        ],
+        "changeFraction": 0.0375293572410762,
+        "blockChangeFractions": {
+          "0": 0.030791506815225356,
+          "1": 0.04150573312951167
+        }
+      },
+      "both": {
+        "processMedianNsPerOperation": [
+          12.024930477142334,
+          8.999098896980286,
+          8.879294395446777,
+          12.02471673488617
+        ],
+        "medianNsPerOperation": 10.511907815933228,
+        "blockMedians": {
+          "0": 10.51201468706131,
+          "1": 10.452005565166473
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "13a17238617f7df9"
+        ],
+        "changeFraction": 0.23424913410721837,
+        "blockChangeFractions": {
+          "0": 0.2403529028641025,
+          "1": 0.06594861026071452
+        }
+      },
+      "crossVariantChecksumsEqual": true
+    },
+    "recognition-mix": {
+      "baseline": {
+        "processMedianNsPerOperation": [
+          7.194920659065247,
+          7.054531574249268,
+          7.131951928138733,
+          10.667840838432312
+        ],
+        "medianNsPerOperation": 7.16343629360199,
+        "blockMedians": {
+          "0": 7.124726116657257,
+          "1": 8.899896383285522
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "0c42ac194bf3e445"
+        ],
+        "changeFraction": 0.0,
+        "blockChangeFractions": {
+          "0": 0.0,
+          "1": 0.0
+        }
+      },
+      "zero-first": {
+        "processMedianNsPerOperation": [
+          8.162007093429565,
+          8.260493516921997,
+          8.224212646484375,
+          12.183596849441528
+        ],
+        "medianNsPerOperation": 8.242353081703186,
+        "blockMedians": {
+          "0": 8.211250305175781,
+          "1": 10.203904747962952
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "0c42ac194bf3e445"
+        ],
+        "changeFraction": 0.15061441798049202,
+        "blockChangeFractions": {
+          "0": 0.15250048503314173,
+          "1": 0.14651949961197586
+        }
+      },
+      "bit-range": {
+        "processMedianNsPerOperation": [
+          9.97205901145935,
+          6.916127324104309,
+          6.94502592086792,
+          10.53000032901764
+        ],
+        "medianNsPerOperation": 8.458542466163635,
+        "blockMedians": {
+          "0": 8.44409316778183,
+          "1": 8.73751312494278
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "0c42ac194bf3e445"
+        ],
+        "changeFraction": 0.18079398203322716,
+        "blockChangeFractions": {
+          "0": 0.18518144129638303,
+          "1": -0.0182455223464969
+        }
+      },
+      "both": {
+        "processMedianNsPerOperation": [
+          12.008379220962524,
+          9.555652379989624,
+          7.776352524757385,
+          11.893520593643188
+        ],
+        "medianNsPerOperation": 10.724586486816406,
+        "blockMedians": {
+          "0": 10.782015800476074,
+          "1": 9.834936559200287
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "0c42ac194bf3e445"
+        ],
+        "changeFraction": 0.49712875877671325,
+        "blockChangeFractions": {
+          "0": 0.5133235473105773,
+          "1": 0.10506191708825052
+        }
+      },
+      "crossVariantChecksumsEqual": true
+    },
+    "preview-mix": {
+      "baseline": {
+        "processMedianNsPerOperation": [
+          8.704974889755249,
+          8.932385683059692,
+          8.837286472320557,
+          8.904923915863037
+        ],
+        "medianNsPerOperation": 8.871105194091797,
+        "blockMedians": {
+          "0": 8.81868028640747,
+          "1": 8.871105194091797
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "f0464d5941197ef8"
+        ],
+        "changeFraction": 0.0,
+        "blockChangeFractions": {
+          "0": 0.0,
+          "1": 0.0
+        }
+      },
+      "zero-first": {
+        "processMedianNsPerOperation": [
+          9.200984120368958,
+          9.39997673034668,
+          9.520851254463196,
+          12.220838069915771
+        ],
+        "medianNsPerOperation": 9.460413992404938,
+        "blockMedians": {
+          "0": 9.300480425357819,
+          "1": 10.870844662189484
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "f0464d5941197ef8"
+        ],
+        "changeFraction": 0.06643014431906669,
+        "blockChangeFractions": {
+          "0": 0.05463404084315915,
+          "1": 0.22542168358340775
+        }
+      },
+      "bit-range": {
+        "processMedianNsPerOperation": [
+          11.954585433006287,
+          9.493120670318604,
+          9.537370324134827,
+          11.721444964408875
+        ],
+        "medianNsPerOperation": 10.62940764427185,
+        "blockMedians": {
+          "0": 10.723853051662445,
+          "1": 10.62940764427185
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "f0464d5941197ef8"
+        ],
+        "changeFraction": 0.19820556872114348,
+        "blockChangeFractions": {
+          "0": 0.21603830770364607,
+          "1": 0.19820556872114348
+        }
+      },
+      "both": {
+        "processMedianNsPerOperation": [
+          11.936000108718872,
+          9.268670558929443,
+          9.27199673652649,
+          11.770535469055176
+        ],
+        "medianNsPerOperation": 10.521266102790833,
+        "blockMedians": {
+          "0": 10.602335333824158,
+          "1": 10.521266102790833
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "f0464d5941197ef8"
+        ],
+        "changeFraction": 0.1860152565655575,
+        "blockChangeFractions": {
+          "0": 0.20225872687162672,
+          "1": 0.1860152565655575
+        }
+      },
+      "crossVariantChecksumsEqual": true
+    },
+    "completion-mix": {
+      "baseline": {
+        "processMedianNsPerOperation": [
+          8.083788871765137,
+          8.18854546546936,
+          8.034233927726746,
+          11.246529221534729
+        ],
+        "medianNsPerOperation": 8.136167168617249,
+        "blockMedians": {
+          "0": 8.136167168617249,
+          "1": 9.640381574630737
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "91d259b1d37a0a32"
+        ],
+        "changeFraction": 0.0,
+        "blockChangeFractions": {
+          "0": 0.0,
+          "1": 0.0
+        }
+      },
+      "zero-first": {
+        "processMedianNsPerOperation": [
+          8.864055514335632,
+          8.818200707435608,
+          9.174287915229797,
+          12.321521997451782
+        ],
+        "medianNsPerOperation": 9.019171714782715,
+        "blockMedians": {
+          "0": 8.84112811088562,
+          "1": 10.74790495634079
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "91d259b1d37a0a32"
+        ],
+        "changeFraction": 0.10852831903102778,
+        "blockChangeFractions": {
+          "0": 0.08664533651515183,
+          "1": 0.11488377022591822
+        }
+      },
+      "bit-range": {
+        "processMedianNsPerOperation": [
+          8.541937112808228,
+          8.5091472864151,
+          8.416375756263733,
+          11.18919551372528
+        ],
+        "medianNsPerOperation": 8.525542199611664,
+        "blockMedians": {
+          "0": 8.525542199611664,
+          "1": 9.802785634994507
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "91d259b1d37a0a32"
+        ],
+        "changeFraction": 0.04785730466506499,
+        "blockChangeFractions": {
+          "0": 0.04785730466506499,
+          "1": 0.016846227413979786
+        }
+      },
+      "both": {
+        "processMedianNsPerOperation": [
+          11.933921933174133,
+          8.765037775039673,
+          8.655061483383179,
+          11.835960984230042
+        ],
+        "medianNsPerOperation": 10.300499379634857,
+        "blockMedians": {
+          "0": 10.349479854106903,
+          "1": 10.24551123380661
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "91d259b1d37a0a32"
+        ],
+        "changeFraction": 0.2660137342514115,
+        "blockChangeFractions": {
+          "0": 0.27203382620096894,
+          "1": 0.06277030162045749
+        }
+      },
+      "crossVariantChecksumsEqual": true
+    },
+    "family-zero_product_a_only": {
+      "baseline": {
+        "processMedianNsPerOperation": [
+          3.630102038383484,
+          3.560837209224701,
+          3.6062042117118835,
+          5.670788049697876
+        ],
+        "medianNsPerOperation": 3.6181531250476837,
+        "blockMedians": {
+          "0": 3.5954696238040924,
+          "1": 4.63849613070488
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "69217783f01babfa"
+        ],
+        "changeFraction": 0.0,
+        "blockChangeFractions": {
+          "0": 0.0,
+          "1": 0.0
+        }
+      },
+      "zero-first": {
+        "processMedianNsPerOperation": [
+          3.039766848087311,
+          2.998344838619232,
+          3.0557209849357605,
+          5.10313355922699
+        ],
+        "medianNsPerOperation": 3.0477439165115356,
+        "blockMedians": {
+          "0": 3.0190558433532715,
+          "1": 4.079427272081375
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "69217783f01babfa"
+        ],
+        "changeFraction": -0.1576520365009788,
+        "blockChangeFractions": {
+          "0": -0.1603166875989238,
+          "1": -0.12052804246676108
+        }
+      },
+      "bit-range": {
+        "processMedianNsPerOperation": [
+          5.7022353410720825,
+          4.293496489524841,
+          4.219856142997742,
+          6.430186450481415
+        ],
+        "medianNsPerOperation": 4.997865915298462,
+        "blockMedians": {
+          "0": 4.997865915298462,
+          "1": 5.325021296739578
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "69217783f01babfa"
+        ],
+        "changeFraction": 0.38133067964960565,
+        "blockChangeFractions": {
+          "0": 0.3900453732690976,
+          "1": 0.1480059801042395
+        }
+      },
+      "both": {
+        "processMedianNsPerOperation": [
+          5.131231367588043,
+          3.0206905603408813,
+          3.1245527863502502,
+          5.144704282283783
+        ],
+        "medianNsPerOperation": 4.127892076969147,
+        "blockMedians": {
+          "0": 4.075960963964462,
+          "1": 4.134628534317017
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "69217783f01babfa"
+        ],
+        "changeFraction": 0.1408837421480731,
+        "blockChangeFractions": {
+          "0": 0.13363799181593383,
+          "1": -0.10862736158223207
+        }
+      },
+      "crossVariantChecksumsEqual": true
+    },
+    "family-zero_product_b_only": {
+      "baseline": {
+        "processMedianNsPerOperation": [
+          4.8322319984436035,
+          4.776958465576172,
+          4.741770446300507,
+          6.759800136089325
+        ],
+        "medianNsPerOperation": 4.804595232009888,
+        "blockMedians": {
+          "0": 4.804595232009888,
+          "1": 5.750785291194916
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "71a4daf80e4d3a3b"
+        ],
+        "changeFraction": 0.0,
+        "blockChangeFractions": {
+          "0": 0.0,
+          "1": 0.0
+        }
+      },
+      "zero-first": {
+        "processMedianNsPerOperation": [
+          3.2844648361206055,
+          3.2413451075553894,
+          3.314939498901367,
+          4.377318024635315
+        ],
+        "medianNsPerOperation": 3.2997021675109863,
+        "blockMedians": {
+          "0": 3.2629049718379974,
+          "1": 3.846128761768341
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "71a4daf80e4d3a3b"
+        ],
+        "changeFraction": -0.313219530850961,
+        "blockChangeFractions": {
+          "0": -0.3208782812547064,
+          "1": -0.33119938112501146
+        }
+      },
+      "bit-range": {
+        "processMedianNsPerOperation": [
+          4.831856966018677,
+          4.753156244754791,
+          5.8944398164749146,
+          6.198569476604462
+        ],
+        "medianNsPerOperation": 5.363148391246796,
+        "blockMedians": {
+          "0": 4.792506605386734,
+          "1": 6.046504646539688
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "71a4daf80e4d3a3b"
+        ],
+        "changeFraction": 0.11625394695387281,
+        "blockChangeFractions": {
+          "0": -0.0025160551595719838,
+          "1": 0.051422430219669524
+        }
+      },
+      "both": {
+        "processMedianNsPerOperation": [
+          4.413462817668915,
+          3.241708219051361,
+          3.359278619289398,
+          4.345673024654388
+        ],
+        "medianNsPerOperation": 3.8524758219718933,
+        "blockMedians": {
+          "0": 3.827585518360138,
+          "1": 3.8524758219718933
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "71a4daf80e4d3a3b"
+        ],
+        "changeFraction": -0.19816849579640816,
+        "blockChangeFractions": {
+          "0": -0.20334901619611379,
+          "1": -0.33009569530087357
+        }
+      },
+      "crossVariantChecksumsEqual": true
+    },
+    "family-zero_product_both": {
+      "baseline": {
+        "processMedianNsPerOperation": [
+          3.5992817282676697,
+          3.559679329395294,
+          3.6095651388168335,
+          5.634021043777466
+        ],
+        "medianNsPerOperation": 3.6044234335422516,
+        "blockMedians": {
+          "0": 3.579480528831482,
+          "1": 4.62179309129715
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "77a27e2d18f2b4d6"
+        ],
+        "changeFraction": 0.0,
+        "blockChangeFractions": {
+          "0": 0.0,
+          "1": 0.0
+        }
+      },
+      "zero-first": {
+        "processMedianNsPerOperation": [
+          3.049773097038269,
+          2.9899383187294006,
+          3.08049613237381,
+          5.233650207519531
+        ],
+        "medianNsPerOperation": 3.0651346147060394,
+        "blockMedians": {
+          "0": 3.019855707883835,
+          "1": 4.1570731699466705
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "77a27e2d18f2b4d6"
+        ],
+        "changeFraction": -0.1496186085734731,
+        "blockChangeFractions": {
+          "0": -0.1563424682548381,
+          "1": -0.10054970271723074
+        }
+      },
+      "bit-range": {
+        "processMedianNsPerOperation": [
+          4.3453816175460815,
+          4.252817988395691,
+          4.276352107524872,
+          6.446914553642273
+        ],
+        "medianNsPerOperation": 4.310866862535477,
+        "blockMedians": {
+          "0": 4.299099802970886,
+          "1": 5.361633330583572
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "77a27e2d18f2b4d6"
+        ],
+        "changeFraction": 0.19599346248256055,
+        "blockChangeFractions": {
+          "0": 0.20104014209411658,
+          "1": 0.1600764518601112
+        }
+      },
+      "both": {
+        "processMedianNsPerOperation": [
+          5.275502800941467,
+          3.0251097083091736,
+          3.058754026889801,
+          5.210931241512299
+        ],
+        "medianNsPerOperation": 4.13484263420105,
+        "blockMedians": {
+          "0": 4.15030625462532,
+          "1": 4.13484263420105
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "77a27e2d18f2b4d6"
+        ],
+        "changeFraction": 0.14715784935887188,
+        "blockChangeFractions": {
+          "0": 0.159471666683485,
+          "1": -0.10535964018229826
+        }
+      },
+      "crossVariantChecksumsEqual": true
+    },
+    "family-finite_nonzero_zeroaddend": {
+      "baseline": {
+        "processMedianNsPerOperation": [
+          6.99759966135025,
+          6.724127769470215,
+          6.720209062099457,
+          10.770868837833405
+        ],
+        "medianNsPerOperation": 6.8608637154102325,
+        "blockMedians": {
+          "0": 6.8608637154102325,
+          "1": 8.74553894996643
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "0c61a46beef42a69"
+        ],
+        "changeFraction": 0.0,
+        "blockChangeFractions": {
+          "0": 0.0,
+          "1": 0.0
+        }
+      },
+      "zero-first": {
+        "processMedianNsPerOperation": [
+          8.01886260509491,
+          8.106461226940155,
+          8.728152453899384,
+          12.400614619255066
+        ],
+        "medianNsPerOperation": 8.41730684041977,
+        "blockMedians": {
+          "0": 8.062661916017532,
+          "1": 10.564383536577225
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "0c61a46beef42a69"
+        ],
+        "changeFraction": 0.22685819010128405,
+        "blockChangeFractions": {
+          "0": 0.17516718746474047,
+          "1": 0.20797398502441933
+        }
+      },
+      "bit-range": {
+        "processMedianNsPerOperation": [
+          6.530555188655853,
+          6.295548677444458,
+          10.104641377925873,
+          11.747041881084442
+        ],
+        "medianNsPerOperation": 8.317598283290863,
+        "blockMedians": {
+          "0": 6.413051933050156,
+          "1": 10.925841629505157
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "0c61a46beef42a69"
+        ],
+        "changeFraction": 0.2123252447951487,
+        "blockChangeFractions": {
+          "0": -0.06527046752936427,
+          "1": 0.24930455309985167
+        }
+      },
+      "both": {
+        "processMedianNsPerOperation": [
+          9.529160916805267,
+          7.337243497371674,
+          7.424394905567169,
+          11.850719630718231
+        ],
+        "medianNsPerOperation": 8.476777911186218,
+        "blockMedians": {
+          "0": 8.43320220708847,
+          "1": 9.6375572681427
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "0c61a46beef42a69"
+        ],
+        "changeFraction": 0.23552635102581476,
+        "blockChangeFractions": {
+          "0": 0.2291750072438543,
+          "1": 0.10199695219237381
+        }
+      },
+      "crossVariantChecksumsEqual": true
+    },
+    "family-finite_nonzero_unitfactor": {
+      "baseline": {
+        "processMedianNsPerOperation": [
+          6.900649666786194,
+          6.743968367576599,
+          6.724606096744537,
+          10.65666526556015
+        ],
+        "medianNsPerOperation": 6.8223090171813965,
+        "blockMedians": {
+          "0": 6.8223090171813965,
+          "1": 8.690635681152344
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "e1a2529eeb0e8bc0"
+        ],
+        "changeFraction": 0.0,
+        "blockChangeFractions": {
+          "0": 0.0,
+          "1": 0.0
+        }
+      },
+      "zero-first": {
+        "processMedianNsPerOperation": [
+          8.030234515666962,
+          8.216291069984436,
+          8.207130372524261,
+          12.333029627799988
+        ],
+        "medianNsPerOperation": 8.211710721254349,
+        "blockMedians": {
+          "0": 8.123262792825699,
+          "1": 10.270080000162125
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "e1a2529eeb0e8bc0"
+        ],
+        "changeFraction": 0.20365563925261432,
+        "blockChangeFractions": {
+          "0": 0.1906911241293765,
+          "1": 0.18174094243015748
+        }
+      },
+      "bit-range": {
+        "processMedianNsPerOperation": [
+          10.208834409713745,
+          6.278401970863342,
+          10.123553991317749,
+          10.087909042835236
+        ],
+        "medianNsPerOperation": 10.105731517076492,
+        "blockMedians": {
+          "0": 8.243618190288544,
+          "1": 10.105731517076492
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "e1a2529eeb0e8bc0"
+        ],
+        "changeFraction": 0.4812773053266979,
+        "blockChangeFractions": {
+          "0": 0.20833257032592667,
+          "1": 0.16282995719094662
+        }
+      },
+      "both": {
+        "processMedianNsPerOperation": [
+          7.380864202976227,
+          7.334900140762329,
+          7.359754681587219,
+          11.705178022384644
+        ],
+        "medianNsPerOperation": 7.370309442281723,
+        "blockMedians": {
+          "0": 7.357882171869278,
+          "1": 9.532466351985931
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "e1a2529eeb0e8bc0"
+        ],
+        "changeFraction": 0.08032477328720145,
+        "blockChangeFractions": {
+          "0": 0.07850320959356827,
+          "1": 0.09686640905443689
+        }
+      },
+      "crossVariantChecksumsEqual": true
+    },
+    "family-remaining_emulated": {
+      "baseline": {
+        "processMedianNsPerOperation": [
+          7.187528729438782,
+          7.3637378215789795,
+          7.274059891700745,
+          11.11439561843872
+        ],
+        "medianNsPerOperation": 7.318898856639862,
+        "blockMedians": {
+          "0": 7.275633275508881,
+          "1": 9.194227755069733
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "967208aa3260d79a"
+        ],
+        "changeFraction": 0.0,
+        "blockChangeFractions": {
+          "0": 0.0,
+          "1": 0.0
+        }
+      },
+      "zero-first": {
+        "processMedianNsPerOperation": [
+          8.518410563468933,
+          8.562663912773132,
+          8.724479794502258,
+          12.876712918281555
+        ],
+        "medianNsPerOperation": 8.643571853637695,
+        "blockMedians": {
+          "0": 8.540537238121033,
+          "1": 10.800596356391907
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "967208aa3260d79a"
+        ],
+        "changeFraction": 0.18099348316530728,
+        "blockChangeFractions": {
+          "0": 0.17385482675027775,
+          "1": 0.17471490201408346
+        }
+      },
+      "bit-range": {
+        "processMedianNsPerOperation": [
+          10.452244400978088,
+          6.617253422737122,
+          10.599265813827515,
+          10.584452271461487
+        ],
+        "medianNsPerOperation": 10.518348336219788,
+        "blockMedians": {
+          "0": 8.534748911857605,
+          "1": 10.5918590426445
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "967208aa3260d79a"
+        ],
+        "changeFraction": 0.43714902231191743,
+        "blockChangeFractions": {
+          "0": 0.1730592497820278,
+          "1": 0.15201181924214446
+        }
+      },
+      "both": {
+        "processMedianNsPerOperation": [
+          8.433548092842102,
+          8.064848780632019,
+          8.241756439208984,
+          12.020928144454956
+        ],
+        "medianNsPerOperation": 8.337652266025543,
+        "blockMedians": {
+          "0": 8.24919843673706,
+          "1": 10.13134229183197
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "967208aa3260d79a"
+        ],
+        "changeFraction": 0.1391949020393206,
+        "blockChangeFractions": {
+          "0": 0.13381174179096944,
+          "1": 0.1019242248208947
+        }
+      },
+      "crossVariantChecksumsEqual": true
+    },
+    "family-remaining_fallback": {
+      "baseline": {
+        "processMedianNsPerOperation": [
+          17.281343698501587,
+          17.785956144332886,
+          17.594594478607178,
+          17.83098077774048
+        ],
+        "medianNsPerOperation": 17.69027531147003,
+        "blockMedians": {
+          "0": 17.533649921417236,
+          "1": 17.712787628173828
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "e8ae13f1858ccb02"
+        ],
+        "changeFraction": 0.0,
+        "blockChangeFractions": {
+          "0": 0.0,
+          "1": 0.0
+        }
+      },
+      "zero-first": {
+        "processMedianNsPerOperation": [
+          17.07077693939209,
+          17.5318500995636,
+          17.39227294921875,
+          22.84932255744934
+        ],
+        "medianNsPerOperation": 17.462061524391174,
+        "blockMedians": {
+          "0": 17.301313519477844,
+          "1": 20.120797753334045
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "e8ae13f1858ccb02"
+        ],
+        "changeFraction": -0.012900522069935638,
+        "blockChangeFractions": {
+          "0": -0.01325088632319471,
+          "1": 0.13594755245244716
+        }
+      },
+      "bit-range": {
+        "processMedianNsPerOperation": [
+          21.495710611343384,
+          17.05853247642517,
+          21.827457189559937,
+          21.97320866584778
+        ],
+        "medianNsPerOperation": 21.66158390045166,
+        "blockMedians": {
+          "0": 19.277121543884277,
+          "1": 21.900332927703857
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "e8ae13f1858ccb02"
+        ],
+        "changeFraction": 0.2244910561910085,
+        "blockChangeFractions": {
+          "0": 0.0994357495604723,
+          "1": 0.23641367962145887
+        }
+      },
+      "both": {
+        "processMedianNsPerOperation": [
+          21.513652563095093,
+          17.477568864822388,
+          17.696561098098755,
+          21.56959366798401
+        ],
+        "medianNsPerOperation": 19.605106830596924,
+        "blockMedians": {
+          "0": 19.49561071395874,
+          "1": 19.633077383041382
+        },
+        "retainedSamples": 24,
+        "checksums": [
+          "e8ae13f1858ccb02"
+        ],
+        "changeFraction": 0.10824204176660568,
+        "blockChangeFractions": {
+          "0": 0.11189688406775944,
+          "1": 0.10841262229177051
+        }
+      },
+      "crossVariantChecksumsEqual": true
+    }
+  },
+  "limits": [
+    "First-N actual operand samples are repeated with measured diagnostic family proportions; this is not a replay of the shipping operation stream.",
+    "Probe side effects may alter compiler call elimination and inlining; diagnostic counts are not guaranteed shipping execution counts.",
+    "Within-family value distribution is biased by bounded first samples; micro results select experiments only.",
+    "Standalone loop, common volatile loads/checksum, separate module layout and compiler context; micro effects do not establish package or workflow gains."
+  ]
+}

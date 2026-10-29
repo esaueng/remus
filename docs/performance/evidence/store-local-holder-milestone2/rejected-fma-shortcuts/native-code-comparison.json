@@ -1,0 +1,1025 @@
+{
+  "schema": "remus-native-code-provenance-v1",
+  "status": "code-sections-identical",
+  "source": "292f084f9165f8f31bcaeb1581324eba69835994",
+  "source_clean": true,
+  "source_files": {
+    "Cargo.toml": "239ea846958192f846c466afe64e719f109e702e0570e4b00d1e8da653f840a2",
+    "Cargo.lock": "51b920921dfa2a0d64448d7555bc529bed4330f0d5503caf8f3593fd42b30f0c",
+    ".cargo/config.toml": "fa81c590ff19f6ed86010391d3dbb99b88a803740ecf1ec6c3db159da61c2ee8",
+    "crates/math/Cargo.toml": "3cf90efb556880a5c18e7b670ccfb714f41dfb3c51e23ec8f838cf800748219c",
+    "crates/math/benches/intersection_inner_loops.rs": "f9bb47da12ed9d53bf5dbaf6fb02706118598761f81dff338ac594e7658b3bf0",
+    "crates/math/src/nurbs/intersection/line.rs": "e94f6c40c1fc5371a1ca64653dd9913b0b8bc971c9fbd1cdeea85e460eac3255",
+    "crates/math/src/fma.rs": "d2488ab8afd1d7f70b18bb49dc9a8b3bfbbfbd89af0a693a1402c98d01d56254"
+  },
+  "baseline": {
+    "source": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+    "binary_sha256": "34e882b265c7ee9ff0b6f5913d125d9e7a74e306275bb0576af04e5e9d528c45",
+    "binary_bytes": 57611432,
+    "binary_mode": 509,
+    "sections": [
+      {
+        "name": ".interp",
+        "kind": "PROGBITS",
+        "flags": "A",
+        "address": 736,
+        "offset": 736,
+        "size": 28,
+        "extracted_size": 28,
+        "sha256": "9097c98ea70f6f3b01d50145eb72bf55ad1f4e9713bccf27bd6405d6254eed00",
+        "file": "baseline.interp.bin",
+        "executable": false
+      },
+      {
+        "name": ".note.ABI-tag",
+        "kind": "NOTE",
+        "flags": "A",
+        "address": 764,
+        "offset": 764,
+        "size": 32,
+        "extracted_size": 32,
+        "sha256": "6e48317ad93a8ac2dc04321465ede06d1274543fc8ab172e68171a9d684bb313",
+        "file": "baseline.note.ABI-tag.bin",
+        "executable": false
+      },
+      {
+        "name": ".note.gnu.build-id",
+        "kind": "NOTE",
+        "flags": "A",
+        "address": 796,
+        "offset": 796,
+        "size": 36,
+        "extracted_size": 36,
+        "sha256": "708ee702b28ed9d4dfa32a0ec6f6ac85c33e62f9346771e7815a025ef77925ee",
+        "file": "baseline.note.gnu.build-id.bin",
+        "executable": false
+      },
+      {
+        "name": ".dynsym",
+        "kind": "DYNSYM",
+        "flags": "A",
+        "address": 832,
+        "offset": 832,
+        "size": 3528,
+        "extracted_size": 3528,
+        "sha256": "8b6c86ed22639aca097a3912d19f024069421d1236a179f8a4f49b45c5098e52",
+        "file": "baseline.dynsym.bin",
+        "executable": false
+      },
+      {
+        "name": ".gnu.version",
+        "kind": "VERSYM",
+        "flags": "A",
+        "address": 4360,
+        "offset": 4360,
+        "size": 294,
+        "extracted_size": 294,
+        "sha256": "3ff67a86cbc6ccffd05ac390f3eb356977c570eb2837ceceddad94d35fc85aba",
+        "file": "baseline.gnu.version.bin",
+        "executable": false
+      },
+      {
+        "name": ".gnu.version_r",
+        "kind": "VERNEED",
+        "flags": "A",
+        "address": 4656,
+        "offset": 4656,
+        "size": 496,
+        "extracted_size": 496,
+        "sha256": "24b98968af5e1fcd0af415de2d908620b39b66530919bd708ff9959e96f77eae",
+        "file": "baseline.gnu.version_r.bin",
+        "executable": false
+      },
+      {
+        "name": ".gnu.hash",
+        "kind": "GNU_HASH",
+        "flags": "A",
+        "address": 5152,
+        "offset": 5152,
+        "size": 28,
+        "extracted_size": 28,
+        "sha256": "1afd34e6bc677894eaa0226216370892e8ded967d1993401eb7366ed9ce31d9c",
+        "file": "baseline.gnu.hash.bin",
+        "executable": false
+      },
+      {
+        "name": ".dynstr",
+        "kind": "STRTAB",
+        "flags": "A",
+        "address": 5180,
+        "offset": 5180,
+        "size": 2107,
+        "extracted_size": 2107,
+        "sha256": "755b94c1c008c8683b3a238df13c7792c0ffbe547cea9fd07fcdcd10c8f31383",
+        "file": "baseline.dynstr.bin",
+        "executable": false
+      },
+      {
+        "name": ".rela.dyn",
+        "kind": "RELA",
+        "flags": "A",
+        "address": 7288,
+        "offset": 7288,
+        "size": 247056,
+        "extracted_size": 247056,
+        "sha256": "9d70728ffc48896f34dcfcfe2e96aeff808ebe47735d0ed4476480bd5d664e7c",
+        "file": "baseline.rela.dyn.bin",
+        "executable": false
+      },
+      {
+        "name": ".rela.plt",
+        "kind": "RELA",
+        "flags": "AI",
+        "address": 254344,
+        "offset": 254344,
+        "size": 72,
+        "extracted_size": 72,
+        "sha256": "06b0d19f1ca957e7de2da8d2f9aea03a25a14618c62011cd2a8122e20e9a7bb4",
+        "file": "baseline.rela.plt.bin",
+        "executable": false
+      },
+      {
+        "name": ".rodata",
+        "kind": "PROGBITS",
+        "flags": "AMS",
+        "address": 254464,
+        "offset": 254464,
+        "size": 413636,
+        "extracted_size": 413636,
+        "sha256": "121300683c2d54b65785156404d3d176b6fd36944ec96e9334463098bb477e4f",
+        "file": "baseline.rodata.bin",
+        "executable": false
+      },
+      {
+        "name": ".gcc_except_table",
+        "kind": "PROGBITS",
+        "flags": "A",
+        "address": 668100,
+        "offset": 668100,
+        "size": 104008,
+        "extracted_size": 104008,
+        "sha256": "210122d2720d660768e30b3121a1cc0d599d747ba50b946c2c6bc2dff2b87e30",
+        "file": "baseline.gcc_except_table.bin",
+        "executable": false
+      },
+      {
+        "name": ".debug_gdb_scripts",
+        "kind": "PROGBITS",
+        "flags": "AMS",
+        "address": 772108,
+        "offset": 772108,
+        "size": 34,
+        "extracted_size": 34,
+        "sha256": "90b05a6111bee6fd5b996298dba2fda834c39fb2709fd7f2377455c439f84eee",
+        "file": "baseline.debug_gdb_scripts.bin",
+        "executable": false
+      },
+      {
+        "name": ".eh_frame_hdr",
+        "kind": "PROGBITS",
+        "flags": "A",
+        "address": 772144,
+        "offset": 772144,
+        "size": 27516,
+        "extracted_size": 27516,
+        "sha256": "3eb82c3793dc2595c9e1abd28f1952fe64469bdf53518a9ba3e1cbab7ef179f3",
+        "file": "baseline.eh_frame_hdr.bin",
+        "executable": false
+      },
+      {
+        "name": ".eh_frame",
+        "kind": "PROGBITS",
+        "flags": "A",
+        "address": 799664,
+        "offset": 799664,
+        "size": 195716,
+        "extracted_size": 195716,
+        "sha256": "f5ad0e8c7421a00ed604907e970e5753178af6efcafbc0d7b63c794a1976ca13",
+        "file": "baseline.eh_frame.bin",
+        "executable": false
+      },
+      {
+        "name": ".text",
+        "kind": "PROGBITS",
+        "flags": "AX",
+        "address": 999488,
+        "offset": 995392,
+        "size": 2548567,
+        "extracted_size": 2548567,
+        "sha256": "ff12b00457f6ca6fa0a70e113855d41604df1dee7ef8764dccb8fe47e3e71b4b",
+        "file": "baseline.text.bin",
+        "executable": true
+      },
+      {
+        "name": ".init",
+        "kind": "PROGBITS",
+        "flags": "AX",
+        "address": 3548056,
+        "offset": 3543960,
+        "size": 27,
+        "extracted_size": 27,
+        "sha256": "6556a5621a2caedb60cf0e6723e267cde0f5bf0ad830153f5af1b3fe5dc70a82",
+        "file": "baseline.init.bin",
+        "executable": true
+      },
+      {
+        "name": ".fini",
+        "kind": "PROGBITS",
+        "flags": "AX",
+        "address": 3548084,
+        "offset": 3543988,
+        "size": 13,
+        "extracted_size": 13,
+        "sha256": "6a4f3e5efc7c1f7ee7d6f21afd9ed040ba1d7f0b97bb12b016f5b176cc558bd8",
+        "file": "baseline.fini.bin",
+        "executable": true
+      },
+      {
+        "name": ".plt",
+        "kind": "PROGBITS",
+        "flags": "AX",
+        "address": 3548112,
+        "offset": 3544016,
+        "size": 64,
+        "extracted_size": 64,
+        "sha256": "596ef482a7692cb1033479653019bde71a07105ca15108111f1d391532643f03",
+        "file": "baseline.plt.bin",
+        "executable": true
+      },
+      {
+        "name": ".tdata",
+        "kind": "PROGBITS",
+        "flags": "WAT",
+        "address": 3552272,
+        "offset": 3544080,
+        "size": 32,
+        "extracted_size": 32,
+        "sha256": "59e7addb5e068640de3f8fb015017e7aa7495430d2533f87d4ece9f7ee548fa3",
+        "file": "baseline.tdata.bin",
+        "executable": false
+      },
+      {
+        "name": ".fini_array",
+        "kind": "FINI_ARRAY",
+        "flags": "WA",
+        "address": 3552304,
+        "offset": 3544112,
+        "size": 8,
+        "extracted_size": 8,
+        "sha256": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+        "file": "baseline.fini_array.bin",
+        "executable": false
+      },
+      {
+        "name": ".init_array",
+        "kind": "INIT_ARRAY",
+        "flags": "WAo",
+        "address": 3552312,
+        "offset": 3544120,
+        "size": 16,
+        "extracted_size": 16,
+        "sha256": "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb",
+        "file": "baseline.init_array.bin",
+        "executable": false
+      },
+      {
+        "name": ".data.rel.ro",
+        "kind": "PROGBITS",
+        "flags": "WA",
+        "address": 3552328,
+        "offset": 3544136,
+        "size": 192064,
+        "extracted_size": 192064,
+        "sha256": "18dc8b777f8b3e0362e1e23a02ac31a2f3a9b2cc33662fdcd9a88e0e9fc0b406",
+        "file": "baseline.data.rel.ro.bin",
+        "executable": false
+      },
+      {
+        "name": ".dynamic",
+        "kind": "DYNAMIC",
+        "flags": "WA",
+        "address": 3744392,
+        "offset": 3736200,
+        "size": 480,
+        "extracted_size": 480,
+        "sha256": "6bd75eb30dc66483be975139cc7d32f792f3723cad72a0d0ecded2653a9fe4cc",
+        "file": "baseline.dynamic.bin",
+        "executable": false
+      },
+      {
+        "name": ".got",
+        "kind": "PROGBITS",
+        "flags": "WA",
+        "address": 3744872,
+        "offset": 3736680,
+        "size": 8760,
+        "extracted_size": 8760,
+        "sha256": "dbef0df1fd7d8dc0e08fbba8dcbceb4d1bcf177073f6027d677ab0df146bcaf6",
+        "file": "baseline.got.bin",
+        "executable": false
+      },
+      {
+        "name": ".got.plt",
+        "kind": "PROGBITS",
+        "flags": "WA",
+        "address": 3753632,
+        "offset": 3745440,
+        "size": 48,
+        "extracted_size": 48,
+        "sha256": "e3d39331dc8d2c80fcb0c85193ed70491dccebac0285332d1144a0609cf08775",
+        "file": "baseline.got.plt.bin",
+        "executable": false
+      },
+      {
+        "name": ".tm_clone_table",
+        "kind": "PROGBITS",
+        "flags": "WA",
+        "address": 3757776,
+        "offset": 3745488,
+        "size": 0,
+        "extracted_size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "file": "baseline.tm_clone_table.bin",
+        "executable": false
+      },
+      {
+        "name": ".data",
+        "kind": "PROGBITS",
+        "flags": "WA",
+        "address": 3757776,
+        "offset": 3745488,
+        "size": 2784,
+        "extracted_size": 2784,
+        "sha256": "0d7de3b9639e7e6486a9082e017ced55e75f35fad9aa04ca9d8af8569c3a11b9",
+        "file": "baseline.data.bin",
+        "executable": false
+      }
+    ]
+  },
+  "tools": {
+    "objcopy": "GNU objcopy (GNU Binutils for Ubuntu) 2.42",
+    "objdump": "GNU objdump (GNU Binutils for Ubuntu) 2.42",
+    "readelf": "GNU readelf (GNU Binutils for Ubuntu) 2.42",
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.0\nLLVM version: 22.1.2",
+    "cargo": "cargo 1.96.0 (30a34c682 2026-05-25)"
+  },
+  "scope": "Exact extracted machine-code/data bytes and compiler provenance only; no elapsed-time or whole-package claim. GNU objcopy always writes a separate extraction destination; frozen baseline input preserved.",
+  "candidate_build": {
+    "command": [
+      "taskset",
+      "-c",
+      "0-14,16-30",
+      "env",
+      "CARGO_BUILD_JOBS=2",
+      "RUST_MIN_STACK=536870912",
+      "cargo",
+      "bench",
+      "-p",
+      "remus-math",
+      "--bench",
+      "intersection_inner_loops",
+      "--profile",
+      "profiling",
+      "--no-run",
+      "--message-format=json-render-diagnostics"
+    ],
+    "exit_code": 0,
+    "json_sha256": "a7d6951225a5950ad53f2ad7296e2e49114073d8b79700ceb1ad4b481eb963c2",
+    "log_sha256": "a137b16315220f07477dcce10f477984da41a432aedc129516e4c2c70ede769b",
+    "artifact": {
+      "features": [
+        "default"
+      ],
+      "profile": {
+        "opt_level": "3",
+        "debuginfo": 2,
+        "debug_assertions": false,
+        "overflow_checks": true,
+        "test": true
+      },
+      "fresh": false,
+      "executable_basename": "intersection_inner_loops-5ee5a25ca5077ead",
+      "target_name": "intersection_inner_loops",
+      "target_kind": [
+        "bench"
+      ]
+    },
+    "cargo_fingerprints": {
+      "remus-math-5ee5a25ca5077ead": {
+        "rustc": 16696009966390864400,
+        "features": "[\"default\"]",
+        "declared_features": "[\"default\", \"serde\", \"simd\"]",
+        "target": 1422439684827079840,
+        "profile": 15381347167402631063,
+        "path": 16051533941787157392,
+        "deps": [
+          [
+            1957009224993739128,
+            "thiserror",
+            false,
+            3726407899843588037
+          ],
+          [
+            2490015432001885548,
+            "remus_math",
+            false,
+            13236738781305046239
+          ],
+          [
+            3629170276479397743,
+            "proptest",
+            false,
+            16730248483293088790
+          ],
+          [
+            8160210889872729633,
+            "serde_json",
+            false,
+            16695143469197991355
+          ],
+          [
+            11177420919098925944,
+            "log",
+            false,
+            15850052509195443764
+          ],
+          [
+            13513330987694523139,
+            "robust",
+            false,
+            17504342694894951064
+          ],
+          [
+            16321741466644061277,
+            "criterion",
+            false,
+            5987893727218000061
+          ]
+        ],
+        "local": [
+          {
+            "CheckDepInfo": {
+              "dep_info": "profiling/.fingerprint/remus-math-5ee5a25ca5077ead/dep-test-bench-intersection_inner_loops",
+              "checksum": false
+            }
+          }
+        ],
+        "rustflags": [],
+        "config": 8247474407144887393,
+        "compile_kind": 0
+      }
+    },
+    "producer_json_file": "candidate-build.jsonl",
+    "build_log_file": "candidate-build.log"
+  },
+  "candidate": {
+    "source": "292f084f9165f8f31bcaeb1581324eba69835994",
+    "binary_sha256": "fa0fa4624f981a620d9c16620f4666c2929c5a076b4c7570200a04b9adac07f4",
+    "binary_bytes": 57611440,
+    "binary_mode": 509,
+    "sections": [
+      {
+        "name": ".interp",
+        "kind": "PROGBITS",
+        "flags": "A",
+        "address": 736,
+        "offset": 736,
+        "size": 28,
+        "extracted_size": 28,
+        "sha256": "9097c98ea70f6f3b01d50145eb72bf55ad1f4e9713bccf27bd6405d6254eed00",
+        "file": "candidate.interp.bin",
+        "executable": false
+      },
+      {
+        "name": ".note.ABI-tag",
+        "kind": "NOTE",
+        "flags": "A",
+        "address": 764,
+        "offset": 764,
+        "size": 32,
+        "extracted_size": 32,
+        "sha256": "6e48317ad93a8ac2dc04321465ede06d1274543fc8ab172e68171a9d684bb313",
+        "file": "candidate.note.ABI-tag.bin",
+        "executable": false
+      },
+      {
+        "name": ".note.gnu.build-id",
+        "kind": "NOTE",
+        "flags": "A",
+        "address": 796,
+        "offset": 796,
+        "size": 36,
+        "extracted_size": 36,
+        "sha256": "a1b6c89c6c020cc177e2b0286c5b83d80a3ca5294c34c60b45b684819ebe09cf",
+        "file": "candidate.note.gnu.build-id.bin",
+        "executable": false
+      },
+      {
+        "name": ".dynsym",
+        "kind": "DYNSYM",
+        "flags": "A",
+        "address": 832,
+        "offset": 832,
+        "size": 3528,
+        "extracted_size": 3528,
+        "sha256": "8b6c86ed22639aca097a3912d19f024069421d1236a179f8a4f49b45c5098e52",
+        "file": "candidate.dynsym.bin",
+        "executable": false
+      },
+      {
+        "name": ".gnu.version",
+        "kind": "VERSYM",
+        "flags": "A",
+        "address": 4360,
+        "offset": 4360,
+        "size": 294,
+        "extracted_size": 294,
+        "sha256": "3ff67a86cbc6ccffd05ac390f3eb356977c570eb2837ceceddad94d35fc85aba",
+        "file": "candidate.gnu.version.bin",
+        "executable": false
+      },
+      {
+        "name": ".gnu.version_r",
+        "kind": "VERNEED",
+        "flags": "A",
+        "address": 4656,
+        "offset": 4656,
+        "size": 496,
+        "extracted_size": 496,
+        "sha256": "24b98968af5e1fcd0af415de2d908620b39b66530919bd708ff9959e96f77eae",
+        "file": "candidate.gnu.version_r.bin",
+        "executable": false
+      },
+      {
+        "name": ".gnu.hash",
+        "kind": "GNU_HASH",
+        "flags": "A",
+        "address": 5152,
+        "offset": 5152,
+        "size": 28,
+        "extracted_size": 28,
+        "sha256": "1afd34e6bc677894eaa0226216370892e8ded967d1993401eb7366ed9ce31d9c",
+        "file": "candidate.gnu.hash.bin",
+        "executable": false
+      },
+      {
+        "name": ".dynstr",
+        "kind": "STRTAB",
+        "flags": "A",
+        "address": 5180,
+        "offset": 5180,
+        "size": 2107,
+        "extracted_size": 2107,
+        "sha256": "755b94c1c008c8683b3a238df13c7792c0ffbe547cea9fd07fcdcd10c8f31383",
+        "file": "candidate.dynstr.bin",
+        "executable": false
+      },
+      {
+        "name": ".rela.dyn",
+        "kind": "RELA",
+        "flags": "A",
+        "address": 7288,
+        "offset": 7288,
+        "size": 247056,
+        "extracted_size": 247056,
+        "sha256": "9d70728ffc48896f34dcfcfe2e96aeff808ebe47735d0ed4476480bd5d664e7c",
+        "file": "candidate.rela.dyn.bin",
+        "executable": false
+      },
+      {
+        "name": ".rela.plt",
+        "kind": "RELA",
+        "flags": "AI",
+        "address": 254344,
+        "offset": 254344,
+        "size": 72,
+        "extracted_size": 72,
+        "sha256": "06b0d19f1ca957e7de2da8d2f9aea03a25a14618c62011cd2a8122e20e9a7bb4",
+        "file": "candidate.rela.plt.bin",
+        "executable": false
+      },
+      {
+        "name": ".rodata",
+        "kind": "PROGBITS",
+        "flags": "AMS",
+        "address": 254464,
+        "offset": 254464,
+        "size": 413636,
+        "extracted_size": 413636,
+        "sha256": "121300683c2d54b65785156404d3d176b6fd36944ec96e9334463098bb477e4f",
+        "file": "candidate.rodata.bin",
+        "executable": false
+      },
+      {
+        "name": ".gcc_except_table",
+        "kind": "PROGBITS",
+        "flags": "A",
+        "address": 668100,
+        "offset": 668100,
+        "size": 104008,
+        "extracted_size": 104008,
+        "sha256": "210122d2720d660768e30b3121a1cc0d599d747ba50b946c2c6bc2dff2b87e30",
+        "file": "candidate.gcc_except_table.bin",
+        "executable": false
+      },
+      {
+        "name": ".debug_gdb_scripts",
+        "kind": "PROGBITS",
+        "flags": "AMS",
+        "address": 772108,
+        "offset": 772108,
+        "size": 34,
+        "extracted_size": 34,
+        "sha256": "90b05a6111bee6fd5b996298dba2fda834c39fb2709fd7f2377455c439f84eee",
+        "file": "candidate.debug_gdb_scripts.bin",
+        "executable": false
+      },
+      {
+        "name": ".eh_frame_hdr",
+        "kind": "PROGBITS",
+        "flags": "A",
+        "address": 772144,
+        "offset": 772144,
+        "size": 27516,
+        "extracted_size": 27516,
+        "sha256": "3eb82c3793dc2595c9e1abd28f1952fe64469bdf53518a9ba3e1cbab7ef179f3",
+        "file": "candidate.eh_frame_hdr.bin",
+        "executable": false
+      },
+      {
+        "name": ".eh_frame",
+        "kind": "PROGBITS",
+        "flags": "A",
+        "address": 799664,
+        "offset": 799664,
+        "size": 195716,
+        "extracted_size": 195716,
+        "sha256": "f5ad0e8c7421a00ed604907e970e5753178af6efcafbc0d7b63c794a1976ca13",
+        "file": "candidate.eh_frame.bin",
+        "executable": false
+      },
+      {
+        "name": ".text",
+        "kind": "PROGBITS",
+        "flags": "AX",
+        "address": 999488,
+        "offset": 995392,
+        "size": 2548567,
+        "extracted_size": 2548567,
+        "sha256": "ff12b00457f6ca6fa0a70e113855d41604df1dee7ef8764dccb8fe47e3e71b4b",
+        "file": "candidate.text.bin",
+        "executable": true
+      },
+      {
+        "name": ".init",
+        "kind": "PROGBITS",
+        "flags": "AX",
+        "address": 3548056,
+        "offset": 3543960,
+        "size": 27,
+        "extracted_size": 27,
+        "sha256": "6556a5621a2caedb60cf0e6723e267cde0f5bf0ad830153f5af1b3fe5dc70a82",
+        "file": "candidate.init.bin",
+        "executable": true
+      },
+      {
+        "name": ".fini",
+        "kind": "PROGBITS",
+        "flags": "AX",
+        "address": 3548084,
+        "offset": 3543988,
+        "size": 13,
+        "extracted_size": 13,
+        "sha256": "6a4f3e5efc7c1f7ee7d6f21afd9ed040ba1d7f0b97bb12b016f5b176cc558bd8",
+        "file": "candidate.fini.bin",
+        "executable": true
+      },
+      {
+        "name": ".plt",
+        "kind": "PROGBITS",
+        "flags": "AX",
+        "address": 3548112,
+        "offset": 3544016,
+        "size": 64,
+        "extracted_size": 64,
+        "sha256": "596ef482a7692cb1033479653019bde71a07105ca15108111f1d391532643f03",
+        "file": "candidate.plt.bin",
+        "executable": true
+      },
+      {
+        "name": ".tdata",
+        "kind": "PROGBITS",
+        "flags": "WAT",
+        "address": 3552272,
+        "offset": 3544080,
+        "size": 32,
+        "extracted_size": 32,
+        "sha256": "59e7addb5e068640de3f8fb015017e7aa7495430d2533f87d4ece9f7ee548fa3",
+        "file": "candidate.tdata.bin",
+        "executable": false
+      },
+      {
+        "name": ".fini_array",
+        "kind": "FINI_ARRAY",
+        "flags": "WA",
+        "address": 3552304,
+        "offset": 3544112,
+        "size": 8,
+        "extracted_size": 8,
+        "sha256": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+        "file": "candidate.fini_array.bin",
+        "executable": false
+      },
+      {
+        "name": ".init_array",
+        "kind": "INIT_ARRAY",
+        "flags": "WAo",
+        "address": 3552312,
+        "offset": 3544120,
+        "size": 16,
+        "extracted_size": 16,
+        "sha256": "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb",
+        "file": "candidate.init_array.bin",
+        "executable": false
+      },
+      {
+        "name": ".data.rel.ro",
+        "kind": "PROGBITS",
+        "flags": "WA",
+        "address": 3552328,
+        "offset": 3544136,
+        "size": 192064,
+        "extracted_size": 192064,
+        "sha256": "18dc8b777f8b3e0362e1e23a02ac31a2f3a9b2cc33662fdcd9a88e0e9fc0b406",
+        "file": "candidate.data.rel.ro.bin",
+        "executable": false
+      },
+      {
+        "name": ".dynamic",
+        "kind": "DYNAMIC",
+        "flags": "WA",
+        "address": 3744392,
+        "offset": 3736200,
+        "size": 480,
+        "extracted_size": 480,
+        "sha256": "6bd75eb30dc66483be975139cc7d32f792f3723cad72a0d0ecded2653a9fe4cc",
+        "file": "candidate.dynamic.bin",
+        "executable": false
+      },
+      {
+        "name": ".got",
+        "kind": "PROGBITS",
+        "flags": "WA",
+        "address": 3744872,
+        "offset": 3736680,
+        "size": 8760,
+        "extracted_size": 8760,
+        "sha256": "dbef0df1fd7d8dc0e08fbba8dcbceb4d1bcf177073f6027d677ab0df146bcaf6",
+        "file": "candidate.got.bin",
+        "executable": false
+      },
+      {
+        "name": ".got.plt",
+        "kind": "PROGBITS",
+        "flags": "WA",
+        "address": 3753632,
+        "offset": 3745440,
+        "size": 48,
+        "extracted_size": 48,
+        "sha256": "e3d39331dc8d2c80fcb0c85193ed70491dccebac0285332d1144a0609cf08775",
+        "file": "candidate.got.plt.bin",
+        "executable": false
+      },
+      {
+        "name": ".tm_clone_table",
+        "kind": "PROGBITS",
+        "flags": "WA",
+        "address": 3757776,
+        "offset": 3745488,
+        "size": 0,
+        "extracted_size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "file": "candidate.tm_clone_table.bin",
+        "executable": false
+      },
+      {
+        "name": ".data",
+        "kind": "PROGBITS",
+        "flags": "WA",
+        "address": 3757776,
+        "offset": 3745488,
+        "size": 2784,
+        "extracted_size": 2784,
+        "sha256": "0d7de3b9639e7e6486a9082e017ced55e75f35fad9aa04ca9d8af8569c3a11b9",
+        "file": "candidate.data.bin",
+        "executable": false
+      }
+    ]
+  },
+  "extractions_match_exact_elf_file_slices": true,
+  "section_comparison": {
+    ".data": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".data.rel.ro": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".debug_gdb_scripts": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".dynamic": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".dynstr": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".dynsym": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".eh_frame": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".eh_frame_hdr": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".fini": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": true
+    },
+    ".fini_array": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".gcc_except_table": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".gnu.hash": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".gnu.version": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".gnu.version_r": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".got": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".got.plt": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".init": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": true
+    },
+    ".init_array": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".interp": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".note.ABI-tag": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".note.gnu.build-id": {
+      "present_in_both": true,
+      "bytes_equal": false,
+      "address_equal": true,
+      "executable": false
+    },
+    ".plt": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": true
+    },
+    ".rela.dyn": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".rela.plt": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".rodata": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".tdata": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    },
+    ".text": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": true
+    },
+    ".tm_clone_table": {
+      "present_in_both": true,
+      "bytes_equal": true,
+      "address_equal": true,
+      "executable": false
+    }
+  },
+  "executable_sections_identical": true,
+  "all_allocated_sections_identical": false,
+  "baseline_preserved": true,
+  "matching_baseline_compile_configuration_fields": [
+    "rustc",
+    "features",
+    "declared_features",
+    "target",
+    "profile",
+    "path",
+    "rustflags",
+    "config",
+    "compile_kind"
+  ],
+  "matching_baseline_native_input_files": [
+    ".cargo/config.toml",
+    "Cargo.lock",
+    "Cargo.toml",
+    "crates/math/Cargo.toml",
+    "crates/math/benches/intersection_inner_loops.rs",
+    "crates/math/src/nurbs/intersection/line.rs"
+  ],
+  "baseline_build_evidence": {
+    "compilerArtifactJson": "Not captured in the initial build; preserved build log, source and Cargo fingerprint retained.",
+    "logSha256": "5b7c92a2d8069c222c953ebd1ff93cc5fe928ccf9ab344ec4c82cab4444096ad",
+    "preservedInitialBinarySha256": "34e882b265c7ee9ff0b6f5913d125d9e7a74e306275bb0576af04e5e9d528c45",
+    "captured_fresh_baseline_cargo_json": false
+  },
+  "interpretation": {
+    "native_machine_code": "Every executable section has identical bytes, sizes and virtual addresses to frozen c754.",
+    "allocated_data": "Every allocated non-NOBITS section has identical bytes/addresses except .note.gnu.build-id.",
+    "timing": "No elapsed-time comparison or native speedup claim; fallback ABBABAAB runner was prepared but not invoked.",
+    "historical_S1": "Rejected d7b native regression evidence remains untouched under its original independent capture.",
+    "full_binary": "ELF hashes differ; whole-binary identity is not claimed."
+  }
+}

@@ -151,7 +151,8 @@ impl BrepKernel {
         .map_err(|error| JsError::new(&error.to_string()))
     }
 
-    /// Drain up to 4096 completed phase events as JSON.
+    /// Drain up to 4096 phase and boolean-route events as JSON. Route
+    /// observations have zero duration and names beginning `boolean.route.`.
     ///
     /// # Errors
     /// Returns an error if events cannot be serialized.

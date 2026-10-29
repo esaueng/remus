@@ -1,0 +1,6 @@
+{
+  "encoding": "UTF-8 diagnostic log stored as a lossless JSON string",
+  "original_name": "final-default-domain.txt",
+  "text_sha256": "67b198d7f33a12c34b8aca025fcb238f08f273c375d490aa4738b088a2a185d2",
+  "text": "   Compiling remus-algo v2026.1.0 (<repo>/crates/algo)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.46s\n     Running unittests src/lib.rs (target/debug/deps/remus_algo-a0d22dca7e33a739)\n\nrunning 1 test\ntest classifier::torus_patch::tests::carried_probes_match_original_for_non_dyadic_reversed_and_close_domains ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 779 filtered out; finished in 0.01s\n\n"
+}

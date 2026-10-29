@@ -1,0 +1,28 @@
+{
+  "observedAt": "2026-10-29T03:36:22.564583+00:00",
+  "scope": "Existing scheduled repository proofs; these are not candidate-head validation. No changes or dispatches were made.",
+  "proofs": [
+    {
+      "name": "Corpus Gauntlet",
+      "id": 40665554610,
+      "source": "d5e20f1aef956f7d79c2c542e06727954643ef34",
+      "conclusion": "success",
+      "url": "https://github.com/esaueng/remus/actions/runs/40665554610"
+    },
+    {
+      "name": "Fuzz Smoke",
+      "id": 40177220417,
+      "source": "7fd8002c657386ad301d9302331999c6b3a0645c",
+      "conclusion": "success",
+      "url": "https://github.com/esaueng/remus/actions/runs/40177220417"
+    },
+    {
+      "name": "Mutation Testing",
+      "id": 40171576959,
+      "source": "ed907bb5639be1cbe461d970e059792340080799",
+      "conclusion": "failure",
+      "detail": "Shard2 mutation step cancelled; judge and upload skipped. Other7 mutation shards reported success. No complete mutation qualification is claimed.",
+      "url": "https://github.com/esaueng/remus/actions/runs/40171576959"
+    }
+  ]
+}

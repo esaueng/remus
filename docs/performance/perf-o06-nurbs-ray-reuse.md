@@ -127,3 +127,21 @@ complete Git tree, recorded in that evidence. Raw timing and exact-output eviden
 are retained beside it. Hosted CI, package refresh, broader workload performance
 and browser presentation are separate. Global NURBS intersection completeness
 and foreign/mutated seed-grid validation remain outside this bounded reuse.
+
+## Holder rebuild follow-through (2026-10-28)
+
+The preceding timings belong to that historical runtime. The new
+[full-holder report](store-local-holder-rebuild-2026-10-28.md) records a
+byte-qualified `c754a9b7` shipping profile: line-NURBS intersection appears in
+54.8% of recognition samples and Newton in 49.6%, especially the lettering.
+Nested shares select costs; diagnostic durations are excluded from timing claims.
+
+Residual/step and one-entry Jacobian caches failed their elapsed-time or
+representative-work gates. The packaged FMA specialization regressed; later
+microbenchmarks of dispatch guards and inside-range zero-addend reuse established
+no mixed-workload win. All were rejected, and both the ray solver and FMA shim
+are restored exactly. Their source-bound observations remain in the new report.
+The same report qualifies torus boundary preparation separately: exact parameter
+reuse reduces packaged rebuild-stage p50 by 8.59% in preview and 10.65% in
+completion, with whole-replay reductions of 3.39% and 2.70%. Broader
+workload coverage, browser presentation and B28 stage budgets remain open.

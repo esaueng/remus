@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "source": "292f084f9165f8f31bcaeb1581324eba69835994",
+  "command": "taskset -c 0-14,16-30 env CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 RUST_MIN_STACK=536870912 cargo nextest run --workspace --cargo-profile ci-test --test-threads 12",
+  "exitCode": 0,
+  "passed": 9234,
+  "failed": 0,
+  "skipped": 34,
+  "slow": 2,
+  "elapsedSecondsDiagnosticOnly": 207.412,
+  "runtimeAndToolingHashesMatchFrozenSource": {
+    ".github/workflows/kernel-performance-contracts.yml": "9da7dcf1ddb65948d98ed1f9147d6f0bb859ffe2d15df8cb69c58b7642673701",
+    "crates/math/src/fma.rs": "d2488ab8afd1d7f70b18bb49dc9a8b3bfbbfbd89af0a693a1402c98d01d56254",
+    "crates/operations/src/boolean/store_local.rs": "61d8f78bf1dee0537254b7dae3a69115f075ad2cecb1bdaa4ca08f7a68a183e2",
+    "crates/operations/src/boolean/store_local_tests.rs": "73937040fcc0445d5c438c87279489f1a88b3e8ca138d37084e2ace3a99f622d",
+    "crates/operations/src/performance.rs": "925623d1e38315a8e20a421281d0cc87eafa9c20baa636bf2626d6a6db4753ba",
+    "crates/wasm/src/bindings/performance.rs": "96dfc12020fc283d3dc61df7b105ed2a8f64102bfa8ec7e5ddc8336bb16f1455",
+    "scripts/perf/parameter-rebuild/profile_holder.cjs": "6b86c4e71cd24d971787437c11fe51bb916e013ae013b1492ad609212e588bc9",
+    "scripts/perf/parameter-rebuild/profile_holder.test.cjs": "251080ae790686e4c7b3165eb59c9843700e212fb371e6724e657d98dd2fd539",
+    "scripts/perf/parameter-rebuild/summarize_profile.py": "e2df22f0db7eefabc0d49c8aed92ce19aafaa6ef78ca02a08333e42da7be8600",
+    "scripts/perf/parameter-rebuild/test_summarize_profile.py": "b4c96f00371746705cd6a7cc4c5b753dc27bfda2bc7c7200e5808f5678d3e7ec",
+    "scripts/performance/store-local/qualify.cjs": "4b2f1fd4b679f4f70ea039819a5e006de1de32b826e75d164a0b559b41a71b22",
+    "scripts/performance/store-local/qualify.test.cjs": "ac86d701d6c0c0b3c309647a4b206968e02b5de124ada7f51706f632da01e0f9"
+  },
+  "rawLogSha256": "a1f421f50645abbf9028ef74ab21728c4fec5eb01cc697cb6197d503d2925e7b",
+  "scope": "Complete native workspace default suite. Focused SIMD/feature-counter tests and actual WASM/package suites are separate. Working report additions did not change compiled runtime inputs. Raw log remains local; no elapsed performance or browser presentation claim."
+}

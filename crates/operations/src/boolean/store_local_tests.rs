@@ -105,6 +105,124 @@ fn counts(topo: &Topology, solid: SolidId) -> (usize, usize, usize) {
     )
 }
 
+fn vertex_content(topo: &Topology, id: remus_topology::vertex::VertexId) -> String {
+    let vertex = topo.vertex(id).unwrap();
+    format!(
+        "{:?} tol={:x}",
+        vertex.point(),
+        vertex.tolerance().to_bits()
+    )
+}
+
+fn edge_content(topo: &Topology, id: remus_topology::edge::EdgeId) -> String {
+    let edge = topo.edge(id).unwrap();
+    let mut endpoints = [
+        vertex_content(topo, edge.start()),
+        vertex_content(topo, edge.end()),
+    ];
+    if matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
+        endpoints.sort();
+    }
+    format!(
+        "{:?} {:?} {endpoints:?} tol={:?}",
+        edge.curve(),
+        edge.trim(),
+        edge.tolerance().map(f64::to_bits)
+    )
+}
+
+/// Content of each distinct edge with all its boundary uses, and of each
+/// distinct vertex with all its incident edges. Repeated uses remain repeated
+/// and pcurves/winding are read from authoritative coedges. This strengthens
+/// the bounded fixtures' sharing checks; it is not a general graph-isomorphism
+/// proof for arbitrary coincident, indistinguishable entities.
+fn boundary_authority(topo: &Topology, solid: SolidId) -> (Vec<String>, Vec<String>) {
+    use std::collections::BTreeMap;
+
+    let mut uses = BTreeMap::<_, Vec<String>>::new();
+    for face_id in remus_topology::explorer::solid_faces(topo, solid).unwrap() {
+        remus_topology::validation::validate_face_loops(topo, face_id).unwrap();
+        let face = topo.face(face_id).unwrap();
+        for (role, &loop_id) in face.boundary_loops().iter().enumerate() {
+            for &use_id in topo.face_loop(loop_id).unwrap().coedges() {
+                let coedge = topo.coedge(use_id).unwrap();
+                let edge = topo.edge(coedge.edge()).unwrap();
+                let traversal = if matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
+                    let (from, to) = if coedge.is_forward() {
+                        (edge.start(), edge.end())
+                    } else {
+                        (edge.end(), edge.start())
+                    };
+                    format!(
+                        "{} -> {}",
+                        vertex_content(topo, from),
+                        vertex_content(topo, to)
+                    )
+                } else {
+                    format!("forward={}", coedge.is_forward())
+                };
+                uses.entry(coedge.edge()).or_default().push(format!(
+                    "{:?} reversed={} outer={} {traversal} pcurve={:?} winding={:?}",
+                    face.surface(),
+                    face.is_reversed(),
+                    role == 0,
+                    coedge.pcurve(),
+                    coedge.periodic_winding()
+                ));
+            }
+        }
+    }
+    let mut incident = BTreeMap::<_, Vec<String>>::new();
+    let mut edges = Vec::new();
+    for (id, mut edge_uses) in uses {
+        edge_uses.sort();
+        let content = edge_content(topo, id);
+        let edge = topo.edge(id).unwrap();
+        for vertex in [edge.start(), edge.end()] {
+            incident.entry(vertex).or_default().push(content.clone());
+        }
+        edges.push(format!("{content} uses={edge_uses:?}"));
+    }
+    let mut vertices: Vec<_> = incident
+        .into_iter()
+        .map(|(id, mut edges)| {
+            edges.sort();
+            format!("{} incident={edges:?}", vertex_content(topo, id))
+        })
+        .collect();
+    vertices.sort();
+    edges.sort();
+    (vertices, edges)
+}
+
+/// Source handles, incidence, coedges and authority must survive unchanged;
+/// content-only equality would miss rewriting a source with fresh entities.
+fn source_identity(topo: &Topology, solid: SolidId) -> Vec<String> {
+    let mut records = vec![format!("{solid:?} {:?}", topo.solid(solid).unwrap())];
+    for id in remus_topology::explorer::solid_vertices(topo, solid).unwrap() {
+        records.push(format!("{id:?} {:?}", topo.vertex(id).unwrap()));
+    }
+    for id in remus_topology::explorer::solid_edges(topo, solid).unwrap() {
+        records.push(format!("{id:?} {:?}", topo.edge(id).unwrap()));
+    }
+    for id in remus_topology::explorer::solid_faces(topo, solid).unwrap() {
+        let face = topo.face(id).unwrap();
+        records.push(format!("{id:?} {face:?}"));
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            records.push(format!("{wire:?} {:?}", topo.wire(wire).unwrap()));
+        }
+        for &loop_id in face.boundary_loops() {
+            let boundary = topo.face_loop(loop_id).unwrap();
+            records.push(format!("{loop_id:?} {boundary:?}"));
+            for &use_id in boundary.coedges() {
+                records.push(format!("{use_id:?} {:?}", topo.coedge(use_id).unwrap()));
+            }
+        }
+    }
+    records.sort();
+    records
+}
+
 fn volume(topo: &Topology, solid: SolidId) -> f64 {
     crate::measure::solid_volume(topo, solid, 0.01).unwrap()
 }
@@ -146,15 +264,44 @@ fn assert_equivalent_op(
     label: &str,
 ) -> (Topology, SolidId) {
     let mut general = topo.clone();
-    let general_result = boolean(&mut general, op, blank, tool).unwrap();
+    crate::performance::configure(Some(|| 42.0));
+    let general_result = boolean(&mut general, op, blank, tool);
+    let general_trace = crate::performance::drain();
+    crate::performance::configure(None);
+    let general_result = general_result.unwrap();
+    assert!(general_trace.iter().all(|phase| !matches!(
+        phase.name,
+        "boolean.route.store_local_attempt" | "boolean.route.store_local_success"
+    )));
     let mut local = topo.clone();
     let built = BUILT.with(std::cell::Cell::get);
     #[cfg(feature = "perf-counters")]
     let _ = crate::performance::take_boolean_routes();
+    crate::performance::configure(Some(|| 42.0));
     set_thread_store_local_cuts(true);
     let local_result = boolean(&mut local, op, blank, tool);
     set_thread_store_local_cuts(false);
+    let local_trace = crate::performance::drain();
+    crate::performance::configure(None);
     let local_result = local_result.unwrap();
+    let routes: Vec<_> = local_trace
+        .iter()
+        .filter(|phase| phase.name.starts_with("boolean.route."))
+        .collect();
+    assert_eq!(
+        routes.iter().map(|phase| phase.name).collect::<Vec<_>>(),
+        [
+            "boolean.route.store_local_attempt",
+            "boolean.route.store_local_success"
+        ],
+        "{label}: trace does not prove local completion"
+    );
+    assert!(
+        routes
+            .iter()
+            .all(|phase| phase.start_ms.to_bits() == 42.0_f64.to_bits()
+                && phase.duration_ms.to_bits() == 0.0_f64.to_bits())
+    );
     #[cfg(feature = "perf-counters")]
     {
         let routes = crate::performance::take_boolean_routes();
@@ -172,6 +319,34 @@ fn assert_equivalent_op(
         counts(&general, general_result),
         "{label}: entity counts differ"
     );
+    assert_eq!(
+        boundary_authority(&local, local_result),
+        boundary_authority(&general, general_result),
+        "{label}: edge/vertex authority or boundary sharing differs"
+    );
+    for source in [blank, tool] {
+        assert_eq!(
+            source_identity(&local, source),
+            source_identity(topo, source),
+            "{label}: source identity or authority changed"
+        );
+        let source_edges = remus_topology::explorer::solid_edges(topo, source).unwrap();
+        let source_vertices = remus_topology::explorer::solid_vertices(topo, source).unwrap();
+        assert!(
+            remus_topology::explorer::solid_edges(&local, local_result)
+                .unwrap()
+                .iter()
+                .all(|id| !source_edges.contains(id)),
+            "{label}: result aliases a source edge"
+        );
+        assert!(
+            remus_topology::explorer::solid_vertices(&local, local_result)
+                .unwrap()
+                .iter()
+                .all(|id| !source_vertices.contains(id)),
+            "{label}: result aliases a source vertex"
+        );
+    }
     let (ours, theirs) = (
         canonical(&local, local_result),
         canonical(&general, general_result),
@@ -562,9 +737,17 @@ fn assert_direct_decline_leaves_inputs_unchanged(
     for op in [BooleanOp::Cut, BooleanOp::Fuse, BooleanOp::Intersect] {
         #[cfg(feature = "perf-counters")]
         let _ = crate::performance::take_boolean_routes();
+        crate::performance::configure(Some(|| 42.0));
         set_thread_store_local_cuts(true);
         let attempt = super::store_local::try_store_local_boolean(topo, op, blank, tool, &context);
         set_thread_store_local_cuts(false);
+        let trace = crate::performance::drain();
+        crate::performance::configure(None);
+        assert_eq!(
+            trace.iter().map(|phase| phase.name).collect::<Vec<_>>(),
+            ["boolean.route.store_local_attempt"],
+            "{label}: {op:?} decline claimed a successful route"
+        );
         #[cfg(feature = "perf-counters")]
         {
             let routes = crate::performance::take_boolean_routes();
@@ -765,10 +948,9 @@ fn line_tolerance_inventory(
 }
 
 /// Exact stored authority is a stronger contract than current material and
-/// effective tube equality. Keep the failed adoption gate reproducible without
-/// changing the default or accepting inherited/explicit tolerance normalization.
+/// effective tube equality. The rebuilt seam must retain the GFA's explicit
+/// tolerance instead of substituting the blank's inherited tolerance.
 #[test]
-#[ignore = "open: store-local cross-drilled shaft changes stored seam-edge tolerance (inherited vs explicit)"]
 fn cross_drilled_store_local_preserves_stored_line_tolerances() {
     let mut topo = Topology::new();
     let shaft = make_cylinder(&mut topo, 3.0, 12.0).unwrap();
@@ -780,10 +962,16 @@ fn cross_drilled_store_local_preserves_stored_line_tolerances() {
     );
     let mut general = topo.clone();
     let expected = boolean(&mut general, BooleanOp::Cut, shaft, tool).unwrap();
+    let built = BUILT.with(std::cell::Cell::get);
     set_thread_store_local_cuts(true);
     let result = boolean(&mut topo, BooleanOp::Cut, shaft, tool);
     set_thread_store_local_cuts(false);
     let result = result.unwrap();
+    assert_eq!(
+        BUILT.with(std::cell::Cell::get),
+        built + 1,
+        "the stored-authority witness must actually complete store-locally"
+    );
     assert_eq!(
         line_tolerance_inventory(&topo, result, false),
         line_tolerance_inventory(&general, expected, false),
@@ -794,4 +982,250 @@ fn cross_drilled_store_local_preserves_stored_line_tolerances() {
         line_tolerance_inventory(&general, expected, true),
         "stored tolerance authority changed"
     );
+}
+
+#[test]
+fn cross_drilled_authority_and_sharing_survive_nondefault_source_edge_tolerances() {
+    for (edge_tolerance, vertex_tolerance) in [(None, 1e-7), (Some(1e-7), 1e-7), (Some(5e-5), 1e-7)]
+    {
+        let mut topo = Topology::new();
+        let shaft = make_cylinder(&mut topo, 3.0, 12.0).unwrap();
+        for id in remus_topology::explorer::solid_edges(&topo, shaft).unwrap() {
+            if matches!(
+                topo.edge(id).unwrap().curve(),
+                remus_topology::edge::EdgeCurve::Line
+            ) {
+                topo.edge_mut(id)
+                    .unwrap()
+                    .set_tolerance(edge_tolerance)
+                    .unwrap();
+            }
+        }
+        for id in remus_topology::explorer::solid_vertices(&topo, shaft).unwrap() {
+            topo.vertex_mut(id)
+                .unwrap()
+                .set_tolerance(vertex_tolerance)
+                .unwrap();
+        }
+        let tool = make_cylinder(&mut topo, 1.0, 10.0).unwrap();
+        let tool = placed(
+            &mut topo,
+            tool,
+            &(Mat4::translation(-5.0, 0.0, 6.0) * Mat4::rotation_y(std::f64::consts::FRAC_PI_2)),
+        );
+        assert_equivalent(
+            &topo,
+            shaft,
+            tool,
+            &format!("cross-drilled edge={edge_tolerance:?} vertex={vertex_tolerance}"),
+        );
+    }
+}
+
+#[test]
+fn raised_boundary_vertex_authority_declines_without_mutation_then_falls_back_exactly() {
+    use remus_check::classify::{ClassifyOptions, PointClassification, PreparedSolid};
+    use remus_math::vec::Point3;
+
+    let mut topo = Topology::new();
+    let shaft = make_cylinder(&mut topo, 3.0, 12.0).unwrap();
+    for id in remus_topology::explorer::solid_vertices(&topo, shaft).unwrap() {
+        topo.vertex_mut(id).unwrap().set_tolerance(7e-6).unwrap();
+    }
+    let tool = make_cylinder(&mut topo, 1.0, 10.0).unwrap();
+    let tool = placed(
+        &mut topo,
+        tool,
+        &(Mat4::translation(-5.0, 0.0, 6.0) * Mat4::rotation_y(std::f64::consts::FRAC_PI_2)),
+    );
+    let before = format!("{topo:?}");
+    let sources = [
+        (shaft, source_identity(&topo, shaft)),
+        (tool, source_identity(&topo, tool)),
+    ];
+    let built = BUILT.with(std::cell::Cell::get);
+    set_thread_store_local_cuts(true);
+    let attempt = super::store_local::try_store_local_boolean(
+        &mut topo,
+        BooleanOp::Cut,
+        shaft,
+        tool,
+        &remus_math::context::OperationContext::new(),
+    );
+    set_thread_store_local_cuts(false);
+    assert!(
+        attempt.unwrap().is_none(),
+        "vertex authority mismatch was accepted"
+    );
+    assert_eq!(format!("{topo:?}"), before, "decline changed source state");
+    assert_eq!(BUILT.with(std::cell::Cell::get), built);
+
+    let mut general = topo.clone();
+    let expected = boolean(&mut general, BooleanOp::Cut, shaft, tool).unwrap();
+    crate::performance::configure(Some(|| 42.0));
+    set_thread_store_local_cuts(true);
+    let actual = boolean(&mut topo, BooleanOp::Cut, shaft, tool);
+    set_thread_store_local_cuts(false);
+    let trace = crate::performance::drain();
+    crate::performance::configure(None);
+    let actual = actual.unwrap();
+    assert_eq!(
+        trace
+            .iter()
+            .filter(|phase| phase.name.starts_with("boolean.route."))
+            .map(|phase| phase.name)
+            .collect::<Vec<_>>(),
+        [
+            "boolean.route.store_local_attempt",
+            "boolean.route.general_gfa"
+        ]
+    );
+    assert_eq!(BUILT.with(std::cell::Cell::get), built);
+    assert_eq!(canonical(&topo, actual), canonical(&general, expected));
+    assert_eq!(counts(&topo, actual), counts(&general, expected));
+    assert_eq!(
+        boundary_authority(&topo, actual),
+        boundary_authority(&general, expected)
+    );
+    for (source, before) in sources {
+        assert_eq!(source_identity(&topo, source), before);
+        assert_eq!(source_identity(&general, source), before);
+    }
+    assert_sound(&topo, actual, "raised-vertex fallback");
+    let prepared = PreparedSolid::prepare(&topo, actual).unwrap();
+    for (point, expected) in [
+        (Point3::new(0.0, 0.0, 6.0), PointClassification::Outside),
+        (Point3::new(0.0, 2.0, 6.0), PointClassification::Inside),
+    ] {
+        assert_eq!(
+            prepared
+                .classify_point(point, &ClassifyOptions::default())
+                .unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn kept_boundary_preserves_inherited_and_nondefault_explicit_edge_authority() {
+    let mut topo = Topology::new();
+    let plate = drilled_plate(&mut topo, 3);
+    let mut marked = 0;
+    for id in remus_topology::explorer::solid_edges(&topo, plate).unwrap() {
+        let edge = topo.edge(id).unwrap();
+        let start = topo.vertex(edge.start()).unwrap().point();
+        let end = topo.vertex(edge.end()).unwrap().point();
+        if matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line)
+            && (end - start).length() > 60.0
+        {
+            // Outer plate edges join the touched top/bottom to kept side
+            // walls. Leave half inherited and give half explicit authority.
+            let tolerance = if marked % 2 == 0 { None } else { Some(5e-5) };
+            topo.edge_mut(id).unwrap().set_tolerance(tolerance).unwrap();
+            marked += 1;
+        }
+    }
+    assert_eq!(marked, 8, "fixture must cover both rims' outer boundaries");
+    let tool = make_box(&mut topo, 2.0, 6.0, 20.0).unwrap();
+    let tool = placed(&mut topo, tool, &Mat4::translation(13.0, 11.0, -5.0));
+    let (local, result) = assert_equivalent(&topo, plate, tool, "mixed boundary authority");
+    let outer_lines: Vec<_> = remus_topology::explorer::solid_edges(&local, result)
+        .unwrap()
+        .into_iter()
+        .filter(|&id| {
+            let edge = local.edge(id).unwrap();
+            matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line)
+                && (local.vertex(edge.end()).unwrap().point()
+                    - local.vertex(edge.start()).unwrap().point())
+                .length()
+                    > 60.0
+        })
+        .map(|id| local.edge(id).unwrap().tolerance().map(f64::to_bits))
+        .collect();
+    assert_eq!(
+        outer_lines.iter().filter(|value| value.is_none()).count(),
+        4
+    );
+    assert_eq!(
+        outer_lines
+            .iter()
+            .filter(|&&value| value == Some(5e-5_f64.to_bits()))
+            .count(),
+        4
+    );
+}
+
+#[test]
+fn kept_periodic_boundary_retains_pcurves_winding_and_shared_entities() {
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::vec::{Point2, Vec2};
+    use remus_topology::coedge::PeriodicWinding;
+    use remus_topology::pcurve::PCurve;
+
+    let mut topo = Topology::new();
+    let plate = drilled_plate(&mut topo, 3);
+    let face_id = remus_topology::explorer::solid_faces(&topo, plate)
+        .unwrap()
+        .into_iter()
+        .find(|&id| {
+            matches!(
+                topo.face(id).unwrap().surface(),
+                remus_topology::face::FaceSurface::Cylinder(_)
+            )
+        })
+        .unwrap();
+    let face = topo.face(face_id).unwrap();
+    let surface = face.surface().clone();
+    let seam_uses: Vec<_> = face
+        .boundary_loops()
+        .iter()
+        .flat_map(|&id| topo.face_loop(id).unwrap().coedges().iter().copied())
+        .filter(|&id| {
+            matches!(
+                topo.edge(topo.coedge(id).unwrap().edge()).unwrap().curve(),
+                remus_topology::edge::EdgeCurve::Line
+            )
+        })
+        .collect();
+    assert_eq!(seam_uses.len(), 2, "fixture needs both seam uses");
+    assert_eq!(
+        topo.coedge(seam_uses[0]).unwrap().edge(),
+        topo.coedge(seam_uses[1]).unwrap().edge(),
+        "fixture needs one shared seam edge"
+    );
+    for (branch, use_id) in [0_i32, 1].into_iter().zip(seam_uses) {
+        let coedge = topo.coedge(use_id).unwrap();
+        let edge = topo.edge(coedge.edge()).unwrap();
+        let (u, start) = surface
+            .project_point(topo.vertex(edge.start()).unwrap().point())
+            .unwrap();
+        let (_, end) = surface
+            .project_point(topo.vertex(edge.end()).unwrap().point())
+            .unwrap();
+        let (start, end) = if coedge.is_forward() {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        let curve = Line2D::new(
+            Point2::new(u + f64::from(branch) * std::f64::consts::TAU, 0.0),
+            Vec2::new(0.0, 1.0),
+        )
+        .unwrap();
+        topo.set_coedge_pcurve(use_id, PCurve::new(Curve2D::Line(curve), start, end))
+            .unwrap();
+        topo.set_coedge_periodic_winding(use_id, PeriodicWinding::new(branch, 0))
+            .unwrap();
+    }
+    let tool = make_box(&mut topo, 2.0, 6.0, 20.0).unwrap();
+    let tool = placed(&mut topo, tool, &Mat4::translation(50.0, 50.0, -5.0));
+    let (local, result) = assert_equivalent(&topo, plate, tool, "kept periodic boundary");
+    let pcurve_uses = remus_topology::explorer::solid_faces(&local, result)
+        .unwrap()
+        .into_iter()
+        .flat_map(|id| local.face(id).unwrap().boundary_loops().iter().copied())
+        .flat_map(|id| local.face_loop(id).unwrap().coedges().iter().copied())
+        .filter(|&id| local.coedge(id).unwrap().pcurve().is_some())
+        .count();
+    assert!(pcurve_uses >= 2, "kept seam authority was discarded");
 }

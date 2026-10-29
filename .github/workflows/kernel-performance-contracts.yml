@@ -7,7 +7,8 @@ on:
       - crates/operations/examples/complex_boolean_baseline.rs
       - crates/algo/src/perf.rs
       - crates/operations/src/performance.rs
-      - scripts/perf/parameter-rebuild/holder_recipe.cjs
+      - scripts/perf/parameter-rebuild/**
+      - scripts/perf/recognition-graph/summarize_wasm_profile.py
       - scripts/perf/filleted-face-edit/wasm_edit_bench.cjs
       - .github/workflows/kernel-performance-contracts.yml
   merge_group:
@@ -32,3 +33,7 @@ jobs:
           node-version: 24
       - name: Store-local qualification comparator contracts
         run: node --test scripts/performance/store-local/qualify.test.cjs
+      - name: Parameter rebuild and profiling contracts
+        run: node --test scripts/perf/parameter-rebuild/*.test.cjs
+      - name: Parameter profile summary contracts
+        run: python3 -m unittest discover -s scripts/perf/parameter-rebuild -p 'test_*.py' -v

@@ -1,0 +1,69 @@
+{
+  "schema": "remus-rejected-prototype-work-receipt-v1",
+  "status": "rejected-work-benefit-insufficient",
+  "base_commit": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+  "parent_commit": "d7b1544a81122c8898fc8f883b8b3f8589a3b39b",
+  "source": {
+    "path": "crates/math/src/nurbs/intersection/line.rs",
+    "sha256": "68152a707b2f02318a97185c738c54378769ae4c77cffb9981896537908aeb8c",
+    "preserved_copy": "remus-jacobian-one-entry-prototype.rs"
+  },
+  "test": {
+    "command": "taskset -c 0-14,16-30 env CARGO_BUILD_JOBS=2 RUST_MIN_STACK=536870912 cargo test -p remus-math --profile ci-test nurbs::intersection::line -- --nocapture",
+    "exit_code": 0,
+    "passed": 32,
+    "failed": 0,
+    "ignored": 0,
+    "raw_log": "remus-jacobian-default-test.log",
+    "raw_log_sha256": "09c0d4432da5d8e47f2142138b9e801a3ba0d2583b09f8448a76861669043dee",
+    "raw_log_bytes": 7898
+  },
+  "work": [
+    {
+      "fixture": "four existing general surface controls",
+      "rays": 240,
+      "jacobian_calculations": 3679,
+      "control_calculations": 3685,
+      "hits": 6,
+      "roots": 37
+    },
+    {
+      "fixture": "all NURBS carriers in existing holder text arena",
+      "fixture_path": "scripts/perf/parameter-rebuild/fixtures/text.arena.json",
+      "fixture_sha256": "dd59dd4c7de07fb7c63c2c8b69aac17fd4ba97244bab7ba3fcfb3638b4b0a96f",
+      "carriers": 34,
+      "rays": 408,
+      "jacobian_calculations": 71616,
+      "control_calculations": 71636,
+      "hits": 20,
+      "roots": 434
+    }
+  ],
+  "controls": [
+    "cached and cache-off roots match in exact bits and order",
+    "equal total Jacobian requests with cache on and off",
+    "pre-O06 allocating/full-budget reference and existing completion oracle tests passed",
+    "key includes all ten exact su/sv/direction/dir_len_sq words",
+    "origin rebase reuses pure Jacobian only; residual recomputed",
+    "nonfinite inputs and results never retained",
+    "native production has no new cache storage, initialization or lookup"
+  ],
+  "limits": [
+    "Working-tree diagnostic run, not an immutable committed candidate qualification.",
+    "Text uses exact existing carrier data with deterministic generated rays; these are not replayed recognition-ray inputs.",
+    "No wall-time or end-to-end performance claim.",
+    "No cache-size growth or approximate key normalization was attempted.",
+    "Final combined default/SIMD/Clippy deferred until concurrent FMA source work freezes."
+  ],
+  "patch": {
+    "path": "remus-jacobian-one-entry-against-c754.patch",
+    "sha256": "14d60bed44246818c64a627aab9f2f3107f6e020e38ca1f6691f0261c40ee50c",
+    "base_commit": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+    "produces_source_sha256": "68152a707b2f02318a97185c738c54378769ae4c77cffb9981896537908aeb8c",
+    "reapplied_to_clean_base_and_matches_preserved_source": true
+  },
+  "restoration": {
+    "source_sha256": "e94f6c40c1fc5371a1ca64653dd9913b0b8bc971c9fbd1cdeea85e460eac3255",
+    "byte_identical_to_base": true
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "schema": "remus-standalone-wasm-fma-validation-v2",
+  "status": "passed",
+  "timed": false,
+  "records": 578952,
+  "nonNaNLoopChecksumRecords": 487181,
+  "corpusSha256": "6aeb31afb7991ef220995a8d8cd9b27e5171b5e088bf3bc9ed22f5a04b58c18c",
+  "driverSha256": "b395ed1ec334212e594f8880bfc7e696b1e6c9f4bf5637986892218e69573c12",
+  "node": "v24.22.1",
+  "nodeExecutableSha256": "e32e2d16081cf644f88392934288086e7662529d0d43277c34f7aad2207cfafb",
+  "variants": [
+    {
+      "name": "baseline",
+      "moduleSha256": "793922ab2be0166bc15bc000b842ba061fb0d9321f68671820a465bec92e12ca",
+      "exactNonNaNOutputs": 487181,
+      "nativeNaNEquivalentOutputs": 91771,
+      "chunkChecksums": [
+        "a62a6b684971ca7b",
+        "3faf9bef332e9540",
+        "569c3fbacddd1ee2",
+        "3fdc5cdd79c110ef",
+        "603a1a5cb74a1010",
+        "ee64b173e6dd9d2e",
+        "fa22fdb07a10dd7e",
+        "be1c1b01ac4605bd",
+        "48ec0ef0466446b2"
+      ]
+    },
+    {
+      "name": "range-c0",
+      "moduleSha256": "1086c0658a316cb9e0d37592777e1a070daa4368e7924ce972988946a04b5c8c",
+      "exactNonNaNOutputs": 487181,
+      "nativeNaNEquivalentOutputs": 91771,
+      "chunkChecksums": [
+        "a62a6b684971ca7b",
+        "3faf9bef332e9540",
+        "569c3fbacddd1ee2",
+        "3fdc5cdd79c110ef",
+        "603a1a5cb74a1010",
+        "ee64b173e6dd9d2e",
+        "fa22fdb07a10dd7e",
+        "be1c1b01ac4605bd",
+        "48ec0ef0466446b2"
+      ]
+    }
+  ],
+  "policy": "Exact bits versus native mul_add for every non-NaN result, including signed zero and infinities; native NaNs use unchanged NaN-equivalence policy. Both WASM variants additionally match baseline non-NaN raw output bits. Volatile-loop/check checksums match for the complete non-NaN-output subset. NaN-inclusive raw checksums are diagnostic only because NaN payload propagation can vary between compilation contexts.",
+  "scope": "Untimed correctness validation only; no kernel or dispatcher performance claim."
+}

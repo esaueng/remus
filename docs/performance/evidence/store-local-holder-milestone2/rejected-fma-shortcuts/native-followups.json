@@ -1,0 +1,49 @@
+{
+  "source": "292f084f9165f8f31bcaeb1581324eba69835994",
+  "sourceHashes": {
+    "crates/math/src/fma.rs": "d2488ab8afd1d7f70b18bb49dc9a8b3bfbbfbd89af0a693a1402c98d01d56254",
+    "crates/math/src/nurbs/intersection/line.rs": "e94f6c40c1fc5371a1ca64653dd9913b0b8bc971c9fbd1cdeea85e460eac3255",
+    "crates/operations/src/boolean/store_local.rs": "61d8f78bf1dee0537254b7dae3a69115f075ad2cecb1bdaa4ca08f7a68a183e2",
+    "crates/operations/src/boolean/store_local_tests.rs": "73937040fcc0445d5c438c87279489f1a88b3e8ca138d37084e2ace3a99f622d",
+    "crates/operations/src/performance.rs": "925623d1e38315a8e20a421281d0cc87eafa9c20baa636bf2626d6a6db4753ba"
+  },
+  "affinity": "0-14,16-30",
+  "cargoBuildJobs": 2,
+  "rustMinStack": 536870912,
+  "runs": [
+    {
+      "name": "docs",
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--profile",
+        "ci-test",
+        "--doc"
+      ],
+      "exitCode": 0,
+      "rawLog": "remus-m2-fma-docs.log",
+      "rawLogSha256": "28ee74fe3118d6a8d346ebbd6eb78ae085ee31ee37acaa74ad904eacf5149f3f"
+    },
+    {
+      "name": "store-local",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "remus-operations",
+        "--profile",
+        "ci-test",
+        "--features",
+        "perf-counters",
+        "--lib",
+        "boolean::store_local",
+        "--",
+        "--nocapture"
+      ],
+      "exitCode": 0,
+      "rawLog": "remus-m2-fma-store-local.log",
+      "rawLogSha256": "1bd19e7aa2f519146cc3deade26ea763e2c960e11aa667f164b1f2e7d7be410a"
+    }
+  ]
+}

@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "kind": "independent-report-and-data-review",
+  "reviewedAt": "2026-10-29T04:36:49.626085+00:00",
+  "baselineSource": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+  "candidateSource": "7364ab7be5e598b7c868bd63239dc831cbceb933",
+  "reportSha256Before": "13b5f4a8a7632af03ab6974384bd7480854641b11fac7773a1ebc5c6103db65c",
+  "reportSha256After": "13b5f4a8a7632af03ab6974384bd7480854641b11fac7773a1ebc5c6103db65c",
+  "reviewedDocumentsSha256": {
+    "docs/performance/store-local-holder-rebuild-2026-10-28.md": "13b5f4a8a7632af03ab6974384bd7480854641b11fac7773a1ebc5c6103db65c",
+    "docs/performance/evidence/store-local-holder-milestone2/README.md": "9fd03a0b545f2b33e3ea1ff9fe4f23cc5e3d1ba5202cd6e187430139ace0ccdb",
+    "docs/kernel-maturity/roadmap-evidence/perf-b09--torus-trim-raw-sample-reuse.md": "758d9da7c4f5279b1b80bfbdded70f57b4a71167922b01432a50dff6479cc370",
+    "docs/kernel-maturity/roadmap-evidence/perf-m08--holder-rebuild-milestone2.md": "46b96dea791ed6b397bfb7337104fed1cb11157b0db44753b7201fbdfe822e7c",
+    "docs/kernel-maturity/roadmap-evidence/perf-b10--store-local-qualification.md": "65a9b6273f86f881aad6dad50b1730e65cbc863a4d948c2a78bc620713b66629",
+    "docs/performance/perf-o06-nurbs-ray-reuse.md": "2fa0bad59b57feac43cbdfa7d0fd881c03c0cb4a33a6f1b7c6befd711d73f952"
+  },
+  "artifactSha256": {
+    "qualified-summary.json": "43a1ac583fc77484491e45d1b65e627cfc4e46948322b12e6e4ef1f8dec4a3f2",
+    "processes.jsonl": "53b18ee689d826e6d966e53c9e422e78e3c1dc65d75b8da72c1c33a0e45e79af",
+    "samples.jsonl": "6f0bc0994db51a35f9616ab060de877afbcbee981d55edc5ad8a20df268b0e16",
+    "capture-environment.json": "d22cc8e7c1c6d2801601a8d5b37b5f503f5edec90bf8bd24935f2f2cf26bfd12",
+    "baseline-package.json": "087b146ca8ee92d9a430e59fa7916f9398a58fbac563d2f0c8d907db8f9065db",
+    "candidate-package.json": "7a0faf6ba20beeca5f2590f616c14360b98181669b8f493af22b0a2fff18fbe8",
+    "baseline-qualification-final.json": "7d95a692a72c5e6d0890d6ba011aa510ff71ab97699c9874ee247d405f35c750",
+    "candidate-qualification.json": "108e073b69a1d5cdc4f09785e9a52df9b57bf121a11e0b28192426d074b39551",
+    "baseline-independent-audit.json": "6f8bd3ce94ca2a838069e87668bc402a5df271d968b8e5cfb05884d347a1cde7",
+    "candidate-independent-audit.json": "6f8bd3ce94ca2a838069e87668bc402a5df271d968b8e5cfb05884d347a1cde7",
+    "holder-profile.json": "024473b1a2b6d8b317bb971a8a60db2dd1bb2d0bf1f577cb08341dca148c9dab",
+    "native-final/qualification.json": "79c38e44fdd8bd69ef7ba9e4a31ed71723f68b3adf0ac24899dff0e32630df2d",
+    "native-torus-controls/summary.json": "c2fce41baab0b84e4759423f1a73d1d09fff2e2dd7cc7e9bb454ef9636ffd4b5",
+    "tooling-checks.json": "653cc041c6b6e3f845a1ff077a287c8ee0f507c049eb59f8bfe28d4a3628cfd7",
+    "reconstruct_runs.cjs": "8ee74f85bd84341a6fb66adedea0b9536bde08215904f4583c43ada3bbd58470",
+    "native-final/verify.py": "18197b4127c9f9ac1ce6dc1884c365195a151c3379dcef1e5d8b8730466dcbcd"
+  },
+  "method": [
+    "Separately derived nearest-rank statistics and both ABBA/BAAB block effects from original untraced driver records; checked fresh sequential processes, raw hashes, immutable source/package/harness identities, and exact-output correspondence.",
+    "Recomputed every retained stage/observed-wall p50 and p95, setup p50 and first-replay p50 from portable process/sample rows; compared all printed tables and rounded effects.",
+    "Compared current installed 24-cell/four-holder qualification and required actual-route observations, baseline two failures, independent recipe audits, native controls and final native source/receipt evidence.",
+    "Reviewed main report, evidence README, B09/M08 fragments and B10/O06 follow-through for historical-source separation, scope limits, overclaims and local links."
+  ],
+  "pureEvidenceChecks": {
+    "native-final/verify.py --repo .": "pass; hashes, 9237 native passes, 9 documentation passes, 33 store-local tests, 52 census rows, 14 cases/28 semantic records and disclosed identical compiler retry",
+    "reconstruct_runs.cjs": "pass; all 16 original driver JSON hashes reconstructed"
+  },
+  "independentlyDerived": {
+    "freshProcesses": 16,
+    "rawTicks": 96,
+    "retainedTicks": 64,
+    "processOrderPerMode": "ABBA then BAAB; four processes and sixteen retained ticks per variant/mode",
+    "previewStageP50ReductionPercent": 3.3865169646742244,
+    "completionStageP50ReductionPercent": 2.7019940786258023,
+    "previewBlockStageP50ReductionPercent": [
+      2.6284685748870995,
+      4.49911744779683
+    ],
+    "completionBlockStageP50ReductionPercent": [
+      2.3166265187347546,
+      2.79040367113339
+    ],
+    "previewRebuildP50ReductionPercent": 8.585012884911214,
+    "completionRebuildP50ReductionPercent": 10.64935322018078,
+    "candidateProcessStageMediansAllBelowBaselineInEachMode": true
+  },
+  "scopeLimits": [
+    "A modest measured improvement for this fixed synchronous Node kernel replay; no general browser, application/worker/renderer, GPU, native imported-holder or broad-workload performance claim.",
+    "Four processes per variant/mode and two balanced blocks do not establish confidence intervals or tail behavior; retained n=16 nearest-rank p95 is the maximum. First replay is not cold application launch.",
+    "Team core reservation and host observations do not establish exclusive-host control or a CPU-frequency cause. Memory snapshots do not prove allocation peaks or long-session reclamation.",
+    "Store-local remains opt-in and separately qualified; arbitrary imported/cavity/NURBS edits, lineage adoption, the sparse 256-body witness and 10% complete-workflow target remain open.",
+    "This review ran no kernel tests, builds, models or timing. Pure evidence verifiers inspect existing receipts only. Earlier raw-artifact review is distinct from this final prose review."
+  ],
+  "blockingFindings": [],
+  "pendingMaterialIssues": [],
+  "result": "No blocking factual, arithmetic, link or scope issue found in the frozen reviewed documents."
+}

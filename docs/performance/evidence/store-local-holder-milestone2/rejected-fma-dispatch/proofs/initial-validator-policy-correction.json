@@ -1,0 +1,7 @@
+{
+  "originalLogSha256": "fb44c18f3f5f4e6380e4c66c832326ae145a4cabe05be1f784ad952f52e914b2",
+  "originalDriverSha256": "b2182c17acd7c3d0c28c88b92d52c98400240d728bef9805105ecc5842a806be",
+  "reason": "The v1 helper demanded raw NaN-inclusive checksums match between output and volatile-loop contexts. Baseline failed this before variant comparison.",
+  "correction": "v2 retains every native oracle record, demands exact non-NaN bits and established NaN equivalence, then separately checks volatile-loop checksums on the complete non-NaN-output subset. No numerical kernel source or oracle outcomes were altered.",
+  "initialSourceKeptLocally": true
+}

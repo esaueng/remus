@@ -1,0 +1,11 @@
+{
+  "schema": "remus-native-portable-receipt-links-v1",
+  "recovery": {
+    "rawLocalReceiptSha256": "948c7ccb0ca867fdb98943f643acc991548d17fc94d2f2de7cc477ccf7da1658",
+    "portableFile": "compiler-retry.json",
+    "portableSha256": "eaca132a09b6f95040cb9abe88dc558598aca3ecdb7ad3d452c41ea60b318620",
+    "pathRedactedOriginalVerifiedBeforeCopy": true,
+    "redaction": "Only repository/capture root strings replaced with <repo>/<capture>. The unredacted root strings are not published."
+  },
+  "scope": "Receipt fields naming original raw Cargo lines, logs and local captures retain their original byte hashes. Public bundle file hashes are separate and listed in manifest.json."
+}

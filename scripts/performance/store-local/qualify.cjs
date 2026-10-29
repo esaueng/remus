@@ -11,17 +11,18 @@ const { meshQuality } = require('../../perf/filleted-face-edit/wasm_edit_bench.c
 
 const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 function options(argv) {
-  const args = { recipe: 'on' };
+  const args = { recipe: 'on', 'require-route-proof': 'off' };
   const seen = new Set();
   for (let index = 0; index < argv.length; index += 2) {
     const name = argv[index].replace(/^--/, '');
-    assert(argv[index].startsWith('--') && ['kernel-pkg', 'out', 'recipe', 'package-source-sha', 'cases'].includes(name)
+    assert(argv[index].startsWith('--') && ['kernel-pkg', 'out', 'recipe', 'package-source-sha', 'cases', 'require-route-proof'].includes(name)
       && argv[index + 1] !== undefined && !seen.has(name),
     `Unknown, duplicate or incomplete argument ${argv[index]}`);
     seen.add(name); args[name] = argv[index + 1];
   }
   assert(args['kernel-pkg'] && args.out, 'Required: --kernel-pkg <installed directory> --out <new JSON file>');
   assert(['on', 'off'].includes(args.recipe), 'Invalid --recipe');
+  assert(['on', 'off'].includes(args['require-route-proof']), 'Invalid --require-route-proof');
   assert(!args['package-source-sha'] || /^[a-f0-9]{40}$/.test(args['package-source-sha']), 'Invalid source SHA');
   args['kernel-pkg'] = path.resolve(args['kernel-pkg']);
   args.out = path.resolve(args.out);
@@ -41,6 +42,25 @@ function exact(value) {
   if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, exact(value[key])]));
   return value;
 }
+function cyclicStart(uses) {
+  // Compare complete rotations: identical minimum tokens can have different
+  // continuations. Skip losing prefixes without rewriting or sorting uses.
+  let first = 0, other = 1, offset = 0;
+  while (first < uses.length && other < uses.length && offset < uses.length) {
+    const left = uses[(first + offset) % uses.length], right = uses[(other + offset) % uses.length];
+    if (left === right) { offset++; continue; }
+    if (left > right) {
+      first += offset + 1;
+      if (first === other) first++;
+    } else {
+      other += offset + 1;
+      if (other === first) other++;
+    }
+    offset = 0;
+  }
+  return Math.min(first, other);
+}
+const rotate = (values, start) => values.slice(start).concat(values.slice(0, start));
 function canonicalArena(bytes) {
   const doc = JSON.parse(Buffer.from(bytes).toString('utf8'));
   assert([3, 4, 5].includes(doc.version) && doc.boundary_authority, 'Unsupported arena schema');
@@ -57,23 +77,7 @@ function canonicalArena(bytes) {
       else Object.assign(shape, { start, end, forward: use.forward });
       return JSON.stringify(exact({ ...shape, winding: use.periodic_winding, pcurve: use.pcurve ?? null }));
     });
-    // Compare complete rotations: identical minimum tokens can have different
-    // continuations. Skip losing prefixes without rewriting or sorting uses.
-    let first = 0, other = 1, offset = 0;
-    while (first < uses.length && other < uses.length && offset < uses.length) {
-      const left = uses[(first + offset) % uses.length], right = uses[(other + offset) % uses.length];
-      if (left === right) { offset++; continue; }
-      if (left > right) {
-        first += offset + 1;
-        if (first === other) first++;
-      } else {
-        other += offset + 1;
-        if (other === first) other++;
-      }
-      offset = 0;
-    }
-    const start = Math.min(first, other);
-    return JSON.stringify({ closed: data.closed, uses: uses.slice(start).concat(uses.slice(0, start)) });
+    return JSON.stringify({ closed: data.closed, uses: rotate(uses, cyclicStart(uses)) });
   };
   const face = id => {
     const data = doc.faces[id], loops = authority.faces[id];
@@ -82,7 +86,97 @@ function canonicalArena(bytes) {
   };
   const shell = id => JSON.stringify(doc.shells[id].faces.map(face).sort());
   return { counts: Object.fromEntries(['vertices', 'edges', 'wires', 'faces', 'shells', 'solids'].map(key => [key, doc[key].length])),
-    roots: doc.solid_roots.map(id => ({ outer: shell(doc.solids[id].outer_shell), cavities: doc.solids[id].inner_shells.map(shell).sort() })) };
+    roots: doc.solid_roots.map(id => ({ outer: shell(doc.solids[id].outer_shell), cavities: doc.solids[id].inner_shells.map(shell).sort() })),
+    incidence: incidenceGraph(doc, { loop, face, shell }) };
+}
+
+function incidenceGraph(doc, content) {
+  // Preserve explicit aliases and every endpoint/use/loop/face/shell link.
+  // Boundary-content order supplies a concrete traversal, whose dense IDs give
+  // a bijection when two encodings agree. This is NOT a complete graph-
+  // isomorphism solver: indistinguishable ordering ties may reject isomorphic
+  // graphs. They cannot authorize different sharing by matching only a multiset.
+  const authority = doc.boundary_authority;
+  assert(!(doc.sheet_roots?.length || doc.wire_roots?.length || doc.compounds?.length), 'Incidence qualification supports solid-root documents only');
+  assert.equal(authority.faces.length, doc.faces.length, 'Missing face boundary authority');
+  const tables = { vertices: doc.vertices, edges: doc.edges, wires: doc.wires,
+    coedges: authority.coedges, loops: authority.loops, faces: doc.faces, shells: doc.shells, solids: doc.solids };
+  const encoded = Object.fromEntries(Object.keys(tables).map(kind => [kind, []]));
+  const indices = Object.fromEntries(Object.keys(tables).map(kind => [kind, new Map()]));
+  const data = (kind, id) => {
+    assert(Number.isInteger(id) && id >= 0 && id < tables[kind].length, `Invalid ${kind} reference`);
+    return tables[kind][id];
+  };
+  const keyCache = new Map();
+  const key = (kind, id) => {
+    const cacheKey = `${kind}:${id}`;
+    if (keyCache.has(cacheKey)) return keyCache.get(cacheKey);
+    const value = data(kind, id);
+    let result;
+    if (kind === 'faces') result = content.face(id);
+    else if (kind === 'loops') result = content.loop(id);
+    else if (kind === 'shells') result = content.shell(id);
+    else if (kind === 'solids') result = JSON.stringify({ outer: key('shells', value.outer_shell), cavities: value.inner_shells.map(id => key('shells', id)).sort() });
+    else if (kind === 'wires') {
+      const uses = value.edges.map(useKey);
+      result = JSON.stringify({ closed: value.closed, bodyClass: value.body_class ?? null, uses: rotate(uses, cyclicStart(uses)) });
+    } else if (kind === 'coedges') result = useKey(value);
+    else if (kind === 'edges') {
+      const ends = endpoints(value);
+      result = JSON.stringify(exact({ curve: value.curve, trim: value.trim ?? null, tolerance: value.tolerance ?? null,
+        start: data('vertices', ends.start), end: data('vertices', ends.end) }));
+    } else result = JSON.stringify(exact(value));
+    keyCache.set(cacheKey, result);
+    return result;
+  };
+  const endpoints = edge => {
+    const flipped = edge.curve === 'Line' && JSON.stringify(exact(data('vertices', edge.start))) > JSON.stringify(exact(data('vertices', edge.end)));
+    return flipped ? { start: edge.end, end: edge.start, flipped } : { start: edge.start, end: edge.end, flipped };
+  };
+  const useKey = use => {
+    const edge = data('edges', use.edge), ends = endpoints(edge);
+    return JSON.stringify({ edge: key('edges', use.edge), forward: use.forward !== ends.flipped,
+      winding: exact(use.periodic_winding ?? null), pcurve: exact(use.pcurve ?? null) });
+  };
+  const ordered = (kind, ids) => ids.slice().sort((a, b) => {
+    const left = key(kind, a), right = key(kind, b);
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
+  const visitUse = use => ({ edge: visit('edges', use.edge), forward: use.forward !== endpoints(data('edges', use.edge)).flipped });
+  const visit = (kind, id) => {
+    const value = data(kind, id), map = indices[kind];
+    if (map.has(id)) return map.get(id);
+    const dense = encoded[kind].length;
+    map.set(id, dense); encoded[kind].push(null);
+    let result;
+    if (kind === 'vertices') result = exact(value);
+    else if (kind === 'edges') {
+      const ends = endpoints(value);
+      result = { curve: exact(value.curve), trim: exact(value.trim ?? null), tolerance: exact(value.tolerance ?? null),
+        start: visit('vertices', ends.start), end: visit('vertices', ends.end) };
+    } else if (kind === 'wires') result = { closed: value.closed, bodyClass: value.body_class ?? null,
+      uses: rotate(value.edges, cyclicStart(value.edges.map(useKey))).map(visitUse) };
+    else if (kind === 'coedges') result = { ...visitUse(value), winding: exact(value.periodic_winding), pcurve: exact(value.pcurve ?? null) };
+    else if (kind === 'loops') result = { closed: value.closed,
+      uses: rotate(value.coedges, cyclicStart(value.coedges.map(id => key('coedges', id)))).map(id => visit('coedges', id)) };
+    else if (kind === 'faces') {
+      const loops = authority.faces[id];
+      assert.equal(value.inner_wires.length, loops.inner_loops.length, 'Wire/loop authority count mismatch');
+      const boundaries = value.inner_wires.map((wire, index) => ({ wire, loop: loops.inner_loops[index] }));
+      const boundaryKey = boundary => JSON.stringify([key('wires', boundary.wire), key('loops', boundary.loop)]);
+      boundaries.sort((a, b) => boundaryKey(a) < boundaryKey(b) ? -1 : boundaryKey(a) > boundaryKey(b) ? 1 : 0);
+      const boundary = (wire, loop) => ({ wire: visit('wires', wire), loop: visit('loops', loop) });
+      result = { surface: exact(value.surface), reversed: value.reversed,
+        outer: boundary(value.outer_wire, loops.outer_loop), holes: boundaries.map(({ wire, loop }) => boundary(wire, loop)) };
+    } else if (kind === 'shells') result = { bodyClass: value.body_class ?? null, faces: ordered('faces', value.faces).map(id => visit('faces', id)) };
+    else result = { outer: visit('shells', value.outer_shell), cavities: ordered('shells', value.inner_shells).map(id => visit('shells', id)) };
+    encoded[kind][dense] = result;
+    return dense;
+  };
+  const roots = doc.solid_roots.map(id => visit('solids', id));
+  // Include orphan table entries too; counts alone would conceal their links.
+  for (const kind of Object.keys(tables)) for (const id of ordered(kind, tables[kind].map((_, id) => id))) visit(kind, id);
+  return { roots, ...encoded };
 }
 function move(kernel, solid, x, y, z) {
   kernel.transformSolid(solid, new Float64Array([1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, z, 0, 0, 0, 1]));
@@ -128,7 +222,68 @@ function quality(kernel, solid, probes, expected) {
   const arena = kernel.serializeSolids(Uint32Array.of(solid));
   return { volume, faces, mesh: meshReport, welded: weldedReport, material, canonical: canonicalArena(arena), arenaSha256: sha256(arena) };
 }
-function runCase(BrepKernel, fixture, enabled, binding) {
+const routeNames = ['general_gfa', 'store_local_attempt', 'store_local_success', 'local_cut_success', 'nary'];
+function observeBoolean(kernel, run) {
+  const unavailable = reason => ({ diagnosticOnly: true, timingClaimsExcluded: true, status: 'unavailable', reason, counts: null, markers: [] });
+  if (typeof kernel.setPerformanceTracing !== 'function' || typeof kernel.drainPerformanceTrace !== 'function') {
+    return { value: run(), routes: unavailable('Package has no performance trace API') };
+  }
+  // Enabling clears previous events. Setup and subsequent quality checks stay
+  // outside this trace; durations are never used as performance measurements.
+  kernel.setPerformanceTracing(true);
+  try {
+    const value = run(), phases = JSON.parse(kernel.drainPerformanceTrace());
+    assert(Array.isArray(phases), 'Malformed performance trace');
+    if (phases.length >= 4096) return { value, routes: { ...unavailable('Trace reached its event bound; route counts may be incomplete'), traceEventCount: phases.length } };
+    const markers = phases.filter(phase => typeof phase.name === 'string' && phase.name.startsWith('boolean.route.')).map(phase => phase.name.slice('boolean.route.'.length));
+    if (!markers.length) return { value, routes: { ...unavailable('No boolean route markers; this package or path does not establish routing'), traceEventCount: phases.length } };
+    assert(markers.every(name => routeNames.includes(name)), 'Unknown boolean route marker');
+    const counts = Object.fromEntries(routeNames.map(name => [name, 0]));
+    for (const name of markers) counts[name]++;
+    return { value, routes: { diagnosticOnly: true, timingClaimsExcluded: true, status: 'observed', counts, markers, traceEventCount: phases.length } };
+  } finally { kernel.setPerformanceTracing(false); }
+}
+function assertRoute(routes, fixture, enabled, required) {
+  if (routes.status !== 'observed') {
+    assert(!required, `${fixture.name}: actual boolean route proof unavailable: ${routes.reason}`);
+    return;
+  }
+  const counts = routes.counts;
+  assert(counts.store_local_success <= counts.store_local_attempt, 'Local success without an observed attempt');
+  if (!enabled) {
+    assert.equal(counts.store_local_attempt, 0, `${fixture.name}: local attempt while disabled`);
+    assert.equal(counts.store_local_success, 0, `${fixture.name}: local success while disabled`);
+    assert(counts.general_gfa > 0, `${fixture.name}: disabled general route not observed`);
+  } else if (['slot_cut', 'rib_fuse', 'window_intersect', 'cross_drilled_shaft'].includes(fixture.name)) {
+    assert.equal(counts.store_local_attempt, 1, `${fixture.name}: expected one local attempt`);
+    assert.equal(counts.store_local_success, 1, `${fixture.name}: local route did not complete`);
+    assert.equal(counts.general_gfa, 0, `${fixture.name}: unexpectedly used general GFA`);
+  } else if (fixture.kind === 'cavity') {
+    assert(counts.store_local_attempt > 0, 'Cavity local eligibility was not tested');
+    assert.equal(counts.store_local_success, 0, 'Cavity unexpectedly completed store-locally');
+    assert(counts.general_gfa > 0, 'Cavity decline did not reach general GFA');
+  } else if (fixture.kind === 'nurbs') {
+    // The original NURBS patch must decline. The wrapper may then flatten the
+    // certified planar supports and retry successfully, which is not evidence
+    // that the original NURBS representation was handled store-locally.
+    assert(counts.store_local_attempt > counts.store_local_success, 'Original NURBS patch decline not observed');
+    assert(counts.general_gfa > 0 || counts.store_local_success > 0 || counts.local_cut_success > 0, 'NURBS wrapper completion route not observed');
+  }
+}
+function assertRecipeRoutes(stages, enabled, required) {
+  for (const [stage, routes] of Object.entries(stages)) {
+    if (routes.status !== 'observed') {
+      assert(!required, `holder_recipe ${stage}: actual boolean route proof unavailable: ${routes.reason}`);
+      continue;
+    }
+    assert(routes.counts.store_local_success <= routes.counts.store_local_attempt, `holder_recipe ${stage}: local success without an observed attempt`);
+    if (!enabled) {
+      assert.equal(routes.counts.store_local_attempt, 0, `holder_recipe ${stage}: local attempt while disabled`);
+      assert.equal(routes.counts.store_local_success, 0, `holder_recipe ${stage}: local success while disabled`);
+    }
+  }
+}
+function runCase(BrepKernel, fixture, enabled, binding, requireRouteProof) {
   const kernel = new BrepKernel();
   try {
     kernel.setStoreLocalCuts(false);
@@ -148,16 +303,20 @@ function runCase(BrepKernel, fixture, enabled, binding) {
     }
     const input = kernel.serializeSolids(Uint32Array.of(blank, tool));
     kernel.setStoreLocalCuts(enabled);
-    let solid;
-    if (binding === 'direct') solid = kernel[fixture.op](blank, tool);
-    else {
+    const { value: solid, routes } = observeBoolean(kernel, () => {
+      if (binding === 'direct') return kernel[fixture.op](blank, tool);
       const rows = JSON.parse(kernel.executeBatch(JSON.stringify([{ op: fixture.op, args: { solidA: blank, solidB: tool } }])));
-      assert.equal(typeof rows[0].ok, 'number', JSON.stringify(rows)); solid = rows[0].ok;
-    }
+      assert.equal(typeof rows[0].ok, 'number', JSON.stringify(rows));
+      return rows[0].ok;
+    });
+    assertRoute(routes, fixture, enabled, requireRouteProof);
     assert.equal(sha256(kernel.serializeSolids(Uint32Array.of(blank, tool))), sha256(input), 'Operation changed source operands');
     const probes = fixture.kind ? fixture.probes : [...fixture.probes, [8, 8, 5, 'outside']];
-    return quality(kernel, solid, probes, fixture.expected);
-  } finally { kernel.setStoreLocalCuts(false); kernel.free(); }
+    return { ...quality(kernel, solid, probes, fixture.expected), routes };
+  } finally {
+    if (typeof kernel.setPerformanceTracing === 'function') kernel.setPerformanceTracing(false);
+    kernel.setStoreLocalCuts(false); kernel.free();
+  }
 }
 function firstDifference(a, b, at = 'root') {
   if (JSON.stringify(a) === JSON.stringify(b)) return null;
@@ -227,7 +386,9 @@ function main(argv = process.argv.slice(2)) {
   node: process.version, harnessSha256: sha256(fs.readFileSync(__filename)),
     recipeHarnessSha256: sha256(fs.readFileSync(path.join(__dirname, '../../perf/parameter-rebuild/holder_recipe.cjs'))),
     meshQualityHarnessSha256: sha256(fs.readFileSync(path.join(__dirname, '../../perf/filleted-face-edit/wasm_edit_bench.cjs'))), cases: [], recipe: [], failures: [],
-  scope: { actualStoreLocalRoute: 'Not exposed by the shipped JS API; native work-count tests prove routing separately.',
+  scope: { actualStoreLocalRoute: 'Diagnostic trace markers around each synthetic boolean and separate recipe prepare/rebuild stages only; absent markers mean unavailable, never zero-success proof. Mesh/quality work is excluded, and trace durations are never timing evidence. Local successes are not inferred from the requested setting.',
+    requireRouteProof: args['require-route-proof'] === 'on',
+    incidence: 'Matching boundary-ordered graph encodings establish a bijection preserving endpoint, use, wire, loop, face, shell and root aliases. Indistinguishable ordering ties may reject isomorphic graphs; this is not a complete graph-isomorphism solver. Attributes and journal semantics remain separate contracts.',
     adoption: 'Qualification of listed inputs only. Default unchanged; general imported-body, cavity, NURBS, identity and lineage adoption require separate evidence.' } };
   result.settings = settingsContract(BrepKernel);
   result.lineage = [];
@@ -239,11 +400,11 @@ function main(argv = process.argv.slice(2)) {
   const selected = args.cases ? args.cases.split(',') : cases.map(fixture => fixture.name);
   assert(selected.length && new Set(selected).size === selected.length && selected.every(name => cases.some(fixture => fixture.name === name)), 'Unknown, empty or duplicate --cases');
   for (const fixture of cases.filter(fixture => selected.includes(fixture.name))) {
-    const baseline = runCase(BrepKernel, fixture, false, 'direct');
+    const baseline = runCase(BrepKernel, fixture, false, 'direct', args['require-route-proof'] === 'on');
     for (const enabled of [false, true]) for (const binding of ['direct', 'batch']) {
-      const checked = runCase(BrepKernel, fixture, enabled, binding);
+      const checked = runCase(BrepKernel, fixture, enabled, binding, args['require-route-proof'] === 'on');
       const difference = firstDifference(baseline.canonical, checked.canonical);
-      if (difference) result.failures.push({ name: fixture.name, requestedStoreLocal: enabled, binding, reason: 'Exact boundary content differs', firstDifference: difference });
+      if (difference) result.failures.push({ name: fixture.name, requestedStoreLocal: enabled, binding, reason: 'Exact boundary or incidence content differs', firstDifference: difference });
       assert(Math.abs(checked.volume - baseline.volume) <= Math.max(1, baseline.volume) * 1e-9, `${fixture.name}: volume differs`);
       const { canonical, ...summary } = checked;
       result.cases.push({ name: fixture.name, requestedStoreLocal: enabled, binding, exactBoundaryAgreement: difference === null, canonicalSha256: sha256(JSON.stringify(canonical)), ...summary });
@@ -258,16 +419,22 @@ function main(argv = process.argv.slice(2)) {
         const kernel = new BrepKernel();
         try {
           kernel.setStoreLocalCuts(enabled);
-          const prefix = recipe.prepare(kernel, data, { checkpoint: false });
-          const built = recipe.rebuild(kernel, data, prefix, width);
+          const prepared = observeBoolean(kernel, () => recipe.prepare(kernel, data, { checkpoint: false }));
+          const rebuilt = observeBoolean(kernel, () => recipe.rebuild(kernel, data, prepared.value, width));
+          const built = rebuilt.value;
+          const routes = { prepare: prepared.routes, rebuild: rebuilt.routes };
+          assertRecipeRoutes(routes, enabled, args['require-route-proof'] === 'on');
           const meshes = built.roots.map(solid => recipe.extract(kernel.tessellateSolidGroupedBinary(solid, recipe.DISPLAY.linear, recipe.DISPLAY.angular)));
           const qualified = recipe.qualify(kernel, data, built, meshes);
           const canonical = canonicalArena(kernel.serializeSolids(Uint32Array.from(built.roots)));
           const difference = baseline ? firstDifference(baseline, canonical) : null;
-          if (difference) result.failures.push({ name: 'holder_recipe', width, requestedStoreLocal: enabled, reason: 'Exact boundary content differs', firstDifference: difference });
+          if (difference) result.failures.push({ name: 'holder_recipe', width, requestedStoreLocal: enabled, reason: 'Exact boundary or incidence content differs', firstDifference: difference });
           if (!baseline) baseline = canonical;
-          result.recipe.push({ width, requestedStoreLocal: enabled, exactBoundaryAgreement: difference === null, canonicalSha256: sha256(JSON.stringify(canonical)), ...qualified });
-        } finally { kernel.setStoreLocalCuts(false); kernel.free(); }
+          result.recipe.push({ width, requestedStoreLocal: enabled, exactBoundaryAgreement: difference === null, canonicalSha256: sha256(JSON.stringify(canonical)), routes, ...qualified });
+        } finally {
+          if (typeof kernel.setPerformanceTracing === 'function') kernel.setPerformanceTracing(false);
+          kernel.setStoreLocalCuts(false); kernel.free();
+        }
       }
     }
   }
@@ -276,5 +443,5 @@ function main(argv = process.argv.slice(2)) {
   process.stdout.write(`${result.passed ? 'Qualified' : 'Partial qualification:'} ${result.cases.length} direct/batch cases and ${result.recipe.length} recipe runs; ${result.failures.length} exact-content failures.\n`);
   if (!result.passed) process.exitCode = 1;
 }
-module.exports = { main, canonicalArena };
+module.exports = { main, canonicalArena, observeBoolean, assertRoute, assertRecipeRoutes };
 if (require.main === module) { try { main(); } catch (error) { process.stderr.write(`${error.stack || error}\n`); process.exitCode = 1; } }

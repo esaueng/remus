@@ -1,0 +1,5 @@
+native mul_add oracle records: 578952; each is 3 input u64 words + expected output u64, little endian
+VALIDATED 578952 records for all four modules; no timing
+VALIDATED 578952 records for both modules; no timing
+{"prepared":["total-mix","recognition-mix","preview-mix","completion-mix","family-zero_product_a_only","family-zero_product_b_only","family-zero_product_both","family-finite_nonzero_zeroaddend","family-finite_nonzero_unitfactor","family-remaining_emulated","family-remaining_fallback"],"timed":false}
+Rebuilt all five modules, native-oracle correctness, and exact sampled input/result bytes. No timing was run.

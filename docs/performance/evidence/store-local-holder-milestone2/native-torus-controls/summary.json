@@ -1,0 +1,824 @@
+{
+  "schemaVersion": 1,
+  "kind": "matched-native-criterion-torus-notch-controls",
+  "processes": 8,
+  "casesPerProcess": 3,
+  "criterionBatchSamples": 240,
+  "sourceBuildProvenance": {
+    "baseline": {
+      "schemaVersion": 1,
+      "kind": "native-torus-notch-criterion-build",
+      "startedAt": "2026-10-29T03:33:53.409309+00:00",
+      "sourceSha": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+      "sourceTree": "77597af50bfc5cf2fa468e3c4f4b9e464657dec7",
+      "trackedChanges": [
+        "crates/wasm-io/pkg/package.json",
+        "crates/wasm-io/pkg/remus_wasm_io_bg.wasm",
+        "crates/wasm/pkg/package.json",
+        "crates/wasm/pkg/remus_wasm.d.ts",
+        "crates/wasm/pkg/remus_wasm_bg.js",
+        "crates/wasm/pkg/remus_wasm_bg.wasm",
+        "crates/wasm/pkg/remus_wasm_bg.wasm.d.ts",
+        "crates/wasm/pkg/remus_wasm_node.cjs"
+      ],
+      "sourceFiles": {
+        "Cargo.toml": {
+          "bytes": 4232,
+          "sha256": "239ea846958192f846c466afe64e719f109e702e0570e4b00d1e8da653f840a2",
+          "mode": "0o664"
+        },
+        "Cargo.lock": {
+          "bytes": 95105,
+          "sha256": "51b920921dfa2a0d64448d7555bc529bed4330f0d5503caf8f3593fd42b30f0c",
+          "mode": "0o664"
+        },
+        "crates/operations/Cargo.toml": {
+          "bytes": 2069,
+          "sha256": "c4a8db969b3bc81f4091e8248afb1366ad3c5383eabd87a5547d63472249f238",
+          "mode": "0o664"
+        },
+        "crates/operations/benches/boolean_tracking.rs": {
+          "bytes": 5823,
+          "sha256": "1625f74b11807f3b7528518c42d4e9f0c00ca82229aaa5c7fe9910ff9aedc782",
+          "mode": "0o664"
+        },
+        "crates/math/src/fma.rs": {
+          "bytes": 16864,
+          "sha256": "d0f8602fc3eadf802223a421844d4fc558445a38f6fd6625994662c18fcb8684",
+          "mode": "0o664"
+        }
+      },
+      "tools": {
+        "rustc": {
+          "version": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.0\nLLVM version: 22.1.2",
+          "file": {
+            "bytes": 646032,
+            "sha256": "ba4b837efb6612dfa8d941c5a72b8a50d1d03a0f36216743b173949aa8d9eb75",
+            "mode": "0o755"
+          }
+        },
+        "cargo": {
+          "version": "cargo 1.96.0 (30a34c682 2026-05-25)",
+          "file": {
+            "bytes": 42865872,
+            "sha256": "f30f9fd1b1d0b8fd10dc33219eb4cd4bec3543f40e434ac71f5a03fd0359063f",
+            "mode": "0o755"
+          }
+        }
+      },
+      "command": [
+        "cargo",
+        "bench",
+        "--profile",
+        "profiling",
+        "-p",
+        "remus-operations",
+        "--bench",
+        "boolean_tracking",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "environment": {
+        "CARGO_BUILD_JOBS": "2",
+        "RUST_MIN_STACK": "536870912",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "immutable-baseline-worktree/target"
+      },
+      "affinity": "0-14,16-30",
+      "timingStarted": false,
+      "requestedFilter": "torus_notch_",
+      "coverage": "Native analytic primitive controls; closure includes setup+boolean. This does not prove coverage of exact imported holder NURBS carriers or WASM latency.",
+      "completedAt": "2026-10-29T03:39:34.951154+00:00",
+      "buildExitedZero": true,
+      "cargoBuildFinishedSuccess": true,
+      "noRunBuildOnly": true,
+      "sourceFilesUnchanged": true,
+      "sourceTrackedChangesPreserved": true,
+      "producerRawJson": {
+        "bytes": 1060,
+        "sha256": "2f3d8d243cd12e0f258ea7ae3c3b9ce30f43668d2750c34562b28eee03b7caaa",
+        "mode": "0o664"
+      },
+      "cargoMessages": {
+        "bytes": 126246,
+        "sha256": "29148d7d366db1b1b60caeb6c05d950819bd5119e97e297dad721766b32bd0ea",
+        "mode": "0o664"
+      },
+      "stderr": {
+        "bytes": 2629,
+        "sha256": "5fd04c80495b85876b4179434f5bcac22b7c0bb672ea326d29d73a224fe73b9f",
+        "mode": "0o664"
+      },
+      "producer": {
+        "package": "remus-operations",
+        "targetName": "boolean_tracking",
+        "kind": [
+          "bench"
+        ],
+        "crateTypes": [
+          "bin"
+        ],
+        "features": [],
+        "profile": {
+          "opt_level": "3",
+          "debuginfo": 2,
+          "debug_assertions": false,
+          "overflow_checks": true,
+          "test": true
+        },
+        "fresh": false,
+        "sourcePath": "crates/operations/benches/boolean_tracking.rs",
+        "executableRelativeToWorktree": "target/profiling/deps/boolean_tracking-361816841f8ec9e8"
+      },
+      "fingerprint": {
+        "file": {
+          "bytes": 1565,
+          "sha256": "78c7e574d69c23c473c1b6829b6fd7687af448e86a384edf1e8d8279f9b43556",
+          "mode": "0o664"
+        },
+        "rustflags": [],
+        "profileId": 15381347167402631063,
+        "features": "[]"
+      },
+      "frozenExecutable": {
+        "name": "boolean_tracking",
+        "bytes": 256839552,
+        "sha256": "e939c2368da75afa0820ca690d9584737c6f47e7d1b1fdd55511990bffd929f8",
+        "mode": "0o775"
+      },
+      "cargoExecutableBeforeAfterCopyEqual": true,
+      "plannedCases": [
+        "boolean/torus_notch_cut",
+        "boolean/torus_notch_fuse",
+        "boolean/torus_notch_intersect"
+      ],
+      "boundaries": "Each Criterion iteration constructs freshTopology,torus(10,3,32),box(8,8,8),translates tool(6,-4,-4),then performs boolean; setup/drop included.",
+      "sourceGroupPolicy": {
+        "samples": 10,
+        "warmupMs": 500,
+        "measurementMs": 2000
+      },
+      "limitations": [
+        "Native analytic primitive control, not a full-holder or WASM result.",
+        "No measured helper-route coverage is established by this build.",
+        "No timing run, speedup claim, or cross-kernel comparison has occurred."
+      ]
+    },
+    "candidate": {
+      "schemaVersion": 1,
+      "kind": "native-torus-notch-criterion-build",
+      "startedAt": "2026-10-29T03:46:02.683154+00:00",
+      "sourceSha": "7364ab7be5e598b7c868bd63239dc831cbceb933",
+      "sourceTree": "e961daf35b4132dae9190bb8265e8b6e9304f22d",
+      "trackedChanges": [],
+      "sourceFiles": {
+        "Cargo.toml": {
+          "bytes": 4232,
+          "sha256": "239ea846958192f846c466afe64e719f109e702e0570e4b00d1e8da653f840a2",
+          "mode": "0o664"
+        },
+        "Cargo.lock": {
+          "bytes": 95105,
+          "sha256": "51b920921dfa2a0d64448d7555bc529bed4330f0d5503caf8f3593fd42b30f0c",
+          "mode": "0o664"
+        },
+        "crates/operations/Cargo.toml": {
+          "bytes": 2069,
+          "sha256": "c4a8db969b3bc81f4091e8248afb1366ad3c5383eabd87a5547d63472249f238",
+          "mode": "0o664"
+        },
+        "crates/operations/benches/boolean_tracking.rs": {
+          "bytes": 5823,
+          "sha256": "1625f74b11807f3b7528518c42d4e9f0c00ca82229aaa5c7fe9910ff9aedc782",
+          "mode": "0o664"
+        },
+        "crates/math/src/fma.rs": {
+          "bytes": 16864,
+          "sha256": "d0f8602fc3eadf802223a421844d4fc558445a38f6fd6625994662c18fcb8684",
+          "mode": "0o664"
+        }
+      },
+      "tools": {
+        "rustc": {
+          "version": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.0\nLLVM version: 22.1.2",
+          "file": {
+            "bytes": 646032,
+            "sha256": "ba4b837efb6612dfa8d941c5a72b8a50d1d03a0f36216743b173949aa8d9eb75",
+            "mode": "0o755"
+          }
+        },
+        "cargo": {
+          "version": "cargo 1.96.0 (30a34c682 2026-05-25)",
+          "file": {
+            "bytes": 42865872,
+            "sha256": "f30f9fd1b1d0b8fd10dc33219eb4cd4bec3543f40e434ac71f5a03fd0359063f",
+            "mode": "0o755"
+          }
+        }
+      },
+      "command": [
+        "cargo",
+        "bench",
+        "--profile",
+        "profiling",
+        "-p",
+        "remus-operations",
+        "--bench",
+        "boolean_tracking",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "environment": {
+        "CARGO_BUILD_JOBS": "2",
+        "RUST_MIN_STACK": "536870912",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "immutable-candidate-worktree/target"
+      },
+      "affinity": "0-14,16-30",
+      "timingStarted": false,
+      "requestedFilter": "torus_notch_",
+      "coverage": "Native analytic primitive controls; closure includes setup+boolean. This does not prove coverage of exact imported holder NURBS carriers or WASM latency.",
+      "baselineReceiptSha256": "aec3cf1c2d5ddf85746ef500a9eab3b906341059489e65689939c50c7ef8170f",
+      "unchangedBenchCargoLockProfileFmaAndToolInputs": true,
+      "completedAt": "2026-10-29T03:52:10.764120+00:00",
+      "buildExitedZero": true,
+      "cargoBuildFinishedSuccess": true,
+      "noRunBuildOnly": true,
+      "sourceFilesUnchanged": true,
+      "sourceTrackedChangesPreserved": true,
+      "producerRawJson": {
+        "bytes": 1095,
+        "sha256": "abb38745ccd7e53e8821011ce037489b640da7acc572097c906f2875b4c12cdd",
+        "mode": "0o664"
+      },
+      "cargoMessages": {
+        "bytes": 128386,
+        "sha256": "3f5407a3e137f6c365e3bfde080733244fe66b9b0708ea05e270a2c7e62454e0",
+        "mode": "0o664"
+      },
+      "stderr": {
+        "bytes": 4728,
+        "sha256": "ae1ecee8c78ef91b44e307548be326132df32111c1555c807d8494131a49ca04",
+        "mode": "0o664"
+      },
+      "producer": {
+        "package": "remus-operations",
+        "targetName": "boolean_tracking",
+        "kind": [
+          "bench"
+        ],
+        "crateTypes": [
+          "bin"
+        ],
+        "features": [],
+        "profile": {
+          "opt_level": "3",
+          "debuginfo": 2,
+          "debug_assertions": false,
+          "overflow_checks": true,
+          "test": true
+        },
+        "fresh": false,
+        "sourcePath": "crates/operations/benches/boolean_tracking.rs",
+        "executableRelativeToWorktree": "target/profiling/deps/boolean_tracking-361816841f8ec9e8"
+      },
+      "fingerprint": {
+        "file": {
+          "bytes": 1565,
+          "sha256": "78c7e574d69c23c473c1b6829b6fd7687af448e86a384edf1e8d8279f9b43556",
+          "mode": "0o664"
+        },
+        "rustflags": [],
+        "profileId": 15381347167402631063,
+        "features": "[]"
+      },
+      "frozenExecutable": {
+        "name": "boolean_tracking",
+        "bytes": 256894744,
+        "sha256": "3379236325cda435520107422f8d5e905a83d288196758ad8fe6f9030694fff5",
+        "mode": "0o775"
+      },
+      "cargoExecutableBeforeAfterCopyEqual": true,
+      "plannedCases": [
+        "boolean/torus_notch_cut",
+        "boolean/torus_notch_fuse",
+        "boolean/torus_notch_intersect"
+      ],
+      "boundaries": "Each Criterion iteration constructs freshTopology,torus(10,3,32),box(8,8,8),translates tool(6,-4,-4),then performs boolean; setup/drop included.",
+      "sourceGroupPolicy": {
+        "samples": 10,
+        "warmupMs": 500,
+        "measurementMs": 2000
+      },
+      "limitations": [
+        "Native analytic primitive control, not a full-holder or WASM result.",
+        "No measured helper-route coverage is established by this build.",
+        "No timing run, speedup claim, or cross-kernel comparison has occurred."
+      ]
+    }
+  },
+  "collector": {
+    "bytes": 14582,
+    "sha256": "06a5514b389ce62e8df4a9083505f9ec46964d4b9986c8cf63addd17fcdd53e0",
+    "mode": "0o664"
+  },
+  "policy": {
+    "order": [
+      "baseline",
+      "candidate",
+      "candidate",
+      "baseline",
+      "candidate",
+      "baseline",
+      "baseline",
+      "candidate"
+    ],
+    "cases": [
+      "boolean/torus_notch_cut",
+      "boolean/torus_notch_fuse",
+      "boolean/torus_notch_intersect"
+    ],
+    "cpu": 31,
+    "physicalSiblings": "15,31",
+    "arguments": [
+      "torus_notch_",
+      "--bench",
+      "--noplot"
+    ],
+    "sourcePolicy": {
+      "sampleSize": 10,
+      "warmupMs": 500,
+      "measurementMs": 2000
+    },
+    "policy": "Unchanged native Criterion primitives; setup and drop included; no memo/store-local toggles."
+  },
+  "cases": {
+    "boolean/torus_notch_cut": {
+      "processes": [
+        {
+          "ordinal": 0,
+          "variant": "baseline",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5671119.310958888,
+              "upper_bound": 5765655.973922903
+            },
+            "point_estimate": 5708566.225974026,
+            "standard_error": 24174.92069269229
+          }
+        },
+        {
+          "ordinal": 1,
+          "variant": "candidate",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5705685.833591112,
+              "upper_bound": 5744702.671606402
+            },
+            "point_estimate": 5721897.74619666,
+            "standard_error": 9949.301464229578
+          }
+        },
+        {
+          "ordinal": 2,
+          "variant": "candidate",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5661762.23427896,
+              "upper_bound": 5753886.7229676405
+            },
+            "point_estimate": 5699874.860111318,
+            "standard_error": 23420.06874640622
+          }
+        },
+        {
+          "ordinal": 3,
+          "variant": "baseline",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5787736.598209132,
+              "upper_bound": 5832614.122834039
+            },
+            "point_estimate": 5810776.507606679,
+            "standard_error": 11441.493022583176
+          }
+        },
+        {
+          "ordinal": 4,
+          "variant": "candidate",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5692623.774324726,
+              "upper_bound": 5742875.456976064
+            },
+            "point_estimate": 5718973.423747681,
+            "standard_error": 12708.669718351608
+          }
+        },
+        {
+          "ordinal": 5,
+          "variant": "baseline",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5668285.767403993,
+              "upper_bound": 5683214.781060408
+            },
+            "point_estimate": 5673433.909833024,
+            "standard_error": 3834.8712860676073
+          }
+        },
+        {
+          "ordinal": 6,
+          "variant": "baseline",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5706835.667933542,
+              "upper_bound": 5738737.69976559
+            },
+            "point_estimate": 5723404.422634508,
+            "standard_error": 8505.16013260138
+          }
+        },
+        {
+          "ordinal": 7,
+          "variant": "candidate",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5666085.4759050375,
+              "upper_bound": 5705709.945116727
+            },
+            "point_estimate": 5689382.812615955,
+            "standard_error": 10082.6024104493
+          }
+        }
+      ],
+      "baselinePointEstimatesNs": [
+        5708566.225974026,
+        5810776.507606679,
+        5673433.909833024,
+        5723404.422634508
+      ],
+      "candidatePointEstimatesNs": [
+        5721897.74619666,
+        5699874.860111318,
+        5718973.423747681,
+        5689382.812615955
+      ],
+      "baselineMedianPointNs": 5715985.324304268,
+      "candidateMedianPointNs": 5709424.1419295,
+      "candidateMedianIncreaseFraction": -0.001147865503935086,
+      "balancedBlockMeanEffects": [
+        {
+          "order": "ABBA",
+          "baselineMeanPointNs": 5759671.366790352,
+          "candidateMeanPointNs": 5710886.303153989,
+          "candidateIncreaseFraction": -0.008470112360516424
+        },
+        {
+          "order": "BAAB",
+          "baselineMeanPointNs": 5698419.166233767,
+          "candidateMeanPointNs": 5704178.118181818,
+          "candidateIncreaseFraction": 0.001010622732384503
+        }
+      ]
+    },
+    "boolean/torus_notch_fuse": {
+      "processes": [
+        {
+          "ordinal": 0,
+          "variant": "baseline",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5706047.288399571,
+              "upper_bound": 5778921.484334579
+            },
+            "point_estimate": 5750941.175881262,
+            "standard_error": 18672.2013968926
+          }
+        },
+        {
+          "ordinal": 1,
+          "variant": "candidate",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5730223.240806891,
+              "upper_bound": 5787901.700991714
+            },
+            "point_estimate": 5762250.541001855,
+            "standard_error": 14947.685441834004
+          }
+        },
+        {
+          "ordinal": 2,
+          "variant": "candidate",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5661610.6665796675,
+              "upper_bound": 5753990.742621016
+            },
+            "point_estimate": 5695971.244897959,
+            "standard_error": 23878.18704912585
+          }
+        },
+        {
+          "ordinal": 3,
+          "variant": "baseline",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5745495.752136752,
+              "upper_bound": 5837621.501143604
+            },
+            "point_estimate": 5775642.559183674,
+            "standard_error": 22961.03613315536
+          }
+        },
+        {
+          "ordinal": 4,
+          "variant": "candidate",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5644029.137767221,
+              "upper_bound": 5674101.953809536
+            },
+            "point_estimate": 5657261.930241187,
+            "standard_error": 8214.270574086459
+          }
+        },
+        {
+          "ordinal": 5,
+          "variant": "baseline",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5675009.259507275,
+              "upper_bound": 5682913.022200121
+            },
+            "point_estimate": 5677833.161781076,
+            "standard_error": 2018.308380306224
+          }
+        },
+        {
+          "ordinal": 6,
+          "variant": "baseline",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5882864.318352402,
+              "upper_bound": 5894683.679109835
+            },
+            "point_estimate": 5887980.077179963,
+            "standard_error": 3010.14291985365
+          }
+        },
+        {
+          "ordinal": 7,
+          "variant": "candidate",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5639808.742346939,
+              "upper_bound": 5691836.52
+            },
+            "point_estimate": 5670578.18664193,
+            "standard_error": 12534.103089116683
+          }
+        }
+      ],
+      "baselinePointEstimatesNs": [
+        5750941.175881262,
+        5775642.559183674,
+        5677833.161781076,
+        5887980.077179963
+      ],
+      "candidatePointEstimatesNs": [
+        5762250.541001855,
+        5695971.244897959,
+        5657261.930241187,
+        5670578.18664193
+      ],
+      "baselineMedianPointNs": 5763291.8675324675,
+      "candidateMedianPointNs": 5683274.715769945,
+      "candidateMedianIncreaseFraction": -0.013883931891997325,
+      "balancedBlockMeanEffects": [
+        {
+          "order": "ABBA",
+          "baselineMeanPointNs": 5763291.8675324675,
+          "candidateMeanPointNs": 5729110.892949907,
+          "candidateIncreaseFraction": -0.005930807491308698
+        },
+        {
+          "order": "BAAB",
+          "baselineMeanPointNs": 5782906.61948052,
+          "candidateMeanPointNs": 5663920.058441559,
+          "candidateIncreaseFraction": -0.020575563270923025
+        }
+      ]
+    },
+    "boolean/torus_notch_intersect": {
+      "processes": [
+        {
+          "ordinal": 0,
+          "variant": "baseline",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5555711.569696969,
+              "upper_bound": 5573408.979648054
+            },
+            "point_estimate": 5564152.99703154,
+            "standard_error": 4728.5731501650525
+          }
+        },
+        {
+          "ordinal": 1,
+          "variant": "candidate",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5805355.815042573,
+              "upper_bound": 5813277.371011266
+            },
+            "point_estimate": 5809115.968460111,
+            "standard_error": 1995.6518302330862
+          }
+        },
+        {
+          "ordinal": 2,
+          "variant": "candidate",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5652292.397788549,
+              "upper_bound": 5704034.874679659
+            },
+            "point_estimate": 5679996.727643785,
+            "standard_error": 13422.599788452251
+          }
+        },
+        {
+          "ordinal": 3,
+          "variant": "baseline",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5578914.805592569,
+              "upper_bound": 5610378.641044304
+            },
+            "point_estimate": 5590509.861595548,
+            "standard_error": 8010.333265315436
+          }
+        },
+        {
+          "ordinal": 4,
+          "variant": "candidate",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5541156.6626257,
+              "upper_bound": 5581116.522071897
+            },
+            "point_estimate": 5558490.33135436,
+            "standard_error": 12025.858375809716
+          }
+        },
+        {
+          "ordinal": 5,
+          "variant": "baseline",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5568491.2235323405,
+              "upper_bound": 5585829.406100093
+            },
+            "point_estimate": 5576608.869387755,
+            "standard_error": 4917.4831533516435
+          }
+        },
+        {
+          "ordinal": 6,
+          "variant": "baseline",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5567846.599639856,
+              "upper_bound": 5590847.546252928
+            },
+            "point_estimate": 5577644.909461967,
+            "standard_error": 5978.492059723719
+          }
+        },
+        {
+          "ordinal": 7,
+          "variant": "candidate",
+          "samplingMode": "Linear",
+          "typicalEstimateKind": "slope",
+          "typicalEstimateNs": {
+            "confidence_interval": {
+              "confidence_level": 0.95,
+              "lower_bound": 5531301.482599884,
+              "upper_bound": 5541965.972130061
+            },
+            "point_estimate": 5535978.332467533,
+            "standard_error": 2768.07210532232
+          }
+        }
+      ],
+      "baselinePointEstimatesNs": [
+        5564152.99703154,
+        5590509.861595548,
+        5576608.869387755,
+        5577644.909461967
+      ],
+      "candidatePointEstimatesNs": [
+        5809115.968460111,
+        5679996.727643785,
+        5558490.33135436,
+        5535978.332467533
+      ],
+      "baselineMedianPointNs": 5577126.8894248605,
+      "candidateMedianPointNs": 5619243.529499073,
+      "candidateMedianIncreaseFraction": 0.007551673273576087,
+      "balancedBlockMeanEffects": [
+        {
+          "order": "ABBA",
+          "baselineMeanPointNs": 5577331.429313544,
+          "candidateMeanPointNs": 5744556.3480519485,
+          "candidateIncreaseFraction": 0.02998296243603127
+        },
+        {
+          "order": "BAAB",
+          "baselineMeanPointNs": 5577126.8894248605,
+          "candidateMeanPointNs": 5547234.331910946,
+          "candidateIncreaseFraction": -0.0053598489162215435
+        }
+      ]
+    }
+  },
+  "rawResultsSha256": "54d0d79b715bf54a39e023d65eb1ec04a439d0a4f6cb7cd97f88fa06d2aae8a0",
+  "limitations": [
+    "Primitive/native controls; no exact imported-holder NURBS path coverage or WASM claim.",
+    "Four independent processes per variant; Criterion samples are timed iteration batches, not independent single operations.",
+    "Medians across process point estimates and block means are descriptive; no pooled confidence interval is invented.",
+    "Team CPU reservation does not establish exclusive host activity.",
+    "The unchanged benchmark unwraps success; geometry qualification is supplied separately."
+  ]
+}

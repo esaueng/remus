@@ -1,0 +1,95 @@
+{
+  "schema": "remus-torus-preliminary-evidence-manifest-v1",
+  "scope": "Pre-lint native working-tree evidence only; final immutable/package/performance qualification excluded.",
+  "preliminary_tested_source_sha256": "cfe5977992fb4ae2580844c2140a9e0f41892b4590316c9308ef7c9db130d235",
+  "previous_reviewed_source_sha256": "6098b364b5c67957c811cf97c5b670f1f263b8f1854c913c5f920c5c6f80a102",
+  "production_prefix_sha256": "b474b8c215c47eb91f4e4b1221d1d3db0ec8c82d369fae85726cf95b71389335",
+  "independent_prefix_without_final_lf_sha256": "e88423deb7437d268c3f9dabc982c34baa5a7c3dcd29eb6b65249494813d3314",
+  "observed_owner_source": {
+    "head": "7364ab7be5e598b7c868bd63239dc831cbceb933",
+    "file_sha256": "6439e3d7b658cac1f32c6339f4c1a96347d7030d251e4f3fc33ccad5842974c7",
+    "production_prefix_equal": true,
+    "gate_claim": "none"
+  },
+  "baseline_source": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+  "reconstructed_sources": {
+    "candidate-promoted-v2.patch.json": {
+      "patch_sha256": "6cb3cb004ff3df108214f809da333402dac607af8f5b50306ecd9686a003afa3",
+      "source_sha256": "cfe5977992fb4ae2580844c2140a9e0f41892b4590316c9308ef7c9db130d235",
+      "reconstruction_verified": true
+    },
+    "uncached-control.patch.json": {
+      "patch_sha256": "d153d9d934aaac2f302f8fa19f8c16ac2e77ba8382cddb00159462b0fee79f3e",
+      "source_sha256": "f1d0ed78ffbdd8cd5fe90235aa714cc68ebe525d0c92c325b4f7e77dd09e30b6",
+      "reconstruction_verified": true
+    }
+  },
+  "files": {
+    "README.md": {
+      "bytes": 5087,
+      "sha256": "8b85ef41c0c9d80314450b9875a1cd38ef62fe162613cb5cab982643a5725de5"
+    },
+    "candidate-promoted-v2.patch.json": {
+      "bytes": 28465,
+      "sha256": "9dff57960844538a0a922c34dd07dee4b117bc7f7c0cf082925869374da0dc24"
+    },
+    "classifier-default.txt.json": {
+      "bytes": 5393,
+      "sha256": "7f1923abe16b261005477b01bc9ac63aa3557774899fce228840dae363942ce3"
+    },
+    "classifier-perf-counters.txt.json": {
+      "bytes": 5400,
+      "sha256": "88a5f963a3d40793ec07a2c0a118000def6084977f9ff78b2c365da30736113d"
+    },
+    "final-default-domain.txt.json": {
+      "bytes": 669,
+      "sha256": "610ea05645460275c4d81a799d9ceb958bc7044d62f40280077b5db70b38c821"
+    },
+    "independent-oracle-review.json": {
+      "bytes": 1545,
+      "sha256": "1bbfaca53f93f752200c6c4b4066e0214b2d9cdf59b0869d79d287d9a7bcab0e"
+    },
+    "qualification.json": {
+      "bytes": 5956,
+      "sha256": "e43b7f1e9c7a607987d408efd0d6d31a1df8e37d5e4560f07dc0b47a6cd6222c"
+    },
+    "report.md": {
+      "bytes": 1626,
+      "sha256": "ce11e10a4c9886878c08e3447bde6ce14e39d44f09c54b659f8b4a13e8139296"
+    },
+    "uncached-control-native.txt.json": {
+      "bytes": 3454,
+      "sha256": "c0570f28acf0d8436c76d35b71bd18caec1c61d18fd153343b512fe33d349db3"
+    },
+    "uncached-control-result.json": {
+      "bytes": 711,
+      "sha256": "493b34f1fe2e34d9161946625d9211ae01a026f0943187c6b753c0918641baae"
+    },
+    "uncached-control.patch.json": {
+      "bytes": 27749,
+      "sha256": "c46e7019594f22c62233c50e7c80f0d14156b85c43695c59feffeb0211634578"
+    }
+  },
+  "encoded_logs": {
+    "uncached-control-native.txt.json": {
+      "decoded_name": "uncached-control-native.txt",
+      "decoded_sha256": "1b1953be2258ad53729057f65b75f0d445e8ced8e4b0d41b5760f5dc1e194818",
+      "decoded_payload_matches_preliminary_receipt": true
+    },
+    "classifier-perf-counters.txt.json": {
+      "decoded_name": "classifier-perf-counters.txt",
+      "decoded_sha256": "1eb45f497e7738e504ca192df72053b1b94f258f6d825f1e21a952bbd74418f1",
+      "decoded_payload_matches_preliminary_receipt": true
+    },
+    "final-default-domain.txt.json": {
+      "decoded_name": "final-default-domain.txt",
+      "decoded_sha256": "67b198d7f33a12c34b8aca025fcb238f08f273c375d490aa4738b088a2a185d2",
+      "decoded_payload_matches_preliminary_receipt": true
+    },
+    "classifier-default.txt.json": {
+      "decoded_name": "classifier-default.txt",
+      "decoded_sha256": "723cf99106d3c48c0f922c7c9943b46bbdf68a2c1a0123c1cdc147600f6a2c8a",
+      "decoded_payload_matches_preliminary_receipt": true
+    }
+  }
+}

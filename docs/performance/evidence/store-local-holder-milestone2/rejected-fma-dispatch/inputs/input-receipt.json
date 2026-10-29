@@ -1,0 +1,14 @@
+{
+  "schema": "remus-bounded-micro-input-receipt-v1",
+  "compression": "gzip with mtime0; lossless original retained-only derived JSON",
+  "compressedSha256": "863a4f19ed49523307d668875e6dd0662f3753d069953b0fef39d4e5df439da7",
+  "uncompressedSha256": "f976d609359262ccfa2cda762752d22eba2490f9206bf08c6389dd3ebd214ded",
+  "uncompressedBytes": 1362645,
+  "timedManifestSha256": "2f70e5d8fd984ff635f4a041e532f6aa006bd22b14c76078fafc5fdffc2f4423",
+  "selection": "Retained ticks>=2, warmup=false, phases prefix/rebuild/validate/mesh/volume/recognize; aggregate only outer stage windows, recognition roots separate; no setup/restore/qualification/after-timing/teardown.",
+  "diagnosticCalls": "131032477",
+  "limits": [
+    "Observer may alter inlining/call elimination. Counts describe instrumented execution only.",
+    "Bounded first-N samples per stage/root repeat in shuffled weighted micro mixes; this is not a replay or representative within-family distribution."
+  ]
+}

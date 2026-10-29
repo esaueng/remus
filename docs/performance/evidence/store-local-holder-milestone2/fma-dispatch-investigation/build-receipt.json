@@ -1,0 +1,300 @@
+{
+  "schemaVersion": 1,
+  "kind": "private-fma-dispatch-diagnostic-build",
+  "diagnosticOnly": true,
+  "timingClaimsExcluded": true,
+  "startedAt": "2026-10-29T02:08:00.637208+00:00",
+  "source": {
+    "kind": "private-fma-dispatch-observer",
+    "diagnosticOnly": true,
+    "timingClaimsExcluded": true,
+    "canonicalRuntimeSuitesDeferred": true,
+    "baseSourceSha": "292f084f9165f8f31bcaeb1581324eba69835994",
+    "baseSourceTree": "aa02a81efe014fe30a89051ae943e0272b3fb584",
+    "restoredFmaSourceSha": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+    "restoredFmaSha256": "d0f8602fc3eadf802223a421844d4fc558445a38f6fd6625994662c18fcb8684",
+    "familyOrder": [
+      "total",
+      "zero_product_a_only",
+      "zero_product_b_only",
+      "zero_product_both",
+      "finite_nonzero_zeroaddend",
+      "finite_nonzero_unitfactor",
+      "remaining_emulated",
+      "remaining_fallback"
+    ],
+    "familyPolicy": "Disjoint priority in listed order; zero-product requires original finite-operand predicate. Counters observe only and never select arithmetic."
+  },
+  "overlay": {
+    "bytes": 17627,
+    "sha256": "b538ae2c880a3a0ee6d65ea5c3028c1d768613e996110a46693ff588a0648aa8",
+    "mode": "0o664"
+  },
+  "sourceFiles": {
+    "crates/math/src/fma.rs": {
+      "bytes": 21412,
+      "sha256": "a39f5bf306ce8fb1e5ac20ffceefe85f4cbabdd5a38a34618a0ac8dcad0b9889",
+      "mode": "0o664"
+    },
+    "crates/wasm/src/bindings/heal.rs": {
+      "bytes": 40205,
+      "sha256": "e1a028b8504dd359682e1a6ca028c87d2457e80566a550d727109f91ae82abb8",
+      "mode": "0o664"
+    },
+    "xtask/src/main.rs": {
+      "bytes": 3422,
+      "sha256": "deb4045ba0e568c88874605694e3912607970564ac1631922f93cf381cf2ba38",
+      "mode": "0o664"
+    },
+    "xtask/src/wasm.rs": {
+      "bytes": 51679,
+      "sha256": "aea99fdb8dd7af006672cfabece3e277f2fd497320bc634d8eb86f29b21579cb",
+      "mode": "0o664"
+    },
+    "Cargo.toml": {
+      "bytes": 4232,
+      "sha256": "239ea846958192f846c466afe64e719f109e702e0570e4b00d1e8da653f840a2",
+      "mode": "0o664"
+    },
+    "Cargo.lock": {
+      "bytes": 95105,
+      "sha256": "51b920921dfa2a0d64448d7555bc529bed4330f0d5503caf8f3593fd42b30f0c",
+      "mode": "0o664"
+    },
+    "crates/wasm/Cargo.toml": {
+      "bytes": 1658,
+      "sha256": "18017d584737cd7fa739dc56485129fbf319c14b29e4aaee2b9ee808293a4a02",
+      "mode": "0o664"
+    }
+  },
+  "literalOriginalArithmeticBodyRetained": true,
+  "baselineArithmeticBodySha256": "825332511eeb6bbf525ea0398ba781883bda81558c2a833c2033f779b673a379",
+  "temporaryBinding": "module.takeFmaDispatchProbe()->BigUint64Array",
+  "bindingLayout": "8counts +7lengths +first16 bit-triplets per bin per drain",
+  "tools": {
+    "rustc": {
+      "version": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.0\nLLVM version: 22.1.2",
+      "file": {
+        "bytes": 646032,
+        "sha256": "ba4b837efb6612dfa8d941c5a72b8a50d1d03a0f36216743b173949aa8d9eb75",
+        "mode": "0o755"
+      }
+    },
+    "cargo": {
+      "version": "cargo 1.96.0 (30a34c682 2026-05-25)",
+      "file": {
+        "bytes": 42865872,
+        "sha256": "f30f9fd1b1d0b8fd10dc33219eb4cd4bec3543f40e434ac71f5a03fd0359063f",
+        "mode": "0o755"
+      }
+    },
+    "wasm-pack": {
+      "version": "wasm-pack 0.15.0",
+      "file": {
+        "bytes": 7150800,
+        "sha256": "aa4b9552ebada9b8a7f5636cf4a1492f51199a6f4170177ab234358450019c97",
+        "mode": "0o775"
+      }
+    },
+    "wasm-opt": {
+      "version": "wasm-opt version 117 (version_117)",
+      "file": {
+        "bytes": 16165712,
+        "sha256": "621b5a984f16d0323ea7aa8b389ac9ccda0950ddee5de0e99292970129f571ed",
+        "mode": "0o755"
+      }
+    },
+    "wasm-bindgen": {
+      "version": "wasm-bindgen 0.2.126",
+      "file": {
+        "bytes": 7459480,
+        "sha256": "d8d94635b40d1d8a93562fc7ced6093488252600dba39ce1dbab410b89157d8b",
+        "mode": "0o755"
+      }
+    }
+  },
+  "command": [
+    "cargo",
+    "xtask",
+    "wasm-build",
+    "--defer-package-tests"
+  ],
+  "affinity": "0-14,16-30",
+  "environment": {
+    "CARGO_BUILD_JOBS": "2",
+    "RUST_MIN_STACK": "536870912",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_TARGET_DIR": "private-worktree/target"
+  },
+  "runtimeSuitesDeferred": true,
+  "canonicalRuntimeSuitesPassed": false,
+  "completedAt": "2026-10-29T03:24:42.000633+00:00",
+  "buildExitedZero": true,
+  "exitEvidence": "Unified exec completion exit0 checked by operator before freezing.",
+  "sourceFilesUnchangedBeforeAfter": true,
+  "sourceChangesAfterBuild": [
+    "crates/math/src/fma.rs",
+    "crates/wasm-io/pkg/package.json",
+    "crates/wasm-io/pkg/remus_wasm_io_bg.wasm",
+    "crates/wasm/pkg/package.json",
+    "crates/wasm/pkg/remus_wasm.d.ts",
+    "crates/wasm/pkg/remus_wasm.js",
+    "crates/wasm/pkg/remus_wasm_bg.js",
+    "crates/wasm/pkg/remus_wasm_bg.wasm",
+    "crates/wasm/pkg/remus_wasm_bg.wasm.d.ts",
+    "crates/wasm/pkg/remus_wasm_node.cjs",
+    "crates/wasm/src/bindings/heal.rs"
+  ],
+  "buildLogs": {
+    "build.log": {
+      "bytes": 7702,
+      "sha256": "026af070abab352bfedb9aed34ef187c0dd2f5ca60920eda01179bbd1a82ca70",
+      "mode": "0o664"
+    },
+    "build-resumed.log": {
+      "bytes": 10001,
+      "sha256": "302d78d7b609025a555c69d5d25611a6418e8ebff0d456ed049ce7eced9103b6",
+      "mode": "0o664"
+    }
+  },
+  "buildStart": {
+    "bytes": 4399,
+    "sha256": "5da97c0f1d93932b3352f08dd6c31fa7e94b8ca61bfb6d89332d25e3fae318c4",
+    "mode": "0o664"
+  },
+  "resumeStart": {
+    "bytes": 494,
+    "sha256": "8a6271348ec3ae3612d73c4ade931052f0c2117b4a05d1a8504674aff24b8b70",
+    "mode": "0o664"
+  },
+  "packages": {
+    "remus-wasm": {
+      "version": "2026.1.84",
+      "files": {
+        ".gitignore": {
+          "bytes": 1,
+          "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
+          "mode": "0o664"
+        },
+        "LICENSE-APACHE": {
+          "bytes": 10669,
+          "sha256": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811",
+          "mode": "0o664"
+        },
+        "NOTICE": {
+          "bytes": 608,
+          "sha256": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9",
+          "mode": "0o664"
+        },
+        "package.json": {
+          "bytes": 902,
+          "sha256": "7cc87020cf28acbe9baa6c6164d46ea27e2d9acb5dd8ada4388cf35fa73a8630",
+          "mode": "0o664"
+        },
+        "remus_wasm.d.ts": {
+          "bytes": 192040,
+          "sha256": "c28cf5d96fd51a36c4544baf0d4ab2f9c05ac8e4119cf890ed45a4dd46abc5bc",
+          "mode": "0o664"
+        },
+        "remus_wasm.js": {
+          "bytes": 443,
+          "sha256": "c895834d543611c3b478082c7cb8238b5d357171c0cfc137a2484487d39acdfd",
+          "mode": "0o664"
+        },
+        "remus_wasm_bg.js": {
+          "bytes": 356189,
+          "sha256": "7bf64d5b5b72a8b803762c1e8caa939d3918cbeb8da1c8949e34e31dbef5578c",
+          "mode": "0o664"
+        },
+        "remus_wasm_bg.wasm": {
+          "bytes": 10882722,
+          "sha256": "36ec3d7d0d52dfd6ea99f94bee9908802d77da952fbcca1b7eaa8f1e1f31ef21",
+          "mode": "0o664"
+        },
+        "remus_wasm_bg.wasm.d.ts": {
+          "bytes": 48439,
+          "sha256": "20b7368971fd793540618ee0fd1370c8dbffa8c837c3c8a48adc9346eb5cb269",
+          "mode": "0o664"
+        },
+        "remus_wasm_node.cjs": {
+          "bytes": 358366,
+          "sha256": "5bc88bb915e11be352c0410745096156bac54e951d2426b613860d8f401417e7",
+          "mode": "0o664"
+        }
+      },
+      "copiedDirectBuildArtifact": true,
+      "npmTarballOrInstalledProof": false
+    },
+    "remus-wasm-io": {
+      "version": "2026.1.84",
+      "files": {
+        ".gitignore": {
+          "bytes": 1,
+          "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
+          "mode": "0o664"
+        },
+        "LICENSE-APACHE": {
+          "bytes": 10669,
+          "sha256": "ca32932d4cb0f8984fb45747f40757ccc76cb2d8efc022b4fe59bf530406f811",
+          "mode": "0o664"
+        },
+        "NOTICE": {
+          "bytes": 608,
+          "sha256": "83ea83b08e2a6489954c9e179bbf68dfdfc1a2145a210f8e9376ce0357bbf7c9",
+          "mode": "0o664"
+        },
+        "package.json": {
+          "bytes": 949,
+          "sha256": "893db3706531b67115e7c40dfa97de044be3f6332ad400b03a65f9c94387ef33",
+          "mode": "0o664"
+        },
+        "remus_wasm_io.d.ts": {
+          "bytes": 5502,
+          "sha256": "c8e79635083298bd399cbac4aff923a433dc89b7a893ffa871b1d24245c880d0",
+          "mode": "0o664"
+        },
+        "remus_wasm_io.js": {
+          "bytes": 268,
+          "sha256": "fe90ec123d3389eb4567206441963288bb342ebf7e72ad8392a9f799a6c37e9d",
+          "mode": "0o664"
+        },
+        "remus_wasm_io_bg.js": {
+          "bytes": 23681,
+          "sha256": "845849c710d91965f6105b23e93b7acdc36824ea2acedb1f50cdcf24d7e52db9",
+          "mode": "0o664"
+        },
+        "remus_wasm_io_bg.wasm": {
+          "bytes": 3193433,
+          "sha256": "5aba88b9a39a9394106810f69584bd92788f3e4bd5458e5eaed44deb8e9611b5",
+          "mode": "0o664"
+        },
+        "remus_wasm_io_bg.wasm.d.ts": {
+          "bytes": 3532,
+          "sha256": "bd01bf4aa45bf771e527675e8d095bf5e580ca37aad44d670715e73fd98acdb3",
+          "mode": "0o664"
+        },
+        "remus_wasm_io_node.cjs": {
+          "bytes": 23994,
+          "sha256": "fb134e228bb2e5566f9b84dbb290ae602fd896b2b19cceed9f671e3170018469",
+          "mode": "0o664"
+        }
+      },
+      "copiedDirectBuildArtifact": true,
+      "npmTarballOrInstalledProof": false
+    }
+  },
+  "rawRustWasmArtifacts": {
+    "remus_wasm.wasm": {
+      "bytes": 14252375,
+      "sha256": "259c6dbd407248768643df45db7153ea7572e47d7481d6441c459a048413cf1e",
+      "mode": "0o775"
+    },
+    "remus_wasm_io.wasm": {
+      "bytes": 3933350,
+      "sha256": "4307c410eee2abfc9894cbc487f65ca5e7dd05a4284f2d74840f01437a2643a4",
+      "mode": "0o775"
+    }
+  },
+  "observerLimitations": "Exact counts/operand bits for this diagnostic execution. Observer side effects may alter compiler CSE/elimination/inlining; this is not a guaranteed shipping dynamic-call census.",
+  "sampleScope": "First16 per disjoint bin between resets; collector retains bounded firstN/category/stage and recognition-root samples. Not a random or frequency-weighted operand distribution."
+}

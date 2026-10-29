@@ -215,6 +215,22 @@ fn trim_key(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Option<Vec<u64>
     Some(key)
 }
 
+/// One finite raw projection on the current immutable edge and torus. This
+/// value never crosses an outer-wire edge boundary or escapes this trim call.
+/// The parameter key is bit-exact; UV unwrapping is deliberately not cached.
+#[derive(Clone, Copy)]
+struct RawTrimSample {
+    parameter_bits: u64,
+    uv: remus_math::vec::Point2,
+    residual: f64,
+}
+
+impl RawTrimSample {
+    fn matching(self, parameter: f64) -> Option<Self> {
+        (self.parameter_bits == parameter.to_bits()).then_some(self)
+    }
+}
+
 /// Recognize a hole-free local patch (less than half a turn in each angle).
 /// Adaptively project authoritative edge trims, rejecting non-finite curves,
 /// non-closing loops, and exhausted sampling budgets. Unsupported patches keep
@@ -250,10 +266,28 @@ pub(super) fn trimmed_torus_polygon(
         let b = topo.vertex(edge.end()).ok()?.point();
         let allowance = tol.linear.max(edge.tolerance().unwrap_or(tol.linear));
         closure_margin = closure_margin.max(allowance / metric);
-        let evaluate = |t: f64, anchor: Point2| -> Option<Point2> {
-            let p = edge.curve().evaluate_with_endpoints(t, a, b);
-            let (u, v) = torus.project_point(p);
-            let residual = (torus.evaluate(u, v) - p).length();
+        let evaluate = |t: f64,
+                        anchor: Point2,
+                        previous: Option<RawTrimSample>|
+         -> Option<(Point2, RawTrimSample)> {
+            #[cfg(test)]
+            tests::note_evaluation(t, anchor);
+            let sample = previous
+                .and_then(|sample| sample.matching(t))
+                .unwrap_or_else(|| {
+                    #[cfg(test)]
+                    tests::note_raw_evaluation();
+                    let p = edge.curve().evaluate_with_endpoints(t, a, b);
+                    let (u, v) = torus.project_point(p);
+                    let residual = (torus.evaluate(u, v) - p).length();
+                    RawTrimSample {
+                        parameter_bits: t.to_bits(),
+                        uv: Point2::new(u, v),
+                        residual,
+                    }
+                });
+            let (u, v) = (sample.uv.x(), sample.uv.y());
+            let residual = sample.residual;
             if !u.is_finite() || !v.is_finite() || !residual.is_finite() {
                 return None;
             }
@@ -261,9 +295,13 @@ pub(super) fn trimmed_torus_polygon(
             // Account for that projection in classifier uncertainty only; never
             // change the edge tolerance or the geometry acceptance policy.
             projection_margin.set(projection_margin.get().max(residual / metric));
-            Some(unwrap_uv(Point2::new(u, v), anchor))
+            Some((unwrap_uv(Point2::new(u, v), anchor), sample))
         };
-        let start = evaluate(t0, polygon.last().copied().unwrap_or(Point2::new(0.0, 0.0)))?;
+        let (start, _) = evaluate(
+            t0,
+            polygon.last().copied().unwrap_or(Point2::new(0.0, 0.0)),
+            None,
+        )?;
         if let Some(last) = polygon.last()
             && (*last - start).length() > closure_margin.max(projection_margin.get())
         {
@@ -276,8 +314,18 @@ pub(super) fn trimmed_torus_polygon(
             let lo = (t1 - t0).mul_add(f64::from(k) / 16.0, t0);
             let hi = (t1 - t0).mul_add(f64::from(k + 1) / 16.0, t0);
             let left = *polygon.last()?;
-            let right = evaluate(hi, left)?;
-            sample_trim_segment(&evaluate, lo, hi, left, right, margin, 0, &mut polygon)?;
+            let (right, _) = evaluate(hi, left, None)?;
+            sample_trim_segment(
+                &evaluate,
+                lo,
+                hi,
+                left,
+                right,
+                margin,
+                0,
+                &mut polygon,
+                None,
+            )?;
         }
     }
     if (*polygon.last()? - *polygon.first()?).length() > closure_margin.max(projection_margin.get())
@@ -318,7 +366,11 @@ fn unwrap_uv(
 
 #[allow(clippy::too_many_arguments)]
 fn sample_trim_segment(
-    evaluate: &impl Fn(f64, remus_math::vec::Point2) -> Option<remus_math::vec::Point2>,
+    evaluate: &impl Fn(
+        f64,
+        remus_math::vec::Point2,
+        Option<RawTrimSample>,
+    ) -> Option<(remus_math::vec::Point2, RawTrimSample)>,
     lo: f64,
     hi: f64,
     a: remus_math::vec::Point2,
@@ -326,14 +378,18 @@ fn sample_trim_segment(
     margin: f64,
     depth: u8,
     polygon: &mut Vec<remus_math::vec::Point2>,
+    previous_middle: Option<RawTrimSample>,
 ) -> Option<()> {
     if polygon.len() >= 16384 || depth >= 20 {
         return None;
     }
+    let mut probes = [None; 3];
     let mut error = 0.0_f64;
-    for fraction in [0.25, 0.5, 0.75] {
+    for (index, fraction) in [0.25, 0.5, 0.75].into_iter().enumerate() {
         let expected = a + (b - a) * fraction;
-        let actual = evaluate((hi - lo).mul_add(fraction, lo), expected)?;
+        let previous = if index == 1 { previous_middle } else { None };
+        let (actual, raw) = evaluate((hi - lo).mul_add(fraction, lo), expected, previous)?;
+        probes[index] = Some(raw);
         error = error.max((actual - expected).length());
     }
     if error <= margin {
@@ -341,14 +397,37 @@ fn sample_trim_segment(
         return Some(());
     }
     let mid = f64::midpoint(lo, hi);
-    let p = evaluate(mid, a + (b - a) * 0.5)?;
-    sample_trim_segment(evaluate, lo, mid, a, p, margin, depth + 1, polygon)?;
-    sample_trim_segment(evaluate, mid, hi, p, b, margin, depth + 1, polygon)
+    let (p, _) = evaluate(mid, a + (b - a) * 0.5, probes[1])?;
+    // The parent's quarter probes are candidate middle probes of the children.
+    // Rounding can make the parameters differ; evaluate checks their exact bits.
+    // Each call still applies its current anchor and updates projection margin.
+    sample_trim_segment(
+        evaluate,
+        lo,
+        mid,
+        a,
+        p,
+        margin,
+        depth + 1,
+        polygon,
+        probes[0],
+    )?;
+    sample_trim_segment(
+        evaluate,
+        mid,
+        hi,
+        p,
+        b,
+        margin,
+        depth + 1,
+        polygon,
+        probes[2],
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use remus_math::{
         curves::Circle3D,
@@ -833,5 +912,530 @@ mod tests {
                 "{bytes} bytes counted for {held} held"
             );
         }
+    }
+    #[derive(Default)]
+    struct EvaluationLog {
+        logical: Vec<[u64; 3]>,
+        raw: usize,
+    }
+
+    thread_local! {
+        static EVALUATION_LOG: std::cell::RefCell<Option<EvaluationLog>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn note_evaluation(t: f64, anchor: remus_math::vec::Point2) {
+        EVALUATION_LOG.with(|log| {
+            if let Some(log) = log.borrow_mut().as_mut() {
+                log.logical
+                    .push([t.to_bits(), anchor.x().to_bits(), anchor.y().to_bits()]);
+            }
+        });
+    }
+
+    pub(super) fn note_raw_evaluation() {
+        EVALUATION_LOG.with(|log| {
+            if let Some(log) = log.borrow_mut().as_mut() {
+                log.raw += 1;
+            }
+        });
+    }
+
+    fn logged<T>(run: impl FnOnce() -> T) -> (T, EvaluationLog) {
+        EVALUATION_LOG.with(|log| *log.borrow_mut() = Some(EvaluationLog::default()));
+        let value = run();
+        let log = EVALUATION_LOG.with(|log| log.borrow_mut().take().unwrap());
+        (value, log)
+    }
+
+    fn trim_bits(trim: TorusTrim) -> (Vec<[u64; 2]>, [u64; 2], u64) {
+        (
+            trim.polygon
+                .iter()
+                .map(|p| [p.x().to_bits(), p.y().to_bits()])
+                .collect(),
+            [trim.centre.x().to_bits(), trim.centre.y().to_bits()],
+            trim.margin.to_bits(),
+        )
+    }
+
+    #[test]
+    fn carried_raw_samples_match_original_trim_bits_and_logical_order() {
+        let mut topo = Topology::new();
+        let faces = memo_corpus(&mut topo);
+        let mut saved = 0;
+        for face in faces {
+            let (actual, actual_log) =
+                logged(|| trimmed_torus_polygon(&topo, face, Tolerance::default()));
+            let (reference, reference_log) =
+                logged(|| reference_trimmed_torus_polygon(&topo, face, Tolerance::default()));
+            assert_eq!(actual.map(trim_bits), reference.map(trim_bits));
+            assert_eq!(
+                actual_log.logical, reference_log.logical,
+                "parameter/anchor/order changed"
+            );
+            assert!(actual_log.raw <= reference_log.raw);
+            saved += reference_log.raw - actual_log.raw;
+        }
+        assert!(
+            saved > 0,
+            "actual curve/projection evaluations were not reused"
+        );
+    }
+
+    fn sampler_pair(lo: f64, hi: f64, margin: f64) -> (usize, usize) {
+        use remus_math::vec::Point2;
+        use std::cell::{Cell, RefCell};
+        let actual_raw = Cell::new(0);
+        let actual_log = RefCell::new(Vec::new());
+        let actual = |t: f64, anchor: Point2, previous: Option<RawTrimSample>| {
+            actual_log
+                .borrow_mut()
+                .push([t.to_bits(), anchor.x().to_bits(), anchor.y().to_bits()]);
+            let sample = previous
+                .and_then(|sample| sample.matching(t))
+                .unwrap_or_else(|| {
+                    actual_raw.set(actual_raw.get() + 1);
+                    RawTrimSample {
+                        parameter_bits: t.to_bits(),
+                        uv: Point2::new(t, t * t),
+                        residual: 0.0,
+                    }
+                });
+            Some((sample.uv, sample))
+        };
+        let reference_raw = Cell::new(0);
+        let reference_log = RefCell::new(Vec::new());
+        let reference = |t: f64, anchor: Point2| {
+            reference_raw.set(reference_raw.get() + 1);
+            reference_log.borrow_mut().push([
+                t.to_bits(),
+                anchor.x().to_bits(),
+                anchor.y().to_bits(),
+            ]);
+            Some(Point2::new(t, t * t))
+        };
+        let a = Point2::new(lo, lo * lo);
+        let b = Point2::new(hi, hi * hi);
+        let mut actual_polygon = vec![a];
+        let mut reference_polygon = vec![a];
+        let actual_result =
+            sample_trim_segment(&actual, lo, hi, a, b, margin, 0, &mut actual_polygon, None);
+        let reference_result = reference_sample_trim_segment(
+            &reference,
+            lo,
+            hi,
+            a,
+            b,
+            margin,
+            0,
+            &mut reference_polygon,
+        );
+        assert_eq!(actual_result, reference_result);
+        let bits = |points: Vec<Point2>| {
+            points
+                .into_iter()
+                .map(|p| [p.x().to_bits(), p.y().to_bits()])
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bits(actual_polygon), bits(reference_polygon));
+        assert_eq!(actual_log.into_inner(), reference_log.into_inner());
+        (actual_raw.get(), reference_raw.get())
+    }
+
+    #[test]
+    fn carried_parent_probes_have_deterministic_raw_work_reduction() {
+        let (actual, reference) = sampler_pair(0.0, 1.0, 1e-5);
+        assert!(
+            actual > 0 && actual * 5 <= reference * 4,
+            "expected at least20% fewer raw evaluations, got {actual}/{reference}"
+        );
+        // This parabola has256 dyadic leaves: 511 nodes. Original raw work is
+        // 3*511+255=1788; carrying parent probes needs3+2*510=1023.
+        assert_eq!((actual, reference), (1023, 1788));
+    }
+
+    #[test]
+    fn carried_probes_match_original_for_non_dyadic_reversed_and_close_domains() {
+        for (lo, hi, margin) in [
+            (0.1, 0.9, 1e-5),
+            (1.0, 1e16, 1e30),
+            (-2.0, 3.0, 1e-4),
+            (270.0, 180.0, 1e-3),
+            (1e-150, 2e-150, 1e-310),
+            (-1e150, 1e150, 1e290),
+            (1.0, 1.0 + 1e-8, 1e-8),
+            (-0.0, 0.0, 1e-5),
+        ] {
+            sampler_pair(lo, hi, margin);
+        }
+    }
+
+    #[test]
+    fn raw_parameter_match_is_bit_exact_and_unwrap_stays_anchor_dependent() {
+        use remus_math::vec::Point2;
+        let sample = RawTrimSample {
+            parameter_bits: 0.0_f64.to_bits(),
+            uv: Point2::new(0.1, 0.2),
+            residual: 0.0,
+        };
+        assert!(sample.matching(0.0).is_some());
+        assert!(sample.matching(-0.0).is_none());
+        assert!(sample.matching(f64::from_bits(1)).is_none());
+        let first = unwrap_uv(sample.uv, Point2::new(0.0, 0.0));
+        let second = unwrap_uv(
+            sample.uv,
+            Point2::new(std::f64::consts::TAU, std::f64::consts::TAU),
+        );
+        assert_ne!(first.x().to_bits(), second.x().to_bits());
+        assert_ne!(first.y().to_bits(), second.y().to_bits());
+    }
+
+    #[test]
+    fn carried_sampler_preserves_both_hard_refusals_before_evaluation() {
+        use remus_math::vec::Point2;
+        let p = Point2::new(0.0, 0.0);
+        for (depth, length) in [(20, 0), (0, 16384)] {
+            let mut actual = vec![p; length];
+            let mut reference = actual.clone();
+            let forbidden_actual =
+                |_: f64, _: Point2, _: Option<RawTrimSample>| -> Option<(Point2, RawTrimSample)> {
+                    panic!("budget must refuse before evaluation")
+                };
+            let forbidden_reference = |_: f64, _: Point2| -> Option<Point2> {
+                panic!("budget must refuse before evaluation")
+            };
+            assert!(
+                sample_trim_segment(
+                    &forbidden_actual,
+                    0.0,
+                    1.0,
+                    p,
+                    p,
+                    1e-7,
+                    depth,
+                    &mut actual,
+                    None
+                )
+                .is_none()
+            );
+            assert!(
+                reference_sample_trim_segment(
+                    &forbidden_reference,
+                    0.0,
+                    1.0,
+                    p,
+                    p,
+                    1e-7,
+                    depth,
+                    &mut reference
+                )
+                .is_none()
+            );
+            assert_eq!(actual.len(), reference.len());
+        }
+    }
+
+    #[test]
+    fn raw_match_declines_non_dyadic_and_overflowing_midpoint_mismatches() {
+        use remus_math::vec::Point2;
+        for (lo, hi) in [(1.0_f64, 1e16_f64), (-f64::MAX, f64::MAX)] {
+            let probe = (hi - lo).mul_add(0.5, lo);
+            let midpoint = f64::midpoint(lo, hi);
+            assert_ne!(probe.to_bits(), midpoint.to_bits());
+            let sample = RawTrimSample {
+                parameter_bits: probe.to_bits(),
+                uv: Point2::new(0.1, 0.2),
+                residual: 0.0,
+            };
+            assert!(sample.matching(midpoint).is_none());
+        }
+    }
+
+    #[test]
+    fn carried_sampler_preserves_partial_polygon_and_margin_on_budget_refusal() {
+        use remus_math::vec::Point2;
+        use std::cell::Cell;
+        let candidate_margin = Cell::new(0.0_f64);
+        let reference_margin = Cell::new(0.0_f64);
+        let candidate = |t: f64, _: Point2, previous: Option<RawTrimSample>| {
+            let sample = previous
+                .and_then(|sample| sample.matching(t))
+                .unwrap_or_else(|| RawTrimSample {
+                    parameter_bits: t.to_bits(),
+                    uv: Point2::new(t, t * t),
+                    residual: t.abs(),
+                });
+            candidate_margin.set(candidate_margin.get().max(sample.residual));
+            Some((sample.uv, sample))
+        };
+        let reference = |t: f64, _: Point2| {
+            reference_margin.set(reference_margin.get().max(t.abs()));
+            Some(Point2::new(t, t * t))
+        };
+        let a = Point2::new(0.0, 0.0);
+        let b = Point2::new(1.0, 1.0);
+        let mut candidate_polygon = vec![a; 16380];
+        let mut reference_polygon = candidate_polygon.clone();
+        assert!(
+            sample_trim_segment(
+                &candidate,
+                0.0,
+                1.0,
+                a,
+                b,
+                1e-12,
+                0,
+                &mut candidate_polygon,
+                None
+            )
+            .is_none()
+        );
+        assert!(
+            reference_sample_trim_segment(
+                &reference,
+                0.0,
+                1.0,
+                a,
+                b,
+                1e-12,
+                0,
+                &mut reference_polygon
+            )
+            .is_none()
+        );
+        let bits = |points: Vec<Point2>| {
+            points
+                .into_iter()
+                .map(|p| [p.x().to_bits(), p.y().to_bits()])
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(candidate_polygon.len(), 16384);
+        assert_eq!(bits(candidate_polygon), bits(reference_polygon));
+        assert_eq!(
+            candidate_margin.get().to_bits(),
+            reference_margin.get().to_bits()
+        );
+    }
+
+    #[test]
+    #[allow(clippy::print_stderr)]
+    fn carried_samples_match_original_on_actual_holder_torus_edges() {
+        // Existing public/licensed full31 fixture, not a new imported asset.
+        // Deserialize only the four measured-path torus boundaries; no I/O
+        // crate dependency, healing, geometry replacement or normalization.
+        let document: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../scripts/perf/parameter-rebuild/fixtures/base.arena.json"
+        ))
+        .unwrap();
+        let mut topo = Topology::new();
+        let vertices: Vec<_> = document["vertices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|record| {
+                let point: Point3 = serde_json::from_value(record["point"].clone()).unwrap();
+                topo.add_vertex(Vertex::new(point, record["tolerance"].as_f64().unwrap()))
+            })
+            .collect();
+        let mut total_saved = 0;
+        for index in [63, 65, 74, 88] {
+            let record = &document["faces"][index];
+            assert!(record["inner_wires"].as_array().unwrap().is_empty());
+            let surface: ToroidalSurface =
+                serde_json::from_value(record["surface"]["Torus"].clone()).unwrap();
+            let wire = &document["wires"][record["outer_wire"].as_u64().unwrap() as usize];
+            let edges = wire["edges"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|use_record| {
+                    let edge = &document["edges"][use_record["edge"].as_u64().unwrap() as usize];
+                    let curve = if let Some(circle) = edge["curve"].get("Circle") {
+                        EdgeCurve::Circle(serde_json::from_value(circle.clone()).unwrap())
+                    } else {
+                        EdgeCurve::NurbsCurve(
+                            serde_json::from_value(edge["curve"]["NurbsCurve"].clone()).unwrap(),
+                        )
+                    };
+                    let mut made = Edge::new(
+                        vertices[edge["start"].as_u64().unwrap() as usize],
+                        vertices[edge["end"].as_u64().unwrap() as usize],
+                        curve,
+                    );
+                    made.set_trim(Some((
+                        edge["trim"][0].as_f64().unwrap(),
+                        edge["trim"][1].as_f64().unwrap(),
+                    )));
+                    if let Some(tolerance) = edge["tolerance"].as_f64() {
+                        made.set_tolerance(Some(tolerance)).unwrap();
+                    }
+                    OrientedEdge::new(
+                        topo.add_edge(made),
+                        use_record["forward"].as_bool().unwrap(),
+                    )
+                })
+                .collect();
+            let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+            let mut face = Face::new(wire, vec![], FaceSurface::Torus(surface));
+            face.set_reversed(record["reversed"].as_bool().unwrap());
+            let face = topo.add_face(face);
+            assert!(rectangular_torus_domain(&topo, face, Tolerance::default()).is_none());
+            let (candidate, candidate_log) =
+                logged(|| trimmed_torus_polygon(&topo, face, Tolerance::default()));
+            let (reference, reference_log) =
+                logged(|| reference_trimmed_torus_polygon(&topo, face, Tolerance::default()));
+            assert!(
+                candidate.is_some(),
+                "actual holder torus face{index} unexpectedly declined"
+            );
+            assert_eq!(
+                candidate.map(trim_bits),
+                reference.map(trim_bits),
+                "holder torus face{index}"
+            );
+            assert_eq!(
+                candidate_log.logical, reference_log.logical,
+                "holder face{index} logical order"
+            );
+            assert!(
+                candidate_log.raw < reference_log.raw,
+                "holder face{index}: no raw-work saving"
+            );
+            eprintln!(
+                "holder torus face{index}: raw evaluations {} -> {}",
+                reference_log.raw, candidate_log.raw
+            );
+            total_saved += reference_log.raw - candidate_log.raw;
+        }
+        assert!(total_saved > 0);
+    }
+
+    // Literal original production algorithms retained as an independent oracle.
+    fn reference_trimmed_torus_polygon(
+        topo: &Topology,
+        face_id: FaceId,
+        tol: Tolerance,
+    ) -> Option<TorusTrim> {
+        use remus_math::vec::Point2;
+        use remus_topology::face::FaceSurface;
+        let face = topo.face(face_id).ok()?;
+        let FaceSurface::Torus(torus) = face.surface() else {
+            return None;
+        };
+        if !face.inner_wires().is_empty() || torus.major_radius() <= torus.minor_radius() {
+            return None;
+        }
+        let metric = torus
+            .minor_radius()
+            .min(torus.major_radius() - torus.minor_radius());
+        let margin = tol.angular.max(tol.linear / metric);
+        let mut polygon: Vec<Point2> = Vec::new();
+        let mut closure_margin = margin;
+        let projection_margin = std::cell::Cell::new(margin);
+        for oe in topo.wire(face.outer_wire()).ok()?.edges() {
+            let edge = topo.edge(oe.edge()).ok()?;
+            let (mut t0, mut t1) = edge.strict_domain().ok()?;
+            if !oe.is_forward() {
+                std::mem::swap(&mut t0, &mut t1);
+            }
+            let a = topo.vertex(edge.start()).ok()?.point();
+            let b = topo.vertex(edge.end()).ok()?.point();
+            let allowance = tol.linear.max(edge.tolerance().unwrap_or(tol.linear));
+            closure_margin = closure_margin.max(allowance / metric);
+            let evaluate = |t: f64, anchor: Point2| -> Option<Point2> {
+                note_evaluation(t, anchor);
+                note_raw_evaluation();
+                let p = edge.curve().evaluate_with_endpoints(t, a, b);
+                let (u, v) = torus.project_point(p);
+                let residual = (torus.evaluate(u, v) - p).length();
+                if !u.is_finite() || !v.is_finite() || !residual.is_finite() {
+                    return None;
+                }
+                // Imported space curves can deviate from their supporting surface.
+                // Account for that projection in classifier uncertainty only; never
+                // change the edge tolerance or the geometry acceptance policy.
+                projection_margin.set(projection_margin.get().max(residual / metric));
+                Some(unwrap_uv(Point2::new(u, v), anchor))
+            };
+            let start = evaluate(t0, polygon.last().copied().unwrap_or(Point2::new(0.0, 0.0)))?;
+            if let Some(last) = polygon.last()
+                && (*last - start).length() > closure_margin.max(projection_margin.get())
+            {
+                return None;
+            }
+            polygon.push(start);
+            // Seed short spans so periodic unwrapping never chooses a complementary
+            // arc from a large endpoint-only jump.
+            for k in 0..16 {
+                let lo = (t1 - t0).mul_add(f64::from(k) / 16.0, t0);
+                let hi = (t1 - t0).mul_add(f64::from(k + 1) / 16.0, t0);
+                let left = *polygon.last()?;
+                let right = evaluate(hi, left)?;
+                reference_sample_trim_segment(
+                    &evaluate,
+                    lo,
+                    hi,
+                    left,
+                    right,
+                    margin,
+                    0,
+                    &mut polygon,
+                )?;
+            }
+        }
+        if (*polygon.last()? - *polygon.first()?).length()
+            > closure_margin.max(projection_margin.get())
+        {
+            return None;
+        }
+        let mut lo = Point2::new(f64::INFINITY, f64::INFINITY);
+        let mut hi = Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for p in &polygon {
+            lo = Point2::new(lo.x().min(p.x()), lo.y().min(p.y()));
+            hi = Point2::new(hi.x().max(p.x()), hi.y().max(p.y()));
+        }
+        let span = hi - lo;
+        if span.x() <= margin
+            || span.y() <= margin
+            || span.x() >= std::f64::consts::PI
+            || span.y() >= std::f64::consts::PI
+        {
+            return None;
+        }
+        Some(TorusTrim {
+            polygon,
+            centre: Point2::new(f64::midpoint(lo.x(), hi.x()), f64::midpoint(lo.y(), hi.y())),
+            margin: closure_margin.max(projection_margin.get()) + margin,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reference_sample_trim_segment(
+        evaluate: &impl Fn(f64, remus_math::vec::Point2) -> Option<remus_math::vec::Point2>,
+        lo: f64,
+        hi: f64,
+        a: remus_math::vec::Point2,
+        b: remus_math::vec::Point2,
+        margin: f64,
+        depth: u8,
+        polygon: &mut Vec<remus_math::vec::Point2>,
+    ) -> Option<()> {
+        if polygon.len() >= 16384 || depth >= 20 {
+            return None;
+        }
+        let mut error = 0.0_f64;
+        for fraction in [0.25, 0.5, 0.75] {
+            let expected = a + (b - a) * fraction;
+            let actual = evaluate((hi - lo).mul_add(fraction, lo), expected)?;
+            error = error.max((actual - expected).length());
+        }
+        if error <= margin {
+            polygon.push(b);
+            return Some(());
+        }
+        let mid = f64::midpoint(lo, hi);
+        let p = evaluate(mid, a + (b - a) * 0.5)?;
+        reference_sample_trim_segment(evaluate, lo, mid, a, p, margin, depth + 1, polygon)?;
+        reference_sample_trim_segment(evaluate, mid, hi, p, b, margin, depth + 1, polygon)
     }
 }

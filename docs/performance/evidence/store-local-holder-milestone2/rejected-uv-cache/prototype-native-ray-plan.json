@@ -1,0 +1,273 @@
+{
+  "baselineBuildEvidence": {
+    "compilerArtifactJson": "Not captured in the initial build; preserved build log, source and Cargo fingerprint retained.",
+    "logSha256": "5b7c92a2d8069c222c953ebd1ff93cc5fe928ccf9ab344ec4c82cab4444096ad",
+    "preservedInitialBinarySha256": "34e882b265c7ee9ff0b6f5913d125d9e7a74e306275bb0576af04e5e9d528c45"
+  },
+  "candidateCargoReceipt": {
+    "features": [
+      "default"
+    ],
+    "fresh": false,
+    "logSha256": "038d2e32b3a9a2720b595569ca2572ac02d9cc3f8f3a17e85f6b4f3a6bb7e3b7",
+    "profile": {
+      "debug_assertions": false,
+      "debuginfo": 2,
+      "opt_level": "3",
+      "overflow_checks": true,
+      "test": true
+    },
+    "receiptSha256": "7c6d1f68ef585505f0bc4e27e89fe692762883ead8141bcc4e459a3ae61391b2"
+  },
+  "command": [
+    "<frozen executable>",
+    "nurbs_ray_",
+    "--bench",
+    "--noplot"
+  ],
+  "cpuAffinity": [
+    31
+  ],
+  "criterion": {
+    "measurementSeconds": 1,
+    "samplesPerProcessPerCase": 10,
+    "version": "0.8.2",
+    "warmupSeconds": 0.3
+  },
+  "expectedCases": [
+    "nurbs_ray_cached/bilinear_hit",
+    "nurbs_ray_cached/quadratic_hit",
+    "nurbs_ray_cached/rational_cylinder_miss",
+    "nurbs_ray_cached/rational_cylinder_secant",
+    "nurbs_ray_completion/large_bicubic_grid_build",
+    "nurbs_ray_completion/large_bicubic_hit",
+    "nurbs_ray_completion/large_bicubic_miss",
+    "nurbs_ray_completion/narrow_bump_flank"
+  ],
+  "host": {
+    "cargo": "cargo 1.96.0 (30a34c682 2026-05-25)",
+    "cpuModel": "AMD Ryzen 9 5900XT 16-Core Processor",
+    "cpuSiblingList": "15,31",
+    "externalActivityCharacterized": false,
+    "kernel": "7.2.6-76070206-generic",
+    "machine": "x86_64",
+    "python": "3.12.3",
+    "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)\nbinary: rustc\ncommit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96\ncommit-date: 2026-05-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.96.0\nLLVM version: 22.1.2",
+    "thermalAndFrequencyControlled": false
+  },
+  "kind": "controlled-native-ray-criterion",
+  "order": [
+    "A",
+    "B",
+    "B",
+    "A",
+    "B",
+    "A",
+    "A",
+    "B"
+  ],
+  "physicalCore": [
+    15,
+    31
+  ],
+  "runnerSha256": "648712a462e6710944eb218a841a18b73233778f886226af0948ccd6f30d0f37",
+  "runtimeEnvironment": {
+    "RAYON_NUM_THREADS": "1"
+  },
+  "schemaVersion": 1,
+  "scope": "Native carrier microbenchmarks only. Every process executes the same embedded root oracles before timing. No WASM, recipe, browser, quiet-host, production-tail or reproducible-build claim. Raw samples and outliers are retained.",
+  "status": "prepared",
+  "variants": {
+    "A": {
+      "binaryBytes": 57611432,
+      "binaryMode": 509,
+      "binarySha256": "34e882b265c7ee9ff0b6f5913d125d9e7a74e306275bb0576af04e5e9d528c45",
+      "cargoFingerprint": {
+        "compile_kind": 0,
+        "config": 8247474407144887393,
+        "declared_features": "[\"default\", \"serde\", \"simd\"]",
+        "deps": [
+          [
+            1957009224993739128,
+            "thiserror",
+            false,
+            3726407899843588037
+          ],
+          [
+            2490015432001885548,
+            "remus_math",
+            false,
+            13236738781305046239
+          ],
+          [
+            3629170276479397743,
+            "proptest",
+            false,
+            16730248483293088790
+          ],
+          [
+            8160210889872729633,
+            "serde_json",
+            false,
+            16695143469197991355
+          ],
+          [
+            11177420919098925944,
+            "log",
+            false,
+            15850052509195443764
+          ],
+          [
+            13513330987694523139,
+            "robust",
+            false,
+            17504342694894951064
+          ],
+          [
+            16321741466644061277,
+            "criterion",
+            false,
+            5987893727218000061
+          ]
+        ],
+        "features": "[\"default\"]",
+        "local": [
+          {
+            "CheckDepInfo": {
+              "checksum": false,
+              "dep_info": "profiling/.fingerprint/remus-math-5ee5a25ca5077ead/dep-test-bench-intersection_inner_loops"
+            }
+          }
+        ],
+        "path": 16051533941787157392,
+        "profile": 15381347167402631063,
+        "rustc": 16696009966390864400,
+        "rustflags": [],
+        "target": 1422439684827079840
+      },
+      "files": {
+        ".cargo/config.toml": "fa81c590ff19f6ed86010391d3dbb99b88a803740ecf1ec6c3db159da61c2ee8",
+        "Cargo.lock": "51b920921dfa2a0d64448d7555bc529bed4330f0d5503caf8f3593fd42b30f0c",
+        "Cargo.toml": "239ea846958192f846c466afe64e719f109e702e0570e4b00d1e8da653f840a2",
+        "crates/math/Cargo.toml": "3cf90efb556880a5c18e7b670ccfb714f41dfb3c51e23ec8f838cf800748219c",
+        "crates/math/benches/intersection_inner_loops.rs": "f9bb47da12ed9d53bf5dbaf6fb02706118598761f81dff338ac594e7658b3bf0",
+        "crates/math/src/nurbs/intersection/line.rs": "e94f6c40c1fc5371a1ca64653dd9913b0b8bc971c9fbd1cdeea85e460eac3255"
+      },
+      "generatedPackageChanges": {
+        "crates/wasm-io/pkg/package.json": {
+          "mode": 436,
+          "sha256": "893db3706531b67115e7c40dfa97de044be3f6332ad400b03a65f9c94387ef33"
+        },
+        "crates/wasm-io/pkg/remus_wasm_io_bg.wasm": {
+          "mode": 436,
+          "sha256": "e6aa350178001df4caf372d92824255b945b50f954e183a313737af5195bf1ee"
+        },
+        "crates/wasm/pkg/package.json": {
+          "mode": 436,
+          "sha256": "7cc87020cf28acbe9baa6c6164d46ea27e2d9acb5dd8ada4388cf35fa73a8630"
+        },
+        "crates/wasm/pkg/remus_wasm.d.ts": {
+          "mode": 436,
+          "sha256": "11950695edb86856fb3f245611e7f0987bc7f50c6c0242ccf27f224f20074dee"
+        },
+        "crates/wasm/pkg/remus_wasm_bg.js": {
+          "mode": 436,
+          "sha256": "395f63a149242bb3a8f170c29eb1c3a436f742d758038a5dc49c7f655994f35d"
+        },
+        "crates/wasm/pkg/remus_wasm_bg.wasm": {
+          "mode": 436,
+          "sha256": "8e9c54487facde0fae7225ab9348373c6b032230de5e983988bba5e7816d0ef9"
+        },
+        "crates/wasm/pkg/remus_wasm_bg.wasm.d.ts": {
+          "mode": 436,
+          "sha256": "8f87eea75541b696884754e6fa887f2ff5e83f74ef9b0d895c0492de9f05b6e3"
+        },
+        "crates/wasm/pkg/remus_wasm_node.cjs": {
+          "mode": 436,
+          "sha256": "55c678cc8a235b1dd98aa63e194995fabe8918ddead5151531407ab699cc7511"
+        }
+      },
+      "source": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+      "tree": "77597af50bfc5cf2fa468e3c4f4b9e464657dec7"
+    },
+    "B": {
+      "binaryBytes": 57627768,
+      "binaryMode": 509,
+      "binarySha256": "683df4b5ab75654f7b1d391790b64894fa53f8aefbee0de66a85060be13f6fa5",
+      "cargoFingerprint": {
+        "compile_kind": 0,
+        "config": 8247474407144887393,
+        "declared_features": "[\"default\", \"serde\", \"simd\"]",
+        "deps": [
+          [
+            1957009224993739128,
+            "thiserror",
+            false,
+            3726407899843588037
+          ],
+          [
+            2490015432001885548,
+            "remus_math",
+            false,
+            13236738781305046239
+          ],
+          [
+            3629170276479397743,
+            "proptest",
+            false,
+            16730248483293088790
+          ],
+          [
+            8160210889872729633,
+            "serde_json",
+            false,
+            16695143469197991355
+          ],
+          [
+            11177420919098925944,
+            "log",
+            false,
+            15850052509195443764
+          ],
+          [
+            13513330987694523139,
+            "robust",
+            false,
+            17504342694894951064
+          ],
+          [
+            16321741466644061277,
+            "criterion",
+            false,
+            5987893727218000061
+          ]
+        ],
+        "features": "[\"default\"]",
+        "local": [
+          {
+            "CheckDepInfo": {
+              "checksum": false,
+              "dep_info": "profiling/.fingerprint/remus-math-5ee5a25ca5077ead/dep-test-bench-intersection_inner_loops"
+            }
+          }
+        ],
+        "path": 16051533941787157392,
+        "profile": 15381347167402631063,
+        "rustc": 16696009966390864400,
+        "rustflags": [],
+        "target": 1422439684827079840
+      },
+      "files": {
+        ".cargo/config.toml": "fa81c590ff19f6ed86010391d3dbb99b88a803740ecf1ec6c3db159da61c2ee8",
+        "Cargo.lock": "51b920921dfa2a0d64448d7555bc529bed4330f0d5503caf8f3593fd42b30f0c",
+        "Cargo.toml": "239ea846958192f846c466afe64e719f109e702e0570e4b00d1e8da653f840a2",
+        "crates/math/Cargo.toml": "3cf90efb556880a5c18e7b670ccfb714f41dfb3c51e23ec8f838cf800748219c",
+        "crates/math/benches/intersection_inner_loops.rs": "f9bb47da12ed9d53bf5dbaf6fb02706118598761f81dff338ac594e7658b3bf0",
+        "crates/math/src/nurbs/intersection/line.rs": "700a057b7a2889b3e418e0d25aa458b6d023340a590acd0afa916744483b0ec9"
+      },
+      "generatedPackageChanges": {},
+      "source": "d7b1544a81122c8898fc8f883b8b3f8589a3b39b",
+      "tree": "cc0c7d89f72f50194351011ef3084381d756084a"
+    }
+  }
+}

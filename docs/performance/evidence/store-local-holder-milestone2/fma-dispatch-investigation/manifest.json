@@ -1,0 +1,42 @@
+{
+  "README.md": {
+    "bytes": 5042,
+    "sha256": "ff2e8acb3b6f0f0e99f9d807c3750105d5d4bf78f0ab959dddbc95d73db843d9"
+  },
+  "build-receipt.json": {
+    "bytes": 10416,
+    "sha256": "22943a488164bd3eb229ea9d4c3723b978d2a1cc4cf328db5f18f7f15cee9429"
+  },
+  "completion-driver-raw.json": {
+    "bytes": 211694,
+    "sha256": "66a194ee12161dc59e9519c72da0f44aeb268753a77e56cc2fb1c56901b9cad2"
+  },
+  "counts-and-samples.json": {
+    "bytes": 391039,
+    "sha256": "d3705521a3efd5d5d4755b68d0afa84eb341f150ebcf4810b310f2647836c7dd"
+  },
+  "observe_dispatch.cjs": {
+    "bytes": 16149,
+    "sha256": "d713178b1391163d8eeba12bb771763fb357e797153e7bc305847416c3f015f6"
+  },
+  "observer-overlay.patch.json": {
+    "bytes": 18340,
+    "sha256": "1f6841b350cfaa46a9efc47bcd2b6546f5e275bc39790a044e0a2b74b340df54"
+  },
+  "observer-tests-final.log": {
+    "bytes": 941,
+    "sha256": "f719bf593e3e7c15205c19e0790c55bdda28788321883ebf5ee8ea10c72b9a7b"
+  },
+  "output-qualification.json": {
+    "bytes": 4921,
+    "sha256": "b1890f681718030942232430038ff79791f62861e23d8da39461b5804e67d154"
+  },
+  "preview-driver-raw.json": {
+    "bytes": 143260,
+    "sha256": "e337619806e238628212c07fe76b3f27805d3a7496c5cdde42775d6ae1a2c31d"
+  },
+  "source-bundle-receipt.json": {
+    "bytes": 2004,
+    "sha256": "841e58f7400b25e9739a07cd325bb542eb667cb93ae179c3266b5316e9be95ae"
+  }
+}

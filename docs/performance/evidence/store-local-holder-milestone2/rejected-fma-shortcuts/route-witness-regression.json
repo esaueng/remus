@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "source": "292f084f9165f8f31bcaeb1581324eba69835994",
+  "fixedWitness": "the repaired cross-drilled witness requires actual local completion",
+  "before": {
+    "exitCode": 1,
+    "reason": "Missing expected exception when general fallback was incorrectly allowed",
+    "rawLogSha256": "0690c5c7993880091af9313d69e5044ad031103f8990d1bccf9f4e8fe11dbc38"
+  },
+  "after": {
+    "exitCode": 0,
+    "testsPassed": 18,
+    "testsFailed": 0,
+    "rawLogSha256": "8361b4217694e38023b30168fd2fbddb1e40e66085870ed11e9d18232d49543e"
+  },
+  "files": {
+    "scripts/performance/store-local/qualify.cjs": "4b2f1fd4b679f4f70ea039819a5e006de1de32b826e75d164a0b559b41a71b22",
+    "scripts/performance/store-local/qualify.test.cjs": "ac86d701d6c0c0b3c309647a4b206968e02b5de124ada7f51706f632da01e0f9"
+  },
+  "scope": "Qualification-only assertion repair. The previously captured enabled direct/batch traces already show actual local success; final-source packages rerun the full required-route matrix. Raw logs remain local."
+}

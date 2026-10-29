@@ -1,0 +1,52 @@
+{
+  "schema": "remus-standalone-range-confirmed-c0-v1",
+  "scope": "Experimental standalone module, original float guard/order plus zero addend identity only inside confirmed emulated range. Not a shipping source commit or package.",
+  "sourceSha256": "1ded1b7a424a8195fbd67c778585a37bf839efd8f3c8a5da99a17a32ba340483",
+  "wrapperSha256": "008d4a408ea65e5162a37090591be3e5ffceeac626c0e348e7fa64f0f6e0cd8f",
+  "rawWasmSha256": "01e0a0997c40b8274e36aa9c33acdde541721efbe81a23db4c5f045252540316",
+  "optimizedWasmSha256": "1086c0658a316cb9e0d37592777e1a070daa4368e7924ce972988946a04b5c8c",
+  "optimizedBytes": 96535,
+  "rustCommand": [
+    "rustc",
+    "--edition=2024",
+    "--target",
+    "wasm32-unknown-unknown",
+    "--crate-name",
+    "dispatch_micro",
+    "--crate-type",
+    "cdylib",
+    "-Dwarnings",
+    "-C",
+    "opt-level=3",
+    "-C",
+    "lto=fat",
+    "-C",
+    "codegen-units=1",
+    "-C",
+    "overflow-checks=true",
+    "-C",
+    "panic=abort",
+    "-C",
+    "target-feature=+simd128",
+    "--remap-path-prefix=<proof-root>/range-c0=/dispatch",
+    "--remap-path-prefix=<cargo-home>=/cargo",
+    "--remap-path-prefix=<rust-sysroot>=/rust",
+    "<proof-root>/range-c0/wrapper.rs",
+    "-o",
+    "<proof-root>/range-c0/raw.wasm"
+  ],
+  "optCommand": [
+    "<wasm-opt117>",
+    "<proof-root>/range-c0/raw.wasm",
+    "-Oz",
+    "--enable-simd",
+    "-o",
+    "<proof-root>/range-c0/optimized.wasm"
+  ],
+  "priorToolReceiptSha256": "2277bad21081911c418181242e1624fc6d0355cbe3a90b6ceba1c02b65f07192",
+  "candidatePatchSha256": "b13f5f478811ef062fae60049e4d0013d35bd4dbb4fad0a9ca311fdf108fb722",
+  "testLogs": {
+    "default": "28f96866cfd4956bd8db6bd3e13ebac5d14372fe193ca42995002187d2718aca",
+    "simd": "a1ca529fa10299b2197bedb829b40cba723d1989085aa24f6949df4fb00c157c"
+  }
+}

@@ -1,0 +1,378 @@
+{
+  "README.md": {
+    "bytes": 2876,
+    "sha256": "a89f42776fa89ffa879d105f9de2ddd0962ef42bb658900e31d1ee40c17078f2"
+  },
+  "baseline-build-receipt.json": {
+    "bytes": 5055,
+    "sha256": "aec3cf1c2d5ddf85746ef500a9eab3b906341059489e65689939c50c7ef8170f"
+  },
+  "candidate-build-receipt.json": {
+    "bytes": 4873,
+    "sha256": "bb9c3f68168bcf4b2d6486477ef2b6270ba147c6927c3cb7aadd74f92c7242b6"
+  },
+  "capture-environment.json": {
+    "bytes": 21091,
+    "sha256": "4a020346ecbdafdbbf0fba86722137ac46cd265fa7b0632dee3813341fef3b75"
+  },
+  "criterion-stdout.json": {
+    "bytes": 4493,
+    "sha256": "121473904c5b20696b9dcf6fac9f9aa0f243aaf6c244b5ca30d51bb00ac829fe"
+  },
+  "processes/0-baseline/stderr.json": {
+    "bytes": 1022,
+    "sha256": "2de37112d6945ab438e33e91b203c64653bcced0317af61c9b15054017a31500"
+  },
+  "processes/0-baseline/stdout.json": {
+    "bytes": 551,
+    "sha256": "4fc271ae08b82a0334d394c173187896c49c3bee2120a0bf398c42be02a319e3"
+  },
+  "processes/0-baseline/torus_notch_cut/benchmark.json": {
+    "bytes": 202,
+    "sha256": "0d08ca53add998a3fc9b34068c8ca9aed36bbfe18643f8e9ed443f5216c17f5c"
+  },
+  "processes/0-baseline/torus_notch_cut/estimates.json": {
+    "bytes": 975,
+    "sha256": "3f5b48a73fa657c4dd0fbe1a0b642016dff8523bcfc22734f8e2f3599fa63241"
+  },
+  "processes/0-baseline/torus_notch_cut/sample.json": {
+    "bytes": 213,
+    "sha256": "530144bc5cab54ed0fbe0b35f5b6a864a65e8d577c0c86fb40a228447bc33775"
+  },
+  "processes/0-baseline/torus_notch_fuse/benchmark.json": {
+    "bytes": 206,
+    "sha256": "1e36c199cfd30b80fa0c2660df64e6da69cd367434b0aad53647c8850839e6e7"
+  },
+  "processes/0-baseline/torus_notch_fuse/estimates.json": {
+    "bytes": 972,
+    "sha256": "dbc463d61703a7852e24eb9da1f5f7e98a7532dec59679f111ba2f5220c37e26"
+  },
+  "processes/0-baseline/torus_notch_fuse/sample.json": {
+    "bytes": 213,
+    "sha256": "ccc0fb0cc55b5f1b599b9f2f48c44b73e2e6567f45b23fe36a422e46fd986ad0"
+  },
+  "processes/0-baseline/torus_notch_intersect/benchmark.json": {
+    "bytes": 226,
+    "sha256": "9ff46f826e322d64a8cc98c35af1ceff2b94872a348737471b8c2d9225c8ba79"
+  },
+  "processes/0-baseline/torus_notch_intersect/estimates.json": {
+    "bytes": 974,
+    "sha256": "a9371b6dc825cf80367a0afccbce3f279287b5bab3232f3797950b97d0d74062"
+  },
+  "processes/0-baseline/torus_notch_intersect/sample.json": {
+    "bytes": 213,
+    "sha256": "19a6076f579aafa047f59c0a34d84b343a577b2848235c718236c422237b9ab4"
+  },
+  "processes/1-candidate/stderr.json": {
+    "bytes": 1022,
+    "sha256": "6b490008664601d8419084d0e12d9b7bb42961ce57bce9e3c9aeba1c5d519c42"
+  },
+  "processes/1-candidate/stdout.json": {
+    "bytes": 646,
+    "sha256": "e9e5ff99b9b67f97763dafdd40b40dff84ebe648dda710907107cc447519056f"
+  },
+  "processes/1-candidate/torus_notch_cut/benchmark.json": {
+    "bytes": 202,
+    "sha256": "0d08ca53add998a3fc9b34068c8ca9aed36bbfe18643f8e9ed443f5216c17f5c"
+  },
+  "processes/1-candidate/torus_notch_cut/estimates.json": {
+    "bytes": 975,
+    "sha256": "22004b82f35c0bbb7aa367993ba1be52c6c11e3ee358a5519843d435beb01007"
+  },
+  "processes/1-candidate/torus_notch_cut/sample.json": {
+    "bytes": 213,
+    "sha256": "7cd0d3f566890c724d0e07584a187f73b04bdc54f4a83ce0e4e1ff4ec69624b9"
+  },
+  "processes/1-candidate/torus_notch_fuse/benchmark.json": {
+    "bytes": 206,
+    "sha256": "1e36c199cfd30b80fa0c2660df64e6da69cd367434b0aad53647c8850839e6e7"
+  },
+  "processes/1-candidate/torus_notch_fuse/estimates.json": {
+    "bytes": 975,
+    "sha256": "736866e874ebb13c26afb15496847408c7b237709b996388a88505fbcc88f671"
+  },
+  "processes/1-candidate/torus_notch_fuse/sample.json": {
+    "bytes": 213,
+    "sha256": "3f9c959ffbeb2053ddbf7395095fe2cfce24adb17124fd788024511d3694b5f3"
+  },
+  "processes/1-candidate/torus_notch_intersect/benchmark.json": {
+    "bytes": 226,
+    "sha256": "9ff46f826e322d64a8cc98c35af1ceff2b94872a348737471b8c2d9225c8ba79"
+  },
+  "processes/1-candidate/torus_notch_intersect/estimates.json": {
+    "bytes": 967,
+    "sha256": "f56d551a9c3c7ed2af00e7011ae99c2c89700d049e8b96b8c26929fb20f3101e"
+  },
+  "processes/1-candidate/torus_notch_intersect/sample.json": {
+    "bytes": 213,
+    "sha256": "27faf63cbd6e14ec53163ce643142575da79f61faf183ea5986d87911fc90402"
+  },
+  "processes/2-candidate/stderr.json": {
+    "bytes": 1022,
+    "sha256": "c6cf6fba3b0f14fae876c3ba4f9a42c582684815b5e45ff7ac4489468e879700"
+  },
+  "processes/2-candidate/stdout.json": {
+    "bytes": 597,
+    "sha256": "912d78c7593321d7c78859a26f8ffc13bf3447271b4b7e371b24c06b86142b41"
+  },
+  "processes/2-candidate/torus_notch_cut/benchmark.json": {
+    "bytes": 202,
+    "sha256": "0d08ca53add998a3fc9b34068c8ca9aed36bbfe18643f8e9ed443f5216c17f5c"
+  },
+  "processes/2-candidate/torus_notch_cut/estimates.json": {
+    "bytes": 972,
+    "sha256": "8fd9eae799c6709fcf26b2c40e24076a878ce6c50203a82a1a34e055007d1a71"
+  },
+  "processes/2-candidate/torus_notch_cut/sample.json": {
+    "bytes": 213,
+    "sha256": "313d5adf58942d27da61c1fcf86f0ac029907b122a4c82ab7d986b1e84433ec7"
+  },
+  "processes/2-candidate/torus_notch_fuse/benchmark.json": {
+    "bytes": 206,
+    "sha256": "1e36c199cfd30b80fa0c2660df64e6da69cd367434b0aad53647c8850839e6e7"
+  },
+  "processes/2-candidate/torus_notch_fuse/estimates.json": {
+    "bytes": 962,
+    "sha256": "8e4c9e07f0c135cf29c7fa2faa85074eb97f1f06f13534017061c2511c42a487"
+  },
+  "processes/2-candidate/torus_notch_fuse/sample.json": {
+    "bytes": 213,
+    "sha256": "c51ba53eee8ed4630566ec22e96708aeac458f0e392d90d3e55b8d986130eaad"
+  },
+  "processes/2-candidate/torus_notch_intersect/benchmark.json": {
+    "bytes": 226,
+    "sha256": "9ff46f826e322d64a8cc98c35af1ceff2b94872a348737471b8c2d9225c8ba79"
+  },
+  "processes/2-candidate/torus_notch_intersect/estimates.json": {
+    "bytes": 977,
+    "sha256": "a8161c65ee1a493126010fa081a072941c6276727fc323daa56b72de155944cb"
+  },
+  "processes/2-candidate/torus_notch_intersect/sample.json": {
+    "bytes": 213,
+    "sha256": "84e1a89375a23f11a44daaefa980336ad27a0125fc6f74cdac0a06b7fe98bfc4"
+  },
+  "processes/3-baseline/stderr.json": {
+    "bytes": 1022,
+    "sha256": "51ea3294c44301990cf99294a385649c17d15e063223b017d5fcde8127bec747"
+  },
+  "processes/3-baseline/stdout.json": {
+    "bytes": 452,
+    "sha256": "50621835c9d034b9c49e2162dd2068f1a00168e2b9d8ce3f5d97c3e28d9eb03d"
+  },
+  "processes/3-baseline/torus_notch_cut/benchmark.json": {
+    "bytes": 202,
+    "sha256": "0d08ca53add998a3fc9b34068c8ca9aed36bbfe18643f8e9ed443f5216c17f5c"
+  },
+  "processes/3-baseline/torus_notch_cut/estimates.json": {
+    "bytes": 970,
+    "sha256": "fee04c54f3a2ffd3caccfc0643805fdb27a919c17dfb5e4f0a895e0cd6e8a245"
+  },
+  "processes/3-baseline/torus_notch_cut/sample.json": {
+    "bytes": 213,
+    "sha256": "de71445a6aec26e147aeaf1ff8218d20d4327977715c92bc89e94087cf085876"
+  },
+  "processes/3-baseline/torus_notch_fuse/benchmark.json": {
+    "bytes": 206,
+    "sha256": "1e36c199cfd30b80fa0c2660df64e6da69cd367434b0aad53647c8850839e6e7"
+  },
+  "processes/3-baseline/torus_notch_fuse/estimates.json": {
+    "bytes": 967,
+    "sha256": "90e29c254b034a2dfa4f605f7db0affead343ea0aff43fa3c5c709a841317757"
+  },
+  "processes/3-baseline/torus_notch_fuse/sample.json": {
+    "bytes": 213,
+    "sha256": "b68fec2bedf2b5a3894aeb416038369a667d667c90a18bd47c10d3f109028737"
+  },
+  "processes/3-baseline/torus_notch_intersect/benchmark.json": {
+    "bytes": 226,
+    "sha256": "9ff46f826e322d64a8cc98c35af1ceff2b94872a348737471b8c2d9225c8ba79"
+  },
+  "processes/3-baseline/torus_notch_intersect/estimates.json": {
+    "bytes": 974,
+    "sha256": "c7260d3cf0520fae300c0e19bd77b52da6404f91cd9b92c5a74a3f381f82d190"
+  },
+  "processes/3-baseline/torus_notch_intersect/sample.json": {
+    "bytes": 213,
+    "sha256": "71758a8d1911fd3f38abff3cb689ff49b880f2cbb73506a3f0e2a95430fe98ac"
+  },
+  "processes/4-candidate/stderr.json": {
+    "bytes": 1022,
+    "sha256": "5603bab1ee2716cf04d8e9700d09561dd972bfc1ef532e2415bc174e637af7b6"
+  },
+  "processes/4-candidate/stdout.json": {
+    "bytes": 600,
+    "sha256": "3c78c4725b2f8fa306901e739da7f1e46fe335130a7a53231ca855465e80281d"
+  },
+  "processes/4-candidate/torus_notch_cut/benchmark.json": {
+    "bytes": 202,
+    "sha256": "0d08ca53add998a3fc9b34068c8ca9aed36bbfe18643f8e9ed443f5216c17f5c"
+  },
+  "processes/4-candidate/torus_notch_cut/estimates.json": {
+    "bytes": 978,
+    "sha256": "e0cf9f856a5293263146431708f36a8347462331c640d95437f6e10351972f56"
+  },
+  "processes/4-candidate/torus_notch_cut/sample.json": {
+    "bytes": 213,
+    "sha256": "a809f808e00c00ed0cead8c09eec040ea4826a542d7fa4d0d2b1ab97606c5066"
+  },
+  "processes/4-candidate/torus_notch_fuse/benchmark.json": {
+    "bytes": 206,
+    "sha256": "1e36c199cfd30b80fa0c2660df64e6da69cd367434b0aad53647c8850839e6e7"
+  },
+  "processes/4-candidate/torus_notch_fuse/estimates.json": {
+    "bytes": 965,
+    "sha256": "a52975bff8ef93ac08075a7c456677580fb0adba4b99956810d5594fe6419afe"
+  },
+  "processes/4-candidate/torus_notch_fuse/sample.json": {
+    "bytes": 213,
+    "sha256": "9366f8c2aa49e5cf05475ee74d01eda2c966a87d2cbffde70785647e45b8b857"
+  },
+  "processes/4-candidate/torus_notch_intersect/benchmark.json": {
+    "bytes": 226,
+    "sha256": "9ff46f826e322d64a8cc98c35af1ceff2b94872a348737471b8c2d9225c8ba79"
+  },
+  "processes/4-candidate/torus_notch_intersect/estimates.json": {
+    "bytes": 965,
+    "sha256": "ab9996e5b2f40576aa3b8490563538c28429ed5b61b8dd9f286329c6c7e96e5c"
+  },
+  "processes/4-candidate/torus_notch_intersect/sample.json": {
+    "bytes": 213,
+    "sha256": "aa9d797d8c15acd7f8c2d57ebc3cccab56226259f882eccc2773e387a65d9a1d"
+  },
+  "processes/5-baseline/stderr.json": {
+    "bytes": 1022,
+    "sha256": "9e97952217a0e9acfa7f9fb8adada0021e9f8bc06a3d467bc76259ce0f7cca8b"
+  },
+  "processes/5-baseline/stdout.json": {
+    "bytes": 623,
+    "sha256": "137a490ee3e1314065b2be789122e1f9f3c12112c84daca90259838ea970b183"
+  },
+  "processes/5-baseline/torus_notch_cut/benchmark.json": {
+    "bytes": 202,
+    "sha256": "0d08ca53add998a3fc9b34068c8ca9aed36bbfe18643f8e9ed443f5216c17f5c"
+  },
+  "processes/5-baseline/torus_notch_cut/estimates.json": {
+    "bytes": 968,
+    "sha256": "0af6f59f4c57502cf7afe6f9b981554646316273de698fd01fd55453d45da0e9"
+  },
+  "processes/5-baseline/torus_notch_cut/sample.json": {
+    "bytes": 213,
+    "sha256": "1a4f964d3138ab0b81522a3ffcd3d7aedb68668ee3537feefdfb0a2a12d997d0"
+  },
+  "processes/5-baseline/torus_notch_fuse/benchmark.json": {
+    "bytes": 206,
+    "sha256": "1e36c199cfd30b80fa0c2660df64e6da69cd367434b0aad53647c8850839e6e7"
+  },
+  "processes/5-baseline/torus_notch_fuse/estimates.json": {
+    "bytes": 976,
+    "sha256": "45a87ad03a39660a0eb774e7291dce173486cf77d2b1263c9a10942ad135c4d9"
+  },
+  "processes/5-baseline/torus_notch_fuse/sample.json": {
+    "bytes": 213,
+    "sha256": "5217c8fbed43c4d98d7d6fa82579be66ed77bed0e20a75f251d2c308f29e7289"
+  },
+  "processes/5-baseline/torus_notch_intersect/benchmark.json": {
+    "bytes": 226,
+    "sha256": "9ff46f826e322d64a8cc98c35af1ceff2b94872a348737471b8c2d9225c8ba79"
+  },
+  "processes/5-baseline/torus_notch_intersect/estimates.json": {
+    "bytes": 979,
+    "sha256": "86b42343d49c7b100f34fbd2cd6d500287c1a4029d40d87d71e33b26626cb286"
+  },
+  "processes/5-baseline/torus_notch_intersect/sample.json": {
+    "bytes": 213,
+    "sha256": "8637de9ea4faeda69f36c9ada14041b11bb270d814ebd1e5f4b1b726b28c1bb0"
+  },
+  "processes/6-baseline/stderr.json": {
+    "bytes": 1022,
+    "sha256": "42a1b28d0f12360dbf343f637b9703c2a12cc20eac311457d5cf2c696dcff5b4"
+  },
+  "processes/6-baseline/stdout.json": {
+    "bytes": 525,
+    "sha256": "da1a52cf7809eecc8c48e98dfb9372a5945acfc1519deb02164fd02085e18227"
+  },
+  "processes/6-baseline/torus_notch_cut/benchmark.json": {
+    "bytes": 202,
+    "sha256": "0d08ca53add998a3fc9b34068c8ca9aed36bbfe18643f8e9ed443f5216c17f5c"
+  },
+  "processes/6-baseline/torus_notch_cut/estimates.json": {
+    "bytes": 973,
+    "sha256": "788fba6ed34135629f18ae00ca327e354ac1fbf9d97da8570b7c3b50802cbe46"
+  },
+  "processes/6-baseline/torus_notch_cut/sample.json": {
+    "bytes": 213,
+    "sha256": "5cf7f8f5bf7323053cd782c709ab6646626fc26f5864b5c5efee04932a1ef59e"
+  },
+  "processes/6-baseline/torus_notch_fuse/benchmark.json": {
+    "bytes": 206,
+    "sha256": "1e36c199cfd30b80fa0c2660df64e6da69cd367434b0aad53647c8850839e6e7"
+  },
+  "processes/6-baseline/torus_notch_fuse/estimates.json": {
+    "bytes": 977,
+    "sha256": "b04faf0b9ced0b4750b36f34b813c2655ffb306b25e9377587d0829a503d674b"
+  },
+  "processes/6-baseline/torus_notch_fuse/sample.json": {
+    "bytes": 213,
+    "sha256": "85914b2e0a5eb4d1b06173526ac54a0e178637a6c1f4eff972c065c370ffd340"
+  },
+  "processes/6-baseline/torus_notch_intersect/benchmark.json": {
+    "bytes": 226,
+    "sha256": "9ff46f826e322d64a8cc98c35af1ceff2b94872a348737471b8c2d9225c8ba79"
+  },
+  "processes/6-baseline/torus_notch_intersect/estimates.json": {
+    "bytes": 966,
+    "sha256": "990413c673281ce0bfa33376704f48aaeae619937e1b63518143693a80fff95b"
+  },
+  "processes/6-baseline/torus_notch_intersect/sample.json": {
+    "bytes": 213,
+    "sha256": "9878d39cb14aa62ea373b3b9738c8f27a06a9c84014265f8097afd0769c11440"
+  },
+  "processes/7-candidate/stderr.json": {
+    "bytes": 1022,
+    "sha256": "760eb2ee1bdaa61cee14487033bad8983220feaef8ab9b274df674836f6ff91a"
+  },
+  "processes/7-candidate/stdout.json": {
+    "bytes": 624,
+    "sha256": "f4b3be5fec531803d780471e78fe001eb573910d6a7f181d625b00dbcd823b58"
+  },
+  "processes/7-candidate/torus_notch_cut/benchmark.json": {
+    "bytes": 202,
+    "sha256": "0d08ca53add998a3fc9b34068c8ca9aed36bbfe18643f8e9ed443f5216c17f5c"
+  },
+  "processes/7-candidate/torus_notch_cut/estimates.json": {
+    "bytes": 970,
+    "sha256": "3fae07f41432736206e4af1929939ef5b4c2524097d095fa0cbf3c8572f4b3d3"
+  },
+  "processes/7-candidate/torus_notch_cut/sample.json": {
+    "bytes": 213,
+    "sha256": "7487b5d7de4202d3d8d91c2193f7505627c7819cf584a868379982cf65fd7b6e"
+  },
+  "processes/7-candidate/torus_notch_fuse/benchmark.json": {
+    "bytes": 206,
+    "sha256": "1e36c199cfd30b80fa0c2660df64e6da69cd367434b0aad53647c8850839e6e7"
+  },
+  "processes/7-candidate/torus_notch_fuse/estimates.json": {
+    "bytes": 966,
+    "sha256": "3d66be0aa683a226f764f6361e11dccf61ad77f807c9f83d10ece21bbf1f04df"
+  },
+  "processes/7-candidate/torus_notch_fuse/sample.json": {
+    "bytes": 213,
+    "sha256": "64cd80b5eedc6153cbd26937f238b057018e56de3386a1ddbc07daf241a0e43a"
+  },
+  "processes/7-candidate/torus_notch_intersect/benchmark.json": {
+    "bytes": 226,
+    "sha256": "9ff46f826e322d64a8cc98c35af1ceff2b94872a348737471b8c2d9225c8ba79"
+  },
+  "processes/7-candidate/torus_notch_intersect/estimates.json": {
+    "bytes": 972,
+    "sha256": "fd3d8d14e96ef55abd8d485bc2ed02821b77c7667c0379a9cd970ac0219c9d7f"
+  },
+  "processes/7-candidate/torus_notch_intersect/sample.json": {
+    "bytes": 213,
+    "sha256": "4b373344693f5fb8c63601c7f254c4ef1492b229392eb8528b2000e748a506e8"
+  },
+  "summary.json": {
+    "bytes": 27512,
+    "sha256": "c2fce41baab0b84e4759423f1a73d1d09fff2e2dd7cc7e9bb454ef9636ffd4b5"
+  }
+}
