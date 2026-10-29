@@ -129,6 +129,13 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **operations:** a fillet whose tangent chain runs over the end arc of an
+  earlier convex fillet band of the same radius now rounds that stretch as an
+  exact sphere triangle, bounded by three great circles, instead of a lofted
+  NURBS patch. Filleting the edges of a part one at a time at one radius now
+  gives the all-exact body that filleting them together gives, and
+  `exactOnly` fillet requests on such parts no longer refuse with
+  `exact_only_unattainable`.
 * **io:** STEP export no longer uses `TRIMMED_CURVE` as edge geometry, which
   ISO 10303-42 advanced B-reps do not allow and other CAD readers reject
   (a cylinder's caps imported with no edges and the solid had no volume).

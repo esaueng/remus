@@ -495,7 +495,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
 | Helical sweep | `helix.rs` |
 | Chamfer, Fillet | `chamfer.rs`, `fillet/` (mod, rolling_ball, g1_chain, geometry, radius_law, helpers, notch_torus, tests) |
-| Rolling-ball arc stripe between a plane and a coaxial cylinder as an exact torus (a fillet riding an earlier band's end) | `fillet/arc_torus.rs` |
+| Rolling-ball arc stripe between a plane and a coaxial cylinder as an exact torus, or a sphere triangle at the band's own radius (a fillet riding an earlier band's end) | `fillet/arc_torus.rs` |
 | Two convex stripes mitred over a reflex corner whose concave edge stays sharp | `fillet/mitre.rs` |
 | Spatial grid behind the rolling-ball Phase 5d vertex dedup and snap (the linear scans' winners and ties), with its oracle tests | `fillet/vertex_snap.rs` |
 | Shell (hollow solid) | `shell_op.rs` |

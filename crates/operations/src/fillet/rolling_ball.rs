@@ -4252,6 +4252,65 @@ pub fn fillet_rolling_ball_with_origins(
                 continue;
             }
 
+            // At the band's own radius that torus has no ring: the ball's
+            // centre stays on the band's axis and the stripe is the sphere
+            // triangle between the arc's centre and the two band contacts,
+            // bounded by three great circles. A loft through it would be the
+            // only approximate face of an otherwise exact blend.
+            if !both_planar
+                && let Some(cap) = crate::fillet::arc_torus::arc_stripe_sphere(
+                    &edge_curve,
+                    surf1,
+                    surf2,
+                    [contact1_start, contact2_start, contact2_end, contact1_end],
+                    {
+                        let mid = grid[n_v / 2];
+                        if matches!(surf1, FaceSurface::Plane { .. }) {
+                            mid[2]
+                        } else {
+                            mid[0]
+                        }
+                    },
+                    radius,
+                    tol,
+                )
+            {
+                let [band_start, band_end] = cap.band;
+                let outward =
+                    ((cap.pole - cap.centre) + (band_start - cap.centre) + (band_end - cap.centre))
+                        .normalize()
+                        .unwrap_or(bisector_ref);
+                // Wound counter-clockwise about the sphere's outward radial,
+                // the winding `SphereCapFace` stores.
+                let corners = if (band_start - cap.pole)
+                    .cross(band_end - cap.pole)
+                    .dot(outward)
+                    >= 0.0
+                {
+                    [cap.pole, band_start, band_end]
+                } else {
+                    [cap.pole, band_end, band_start]
+                };
+                if let Some(spec) =
+                    build_sphere_cap(&corners, cap.centre, outward.dot(bisector_ref) > 0.0)
+                {
+                    push_face_spec(
+                        &mut all_specs,
+                        &mut all_spec_origins,
+                        spec,
+                        FaceSpecOrigin::Generated(vec![f1, f2]),
+                    );
+                    record_strip_contacts(
+                        &mut vertex_contacts,
+                        (edge.start().index(), edge.end().index()),
+                        (f1.index(), f2.index()),
+                        [contact1_start, contact2_start, contact1_end, contact2_end],
+                    );
+                    blended_edges.insert(edge_id.index());
+                    continue;
+                }
+            }
+
             // An arc between a plane and a coaxial cylinder sweeps an exact
             // torus: emit it with its four seam circles rather than a loft,
             // which would leave the plane's contact arc a chord.

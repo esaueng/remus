@@ -320,3 +320,29 @@ fn bounded_tab_rollover_native_direct_detailed_both_batches_and_history() {
         assert_eq!(kernel.serialize_solid(other).unwrap(), other_before);
     }
 }
+
+/// The audit plate's two front top edges at the earlier bands' R1, through
+/// the exact-only typed twin a CAD client calls: each chain crosses two
+/// band arcs whose blend is a sphere triangle, so the result is exact
+/// rather than refused as `exact_only_unattainable`.
+#[test]
+fn audit_plate_equal_radius_fillet_is_exact_only() {
+    for (y, z) in [(-4.5, 11.0), (21.5, 37.0)] {
+        let mut kernel = BrepKernel::new();
+        let solid = kernel
+            .deserialize_solid(include_bytes!(
+                "../../../operations/tests/data/audit_plate_body.arena.json"
+            ))
+            .unwrap();
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-8;
+        let edge = edge_where(&mut kernel, solid, |px, py, pz| {
+            (near(px, 1.0) || near(px, 55.5)) && near(py, y) && near(pz, z)
+        });
+        let payload =
+            serde_json::to_value(kernel.fillet_detailed_impl(solid, &[edge], 1.0, true)).unwrap();
+        assert_eq!(payload["status"], "ok", "edge at y={y}: {payload}");
+        assert_eq!(payload["details"]["quality"], "exact");
+        let result = u32::try_from(payload["value"].as_u64().unwrap()).unwrap();
+        assert_eq!(kernel.validate_solid(result).unwrap(), 0);
+    }
+}
