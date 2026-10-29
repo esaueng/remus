@@ -379,20 +379,6 @@ struct LineQuery {
     dir_len_sq: f64,
 }
 
-impl LineQuery {
-    fn bits(self) -> [u64; 7] {
-        [
-            self.origin.x().to_bits(),
-            self.origin.y().to_bits(),
-            self.origin.z().to_bits(),
-            self.direction.x().to_bits(),
-            self.direction.y().to_bits(),
-            self.direction.z().to_bits(),
-            self.dir_len_sq.to_bits(),
-        ]
-    }
-}
-
 // Bounded, call-local storage. UV identity is exact; a collision only causes
 // another evaluation. No topology/surface identity or invalidation is needed:
 // one workspace is created for one immutable surface and one line query.
@@ -425,51 +411,6 @@ impl SurfaceEvaluation {
     }
 }
 
-/// Pure line arithmetic at one exact UV and evaluated point. No convergence
-/// decision, clamp, iteration count or Newton outcome is retained. The ray is
-/// held separately by the workspace and a change invalidates every entry.
-#[derive(Clone, Copy)]
-struct IterationArithmetic {
-    occupied: bool,
-    u_bits: u64,
-    v_bits: u64,
-    point: [u64; 3],
-    t: f64,
-    residual: Vec3,
-    residual_length: f64,
-    has_delta: bool,
-    delta: (f64, f64),
-}
-
-impl IterationArithmetic {
-    const EMPTY: Self = Self {
-        occupied: false,
-        u_bits: 0,
-        v_bits: 0,
-        point: [0; 3],
-        t: 0.0,
-        residual: Vec3::new(0.0, 0.0, 0.0),
-        residual_length: 0.0,
-        has_delta: false,
-        delta: (0.0, 0.0),
-    };
-
-    fn point_bits(point: Point3) -> [u64; 3] {
-        [
-            point.x().to_bits(),
-            point.y().to_bits(),
-            point.z().to_bits(),
-        ]
-    }
-
-    fn matches(&self, u: f64, v: f64, point: Point3) -> bool {
-        self.occupied
-            && self.u_bits == u.to_bits()
-            && self.v_bits == v.to_bits()
-            && self.point == Self::point_bits(point)
-    }
-}
-
 /// Reusable surface-position/first-partial evaluations for the refinements.
 /// Position and partials retain their separate arithmetic: the derivative
 /// solve's position does not have the same bits as `surface.evaluate`, so a
@@ -478,11 +419,6 @@ impl IterationArithmetic {
 struct NewtonWorkspace {
     scratch: DerivativeScratch,
     evaluations: [SurfaceEvaluation; EVALUATION_CACHE_SIZE],
-    arithmetic: [IterationArithmetic; EVALUATION_CACHE_SIZE],
-    arithmetic_line: Option<[u64; 7]>,
-    finite_arithmetic_line: bool,
-    #[cfg(test)]
-    reuse_arithmetic: bool,
     #[cfg(test)]
     stats: EvaluationStats,
 }
@@ -492,11 +428,6 @@ impl Default for NewtonWorkspace {
         Self {
             scratch: DerivativeScratch::default(),
             evaluations: [SurfaceEvaluation::EMPTY; EVALUATION_CACHE_SIZE],
-            arithmetic: [IterationArithmetic::EMPTY; EVALUATION_CACHE_SIZE],
-            arithmetic_line: None,
-            finite_arithmetic_line: false,
-            #[cfg(test)]
-            reuse_arithmetic: true,
             #[cfg(test)]
             stats: EvaluationStats::default(),
         }
@@ -504,113 +435,6 @@ impl Default for NewtonWorkspace {
 }
 
 impl NewtonWorkspace {
-    fn prepare_line(&mut self, line: LineQuery) {
-        let bits = line.bits();
-        if self.arithmetic_line != Some(bits) {
-            for entry in &mut self.arithmetic {
-                entry.occupied = false;
-            }
-            self.arithmetic_line = Some(bits);
-            self.finite_arithmetic_line =
-                bits.iter().all(|&value| f64::from_bits(value).is_finite());
-            #[cfg(test)]
-            {
-                self.stats.arithmetic_line_changes += 1;
-            }
-        }
-    }
-
-    fn residual(&mut self, line: LineQuery, u: f64, v: f64, point: Point3) -> (f64, Vec3, f64) {
-        let index = Self::index(u, v);
-        let cached = &self.arithmetic[index];
-        let reuse = {
-            #[cfg(test)]
-            {
-                self.reuse_arithmetic
-            }
-            #[cfg(not(test))]
-            {
-                true
-            }
-        };
-        if reuse && cached.matches(u, v, point) {
-            #[cfg(test)]
-            {
-                self.stats.residual_hits += 1;
-            }
-            return (cached.t, cached.residual, cached.residual_length);
-        }
-        let diff = point - line.origin;
-        let diff_vec = Vec3::new(diff.x(), diff.y(), diff.z());
-        let t = diff_vec.dot(line.direction) / line.dir_len_sq;
-        let ray_point = Point3::new(
-            line.direction.x().fma(t, line.origin.x()),
-            line.direction.y().fma(t, line.origin.y()),
-            line.direction.z().fma(t, line.origin.z()),
-        );
-        let residual = point - ray_point;
-        let residual_length = residual.length();
-        self.arithmetic[index] = IterationArithmetic {
-            // Unsupported nonfinite inputs/results keep the original
-            // arithmetic on every visit, including its NaN behavior.
-            occupied: self.finite_arithmetic_line
-                && [
-                    u,
-                    v,
-                    point.x(),
-                    point.y(),
-                    point.z(),
-                    t,
-                    residual.x(),
-                    residual.y(),
-                    residual.z(),
-                    residual_length,
-                ]
-                .iter()
-                .all(|value| value.is_finite()),
-            u_bits: u.to_bits(),
-            v_bits: v.to_bits(),
-            point: IterationArithmetic::point_bits(point),
-            t,
-            residual,
-            residual_length,
-            ..IterationArithmetic::EMPTY
-        };
-        #[cfg(test)]
-        {
-            self.stats.residual_evaluations += 1;
-        }
-        (t, residual, residual_length)
-    }
-
-    fn delta(&self, u: f64, v: f64, point: Point3) -> Option<(f64, f64)> {
-        let cached = &self.arithmetic[Self::index(u, v)];
-        let reuse = {
-            #[cfg(test)]
-            {
-                self.reuse_arithmetic
-            }
-            #[cfg(not(test))]
-            {
-                true
-            }
-        };
-        if reuse && cached.matches(u, v, point) && cached.has_delta {
-            return Some(cached.delta);
-        }
-        None
-    }
-
-    fn record_delta(&mut self, u: f64, v: f64, point: Point3, delta: (f64, f64)) {
-        let cached = &mut self.arithmetic[Self::index(u, v)];
-        // The residual at this exact point was read immediately before the
-        // delta; partial evaluation touches only the separate surface table.
-        if cached.matches(u, v, point) && delta.0.is_finite() && delta.1.is_finite() {
-            cached.delta = delta;
-            cached.has_delta = true;
-        }
-    }
-
     fn index(u: f64, v: f64) -> usize {
         let hash = u
             .to_bits()
@@ -701,7 +525,7 @@ impl NewtonWorkspace {
 }
 
 #[cfg(test)]
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Default)]
 struct EvaluationStats {
     seed_points: usize,
     /// Position solves; each also yields the partials at its UV.
@@ -710,11 +534,6 @@ struct EvaluationStats {
     partial_evaluations: usize,
     point_hits: usize,
     partial_hits: usize,
-    residual_evaluations: usize,
-    residual_hits: usize,
-    delta_evaluations: usize,
-    delta_hits: usize,
-    arithmetic_line_changes: usize,
 }
 
 /// Where the iteration budget ends on a cycle: the index into the visited
@@ -761,9 +580,6 @@ fn refine_line_surface_point(
         direction: ray_dir,
         dir_len_sq,
     } = line;
-    // Completion can rebase the ray's origin while sharing this workspace.
-    // Only identical full ray bits may share per-iteration line arithmetic.
-    workspace.prepare_line(line);
     let (mut u, mut v) = guess;
     workspace.seed_point(u, v, seed_point);
     let [u_min, u_max, v_min, v_max] = bounds;
@@ -780,8 +596,19 @@ fn refine_line_surface_point(
         } else {
             workspace.point(surface, u, v)
         };
-        let (t, residual, residual_length) = workspace.residual(line, u, v, pt);
-        if residual_length < converged {
+        let diff = pt - ray_origin;
+        let diff_vec = Vec3::new(diff.x(), diff.y(), diff.z());
+
+        // Closest t on ray.
+        let t = diff_vec.dot(ray_dir) / dir_len_sq;
+        let ray_pt = Point3::new(
+            ray_dir.x().fma(t, ray_origin.x()),
+            ray_dir.y().fma(t, ray_origin.y()),
+            ray_dir.z().fma(t, ray_origin.z()),
+        );
+
+        let residual = pt - ray_pt;
+        if residual.length() < converged {
             return Some(IntersectionPoint {
                 point: pt,
                 param1: (u, v),
@@ -789,75 +616,63 @@ fn refine_line_surface_point(
             });
         }
 
-        let cached_delta = workspace.delta(u, v, pt);
-        #[cfg(test)]
-        if cached_delta.is_some() {
-            workspace.stats.delta_hits += 1;
-        } else {
-            workspace.stats.delta_evaluations += 1;
-        }
-        let (du, dv) = if let Some(delta) = cached_delta {
-            delta
-        } else {
-            // Keep `evaluate` above for the position and residual: the
-            // derivative solve's position uses a different arithmetic order.
-            let (su, sv) = workspace.partials(surface, u, v);
+        // Keep `evaluate` above for the position and residual: the derivative
+        // solve's position uses a different arithmetic order. Only substitute
+        // the partials, whose bits match the general derivative-table solve.
+        let (su, sv) = workspace.partials(surface, u, v);
 
-            let r = Vec3::new(residual.x(), residual.y(), residual.z());
+        let r = Vec3::new(residual.x(), residual.y(), residual.z());
 
-            // The quantity being driven to zero is the distance to the ray LINE, so
-            // only the ray-PERPENDICULAR part of a tangent reduces it -- sliding the
-            // surface point along the ray moves it without getting it any closer.
-            // Build the Gauss-Newton system from those projected tangents. Using the
-            // raw su/sv inflates the matrix by the ray-parallel component and
-            // under-relaxes every step: on a plane, where the projected system lands
-            // exactly in one iteration, the raw one still has not converged after
-            // 100 and so gives up at MAX_NEWTON_ITER with the intersection
-            // undiscovered. `r` is already perpendicular to the ray, so the
-            // right-hand side is unchanged in exact arithmetic; it is projected here
-            // too to keep the system self-consistent.
-            let ju = su - ray_dir * (su.dot(ray_dir) / dir_len_sq);
-            let jv = sv - ray_dir * (sv.dot(ray_dir) / dir_len_sq);
+        // The quantity being driven to zero is the distance to the ray LINE, so
+        // only the ray-PERPENDICULAR part of a tangent reduces it -- sliding the
+        // surface point along the ray moves it without getting it any closer.
+        // Build the Gauss-Newton system from those projected tangents. Using the
+        // raw su/sv inflates the matrix by the ray-parallel component and
+        // under-relaxes every step: on a plane, where the projected system lands
+        // exactly in one iteration, the raw one still has not converged after
+        // 100 and so gives up at MAX_NEWTON_ITER with the intersection
+        // undiscovered. `r` is already perpendicular to the ray, so the
+        // right-hand side is unchanged in exact arithmetic; it is projected here
+        // too to keep the system self-consistent.
+        let ju = su - ray_dir * (su.dot(ray_dir) / dir_len_sq);
+        let jv = sv - ray_dir * (sv.dot(ray_dir) / dir_len_sq);
 
-            // Solve 2x2 system: [ju*ju, ju*jv; jv*ju, jv*jv] * [du, dv] = [ju*r, jv*r]
-            let a11 = ju.dot(ju);
-            let a12 = ju.dot(jv);
-            let a22 = jv.dot(jv);
-            let b1 = ju.dot(r);
-            let b2 = jv.dot(r);
+        // Solve 2x2 system: [ju*ju, ju*jv; jv*ju, jv*jv] * [du, dv] = [ju*r, jv*r]
+        let a11 = ju.dot(ju);
+        let a12 = ju.dot(jv);
+        let a22 = jv.dot(jv);
+        let b1 = ju.dot(r);
+        let b2 = jv.dot(r);
 
-            let det = a11.fma(a22, -(a12 * a12));
-            // Relative singularity threshold -- catches surface poles/apex where
-            // derivatives shrink to zero (making absolute 1e-20 too lenient).
-            let delta = if det.abs() < (a11 + a22).max(1e-30) * 1e-12 {
-                // Near-degenerate: Tikhonov regularization.
-                let lambda = (a11 + a22).max(1e-10) * 1e-4;
-                let a11r = a11 + lambda;
-                let a22r = a22 + lambda;
-                let det_r = a11r.fma(a22r, -(a12 * a12));
-                if det_r.abs() < 1e-30 {
-                    // Truly singular -- step along the non-degenerate direction only.
-                    if a11 > a22 {
-                        (b1 / a11.max(1e-30), 0.0)
-                    } else if a22 > 1e-30 {
-                        (0.0, b2 / a22.max(1e-30))
-                    } else {
-                        break;
-                    }
+        let det = a11.fma(a22, -(a12 * a12));
+        // Relative singularity threshold -- catches surface poles/apex where
+        // derivatives shrink to zero (making absolute 1e-20 too lenient).
+        let (du, dv) = if det.abs() < (a11 + a22).max(1e-30) * 1e-12 {
+            // Near-degenerate: Tikhonov regularization.
+            let lambda = (a11 + a22).max(1e-10) * 1e-4;
+            let a11r = a11 + lambda;
+            let a22r = a22 + lambda;
+            let det_r = a11r.fma(a22r, -(a12 * a12));
+            if det_r.abs() < 1e-30 {
+                // Truly singular -- step along the non-degenerate direction only.
+                if a11 > a22 {
+                    (b1 / a11.max(1e-30), 0.0)
+                } else if a22 > 1e-30 {
+                    (0.0, b2 / a22.max(1e-30))
                 } else {
-                    (
-                        b1.fma(a22r, -(b2 * a12)) / det_r,
-                        a11r.fma(b2, -(a12 * b1)) / det_r,
-                    )
+                    break;
                 }
             } else {
                 (
-                    b1.fma(a22, -(b2 * a12)) / det,
-                    a11.fma(b2, -(a12 * b1)) / det,
+                    b1.fma(a22r, -(b2 * a12)) / det_r,
+                    a11r.fma(b2, -(a12 * b1)) / det_r,
                 )
-            };
-            workspace.record_delta(u, v, pt, delta);
-            delta
+            }
+        } else {
+            (
+                b1.fma(a22, -(b2 * a12)) / det,
+                a11.fma(b2, -(a12 * b1)) / det,
+            )
         };
 
         u -= du;
@@ -1352,13 +1167,10 @@ mod tests {
         // Within one refinement, partial reads hit the partials each position
         // solve kept; the second refinement also hits the first one's values.
         let first_hits = (workspace.stats.point_hits, workspace.stats.partial_hits);
-        let first_delta_hits = workspace.stats.delta_hits;
         let second = refine(&mut workspace).unwrap();
         assert_eq!(bits(&[first]), bits(&[second]));
         assert!(workspace.stats.point_hits > first_hits.0);
-        // The second walk now reuses the unclamped scalar delta too, so it
-        // need not read the cached surface partials again.
-        assert!(workspace.stats.delta_hits > first_delta_hits);
+        assert!(workspace.stats.partial_hits > first_hits.1);
         assert!(
             workspace.stats.point_evaluations + workspace.stats.partial_evaluations
                 < 2 * evaluations
@@ -1386,242 +1198,6 @@ mod tests {
         assert_eq!(
             fresh.stats.point_evaluations + fresh.stats.partial_evaluations,
             evaluations
-        );
-    }
-
-    #[test]
-    fn iteration_arithmetic_keys_ray_uv_and_point_bits_and_bounds_storage() {
-        let direction = Vec3::new(0.1, -0.2, -1.0);
-        let line = LineQuery {
-            origin: Point3::new(2.0, 2.0, 3.0),
-            direction,
-            dir_len_sq: direction.dot(direction),
-        };
-        let point = Point3::new(0.3, 0.4, 0.5);
-        let (u, v) = (0.0, 0.25);
-        let mut workspace = NewtonWorkspace::default();
-        workspace.prepare_line(line);
-        let original = workspace.residual(line, u, v, point);
-        workspace.record_delta(u, v, point, (0.125, -0.25));
-        assert_eq!(workspace.delta(u, v, point), Some((0.125, -0.25)));
-        let repeated = workspace.residual(line, u, v, point);
-        assert_eq!(original.0.to_bits(), repeated.0.to_bits());
-        assert_eq!(vector_bits(original.1), vector_bits(repeated.1));
-        assert_eq!(original.2.to_bits(), repeated.2.to_bits());
-        assert_eq!(workspace.stats.residual_hits, 1);
-        assert!(workspace.delta(-0.0, v, point).is_none());
-        assert!(workspace.delta(u, v.next_up(), point).is_none());
-        let changed_point = Point3::new(point.x().next_up(), point.y(), point.z());
-        assert!(workspace.delta(u, v, changed_point).is_none());
-        workspace.residual(line, u, v, changed_point);
-        assert_eq!(workspace.stats.residual_hits, 1);
-
-        for changed in [
-            // Completion rebases the origin along the same line.
-            LineQuery {
-                origin: line.origin + line.direction * 2.0,
-                ..line
-            },
-            LineQuery {
-                direction: Vec3::new(direction.x().next_up(), direction.y(), direction.z()),
-                ..line
-            },
-            LineQuery {
-                dir_len_sq: line.dir_len_sq.next_up(),
-                ..line
-            },
-        ] {
-            workspace.prepare_line(line);
-            workspace.residual(line, u, v, point);
-            workspace.record_delta(u, v, point, (0.125, -0.25));
-            let before = workspace.stats;
-            workspace.prepare_line(changed);
-            assert!(workspace.delta(u, v, point).is_none());
-            let actual = workspace.residual(changed, u, v, point);
-            assert_eq!(workspace.stats.residual_hits, before.residual_hits);
-            let mut fresh = NewtonWorkspace::default();
-            fresh.prepare_line(changed);
-            let expected = fresh.residual(changed, u, v, point);
-            assert_eq!(actual.0.to_bits(), expected.0.to_bits());
-            assert_eq!(vector_bits(actual.1), vector_bits(expected.1));
-            assert_eq!(actual.2.to_bits(), expected.2.to_bits());
-        }
-        assert!(std::mem::size_of_val(&workspace.arithmetic) <= 8 * 1024);
-    }
-
-    #[test]
-    fn nonfinite_iteration_arithmetic_is_never_reused() {
-        let line = LineQuery {
-            origin: Point3::new(0.0, 0.0, 0.0),
-            direction: Vec3::new(1.0, 0.0, 0.0),
-            dir_len_sq: 1.0,
-        };
-        for (query, point, u) in [
-            (
-                LineQuery {
-                    origin: Point3::new(f64::NAN, 0.0, 0.0),
-                    ..line
-                },
-                Point3::new(0.0, 0.0, 0.0),
-                0.0,
-            ),
-            (line, Point3::new(f64::INFINITY, 0.0, 0.0), 0.0),
-            (line, Point3::new(1e308, 1e308, 1e308), 0.0),
-            (line, Point3::new(0.0, 0.0, 0.0), f64::NAN),
-        ] {
-            let mut workspace = NewtonWorkspace::default();
-            workspace.prepare_line(query);
-            for _ in 0..2 {
-                workspace.residual(query, u, 0.25, point);
-                workspace.record_delta(u, 0.25, point, (0.0, 0.0));
-                assert!(workspace.delta(u, 0.25, point).is_none());
-            }
-            assert_eq!(workspace.stats.residual_hits, 0);
-            assert_eq!(workspace.stats.delta_hits, 0);
-        }
-    }
-
-    #[test]
-    fn iteration_reuse_preserves_separate_clamps_and_convergence_thresholds() {
-        let surface = wavy_bicubic();
-        let direction = Vec3::new(0.1, -0.2, -1.0);
-        let line = LineQuery {
-            origin: Point3::new(2.0, 2.0, 3.0),
-            direction,
-            dir_len_sq: direction.dot(direction),
-        };
-        let guess = (1.2, 1.8);
-        let seed = surface.evaluate(guess.0, guess.1);
-        let mut workspace = NewtonWorkspace::default();
-        for (bounds, tolerance) in [
-            ([0.0, 3.0, 0.0, 3.0], 1e-5),
-            ([1.1, 1.3, 1.7, 1.9], 1e-12),
-            ([0.0, 3.0, 0.0, 3.0], 1e-12),
-            ([1.0, 2.0, 1.0, 2.0], 1e-5),
-        ] {
-            let actual = refine_line_surface_point(
-                &surface,
-                line,
-                guess,
-                seed,
-                bounds,
-                GRID_CONVERGENCE,
-                tolerance,
-                &mut workspace,
-            );
-            let mut fresh = NewtonWorkspace {
-                reuse_arithmetic: false,
-                ..NewtonWorkspace::default()
-            };
-            let expected = refine_line_surface_point(
-                &surface,
-                line,
-                guess,
-                seed,
-                bounds,
-                GRID_CONVERGENCE,
-                tolerance,
-                &mut fresh,
-            );
-            assert_eq!(
-                bits(&actual.into_iter().collect::<Vec<_>>()),
-                bits(&expected.into_iter().collect::<Vec<_>>())
-            );
-        }
-    }
-
-    fn intersection_arithmetic_work(
-        surface: &NurbsSurface,
-        grid: &LineSurfaceSeedGrid,
-        origin: Point3,
-        direction: Vec3,
-        reuse: bool,
-    ) -> (Vec<IntersectionPoint>, EvaluationStats) {
-        let dir_len_sq = direction.dot(direction);
-        let line = LineQuery {
-            origin,
-            direction,
-            dir_len_sq,
-        };
-        let (u0, u1) = surface.domain_u();
-        let (v0, v1) = surface.domain_v();
-        let mut workspace = NewtonWorkspace {
-            reuse_arithmetic: reuse,
-            ..NewtonWorkspace::default()
-        };
-        let mut results: Vec<IntersectionPoint> = Vec::new();
-        for (u, v, point) in seed_candidates(grid, origin, direction, dir_len_sq) {
-            if let Some(hit) = refine_line_surface_point(
-                surface,
-                line,
-                (u, v),
-                point,
-                [u0, u1, v0, v1],
-                GRID_CONVERGENCE,
-                GRID_ROOT_TOLERANCE,
-                &mut workspace,
-            ) && !results
-                .iter()
-                .any(|existing| (existing.point - hit.point).length() < 1e-6)
-            {
-                results.push(hit);
-            }
-        }
-        subdivision::complete_line_roots(surface, &grid.hull, line, &mut workspace, &mut results);
-        (results, workspace.stats)
-    }
-
-    #[test]
-    #[allow(clippy::print_stderr)] // Deterministic work evidence, never a timing assertion.
-    fn intersection_reuses_arithmetic_across_distinct_seed_walks() {
-        let (mut calculations, mut residual_hits, mut delta_hits, mut reference_calculations) =
-            (0, 0, 0, 0);
-        let mut hit_count = 0;
-        for surface in [
-            wavy_bicubic(),
-            rational_cylinder(),
-            rational_pole_patch(),
-            high_degree_patch(),
-        ] {
-            let grid = LineSurfaceSeedGrid::for_surface(&surface, 20);
-            for i in 1..=60_u32 {
-                let origin = Point3::new(
-                    8.0 * halton(i, 2) - 2.0,
-                    8.0 * halton(i, 3) - 2.0,
-                    6.0 * halton(i, 5) - 3.0,
-                );
-                let z = 2.0 * halton(i, 7) - 1.0;
-                let phi = std::f64::consts::TAU * halton(i, 11);
-                let r = (1.0 - z * z).max(0.0).sqrt();
-                let direction = Vec3::new(r * phi.cos(), r * phi.sin(), z);
-                let (actual, work) =
-                    intersection_arithmetic_work(&surface, &grid, origin, direction, true);
-                let (expected, reference) =
-                    intersection_arithmetic_work(&surface, &grid, origin, direction, false);
-                assert_eq!(bits(&actual), bits(&expected), "ray {i}");
-                assert_eq!(
-                    work.residual_evaluations + work.residual_hits,
-                    reference.residual_evaluations
-                );
-                assert_eq!(
-                    work.delta_evaluations + work.delta_hits,
-                    reference.delta_evaluations
-                );
-                calculations += work.delta_evaluations;
-                residual_hits += work.residual_hits;
-                delta_hits += work.delta_hits;
-                reference_calculations += reference.delta_evaluations;
-                hit_count += actual.len();
-            }
-        }
-        eprintln!(
-            "iteration arithmetic: {calculations}/{reference_calculations} delta calculations; {delta_hits} delta hits, {residual_hits} residual hits; {hit_count} roots"
-        );
-        assert!(hit_count > 20);
-        assert!(delta_hits > 0 && residual_hits > 0);
-        assert!(
-            calculations * 4 <= reference_calculations * 3,
-            "fixed fixture arithmetic reduction must remain at least 25%"
         );
     }
 

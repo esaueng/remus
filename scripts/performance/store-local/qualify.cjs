@@ -254,7 +254,7 @@ function assertRoute(routes, fixture, enabled, required) {
     assert.equal(counts.store_local_attempt, 0, `${fixture.name}: local attempt while disabled`);
     assert.equal(counts.store_local_success, 0, `${fixture.name}: local success while disabled`);
     assert(counts.general_gfa > 0, `${fixture.name}: disabled general route not observed`);
-  } else if (['slot_cut', 'rib_fuse', 'window_intersect'].includes(fixture.name)) {
+  } else if (['slot_cut', 'rib_fuse', 'window_intersect', 'cross_drilled_shaft'].includes(fixture.name)) {
     assert.equal(counts.store_local_attempt, 1, `${fixture.name}: expected one local attempt`);
     assert.equal(counts.store_local_success, 1, `${fixture.name}: local route did not complete`);
     assert.equal(counts.general_gfa, 0, `${fixture.name}: unexpectedly used general GFA`);

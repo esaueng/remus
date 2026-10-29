@@ -252,6 +252,14 @@ test('route contracts distinguish local completion from declines and wrapper ret
   assertRoute(routes({ general_gfa: 1 }), { name: 'slot_cut' }, false, true);
 });
 
+test('the repaired cross-drilled witness requires actual local completion', () => {
+  const observed = counts => ({ status: 'observed', counts: { general_gfa: 0, store_local_attempt: 0, store_local_success: 0, local_cut_success: 0, nary: 0, ...counts } });
+  const fixture = { name: 'cross_drilled_shaft' };
+  assert.throws(() => assertRoute(observed({ store_local_attempt: 1, general_gfa: 1 }), fixture, true, true), /local route did not complete/);
+  assertRoute(observed({ store_local_attempt: 1, store_local_success: 1 }), fixture, true, true);
+  assertRoute(observed({ general_gfa: 1 }), fixture, false, true);
+});
+
 test('recipe stages drain separately and report observed zero successes without assuming locality', () => {
   let events = [];
   const kernel = { setPerformanceTracing() { events = []; }, drainPerformanceTrace: () => JSON.stringify(events) };
