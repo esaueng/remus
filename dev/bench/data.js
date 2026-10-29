@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793232277480,
+  "lastUpdate": 1793232854109,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -139339,6 +139339,306 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 75480,
             "range": "± 203",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c754a9b7f89971691ab8867bf7d7bafcc022ad14",
+          "message": "build(deps): bump zip from 8.6.0 to 9.0.5 in /fuzz (#1330)\n\nBumps [zip](https://github.com/zip-rs/zip2) from 8.6.0 to 9.0.5.\n<details>\n<summary>Release notes</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/zip-rs/zip2/releases\">zip's\nreleases</a>.</em></p>\n<blockquote>\n<h2>v9.0.5</h2>\n<h3><!-- raw HTML omitted -->🐛 Bug Fixes</h3>\n<ul>\n<li>use mode_t for fchmodat's mode, which is u32 on NetBSD and OpenBSD\n(<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1076\">#1076</a>)</li>\n<li><em>(write)</em> prevent duplicate 0x9901 AES extra field in\nraw_copy_file (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1078\">#1078</a>)</li>\n</ul>\n<h3><!-- raw HTML omitted -->⚙️ Miscellaneous Tasks</h3>\n<ul>\n<li>Enable release-plz on backport branches in future (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1079\">#1079</a>)</li>\n</ul>\n<h2>v9.0.4</h2>\n<h3><!-- raw HTML omitted -->🐛 Bug Fixes</h3>\n<ul>\n<li>enclosed_name rejects a separator inside one verbatim path component\n(<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1066\">#1066</a>)</li>\n<li>return <code>Ok(None)</code> when read_zipfile_from_stream is called\non an empty archive (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1063\">#1063</a>)</li>\n</ul>\n<h3><!-- raw HTML omitted -->⚙️ Miscellaneous Tasks</h3>\n<ul>\n<li>Revert impl Copy for Zip64CentralDirectoryEndLocator due to failing\nsemver check, fix CI where most Miri tests weren't running, and other\nfixes so other PRs can pass CI (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1065\">#1065</a>)</li>\n<li>update lzma-rust2 and ppmd-rust dependencies (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1060\">#1060</a>)</li>\n</ul>\n<h2>v9.0.3</h2>\n<h3><!-- raw HTML omitted -->🐛 Bug Fixes</h3>\n<ul>\n<li>Preserve directories' read-only status when extracting on non-Unix\nsystems (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1054\">#1054</a>)</li>\n</ul>\n<h2>v9.0.1</h2>\n<h3><!-- raw HTML omitted -->🐛 Bug Fixes</h3>\n<ul>\n<li>set_permissions was still following symlinks in non-streaming\nextraction (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1038\">#1038</a>)</li>\n<li>two arithmetic overflows in the implode decoder (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1028\">#1028</a>)</li>\n<li>reject an empty archive whose central directory offset is past the\nEOCD (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1025\">#1025</a>)</li>\n<li>don't panic when two entries extract to the same path (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1023\">#1023</a>)</li>\n<li>fail reads that exceed the declared uncompressed size (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1022\">#1022</a>)</li>\n<li>shrink decoder skipped LZW code 8191 (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1029\">#1029</a>)</li>\n<li>write only the sentinel-marked values in a central ZIP64 field (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1027\">#1027</a>)</li>\n</ul>\n<h2>v9.0.0</h2>\n<h3><!-- raw HTML omitted -->🚀 Features</h3>\n<ul>\n<li>add ZipFileBuilder for parallelizing compression (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/911\">#911</a>)</li>\n<li>add method <code>by_index_with_data_descriptor</code> (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/994\">#994</a>)</li>\n<li>add len, is_empty and entry to ZipArchiveMetadata (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1015\">#1015</a>)</li>\n<li>read data descriptor from binary (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/990\">#990</a>)</li>\n<li>add comment and test for ZipStreamReader and symlinks (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/985\">#985</a>)</li>\n<li><em>(write)</em> add <code>ZipWriter::hide_file</code> for in-place\nentry deletion (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/924\">#924</a>)</li>\n<li>add compression (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/948\">#948</a>)</li>\n<li>add test to in place modification (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/945\">#945</a>)</li>\n<li>move CustomExtraField to own file (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/941\">#941</a>)</li>\n<li>add a test on enum size (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/939\">#939</a>)</li>\n</ul>\n<!-- raw HTML omitted -->\n</blockquote>\n<p>... (truncated)</p>\n</details>\n<details>\n<summary>Changelog</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/zip-rs/zip2/blob/master/CHANGELOG.md\">zip's\nchangelog</a>.</em></p>\n<blockquote>\n<h2><a\nhref=\"https://github.com/zip-rs/zip2/compare/v9.0.4...v9.0.5\">9.0.5</a>\n- 2026-10-17</h2>\n<h3><!-- raw HTML omitted -->🐛 Bug Fixes</h3>\n<ul>\n<li>use mode_t for fchmodat's mode, which is u32 on NetBSD and OpenBSD\n(<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1076\">#1076</a>)</li>\n<li><em>(write)</em> prevent duplicate 0x9901 AES extra field in\nraw_copy_file (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1078\">#1078</a>)</li>\n</ul>\n<h3><!-- raw HTML omitted -->⚙️ Miscellaneous Tasks</h3>\n<ul>\n<li>Enable release-plz on backport branches in future (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1079\">#1079</a>)</li>\n</ul>\n<h2><a\nhref=\"https://github.com/zip-rs/zip2/compare/v9.0.3...v9.0.4\">9.0.4</a>\n- 2026-10-16</h2>\n<h3><!-- raw HTML omitted -->🐛 Bug Fixes</h3>\n<ul>\n<li>enclosed_name rejects a separator inside one verbatim path component\n(<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1066\">#1066</a>)</li>\n<li>return <code>Ok(None)</code> when read_zipfile_from_stream is called\non an empty archive (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1063\">#1063</a>)</li>\n</ul>\n<h3><!-- raw HTML omitted -->⚙️ Miscellaneous Tasks</h3>\n<ul>\n<li>Revert impl Copy for Zip64CentralDirectoryEndLocator due to failing\nsemver check, fix CI where most Miri tests weren't running, and other\nfixes so other PRs can pass CI (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1065\">#1065</a>)</li>\n<li>update lzma-rust2 and ppmd-rust dependencies (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1060\">#1060</a>)</li>\n</ul>\n<h2><a\nhref=\"https://github.com/zip-rs/zip2/compare/v9.0.2...v9.0.3\">9.0.3</a>\n- 2026-10-13</h2>\n<h3><!-- raw HTML omitted -->🐛 Bug Fixes</h3>\n<ul>\n<li>Preserve directories' read-only status when extracting on non-Unix\nsystems (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1054\">#1054</a>)</li>\n</ul>\n<h2><a\nhref=\"https://github.com/zip-rs/zip2/compare/v9.0.1...v9.0.2\">9.0.2</a>\n- 2026-10-11</h2>\n<h3><!-- raw HTML omitted -->🐛 Bug Fixes</h3>\n<ul>\n<li>additional bug fixes for symlink extraction</li>\n</ul>\n<h2><a\nhref=\"https://github.com/zip-rs/zip2/compare/v9.0.0...v9.0.1\">9.0.1</a>\n- 2026-10-10</h2>\n<h3><!-- raw HTML omitted -->🐛 Bug Fixes</h3>\n<ul>\n<li>set_permissions was still following symlinks in non-streaming\nextraction (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1038\">#1038</a>)</li>\n<li>two arithmetic overflows in the implode decoder (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1028\">#1028</a>)</li>\n<li>reject an empty archive whose central directory offset is past the\nEOCD (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1025\">#1025</a>)</li>\n<li>don't panic when two entries extract to the same path (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1023\">#1023</a>)</li>\n<li>fail reads that exceed the declared uncompressed size (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1022\">#1022</a>)</li>\n<li>shrink decoder skipped LZW code 8191 (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1029\">#1029</a>)</li>\n<li>write only the sentinel-marked values in a central ZIP64 field (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/pull/1027\">#1027</a>)</li>\n</ul>\n<h2><a\nhref=\"https://github.com/zip-rs/zip2/compare/v9.0.0-pre3...v9.0.0\">9.0.0</a>\n- 2026-10-08</h2>\n<h3><!-- raw HTML omitted -->🚀 Features</h3>\n<!-- raw HTML omitted -->\n</blockquote>\n<p>... (truncated)</p>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/0123ed144cfa7d672dae78b79a034d8900f9aaeb\"><code>0123ed1</code></a>\nchore: release v9.0.5 (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/issues/1093\">#1093</a>)</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/00cf82bdd29e00b74bc8011986ca4f66c7f83b7e\"><code>00cf82b</code></a>\ndocs: Repeal policy of yanking versions with known vulnerabilities, add\nmenti...</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/52165b91140f209ba3076b4dd56f61cabd66e33a\"><code>52165b9</code></a>\nchore: Enable release-plz on backport branches in future (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/issues/1079\">#1079</a>)</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/ca51e6488dd3b54b8bd6fc100b2848e8b2e848fb\"><code>ca51e64</code></a>\ndocs: Remove doc links that break when doc build doesn't enable all\nfeatures ...</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/663968766e2d33607079362b2fcc5455e32f9553\"><code>6639687</code></a>\nfix: use mode_t for fchmodat's mode, which is u32 on NetBSD and OpenBSD\n(<a\nhref=\"https://redirect.github.com/zip-rs/zip2/issues/1076\">#1076</a>)</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/5e06fa80da8b6113c5af847af937a2ce3a89039a\"><code>5e06fa8</code></a>\nfix(write): prevent duplicate 0x9901 AES extra field in raw_copy_file\n(<a\nhref=\"https://redirect.github.com/zip-rs/zip2/issues/1078\">#1078</a>)</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/b6f9fb801993df0ec46ecfc4c97bd07a698dab7e\"><code>b6f9fb8</code></a>\nMerge commit from fork</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/ea2ccfe79e5b751605f6b1fa4b47f6eba4ebb53e\"><code>ea2ccfe</code></a>\nMerge commit from fork</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/8068ab480ccf8daa7411424e365fcdbe6d09443e\"><code>8068ab4</code></a>\nMerge commit from fork</li>\n<li><a\nhref=\"https://github.com/zip-rs/zip2/commit/0b5112886173004dcf22377f5ffa258852ad221f\"><code>0b51128</code></a>\ndoc: Clarifications to security policy (<a\nhref=\"https://redirect.github.com/zip-rs/zip2/issues/1074\">#1074</a>)</li>\n<li>Additional commits viewable in <a\nhref=\"https://github.com/zip-rs/zip2/compare/v8.6.0...v9.0.5\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\n\n[![Dependabot compatibility\nscore](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=zip&package-manager=cargo&previous-version=8.6.0&new-version=9.0.5)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't\nalter it yourself. You can also trigger a rebase manually by commenting\n`@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits\nthat have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all\nof the ignore conditions of the specified dependency\n- `@dependabot ignore this major version` will close this PR and stop\nDependabot creating any more for this major version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this minor version` will close this PR and stop\nDependabot creating any more for this minor version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this dependency` will close this PR and stop\nDependabot creating any more for this dependency (unless you reopen the\nPR or upgrade to it yourself)\nYou can disable automated security fix PRs for this repo from the\n[Security Alerts page](https://github.com/esaueng/remus/network/alerts).\n\n</details>\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-28T23:33:17Z",
+          "tree_id": "77597af50bfc5cf2fa468e3c4f4b9e464657dec7",
+          "url": "https://github.com/esaueng/remus/commit/c754a9b7f89971691ab8867bf7d7bafcc022ad14"
+        },
+        "date": 1793232849847,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1174988,
+            "range": "± 1994",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1261686,
+            "range": "± 32630",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 28153,
+            "range": "± 182",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 7750123,
+            "range": "± 22843",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 7728304,
+            "range": "± 6123",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 7590208,
+            "range": "± 10306",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 28868,
+            "range": "± 94",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3580498,
+            "range": "± 5730",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 29833067,
+            "range": "± 659035",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 40,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 114,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 80,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 224,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 195,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 873,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 169,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 389,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 248,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 560,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 932,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3456,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 38,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 24673,
+            "range": "± 55",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 146087,
+            "range": "± 491",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 4044,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 15531,
+            "range": "± 225",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 56405,
+            "range": "± 71",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5345,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 509862,
+            "range": "± 2659",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2638362,
+            "range": "± 6236",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 147303,
+            "range": "± 322",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 298298,
+            "range": "± 443",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 362724,
+            "range": "± 1685",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 68227,
+            "range": "± 744",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 34859,
+            "range": "± 57",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 21284,
+            "range": "± 33",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 127763,
+            "range": "± 356",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 146112,
+            "range": "± 458",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 652166,
+            "range": "± 34150",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 7841069,
+            "range": "± 107892",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 554781,
+            "range": "± 1075",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1184518,
+            "range": "± 2262",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 85015,
+            "range": "± 489",
             "unit": "ns/iter"
           }
         ]
