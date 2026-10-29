@@ -38,6 +38,35 @@ thread_local! {
 
 #[inline]
 pub(crate) fn bump_boolean_route(route: BooleanRoute) {
+    // Route observations use the existing opt-in trace, including in shipped
+    // WASM builds without deterministic counters. A requested switch alone
+    // does not establish which route actually completed.
+    let clock = TRACE.with(|trace| {
+        let trace = trace.borrow();
+        (trace.phases.len() < 4096).then_some(trace.clock).flatten()
+    });
+    if let Some(clock) = clock {
+        // As with Span, never retain a borrow while calling the host clock.
+        let start_ms = clock();
+        TRACE.with(|trace| {
+            let mut trace = trace.borrow_mut();
+            if trace.clock.is_none() || trace.phases.len() >= 4096 {
+                return;
+            }
+            let name = match route {
+                BooleanRoute::GeneralGfa => "boolean.route.general_gfa",
+                BooleanRoute::StoreLocalAttempt => "boolean.route.store_local_attempt",
+                BooleanRoute::StoreLocalSuccess => "boolean.route.store_local_success",
+                BooleanRoute::LocalCutSuccess => "boolean.route.local_cut_success",
+                BooleanRoute::Nary => "boolean.route.nary",
+            };
+            trace.phases.push(Phase {
+                name,
+                start_ms,
+                duration_ms: 0.0,
+            });
+        });
+    }
     #[cfg(feature = "perf-counters")]
     BOOLEAN_ROUTES.with(|routes| {
         let mut routes = routes.borrow_mut();
@@ -61,7 +90,7 @@ pub fn take_boolean_routes() -> BooleanRoutes {
     BOOLEAN_ROUTES.with(|routes| std::mem::take(&mut *routes.borrow_mut()))
 }
 
-/// One completed phase, in the host clock's time domain.
+/// One completed phase or zero-duration route observation, in host time.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Phase {
     /// Stable phase label; never document content.
@@ -96,6 +125,39 @@ pub fn configure(clock: Option<fn() -> f64>) {
 #[must_use]
 pub fn drain() -> Vec<Phase> {
     TRACE.with(|trace| std::mem::take(&mut trace.borrow_mut().phases))
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use super::{BooleanRoute, bump_boolean_route, configure, drain};
+
+    #[test]
+    fn route_observations_are_opt_in_bounded_and_drained() {
+        configure(None);
+        bump_boolean_route(BooleanRoute::StoreLocalAttempt);
+        assert!(drain().is_empty());
+        configure(Some(|| 42.0));
+        bump_boolean_route(BooleanRoute::StoreLocalAttempt);
+        bump_boolean_route(BooleanRoute::GeneralGfa);
+        let declined = drain();
+        assert_eq!(declined.len(), 2);
+        assert_eq!(declined[0].name, "boolean.route.store_local_attempt");
+        assert_eq!(declined[1].name, "boolean.route.general_gfa");
+        assert!(
+            declined
+                .iter()
+                .all(|p| p.start_ms.to_bits() == 42.0_f64.to_bits()
+                    && p.duration_ms.to_bits() == 0.0_f64.to_bits())
+        );
+        assert!(drain().is_empty());
+        for _ in 0..4097 {
+            bump_boolean_route(BooleanRoute::StoreLocalSuccess);
+        }
+        assert_eq!(drain().len(), 4096);
+        bump_boolean_route(BooleanRoute::LocalCutSuccess);
+        configure(None);
+        assert!(drain().is_empty());
+    }
 }
 
 /// A synchronous phase guard. Drop it before yielding or starting unrelated work.
