@@ -365,6 +365,13 @@ impl StructuredWasmError {
         self
     }
 
+    /// Replace only the human message for a scoped error projection.
+    /// Wire code, category and native detail fields remain intact.
+    pub(crate) fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = message.into();
+        self
+    }
+
     pub(crate) fn resource_limit(
         message: impl Into<String>,
         resource: &'static str,

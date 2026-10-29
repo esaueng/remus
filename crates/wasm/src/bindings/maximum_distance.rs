@@ -10,7 +10,9 @@ fn failure(error: MaximumDistanceError) -> StructuredWasmError {
     let code = error.kernel_code();
     let message = format!("{code}: {error}");
     let structured = match error {
-        MaximumDistanceError::Topology(error) => StructuredWasmError::from(error),
+        MaximumDistanceError::Topology(error) => {
+            StructuredWasmError::from(error).with_message(message)
+        }
         MaximumDistanceError::InvalidGeometry(_) => {
             StructuredWasmError::invalid_argument(message, None)
         }
@@ -24,7 +26,7 @@ fn failure(error: MaximumDistanceError) -> StructuredWasmError {
             limit,
         } => StructuredWasmError::resource_limit(message, resource, limit, required),
         MaximumDistanceError::Cancelled => {
-            StructuredWasmError::from(remus_math::MathError::Cancelled)
+            StructuredWasmError::from(remus_math::MathError::Cancelled).with_message(message)
         }
     };
     structured.with_detail("kernelCode", code)
@@ -92,6 +94,72 @@ mod tests {
         };
         serde_json::from_str::<Value>(&output).unwrap()[0].clone()
     }
+
+    #[test]
+    #[allow(deprecated)] // Deliberate mismatch of compatibility and authoritative boundaries.
+    fn maximum_distance_topology_refusals_keep_query_code_and_topology_details() {
+        for v2 in [false, true] {
+            let mut kernel = BrepKernel::new();
+            let solid = u32::try_from(
+                call(
+                    &mut kernel,
+                    v2,
+                    "makeBox",
+                    json!({"width":2,"height":3,"depth":4}),
+                )["ok"]
+                    .as_u64()
+                    .unwrap(),
+            )
+            .unwrap();
+            let id = kernel.resolve_solid(solid).unwrap();
+            let faces = remus_topology::explorer::solid_faces(&kernel.topo, id).unwrap();
+            let other = kernel.topo.face(faces[1]).unwrap().outer_wire();
+            kernel
+                .topo_mut()
+                .face_mut(faces[0])
+                .unwrap()
+                .set_outer_wire(other);
+            kernel.checkpoint_impl().unwrap();
+            let owner = std::rc::Rc::clone(&kernel.topo);
+            let ticks = kernel.topo.mutation_ticks();
+            let direct = kernel.maximum_distance_values(solid, solid).unwrap_err();
+            let (code, category, details) = direct.into_direct_parts();
+            assert_eq!(code, "maximum-distance:invalid-topology");
+            assert_eq!(category, "invalid_topology");
+            assert!(
+                details["message"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("maximum-distance:invalid-topology:")
+            );
+            let result = call(
+                &mut kernel,
+                v2,
+                "solidToSolidMaximumDistance",
+                json!({"solidA":solid,"solidB":solid}),
+            );
+            if v2 {
+                assert_eq!(result["error"]["category"], "invalid_topology");
+                assert_eq!(
+                    result["error"]["details"]["kernelCode"],
+                    "maximum-distance:invalid-topology"
+                );
+                assert_eq!(result["error"]["details"]["entity"], "face");
+                assert_eq!(result["error"]["details"]["index"], faces[0].index());
+            } else {
+                assert!(
+                    result["error"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("maximum-distance:invalid-topology:"),
+                    "{result}"
+                );
+            }
+            assert!(std::rc::Rc::ptr_eq(&owner, &kernel.topo));
+            assert_eq!(kernel.topo.mutation_ticks(), ticks);
+        }
+    }
+
     #[test]
     fn maximum_distance_batch_oracles_and_read_only_session_contract() {
         for v2 in [false, true] {
