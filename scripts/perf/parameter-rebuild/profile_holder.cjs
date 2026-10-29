@@ -7,6 +7,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const inspector = require('node:inspector');
 const os = require('node:os');
+const { kernelClass } = require('../../kernel-class.cjs');
 const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const assert = (condition, message) => { if (!condition) throw Error(message); };
 const nowUs = () => Number(process.hrtime.bigint() / 1000n);
@@ -144,7 +145,7 @@ async function main(argv = process.argv.slice(2)) {
       capture.source.receiptVerification = 'External attestation retained verbatim; not interpreted or independently validated by this profiler.';
     }
     const recipe = require('./holder_recipe.cjs');
-    const { RemusKernel } = require(path.join(args['kernel-pkg'], 'remus_wasm_node.cjs'));
+    const RemusKernel = kernelClass(require(path.join(args['kernel-pkg'], 'remus_wasm_node.cjs')));
     observer = observe(recipe, RemusKernel);
     session = new inspector.Session(); session.connect();
     await post(session, 'Profiler.enable');

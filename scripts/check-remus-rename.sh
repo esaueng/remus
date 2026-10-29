@@ -154,6 +154,10 @@ fi
 #       The alias's generator and the installed-package test that keeps it
 #       working. Both must name it.
 #
+#   scripts/kernel-class.cjs
+#       Benchmark and parity drivers load baseline and committed packages
+#       built before the rename, which export only the old name.
+#
 #   docs/performance/evidence/, docs/kernel-maturity/campaign-history.md
 #       Captured run scripts and dated campaign records, written against the
 #       old class name. Editing them would misstate what was run.
@@ -163,6 +167,7 @@ readonly ALLOWED_CLASS_HISTORY=(
   "crates/wasm-io/pkg/**"
   "xtask/src/wasm.rs"
   "scripts/test-wasm-tarball-consumer.mjs"
+  "scripts/kernel-class.cjs"
   "docs/performance/evidence/**"
   "docs/kernel-maturity/campaign-history.md"
 )

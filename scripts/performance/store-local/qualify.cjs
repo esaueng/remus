@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { kernelClass } = require('../../kernel-class.cjs');
 const recipe = require('../../perf/parameter-rebuild/holder_recipe.cjs');
 const { meshQuality } = require('../../perf/filleted-face-edit/wasm_edit_bench.cjs');
 
@@ -378,7 +379,7 @@ function lineageContract(RemusKernel, op, enabled) {
 function main(argv = process.argv.slice(2)) {
   const args = options(argv), directory = args['kernel-pkg'];
   const wrapper = path.join(directory, 'remus_wasm_node.cjs');
-  const { RemusKernel } = require(wrapper);
+  const RemusKernel = kernelClass(require(wrapper));
   const packageJson = fs.readFileSync(path.join(directory, 'package.json'));
   const result = { schemaVersion: 1, correctnessOnly: true, package: { name: JSON.parse(packageJson).name, version: JSON.parse(packageJson).version,
     wasmSha256: sha256(fs.readFileSync(path.join(directory, 'remus_wasm_bg.wasm'))), wrapperSha256: sha256(fs.readFileSync(wrapper)), packageJsonSha256: sha256(packageJson),

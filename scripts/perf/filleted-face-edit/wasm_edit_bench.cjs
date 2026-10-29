@@ -8,6 +8,7 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { performance } = require('node:perf_hooks');
+const { kernelClass } = require('../../kernel-class.cjs');
 
 const TARGET_AREA = 1045.930731242697;
 // Native/WASM planar sampling differs by ~1.2e-6 mm² on this imported face.
@@ -231,7 +232,7 @@ function main(argv = process.argv.slice(2), recognitionObserver = null) {
       cacheLimits: 'production defaults; face display mesh cache 32 MiB; no benchmark override' },
   };
   if (recognitionObserver) meta.recognitionDiagnostic = recognitionObserver.name;
-  const { RemusKernel } = require(path.join(args['kernel-pkg'], 'remus_wasm_node.cjs'));
+  const RemusKernel = kernelClass(require(path.join(args['kernel-pkg'], 'remus_wasm_node.cjs')));
   const { RemusIo } = require(path.join(args['io-pkg'], 'remus_wasm_io_node.cjs'));
   const io = new RemusIo();
   let imported;

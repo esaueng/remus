@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { performance } = require('node:perf_hooks');
 const path = require('node:path');
+const { kernelClass } = require('../kernel-class.cjs');
 const [pkg, scenario, sizeArg, samplesArg, warmupArg] = process.argv.slice(2);
 const size = Number(sizeArg),
   samples = Number(samplesArg),
@@ -13,7 +14,7 @@ assert(
 assert(Number.isInteger(size) && size >= 2 && size <= 8192);
 assert(Number.isInteger(samples) && samples >= 1 && samples <= 1000);
 assert(Number.isInteger(warmup) && warmup >= 1 && warmup <= 100);
-const { RemusKernel } = require(path.join(path.resolve(pkg), 'remus_wasm_node.cjs'));
+const RemusKernel = kernelClass(require(path.join(path.resolve(pkg), 'remus_wasm_node.cjs')));
 const calls = 150;
 const matrix = [1, 0, 0, 0.001, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 function checked(output, count) {

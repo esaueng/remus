@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { performance } = require('node:perf_hooks');
+const { kernelClass } = require('../../kernel-class.cjs');
 const recipe = require('./holder_recipe.cjs');
 const { assert, sha256, DISPLAY } = recipe;
 const STAGES = ['restore', 'prefix', 'rebuild', 'validate', 'mesh', 'transfer', 'volume', 'recognize'];
@@ -83,7 +84,7 @@ function main(argv = process.argv.slice(2)) {
   const wrapper = path.join(args['kernel-pkg'], 'remus_wasm_node.cjs');
   const packageInfo = JSON.parse(packageJson);
   const loadStart = performance.now();
-  const { RemusKernel } = require(wrapper);
+  const RemusKernel = kernelClass(require(wrapper));
   const moduleLoadMs = performance.now() - loadStart;
   const constructorStart = performance.now(), kernel = new RemusKernel();
   const constructorMs = performance.now() - constructorStart;

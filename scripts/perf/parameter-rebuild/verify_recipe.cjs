@@ -3,6 +3,7 @@
 const path = require('node:path');
 const fs = require('node:fs');
 const assert = require('node:assert/strict');
+const { kernelClass } = require('../../kernel-class.cjs');
 const recipe = require('./holder_recipe.cjs');
 
 // Independent quantity oracle: only the floor's rounded rectangular section
@@ -39,7 +40,7 @@ function retainedNurbsCarriersMatch(base, result, width, expectedCount = 8) {
 
 function verify(packageDirectory, capturedRuns = null) {
   const data = recipe.fixture();
-  const { RemusKernel } = require(path.join(path.resolve(packageDirectory), 'remus_wasm_node.cjs'));
+  const RemusKernel = kernelClass(require(path.join(path.resolve(packageDirectory), 'remus_wasm_node.cjs')));
   const kernel = new RemusKernel(), rows = [], previous = new Map();
   try {
     const prefix = recipe.prepare(kernel, data);

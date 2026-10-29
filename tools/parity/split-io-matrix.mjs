@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { kernelClass } from '../../scripts/kernel-class.cjs';
 import { runNpm } from './npm-cli.mjs';
 import { performance } from 'node:perf_hooks';
 import {
@@ -350,7 +351,7 @@ function wasmSplitObservation(c, kernelEntry, ioEntry, fixtures) {
   const started = performance.now();
   const kernelRequire = createRequire(kernelEntry);
   const ioRequire = createRequire(ioEntry);
-  const { RemusKernel } = kernelRequire(kernelEntry);
+  const RemusKernel = kernelClass(kernelRequire(kernelEntry));
   const { RemusIo } = ioRequire(ioEntry);
   const base = (outcome) => ({
     schemaVersion: 1,
