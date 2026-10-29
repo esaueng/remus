@@ -1,6 +1,6 @@
 //! GCS system: CRUD operations, parameter management, and solve orchestration.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::SketchError;
 
@@ -34,6 +34,8 @@ pub struct GcsSystem {
     points: GenArena<PointData>,
     lines: GenArena<LineData>,
     circles: GenArena<CircleData>,
+    /// Radius parameters owned by external geometry, not by the solver.
+    fixed_circle_radii: HashSet<CircleId>,
     arcs: GenArena<ArcData>,
     ellipses: GenArena<EllipseData>,
     constraints: GenArena<ConstraintEntry>,
@@ -55,6 +57,7 @@ impl Clone for GcsSystem {
             points: self.points.clone(),
             lines: self.lines.clone(),
             circles: self.circles.clone(),
+            fixed_circle_radii: self.fixed_circle_radii.clone(),
             arcs: self.arcs.clone(),
             ellipses: self.ellipses.clone(),
             constraints: self.constraints.clone(),
@@ -175,6 +178,7 @@ impl GcsSystem {
             points: GenArena::new(),
             lines: GenArena::new(),
             circles: GenArena::new(),
+            fixed_circle_radii: HashSet::new(),
             arcs: GenArena::new(),
             ellipses: GenArena::new(),
             constraints: GenArena::new(),
@@ -342,6 +346,57 @@ impl GcsSystem {
         Ok(self.circles.insert(CircleData { center, radius }))
     }
 
+    /// Add a circle whose radius is excluded from solver parameters.
+    ///
+    /// The center retains its own fixed/free status. No constraint implements
+    /// the radius lock, so removing constraints or publishing a nonconverged
+    /// iterate cannot move it.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::add_circle`].
+    pub fn add_circle_with_fixed_radius(
+        &mut self,
+        center: PointId,
+        radius: f64,
+    ) -> Result<CircleId, SketchError> {
+        let id = self.add_circle(center, radius)?;
+        self.fixed_circle_radii.insert(id);
+        Ok(id)
+    }
+
+    /// Update an already fixed radius, for explicit external-input refresh.
+    ///
+    /// This never changes whether a radius is fixed. Ordinary circles remain
+    /// solver parameters and cannot be changed through this method.
+    ///
+    /// # Errors
+    /// Returns `InvalidHandle` for a stale circle and `InvalidValue` for a
+    /// non-fixed circle or a non-finite/non-positive radius. Refusal is atomic.
+    pub fn set_fixed_circle_radius(
+        &mut self,
+        id: CircleId,
+        radius: f64,
+    ) -> Result<(), SketchError> {
+        let circle = self.circles.get_mut(id).ok_or(SketchError::InvalidHandle)?;
+        if !(self.fixed_circle_radii.contains(&id) && radius.is_finite() && radius > 0.0) {
+            return Err(SketchError::InvalidValue);
+        }
+        circle.radius = radius;
+        Ok(())
+    }
+
+    /// Whether a live circle's radius is excluded from solver parameters.
+    #[must_use]
+    pub fn is_circle_radius_fixed(&self, id: CircleId) -> bool {
+        self.fixed_circle_radii.contains(&id)
+    }
+
+    /// Number of live fixed-radius records, including cloned sketch state.
+    #[must_use]
+    pub fn fixed_circle_radius_count(&self) -> usize {
+        self.fixed_circle_radii.len()
+    }
+
     /// Get a circle by handle.
     #[must_use]
     pub fn circle(&self, id: CircleId) -> Option<&CircleData> {
@@ -360,8 +415,10 @@ impl GcsSystem {
                 return Err(SketchError::EntityInUse);
             }
         }
+        let removed = self.circles.remove(id).ok_or(SketchError::InvalidHandle)?;
+        self.fixed_circle_radii.remove(&id);
         self.dirty = true;
-        self.circles.remove(id).ok_or(SketchError::InvalidHandle)
+        Ok(removed)
     }
 
     /// Add a full ellipse with a center point, two semiaxes, and an orientation.
@@ -1886,6 +1943,9 @@ impl GcsSystem {
         }
 
         for (id, _) in self.circles.iter() {
+            if self.fixed_circle_radii.contains(&id) {
+                continue;
+            }
             let idx = self.param_map.len();
             self.param_map.push(ParamRef::CircleRadius(id));
             self.param_index.insert(ParamRef::CircleRadius(id), idx);

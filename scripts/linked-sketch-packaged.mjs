@@ -1,4 +1,4 @@
-/** Real packaged WASM witnesses for construction-linked planar sketch lines. */
+/** Real packaged WASM witnesses for construction-linked planar sketch lines and circles. */
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
@@ -133,6 +133,7 @@ export function runLinkedSketchPackaged({ BrepKernel }) {
       console.log(`ok - linked planar sketch ${route}: construction identity, edit/undo, typed refusals, refresh-first rollback`);
     } finally { k.free(); }
   }
+  runLinkedSketchCirclesPackaged({ BrepKernel });
 }
 
 // Run the same witness against either a fresh build or an npm-installed tarball:
@@ -141,4 +142,122 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   assert.ok(process.argv[2], 'usage: node scripts/linked-sketch-packaged.mjs PACKAGE_DIRECTORY');
   const pkg = createRequire(import.meta.url)(resolve(process.argv[2], 'remus_wasm_node.cjs'));
   runLinkedSketchPackaged(pkg);
+}
+
+/** Full-circle witnesses over the real direct and both batch API exports. */
+export function runLinkedSketchCirclesPackaged({ BrepKernel }) {
+  let cells = 0;
+  for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
+    for (const scale of [0.001, 1, 1000]) for (const placement of [0, 1, 2]) {
+      const k = new BrepKernel();
+      try {
+        const call = (op, args, direct) => invoke(k, route, op, args, direct);
+        const radius = circle => call('gcsCircleRadius', { sketch, circle }, [sketch, circle]);
+        const near = (a, b) => close(a / scale, b / scale);
+        const refuse = (op, args, direct, code, category) => {
+          const prefix = `linked-sketch:${code}`;
+          if (route === 'direct') {
+            assert.throws(() => call(op, args, direct), error => error.message.startsWith(`${prefix}:`));
+          } else {
+            const row = JSON.parse(k[route](JSON.stringify([{ op, args }])))[0];
+            assert.ok(Object.hasOwn(row, 'error'), JSON.stringify(row));
+            if (route === 'executeBatchV2') {
+              assert.equal(row.error.details.kernelCode, prefix);
+              assert.equal(row.error.category, category);
+            } else assert.ok(row.error.startsWith(`${prefix}:`), row.error);
+          }
+        };
+        const boxed = k.makeBox(10 * scale, 8 * scale, 4 * scale);
+        const tool = k.makeCylinder(2 * scale, 6 * scale);
+        k.transformSolid(tool, Float64Array.from([
+          1, 0, 0, 5 * scale, 0, 1, 0, 4 * scale, 0, 0, 1, -scale, 0, 0, 0, 1,
+        ]));
+        const bored = k.cut(boxed, tool);
+        let origin = [0, 0, 4 * scale], normal = [0, 0, 1];
+        if (placement) {
+          const rotated = placement === 2;
+          k.transformSolid(bored, Float64Array.from([
+            1, 0, 0, 3 * scale, 0, rotated ? 0 : 1, rotated ? -1 : 0, -5 * scale,
+            0, rotated ? 1 : 0, rotated ? 0 : 1, 7 * scale, 0, 0, 0, 1,
+          ]));
+          origin = rotated ? [3 * scale, -9 * scale, 7 * scale] : [3 * scale, -5 * scale, 11 * scale];
+          normal = rotated ? [0, -1, 0] : [0, 0, 1];
+        }
+        const cylinder = solid => Array.from(k.getSolidFaces(solid)).find(f => k.getSurfaceType(f) === 'cylinder');
+        const seeded = JSON.parse(k.resizeCylindricalFaceJournaled(bored, cylinder(bored), 2.5 * scale));
+        const top = Array.from(k.getSolidFaces(seeded.solid)).find(f => k.getSurfaceType(f) === 'plane'
+          && k.getFaceNormal(f).reduce((sum, n, i) => sum + n * normal[i], 0) > 0.99);
+        const ring = Array.from(k.getFaceEdges(top)).find(e => k.getEdgeCurveType(e) === 'CIRCLE');
+        const line = Array.from(k.getFaceEdges(top)).find(e => k.getEdgeCurveType(e) === 'LINE');
+        const reference = (kind, handle) => {
+          for (let i = 0; i < 100; i++) {
+            const r = JSON.parse(k.resolveOperationOutput(seeded.op, kind, i));
+            if (r.status === 'bound' && r.entities[0].handle === handle) return k.makeOperationOutputRef(seeded.op, kind, i);
+          }
+          assert.fail(`missing circle fixture output ${kind}:${handle}`);
+        };
+        const source = reference('edge', ring), faceRef = reference('face', top), lineRef = reference('edge', line);
+        const sketch = call('gcsNew', {}, []);
+        call('gcsAttachToFace', { sketch, ref: faceRef, frame: { origin, xAxis: [1, 0, 0], normal } },
+          [sketch, faceRef, { origin, xAxis: [1, 0, 0], normal }]);
+        const external = call('gcsAddExternalCircle', { sketch, ref: source }, [sketch, source]);
+        assert.equal(json(call('gcsDof', { sketch }, [sketch])).numParams, 0);
+        near(radius(external.circle), 2.5 * scale);
+        const position = call('gcsPointPosition', { sketch, point: external.center }, [sketch, external.center]);
+        near(position[0], 5 * scale); near(position[1], 4 * scale);
+        refuse('gcsAddExternalCircle', { sketch, ref: lineRef }, [sketch, lineRef], 'unsupported_curve', 'unsupported');
+        refuse('gcsAddExternalCircle', { sketch, ref: faceRef }, [sketch, faceRef], 'invalid_reference_kind', 'invalid_input');
+        const inferred = k.captureSignatureRef('edge', ring, 1e-7);
+        const inferredResolution = JSON.parse(k.resolveRef(inferred));
+        assert.equal(inferredResolution.status, 'bound'); assert.equal(inferredResolution.provenance, 'inferred');
+        refuse('gcsAddExternalCircle', { sketch, ref: inferred }, [sketch, inferred], 'inferred_reference', 'unsupported');
+        const center = call('gcsAddPoint', { sketch, x: 6 * scale, y: 5 * scale, fixed: false }, [sketch, 6 * scale, 5 * scale, false]);
+        const consumer = call('gcsAddCircle', { sketch, center, radius: scale }, [sketch, center, scale]);
+        const constraint = value => call('gcsAddConstraint', { sketch, constraint: value }, [sketch, JSON.stringify(value)]);
+        const centerConstraint = constraint({ type: 'coincident', a: center, b: external.center });
+        const radiusConstraint = constraint({ type: 'equalRadiusCircleCircle', circle1: consumer, circle2: external.circle });
+        const solve = op => json(call(op, { sketch, maxIterations: 100, tolerance: 1e-10 * scale }, [sketch, 100, 1e-10 * scale]));
+        const solved = solve('gcsSolveDetailed');
+        assert.equal(solved.converged, true); assert.equal(solved.numParams, 3); assert.equal(solved.rank, 3); assert.equal(solved.dof, 0);
+        near(radius(consumer), 2.5 * scale);
+        const cp = k.checkpoint();
+        const retired = call('gcsAddExternalCircle', { sketch, ref: source }, [sketch, source]);
+        const consumerConflict = constraint({ type: 'circleRadius', circle: consumer, value: 2.5 * scale });
+        const grown = JSON.parse(k.resizeCylindricalFaceJournaled(seeded.solid, cylinder(seeded.solid), 3 * scale));
+        const unsatisfied = solve('gcsSolveDetailed');
+        assert.equal(unsatisfied.converged, false); assert.equal(unsatisfied.rolledBack, true);
+        near(radius(external.circle), 3 * scale); near(radius(consumer), 2.5 * scale);
+        near(unsatisfied.publishedMaxResidual, 0.5 * scale);
+        call('gcsRemoveConstraint', { sketch, constraint: consumerConflict }, [sketch, consumerConflict]);
+        assert.equal(solve('gcsSolve').converged, true); near(radius(consumer), 3 * scale);
+        const extConflict = constraint({ type: 'circleRadius', circle: external.circle, value: 4 * scale });
+        assert.equal(solve('gcsSolve').converged, false); near(radius(external.circle), 3 * scale);
+        assert.equal(solve('gcsSolveDetailed').rolledBack, true); near(radius(external.circle), 3 * scale);
+        for (const id of [centerConstraint, radiusConstraint, extConflict]) call('gcsRemoveConstraint', { sketch, constraint: id }, [sketch, id]);
+        assert.equal(json(call('gcsDof', { sketch }, [sketch])).numParams, 3);
+        near(radius(external.circle), 3 * scale);
+        const ellipse = call('gcsAddEllipse', { sketch, center: external.center, a: 2 * scale, b: scale, angle: 0 }, [sketch, external.center, 2 * scale, scale, 0]);
+        refuse('gcsSetPoint', { sketch, point: external.center, x: 99, y: 99 }, [sketch, external.center, 99, 99], 'read_only_external_point', 'invalid_input');
+        refuse('gcsSetEllipse', { sketch, ellipse, x: 99, y: 99, a: 3, b: 2, angle: 0 }, [sketch, ellipse, 99, 99, 3, 2, 0], 'read_only_external_point', 'invalid_input');
+        const currentTop = JSON.parse(k.resolveRef(faceRef)).entities[0].handle;
+        const moved = JSON.parse(k.moveFacesJournaled(grown.solid, Uint32Array.of(currentTop), scale));
+        const resolved = call('gcsResolveRefs', { sketch }, [sketch]);
+        assert.equal(resolved.externalCircles, 2);
+        for (let i = 0; i < 3; i++) near(resolved.frame.origin[i], origin[i] + normal[i] * scale);
+        near(radius(external.circle), 3 * scale);
+        near(k.volume(moved.solid, 0.01 * scale) / scale ** 2, (80 - Math.PI * 9) * 5 * scale);
+        assert.equal(k.validateSolid(moved.solid), 0);
+        k.restore(cp);
+        near(radius(external.circle), 2.5 * scale); near(radius(consumer), 2.5 * scale);
+        assert.equal(call('gcsResolveRefs', { sketch }, [sketch]).externalCircles, 1);
+        assert.throws(() => call('gcsCircleRadius', { sketch, circle: retired.circle }, [sketch, retired.circle]));
+        assert.throws(() => call('gcsPointPosition', { sketch, point: retired.center }, [sketch, retired.center]));
+        const next = call('gcsAddExternalCircle', { sketch, ref: source }, [sketch, source]);
+        assert.ok(next.circle > retired.circle && next.center > retired.center);
+        near(radius(next.circle), 2.5 * scale);
+        cells++;
+      } finally { k.free(); }
+    }
+  }
+  console.log(`ok - linked complete circles: ${cells} direct/batch cells, fixed-radius conflicts, refresh, typed refusals and undo`);
 }
