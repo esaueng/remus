@@ -250,6 +250,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         "gcsAttachToFace"
         | "gcsAddExternalLine"
         | "gcsAddExternalCircle"
+        | "gcsAddExternalEllipse"
         | "gcsResolveRefs"
         | "gcsNew"
         | "gcsAddPoint"

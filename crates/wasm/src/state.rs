@@ -80,6 +80,7 @@ pub struct GcsSketchState {
     pub(crate) attachment: Option<remus_operations::linked_sketch::PlanarSketchAttachment>,
     pub(crate) external_lines: Vec<crate::bindings::linked_sketch::ExternalLine>,
     pub(crate) external_circles: Vec<crate::bindings::linked_sketch::ExternalCircle>,
+    pub(crate) external_ellipses: Vec<crate::bindings::linked_sketch::ExternalEllipse>,
     /// The persistent constraint system.
     pub sys: remus_sketch::GcsSystem,
     /// JS handle → point id.
@@ -187,6 +188,10 @@ impl GcsSketchState {
                 .external_circles
                 .iter()
                 .any(|circle| circle.center == point)
+            || self
+                .external_ellipses
+                .iter()
+                .any(|ellipse| ellipse.center == point)
     }
 
     pub(crate) fn restore(&mut self, snapshot: &Self) {
@@ -200,6 +205,8 @@ impl GcsSketchState {
         self.attachment.clone_from(&snapshot.attachment);
         self.external_lines.clone_from(&snapshot.external_lines);
         self.external_circles.clone_from(&snapshot.external_circles);
+        self.external_ellipses
+            .clone_from(&snapshot.external_ellipses);
         restore_table(&mut self.points, &snapshot.points);
         restore_table(&mut self.lines, &snapshot.lines);
         restore_table(&mut self.circles, &snapshot.circles);
