@@ -53,6 +53,7 @@ use crate::OperationsError;
 mod bevel;
 mod cylinder;
 mod profile;
+mod throat;
 mod worm;
 
 pub use bevel::{
@@ -61,8 +62,9 @@ pub use bevel::{
 };
 pub use cylinder::{CylinderGearOptions, GearFit, cut_gear_teeth};
 pub use worm::{
-    MAX_LEAD_ANGLE_DEG, MAX_WORM_STARTS, WormGeometry, WormOutcome, WormParams, WormWheel,
-    make_worm, worm_geometry, worm_wheel,
+    MAX_LEAD_ANGLE_DEG, MAX_WORM_STARTS, ThroatedWheelOptions, ThroatedWheelOutcome, WormGeometry,
+    WormOutcome, WormParams, WormWheel, make_throated_worm_wheel, make_worm, worm_geometry,
+    worm_wheel,
 };
 
 use profile::{CircularTooth, RackTooth, Segment};
@@ -314,6 +316,11 @@ pub enum GearFaceRole {
         /// Tooth index.
         tooth: u32,
     },
+    /// Torus patch a throated worm wheel's tooth tip takes under the worm.
+    Throat {
+        /// Tooth index.
+        tooth: u32,
+    },
     /// Root land between teeth `gap` and `gap + 1`.
     Root {
         /// Index of the tooth before the land.
@@ -382,6 +389,7 @@ impl GearFaceRole {
             }
             Self::Fillet { tooth, side: s } => format!("tooth[{tooth}].fillet.{}", side(s)),
             Self::Tip { tooth } => format!("tooth[{tooth}].tip"),
+            Self::Throat { tooth } => format!("tooth[{tooth}].throat"),
             Self::Root { gap } => format!("root[{gap}]"),
             Self::Cap(e) => format!("cap.{}", end(e)),
             Self::Bore => "bore".to_owned(),
@@ -409,6 +417,9 @@ impl GearFaceRole {
                 side,
             },
             Self::Tip { tooth } => Self::Tip {
+                tooth: shift(tooth),
+            },
+            Self::Throat { tooth } => Self::Throat {
                 tooth: shift(tooth),
             },
             Self::Root { gap } => Self::Root { gap: shift(gap) },

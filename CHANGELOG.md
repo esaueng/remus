@@ -55,6 +55,13 @@ historical predecessor-line records, retained for provenance. The
   (the worm's hand, helix angle equal to the lead angle) and its
   `centerDistance`. The pair is a crossed helical drive with point contact,
   not a hobbed throated wheel.
+* **operations,wasm:** throated worm wheels. `make_throated_worm_wheel` /
+  `makeWormWheelDetailed` with `throated: true` wrap the wheel's tips around
+  the worm: across the throat they follow the torus that keeps the worm's
+  root clearance, and either side of it they stand at the outside diameter.
+  Built without a boolean: tip lands become two cylinder strips and an exact
+  torus patch, and flanks stop at the throat along certified fits
+  (`throatCurveBound`). The flanks stay the crossed helical wheel's.
 * **math:** `nurbs::screw` fits helices and screw-motion swept surfaces as
   NURBS with a proven bound; fits sharing one plan share their knots, so
   neighbouring faces and edges match exactly.

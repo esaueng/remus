@@ -29,6 +29,13 @@
 //! wheel touches the worm along lines and carries more load; this wheel has
 //! the right kinematics, not a hobbed wheel's contact.
 //!
+//! A throated wheel ([`make_throated_worm_wheel`]) wraps its tips around the
+//! worm: over the throat they follow the torus that keeps a constant
+//! clearance from the worm's root, and outside it they stay on an outside
+//! cylinder. Its flanks are still the helical wheel's, so it is the same
+//! crossed helical drive; the throat only gives the worm more wheel to run
+//! in.
+//!
 //! The thread ends where the end caps cut it, perpendicular to the axis.
 
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
@@ -37,10 +44,12 @@ use remus_topology::Topology;
 use remus_topology::face::FaceId;
 use remus_topology::solid::SolidId;
 
+use super::throat::{Throat, cut_throat};
 use super::{
-    DEFAULT_TOLERANCE_PER_MODULE, Frame, GearError, GearFace, GearGeometry, GearKind, GearParams,
-    GearPlacement, GearWarning, Hand, MAX_TEETH, THIN_RIM_MODULES, THIN_TIP_MODULES, flank_bound,
-    gear_body, helical_geometry, local_outline, non_negative, positive, require, twist,
+    DEFAULT_TOLERANCE_PER_MODULE, Frame, GearError, GearFace, GearGeometry, GearKind, GearOutcome,
+    GearParams, GearPlacement, GearWarning, Hand, MAX_TEETH, THIN_RIM_MODULES, THIN_TIP_MODULES,
+    circular, flank_bound, flank_tolerance, gear_body, gear_geometry, helical_geometry,
+    local_outline, non_negative, positive, require, twist,
 };
 
 /// Largest supported number of thread starts.
@@ -404,5 +413,159 @@ pub fn worm_wheel(worm: &WormParams, teeth: u32, face_width: f64) -> Result<Worm
     Ok(WormWheel {
         params,
         center_distance: 0.5 * worm.module * (worm.diameter_factor + f64::from(teeth)),
+    })
+}
+
+/// Options for [`make_throated_worm_wheel`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ThroatedWheelOptions {
+    /// Outside diameter `d_e2`, where the tips stand outside the throat;
+    /// `None` is the throat diameter plus one axial module.
+    pub outside_diameter: Option<f64>,
+    /// Circumferential tooth thinning at the pitch circle (length).
+    pub backlash: f64,
+    /// Flank and throat curve tolerance; `None` uses
+    /// [`DEFAULT_TOLERANCE_PER_MODULE`]·`m_x·cos γ`.
+    pub tolerance: Option<f64>,
+    /// Optional concentric bore diameter.
+    pub bore_diameter: Option<f64>,
+}
+
+/// A built throated worm wheel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThroatedWheelOutcome {
+    /// The wheel body and its tooth form. `geometry.tip_diameter` is the
+    /// outside diameter; `face_roles` names the throat patches
+    /// `tooth[k].throat` and the tip strips either side of it
+    /// `tooth[k].tip.start-half` and `tooth[k].tip.end-half`.
+    pub gear: GearOutcome,
+    /// Proven bound on the distance from each curve where a flank meets the
+    /// throat to the exact intersection of the involute helicoid with the
+    /// torus, with a floating-point allowance.
+    pub throat_curve_bound: f64,
+    /// Distance between the worm and wheel axes, `(d₁ + d₂)/2`.
+    pub center_distance: f64,
+    /// Throat diameter `d_a2 = d₂ + 2·h_a·m_x`, the tips' smallest diameter,
+    /// half way across the face.
+    pub throat_diameter: f64,
+    /// Outside diameter `d_e2`.
+    pub outside_diameter: f64,
+    /// Radius of the throat torus's circle about the worm axis,
+    /// `a − d_a2/2`.
+    pub throat_radius: f64,
+    /// Width of the throat along the wheel axis, where the tips run below
+    /// the outside diameter.
+    pub throat_width: f64,
+}
+
+/// Build the helical wheel that meshes with `worm` (see [`worm_wheel`]) on a
+/// throated blank.
+///
+/// Across the throat its tips follow the torus that keeps the worm's root
+/// clearance, centered on the worm axis half way across the face width;
+/// either side of it they stay on the outside cylinder.
+///
+/// The worm's axis is perpendicular to the wheel's, `center_distance` from
+/// it and `face_width/2` along it from the first cap. The construction is
+/// the helical wheel with tips out to the outside diameter, each tooth tip
+/// rebuilt as two cylinder strips and an exact torus patch, and each flank
+/// stopped at the throat along a certified fit of its intersection with the
+/// torus. No boolean is involved.
+///
+/// The whole construction runs in one transaction: a refusal or failure
+/// leaves the topology as it was.
+///
+/// # Errors
+///
+/// [`GearError::Refused`] with
+/// [`GearRefusal::InvalidParameter`](super::GearRefusal::InvalidParameter)
+/// when the worm, tooth count or face width is out of range, the outside
+/// diameter is not above the throat diameter, or the throat spans the whole
+/// face width (a narrower face needs a smaller outside diameter); the
+/// gear's own refusals for the tooth form (a pointed tip at the outside
+/// diameter, a bore reaching the root); [`GearError::Operations`] when the
+/// construction fails.
+pub fn make_throated_worm_wheel(
+    topo: &mut Topology,
+    worm: &WormParams,
+    teeth: u32,
+    face_width: f64,
+    options: &ThroatedWheelOptions,
+    placement: &GearPlacement,
+) -> Result<ThroatedWheelOutcome, GearError> {
+    let matched = worm_wheel(worm, teeth, face_width)?;
+    non_negative(options.backlash, "backlash")?;
+    let throat_diameter = gear_geometry(&matched.params)?.tip_diameter.unwrap_or(0.0);
+    let throat_radius = matched.center_distance - 0.5 * throat_diameter;
+    require(throat_radius > 0.0, || {
+        "the worm is too thin to wrap the wheel's throat around it".to_owned()
+    })?;
+    let outside_diameter = options
+        .outside_diameter
+        .unwrap_or(throat_diameter + worm.module);
+    positive(outside_diameter, "outside diameter")?;
+    let outside_radius = 0.5 * outside_diameter;
+    require(outside_diameter > throat_diameter * (1.0 + 1e-9), || {
+        format!(
+            "the outside diameter {outside_diameter} must be above the throat diameter \
+             {throat_diameter}"
+        )
+    })?;
+    // Where the torus meets the outside cylinder: |s − c| = w.
+    let reach = matched.center_distance - outside_radius;
+    let half_width = throat_radius.mul_add(throat_radius, -reach * reach).sqrt();
+    require(2.0 * half_width < face_width * (1.0 - 1e-9), || {
+        format!(
+            "the throat ({:.4} wide) spans the whole face width {face_width}; use a wider face \
+             or a smaller outside diameter",
+            2.0 * half_width
+        )
+    })?;
+    // The matching wheel with its tips raised to the outside diameter.
+    let pitch_radius = 0.5 * worm.module * f64::from(teeth);
+    let params = GearParams {
+        addendum: (outside_radius - pitch_radius) / matched.params.module,
+        backlash: options.backlash,
+        tolerance: options.tolerance,
+        bore_diameter: options.bore_diameter,
+        ..matched.params
+    };
+    let geometry = gear_geometry(&params)?;
+    let frame = Frame::new(placement, GearKind::External)?;
+    let throat = Throat {
+        center_distance: matched.center_distance,
+        tube_radius: throat_radius,
+        mid_height: 0.5 * face_width,
+        half_width,
+        outside_radius,
+        face_width,
+    };
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let gear = super::build(topo, &params, &frame, placement.phase, &geometry)?;
+        let rate = twist(&params, &geometry).map_or(0.0, |twist| twist.rate);
+        let throated = cut_throat(
+            topo,
+            gear.solid,
+            &gear.face_roles,
+            &frame,
+            &throat,
+            circular(&params).base_radius,
+            rate,
+            0.5 * flank_tolerance(&params),
+            gear.flank_deviation_bound,
+        )?;
+        Ok(ThroatedWheelOutcome {
+            gear: GearOutcome {
+                solid: throated.solid,
+                face_roles: throated.face_roles,
+                ..gear
+            },
+            throat_curve_bound: throated.curve_bound,
+            center_distance: matched.center_distance,
+            throat_diameter,
+            outside_diameter,
+            throat_radius,
+            throat_width: 2.0 * half_width,
+        })
     })
 }

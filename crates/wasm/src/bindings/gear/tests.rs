@@ -730,3 +730,71 @@ fn worm_refusals_carry_dimensions_and_keep_the_session() {
     }
     assert_eq!(live_counts(&kernel), before);
 }
+
+#[test]
+fn throated_worm_wheels_report_their_throat_direct_and_batch() {
+    let spec = json!({
+        "module": 2.0, "starts": 1, "diameterFactor": 10.0,
+        "teeth": 30, "faceWidth": 14.0, "throated": true, "boreDiameter": 12.0
+    });
+    let mut direct_kernel = RemusKernel::new();
+    let direct = worm_envelope(&mut direct_kernel, "makeWormWheelDetailed", &spec);
+    assert_eq!(direct["status"], "ok", "{direct}");
+    let details = &direct["details"];
+    let curve = details["throatCurveBound"].as_f64().unwrap();
+    assert!(curve > 0.0 && curve <= 1e-5 * 2.0, "{curve}");
+    // a = 40, throat diameter 64, outside diameter 66 by default, ρ = 8.
+    let geometry = &details["geometry"];
+    for (key, value) in [
+        ("centerDistance", 40.0),
+        ("throatDiameter", 64.0),
+        ("outsideDiameter", 66.0),
+        ("throatRadius", 8.0),
+        ("tipDiameter", 66.0),
+    ] {
+        assert!(
+            (geometry[key].as_f64().unwrap() - value).abs() < 1e-12,
+            "{key}"
+        );
+    }
+    let width = 2.0 * (64.0_f64 - 49.0).sqrt();
+    assert!((geometry["throatWidth"].as_f64().unwrap() - width).abs() < 1e-12);
+    let roles: Vec<&str> = details["faceRoles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["role"].as_str().unwrap())
+        .collect();
+    for name in [
+        "tooth[0].throat",
+        "tooth[29].tip.start-half",
+        "tooth[7].tip.end-half",
+        "bore",
+    ] {
+        assert!(roles.contains(&name), "{name}");
+    }
+    let solid = handle(&direct["value"]);
+    assert_eq!(roles.len(), faces_of(&direct_kernel, solid).len());
+    assert_valid(&direct_kernel, solid);
+    let mut batch_kernel = RemusKernel::new();
+    assert_eq!(
+        worm_batch(&mut batch_kernel, "makeWormWheelDetailed", &spec)["ok"],
+        direct
+    );
+
+    let before = live_counts(&batch_kernel);
+    let narrow = json!({
+        "module": 2.0, "starts": 1, "diameterFactor": 10.0,
+        "teeth": 30, "faceWidth": 7.0, "throated": true
+    });
+    let refused = worm_envelope(&mut batch_kernel, "makeWormWheelDetailed", &narrow);
+    assert_eq!(refused["code"], "gear:invalid-parameter", "{refused}");
+    let plain = json!({
+        "module": 2.0, "starts": 1, "diameterFactor": 10.0,
+        "teeth": 30, "faceWidth": 14.0, "outsideDiameter": 66.0
+    });
+    let refused = worm_envelope(&mut batch_kernel, "makeWormWheelDetailed", &plain);
+    assert_eq!(refused["code"], "invalid_argument", "{refused}");
+    assert_eq!(refused["details"]["argument"], "outsideDiameter");
+    assert_eq!(live_counts(&batch_kernel), before);
+}
