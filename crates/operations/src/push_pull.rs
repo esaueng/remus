@@ -1008,6 +1008,14 @@ pub fn resize_cylindrical_face(
         return resize_partial_cylindrical_face(topo, solid, face, &cyl, new_radius);
     }
 
+    // A bore whose rims are blended onto its caps carries those blends to the
+    // new radius; the sleeve below would leave them behind at the old one.
+    if let Some(result) =
+        crate::resize_blend::resize_cylindrical_face_with_blends(topo, solid, face, new_radius)?
+    {
+        return Ok(result);
+    }
+
     let axis = unit(cyl.axis())?;
     if axis.dot(Vec3::new(0.0, 0.0, 1.0)) > 1.0 - tol.angular {
         return resize_cylindrical_face_aligned(topo, solid, face, new_radius, false)

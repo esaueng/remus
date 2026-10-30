@@ -3,6 +3,7 @@
 use remus_math::curves2d::Curve2D;
 use remus_math::vec::Point2;
 
+use super::super::classify_2d::{PlanarLoopEdge, point_in_planar_loop};
 use super::super::split_types::OrientedPCurveEdge;
 use super::sampling::sample_wire_loop_uv;
 
@@ -189,10 +190,44 @@ pub(super) fn find_point_outside_holes(
             pts
         })
         .collect();
+    // Even the densified polygon is inscribed: a 16-gon still under-covers a
+    // full bore circle by 1.9% of its radius, more than a ring left by a
+    // small coaxial resize is wide. Line and circle holes are therefore
+    // decided on the curves themselves, and the polygon decides only what
+    // they cannot (other curves, or a seed within tolerance of the hole).
+    let tol = remus_math::tolerance::Tolerance::new();
+    let exact_holes: Vec<Option<Vec<PlanarLoopEdge>>> = inner_wires
+        .iter()
+        .map(|hole| {
+            let f = frame?;
+            hole.iter()
+                .map(|e| {
+                    let (s3, e3) = if e.forward {
+                        (e.start_3d, e.end_3d)
+                    } else {
+                        (e.end_3d, e.start_3d)
+                    };
+                    let (t0, t1) = e.native_domain();
+                    let at = |t: f64| {
+                        let t = if e.forward { t } else { 1.0 - t };
+                        e.curve_3d
+                            .evaluate_with_endpoints((t1 - t0).mul_add(t, t0), s3, e3)
+                    };
+                    let closed = (e.start_3d - e.end_3d).length() <= tol.linear;
+                    PlanarLoopEdge::project(&e.curve_3d, at, closed, f, tol.angular)
+                })
+                .collect()
+        })
+        .collect();
     let in_any_hole = |pt: Point2| -> bool {
-        hole_polys
-            .iter()
-            .any(|poly| poly.len() >= 3 && super::super::classify_2d::point_in_polygon_2d(pt, poly))
+        hole_polys.iter().zip(&exact_holes).any(|(poly, exact)| {
+            exact
+                .as_deref()
+                .and_then(|edges| point_in_planar_loop(pt, edges, tol.linear * 10.0))
+                .unwrap_or_else(|| {
+                    poly.len() >= 3 && super::super::classify_2d::point_in_polygon_2d(pt, poly)
+                })
+        })
     };
 
     // Strategy: take midpoints between outer wire edge midpoints and the outer
@@ -234,6 +269,24 @@ pub(super) fn find_point_outside_holes(
     for vertex in outer_pts {
         for k in 1..=99 {
             let t = f64::from(k) * 0.005;
+            let candidate = Point2::new(
+                vertex.x() * (1.0 - t) + centroid_x * t,
+                vertex.y() * (1.0 - t) + centroid_y * t,
+            );
+            if super::super::classify_2d::point_in_polygon_2d(candidate, outer_pts)
+                && !in_any_hole(candidate)
+            {
+                return candidate;
+            }
+        }
+    }
+
+    // A ring thinner than the first vertex step (0.5% of the way to the
+    // centroid) is still resolved by halving that step: a coaxial resize by
+    // 0.05 on an r 12.25 cap leaves a ring narrower than 0.005 x 12.25.
+    for vertex in outer_pts {
+        for halving in 1..=24 {
+            let t = 0.005 * 0.5_f64.powi(halving);
             let candidate = Point2::new(
                 vertex.x() * (1.0 - t) + centroid_x * t,
                 vertex.y() * (1.0 - t) + centroid_y * t,
