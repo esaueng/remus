@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793281127649,
+  "lastUpdate": 1793366971611,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -139937,6 +139937,304 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 78321,
             "range": "± 1246",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Peter",
+            "username": "petertoday",
+            "email": "171875562+petertoday@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "7608b02924f21740eb27072fc8be3788fb239af4",
+          "message": "fix(algo,operations): grow a turned part's outer walls between fillet bands (#1407)\n\n## Change\n\nThis follows #1395. On the imported walking-stick foot\n(`crates/io/tests/data/walking_stick_foot_body.bin`), the bore now\nresizes, but growing the R16.5 neck or the R20 band still refused with\n`exact_only_unattainable`. Three defects were stacked:\n\n1. **operations: a growing boss filled its own bore.**\n`resize_cylindrical_face` grew a boss by fusing a solid cylinder of the\nnew radius over the face's extent. Both walls on this part stand around\nthe R12.5 bore, so the fuse also filled it. Growing a boss now fuses the\nsleeve, a tube from the old radius to the new one, just as shrinking\nalready cuts one. A growing bore still cuts a plain cylinder.\n2. **algo: a cap level with a fillet's rim slit the fillet open.** The\nband's tool caps lie at the two convex fillets' equator heights, so each\ncap plane holds a fillet rim circle. Plane × torus sections are sampled,\nand the sampled trace of the rim lies exactly on the torus face's\nboundary. There the face-restriction in-face test cannot decide, so it\nkept four arbitrary pieces of the trace, and the fillet face got a\nnon-closed wire and free edges. Now, when a plane holds one of a torus\nface's rim circles, the whole face lies on one side of it, and the\npair's sampled section is a trace of that rim, the rim's exact boundary\narcs replace the trace. `link_existing` welds them onto the boundary\nedges. This mirrors `tangent_torus_boundary_sections` for torus ×\ncylinder tangency. If there is no trace to replace, nothing is added.\n3. **algo: the classifier tested planar faces against inscribed\npolygons.** `wire_polygon` samples a full circle with 17 points and an\narc with four chords, and planar faces were tested against that polygon.\nOn an R16.5 rim the chords fall 0.28 mm short. With fix 2 in place,\nshrinking the neck to R16 put the cap's sample point at r = 16.25 in\nsuch a gap: (−16.25, 0, z_rim) classified Outside and the cap was\ndropped from the cut. The planar test now has each polygon segment carry\nthe circle it is a chord of, for true planes and coplanar circles only.\nA hit in an odd number of a loop's circular segments flips that loop's\npolygon verdict, so circular boundaries are tested exactly. Loop bounds\ngrow by each segment's sagitta, so the bounding-box gate stays sound.\n\n## Verification\n\n-\n`crates/io/tests/split_rim_torus_cylinder_resize.rs::outer_walls_resize_through_the_fillet_bands`\nresizes the neck to R15, R16, R17, R17.5 and R20, and the band to R18,\nR19.5, R20.5, R21 and R24. For each it checks a closed shell, the new\nwall and the bore both present, and the sleeve volume within 1e-3.\nBefore this change, every growth refused.\n- `push_pull::tests::growing_a_hollow_boss_keeps_its_bore`: grows a boss\nwith a blind bore and checks the volume, watertightness and both\ncylinders.\n- `ray_cast::tests::cap_hits_between_rim_chords_count`: points just\ninside and outside a cap rim, halfway between polygon vertices, at four\nseam angles, must vote 3 and 0. It fails with the arc correction\ndisabled.\n- `gate_oracle_tests`: the brute-force reference now applies the same\ncircular-segment rule without gating, so the differential oracles still\ncheck that the gate and plane groups change no answer.\n- On the rebased head, `cargo test --release --no-fail-fast` passes for\nremus-algo, remus-operations and remus-io, apart from\n`tessellation_digest_hammer::hammer_holder_display_mesh_digest_is_pinned`.\nThat test fails on this Mac with the same digest as a clean main\ncheckout (`0x10bf804447d9f1f3`), so this change does not move it.\n- Before the rebase, the same `--no-fail-fast` run also passed for\nremus-math, remus-blend, remus-offset, remus-check, remus-heal and\nremus-wasm, apart from that digest test.\n- `cargo clippy -p remus-algo -p remus-operations -p remus-io\n--all-targets -- -D warnings` and `cargo fmt --all` are clean.\n\n## Compatibility and risks\n\nThere are no API or format changes, but the point classifier's verdicts\nchange in one place: points between a planar face's circular rim and its\ninscribed polygon now classify by the true boundary. Every boolean uses\nthis classifier, so results whose sub-face samples fell in those gaps\nchange, from wrong to right. A plane × torus pair whose sampled section\nre-traces a rim of a one-sided torus face now gets the exact rim arcs\ninstead.\n\n## WASM module tier\n\nNone\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-10-30T12:42:57Z",
+          "url": "https://github.com/esaueng/remus/commit/7608b02924f21740eb27072fc8be3788fb239af4"
+        },
+        "date": 1793366966724,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1202343,
+            "range": "± 7660",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1297574,
+            "range": "± 22972",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 28396,
+            "range": "± 1140",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 8328736,
+            "range": "± 51629",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 8304866,
+            "range": "± 161481",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 8144822,
+            "range": "± 44715",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 29198,
+            "range": "± 171",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3901965,
+            "range": "± 217101",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 29733402,
+            "range": "± 412043",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 37,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 115,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 86,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 234,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 227,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 868,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 184,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 383,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 257,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 558,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 1093,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3591,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 26,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 33,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 95,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 106,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 23895,
+            "range": "± 37",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 149358,
+            "range": "± 640",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 4036,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 14889,
+            "range": "± 61",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 53321,
+            "range": "± 72",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5310,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 510568,
+            "range": "± 709",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2793913,
+            "range": "± 5652",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 147010,
+            "range": "± 205",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 309555,
+            "range": "± 800",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 372121,
+            "range": "± 1152",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 64628,
+            "range": "± 544",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 35542,
+            "range": "± 89",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 21077,
+            "range": "± 30",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 115673,
+            "range": "± 228",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 145317,
+            "range": "± 210",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 617047,
+            "range": "± 56101",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 8759649,
+            "range": "± 155190",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 602496,
+            "range": "± 2184",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1217971,
+            "range": "± 3151",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 94405,
+            "range": "± 649",
             "unit": "ns/iter"
           }
         ]
