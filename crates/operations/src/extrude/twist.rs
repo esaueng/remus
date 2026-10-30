@@ -77,7 +77,11 @@ pub(crate) fn twisted_extrude_impl(
     let axis = direction.normalize()?;
     let perpendicular = match topo.face(face)?.surface() {
         FaceSurface::Plane { normal, .. } => normal.cross(axis).length() < CONCENTRIC_TOLERANCE,
-        _ => false,
+        FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => false,
     };
     if !perpendicular {
         return Err(OperationsError::InvalidInput {
@@ -168,7 +172,12 @@ fn plan_wire(
         let edge = topo.edge(wire.edge_ids[0])?;
         return match edge.curve() {
             EdgeCurve::Circle(circle) if concentric(motion, circle) => Ok(None),
-            _ => Err(unsupported("a closed edge off the axis")),
+            EdgeCurve::Circle(_)
+            | EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => Err(unsupported("a closed edge off the axis")),
         };
     }
     let mut max_radius: f64 = 0.0;
@@ -207,7 +216,9 @@ fn plan_wire(
                 }
                 Side::Sweep(snap(curve.clone(), start, end)?)
             }
-            _ => return Err(unsupported("an ellipse or open conic edge")),
+            EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                return Err(unsupported("an ellipse or open conic edge"));
+            }
         };
         if let Side::Sweep(curve) = &side {
             for &p in curve.control_points() {
@@ -236,7 +247,13 @@ fn plan_wire(
                     reverse_edge_curve(&moved)?
                 }
             }
-            _ => return Err(unsupported("a top edge unlike its profile edge")),
+            (
+                EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_),
+                _,
+            ) => return Err(unsupported("a top edge unlike its profile edge")),
         };
         positions.push(Position {
             bottom,
