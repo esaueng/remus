@@ -37,7 +37,7 @@ use remus_math::nurbs::NurbsCurve;
 use remus_math::nurbs::hermite_fit::fit_cubic_hermite;
 use remus_math::vec::{Point3, Vec3};
 
-use super::{GearError, GearRefusal};
+use super::{GearEnd, GearError, GearFaceRole, GearRefusal, ToothSide};
 
 /// Uniform Hermite spans allowed per flank before the tolerance refuses.
 pub(super) const MAX_SPANS_PER_FLANK: usize = 256;
@@ -244,6 +244,9 @@ fn fit_upper_flank(
 /// A full outline plus what the flank fit proved.
 pub(super) struct Outline {
     pub(super) segments: Vec<Segment>,
+    /// The face role each segment's extruded side takes, parallel to
+    /// `segments`.
+    pub(super) roles: Vec<GearFaceRole>,
     pub(super) flank: Option<FittedFlank>,
 }
 
@@ -328,46 +331,87 @@ pub(super) fn external_outline(tooth: &CircularTooth) -> Result<Outline, GearErr
 
     let mut period = Vec::with_capacity(7);
     if has_fillet {
-        period.push(Segment::Arc {
-            center: mirror(center),
-            start: mirror(root_point),
-            end: mirror(tangent_point),
-        });
+        period.push((
+            Segment::Arc {
+                center: mirror(center),
+                start: mirror(root_point),
+                end: mirror(tangent_point),
+            },
+            GearFaceRole::Fillet {
+                tooth: 0,
+                side: ToothSide::Minus,
+            },
+        ));
     }
     if !involute_meets_fillet {
-        period.push(Segment::Line {
-            start: mirror(tangent_point),
-            end: mirror(start_point),
-        });
+        period.push((
+            Segment::Line {
+                start: mirror(tangent_point),
+                end: mirror(start_point),
+            },
+            GearFaceRole::FlankBase {
+                tooth: 0,
+                side: ToothSide::Minus,
+            },
+        ));
     }
-    period.push(Segment::Flank {
-        curve: map_curve(&flank.curve, mirror)?,
-        reversed: false,
-    });
-    period.push(Segment::Arc {
-        center: Point3::new(0.0, 0.0, 0.0),
-        start: mirror(tip_point),
-        end: tip_point,
-    });
-    period.push(Segment::Flank {
-        curve: flank.curve.clone(),
-        reversed: true,
-    });
+    period.push((
+        Segment::Flank {
+            curve: map_curve(&flank.curve, mirror)?,
+            reversed: false,
+        },
+        GearFaceRole::Flank {
+            tooth: 0,
+            side: ToothSide::Minus,
+        },
+    ));
+    period.push((
+        Segment::Arc {
+            center: Point3::new(0.0, 0.0, 0.0),
+            start: mirror(tip_point),
+            end: tip_point,
+        },
+        GearFaceRole::Tip { tooth: 0 },
+    ));
+    period.push((
+        Segment::Flank {
+            curve: flank.curve.clone(),
+            reversed: true,
+        },
+        GearFaceRole::Flank {
+            tooth: 0,
+            side: ToothSide::Plus,
+        },
+    ));
     if !involute_meets_fillet {
-        period.push(Segment::Line {
-            start: start_point,
-            end: tangent_point,
-        });
+        period.push((
+            Segment::Line {
+                start: start_point,
+                end: tangent_point,
+            },
+            GearFaceRole::FlankBase {
+                tooth: 0,
+                side: ToothSide::Plus,
+            },
+        ));
     }
     if has_fillet {
-        period.push(Segment::Arc {
-            center,
-            start: tangent_point,
-            end: root_point,
-        });
+        period.push((
+            Segment::Arc {
+                center,
+                start: tangent_point,
+                end: root_point,
+            },
+            GearFaceRole::Fillet {
+                tooth: 0,
+                side: ToothSide::Plus,
+            },
+        ));
     }
+    let (segments, roles) = replicate(&period, GearFaceRole::Root { gap: 0 }, teeth, tooth.phase)?;
     Ok(Outline {
-        segments: replicate(&period, teeth, tooth.phase)?,
+        segments,
+        roles,
         flank: Some(flank),
     })
 }
@@ -437,55 +481,107 @@ pub(super) fn internal_outline(space: &CircularTooth) -> Result<Outline, GearErr
 
     let mut period = Vec::with_capacity(7);
     if !involute_at_tip {
-        period.push(Segment::Line {
-            start: mirror(tip_corner),
-            end: mirror(start_point),
-        });
+        period.push((
+            Segment::Line {
+                start: mirror(tip_corner),
+                end: mirror(start_point),
+            },
+            GearFaceRole::FlankBase {
+                tooth: 0,
+                side: ToothSide::Plus,
+            },
+        ));
     }
-    period.push(Segment::Flank {
-        curve: map_curve(&flank.curve, mirror)?,
-        reversed: false,
-    });
+    period.push((
+        Segment::Flank {
+            curve: map_curve(&flank.curve, mirror)?,
+            reversed: false,
+        },
+        GearFaceRole::Flank {
+            tooth: 0,
+            side: ToothSide::Plus,
+        },
+    ));
     if has_fillet {
-        period.push(Segment::Arc {
-            center: mirror(center),
-            start: mirror(tangent_point),
-            end: mirror(root_point),
-        });
+        period.push((
+            Segment::Arc {
+                center: mirror(center),
+                start: mirror(tangent_point),
+                end: mirror(root_point),
+            },
+            GearFaceRole::Fillet {
+                tooth: 0,
+                side: ToothSide::Plus,
+            },
+        ));
     }
-    period.push(Segment::Arc {
-        center: Point3::new(0.0, 0.0, 0.0),
-        start: mirror(root_point),
-        end: root_point,
-    });
+    period.push((
+        Segment::Arc {
+            center: Point3::new(0.0, 0.0, 0.0),
+            start: mirror(root_point),
+            end: root_point,
+        },
+        GearFaceRole::Root { gap: 0 },
+    ));
     if has_fillet {
-        period.push(Segment::Arc {
-            center,
-            start: root_point,
-            end: tangent_point,
-        });
+        period.push((
+            Segment::Arc {
+                center,
+                start: root_point,
+                end: tangent_point,
+            },
+            GearFaceRole::Fillet {
+                tooth: 1,
+                side: ToothSide::Minus,
+            },
+        ));
     }
-    period.push(Segment::Flank {
-        curve: flank.curve.clone(),
-        reversed: true,
-    });
+    period.push((
+        Segment::Flank {
+            curve: flank.curve.clone(),
+            reversed: true,
+        },
+        GearFaceRole::Flank {
+            tooth: 1,
+            side: ToothSide::Minus,
+        },
+    ));
     if !involute_at_tip {
-        period.push(Segment::Line {
-            start: start_point,
-            end: tip_corner,
-        });
+        period.push((
+            Segment::Line {
+                start: start_point,
+                end: tip_corner,
+            },
+            GearFaceRole::FlankBase {
+                tooth: 1,
+                side: ToothSide::Minus,
+            },
+        ));
     }
     // Spaces sit half a pitch off the teeth, so a tooth lands on the phase.
+    let (segments, roles) = replicate(
+        &period,
+        GearFaceRole::Tip { tooth: 1 },
+        teeth,
+        space.phase + half_pitch,
+    )?;
     Ok(Outline {
-        segments: replicate(&period, teeth, space.phase + half_pitch)?,
+        segments,
+        roles,
         flank: Some(flank),
     })
 }
 
 /// Rotate one period `teeth` times and join consecutive periods with an arc
 /// about the center (a root land for external gears, a tip land for
-/// internal ones).
-fn replicate(period: &[Segment], teeth: u32, phase: f64) -> Result<Vec<Segment>, GearError> {
+/// internal ones). Role tooth indices in `period` and `between` are offsets
+/// from the period's own index.
+fn replicate(
+    period: &[(Segment, GearFaceRole)],
+    between: GearFaceRole,
+    teeth: u32,
+    phase: f64,
+) -> Result<(Vec<Segment>, Vec<GearFaceRole>), GearError> {
     let pitch = 2.0 * PI / f64::from(teeth);
     let rotation = |k: u32| {
         let (sin, cos) = f64::from(k).mul_add(pitch, phase).sin_cos();
@@ -493,17 +589,20 @@ fn replicate(period: &[Segment], teeth: u32, phase: f64) -> Result<Vec<Segment>,
     };
     let first_start = period
         .first()
-        .map(Segment::start)
+        .map(|(piece, _)| piece.start())
         .ok_or_else(|| GearError::refused(GearRefusal::InvalidParameter, "empty tooth period"))?;
     let last_end = period
         .last()
-        .map(Segment::end)
+        .map(|(piece, _)| piece.end())
         .ok_or_else(|| GearError::refused(GearRefusal::InvalidParameter, "empty tooth period"))?;
-    let mut segments = Vec::with_capacity((period.len() + 1) * teeth as usize);
+    let capacity = (period.len() + 1) * teeth as usize;
+    let mut segments = Vec::with_capacity(capacity);
+    let mut roles = Vec::with_capacity(capacity);
     for k in 0..teeth {
         let here = rotation(k);
-        for piece in period {
+        for (piece, role) in period {
             segments.push(piece.mapped(here)?);
+            roles.push(role.shifted(k, teeth));
         }
         let next = rotation((k + 1) % teeth);
         segments.push(Segment::Arc {
@@ -511,8 +610,9 @@ fn replicate(period: &[Segment], teeth: u32, phase: f64) -> Result<Vec<Segment>,
             start: here(last_end),
             end: next(first_start),
         });
+        roles.push(between.shifted(k, teeth));
     }
-    Ok(segments)
+    Ok((segments, roles))
 }
 
 /// Straight-sided rack tooth data in the rack's local frame.
@@ -581,60 +681,112 @@ pub(super) fn rack_outline(rack: &RackTooth) -> Result<Outline, GearError> {
 
     let length = f64::from(teeth) * pitch;
     let mut segments = Vec::with_capacity(4 + 6 * teeth as usize);
-    segments.push(Segment::Line {
-        start: Point3::new(0.0, yb, 0.0),
-        end: Point3::new(length, yb, 0.0),
-    });
-    segments.push(Segment::Line {
-        start: Point3::new(length, yb, 0.0),
-        end: Point3::new(length, yf, 0.0),
-    });
+    let mut roles = Vec::with_capacity(4 + 6 * teeth as usize);
+    let mut push = |segment: Segment, role: GearFaceRole| {
+        segments.push(segment);
+        roles.push(role);
+    };
+    push(
+        Segment::Line {
+            start: Point3::new(0.0, yb, 0.0),
+            end: Point3::new(length, yb, 0.0),
+        },
+        GearFaceRole::RackBack,
+    );
+    push(
+        Segment::Line {
+            start: Point3::new(length, yb, 0.0),
+            end: Point3::new(length, yf, 0.0),
+        },
+        GearFaceRole::RackEnd(GearEnd::End),
+    );
     let mut cursor = Point3::new(length, yf, 0.0);
     for k in (0..teeth).rev() {
         let dx = (f64::from(k) + 0.5) * pitch;
         let right_root = shift(root, dx);
-        segments.push(Segment::Line {
-            start: cursor,
-            end: right_root,
-        });
+        push(
+            Segment::Line {
+                start: cursor,
+                end: right_root,
+            },
+            if k + 1 == teeth {
+                GearFaceRole::RackRootEnd(GearEnd::End)
+            } else {
+                GearFaceRole::Root { gap: k }
+            },
+        );
         if has_fillet {
-            segments.push(Segment::Arc {
-                center: shift(center, dx),
-                start: right_root,
-                end: shift(tangent, dx),
-            });
+            push(
+                Segment::Arc {
+                    center: shift(center, dx),
+                    start: right_root,
+                    end: shift(tangent, dx),
+                },
+                GearFaceRole::Fillet {
+                    tooth: k,
+                    side: ToothSide::Plus,
+                },
+            );
         }
-        segments.push(Segment::Line {
-            start: shift(tangent, dx),
-            end: shift(tip, dx),
-        });
-        segments.push(Segment::Line {
-            start: shift(tip, dx),
-            end: shift(left(tip), dx),
-        });
-        segments.push(Segment::Line {
-            start: shift(left(tip), dx),
-            end: shift(left(tangent), dx),
-        });
+        push(
+            Segment::Line {
+                start: shift(tangent, dx),
+                end: shift(tip, dx),
+            },
+            GearFaceRole::Flank {
+                tooth: k,
+                side: ToothSide::Plus,
+            },
+        );
+        push(
+            Segment::Line {
+                start: shift(tip, dx),
+                end: shift(left(tip), dx),
+            },
+            GearFaceRole::Tip { tooth: k },
+        );
+        push(
+            Segment::Line {
+                start: shift(left(tip), dx),
+                end: shift(left(tangent), dx),
+            },
+            GearFaceRole::Flank {
+                tooth: k,
+                side: ToothSide::Minus,
+            },
+        );
         if has_fillet {
-            segments.push(Segment::Arc {
-                center: shift(left(center), dx),
-                start: shift(left(tangent), dx),
-                end: shift(left(root), dx),
-            });
+            push(
+                Segment::Arc {
+                    center: shift(left(center), dx),
+                    start: shift(left(tangent), dx),
+                    end: shift(left(root), dx),
+                },
+                GearFaceRole::Fillet {
+                    tooth: k,
+                    side: ToothSide::Minus,
+                },
+            );
         }
         cursor = shift(left(root), dx);
     }
-    segments.push(Segment::Line {
-        start: cursor,
-        end: Point3::new(0.0, yf, 0.0),
-    });
-    segments.push(Segment::Line {
-        start: Point3::new(0.0, yf, 0.0),
-        end: Point3::new(0.0, yb, 0.0),
-    });
+    push(
+        Segment::Line {
+            start: cursor,
+            end: Point3::new(0.0, yf, 0.0),
+        },
+        GearFaceRole::RackRootEnd(GearEnd::Start),
+    );
+    push(
+        Segment::Line {
+            start: Point3::new(0.0, yf, 0.0),
+            end: Point3::new(0.0, yb, 0.0),
+        },
+        GearFaceRole::RackEnd(GearEnd::Start),
+    );
     Ok(Outline {
         segments,
+        roles,
         flank: None,
     })
 }

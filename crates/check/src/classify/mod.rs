@@ -93,9 +93,10 @@ pub fn classify_point(
     )
 }
 
-/// Internal refusal carried through crossing APIs when a NURBS contact is
-/// too close to tangency to determine crossing parity. The shared vote loop
-/// treats this one qualified error as an abstention and tries another ray.
+/// Internal refusal carried through crossing APIs when a NURBS or quadric
+/// contact is too close to tangency to determine crossing parity. The shared
+/// vote loop treats this one qualified error as an abstention and tries
+/// another ray.
 pub(crate) const NURBS_RAY_GRAZE: &str = "NURBS ray contact has unresolved crossing parity";
 
 fn is_nurbs_ray_graze(error: &CheckError) -> bool {

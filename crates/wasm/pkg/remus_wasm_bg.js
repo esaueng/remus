@@ -1848,6 +1848,28 @@ export class RemusKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * Cut gear teeth along the whole length of a solid's cylindrical face,
+     * as typed data: external teeth on a boss, internal teeth in a bore
+     * (see the module docs for the fields).
+     *
+     * The input solid is left in place and a new solid is returned. Never
+     * throws on a refusal: the envelope's `status` is `"error"` with a
+     * `gear:<reason>` code and the session unchanged.
+     * @param {number} solid
+     * @param {number} face
+     * @param {string} spec
+     * @returns {SolidOperationDetailedResult}
+     */
+    cutGearTeethDetailed(solid, face, spec) {
+        const ptr0 = passStringToWasm0(spec, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_cutGearTeethDetailed(this.__wbg_ptr, solid, face, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Cut solid `b` from `a` with journaled construction history.
      * @param {number} a
      * @param {number} b
@@ -5548,6 +5570,24 @@ export class RemusKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] >>> 0;
+    }
+    /**
+     * Build an involute spur gear, internal gear or rack from a JSON
+     * specification, as typed data (see the module docs for the fields).
+     *
+     * Never throws on a refusal: the envelope's `status` is `"error"` with
+     * a `gear:<reason>` code and the session unchanged.
+     * @param {string} spec
+     * @returns {SolidOperationDetailedResult}
+     */
+    makeGearDetailed(spec) {
+        const ptr0 = passStringToWasm0(spec, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_makeGearDetailed(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Create a straight-line edge between two points.

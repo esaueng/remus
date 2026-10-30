@@ -14,6 +14,24 @@ historical predecessor-line records, retained for provenance. The
   `quality: "approximate"` with a proven `flankDeviationBound` (racks are
   exact). Dimensions, guideline warnings and typed `gear:<reason>` refusals
   are returned as data.
+* **operations,wasm:** `cut_gear_teeth` / `cutGearTeethDetailed` cut gear
+  teeth along the whole length of a solid's boss (external) or bore
+  (internal), keeping its diameter or using a given module; the input solid is
+  kept. A feature crossing the tooth band, or a span over part of the face,
+  refuses with a typed `gear:<reason>` code. Gear results now name every gear
+  face (`faceRoles`, e.g. `tooth[3].flank.plus`) and report the `module`.
+* **operations,wasm:** helical gears. `GearParams::helix_angle` and `hand`
+  (`helixAngle` in degrees, `hand: "right" | "left"`) make external and
+  internal helical gears, standalone or cut into a boss or bore (ISO 21771:
+  normal module, pressure angle and coefficients). The transverse profile
+  turns along the axis; lands concentric with the axis stay exact cylinders,
+  and flanks and fillets are certified swept surfaces whose
+  `flankDeviationBound` covers the exact involute helicoid. Results report
+  `transverseModule`, `helixAngle`, `lead` and `spansAlongAxis`. Helical
+  racks refuse for now.
+* **math:** `nurbs::screw` fits helices and screw-motion swept surfaces as
+  NURBS with a proven bound; fits sharing one plan share their knots, so
+  neighbouring faces and edges match exactly.
 * **math:** `nurbs::hermite_fit::fit_cubic_hermite` fits a parametric curve
   with uniform cubic Hermite spans and a proven remainder bound from a
   caller-supplied fourth-derivative bound.
@@ -139,6 +157,31 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **algo:** the ray-cast point classifier no longer double-counts crossings
+  near the rims of a partial cylinder face whose trim is not a rectangle in
+  its `(u, v)` chart (a helical gear's tip and root lands, bounded by
+  helices): it tests the hit against the face's trim polygon instead of the
+  rectangle spanning every angle the face reaches. Rectangular patches keep
+  their model. A cut against a helical gear's bore discarded a coplanar cap
+  and left an open shell.
+
+* **algo:** exact booleans against coaxial tubes, the steps of cutting gear
+  teeth into an existing cylinder. A turned groove whose tube caps lie inside
+  the cylinder and whose outer wall stands outside it no longer refuses
+  (the cap annulus outside the cylinder sampled its interior inside its own
+  hole). A tube wall coincident with an existing cylinder no longer depends
+  on the two seams lining up: a mismatched seam refused, or, for a cut whose
+  caps lie inside the cylinder, returned the uncut body. A planar face whose
+  inner wire is not a circle (an internal gear's tooth outline) now splits
+  along nested coaxial section circles.
+* **math:** point-to-surface projection no longer stalls where a partial
+  derivative vanishes, as along a fitted involute flank leaving its base
+  circle. `solid_volume` of a gear on its shaft read its clamp mesh, 1.6e-4
+  low, at coarse deflections; it now takes the exact face integrals at every
+  deflection.
+* **operations:** `face_area` of a planar face bounded by polynomial NURBS
+  edges (cubic flank traces, for example) integrates them exactly instead of
+  sampling the whole boundary; a bored gear cap read 2.6e-5 high.
 * **operations:** a fillet whose tangent chain runs over the end arc of an
   earlier convex fillet band of the same radius now rounds that stretch as an
   exact sphere triangle, bounded by three great circles, instead of a lofted

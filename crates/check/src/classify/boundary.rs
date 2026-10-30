@@ -10,10 +10,12 @@ use std::sync::OnceLock;
 
 use smallvec::SmallVec;
 
+use remus_math::intersect::ContactKind;
 use remus_math::nurbs::intersection::LineSurfaceSeedGrid;
 use remus_math::nurbs::projection::{SurfaceSeedGrid, project_point_to_surface_with_grid};
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::predicates::point_in_polygon;
+use remus_math::ray::RayHit;
 use remus_math::traits::ParametricSurface;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
@@ -22,6 +24,7 @@ use remus_topology::face::{FaceId, FaceSurface};
 
 use crate::CheckError;
 use crate::classify::ray_surface;
+use crate::distance::plane_trim::PlanarTrim;
 use crate::util::{face_hole_polygons, face_polygon, point_in_polygon_3d};
 
 /// Minimum positive ray parameter to count as a forward hit.
@@ -566,6 +569,8 @@ pub struct FaceCache {
     uv_trim: OnceLock<NurbsUvTrim>,
     analytic_uv_trim: OnceLock<AnalyticUvTrim>,
     spherical_trim: OnceLock<Option<GreatCircleTrim>>,
+    /// The exact trim of a planar face with a curved edge.
+    plane_trim: OnceLock<Option<PlanarTrim>>,
 }
 
 /// UV images of a cylinder, cone or torus face's trim polygons, as
@@ -731,10 +736,16 @@ impl NurbsUvTrim {
 }
 
 /// True when a hit lands in one of the face's holes (3D polygon variant).
+/// Whether `hit` lies in a hole. Nested inner wires alternate void and
+/// material (an island inside a cavity opening), so a hit is in a hole when
+/// an odd number of hole loops contain it.
 fn hit_in_hole_3d(holes: &[Vec<Point3>], hit: Point3, normal: Vec3) -> bool {
     holes
         .iter()
-        .any(|hole| point_in_polygon_3d(&hit, hole, &normal))
+        .filter(|hole| point_in_polygon_3d(&hit, hole, &normal))
+        .count()
+        % 2
+        == 1
 }
 
 /// Count crossings for analytic (non-planar) faces using UV containment.
@@ -1922,36 +1933,38 @@ pub fn count_face_ray_crossings_cached(
 ) -> Result<u32, CheckError> {
     let face = topo.face(face_id)?;
     match face.surface() {
-        FaceSurface::Plane { normal, d } => {
-            ray_plane_crossings_with_trim(topo, face_id, trim, origin, direction, *normal, *d)
-        }
+        FaceSurface::Plane { normal, d } => ray_plane_crossings_with_trim(
+            topo, face_id, trim, cache, origin, direction, *normal, *d,
+        ),
         FaceSurface::Cylinder(cyl) => {
-            let cyl = cyl.clone();
-            let roots = ray_surface::ray_cylinder(origin, direction, &cyl);
-            count_analytic_crossings_with_trim(
-                topo,
-                face_id,
-                trim,
-                cache,
-                &ray_hit_points(origin, direction, &roots),
-                |p| cyl.project_point(p),
-                false,
-                None,
-            )
+            let hits = ray_surface::ray_cylinder(origin, direction, cyl);
+            count_quadric_crossings(origin, direction, &hits, |points| {
+                count_analytic_crossings_with_trim(
+                    topo,
+                    face_id,
+                    trim,
+                    cache,
+                    points,
+                    |p| cyl.project_point(p),
+                    false,
+                    None,
+                )
+            })
         }
         FaceSurface::Cone(cone) => {
-            let cone = cone.clone();
-            let roots = ray_surface::ray_cone(origin, direction, &cone);
-            count_analytic_crossings_with_trim(
-                topo,
-                face_id,
-                trim,
-                cache,
-                &ray_hit_points(origin, direction, &roots),
-                |p| cone.project_point(p),
-                false,
-                Some(CONE_APEX_V),
-            )
+            let hits = ray_surface::ray_cone(origin, direction, cone);
+            count_quadric_crossings(origin, direction, &hits, |points| {
+                count_analytic_crossings_with_trim(
+                    topo,
+                    face_id,
+                    trim,
+                    cache,
+                    points,
+                    |p| cone.project_point(p),
+                    false,
+                    Some(CONE_APEX_V),
+                )
+            })
         }
         FaceSurface::Sphere(sph) => {
             // A spherical cap's boundary is planar, and the plane cuts the
@@ -1959,38 +1972,24 @@ pub fn count_face_ray_crossings_cached(
             // against that plane, with no polygon involved. Take it when the
             // boundary really is planar; fall back to the chorded polygon for a
             // lune or a boolean-made spherical triangle, whose boundary is not.
-            let sph = sph.clone();
-            let roots = ray_surface::ray_sphere(origin, direction, &sph);
-            if let Some(count) = count_sphere_cap_crossings_with_trim(
-                topo,
-                face_id,
-                trim,
-                &ray_hit_points(origin, direction, &roots),
-                &sph,
-            )? {
-                Ok(count)
-            } else if let Some(count) = count_great_circle_trim_crossings(
-                topo,
-                face_id,
-                cache,
-                &ray_hit_points(origin, direction, &roots),
-            )? {
-                Ok(count)
-            } else if let Some(count) = count_sphere_circle_patch_crossings(
-                topo,
-                face_id,
-                &ray_hit_points(origin, direction, &roots),
-                &sph,
-            )? {
-                Ok(count)
-            } else {
-                count_3d_polygon_crossings_with_trim(
-                    topo,
-                    face_id,
-                    trim,
-                    &ray_hit_points(origin, direction, &roots),
-                )
-            }
+            let hits = ray_surface::ray_sphere(origin, direction, sph);
+            count_quadric_crossings(origin, direction, &hits, |points| {
+                if let Some(count) =
+                    count_sphere_cap_crossings_with_trim(topo, face_id, trim, points, sph)?
+                {
+                    Ok(count)
+                } else if let Some(count) =
+                    count_great_circle_trim_crossings(topo, face_id, cache, points)?
+                {
+                    Ok(count)
+                } else if let Some(count) =
+                    count_sphere_circle_patch_crossings(topo, face_id, points, sph)?
+                {
+                    Ok(count)
+                } else {
+                    count_3d_polygon_crossings_with_trim(topo, face_id, trim, points)
+                }
+            })
         }
         FaceSurface::Torus(tor) => {
             let tor = tor.clone();
@@ -2064,15 +2063,78 @@ pub fn analytic_uv_trim_contains(
     Ok(Some(count > 0))
 }
 
+/// Whether a planar face has a boundary edge its trim polygon only
+/// approximates: anything but a straight line.
+fn planar_face_has_curved_edge(topo: &Topology, face_id: FaceId) -> Result<bool, CheckError> {
+    let face = topo.face(face_id)?;
+    for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        for oriented in topo.wire(wire)?.edges() {
+            if !crate::distance::edge::is_linear_curve(topo.edge(oriented.edge())?.curve()) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// The exact trim of a planar face with a curved edge, `None` for a
+/// straight-edged face, whose polygon is already exact.
+fn exact_plane_trim_for(
+    topo: &Topology,
+    face_id: FaceId,
+    normal: Vec3,
+) -> Result<Option<PlanarTrim>, CheckError> {
+    if planar_face_has_curved_edge(topo, face_id)? {
+        PlanarTrim::build(topo, face_id, normal).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Exact trim membership of a plane hit on a face bounded by lines and
+/// circles (RFC 0008 F1). The chorded polygon's inradius falls short of a
+/// circular rim by its sagitta, a band no graze margin covers, so a ray
+/// through that band would miss the cap while crossing the exact wall.
+///
+/// `None` when the face is straight-edged or the exact test declines (another
+/// curve kind, or an event it cannot resolve); the caller then keeps the
+/// polygon.
+fn exact_plane_trim(
+    topo: &Topology,
+    face_id: FaceId,
+    cache: Option<&FaceCache>,
+    hit: Point3,
+    normal: Vec3,
+) -> Result<Option<bool>, CheckError> {
+    let contains = |trim: &PlanarTrim| trim.contains(hit).ok();
+    Ok(match cache {
+        Some(cache) => {
+            let trim = if let Some(trim) = cache.plane_trim.get() {
+                trim
+            } else {
+                let trim = exact_plane_trim_for(topo, face_id, normal)?;
+                cache.plane_trim.get_or_init(|| trim)
+            };
+            trim.as_ref().and_then(contains)
+        }
+        None => exact_plane_trim_for(topo, face_id, normal)?
+            .as_ref()
+            .and_then(contains),
+    })
+}
+
 /// Ray-plane intersection with point-in-polygon boundary test.
 ///
 /// Takes caller-supplied trim data. `None` rebuilds it on demand in the
 /// pre-refactor lazy order: the outer polygon first, hole polygons only when
-/// the hit survives outer containment.
+/// the hit survives outer containment. A face with circular edges is decided
+/// exactly first ([`exact_plane_trim`]).
+#[allow(clippy::too_many_arguments)]
 fn ray_plane_crossings_with_trim(
     topo: &Topology,
     face_id: FaceId,
     trim: Option<&FaceTrimData>,
+    cache: Option<&FaceCache>,
     origin: Point3,
     direction: Vec3,
     normal: Vec3,
@@ -2084,6 +2146,9 @@ fn ray_plane_crossings_with_trim(
     };
 
     let hit = origin + direction * t;
+    if let Some(inside) = exact_plane_trim(topo, face_id, cache, hit, normal)? {
+        return Ok(u32::from(inside));
+    }
     if let Some(cached) = trim {
         return Ok(ray_plane_crossings_with_cached(hit, cached, normal));
     }
@@ -2370,6 +2435,52 @@ fn count_nurbs_hits_with_trim(
     }
 
     Ok(crossings)
+}
+
+/// Crossings of one ray over a quadric face from its qualified hits.
+///
+/// `count` is the face's trim count over a set of points on the ray. The
+/// transversal hits are counted in one call, exactly as bare roots were. A
+/// tangential contact adds no crossing as long as the trim answers alike at
+/// both ends of its root window (both roots inside: two crossings; both
+/// outside: none). One that straddles the trim, or an unclassified contact
+/// the trim may contain, leaves the parity open: the ray abstains with the
+/// same refusal as a NURBS graze, and the vote loop draws another ray.
+fn count_quadric_crossings(
+    origin: Point3,
+    direction: Vec3,
+    hits: &[RayHit],
+    mut count: impl FnMut(&[Point3]) -> Result<u32, CheckError>,
+) -> Result<u32, CheckError> {
+    let abstain = || CheckError::ClassificationFailed(super::NURBS_RAY_GRAZE.into());
+    let mut transversal = SmallVec::<[Point3; 4]>::new();
+    for hit in hits {
+        if hit.kind == ContactKind::Transversal {
+            if hit.t > RAY_T_MIN {
+                transversal.push(origin + direction * hit.t);
+            }
+            continue;
+        }
+        if !hit.spread.is_finite() {
+            return Err(abstain());
+        }
+        let (lo, hi) = (hit.t - hit.spread, hit.t + hit.spread);
+        if hi <= RAY_T_MIN {
+            continue;
+        }
+        let mut inside = |t: f64| -> Result<bool, CheckError> {
+            Ok(t > RAY_T_MIN && count(&[origin + direction * t])? > 0)
+        };
+        let resolved = if hit.kind == ContactKind::Tangential && lo > RAY_T_MIN {
+            inside(lo)? == inside(hi)?
+        } else {
+            !(inside(lo)? || inside(hit.t)? || inside(hi)?)
+        };
+        if !resolved {
+            return Err(abstain());
+        }
+    }
+    count(&transversal)
 }
 
 fn ray_hit_points(origin: Point3, direction: Vec3, roots: &[f64]) -> SmallVec<[Point3; 4]> {
