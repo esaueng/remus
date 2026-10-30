@@ -142,3 +142,21 @@ fn sphere_minus_corner_classifies_by_closed_form() {
     );
     assert_classifies(&topo, solid, &points);
 }
+
+/// The box-sphere octant comes from an analytic shortcut whose shell winds
+/// its faces on the right of their loops: the arc trim reads that side off a
+/// planar neighbour instead of assuming one.
+#[test]
+fn box_intersect_sphere_octant_classifies_by_closed_form() {
+    let mut topo = Topology::new();
+    let block = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let ball = make_sphere(&mut topo, 8.0, 32).unwrap();
+    let solid = boolean(&mut topo, BooleanOp::Intersect, block, ball).unwrap();
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let points = closed_form(
+        |p| (8.0 - (p - origin).length()).min(in_box(p, BOX_LO, Point3::new(10.0, 10.0, 10.0))),
+        Point3::new(-1.0, -1.0, -1.0),
+        Point3::new(9.0, 9.0, 9.0),
+    );
+    assert_classifies(&topo, solid, &points);
+}

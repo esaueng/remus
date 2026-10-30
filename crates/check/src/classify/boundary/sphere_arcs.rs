@@ -7,10 +7,15 @@
 //! polygon projected onto one plane, which does not bound a strongly curved
 //! patch.
 //!
-//! The face lies to the left of every one of its loops, looking down its
-//! normal (the outward sphere normal, flipped for a reversed face). From the
-//! query point, walk a great circle and find the first boundary arc it
-//! crosses: the point is inside exactly when the walk leaves the face there.
+//! The face lies on one side of every one of its loops, looking down its
+//! normal (the outward sphere normal, flipped for a reversed face): the left
+//! for boolean results, the right for some analytic shortcuts (the box-sphere
+//! octant), since no rule fixes a winding. A consistently oriented shell has
+//! one side throughout, so the side is measured exactly on a planar face
+//! sharing an edge, where the loop's Newell normal against the plane normal
+//! gives it; with no planar neighbour the test declines. From the query
+//! point, walk a great circle and find the first boundary arc it crosses:
+//! the point is inside exactly when the walk leaves the face there.
 //! Every crossing is a closed-form circle-circle event on the sphere, so no
 //! chord approximates the boundary. A walk that meets a vertex, touches an arc
 //! tangentially or starts on the boundary proves nothing and the next
@@ -21,7 +26,7 @@ use remus_math::compact_sort::CompactSort;
 use remus_math::surfaces::SphericalSurface;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
-use remus_topology::edge::EdgeCurve;
+use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::face::FaceId;
 
 use crate::CheckError;
@@ -81,7 +86,8 @@ impl TrimArc {
 pub(super) struct SphereArcTrim {
     center: Point3,
     radius: f64,
-    /// `1` when the face normal is the outward sphere normal, `-1` reversed.
+    /// `1` when the face lies left of its loops looking down the outward
+    /// sphere normal, `-1` when it lies right.
     sense: f64,
     arcs: Vec<TrimArc>,
 }
@@ -96,12 +102,14 @@ impl SphereArcTrim {
     ) -> Result<Option<Self>, CheckError> {
         let face = topo.face(face_id)?;
         let mut arcs = Vec::new();
+        let mut edges = Vec::new();
         for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
             for oriented in topo.wire(wire)?.edges() {
                 let edge = topo.edge(oriented.edge())?;
                 let EdgeCurve::Circle(circle) = edge.curve() else {
                     return Ok(None);
                 };
+                edges.push(oriented.edge());
                 let Ok((t0, t1)) = edge.strict_domain() else {
                     return Ok(None);
                 };
@@ -144,10 +152,14 @@ impl SphereArcTrim {
         if arcs.is_empty() {
             return Ok(None);
         }
+        let Some(left) = shell_winds_left(topo, face_id, &edges)? else {
+            return Ok(None);
+        };
+        let reversed = if face.is_reversed() { -1.0 } else { 1.0 };
         Ok(Some(Self {
             center: sphere.center(),
             radius: sphere.radius(),
-            sense: if face.is_reversed() { -1.0 } else { 1.0 },
+            sense: if left { reversed } else { -reversed },
             arcs,
         }))
     }
@@ -256,6 +268,47 @@ impl SphereArcTrim {
         }
         None
     }
+}
+
+/// Whether faces around `face_id` lie left of their loops looking down their
+/// normals, read off the first planar face that shares one of `edges`: its
+/// loop's Newell normal points along its effective normal exactly when an
+/// outer loop winds the face on its left (an inner loop the other way).
+/// `None` when no planar face shares an edge.
+fn shell_winds_left(
+    topo: &Topology,
+    face_id: FaceId,
+    edges: &[EdgeId],
+) -> Result<Option<bool>, CheckError> {
+    for (other, face) in topo.faces().iter() {
+        if other == face_id {
+            continue;
+        }
+        let Some(normal) = face.effective_plane_normal() else {
+            continue;
+        };
+        for (k, wire) in std::iter::once(face.outer_wire())
+            .chain(face.inner_wires().iter().copied())
+            .enumerate()
+        {
+            if !topo
+                .wire(wire)?
+                .edges()
+                .iter()
+                .any(|oriented| edges.contains(&oriented.edge()))
+            {
+                continue;
+            }
+            let along =
+                crate::util::polygon_normal(&crate::util::wire_polygon(topo, wire)?).dot(normal);
+            // A degenerate loop's Newell normal is a placeholder.
+            if along.abs() < 0.5 {
+                continue;
+            }
+            return Ok(Some((along > 0.0) == (k == 0)));
+        }
+    }
+    Ok(None)
 }
 
 /// A value in `[0, 4)` increasing with the angle of `(x, y)` from the `+x`
