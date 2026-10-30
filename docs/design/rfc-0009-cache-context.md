@@ -11,9 +11,9 @@ carrier), [PERF-Q02](perf-q02-cache-identity.md) (topology cache identity),
 [browser kernel size architecture](kernel-wasm-size-architecture.md) (owner
 decision 1: no speed regression).
 
-Baseline: `main` at `cc7b260`. Line references are to that revision. The
-kernel struct is still named `BrepKernel` there; this RFC says "the kernel"
-and applies unchanged after the rename to `RemusKernel`.
+Baseline: `main` at `cc7b260`; line references are to that revision. The
+kernel struct is `RemusKernel` (renamed in #1358, after that revision); this
+RFC says "the kernel".
 
 ## 1. Problem
 
@@ -74,7 +74,7 @@ Some abbreviations used in the tables:
 
 | Cache | Key → value | Bound | Owner | Evidence | Oracles |
 |---|---|---|---|---|---|
-| `check::classify::ClassificationCache` (PERF-Q02) | `(lineage, generation, solid, tolerance bits, recovery attempts)` → prepared classification | 16 solids, 32 MiB. FIFO. ≈ 1.8 KB per entry | `BrepKernel::classify_cache` (`RefCell`) | 5.5× on repeated queries. Thrashes above 16 solids (`classify_cache_perf`). | `wasm/bindings/checkpoint.rs` restore-invalidation tests, plus the identity audit in PERF-Q02 |
+| `check::classify::ClassificationCache` (PERF-Q02) | `(lineage, generation, solid, tolerance bits, recovery attempts)` → prepared classification | 16 solids, 32 MiB. FIFO. ≈ 1.8 KB per entry | `RemusKernel::classify_cache` (`RefCell`) | 5.5× on repeated queries. Thrashes above 16 solids (`classify_cache_perf`). | `wasm/bindings/checkpoint.rs` restore-invalidation tests, plus the identity audit in PERF-Q02 |
 | `wasm::bindings::prepared_move::PreparedMoves` | Opaque never-reused handle → `PreparedFaceMove` | 16 live | Kernel. Not saved or restored by checkpoints. | Prepared p95 29 against 43 ms (W, `face-drag-session-2026-10-19.md`) | `prepared_move/tests/scaling.rs`, `face_move_preview_tests.rs` |
 | `resize_blend::DISCOVERY_MEMO` | Tagged with `CacheIdentity`. `(edge, face pair)` verdicts + adjacency | One move | `DiscoveryMemoScope` guard (thread-local, set only during the call) | None | `resize_blend/translation_oracle_tests.rs` |
 | `volume_memo::scoped` stand-in | as #5 | 16 | One operation; the disabled memo is restored on unwind | (blend cascade) | as #5 |
