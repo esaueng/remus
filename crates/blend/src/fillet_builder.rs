@@ -2757,14 +2757,15 @@ fn compute_stripe_for_spine(
     // The rolling-ball constraints place the centre on each surface's
     // +normal side, so present every surface with its normal on the ball's
     // side: inward (into the material) for a convex edge, outward for a
-    // concave one, and the opposite for the external common-tangent branch.
-    // The old path only negated planes and silently sent curved faces to the
-    // external branch; after that it always took the inward side, which put
-    // a concave edge's ball inside the material.
+    // concave one. The external common-tangent branch (a resized
+    // cylinder-cone rim, whose torus runs outside the cylinder) is concave by
+    // construction and always takes the outward side, whatever the frames
+    // read at its spine. The old path only negated planes and otherwise took
+    // the inward side, which put a concave edge's ball inside the material.
     let concave = analytic::edge_material_frames(topo, &spine, face1, face2)?
         .and_then(|frames| frames.concave())
         == Some(true);
-    let outward = concave != external_support_side;
+    let outward = concave || external_support_side;
     let mut adapter1 = None;
     let mut adapter2 = None;
     let base1 = surface_ref_or_adapter(&surf1, &mut adapter1);
