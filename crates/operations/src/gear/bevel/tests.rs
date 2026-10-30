@@ -246,18 +246,14 @@ fn bevel_gears_are_valid_and_sweep_their_exact_heel_area() {
             "z {}: cap divergence off the exact volume",
             params.teeth
         );
-        // The volume path reads the rational ruled flanks to about 1e-5
-        // relative, independent of the deflection. On the bored gear its
-        // boundary check misses the flank projection and it falls back to a
-        // fine mesh, so only the caps above measure that case.
-        if params.bore_diameter.is_none() {
-            let volume = solid_volume(&topo, outcome.solid, 1e-5).unwrap();
-            assert!(
-                ((volume - expected) / expected).abs() < 5e-5,
-                "z {}: volume {volume} vs exact {expected}",
-                params.teeth
-            );
-        }
+        // The qualified face integrals read every case, the bored one
+        // included, to the flank fit's own deviation.
+        let volume = solid_volume(&topo, outcome.solid, 1e-5).unwrap();
+        assert!(
+            ((volume - expected) / expected).abs() < 1e-6,
+            "z {}: solid volume off the exact sweep",
+            params.teeth
+        );
         let z = params.teeth as usize;
         let radial = if c.root < c.base { 2 * z } else { 0 };
         let bore = usize::from(params.bore_diameter.is_some());

@@ -326,6 +326,30 @@ pub fn integrate_face_area(
     .area)
 }
 
+/// Area of a planar face from its Green's-theorem boundary moments, or
+/// `None` where that exact path declines.
+///
+/// It declines a face that is not planar, a degenerate boundary, or a NURBS
+/// edge whose spans the adaptive rule cannot certify. Unlike
+/// [`integrate_face_area`] it never substitutes the chord polygon, so a
+/// caller keeps its own fallback.
+///
+/// # Errors
+///
+/// Returns topology and edge-domain errors.
+pub fn planar_face_exact_area(topo: &Topology, face_id: FaceId) -> Result<Option<f64>, CheckError> {
+    let FaceSurface::Plane { normal, .. } = topo.face(face_id)?.surface() else {
+        return Ok(None);
+    };
+    let Ok(normal) = normal.normalize() else {
+        return Ok(None);
+    };
+    Ok(
+        integrate_planar_face_exact(topo, face_id, normal, Point3::new(0.0, 0.0, 0.0))?
+            .map(|contribution| contribution.area),
+    )
+}
+
 /// Area of a cylinder, cone, sphere or torus face by exact boundary
 /// integrals, with quadrature as the fallback.
 ///
@@ -884,12 +908,30 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
             // `project_point_to_surface_with_grid`). The surface outlives
             // this call by construction (it is borrowed from the topology).
             let grid = remus_math::nurbs::projection::SurfaceSeedGrid::for_surface(s);
+            // The coarse grid's nine nodes per axis can seed a trim point in
+            // the wrong basin of a many-span carrier, and a misplaced trim
+            // vertex bends the polygon the quadrature is exact for. A point
+            // the coarse seed leaves farther off than any edge plausibly
+            // stands is reseeded from every knot span; the closer foot wins.
+            let span_grid = std::cell::OnceCell::new();
+            let retry = TRIM_PROJECTION_RETRY * control_box_diagonal(s);
             let project = |p: Point3| {
-                remus_math::nurbs::projection::project_point_to_surface_with_grid(s, p, 1e-7, &grid)
-                    .map_or(
-                        ((full.0.0 + full.0.1) * 0.5, (full.1.0 + full.1.1) * 0.5),
-                        |proj| (proj.u, proj.v),
-                    )
+                use remus_math::nurbs::projection::{
+                    SurfaceSeedGrid, project_point_to_surface_with_grid,
+                };
+                let mut found = project_point_to_surface_with_grid(s, p, 1e-7, &grid).ok();
+                if found.is_none_or(|proj| proj.distance.is_nan() || proj.distance > retry) {
+                    let fine = span_grid.get_or_init(|| SurfaceSeedGrid::for_surface_spans(s));
+                    if let Ok(reseeded) = project_point_to_surface_with_grid(s, p, 1e-7, fine)
+                        && found.is_none_or(|proj| reseeded.distance < proj.distance)
+                    {
+                        found = Some(reseeded);
+                    }
+                }
+                found.map_or(
+                    ((full.0.0 + full.0.1) * 0.5, (full.1.0 + full.1.1) * 0.5),
+                    |proj| (proj.u, proj.v),
+                )
             };
             let ((u_range, v_range), outline) =
                 face_uv_bounds(topo, face_id, &project, periodic_u, periodic_v, full)?;
@@ -908,6 +950,25 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
             )
         }
     }
+}
+
+/// Fraction of a NURBS carrier's control-box diagonal past which a trim
+/// point's coarse-seeded projection is retried from the span-aligned grid.
+/// Boundary edges lie on their faces to modelling tolerance, far inside this,
+/// so a projection this far off has missed rather than measured.
+const TRIM_PROJECTION_RETRY: f64 = 1e-7;
+
+/// Diagonal of the box around `surface`'s control points, which contains it.
+fn control_box_diagonal(surface: &NurbsSurface) -> f64 {
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for p in surface.control_points().iter().flatten() {
+        for (axis, value) in [p.x(), p.y(), p.z()].into_iter().enumerate() {
+            lo[axis] = lo[axis].min(value);
+            hi[axis] = hi[axis].max(value);
+        }
+    }
+    Vec3::new(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]).length()
 }
 
 /// UV domain bounds as `((u_min, u_max), (v_min, v_max))`.
@@ -2779,11 +2840,18 @@ fn planar_wire_monomial_moments(
                     e1,
                     e2,
                 )? {
-                    if !has_exact_polynomial_green_rule(nc) {
-                        return Ok(None);
-                    }
                     let traversal_start = topo.vertex(if forward { start_vid } else { end_vid })?;
-                    accumulate_nurbs_green_spans(
+                    if has_exact_polynomial_green_rule(nc) {
+                        accumulate_nurbs_green_spans(
+                            &mut moments,
+                            nc,
+                            edge,
+                            traversal_start.point(),
+                            origin,
+                            e1,
+                            e2,
+                        )?;
+                    } else if !accumulate_adaptive_nurbs_green_spans(
                         &mut moments,
                         nc,
                         edge,
@@ -2791,7 +2859,9 @@ fn planar_wire_monomial_moments(
                         origin,
                         e1,
                         e2,
-                    )?;
+                    )? {
+                        return Ok(None);
+                    }
                 }
             }
         }
@@ -2940,6 +3010,188 @@ fn accumulate_nurbs_green_spans(
         );
     }
     Ok(())
+}
+
+/// Gauss order of one cell of [`accumulate_adaptive_nurbs_green_spans`].
+const ADAPTIVE_GREEN_ORDER: usize = 16;
+
+/// Bisections allowed below one knot span in
+/// [`accumulate_adaptive_nurbs_green_spans`] before it refuses.
+const ADAPTIVE_GREEN_MAX_DEPTH: u32 = 10;
+
+/// Cells one edge may accept in [`accumulate_adaptive_nurbs_green_spans`]
+/// before it refuses; also what the edge's error allowance is split into.
+const ADAPTIVE_GREEN_MAX_CELLS: usize = 1 << 12;
+
+/// Total error [`accumulate_adaptive_nurbs_green_spans`] allows an edge's
+/// moment, relative to the integral of that moment integrand's magnitude
+/// along the whole edge.
+const ADAPTIVE_GREEN_TOLERANCE: f64 = 1e-13;
+
+/// The ten Green moments of one curve cell at [`ADAPTIVE_GREEN_ORDER`], with
+/// the integral of each integrand's magnitude (the scale its error is judged
+/// against).
+fn green_cell_moments<F>(
+    range: (f64, f64),
+    eval: &F,
+    origin: Point3,
+    e1: Vec3,
+    e2: Vec3,
+) -> ([f64; 10], [f64; 10])
+where
+    F: Fn(f64) -> (Point3, Vec3),
+{
+    let mut value = [0.0; 10];
+    accumulate_green_segment(
+        &mut value,
+        range,
+        ADAPTIVE_GREEN_ORDER,
+        1.0,
+        eval,
+        origin,
+        e1,
+        e2,
+    );
+    let mut magnitude = [0.0; 10];
+    let scale = (range.1 - range.0).abs() / 2.0;
+    let mid = f64::midpoint(range.0, range.1);
+    for gp in gauss_legendre_points(ADAPTIVE_GREEN_ORDER) {
+        let (p, dp) = eval(scale.fma(gp.x, mid));
+        let rel = p - origin;
+        let (s, t) = (rel.dot(e1).abs(), rel.dot(e2).abs());
+        let w = gp.w * scale * dp.dot(e2).abs();
+        let terms = [
+            s,
+            s * s,
+            s * t,
+            s.powi(3),
+            s * s * t,
+            s * t * t,
+            s.powi(4),
+            s.powi(3) * t,
+            s * s * t * t,
+            s * t.powi(3),
+        ];
+        for (m, term) in magnitude.iter_mut().zip(terms) {
+            *m += w * term;
+        }
+    }
+    (value, magnitude)
+}
+
+/// Shared state of one edge's adaptive Green integration.
+struct AdaptiveGreen<'a, F> {
+    eval: &'a F,
+    origin: Point3,
+    e1: Vec3,
+    e2: Vec3,
+    /// Largest discrepancy a cell may show, per moment.
+    allowance: [f64; 10],
+    /// Cells accepted so far.
+    cells: usize,
+}
+
+impl<F: Fn(f64) -> (Point3, Vec3)> AdaptiveGreen<'_, F> {
+    /// Add the halves of `range` to `out` once they agree with `whole`
+    /// within the allowance, bisecting further where they do not; `false`
+    /// past [`ADAPTIVE_GREEN_MAX_DEPTH`] or [`ADAPTIVE_GREEN_MAX_CELLS`].
+    fn cell(
+        &mut self,
+        out: &mut [f64; 10],
+        range: (f64, f64),
+        whole: &[f64; 10],
+        depth: u32,
+    ) -> bool {
+        let mid = f64::midpoint(range.0, range.1);
+        let left = green_cell_moments((range.0, mid), self.eval, self.origin, self.e1, self.e2);
+        let right = green_cell_moments((mid, range.1), self.eval, self.origin, self.e1, self.e2);
+        // A non-finite moment never compares as converged.
+        let converged =
+            (0..10).all(|k| (left.0[k] + right.0[k] - whole[k]).abs() <= self.allowance[k]);
+        if converged {
+            self.cells += 1;
+            for k in 0..10 {
+                out[k] += left.0[k] + right.0[k];
+            }
+            return self.cells <= ADAPTIVE_GREEN_MAX_CELLS;
+        }
+        depth < ADAPTIVE_GREEN_MAX_DEPTH
+            && self.cell(out, (range.0, mid), &left.0, depth + 1)
+            && self.cell(out, (mid, range.1), &right.0, depth + 1)
+    }
+}
+
+/// Integrate a NURBS edge the exact polynomial rule does not cover (a
+/// rational curve, or a degree past [`has_exact_polynomial_green_rule`]'s)
+/// span by span with adaptive Gauss bisection, or return `false` so the face
+/// keeps its chord-polygon fallback.
+///
+/// No fixed rule is exact for a rational span, and a planar face's Green
+/// moments do not depend on the volume route's Gauss order, so the order
+/// comparison there could not catch an unconverged one. The edge certifies
+/// itself instead: a cell is accepted only once its two halves agree with
+/// the whole to within its share of [`ADAPTIVE_GREEN_TOLERANCE`] of the
+/// moment's magnitude along the edge (its share: one of at most
+/// [`ADAPTIVE_GREEN_MAX_CELLS`]), and the halves' finer sum is what is kept.
+/// The allowance is the edge's, not the cell's, because a fitted curve's
+/// short knot spans carry a rounding floor of their own: a bevel flank
+/// section's 2.5e-5-wide spans differ from themselves by 1e-10 of the cell
+/// at every depth. The chord polygon this replaces read that gear's planar
+/// heel cap 3.1e-5 of its area short.
+#[allow(clippy::too_many_arguments)]
+fn accumulate_adaptive_nurbs_green_spans(
+    moments: &mut [f64; 10],
+    nc: &remus_math::nurbs::curve::NurbsCurve,
+    edge: &remus_topology::edge::Edge,
+    traversal_start: Point3,
+    origin: Point3,
+    e1: Vec3,
+    e2: Vec3,
+) -> Result<bool, CheckError> {
+    let (from, to) = oriented_nurbs_trim(nc, edge, traversal_start)?;
+    let (lo, hi) = (from.min(to), from.max(to));
+    let dir_sign = if from < to { 1.0 } else { -1.0 };
+    let mut breaks = vec![lo];
+    breaks.extend(nc.knots().iter().copied().filter(|&k| k > lo && k < hi));
+    breaks.push(hi);
+    breaks.dedup();
+    let eval = |u: f64| {
+        let d = nc.derivatives(u, 1);
+        (Point3::new(d[0].x(), d[0].y(), d[0].z()), d[1])
+    };
+    let spans: Vec<_> = breaks
+        .windows(2)
+        .map(|pair| {
+            let range = (pair[0], pair[1]);
+            (range, green_cell_moments(range, &eval, origin, e1, e2))
+        })
+        .collect();
+    let mut magnitude = [0.0; 10];
+    for (_, (_, cell)) in &spans {
+        for (m, c) in magnitude.iter_mut().zip(cell) {
+            *m += c;
+        }
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let share = ADAPTIVE_GREEN_TOLERANCE / ADAPTIVE_GREEN_MAX_CELLS as f64;
+    let mut adaptive = AdaptiveGreen {
+        eval: &eval,
+        origin,
+        e1,
+        e2,
+        allowance: magnitude.map(|m| share * m),
+        cells: 0,
+    };
+    let mut edge_moments = [0.0; 10];
+    for (range, (whole, _)) in spans {
+        if !adaptive.cell(&mut edge_moments, range, &whole, 0) {
+            return Ok(false);
+        }
+    }
+    for (m, e) in moments.iter_mut().zip(edge_moments) {
+        *m += dir_sign * e;
+    }
+    Ok(true)
 }
 
 /// Integrate one NURBS edge's Green's-theorem contribution through its
@@ -3433,31 +3685,6 @@ fn accumulate_green_segment<F>(
     }
 }
 
-/// Whether a NURBS boundary edge is recognized as an analytic form (line,
-/// circle, ellipse, hyperbola, or parabola) at a scale-relative tolerance.
-///
-/// Shared by [`wire_newell_normal`] and `planar_wire_monomial_moments`'s
-/// NURBS arm so both make the same routing decision for the same edge.
-fn nurbs_boundary_is_recognized(
-    nc: &remus_math::nurbs::curve::NurbsCurve,
-    edge: &remus_topology::edge::Edge,
-    topo: &Topology,
-) -> Result<bool, CheckError> {
-    use remus_geometry::convert::{RecognizedCurve, recognize_curve};
-
-    let start = topo.vertex(edge.start())?.point();
-    let mut extent: f64 = 0.0;
-    for p in nc.control_points() {
-        extent = extent.max((*p - start).length());
-    }
-    let extent = extent.max(1e-12);
-    let tolerance = (extent * 1e-9).max(1e-12);
-    Ok(!matches!(
-        recognize_curve(nc, tolerance),
-        RecognizedCurve::NotRecognized
-    ))
-}
-
 /// Newell normal of a wire's boundary, sampled densely enough that a wire
 /// consisting of a single closed circle (one vertex) still determines its
 /// plane. Returns `None` when the boundary is degenerate (collapsed to a
@@ -3551,11 +3778,9 @@ fn wire_newell_normal(
                 }
             }
             EdgeCurve::NurbsCurve(nc) => {
-                if !has_exact_polynomial_green_rule(nc)
-                    && !nurbs_boundary_is_recognized(nc, edge, topo)?
-                {
-                    return Ok(None);
-                }
+                // Every NURBS edge has a Green rule now (exact, recognized,
+                // or adaptive and self-certified); a span the adaptive rule
+                // cannot certify refuses in `planar_wire_monomial_moments`.
                 // Unused carrier spans need not lie in the trimmed face's
                 // plane. Determine the frame from the authoritative trim.
                 let traversal_start = topo.vertex(if forward { start_vid } else { end_vid })?;
