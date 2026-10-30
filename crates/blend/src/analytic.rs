@@ -408,6 +408,128 @@ fn material_contact_direction(
     None
 }
 
+/// Each face's local frame along a blended edge, read at the midpoint of the
+/// spine's first edge (a G1 chain shares one face pair, so one station speaks
+/// for the chain).
+#[derive(Debug, Clone, Copy)]
+struct EdgeMaterialFrames {
+    /// Unit outward normal of the first face at the station.
+    outward1: Vec3,
+    /// Unit direction from the edge INTO the first face's material, in the
+    /// face's tangent plane.
+    into1: Vec3,
+    /// Unit outward normal of the second face at the station.
+    outward2: Vec3,
+    /// Unit direction from the edge into the second face's material.
+    into2: Vec3,
+}
+
+impl EdgeMaterialFrames {
+    /// `Some(true)` when the edge is concave (each face heads to the outward
+    /// side of the other's tangent plane), `Some(false)` when convex, `None`
+    /// when the faces meet tangentially or the two readings disagree.
+    fn concave(&self) -> Option<bool> {
+        let tangency = remus_math::tolerance::Tolerance::new().angular;
+        let side1 = self.into1.dot(self.outward2);
+        let side2 = self.into2.dot(self.outward1);
+        if side1 > tangency && side2 > tangency {
+            Some(true)
+        } else if side1 < -tangency && side2 < -tangency {
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
+/// The two faces' [`EdgeMaterialFrames`] along the spine, or `None` when
+/// either is undefined.
+///
+/// A face's direction into its own material is the left side of its
+/// effective traversal of the edge: `outward normal x traversal tangent`,
+/// where a reversed face traverses each edge against its wire flag. The
+/// tangent is the edge's own, not the spine's, because the traversal flag is
+/// relative to the edge. `None` when the edge is degenerate, a face uses it twice (a seam) or
+/// not at all, or a surface normal is undefined at the station.
+fn edge_material_frames(
+    topo: &Topology,
+    spine: &Spine,
+    face1: FaceId,
+    face2: FaceId,
+) -> Result<Option<EdgeMaterialFrames>, BlendError> {
+    let Some(&edge_id) = spine.edges().first() else {
+        return Ok(None);
+    };
+    let edge = topo.edge(edge_id)?;
+    let start = topo.vertex(edge.start())?.point();
+    let end = topo.vertex(edge.end())?.point();
+    let Ok((t0, t1)) = edge.strict_domain() else {
+        return Ok(None);
+    };
+    let mid = f64::midpoint(t0, t1);
+    let point = edge.curve().evaluate_with_endpoints(mid, start, end);
+    let Ok(tangent) = edge
+        .curve()
+        .tangent_with_endpoints(mid, start, end)
+        .normalize()
+    else {
+        return Ok(None);
+    };
+
+    let frame = |face_id: FaceId| -> Result<Option<(Vec3, Vec3)>, BlendError> {
+        let face = topo.face(face_id)?;
+        let raw = match face.surface() {
+            FaceSurface::Plane { normal, .. } => *normal,
+            surface => {
+                let Some((u, v)) = surface.project_point(point) else {
+                    return Ok(None);
+                };
+                surface.normal(u, v)
+            }
+        };
+        let Ok(raw) = raw.normalize() else {
+            return Ok(None);
+        };
+        let outward = if face.is_reversed() { -raw } else { raw };
+        let mut traversal = None;
+        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+        {
+            for oe in topo.wire(wire_id)?.edges() {
+                if oe.edge() == edge_id {
+                    if traversal.is_some() {
+                        return Ok(None);
+                    }
+                    traversal = Some(oe.is_forward());
+                }
+            }
+        }
+        let Some(forward) = traversal else {
+            return Ok(None);
+        };
+        // A reversed face (a cut's tool face) uses each edge against its
+        // wire flag, just as its outward normal opposes the surface's.
+        let along = if forward == face.is_reversed() {
+            -tangent
+        } else {
+            tangent
+        };
+        Ok(outward
+            .cross(along)
+            .normalize()
+            .ok()
+            .map(|into| (outward, into)))
+    };
+    let (Some((outward1, into1)), Some((outward2, into2))) = (frame(face1)?, frame(face2)?) else {
+        return Ok(None);
+    };
+    Ok(Some(EdgeMaterialFrames {
+        outward1,
+        into1,
+        outward2,
+        into2,
+    }))
+}
+
 /// Compute the direction from edge toward contact point on a plane.
 ///
 /// This is the component of the bisector projected onto the plane surface,
@@ -774,6 +896,13 @@ pub fn plane_cylinder_fillet(
     //    normal — this is the perpendicular plane-cylinder case.
     let axis_c = cyl.axis();
     let n_dot = axis_c.dot(n_p_inward);
+    if n_dot.abs() <= tol_ang {
+        // The axis lies along the plane: the edge is a ruling of the
+        // cylinder, not a circle around it.
+        return plane_cylinder_parallel_fillet(
+            n_p_inward, d_plane, cyl, spine, topo, radius, face_plane, face_cyl,
+        );
+    }
     if n_dot.abs() < 1.0 - tol_ang {
         return Ok(None);
     }
@@ -1048,6 +1177,187 @@ pub fn plane_cylinder_fillet(
     };
     Ok(Some(StripeResult {
         stripe,
+        new_edges: Vec::new(),
+    }))
+}
+
+/// Fillet between a plane and a cylinder whose axis runs along it: the edge
+/// is a ruling of the cylinder (a straight line parallel to the axis), and the
+/// rolling ball's centre traces a parallel line, so the blend is an exact
+/// cylinder of the fillet radius and both contacts are straight rulings.
+///
+/// This is where a cylinder meets a wall it crosses (a round boss standing
+/// against a block, the concave case), or where a flat is ground onto a shaft
+/// (the convex case). The walker used to take both, approximating the band
+/// as NURBS — and on the concave one it placed the ball inside the material.
+///
+/// # Geometry
+///
+/// In the cross-section through the spine point `S`, with the cylinder axis
+/// at `O` and radius `R`:
+///
+/// - The ball centre lies one radius off the plane, on the material side for
+///   a convex edge and the void side for a concave one:
+///   `c = S + σ·r·n_out + t·w`, where `n_out` is the plane's outward normal,
+///   `w` the in-plane direction across the spine, and `σ = +1` (concave) or
+///   `−1` (convex).
+/// - It lies `ρ` from the axis, one radius off the cylinder on the same side:
+///   `ρ = R + σ·r` when the cylinder's outward normal is radial (a post), and
+///   `R − σ·r` when it points at the axis (a bore).
+///
+/// `|c − O|² = ρ²` is a quadratic in `t`; the plane contact `S + t·w` must
+/// run into the plane face's material, and the cylinder contact
+/// `O + R·(c − O)/ρ` must run into the cylinder face's material. Of the roots
+/// that do, the one nearest the spine is the fillet.
+///
+/// Returns `None` (walker fallback) when the spine is not a straight run
+/// along the axis, the frames are undefined, or no root lands on both faces.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn plane_cylinder_parallel_fillet(
+    n_p_inward: Vec3,
+    d_plane: f64,
+    cyl: &CylindricalSurface,
+    spine: &Spine,
+    topo: &Topology,
+    radius: f64,
+    face_plane: FaceId,
+    face_cyl: FaceId,
+) -> Result<Option<StripeResult>, BlendError> {
+    let axis = cyl.axis();
+    // Every spine edge must be a ruling: a line along the axis.
+    for &edge_id in spine.edges() {
+        let edge = topo.edge(edge_id)?;
+        if !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
+            return Ok(None);
+        }
+        let start = topo.vertex(edge.start())?.point();
+        let end = topo.vertex(edge.end())?.point();
+        let Ok(direction) = (end - start).normalize() else {
+            return Ok(None);
+        };
+        if direction.cross(axis).length() > ANALYTIC_TOL_ANG.sqrt() {
+            return Ok(None);
+        }
+    }
+    let Some(frames) = edge_material_frames(topo, spine, face_plane, face_cyl)? else {
+        return Ok(None);
+    };
+    let Some(concave) = frames.concave() else {
+        return Ok(None);
+    };
+    let sigma = if concave { 1.0 } else { -1.0 };
+
+    let p_start = spine.evaluate(topo, 0.0)?;
+    let p_end = spine.evaluate(topo, spine.length())?;
+    let tangent = spine.tangent(topo, 0.0)?;
+
+    // Cross-section frame at the spine start.
+    let n_out = frames.outward1;
+    let Ok(w) = tangent.cross(n_out).normalize() else {
+        return Ok(None);
+    };
+    let o_c = cyl.origin();
+    let axis_foot = o_c + axis * axis.dot(p_start - o_c);
+    let r_c = cyl.radius();
+    let radial_at_spine = (p_start - axis_foot).normalize().ok();
+    let Some(radial_at_spine) = radial_at_spine else {
+        return Ok(None);
+    };
+    let post = frames.outward2.dot(radial_at_spine) > 0.0;
+    let rho = if post {
+        r_c + sigma * radius
+    } else {
+        r_c - sigma * radius
+    };
+    if rho <= ANALYTIC_TOL_LIN {
+        // The ball does not fit inside the cylinder.
+        return Ok(None);
+    }
+
+    // |q + t·w|² = ρ², q = S + σ·r·n_out − O.
+    let q = p_start + n_out * (sigma * radius) - axis_foot;
+    let b = q.dot(w);
+    let c = q.dot(q) - rho * rho;
+    let discriminant = b * b - c;
+    if discriminant < 0.0 {
+        return Ok(None);
+    }
+    let root = discriminant.sqrt();
+    let mut best: Option<(f64, Point3, Point3, Point3)> = None;
+    for t in [-b - root, -b + root] {
+        let plane_contact = p_start + w * t;
+        let center = plane_contact + n_out * (sigma * radius);
+        let Ok(from_axis) = (center - axis_foot).normalize() else {
+            continue;
+        };
+        let cyl_contact = axis_foot + from_axis * r_c;
+        // Both contacts must run INTO their faces from the spine.
+        if (plane_contact - p_start).dot(frames.into1) <= ANALYTIC_TOL_LIN
+            || (cyl_contact - p_start).dot(frames.into2) <= ANALYTIC_TOL_LIN
+        {
+            continue;
+        }
+        if best.is_none_or(|(best_t, ..)| t.abs() < best_t.abs()) {
+            best = Some((t, plane_contact, cyl_contact, center));
+        }
+    }
+    let Some((_, c1_start, c2_start, center_start)) = best else {
+        return Ok(None);
+    };
+    let run = p_end - p_start;
+    let (c1_end, c2_end, center_end) = (c1_start + run, c2_start + run, center_start + run);
+
+    let blend = CylindricalSurface::new(center_start, tangent, radius)?;
+    let contact1 = nurbs_line(c1_start, c1_end)?;
+    let contact2 = nurbs_line(c2_start, c2_end)?;
+
+    let plane_adapter = crate::builder_utils::PlaneAdapter::from_normal_and_d(n_p_inward, d_plane);
+    let pcurve1 = {
+        let (u0, v0) = plane_adapter.project_point(c1_start);
+        let (u1, v1) = plane_adapter.project_point(c1_end);
+        Curve2D::Line(Line2D::new(
+            remus_math::vec::Point2::new(u0, v0),
+            remus_math::vec::Vec2::new(u1 - u0, v1 - v0),
+        )?)
+    };
+    let (u_cyl, v0) = ParametricSurface::project_point(cyl, c2_start);
+    let v1 = cyl_v_at_point(cyl, c2_end);
+    let pcurve2 = Curve2D::Line(Line2D::new(
+        remus_math::vec::Point2::new(u_cyl, v0),
+        remus_math::vec::Vec2::new(0.0, v1 - v0),
+    )?);
+
+    let section_start = CircSection {
+        p1: c1_start,
+        p2: c2_start,
+        center: center_start,
+        radius,
+        uv1: plane_adapter.project_point(c1_start),
+        uv2: (u_cyl, v0),
+        t: 0.0,
+    };
+    let section_end = CircSection {
+        p1: c1_end,
+        p2: c2_end,
+        center: center_end,
+        radius,
+        uv1: plane_adapter.project_point(c1_end),
+        uv2: (u_cyl, v1),
+        t: 1.0,
+    };
+
+    Ok(Some(StripeResult {
+        stripe: Stripe {
+            spine: spine.clone(),
+            surface: FaceSurface::Cylinder(blend),
+            pcurve1,
+            pcurve2,
+            contact1,
+            contact2,
+            face1: face_plane,
+            face2: face_cyl,
+            sections: vec![section_start, section_end],
+        },
         new_edges: Vec::new(),
     }))
 }
