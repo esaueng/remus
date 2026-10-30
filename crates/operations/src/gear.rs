@@ -35,20 +35,25 @@
 
 use std::f64::consts::{FRAC_PI_4, PI, TAU};
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::curves::Circle3D;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::builder::make_circle_edge_with_ref;
+use remus_topology::edge::EdgeId;
 use remus_topology::edge::{Edge, EdgeCurve};
-use remus_topology::face::{Face, FaceSurface};
+use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::OperationsError;
 
+mod cylinder;
 mod profile;
+
+pub use cylinder::{CylinderGearOptions, GearFit, cut_gear_teeth};
 
 use profile::{CircularTooth, RackTooth, Segment};
 
@@ -204,12 +209,143 @@ impl GearWarning {
     }
 }
 
+/// Which side of a tooth a face lies on: `Plus` is the side at the larger
+/// polar angle about the gear axis (counter-clockwise looking down the
+/// axis), or the `+x` side of a rack tooth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ToothSide {
+    /// Smaller polar angle (rack: `−x`).
+    Minus,
+    /// Larger polar angle (rack: `+x`).
+    Plus,
+}
+
+/// Start or end of the extrusion (caps) or of a rack's length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum GearEnd {
+    /// The placement origin's end.
+    Start,
+    /// The far end.
+    End,
+}
+
+/// What a face of a gear body is, from the construction itself (never from
+/// matching coordinates).
+///
+/// Tooth `k` of a circular gear is centered at `phase + k·2π/z`; root land
+/// `k` lies between teeth `k` and `k + 1` (mod z). An internal gear uses the
+/// same indices for its own (inward-pointing) teeth. Rack tooth `k` is
+/// centered at `(k + ½)·p` along the rack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum GearFaceRole {
+    /// Involute flank of a tooth (rack: straight flank).
+    Flank {
+        /// Tooth index.
+        tooth: u32,
+        /// Which flank.
+        side: ToothSide,
+    },
+    /// Radial flank piece below the base circle.
+    FlankBase {
+        /// Tooth index.
+        tooth: u32,
+        /// Which flank.
+        side: ToothSide,
+    },
+    /// Root fillet at the foot of a tooth flank.
+    Fillet {
+        /// Tooth index.
+        tooth: u32,
+        /// Which flank.
+        side: ToothSide,
+    },
+    /// Tip land of a tooth.
+    Tip {
+        /// Tooth index.
+        tooth: u32,
+    },
+    /// Root land between teeth `gap` and `gap + 1`.
+    Root {
+        /// Index of the tooth before the land.
+        gap: u32,
+    },
+    /// Planar end cap.
+    Cap(GearEnd),
+    /// Bore of an external gear.
+    Bore,
+    /// Outer rim of an internal gear.
+    Rim,
+    /// Back face of a rack.
+    RackBack,
+    /// End face of a rack.
+    RackEnd(GearEnd),
+    /// Half root land at a rack's end.
+    RackRootEnd(GearEnd),
+}
+
+impl GearFaceRole {
+    /// Stable name, e.g. `tooth[3].flank.plus`, `root[0]`, `cap.start`.
+    #[must_use]
+    pub fn name(self) -> String {
+        let side = |side: ToothSide| match side {
+            ToothSide::Minus => "minus",
+            ToothSide::Plus => "plus",
+        };
+        let end = |end: GearEnd| match end {
+            GearEnd::Start => "start",
+            GearEnd::End => "end",
+        };
+        match self {
+            Self::Flank { tooth, side: s } => format!("tooth[{tooth}].flank.{}", side(s)),
+            Self::FlankBase { tooth, side: s } => {
+                format!("tooth[{tooth}].flank-base.{}", side(s))
+            }
+            Self::Fillet { tooth, side: s } => format!("tooth[{tooth}].fillet.{}", side(s)),
+            Self::Tip { tooth } => format!("tooth[{tooth}].tip"),
+            Self::Root { gap } => format!("root[{gap}]"),
+            Self::Cap(e) => format!("cap.{}", end(e)),
+            Self::Bore => "bore".to_owned(),
+            Self::Rim => "rim".to_owned(),
+            Self::RackBack => "back".to_owned(),
+            Self::RackEnd(e) => format!("end.{}", end(e)),
+            Self::RackRootEnd(e) => format!("root.{}", end(e)),
+        }
+    }
+
+    /// The same role `k` periods on, with tooth indices taken mod `teeth`.
+    fn shifted(self, k: u32, teeth: u32) -> Self {
+        let shift = |index: u32| (index + k) % teeth;
+        match self {
+            Self::Flank { tooth, side } => Self::Flank {
+                tooth: shift(tooth),
+                side,
+            },
+            Self::FlankBase { tooth, side } => Self::FlankBase {
+                tooth: shift(tooth),
+                side,
+            },
+            Self::Fillet { tooth, side } => Self::Fillet {
+                tooth: shift(tooth),
+                side,
+            },
+            Self::Tip { tooth } => Self::Tip {
+                tooth: shift(tooth),
+            },
+            Self::Root { gap } => Self::Root { gap: shift(gap) },
+            other => other,
+        }
+    }
+}
+
 /// Closed-form gear dimensions, available before any topology is built.
 ///
 /// Diameters are `None` for a rack. For an internal gear `tip_diameter` is
 /// the inner (tooth tip) circle and `root_diameter` the outer root circle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GearGeometry {
+    /// Module the dimensions use (solved from the diameter when fitting teeth
+    /// to an existing cylinder).
+    pub module: f64,
     /// Pitch circle diameter `m·z`.
     pub pitch_diameter: Option<f64>,
     /// Base circle diameter.
@@ -246,6 +382,9 @@ pub struct GearOutcome {
     pub flank_deviation_bound: f64,
     /// Hermite spans per flank (zero for a rack).
     pub spans_per_flank: usize,
+    /// The role of every gear face, from the construction record. Faces of
+    /// a body the gear was cut into carry no role.
+    pub face_roles: Vec<(FaceId, GearFaceRole)>,
 }
 
 /// Why a gear was refused.
@@ -267,6 +406,16 @@ pub enum GearRefusal {
     RimTooSmall,
     /// The flank tolerance needs more spans than allowed.
     ToleranceTooTight,
+    /// The picked face is not a cylinder.
+    NotACylinder,
+    /// The picked cylinder has material on neither or both sides.
+    NotABossOrBore,
+    /// The teeth would cover only part of the picked face.
+    PartialSpan,
+    /// The tip circle is larger than the picked boss.
+    CylinderTooSmall,
+    /// A hole, slot or other feature crosses the band the teeth rebuild.
+    FeaturesInToothRegion,
 }
 
 impl GearRefusal {
@@ -282,6 +431,11 @@ impl GearRefusal {
             Self::BoreTooLarge => "bore-too-large",
             Self::RimTooSmall => "rim-too-small",
             Self::ToleranceTooTight => "tolerance-too-tight",
+            Self::NotACylinder => "not-a-cylinder",
+            Self::NotABossOrBore => "not-a-boss-or-bore",
+            Self::PartialSpan => "partial-span-unsupported",
+            Self::CylinderTooSmall => "cylinder-too-small",
+            Self::FeaturesInToothRegion => "features-in-tooth-region",
         }
     }
 }
@@ -490,6 +644,7 @@ pub fn gear_geometry(params: &GearParams) -> Result<GearGeometry, GearError> {
         let tip_thickness =
             (2.0 * params.addendum * m).mul_add(-params.pressure_angle.tan(), thickness);
         GearGeometry {
+            module: m,
             pitch_diameter: None,
             base_diameter: None,
             tip_diameter: None,
@@ -550,6 +705,7 @@ pub fn gear_geometry(params: &GearParams) -> Result<GearGeometry, GearError> {
             warnings.push(GearWarning::ThinRim { thickness });
         }
         GearGeometry {
+            module: m,
             pitch_diameter: Some(2.0 * c.pitch_radius),
             base_diameter: Some(2.0 * c.base_radius),
             tip_diameter: Some(2.0 * c.tip_radius),
@@ -700,23 +856,62 @@ fn build(
     phase: f64,
     geometry: &GearGeometry,
 ) -> Result<GearOutcome, GearError> {
-    let m = params.module;
+    let local = local_outline(params, geometry, phase)?;
+    let (flank_deviation_bound, spans_per_flank) = flank_bound(&local.outline, geometry);
+    let (solid, face_roles) = gear_body(topo, local, frame, frame.x, params.face_width)?;
+    Ok(GearOutcome {
+        solid,
+        geometry: geometry.clone(),
+        flank_deviation_bound,
+        spans_per_flank,
+        face_roles,
+    })
+}
+
+/// Proven flank deviation bound (with a rounding allowance) and span count.
+fn flank_bound(outline: &profile::Outline, geometry: &GearGeometry) -> (f64, usize) {
+    outline.flank.as_ref().map_or((0.0, 0), |f| {
+        // The remainder bound is exact-arithmetic; allow for rounding of the
+        // control points at the gear's largest radius.
+        let scale = geometry
+            .root_diameter
+            .unwrap_or(0.0)
+            .max(geometry.tip_diameter.unwrap_or(0.0));
+        (
+            (64.0 * f64::EPSILON).mul_add(scale.max(geometry.module), f.remainder_bound),
+            f.spans,
+        )
+    })
+}
+
+/// Extrude a local outline into a gear body and name every face from the
+/// extrusion's construction record: each side face is matched to the
+/// profile edge it was swept from, by edge identity.
+fn gear_body(
+    topo: &mut Topology,
+    local: LocalOutline,
+    frame: &Frame,
+    circle_ref: Vec3,
+    face_width: f64,
+) -> Result<(SolidId, Vec<(FaceId, GearFaceRole)>), GearError> {
     let vertex_tol = Tolerance::new().linear;
     let LocalOutline {
         outline,
         rim_radius,
         bore_radius,
-    } = local_outline(params, geometry, phase)?;
-
+    } = local;
+    // Profile edge index -> role, for every edge of every wire.
+    let mut edge_roles: Vec<(usize, GearFaceRole)> = Vec::new();
     let (outer, inner) = if let Some(rim_radius) = rim_radius {
         let rim = make_circle_edge_with_ref(
             topo,
             frame.origin,
             frame.axis,
             rim_radius,
-            frame.x,
+            circle_ref,
             vertex_tol,
         )?;
+        edge_roles.push((rim.index(), GearFaceRole::Rim));
         let rim_wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(rim, true)], true)?);
         let hole: Vec<Segment> = outline
             .segments
@@ -724,9 +919,22 @@ fn build(
             .rev()
             .map(Segment::reversed)
             .collect();
-        (rim_wire, vec![build_wire(topo, &hole, frame, vertex_tol)?])
+        let (wire, edges) = build_wire(topo, &hole, frame, vertex_tol)?;
+        edge_roles.extend(
+            edges
+                .iter()
+                .zip(outline.roles.iter().rev())
+                .map(|(edge, role)| (edge.index(), *role)),
+        );
+        (rim_wire, vec![wire])
     } else {
-        let outer = build_wire(topo, &outline.segments, frame, vertex_tol)?;
+        let (outer, edges) = build_wire(topo, &outline.segments, frame, vertex_tol)?;
+        edge_roles.extend(
+            edges
+                .iter()
+                .zip(&outline.roles)
+                .map(|(edge, role)| (edge.index(), *role)),
+        );
         let mut inner = Vec::new();
         if let Some(radius) = bore_radius {
             // Wound clockwise about the axis, opposite the outer boundary.
@@ -735,13 +943,15 @@ fn build(
                 frame.origin,
                 -frame.axis,
                 radius,
-                frame.x,
+                circle_ref,
                 vertex_tol,
             )?;
+            edge_roles.push((bore.index(), GearFaceRole::Bore));
             inner.push(topo.add_wire(Wire::new(vec![OrientedEdge::new(bore, true)], true)?));
         }
         (outer, inner)
     };
+    edge_roles.compact_sort_by_key(|entry| entry.0);
 
     let d = frame.axis.dot(Vec3::new(
         frame.origin.x(),
@@ -756,26 +966,36 @@ fn build(
             d,
         },
     ));
-    let solid = crate::extrude::extrude(topo, face, frame.axis, params.face_width)?;
+    let (solid, construction) = crate::extrude::extrude_impl(topo, face, frame.axis, face_width)?;
 
-    let (flank_deviation_bound, spans_per_flank) = outline.flank.as_ref().map_or((0.0, 0), |f| {
-        // The remainder bound is exact-arithmetic; allow for rounding of the
-        // control points at the gear's largest radius.
-        let scale = geometry
-            .root_diameter
-            .unwrap_or(0.0)
-            .max(geometry.tip_diameter.unwrap_or(0.0));
-        (
-            (64.0 * f64::EPSILON).mul_add(scale.max(m), f.remainder_bound),
-            f.spans,
-        )
-    });
-    Ok(GearOutcome {
-        solid,
-        geometry: geometry.clone(),
-        flank_deviation_bound,
-        spans_per_flank,
-    })
+    let role_of = |edge: EdgeId| {
+        edge_roles
+            .binary_search_by_key(&edge.index(), |entry| entry.0)
+            .ok()
+            .map(|i| edge_roles[i].1)
+    };
+    let mut face_roles = vec![
+        (construction.bottom, GearFaceRole::Cap(GearEnd::Start)),
+        (construction.top, GearFaceRole::Cap(GearEnd::End)),
+    ];
+    let sides = construction
+        .outer
+        .source_edges()
+        .iter()
+        .zip(&construction.outer_sides)
+        .chain(
+            construction
+                .holes
+                .iter()
+                .flat_map(|hole| hole.inner.source_edges().iter().zip(&hole.sides)),
+        );
+    for (&edge, &side) in sides {
+        let role = role_of(edge).ok_or_else(|| OperationsError::InvalidInput {
+            reason: "gear side face has no profile edge in its construction record".to_owned(),
+        })?;
+        face_roles.push((side, role));
+    }
+    Ok((solid, face_roles))
 }
 
 /// Orthonormal placement frame: local `(x, y, 0)` maps to
@@ -829,7 +1049,7 @@ fn build_wire(
     segments: &[Segment],
     frame: &Frame,
     tolerance: f64,
-) -> Result<WireId, GearError> {
+) -> Result<(WireId, Vec<EdgeId>), GearError> {
     let vertices: Vec<_> = segments
         .iter()
         .map(|segment| topo.add_vertex(Vertex::new(frame.point(segment.start()), tolerance)))
@@ -894,7 +1114,8 @@ fn build_wire(
         };
         edges.push(oriented);
     }
-    Ok(topo.add_wire(Wire::new(edges, true)?))
+    let ids = edges.iter().map(OrientedEdge::edge).collect();
+    Ok((topo.add_wire(Wire::new(edges, true)?), ids))
 }
 
 #[cfg(test)]
