@@ -6,7 +6,12 @@
 //! every scale — and a wrong answer moves a user's saved face selection onto a
 //! different face rather than dropping it.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::disallowed_methods
+)]
 
 use remus_math::vec::Point3;
 use remus_operations::boolean::{self, BooleanOp, collect_face_signatures};

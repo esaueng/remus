@@ -63,6 +63,13 @@ pub const MAX_TEETH: u32 = 1000;
 /// Default flank tolerance as a fraction of the module.
 pub const DEFAULT_TOLERANCE_PER_MODULE: f64 = 1e-5;
 
+/// Largest supported helix angle, degrees.
+pub const MAX_HELIX_ANGLE_DEG: f64 = 45.0;
+
+/// Uniform Hermite spans allowed along the axis of a helical gear before
+/// the tolerance refuses.
+const MAX_TWIST_SPANS: usize = 1024;
+
 /// Default rack back depth (root line to back face) in modules.
 pub const DEFAULT_RACK_BACK_DEPTH_PER_MODULE: f64 = 2.0;
 
@@ -84,8 +91,28 @@ pub enum GearKind {
     Rack,
 }
 
+/// Hand of a helical gear's teeth.
+///
+/// Right-handed teeth turn counter-clockwise about the placement axis as
+/// they advance along it (a right-handed screw); left-handed teeth turn
+/// clockwise. External gears mesh with the opposite hand, an internal gear
+/// with the same hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Hand {
+    /// Right-handed helix.
+    #[default]
+    Right,
+    /// Left-handed helix.
+    Left,
+}
+
 /// Gear parameters. Lengths are model units; coefficients are multiples of
 /// the module.
+///
+/// A non-zero `helix_angle` makes a helical gear (ISO 21771): `module`,
+/// `pressure_angle` and the coefficients are then normal-section values,
+/// while `backlash` and the root fillet apply in the transverse section
+/// (perpendicular to the axis).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GearParams {
     /// Body kind.
@@ -118,6 +145,11 @@ pub struct GearParams {
     /// Racks: root line to back face; `None` uses
     /// [`DEFAULT_RACK_BACK_DEPTH_PER_MODULE`]·m.
     pub back_depth: Option<f64>,
+    /// Helix angle β at the pitch cylinder, radians in
+    /// `[0, MAX_HELIX_ANGLE_DEG°]`; zero is a spur gear. Circular gears only.
+    pub helix_angle: f64,
+    /// Hand of the helix; ignored for a spur gear.
+    pub hand: Hand,
 }
 
 impl GearParams {
@@ -140,6 +172,8 @@ impl GearParams {
             bore_diameter: None,
             rim_diameter: None,
             back_depth: None,
+            helix_angle: 0.0,
+            hand: Hand::Right,
         }
     }
 }
@@ -344,9 +378,17 @@ impl GearFaceRole {
 #[derive(Debug, Clone, PartialEq)]
 pub struct GearGeometry {
     /// Module the dimensions use (solved from the diameter when fitting teeth
-    /// to an existing cylinder).
+    /// to an existing cylinder); the normal module of a helical gear.
     pub module: f64,
-    /// Pitch circle diameter `m·z`.
+    /// Transverse module `m/cos β` (equal to `module` for a spur gear or a
+    /// rack). Diameters are `transverse_module·z` based.
+    pub transverse_module: f64,
+    /// Helix angle β at the pitch cylinder, radians (zero for a spur gear).
+    pub helix_angle: f64,
+    /// Axial advance of one tooth over a full turn, `π·d/tan β`; `None` for
+    /// a spur gear or a rack.
+    pub lead: Option<f64>,
+    /// Pitch circle diameter `m_t·z`.
     pub pitch_diameter: Option<f64>,
     /// Base circle diameter.
     pub base_diameter: Option<f64>,
@@ -354,14 +396,16 @@ pub struct GearGeometry {
     pub tip_diameter: Option<f64>,
     /// Root circle diameter.
     pub root_diameter: Option<f64>,
-    /// Circular pitch `π·m`.
+    /// Circular pitch `π·m_t` along the pitch circle.
     pub circular_pitch: f64,
-    /// The gear's own tooth thickness at the pitch circle (arc) or line.
+    /// The gear's own tooth thickness at the pitch circle (transverse arc)
+    /// or line.
     pub tooth_thickness: f64,
-    /// Tooth thickness at the tip circle (arc) or tip line; non-positive
-    /// means pointed.
+    /// Tooth thickness at the tip circle (transverse arc) or tip line;
+    /// non-positive means pointed.
     pub tip_thickness: f64,
-    /// External gears: tooth count below which a zero-shift gear undercuts.
+    /// External gears: tooth count below which a zero-shift gear undercuts
+    /// (`2·h_a·cos β/sin² α_t` for a helical gear).
     pub min_teeth_without_undercut: Option<f64>,
     /// External gears: smallest profile shift without undercut.
     pub min_profile_shift_without_undercut: Option<f64>,
@@ -376,12 +420,16 @@ pub struct GearOutcome {
     pub solid: SolidId,
     /// Its dimensions and warnings.
     pub geometry: GearGeometry,
-    /// Proven bound on any flank's distance from the true involute,
-    /// including a floating-point allowance; zero for a rack, whose flanks
-    /// are exact planes.
+    /// Proven bound on any flank's distance from the true involute (a
+    /// helical gear: the involute helicoid, profile and twist fits
+    /// together), including a floating-point allowance; zero for a rack,
+    /// whose flanks are exact planes.
     pub flank_deviation_bound: f64,
-    /// Hermite spans per flank (zero for a rack).
+    /// Hermite spans per flank across the profile (zero for a rack).
     pub spans_per_flank: usize,
+    /// Hermite spans along the axis of a helical gear (zero for a spur gear
+    /// or a rack).
+    pub spans_along_axis: usize,
     /// The role of every gear face, from the construction record. Faces of
     /// a body the gear was cut into carry no role.
     pub face_roles: Vec<(FaceId, GearFaceRole)>,
@@ -580,7 +628,89 @@ fn validate(params: &GearParams) -> Result<(), GearError> {
         (_, Some(_)) => return Err(GearError::invalid("only a rack takes a back depth")),
         _ => {}
     }
+    require(
+        params.helix_angle.is_finite()
+            && params.helix_angle >= 0.0
+            && params.helix_angle <= MAX_HELIX_ANGLE_DEG.to_radians(),
+        || {
+            format!(
+                "helix angle must be in [0°, {MAX_HELIX_ANGLE_DEG}°], got {}°",
+                params.helix_angle.to_degrees()
+            )
+        },
+    )?;
+    require(kind != GearKind::Rack || params.helix_angle <= 0.0, || {
+        "helical racks are not supported yet".to_owned()
+    })?;
     Ok(())
+}
+
+/// The flank tolerance in model units.
+fn flank_tolerance(params: &GearParams) -> f64 {
+    params
+        .tolerance
+        .unwrap_or(DEFAULT_TOLERANCE_PER_MODULE * params.module)
+}
+
+/// The transverse-section spur equivalent of a helical gear (ISO 21771):
+/// module `m/cos β`, pressure angle `atan(tan α/cos β)`, and every
+/// coefficient rescaled so its length in model units is unchanged (the root
+/// fillet radius stays `ρ·m` in the transverse section). Half the flank
+/// tolerance goes to the profile, the other half to the twist. A spur gear
+/// is its own equivalent.
+fn transverse(params: &GearParams) -> GearParams {
+    if params.helix_angle <= 0.0 {
+        return params.clone();
+    }
+    let cos = params.helix_angle.cos();
+    GearParams {
+        module: params.module / cos,
+        pressure_angle: (params.pressure_angle.tan() / cos).atan(),
+        profile_shift: params.profile_shift * cos,
+        addendum: params.addendum * cos,
+        dedendum: params.dedendum * cos,
+        root_fillet: params.root_fillet * cos,
+        tolerance: Some(0.5 * flank_tolerance(params)),
+        helix_angle: 0.0,
+        ..params.clone()
+    }
+}
+
+/// A built gear body: the solid, every face's role, and its twist report.
+type GearBody = (SolidId, Vec<(FaceId, GearFaceRole)>, TwistReport);
+
+/// A twist's certified deviation bound and spans along the axis.
+#[derive(Debug, Clone, Copy, Default)]
+struct TwistReport {
+    bound: f64,
+    spans: usize,
+}
+
+/// How a helical gear's transverse profile turns along its axis.
+#[derive(Debug, Clone, Copy)]
+struct Twist {
+    /// Radians per unit of advance, positive for a right hand.
+    rate: f64,
+    /// The twist's share of the flank tolerance.
+    tolerance: f64,
+}
+
+/// The twist of a helical gear (`None` for a spur gear or a rack): the
+/// teeth follow helices of angle β on the pitch cylinder, `tan β / r` radians
+/// per unit length.
+fn twist(params: &GearParams, geometry: &GearGeometry) -> Option<Twist> {
+    if params.helix_angle <= 0.0 {
+        return None;
+    }
+    let pitch_radius = 0.5 * geometry.pitch_diameter?;
+    let sign = match params.hand {
+        Hand::Right => 1.0,
+        Hand::Left => -1.0,
+    };
+    Some(Twist {
+        rate: sign * params.helix_angle.tan() / pitch_radius,
+        tolerance: 0.5 * flank_tolerance(params),
+    })
 }
 
 /// Radii and tooth angles shared by [`gear_geometry`] and [`make_gear`].
@@ -596,6 +726,7 @@ struct Circular {
 }
 
 fn circular(params: &GearParams) -> Circular {
+    let params = &transverse(params);
     let m = params.module;
     let x = params.profile_shift;
     let alpha = params.pressure_angle;
@@ -636,6 +767,31 @@ fn circular(params: &GearParams) -> Circular {
 /// parameter is out of range.
 pub fn gear_geometry(params: &GearParams) -> Result<GearGeometry, GearError> {
     validate(params)?;
+    let mut geometry = spur_geometry(&transverse(params));
+    if params.helix_angle > 0.0 {
+        // Report the normal module and convert the transverse shift
+        // coefficients back to normal ones (lengths are unchanged).
+        let cos = params.helix_angle.cos();
+        geometry.module = params.module;
+        geometry.helix_angle = params.helix_angle;
+        geometry.lead = geometry
+            .pitch_diameter
+            .map(|diameter| PI * diameter / params.helix_angle.tan());
+        geometry.min_profile_shift_without_undercut = geometry
+            .min_profile_shift_without_undercut
+            .map(|shift| shift / cos);
+        for warning in &mut geometry.warnings {
+            if let GearWarning::Undercut { min_profile_shift } = warning {
+                *min_profile_shift /= cos;
+            }
+        }
+    }
+    Ok(geometry)
+}
+
+/// [`gear_geometry`] of a spur gear (or a helical gear's transverse
+/// equivalent), without validation.
+fn spur_geometry(params: &GearParams) -> GearGeometry {
     let m = params.module;
     let circular_pitch = PI * m;
     let mut warnings = Vec::new();
@@ -645,6 +801,9 @@ pub fn gear_geometry(params: &GearParams) -> Result<GearGeometry, GearError> {
             (2.0 * params.addendum * m).mul_add(-params.pressure_angle.tan(), thickness);
         GearGeometry {
             module: m,
+            transverse_module: m,
+            helix_angle: 0.0,
+            lead: None,
             pitch_diameter: None,
             base_diameter: None,
             tip_diameter: None,
@@ -706,6 +865,9 @@ pub fn gear_geometry(params: &GearParams) -> Result<GearGeometry, GearError> {
         }
         GearGeometry {
             module: m,
+            transverse_module: m,
+            helix_angle: 0.0,
+            lead: None,
             pitch_diameter: Some(2.0 * c.pitch_radius),
             base_diameter: Some(2.0 * c.base_radius),
             tip_diameter: Some(2.0 * c.tip_radius),
@@ -723,10 +885,10 @@ pub fn gear_geometry(params: &GearParams) -> Result<GearGeometry, GearError> {
             thickness: geometry.tip_thickness,
         });
     }
-    Ok(GearGeometry {
+    GearGeometry {
         warnings,
         ..geometry
-    })
+    }
 }
 
 /// Build a gear body.
@@ -764,6 +926,7 @@ fn local_outline(
     geometry: &GearGeometry,
     phase: f64,
 ) -> Result<LocalOutline, GearError> {
+    let params = &transverse(params);
     let m = params.module;
     let tolerance = params.tolerance.unwrap_or(DEFAULT_TOLERANCE_PER_MODULE * m);
     let fillet_radius = params.root_fillet * m;
@@ -857,13 +1020,21 @@ fn build(
     geometry: &GearGeometry,
 ) -> Result<GearOutcome, GearError> {
     let local = local_outline(params, geometry, phase)?;
-    let (flank_deviation_bound, spans_per_flank) = flank_bound(&local.outline, geometry);
-    let (solid, face_roles) = gear_body(topo, local, frame, frame.x, params.face_width)?;
+    let (profile_bound, spans_per_flank) = flank_bound(&local.outline, geometry);
+    let (solid, face_roles, twisted) = gear_body(
+        topo,
+        local,
+        frame,
+        frame.x,
+        params.face_width,
+        twist(params, geometry),
+    )?;
     Ok(GearOutcome {
         solid,
         geometry: geometry.clone(),
-        flank_deviation_bound,
+        flank_deviation_bound: profile_bound + twisted.bound,
         spans_per_flank,
+        spans_along_axis: twisted.spans,
         face_roles,
     })
 }
@@ -884,16 +1055,18 @@ fn flank_bound(outline: &profile::Outline, geometry: &GearGeometry) -> (f64, usi
     })
 }
 
-/// Extrude a local outline into a gear body and name every face from the
-/// extrusion's construction record: each side face is matched to the
-/// profile edge it was swept from, by edge identity.
+/// Extrude a local outline into a gear body (twisted for a helical gear)
+/// and name every face from the extrusion's construction record: each side
+/// face is matched to the profile edge it was swept from, by edge identity.
+/// Also reports the twist's deviation bound and spans (zero without one).
 fn gear_body(
     topo: &mut Topology,
     local: LocalOutline,
     frame: &Frame,
     circle_ref: Vec3,
     face_width: f64,
-) -> Result<(SolidId, Vec<(FaceId, GearFaceRole)>), GearError> {
+    twist: Option<Twist>,
+) -> Result<GearBody, GearError> {
     let vertex_tol = Tolerance::new().linear;
     let LocalOutline {
         outline,
@@ -966,7 +1139,45 @@ fn gear_body(
             d,
         },
     ));
-    let (solid, construction) = crate::extrude::extrude_impl(topo, face, frame.axis, face_width)?;
+    let (solid, construction, twist_bound) = match twist {
+        None => {
+            let (solid, construction) =
+                crate::extrude::extrude_impl(topo, face, frame.axis, face_width)?;
+            (solid, construction, TwistReport::default())
+        }
+        Some(twist) => {
+            let twisted = crate::extrude::twist::twisted_extrude_impl(
+                topo,
+                face,
+                frame.origin,
+                frame.axis,
+                face_width,
+                twist.rate,
+                twist.tolerance,
+                MAX_TWIST_SPANS,
+            )
+            .map_err(|error| match error {
+                OperationsError::Math(remus_math::MathError::ResourceLimitExceeded { .. }) => {
+                    GearError::refused(
+                        GearRefusal::ToleranceTooTight,
+                        format!(
+                            "the helix needs more than {MAX_TWIST_SPANS} spans for a tolerance of {}",
+                            twist.tolerance
+                        ),
+                    )
+                }
+                other => other.into(),
+            })?;
+            (
+                twisted.solid,
+                twisted.construction,
+                TwistReport {
+                    bound: twisted.deviation_bound,
+                    spans: twisted.spans,
+                },
+            )
+        }
+    };
 
     let role_of = |edge: EdgeId| {
         edge_roles
@@ -995,7 +1206,7 @@ fn gear_body(
         })?;
         face_roles.push((side, role));
     }
-    Ok((solid, face_roles))
+    Ok((solid, face_roles, twist_bound))
 }
 
 /// Orthonormal placement frame: local `(x, y, 0)` maps to

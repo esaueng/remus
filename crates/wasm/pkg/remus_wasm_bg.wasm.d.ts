@@ -97,6 +97,7 @@ export const remuskernel_curveKnotRemove: (a: number, b: number, c: number, d: n
 export const remuskernel_curveSplit: (a: number, b: number, c: number) => [number, number, number, number];
 export const remuskernel_cut: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_cutDetailed: (a: number, b: number, c: number) => [number, number, number];
+export const remuskernel_cutGearTeethDetailed: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_cutJournaled: (a: number, b: number, c: number) => [number, number, number, number];
 export const remuskernel_cutWithEntityEvolution: (a: number, b: number, c: number) => [number, number, number, number];
 export const remuskernel_cutWithEvolution: (a: number, b: number, c: number) => [number, number, number];
@@ -256,6 +257,7 @@ export const remuskernel_makeEllipseEdgeWithRef: (a: number, b: number, c: numbe
 export const remuskernel_makeEllipsoid: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const remuskernel_makeFaceFromWire: (a: number, b: number) => [number, number, number];
 export const remuskernel_makeFaceFromWires: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const remuskernel_makeGearDetailed: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_makeLineEdge: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const remuskernel_makeNurbsEdge: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => [number, number, number];
 export const remuskernel_makeOperationOutputRef: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];

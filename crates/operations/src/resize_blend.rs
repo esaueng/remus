@@ -231,7 +231,7 @@ pub(crate) fn resize_blend_with_entity_evolution(
             .iter()
             .filter_map(|(&output, sources)| {
                 let mut sources = sources.clone();
-                sources.sort_unstable();
+                sources.compact_sort_unstable();
                 sources.dedup();
                 (sources == supports).then_some(output)
             })
@@ -656,6 +656,8 @@ fn face_edges(topo: &Topology, face: FaceId) -> Result<Vec<EdgeId>, OperationsEr
     for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
         edges.extend(topo.wire(wire)?.edges().iter().map(OrientedEdge::edge));
     }
+    // hot: 1,024+ calls in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     edges.sort_unstable_by_key(|edge| edge.index());
     edges.dedup();
     Ok(edges)
@@ -663,6 +665,8 @@ fn face_edges(topo: &Topology, face: FaceId) -> Result<Vec<EdgeId>, OperationsEr
 
 fn distinct_faces(faces: &[FaceId]) -> Vec<FaceId> {
     let mut result = faces.to_vec();
+    // hot: 4,608+ calls in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     result.sort_unstable_by_key(|face| face.index());
     result.dedup();
     result
@@ -860,7 +864,7 @@ pub fn blend_region(
     }
 
     let mut faces: Vec<FaceId> = band.into_iter().collect();
-    faces.sort_unstable_by_key(|face| face.index());
+    faces.compact_sort_unstable_by_key(|face| face.index());
     let supports = blend_region_supports(topo, solid, &faces)?;
     if supports.len() < 2 {
         return Err(reconstruction(format!(
@@ -900,7 +904,7 @@ fn blend_region_supports(
     }
 
     let mut supports: Vec<FaceId> = supports.into_iter().collect();
-    supports.sort_unstable_by_key(|support| support.index());
+    supports.compact_sort_unstable_by_key(|support| support.index());
     Ok(supports)
 }
 
@@ -956,7 +960,7 @@ pub(crate) fn remove_recognized_blend_faces(
         .into_iter()
         .collect();
     let mut explicit = faces.to_vec();
-    explicit.sort_unstable_by_key(|face| face.index());
+    explicit.compact_sort_unstable_by_key(|face| face.index());
     explicit.dedup();
     if explicit.iter().any(|face| !solid_faces.contains(face)) {
         return Err(invalid(
@@ -997,7 +1001,7 @@ pub(crate) fn remove_recognized_blend_faces(
     let mut boundary_history = sharp.boundary_history.ok_or_else(|| {
         reconstruction("recognized blend union has no construction boundary history")
     })?;
-    boundary_history.sort_unstable();
+    boundary_history.compact_sort_unstable();
     boundary_history.dedup();
     Ok(RecognizedBlendRemoval {
         solid: sharp.solid,
@@ -1451,7 +1455,7 @@ pub(crate) fn construction_boundary_pairs(
     let mut groups = BTreeMap::<Vec<usize>, Vec<usize>>::new();
     for (edge, faces) in &new_edges {
         let mut key: Vec<_> = faces.iter().map(|face| face.index()).collect();
-        key.sort_unstable();
+        key.compact_sort_unstable();
         key.dedup();
         groups.entry(key).or_default().push(*edge);
     }
@@ -1465,7 +1469,7 @@ pub(crate) fn construction_boundary_pairs(
         else {
             return Ok(Vec::new());
         };
-        key.sort_unstable();
+        key.compact_sort_unstable();
         key.dedup();
         let Some(candidates) = groups.get(&key) else {
             return Ok(Vec::new());
@@ -1494,7 +1498,7 @@ pub(crate) fn construction_boundary_pairs(
     }
     let mut vertex_groups = BTreeMap::<Vec<usize>, Vec<usize>>::new();
     for (vertex, mut edges) in target_vertices {
-        edges.sort_unstable();
+        edges.compact_sort_unstable();
         vertex_groups.entry(edges).or_default().push(vertex);
     }
     let mut source_vertices = BTreeMap::<usize, Vec<usize>>::new();
@@ -1513,7 +1517,7 @@ pub(crate) fn construction_boundary_pairs(
     let mut vertex_map = HashMap::new();
     let mut used_vertices = HashSet::new();
     for (vertex, mut edges) in source_vertices {
-        edges.sort_unstable();
+        edges.compact_sort_unstable();
         let Some(candidates) = vertex_groups.get(&edges) else {
             return Ok(Vec::new());
         };
@@ -1549,8 +1553,8 @@ pub(crate) fn construction_boundary_pairs(
             .iter()
             .map(|&wire| mapped_wire_cycle(topo, wire, None))
             .collect::<Result<Vec<_>, _>>()?;
-        before_holes.sort_unstable();
-        after_holes.sort_unstable();
+        before_holes.compact_sort_unstable();
+        after_holes.compact_sort_unstable();
         if before_holes != after_holes {
             return Ok(Vec::new());
         }
@@ -1614,11 +1618,11 @@ fn adjacent_blend_seed(
     let selected: HashSet<FaceId> = selected_faces.iter().copied().collect();
     let adjacency = solid_adjacency(topo, solid)?;
     let mut ordered = selected_faces.to_vec();
-    ordered.sort_unstable_by_key(|face| face.index());
+    ordered.compact_sort_unstable_by_key(|face| face.index());
     for selected_face in ordered {
         for edge in face_edges(topo, selected_face)? {
             let mut adjacent = distinct_faces(adjacency.faces_for_edge(edge));
-            adjacent.sort_unstable_by_key(|face| face.index());
+            adjacent.compact_sort_unstable_by_key(|face| face.index());
             for candidate in adjacent {
                 if selected.contains(&candidate)
                     || blend_surface(topo.face(candidate)?.surface()).is_none()
@@ -1644,11 +1648,11 @@ fn adjacent_analytic_blend_seed(
     let selected: HashSet<FaceId> = selected_faces.iter().copied().collect();
     let adjacency = solid_adjacency(topo, solid)?;
     let mut ordered = selected_faces.to_vec();
-    ordered.sort_unstable_by_key(|face| face.index());
+    ordered.compact_sort_unstable_by_key(|face| face.index());
     for selected_face in ordered {
         for edge in face_edges(topo, selected_face)? {
             let mut adjacent = distinct_faces(adjacency.faces_for_edge(edge));
-            adjacent.sort_unstable_by_key(|face| face.index());
+            adjacent.compact_sort_unstable_by_key(|face| face.index());
             for candidate in adjacent {
                 if selected.contains(&candidate)
                     || blend_surface(topo.face(candidate)?.surface()).is_none()
@@ -1783,7 +1787,7 @@ fn translation_invariant_blend_region(
     let mut translated_nurbs_supports = HashSet::new();
     // Face order, not set order, so a refusal always names the same face.
     let mut ordered_region: Vec<FaceId> = region.iter().copied().collect();
-    ordered_region.sort_unstable_by_key(|face| face.index());
+    ordered_region.compact_sort_unstable_by_key(|face| face.index());
     for blend_face in ordered_region {
         for edge in face_edges(topo, blend_face)? {
             for adjacent in distinct_faces(adjacency.faces_for_edge(edge)) {
@@ -1898,7 +1902,7 @@ fn translated_faces_volume_change(
     let reference = remus_check::properties::integration_reference(before, solid)?;
     let order = remus_check::properties::PropertiesOptions::default().gauss_order;
     let mut ordered: Vec<FaceId> = faces.iter().copied().collect();
-    ordered.sort_unstable_by_key(|face| face.index());
+    ordered.compact_sort_unstable_by_key(|face| face.index());
     let mut change = 0.0;
     let mut area = 0.0;
     for face in ordered {
@@ -2526,7 +2530,7 @@ fn describe_band_face_lineage(
             }
         }
         let mut supports: Vec<_> = supports.into_iter().collect();
-        supports.sort_unstable_by_key(|face| face.index());
+        supports.compact_sort_unstable_by_key(|face| face.index());
         if supports.is_empty() {
             exact = false;
         }
@@ -2570,7 +2574,7 @@ fn remap_construction_lineage(
 
 fn canonical_faces(faces: &[FaceId]) -> Vec<usize> {
     let mut indices: Vec<_> = faces.iter().map(|face| face.index()).collect();
-    indices.sort_unstable();
+    indices.compact_sort_unstable();
     indices.dedup();
     indices
 }
@@ -2635,7 +2639,7 @@ fn conservative_move_evolution(
     let mut proven_sources = HashSet::new();
     let mut proven_results = HashSet::new();
     for (&result, candidates) in &mut candidates_by_result {
-        candidates.sort_unstable();
+        candidates.compact_sort_unstable();
         candidates.dedup();
         if let [source] = candidates.as_slice() {
             evolution.add_modified(*source, result);
@@ -2648,7 +2652,7 @@ fn conservative_move_evolution(
         .map(|face| face.index())
         .filter(|source| !proven_sources.contains(source))
         .collect();
-    uncertain_sources.sort_unstable();
+    uncertain_sources.compact_sort_unstable();
     for result in result_faces {
         if !proven_results.contains(&result.index()) {
             evolution.add_unresolved(result.index(), uncertain_sources.clone());
@@ -2733,7 +2737,7 @@ fn resolve_support_pair_edges(
     let mut edges = Vec::new();
     for pair in &plan.support_pairs {
         let mut shared = shared_edges(topo, solid, pair.first, pair.second)?;
-        shared.sort_unstable_by_key(|edge| edge.index());
+        shared.compact_sort_unstable_by_key(|edge| edge.index());
         shared.dedup();
         if shared.len() != pair.edge_count {
             return Err(reconstruction(format!(
@@ -2746,7 +2750,7 @@ fn resolve_support_pair_edges(
         }
         edges.extend(shared);
     }
-    edges.sort_unstable_by_key(|edge| edge.index());
+    edges.compact_sort_unstable_by_key(|edge| edge.index());
     edges.dedup();
     Ok(edges)
 }
@@ -2983,7 +2987,7 @@ fn prove_spring_chain(
         ));
     }
 
-    endpoints.sort_unstable_by_key(|vertex| vertex.index());
+    endpoints.compact_sort_unstable_by_key(|vertex| vertex.index());
     // Walk the topology from one terminal to the other. The resulting vertex
     // order is later proved strictly monotone on the common line, excluding
     // overlapping/backtracking chains such as 0→2→1→3.
@@ -3075,7 +3079,7 @@ fn prove_spring_chain(
         .into_iter()
         .filter_map(|(vertex, edges)| (edges.len() == 2).then_some(vertex))
         .collect();
-    interior_vertices.sort_unstable_by_key(|vertex| vertex.index());
+    interior_vertices.compact_sort_unstable_by_key(|vertex| vertex.index());
     Ok(Some(SpringChain {
         edges: ordered_edges,
         endpoints: [endpoints[0], endpoints[1]],
@@ -3360,7 +3364,7 @@ fn heal_cylinder_plane_strip(
             .copied()
             .filter(|face| *face != band_face)
             .collect();
-        neighbors.sort_unstable_by_key(|face| face.index());
+        neighbors.compact_sort_unstable_by_key(|face| face.index());
         neighbors.dedup();
         if neighbors.len() != 1 {
             return Ok(None);
@@ -3371,7 +3375,7 @@ fn heal_cylinder_plane_strip(
         cross_neighbor.insert(cross, neighbors[0]);
     }
     let mut endfaces: Vec<FaceId> = cross_neighbor.values().copied().collect();
-    endfaces.sort_unstable_by_key(|face| face.index());
+    endfaces.compact_sort_unstable_by_key(|face| face.index());
     endfaces.dedup();
     // A compound R8 end groups one cylindrical cross-neighbor with the planar
     // crosses sharing its band vertices; every other end must be a single
@@ -3529,7 +3533,7 @@ fn heal_cylinder_plane_strip(
                     }
                 }
             }
-            lines.sort_unstable_by_key(|edge| edge.index());
+            lines.compact_sort_unstable_by_key(|edge| edge.index());
             lines.dedup();
             lines
         };
@@ -3576,7 +3580,7 @@ fn heal_cylinder_plane_strip(
                     .copied()
                     .filter(|face| *face != band_face)
                     .collect();
-                adjacent.sort_unstable_by_key(|face| face.index());
+                adjacent.compact_sort_unstable_by_key(|face| face.index());
                 adjacent.dedup();
                 adjacent == vec![obl, r8] || adjacent == vec![r8, obl]
             })
@@ -3757,10 +3761,10 @@ fn heal_cylinder_plane_strip(
                 .copied()
                 .filter(|face| *face != band_face)
                 .collect();
-            adjacent.sort_unstable_by_key(|face| face.index());
+            adjacent.compact_sort_unstable_by_key(|face| face.index());
             adjacent.dedup();
             let mut expected = [obl, sy];
-            expected.sort_unstable_by_key(|face| face.index());
+            expected.compact_sort_unstable_by_key(|face| face.index());
             if adjacent != expected {
                 return Err(reconstruction(format!(
                     "kept line at D joins faces {:?}, not the oblique/support pair",
@@ -3818,6 +3822,8 @@ fn heal_cylinder_plane_strip(
             (entry.west.index(), entry.west_point),
             (entry.r8.index(), entry.p2),
         ];
+        // ties: the key is a face index and the payload a point, so equal keys would order distinct points.
+        #[allow(clippy::disallowed_methods)]
         keys.sort_unstable_by_key(|(key, _)| *key);
         for (key, point) in keys {
             end_keys.push(key);
@@ -4118,7 +4124,7 @@ fn heal_cylinder_plane_strip(
     let mut rebuilt_wires: HashSet<WireId> = HashSet::new();
     let mut edge_replacements: HashMap<EdgeId, EdgeId> = HashMap::new();
     let mut ordered_adjacent: Vec<FaceId> = wound_adjacent.iter().copied().collect();
-    ordered_adjacent.sort_unstable_by_key(|face| face.index());
+    ordered_adjacent.compact_sort_unstable_by_key(|face| face.index());
     for &face in &ordered_adjacent {
         let face_data = topo.face(face)?;
         let wires: Vec<WireId> = std::iter::once(face_data.outer_wire())
@@ -4597,7 +4603,7 @@ fn heal_planar_band(
             edges.push(edge);
         }
     }
-    edges.sort_unstable_by_key(|edge| edge.index());
+    edges.compact_sort_unstable_by_key(|edge| edge.index());
     edges.dedup();
     if edges.len() != expected_edges {
         return Err(reconstruction(format!(
@@ -4958,7 +4964,7 @@ fn heal_plane_cylinder_band(
             )
         })
         .collect();
-    seam_candidates.sort_unstable_by_key(|edge| edge.index());
+    seam_candidates.compact_sort_unstable_by_key(|edge| edge.index());
     seam_candidates.dedup();
     let [old_seam] = seam_candidates.as_slice() else {
         return Err(reconstruction(format!(
@@ -5272,7 +5278,7 @@ fn rebuild_closed_periodic_support(
             candidates.push((oriented.edge(), contact));
         }
     }
-    candidates.sort_unstable();
+    candidates.compact_sort_unstable();
     candidates.dedup();
     let source = match candidates.as_slice() {
         // Zero or several ambiguous seam sources mean no single seam to

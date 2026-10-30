@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6906a85c19e2fc437d23344a9c7c615cab126dfbd1db317344b17a3567d889e2 # shrinks to r = 0.0028823174898905445, center = Vector([198530739.17513606, 0.0, 0.0]), axis = Vector([1.0, 0.0, 0.0]), (u1, du) = (0.0, 0.3), (v1, v2) = (0.0, -9.951363826523805), lambda = 0.1

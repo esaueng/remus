@@ -8,6 +8,7 @@
 use smallvec::SmallVec;
 
 use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::ray::RayHits;
 use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
 use remus_math::vec::{Point3, Vec3};
 
@@ -42,69 +43,25 @@ pub fn ray_plane(origin: Point3, direction: Vec3, normal: Vec3, d: f64) -> Optio
 }
 
 // ---------------------------------------------------------------------------
-// Ray-cylinder
+// Ray-cylinder, ray-cone, ray-sphere
 // ---------------------------------------------------------------------------
 
-/// Intersect a ray with an infinite cylindrical surface.
-///
-/// Returns up to 2 positive-t values.
-pub fn ray_cylinder(
-    origin: Point3,
-    direction: Vec3,
-    cyl: &CylindricalSurface,
-) -> SmallVec<[f64; 4]> {
-    let ov = origin - cyl.origin();
-    let axis = cyl.axis();
-    let ov_perp = ov - axis * ov.dot(axis);
-    let d_perp = direction - axis * direction.dot(axis);
-
-    let a = d_perp.dot(d_perp);
-    let b = 2.0 * ov_perp.dot(d_perp);
-    let c = ov_perp.dot(ov_perp) - cyl.radius() * cyl.radius();
-
-    solve_quadratic(a, b, c)
+/// Intersect a ray with an infinite cylindrical surface: up to two qualified
+/// hits, unfiltered by sign ([`remus_math::ray::ray_cylinder`]).
+pub fn ray_cylinder(origin: Point3, direction: Vec3, cyl: &CylindricalSurface) -> RayHits {
+    remus_math::ray::ray_cylinder(origin, direction, cyl)
 }
 
-// ---------------------------------------------------------------------------
-// Ray-cone
-// ---------------------------------------------------------------------------
-
-/// Intersect a ray with an infinite conical surface.
-///
-/// Returns up to 2 positive-t values (both nappes of the double cone).
-#[allow(clippy::similar_names)]
-pub fn ray_cone(origin: Point3, direction: Vec3, cone: &ConicalSurface) -> SmallVec<[f64; 4]> {
-    let ov = origin - cone.apex();
-    let axis = cone.axis();
-
-    let cos_a = cone.half_angle().cos();
-    let cos2 = cos_a * cos_a;
-    let sin2 = 1.0 - cos2;
-
-    let d_dot_a = direction.dot(axis);
-    let ov_dot_a = ov.dot(axis);
-
-    let a = cos2 * d_dot_a * d_dot_a - sin2 * (direction.dot(direction) - d_dot_a * d_dot_a);
-    let half_b = cos2 * d_dot_a * ov_dot_a - sin2 * (direction.dot(ov) - d_dot_a * ov_dot_a);
-    let c = cos2 * ov_dot_a * ov_dot_a - sin2 * (ov.dot(ov) - ov_dot_a * ov_dot_a);
-
-    solve_quadratic(a, 2.0 * half_b, c)
+/// Intersect a ray with an infinite double cone: up to two qualified hits
+/// over both nappes, unfiltered by sign ([`remus_math::ray::ray_cone`]).
+pub fn ray_cone(origin: Point3, direction: Vec3, cone: &ConicalSurface) -> RayHits {
+    remus_math::ray::ray_cone(origin, direction, cone)
 }
 
-// ---------------------------------------------------------------------------
-// Ray-sphere
-// ---------------------------------------------------------------------------
-
-/// Intersect a ray with a sphere.
-///
-/// Returns up to 2 positive-t values.
-pub fn ray_sphere(origin: Point3, direction: Vec3, sph: &SphericalSurface) -> SmallVec<[f64; 4]> {
-    let ov = origin - sph.center();
-    let a = direction.dot(direction);
-    let b = 2.0 * ov.dot(direction);
-    let c = ov.dot(ov) - sph.radius() * sph.radius();
-
-    solve_quadratic(a, b, c)
+/// Intersect a ray with a sphere: up to two qualified hits, unfiltered by
+/// sign ([`remus_math::ray::ray_sphere`]).
+pub fn ray_sphere(origin: Point3, direction: Vec3, sph: &SphericalSurface) -> RayHits {
+    remus_math::ray::ray_sphere(origin, direction, sph)
 }
 
 // ---------------------------------------------------------------------------
@@ -187,57 +144,6 @@ fn forward_nurbs_hits(
 }
 
 // ===========================================================================
-// Polynomial solvers
-// ===========================================================================
-
-/// Solve `a*t^2 + b*t + c = 0` returning positive roots (t > `RAY_T_MIN`).
-pub fn solve_quadratic(a: f64, b: f64, c: f64) -> SmallVec<[f64; 4]> {
-    let all = solve_quadratic_all(a, b, c);
-    all.into_iter().filter(|&t| t > RAY_T_MIN).collect()
-}
-
-/// Solve `a*t^2 + b*t + c = 0` returning ALL real roots (no positive filter).
-fn solve_quadratic_all(a: f64, b: f64, c: f64) -> SmallVec<[f64; 4]> {
-    let mut roots = SmallVec::new();
-
-    if a.abs() < NEAR_ZERO {
-        if b.abs() < NEAR_ZERO {
-            return roots;
-        }
-        roots.push(-c / b);
-        return roots;
-    }
-
-    let disc = b * b - 4.0 * a * c;
-    if disc < -NEAR_ZERO {
-        return roots;
-    }
-
-    if disc.abs() < NEAR_ZERO {
-        roots.push(-b / (2.0 * a));
-        return roots;
-    }
-
-    let sqrt_disc = disc.max(0.0).sqrt();
-    let q = if b < 0.0 {
-        -0.5 * (b - sqrt_disc)
-    } else {
-        -0.5 * (b + sqrt_disc)
-    };
-
-    roots.push(q / a);
-    if q.abs() > NEAR_ZERO {
-        roots.push(c / q);
-    }
-
-    if roots.len() == 2 && roots[0] > roots[1] {
-        roots.swap(0, 1);
-    }
-
-    roots
-}
-
-// ===========================================================================
 // Tests
 // ===========================================================================
 
@@ -255,9 +161,9 @@ mod tests {
         let origin = Point3::new(0.0, 0.0, -5.0);
         let dir = Vec3::new(0.0, 0.0, 1.0);
         let hits = ray_sphere(origin, dir, &sph);
-        assert_eq!(hits.len(), 2, "expected 2 hits, got {}", hits.len());
-        assert!((hits[0] - 4.0).abs() < TOL, "t0={}, expected 4.0", hits[0]);
-        assert!((hits[1] - 6.0).abs() < TOL, "t1={}, expected 6.0", hits[1]);
+        assert_eq!(hits.len(), 2, "expected 2 hits, got {hits:?}");
+        assert!((hits[0].t - 4.0).abs() < TOL, "{hits:?}, expected 4.0");
+        assert!((hits[1].t - 6.0).abs() < TOL, "{hits:?}, expected 6.0");
     }
 
     #[test]
@@ -285,9 +191,9 @@ mod tests {
         let origin = Point3::new(5.0, 0.0, 0.0);
         let dir = Vec3::new(-1.0, 0.0, 0.0);
         let hits = ray_cylinder(origin, dir, &cyl);
-        assert_eq!(hits.len(), 2, "expected 2 hits, got {}", hits.len());
-        assert!((hits[0] - 4.0).abs() < TOL, "t0={}, expected 4.0", hits[0]);
-        assert!((hits[1] - 6.0).abs() < TOL, "t1={}, expected 6.0", hits[1]);
+        assert_eq!(hits.len(), 2, "expected 2 hits, got {hits:?}");
+        assert!((hits[0].t - 4.0).abs() < TOL, "{hits:?}, expected 4.0");
+        assert!((hits[1].t - 6.0).abs() < TOL, "{hits:?}, expected 6.0");
     }
 
     #[test]
@@ -326,31 +232,6 @@ mod tests {
             "t3={}, expected 9.0 (x=4)",
             hits[3]
         );
-    }
-
-    #[test]
-    fn solve_quadratic_discriminant_zero() {
-        // t^2 - 2t + 1 = 0 => t = 1 (double root)
-        let roots = solve_quadratic(1.0, -2.0, 1.0);
-        assert_eq!(
-            roots.len(),
-            1,
-            "expected 1 root, got {}: {:?}",
-            roots.len(),
-            roots
-        );
-        assert!(
-            (roots[0] - 1.0).abs() < TOL,
-            "root={}, expected 1.0",
-            roots[0]
-        );
-    }
-
-    #[test]
-    fn solve_quadratic_no_real_roots() {
-        // t^2 + 1 = 0 => no real roots
-        let roots = solve_quadratic(1.0, 0.0, 1.0);
-        assert!(roots.is_empty(), "expected no roots, got {:?}", roots);
     }
 
     #[test]

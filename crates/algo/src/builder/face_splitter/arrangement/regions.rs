@@ -2,6 +2,7 @@
 use super::{
     Arrangement, ArrangementError, ArrangementRegion, CurveUse, Cycle, Result, Work, geometry,
 };
+use remus_math::compact_sort::CompactSort;
 use remus_math::vec::{Point2, Vec2};
 use std::collections::BTreeMap;
 
@@ -113,7 +114,7 @@ pub(super) fn extract(
         // A bridge repeats an undirected edge in the same orbit. It is a slit,
         // not a qualified closed region in this first slice.
         let mut undirected: Vec<_> = edges.iter().map(|h| h / 2).collect();
-        undirected.sort_unstable();
+        undirected.compact_sort_unstable();
         if undirected.windows(2).any(|p| p[0] == p[1]) {
             return Err(ArrangementError::OpenRegion);
         }

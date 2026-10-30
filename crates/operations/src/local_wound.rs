@@ -97,7 +97,7 @@ fn shared_edges(
             result.push(edge);
         }
     }
-    result.sort_unstable_by_key(|edge| edge.index());
+    result.compact_sort_unstable_by_key(|edge| edge.index());
     result.dedup();
     Ok(result)
 }
@@ -113,7 +113,7 @@ fn other_face(
         .copied()
         .filter(|face| *face != excluded)
         .collect();
-    faces.sort_unstable_by_key(|face| face.index());
+    faces.compact_sort_unstable_by_key(|face| face.index());
     faces.dedup();
     let [face] = faces.as_slice() else {
         return None;
@@ -126,7 +126,7 @@ fn shared_vertex(first: [VertexId; 2], second: [VertexId; 2]) -> Option<VertexId
         .into_iter()
         .filter(|vertex| second.contains(vertex))
         .collect::<Vec<_>>();
-    common.sort_unstable_by_key(|vertex| vertex.index());
+    common.compact_sort_unstable_by_key(|vertex| vertex.index());
     common.dedup();
     let [vertex] = common.as_slice() else {
         return None;
@@ -157,7 +157,7 @@ fn incident_pair_edge(
             candidates.push(edge_id);
         }
     }
-    candidates.sort_unstable_by_key(|edge| edge.index());
+    candidates.compact_sort_unstable_by_key(|edge| edge.index());
     candidates.dedup();
     let [edge] = candidates.as_slice() else {
         return Ok(None);
@@ -430,7 +430,7 @@ fn classify_sphere_end(
                 users.extend(adjacency.faces_for_edge(edge).iter().copied());
             }
         }
-        users.sort_unstable_by_key(|face| face.index());
+        users.compact_sort_unstable_by_key(|face| face.index());
         users.dedup();
         if users.len() != 3 || !users.contains(&band) {
             return Ok(None);
@@ -1072,7 +1072,7 @@ fn certify_result(topo: &Topology, solid: SolidId) -> Result<(), OperationsError
     let adjacency = topo.build_adjacency(solid)?;
     for edge in remus_topology::explorer::solid_edges(topo, solid)? {
         let mut faces = adjacency.faces_for_edge(edge).to_vec();
-        faces.sort_unstable_by_key(|face| face.index());
+        faces.compact_sort_unstable_by_key(|face| face.index());
         faces.dedup();
         if faces.len() != 2 {
             return Err(reconstruction(format!(
@@ -1263,7 +1263,7 @@ fn heal_cylinder_plane_band_sphere_end_impl(
         .into_iter()
         .collect();
     let mut copied_edges: Vec<_> = copied.edge_map.into_iter().collect();
-    copied_edges.sort_unstable_by_key(|(source, _)| *source);
+    copied_edges.compact_sort_unstable_by_key(|(source, _)| *source);
     let mut boundary_history = Vec::new();
     for (source, copied_edge) in copied_edges {
         let target = if spring_sources.contains(&source) {
@@ -1298,7 +1298,7 @@ fn heal_cylinder_plane_band_sphere_end_impl(
         .into_iter()
         .collect();
     let mut copied_vertices: Vec<_> = copied.vertex_map.into_iter().collect();
-    copied_vertices.sort_unstable_by_key(|(source, _)| *source);
+    copied_vertices.compact_sort_unstable_by_key(|(source, _)| *source);
     for (source, copied_vertex) in copied_vertices {
         let target = if planar_source_vertices.contains(&source) {
             Some(planar_corner)

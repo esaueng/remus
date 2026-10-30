@@ -368,3 +368,82 @@ fn cylinder_refusals_are_typed_and_atomic() {
     );
     assert_eq!(missing["ok"]["status"], "error");
 }
+
+#[test]
+fn helical_gears_take_a_helix_angle_and_hand_direct_and_batch() {
+    let spec = json!({
+        "kind": "external", "module": 2.0, "teeth": 20, "faceWidth": 8.0,
+        "helixAngle": 20.0, "hand": "left", "boreDiameter": 10.0
+    });
+    let mut direct_kernel = RemusKernel::new();
+    let direct = envelope(&mut direct_kernel, &spec);
+    assert_eq!(direct["status"], "ok", "{direct}");
+    let details = &direct["details"];
+    assert_eq!(details["quality"], "approximate");
+    assert!(details["spansAlongAxis"].as_u64().unwrap() >= 1);
+    let bound = details["flankDeviationBound"].as_f64().unwrap();
+    assert!(bound > 0.0 && bound <= 2.02e-5, "{bound}");
+    let beta = 20.0_f64.to_radians();
+    let geometry = &details["geometry"];
+    assert!((geometry["module"].as_f64().unwrap() - 2.0).abs() < 1e-12);
+    assert!((geometry["transverseModule"].as_f64().unwrap() - 2.0 / beta.cos()).abs() < 1e-12);
+    assert!((geometry["helixAngle"].as_f64().unwrap() - 20.0).abs() < 1e-12);
+    let d = 40.0 / beta.cos();
+    assert!((geometry["pitchDiameter"].as_f64().unwrap() - d).abs() < 1e-12);
+    assert!(
+        (geometry["lead"].as_f64().unwrap() - std::f64::consts::PI * d / beta.tan()).abs() < 1e-9
+    );
+    assert_valid(&direct_kernel, handle(&direct["value"]));
+
+    let mut batch_kernel = RemusKernel::new();
+    let batch = batch_v2(&mut batch_kernel, &spec);
+    assert_eq!(batch["ok"], direct);
+
+    // A spur gear reports no lead; bad helix specs refuse.
+    let spur = envelope(
+        &mut direct_kernel,
+        &json!({ "kind": "external", "module": 2.0, "teeth": 20, "faceWidth": 5.0 }),
+    );
+    assert_eq!(spur["details"]["geometry"]["lead"], Value::Null);
+    assert_eq!(spur["details"]["spansAlongAxis"], 0);
+    let before = live_counts(&direct_kernel);
+    let steep = envelope(
+        &mut direct_kernel,
+        &json!({ "kind": "external", "module": 2.0, "teeth": 20, "faceWidth": 5.0, "helixAngle": 50.0 }),
+    );
+    assert_eq!(steep["code"], "gear:invalid-parameter", "{steep}");
+    let bad_hand = envelope(
+        &mut direct_kernel,
+        &json!({ "kind": "external", "module": 2.0, "teeth": 20, "faceWidth": 5.0, "hand": "up" }),
+    );
+    assert_eq!(bad_hand["code"], "invalid_argument", "{bad_hand}");
+    assert_eq!(live_counts(&direct_kernel), before);
+}
+
+#[test]
+fn helical_teeth_on_a_boss_solve_the_normal_module() {
+    let spec = json!({ "kind": "external", "teeth": 20, "faceWidth": 6.0, "helixAngle": 15.0 });
+    let mut kernel = RemusKernel::new();
+    let blank = kernel.make_cylinder_solid(11.0, 6.0).unwrap();
+    let face = side_face(&kernel, blank);
+    let direct =
+        serde_json::to_value(kernel.cut_gear_teeth_detailed_impl(blank, face, &spec)).unwrap();
+    assert_eq!(direct["status"], "ok", "{direct}");
+    let expected = 22.0 / (20.0 / 15.0_f64.to_radians().cos() + 2.0);
+    assert!((direct["details"]["geometry"]["module"].as_f64().unwrap() - expected).abs() < 1e-12);
+    assert!(
+        (direct["details"]["geometry"]["tipDiameter"]
+            .as_f64()
+            .unwrap()
+            - 22.0)
+            .abs()
+            < 1e-9
+    );
+    assert_valid(&kernel, handle(&direct["value"]));
+
+    let mut batch_kernel = RemusKernel::new();
+    let batch_blank = batch_kernel.make_cylinder_solid(11.0, 6.0).unwrap();
+    let batch_face = side_face(&batch_kernel, batch_blank);
+    let batch = cut_batch(&mut batch_kernel, batch_blank, batch_face, &spec);
+    assert_eq!(batch["ok"], direct);
+}

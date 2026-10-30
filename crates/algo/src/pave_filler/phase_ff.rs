@@ -303,7 +303,7 @@ impl JunctionRegistry {
                 )
             })
             .collect();
-        cells.sort_unstable_by_key(|cell| cell.0);
+        cells.compact_sort_unstable_by_key(|cell| cell.0);
         cells
     }
 

@@ -158,7 +158,11 @@ impl AxisIndex {
         let mut by_y: Vec<(f64, f64, usize)> = by_x.iter().map(|&(x, y, vi)| (y, x, vi)).collect();
         let order =
             |a: &(f64, f64, usize), b: &(f64, f64, usize)| a.0.total_cmp(&b.0).then(a.2.cmp(&b.2));
+        // hot: ~62,000 n*log2(n) work, n up to 1,156 in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         by_x.sort_unstable_by(order);
+        // hot: ~62,000 n*log2(n) work, n up to 1,156 in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         by_y.sort_unstable_by(order);
         Some(Self {
             by_x,
@@ -254,6 +258,8 @@ impl Cdt {
             }
         }
         // The plain scan pushes in `vi` order and sorts stably by `t`.
+        // hot: 6,656+ calls in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         hits.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         hits
     }

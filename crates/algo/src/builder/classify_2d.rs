@@ -150,6 +150,8 @@ fn candidate_edge_indices(loop_pts: &[Point2]) -> Vec<usize> {
     const MAX_CHORD_CANDIDATES: usize = 64;
 
     let mut indices: Vec<usize> = (0..loop_pts.len()).collect();
+    // ties: edges with equal length and midpoint tie, and the cut to 64 candidates keeps some of them.
+    #[allow(clippy::disallowed_methods)]
     indices.sort_unstable_by(|&lhs, &rhs| {
         let edge_key = |i: usize| {
             let a = loop_pts[i];

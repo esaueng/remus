@@ -1,6 +1,11 @@
 //! Exact resize/removal coverage for analytic blend bands.
 
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::disallowed_methods
+)]
 
 use remus_check::validate::{ValidateOptions, validate_solid};
 use remus_math::nurbs::surface::NurbsSurface;

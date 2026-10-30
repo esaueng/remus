@@ -127,6 +127,8 @@ fn sew_shell_impl(
         .filter(|&(_, &count)| count == 1)
         .map(|(&eid, _)| eid)
         .collect();
+    // hot: ~18,000 n*log2(n) work, n up to 400 in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     free_ids.sort_unstable();
 
     if free_ids.len() < 2 {
@@ -748,6 +750,8 @@ fn collect_two_neighborhoods(
             }
         }
     }
+    // hot: 2,094+ calls, ~780,000 n*log2(n) work, n up to 400 in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     out.sort_unstable();
     out.dedup();
 }

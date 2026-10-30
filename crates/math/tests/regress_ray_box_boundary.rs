@@ -1,5 +1,6 @@
 //! Closed-box ray intersections must retain face, edge, and corner hits.
 
+#![allow(clippy::disallowed_methods)]
 use remus_math::aabb::Aabb3;
 use remus_math::bvh::Bvh;
 use remus_math::vec::{Point3, Vec3};

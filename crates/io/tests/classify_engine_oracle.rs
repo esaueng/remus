@@ -103,7 +103,7 @@ const PINNED: &[(&str, usize, usize)] = &[
     ("scoop_cavity_0.step#0", 0, 0),
     ("scoop_cavity_1.step#0", 0, 0),
     ("scoop_scoop_0.step#0", 0, 0),
-    ("shapr3d_hammer_holder.step#0", 51, 0),
+    ("shapr3d_hammer_holder.step#0", 49, 0),
     ("shapr3d_walking_stick_foot.step#0", 220, 0),
     ("shapr_untrimmed_nurbs_domain.step#0", 205, 0),
     ("wallcut_body.step#0", 0, 0),

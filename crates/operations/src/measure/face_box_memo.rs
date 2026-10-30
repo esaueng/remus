@@ -31,6 +31,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 
 use remus_math::aabb::Aabb3;
+use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::DetHashMap;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -436,7 +437,7 @@ impl KeyWriter {
                 vertex_ids.push(edge.end());
             }
         }
-        vertex_ids.sort_unstable();
+        vertex_ids.compact_sort_unstable();
         vertex_ids.dedup();
         let mut points = Vec::with_capacity(vertex_ids.len());
         for vertex in vertex_ids {

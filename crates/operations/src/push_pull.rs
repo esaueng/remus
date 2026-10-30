@@ -1627,7 +1627,7 @@ pub(crate) fn radius_subdivision_outputs(
                 .iter()
                 .flat_map(|edge| generated_edges[edge].iter().copied())
                 .collect();
-            sources.sort_unstable();
+            sources.compact_sort_unstable();
             sources.dedup();
             outputs.push((
                 EntityKey::vertex(vertex),
@@ -1754,7 +1754,7 @@ fn radius_boundary_pairs(
         else {
             return Ok(Vec::new());
         };
-        key.sort_unstable();
+        key.compact_sort_unstable();
         key.dedup();
         groups.entry(key).or_default().push(edge);
     }
@@ -1766,7 +1766,7 @@ fn radius_boundary_pairs(
         if distinct.len() > 1 && key.iter().all(|parent| *parent == key[0]) {
             continue;
         }
-        key.sort_unstable();
+        key.compact_sort_unstable();
         key.dedup();
         let Some(candidates) = groups.get(&key) else {
             return Ok(Vec::new());
@@ -1794,7 +1794,7 @@ fn radius_boundary_pairs(
     }
     let mut vertex_groups = BTreeMap::<Vec<usize>, Vec<usize>>::new();
     for (vertex, mut edges) in new_vertices {
-        edges.sort_unstable();
+        edges.compact_sort_unstable();
         vertex_groups.entry(edges).or_default().push(vertex);
     }
     let mut old_vertices = BTreeMap::<usize, Vec<usize>>::new();
@@ -1810,7 +1810,7 @@ fn radius_boundary_pairs(
     let mut vertex_map = HashMap::new();
     let mut used_vertices = HashSet::new();
     for (vertex, mut edges) in old_vertices {
-        edges.sort_unstable();
+        edges.compact_sort_unstable();
         let Some(candidates) = vertex_groups.get(&edges) else {
             return Ok(Vec::new());
         };
@@ -1885,8 +1885,8 @@ fn radius_boundary_pairs(
                 }
             }
         }
-        expected.sort_unstable();
-        actual.sort_unstable();
+        expected.compact_sort_unstable();
+        actual.compact_sort_unstable();
         if expected != actual {
             return Ok(Vec::new());
         }
@@ -2000,7 +2000,7 @@ fn radius_face_history(
                     live.contains(&final_face).then_some(final_face)
                 })
                 .collect::<Vec<_>>();
-            outputs.sort_unstable();
+            outputs.compact_sort_unstable();
             outputs.dedup();
             if outputs.is_empty() && boolean_history.deleted.contains(&source.index()) {
                 history.add_deleted(source.index());

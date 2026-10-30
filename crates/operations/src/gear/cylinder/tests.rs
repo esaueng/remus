@@ -6,7 +6,7 @@ use remus_math::mat::Mat4;
 use remus_math::vec::Point3;
 
 use super::*;
-use crate::gear::{GearFaceRole, make_gear};
+use crate::gear::{GearFaceRole, Hand, make_gear};
 use crate::measure::solid_volume;
 use crate::primitives::make_cylinder;
 use crate::tessellate::{is_watertight, tessellate_solid_with_tolerance};
@@ -366,4 +366,46 @@ fn bore_larger_than_the_inner_tip_refuses_with_dimensions() {
         }) => assert!((geometry.tip_diameter.unwrap() - 30.4).abs() < 1e-9),
         other => panic!("expected bore-too-large, got {other:?}"),
     }
+}
+
+#[test]
+fn helical_teeth_on_a_boss_keep_its_diameter_and_match_the_standalone_gear() {
+    let mut topo = Topology::new();
+    let blank = make_cylinder(&mut topo, 11.0, 6.0).unwrap();
+    let face = cylinder_face(&topo, blank, 11.0);
+    let params = GearParams {
+        helix_angle: 15.0_f64.to_radians(),
+        hand: Hand::Left,
+        ..spur(20, 6.0)
+    };
+    let outcome = cut_gear_teeth(
+        &mut topo,
+        blank,
+        face,
+        &params,
+        &CylinderGearOptions::default(),
+    )
+    .unwrap();
+    assert_valid_and_watertight(&topo, outcome.solid);
+
+    // Tip diameter is the boss: m_n = 22 / (20/cos β + 2).
+    let g = &outcome.geometry;
+    let expected_module = 22.0 / (20.0 / 15.0_f64.to_radians().cos() + 2.0);
+    assert!((g.module - expected_module).abs() < 1e-12);
+    assert!((g.tip_diameter.unwrap() - 22.0).abs() < 1e-9);
+    assert!(outcome.spans_along_axis >= 1);
+    let mut standalone = params.clone();
+    standalone.module = g.module;
+    let expected = outline_area(&standalone) * 6.0;
+    let got = crate::measure::solid_volume(&topo, outcome.solid, 1e-4).unwrap();
+    assert!(
+        ((got - expected) / expected).abs() < 1e-6,
+        "{got} vs {expected}"
+    );
+    let flanks = outcome
+        .face_roles
+        .iter()
+        .filter(|(_, role)| matches!(role, GearFaceRole::Flank { .. }))
+        .count();
+    assert_eq!(flanks, 40, "every flank keeps its role through the fuse");
 }

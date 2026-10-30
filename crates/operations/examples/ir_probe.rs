@@ -41,7 +41,8 @@
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    missing_docs
+    missing_docs,
+    clippy::disallowed_methods
 )]
 
 use std::fmt::Write as _;

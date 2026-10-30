@@ -939,6 +939,8 @@ fn plan_duplicate_removals(
                 // At most 3 * MAX_FACE_USES entries; bound worst-case sort work
                 // before sorting, including a conservative comparison factor.
                 budget.charge(scratch.len().saturating_mul(64))?;
+                // hot: 4,096+ calls, ~13,000 n*log2(n) work in one criterion --test + native perf pass.
+                #[allow(clippy::disallowed_methods)]
                 scratch.sort_unstable();
                 scratch.dedup();
             }
@@ -1123,6 +1125,8 @@ fn bucket_key_at(descriptor: &FaceDescriptor, tolerance: f64, c: Point3) -> Opti
 /// can never exclude a true match.
 fn boundary_signature(descriptor: &FaceDescriptor) -> Signature {
     let mut hole_lens: Vec<usize> = descriptor.holes.iter().map(Vec::len).collect();
+    // hot: 4,096+ calls in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     hole_lens.sort_unstable();
     (descriptor.outer.len(), hole_lens)
 }
