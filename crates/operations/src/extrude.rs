@@ -1820,6 +1820,7 @@ fn reverse_edge_curve(curve: &EdgeCurve) -> Result<EdgeCurve, crate::OperationsE
     })
 }
 
+pub(crate) mod taper;
 pub(crate) mod twist;
 
 #[cfg(test)]
