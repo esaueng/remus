@@ -28,6 +28,7 @@ use std::f64::consts::PI;
 use remus_math::vec::Vec3;
 use remus_topology::Topology;
 use remus_topology::builder::make_circle_edge_with_ref;
+use remus_topology::edge::EdgeCurve;
 use remus_topology::explorer::solid_faces;
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
@@ -352,9 +353,12 @@ fn seam_direction(
         for oriented in topo.wire(wire)?.edges() {
             let edge = topo.edge(oriented.edge())?;
             let seam_like = match edge.curve() {
-                remus_topology::edge::EdgeCurve::Circle(_) => edge.start() == edge.end(),
-                remus_topology::edge::EdgeCurve::Line => true,
-                _ => false,
+                EdgeCurve::Circle(_) => edge.start() == edge.end(),
+                EdgeCurve::Line => true,
+                EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => false,
             };
             if !seam_like {
                 continue;
