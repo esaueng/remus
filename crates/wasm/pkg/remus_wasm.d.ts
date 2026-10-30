@@ -3334,6 +3334,14 @@ export class RemusKernel {
      */
     makeFaceFromWires(outer_wire: number, inner_wire_handles: Uint32Array): number;
     /**
+     * Build an involute spur gear, internal gear or rack from a JSON
+     * specification, as typed data (see the module docs for the fields).
+     *
+     * Never throws on a refusal: the envelope's `status` is `"error"` with
+     * a `gear:<reason>` code and the session unchanged.
+     */
+    makeGearDetailed(spec: string): SolidOperationDetailedResult;
+    /**
      * Create a straight-line edge between two points.
      *
      * Returns an edge handle (`u32`).
