@@ -56,6 +56,11 @@ impl ExtrudedWire {
     pub(crate) fn source_edges(&self) -> &[EdgeId] {
         &self.source_edges
     }
+
+    /// The top edge at each post-split position.
+    pub(crate) fn top_edge_ids(&self) -> &[EdgeId] {
+        &self.top_edge_ids
+    }
 }
 
 /// Split closed single-edge wires (e.g. a full circle represented as one

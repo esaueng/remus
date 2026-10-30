@@ -20,6 +20,10 @@
 //!   rim) is left as built: the motion maps it onto itself, and keeping its
 //!   seam straight keeps its wall an untrimmed cylinder.
 //!
+//! A herringbone extrusion stacks two twisted halves of opposite hand: the
+//! upper half is the twisted extrusion of the lower half's top cap, so the
+//! halves share the mid-plane boundary and glue without a boolean.
+//!
 //! A swept face keeps the reversed flag the straight extrusion chose for its
 //! wire, so its surface must keep the straight surface's natural normal
 //! sense; the profile curve is reversed when the swept surface would not.
@@ -31,7 +35,10 @@ use remus_math::nurbs::screw::{ScrewMotion, ScrewPlan};
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
+use remus_topology::explorer::solid_faces;
 use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::Solid;
 use remus_topology::vertex::VertexId;
 
 use super::{ExtrudeConstruction, ExtrudedWire, extrude_impl, reverse_edge_curve};
@@ -39,6 +46,24 @@ use crate::OperationsError;
 
 /// Relative tolerance for treating a circle as concentric with the axis.
 const CONCENTRIC_TOLERANCE: f64 = 1e-9;
+
+/// A herringbone extrusion: two twisted halves of opposite hand, glued at the
+/// mid-plane into one solid.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) struct HerringboneExtrusion {
+    pub(crate) solid: remus_topology::solid::SolidId,
+    /// The half from the profile to the mid-plane. Its `top` cap is not a
+    /// face of the solid.
+    pub(crate) lower: ExtrudeConstruction,
+    /// The half from the mid-plane to the far cap, extruded from `lower.top`
+    /// (its `bottom` cap is not a face of the solid; its sides' source
+    /// edges are `lower`'s top edges).
+    pub(crate) upper: ExtrudeConstruction,
+    /// As [`TwistedExtrusion::deviation_bound`], over both halves.
+    pub(crate) deviation_bound: f64,
+    /// Uniform Hermite spans along the axis, per half.
+    pub(crate) spans: usize,
+}
 
 /// A twisted extrusion and its certified geometry report.
 #[allow(clippy::redundant_pub_crate)]
@@ -120,6 +145,72 @@ pub(crate) fn twisted_extrude_impl(
         construction,
         deviation_bound,
         spans: screw.spans,
+    })
+}
+
+/// Extrude the planar `face` by `distance` along `direction` turning `rate`
+/// radians per unit length about the axis through `axis_origin` up to the
+/// mid-plane, and `−rate` from there on: a herringbone (double helical)
+/// sweep whose far cap is the profile translated, unturned.
+///
+/// The upper half is the twisted extrusion of the lower half's top cap, so
+/// both halves share the mid-plane's edges and vertices; dropping the two
+/// coincident mid-plane caps leaves one closed shell with no boolean.
+///
+/// # Errors
+///
+/// As [`twisted_extrude_impl`] for either half.
+#[allow(clippy::too_many_arguments, clippy::redundant_pub_crate)]
+pub(crate) fn herringbone_extrude_impl(
+    topo: &mut Topology,
+    face: FaceId,
+    axis_origin: Point3,
+    direction: Vec3,
+    distance: f64,
+    rate: f64,
+    tolerance: f64,
+    max_spans: usize,
+) -> Result<HerringboneExtrusion, OperationsError> {
+    let half = 0.5 * distance;
+    let lower = twisted_extrude_impl(
+        topo,
+        face,
+        axis_origin,
+        direction,
+        half,
+        rate,
+        tolerance,
+        max_spans,
+    )?;
+    let upper = twisted_extrude_impl(
+        topo,
+        lower.construction.top,
+        axis_origin,
+        direction,
+        half,
+        -rate,
+        tolerance,
+        max_spans,
+    )?;
+    let mut faces = Vec::new();
+    for (solid, mid) in [
+        (lower.solid, lower.construction.top),
+        (upper.solid, upper.construction.bottom),
+    ] {
+        faces.extend(
+            solid_faces(topo, solid)?
+                .into_iter()
+                .filter(|&face| face != mid),
+        );
+    }
+    let shell = topo.add_shell(Shell::new(faces)?);
+    let solid = topo.add_solid(Solid::new(shell, vec![]));
+    Ok(HerringboneExtrusion {
+        solid,
+        lower: lower.construction,
+        upper: upper.construction,
+        deviation_bound: lower.deviation_bound.max(upper.deviation_bound),
+        spans: lower.spans.max(upper.spans),
     })
 }
 
