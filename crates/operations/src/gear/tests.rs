@@ -624,9 +624,9 @@ fn every_face_of_a_new_gear_has_one_unique_construction_role() {
         }
         let pitch = TAU / f64::from(params.teeth);
         for (face, role) in &outcome.face_roles {
-            match role {
+            match role.role {
                 GearFaceRole::Tip { tooth } => {
-                    let center = phase + f64::from(*tooth) * pitch;
+                    let center = phase + f64::from(tooth) * pitch;
                     let offset = angle_between(face_angle(&topo, *face), center);
                     assert!(
                         offset.abs() < 1e-9,
@@ -636,9 +636,9 @@ fn every_face_of_a_new_gear_has_one_unique_construction_role() {
                     );
                 }
                 GearFaceRole::Flank { tooth, side } => {
-                    let center = phase + f64::from(*tooth) * pitch;
+                    let center = phase + f64::from(tooth) * pitch;
                     let offset = angle_between(face_angle(&topo, *face), center);
-                    let expected_sign = if *side == ToothSide::Plus { 1.0 } else { -1.0 };
+                    let expected_sign = if side == ToothSide::Plus { 1.0 } else { -1.0 };
                     assert!(
                         offset * expected_sign > 0.0 && offset.abs() < 0.5 * pitch,
                         "{} sits {offset} from its tooth",
@@ -650,7 +650,7 @@ fn every_face_of_a_new_gear_has_one_unique_construction_role() {
                     ));
                 }
                 GearFaceRole::Root { gap } => {
-                    let center = phase + (f64::from(*gap) + 0.5) * pitch;
+                    let center = phase + (f64::from(gap) + 0.5) * pitch;
                     assert!(
                         angle_between(face_angle(&topo, *face), center).abs() < 1e-9,
                         "{}",
@@ -664,3 +664,4 @@ fn every_face_of_a_new_gear_has_one_unique_construction_role() {
 }
 
 mod helical;
+mod herringbone;

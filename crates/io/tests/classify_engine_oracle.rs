@@ -5,8 +5,9 @@
 //! tessellation of the same body.
 //!
 //! * Bodies: every solid of every `tests/data/*.step` fixture, plus box,
-//!   cylinder, cone, sphere, torus, box − cylinder, box ∪ sphere and
-//!   box ∩ torus. A body whose fine mesh exceeds [`MAX_TRIANGLES`] is skipped.
+//!   cylinder, cone, sphere, torus, box − cylinder, box ∪ sphere,
+//!   box − sphere and box ∩ torus. A body whose fine mesh exceeds
+//!   [`MAX_TRIANGLES`] is skipped.
 //! * Points: a 7³ grid over the bounding box inset by half a cell, plus
 //!   near-surface probes: centroids of evenly strided mesh triangles offset
 //!   by ±1e-3 and ±2e-4 × the diagonal along the facet normal.
@@ -102,7 +103,7 @@ const PINNED: &[(&str, usize, usize)] = &[
     ("scoop_cavity_0.step#0", 0, 0),
     ("scoop_cavity_1.step#0", 0, 0),
     ("scoop_scoop_0.step#0", 0, 0),
-    ("shapr3d_hammer_holder.step#0", 51, 0),
+    ("shapr3d_hammer_holder.step#0", 49, 0),
     ("shapr3d_walking_stick_foot.step#0", 220, 0),
     ("shapr_untrimmed_nurbs_domain.step#0", 205, 0),
     ("wallcut_body.step#0", 0, 0),
@@ -112,7 +113,8 @@ const PINNED: &[(&str, usize, usize)] = &[
     ("cone", 0, 0),
     ("sphere", 0, 0),
     ("box_minus_cylinder", 0, 0),
-    ("box_union_sphere", 188, 108),
+    ("box_union_sphere", 188, 0),
+    ("box_minus_sphere", 188, 0),
     ("box_intersect_torus", 390, 0),
 ];
 
@@ -194,6 +196,13 @@ fn synthetic_bodies(keep: &dyn Fn(&str) -> bool) -> Vec<Body> {
         let ball = make_sphere(t, 6.0, 16).unwrap();
         translated(t, ball, 20.0, 10.0, 5.0);
         boolean(t, BooleanOp::Fuse, block, ball).unwrap()
+    });
+    // The same sphere cut out of the box: its patches are reversed faces.
+    push("box_minus_sphere", &|t| {
+        let block = make_box(t, 20.0, 20.0, 10.0).unwrap();
+        let ball = make_sphere(t, 6.0, 16).unwrap();
+        translated(t, ball, 20.0, 10.0, 5.0);
+        boolean(t, BooleanOp::Cut, block, ball).unwrap()
     });
     push("box_intersect_torus", &|t| {
         let ring = make_torus(t, 10.0, 3.0, 32).unwrap();

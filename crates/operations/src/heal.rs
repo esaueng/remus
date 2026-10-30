@@ -2333,9 +2333,9 @@ fn plan_unify(
     // different edge re-allocations between runs.
     let mut merge_groups: Vec<Vec<usize>> = groups.into_values().filter(|g| g.len() >= 2).collect();
     for g in &mut merge_groups {
-        g.sort_unstable();
+        g.compact_sort_unstable();
     }
-    merge_groups.sort_unstable_by_key(|g| g.first().copied().unwrap_or(usize::MAX));
+    merge_groups.compact_sort_unstable_by_key(|g| g.first().copied().unwrap_or(usize::MAX));
 
     Ok(UnifyPlan {
         shell_id,

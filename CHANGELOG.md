@@ -29,6 +29,22 @@ historical predecessor-line records, retained for provenance. The
   `flankDeviationBound` covers the exact involute helicoid. Results report
   `transverseModule`, `helixAngle`, `lead` and `spansAlongAxis`. Helical
   racks refuse for now.
+* **operations,wasm:** herringbone gears. `GearParams::herringbone`
+  (`herringbone: true`) reverses a helical gear's hand at the middle of the
+  face width, standalone or cut into a boss or bore. The two twisted halves
+  share their mid-plane edges and form one solid without a boolean. Each
+  half's swept faces carry `.start-half` or `.end-half` on their role.
+  `GearOutcome::face_roles` now pairs each face with a `GearFace` (its
+  `GearFaceRole` and the half) instead of a bare `GearFaceRole`.
+* **operations,wasm:** straight bevel gears. `make_bevel_gear` /
+  `makeBevelGearDetailed` build a gear on a pitch cone set by its tooth
+  count, its mate's and the shaft angle (default 90°), with teeth tapering to
+  the cone apex and a flat heel and toe. Flanks are certified fits of the
+  spherical involute (`quality: "approximate"`, with a proven
+  `flankDeviationBound`); tip and root lands are exact cones. Results report
+  the cone angles and distances; refusals carry them when the parameters
+  admit them. The new tapered extrusion (`extrude::taper`) sweeps a planar
+  profile toward an apex.
 * **math:** `nurbs::screw` fits helices and screw-motion swept surfaces as
   NURBS with a proven bound; fits sharing one plan share their knots, so
   neighbouring faces and edges match exactly.
@@ -156,6 +172,29 @@ historical predecessor-line records, retained for provenance. The
   the public work budget, and omitting them reproduces prior behavior exactly.
 
 ### Bug Fixes
+
+* **operations:** growing a cylindrical boss now adds only the sleeve between
+  the old and new radii. It fused a solid cylinder of the new radius, which
+  also filled any bore inside the boss, so growing the outer wall of a turned
+  part around a bore refused.
+* **algo:** a plane holding one of a torus face's rim circles (a cylinder cap
+  level with a fillet band's tangent rim) now takes that rim's exact boundary
+  arcs as its section. The sampled plane × torus trace of the rim sat on the
+  face boundary, where face restriction kept arbitrary pieces of it and
+  slit the fillet face open.
+* **algo:** the ray-cast point classifier tests planar faces against their
+  circular edges exactly. It used inscribed polygons (17 points per full
+  circle, four chords per arc), whose chords fall short of the rim by up to
+  1.7% of a full circle's radius and more on a split rim, so points just
+  inside a circular boundary could classify Outside.
+
+* **algo:** the point classifier now reads a torus fillet band as its exact
+  torus when a rim of the band is split into arcs, as STEP writers emit a
+  full-revolution fillet whose rim meets a neighbouring face's seam. It used
+  to fall back to a flat boundary polygon that horizontal rays never crossed,
+  so points level with such a fillet classified Outside. A boolean then
+  dropped the faces sampled there: resizing the bore or wall of an imported
+  revolved part refused with `exact_only_unattainable`.
 
 * **algo:** the ray-cast point classifier no longer double-counts crossings
   near the rims of a partial cylinder face whose trim is not a rectangle in

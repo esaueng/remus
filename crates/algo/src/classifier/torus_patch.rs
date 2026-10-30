@@ -2,8 +2,14 @@
 use remus_math::tolerance::Tolerance;
 use remus_topology::{Topology, face::FaceId};
 
-/// Recognize a four-arc rectangular torus patch in unwrapped parameter space.
+/// Recognize a rectangular torus patch in unwrapped parameter space.
 /// Returns each angular interval as (start, span).
+///
+/// Every boundary edge must be an iso-parametric circle (constant `u` or
+/// constant `v`). Consecutive edges on the same iso-line form one side, so a
+/// rim split into arcs still bounds a rectangle: STEP writers commonly split
+/// a full-revolution fillet's rim where a neighbouring face's seam meets it.
+/// The merged boundary must have exactly four alternating sides.
 pub fn rectangular_torus_domain(
     topo: &Topology,
     face_id: FaceId,
@@ -19,12 +25,15 @@ pub fn rectangular_torus_domain(
         return None;
     }
     let edges = topo.wire(face.outer_wire()).ok()?.edges();
-    if edges.len() != 4 {
+    if edges.len() < 4 {
         return None;
     }
     let angular_tol = tol.angular.max(tol.linear / torus.minor_radius());
     let mut polygon: Vec<Point2> = Vec::new();
     let mut previous: Option<Point2> = None;
+    // One entry per side: whether it holds `u` (rather than `v`) constant,
+    // and the unwrapped value it holds.
+    let mut sides: Vec<(bool, f64)> = Vec::with_capacity(4);
     for oe in edges {
         let edge = topo.edge(oe.edge()).ok()?;
         if !matches!(edge.curve(), EdgeCurve::Circle(_)) {
@@ -71,11 +80,35 @@ pub fn rectangular_torus_domain(
         if constant_u == constant_v {
             return None;
         }
+        let side = (constant_u, if constant_u { first.x() } else { first.y() });
+        match sides.last() {
+            Some(&(along_u, value))
+                if along_u == side.0 && (value - side.1).abs() <= angular_tol => {}
+            _ => sides.push(side),
+        }
         polygon.extend(points);
     }
     let first = polygon.first()?;
     let last = polygon.last()?;
     if (*last - *first).length() > angular_tol {
+        return None;
+    }
+    // The wire may start partway along a side; its first and last runs then
+    // lie on the same iso-line. The polygon closes, so their values agree.
+    if sides.len() > 1
+        && let (Some(&(first_u, first_value)), Some(&(last_u, last_value))) =
+            (sides.first(), sides.last())
+        && first_u == last_u
+        && (first_value - last_value).abs() <= angular_tol
+    {
+        sides.pop();
+    }
+    if sides.len() != 4
+        || sides
+            .iter()
+            .zip(sides.iter().skip(1))
+            .any(|(a, b)| a.0 == b.0)
+    {
         return None;
     }
     let u0 = polygon.iter().map(|p| p.x()).fold(f64::INFINITY, f64::min);
@@ -441,6 +474,71 @@ mod tests {
         wire::{OrientedEdge, Wire},
     };
 
+    /// A full-revolution fillet band as STEP writers emit it: one rim split
+    /// into two half-circle arcs, the other rim closed, and the seam used
+    /// twice. The merged boundary is the whole `u` period by the band's `v`.
+    #[test]
+    fn full_revolution_band_with_a_split_rim_is_rectangular() {
+        use std::f64::consts::{PI, TAU};
+        let (v0, v1) = (2.0, 3.4);
+        let t = ToroidalSurface::with_axis(
+            Point3::new(0.0, 0.0, 30.0),
+            20.5,
+            4.0,
+            Vec3::new(0.0, 0.0, 1.0),
+        )
+        .unwrap();
+        let major = |v: f64| {
+            Circle3D::new_with_ref(
+                t.center() + t.z_axis() * (t.minor_radius() * v.sin()),
+                t.z_axis(),
+                t.major_radius() + t.minor_radius() * v.cos(),
+                t.x_axis(),
+            )
+            .unwrap()
+        };
+        let seam = {
+            let radial = t.x_axis();
+            Circle3D::new_with_ref(
+                t.center() + radial * t.major_radius(),
+                radial.cross(t.z_axis()),
+                t.minor_radius(),
+                radial,
+            )
+            .unwrap()
+        };
+        let mut topo = Topology::new();
+        let [low_start, low_half, high] = [(0.0, v0), (PI, v0), (0.0, v1)]
+            .map(|(u, v)| topo.add_vertex(Vertex::new(t.evaluate(u, v), 1e-7)));
+        let mut edge = |start, end, circle, domain| {
+            let mut e = Edge::new(start, end, EdgeCurve::Circle(circle));
+            e.set_trim(Some(domain));
+            topo.add_edge(e)
+        };
+        let low_a = edge(low_start, low_half, major(v0), (0.0, PI));
+        let low_b = edge(low_half, low_start, major(v0), (PI, TAU));
+        let seam = edge(low_start, high, seam, (v0, v1));
+        let high_rim = edge(high, high, major(v1), (0.0, TAU));
+        let forward = vec![
+            OrientedEdge::new(low_a, true),
+            OrientedEdge::new(low_b, true),
+            OrientedEdge::new(seam, true),
+            OrientedEdge::new(high_rim, false),
+            OrientedEdge::new(seam, false),
+        ];
+        // Start the wire partway along the split rim as well.
+        let rotated = [&forward[1..], &forward[..1]].concat();
+        for winding in [forward, rotated] {
+            let wire = topo.add_wire(Wire::new(winding, true).unwrap());
+            let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Torus(t.clone())));
+            let ((_, du), (dv0, dv)) =
+                rectangular_torus_domain(&topo, face, Tolerance::default()).unwrap();
+            assert!((du - TAU).abs() < 1e-9, "u span {du}");
+            assert!((dv0.rem_euclid(TAU) - v0).abs() < 1e-9, "v start {dv0}");
+            assert!((dv - (v1 - v0)).abs() < 1e-9, "v span {dv}");
+        }
+    }
+
     #[test]
     fn projected_trim_preserves_split_arcs_winding_and_periodic_seams() {
         for scale in [0.01, 1.0, 100.0] {
@@ -503,7 +601,17 @@ mod tests {
                     let wire = topo.add_wire(Wire::new(winding, true).unwrap());
                     let face =
                         topo.add_face(Face::new(wire, vec![], FaceSurface::Torus(t.clone())));
-                    assert!(rectangular_torus_domain(&topo, face, Tolerance::default()).is_none());
+                    // The split side is one side: the patch is still a
+                    // rectangle in (u, v).
+                    let ((du0, du), (dv0, dv)) =
+                        rectangular_torus_domain(&topo, face, Tolerance::default()).unwrap();
+                    let start = unwrap_uv(
+                        remus_math::vec::Point2::new(du0, dv0),
+                        remus_math::vec::Point2::new(u0, v0),
+                    );
+                    assert!((start.x() - u0).abs() < 1e-9, "u0 {du0} vs {u0}");
+                    assert!((start.y() - v0).abs() < 1e-9, "v0 {dv0} vs {v0}");
+                    assert!((du - (u1 - u0)).abs() < 1e-9 && (dv - (v1 - v0)).abs() < 1e-9);
                     let trim = trimmed_torus_polygon(&topo, face, Tolerance::default()).unwrap();
                     let middle = unwrap_uv(
                         remus_math::vec::Point2::new(um, f64::midpoint(v0, v1)),

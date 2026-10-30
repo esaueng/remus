@@ -5354,7 +5354,7 @@ pub(super) fn try_split_crossing_plane_face(
         };
         section_indices.push(idx);
     }
-    section_indices.sort_unstable();
+    section_indices.compact_sort_unstable();
     section_indices.dedup();
     if section_indices.len() != section_endpoints.len() || section_indices.len() < 3 {
         return Ok(None);

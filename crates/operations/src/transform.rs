@@ -2458,6 +2458,8 @@ fn collect_solid_entities(
             }
         }
     }
+    // hot: 5,120+ calls, ~76,000 n*log2(n) work in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     face_ids.sort_unstable();
     face_ids.dedup();
     let (vertex_ids, edge_ids) = sorted_edge_vertices(topo, edge_ids)?;
@@ -2485,6 +2487,8 @@ fn sorted_edge_vertices(
     topo: &Topology,
     mut edge_ids: Vec<EdgeId>,
 ) -> Result<(Vec<VertexId>, Vec<EdgeId>), crate::OperationsError> {
+    // hot: 5,120+ calls, ~559,000 n*log2(n) work in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     edge_ids.sort_unstable();
     edge_ids.dedup();
     let mut vertex_ids = Vec::with_capacity(edge_ids.len().saturating_mul(2));
@@ -2493,6 +2497,8 @@ fn sorted_edge_vertices(
         vertex_ids.push(edge.start());
         vertex_ids.push(edge.end());
     }
+    // hot: 5,120+ calls, ~559,000 n*log2(n) work in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     vertex_ids.sort_unstable();
     vertex_ids.dedup();
     Ok((vertex_ids, edge_ids))

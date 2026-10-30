@@ -50,9 +50,14 @@ use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::OperationsError;
 
+mod bevel;
 mod cylinder;
 mod profile;
 
+pub use bevel::{
+    BevelGearGeometry, BevelGearOutcome, BevelGearParams, MAX_FACE_ANGLE_DEG, bevel_gear_geometry,
+    make_bevel_gear,
+};
 pub use cylinder::{CylinderGearOptions, GearFit, cut_gear_teeth};
 
 use profile::{CircularTooth, RackTooth, Segment};
@@ -148,8 +153,13 @@ pub struct GearParams {
     /// Helix angle β at the pitch cylinder, radians in
     /// `[0, MAX_HELIX_ANGLE_DEG°]`; zero is a spur gear. Circular gears only.
     pub helix_angle: f64,
-    /// Hand of the helix; ignored for a spur gear.
+    /// Hand of the helix; ignored for a spur gear. A herringbone gear's hand
+    /// is that of its start half.
     pub hand: Hand,
+    /// Herringbone (double helical): the helix reverses hand at the middle
+    /// of the face width, so the far cap's profile lines up with the start
+    /// cap's. Needs a helix angle.
+    pub herringbone: bool,
 }
 
 impl GearParams {
@@ -174,6 +184,7 @@ impl GearParams {
             back_depth: None,
             helix_angle: 0.0,
             hand: Hand::Right,
+            herringbone: false,
         }
     }
 }
@@ -317,6 +328,36 @@ pub enum GearFaceRole {
     RackRootEnd(GearEnd),
 }
 
+/// A gear face's role and, on a herringbone gear, the half of the face width
+/// it lies in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct GearFace {
+    /// What the face is.
+    pub role: GearFaceRole,
+    /// Herringbone gears: the half (from the start or the end cap) of a face
+    /// swept from the profile; `None` on every other gear and on the caps.
+    pub half: Option<GearEnd>,
+}
+
+impl GearFace {
+    /// Stable name: the role's name, with `.start-half` or `.end-half` on a
+    /// herringbone gear's halves, e.g. `tooth[3].flank.plus.end-half`.
+    #[must_use]
+    pub fn name(self) -> String {
+        match self.half {
+            None => self.role.name(),
+            Some(GearEnd::Start) => format!("{}.start-half", self.role.name()),
+            Some(GearEnd::End) => format!("{}.end-half", self.role.name()),
+        }
+    }
+}
+
+impl From<GearFaceRole> for GearFace {
+    fn from(role: GearFaceRole) -> Self {
+        Self { role, half: None }
+    }
+}
+
 impl GearFaceRole {
     /// Stable name, e.g. `tooth[3].flank.plus`, `root[0]`, `cap.start`.
     #[must_use]
@@ -432,7 +473,7 @@ pub struct GearOutcome {
     pub spans_along_axis: usize,
     /// The role of every gear face, from the construction record. Faces of
     /// a body the gear was cut into carry no role.
-    pub face_roles: Vec<(FaceId, GearFaceRole)>,
+    pub face_roles: Vec<(FaceId, GearFace)>,
 }
 
 /// Why a gear was refused.
@@ -642,6 +683,9 @@ fn validate(params: &GearParams) -> Result<(), GearError> {
     require(kind != GearKind::Rack || params.helix_angle <= 0.0, || {
         "helical racks are not supported yet".to_owned()
     })?;
+    require(!params.herringbone || params.helix_angle > 0.0, || {
+        "a herringbone gear needs a helix angle".to_owned()
+    })?;
     Ok(())
 }
 
@@ -677,7 +721,7 @@ fn transverse(params: &GearParams) -> GearParams {
 }
 
 /// A built gear body: the solid, every face's role, and its twist report.
-type GearBody = (SolidId, Vec<(FaceId, GearFaceRole)>, TwistReport);
+type GearBody = (SolidId, Vec<(FaceId, GearFace)>, TwistReport);
 
 /// A twist's certified deviation bound and spans along the axis.
 #[derive(Debug, Clone, Copy, Default)]
@@ -686,13 +730,34 @@ struct TwistReport {
     spans: usize,
 }
 
+/// How a gear's outline is swept along its axis.
+#[derive(Debug, Clone, Copy)]
+enum Sweep {
+    /// A straight extrusion (spur gears, racks).
+    Straight,
+    /// A twisted extrusion (helical and herringbone gears).
+    Twist(Twist),
+    /// A tapered extrusion toward the apex this far along the axis from the
+    /// outline (bevel gears).
+    Taper { apex_distance: f64 },
+}
+
+impl From<Option<Twist>> for Sweep {
+    fn from(twist: Option<Twist>) -> Self {
+        twist.map_or(Self::Straight, Self::Twist)
+    }
+}
+
 /// How a helical gear's transverse profile turns along its axis.
 #[derive(Debug, Clone, Copy)]
 struct Twist {
-    /// Radians per unit of advance, positive for a right hand.
+    /// Radians per unit of advance, positive for a right hand (a herringbone
+    /// gear: over its start half).
     rate: f64,
     /// The twist's share of the flank tolerance.
     tolerance: f64,
+    /// The rate reverses at the middle of the face width.
+    herringbone: bool,
 }
 
 /// The twist of a helical gear (`None` for a spur gear or a rack): the
@@ -710,6 +775,7 @@ fn twist(params: &GearParams, geometry: &GearGeometry) -> Option<Twist> {
     Some(Twist {
         rate: sign * params.helix_angle.tan() / pitch_radius,
         tolerance: 0.5 * flank_tolerance(params),
+        herringbone: params.herringbone,
     })
 }
 
@@ -1027,7 +1093,7 @@ fn build(
         frame,
         frame.x,
         params.face_width,
-        twist(params, geometry),
+        twist(params, geometry).into(),
     )?;
     Ok(GearOutcome {
         solid,
@@ -1065,7 +1131,7 @@ fn gear_body(
     frame: &Frame,
     circle_ref: Vec3,
     face_width: f64,
-    twist: Option<Twist>,
+    sweep: Sweep,
 ) -> Result<GearBody, GearError> {
     let vertex_tol = Tolerance::new().linear;
     let LocalOutline {
@@ -1139,13 +1205,52 @@ fn gear_body(
             d,
         },
     ));
-    let (solid, construction, twist_bound) = match twist {
-        None => {
+    let tolerance_refusal = |twist: Twist| {
+        move |error| match error {
+            OperationsError::Math(remus_math::MathError::ResourceLimitExceeded { .. }) => {
+                GearError::refused(
+                    GearRefusal::ToleranceTooTight,
+                    format!(
+                        "the helix needs more than {MAX_TWIST_SPANS} spans for a tolerance of {}",
+                        twist.tolerance
+                    ),
+                )
+            }
+            other => other.into(),
+        }
+    };
+    // The extruded halves, each with the half its sides are named for.
+    let (solid, halves, twist_bound) = match sweep {
+        Sweep::Straight => {
             let (solid, construction) =
                 crate::extrude::extrude_impl(topo, face, frame.axis, face_width)?;
-            (solid, construction, TwistReport::default())
+            (solid, vec![(construction, None)], TwistReport::default())
         }
-        Some(twist) => {
+        Sweep::Twist(twist) if twist.herringbone => {
+            let built = crate::extrude::twist::herringbone_extrude_impl(
+                topo,
+                face,
+                frame.origin,
+                frame.axis,
+                face_width,
+                twist.rate,
+                twist.tolerance,
+                MAX_TWIST_SPANS,
+            )
+            .map_err(tolerance_refusal(twist))?;
+            (
+                built.solid,
+                vec![
+                    (built.lower, Some(GearEnd::Start)),
+                    (built.upper, Some(GearEnd::End)),
+                ],
+                TwistReport {
+                    bound: built.deviation_bound,
+                    spans: built.spans,
+                },
+            )
+        }
+        Sweep::Twist(twist) => {
             let twisted = crate::extrude::twist::twisted_extrude_impl(
                 topo,
                 face,
@@ -1156,25 +1261,28 @@ fn gear_body(
                 twist.tolerance,
                 MAX_TWIST_SPANS,
             )
-            .map_err(|error| match error {
-                OperationsError::Math(remus_math::MathError::ResourceLimitExceeded { .. }) => {
-                    GearError::refused(
-                        GearRefusal::ToleranceTooTight,
-                        format!(
-                            "the helix needs more than {MAX_TWIST_SPANS} spans for a tolerance of {}",
-                            twist.tolerance
-                        ),
-                    )
-                }
-                other => other.into(),
-            })?;
+            .map_err(tolerance_refusal(twist))?;
             (
                 twisted.solid,
-                twisted.construction,
+                vec![(twisted.construction, None)],
                 TwistReport {
                     bound: twisted.deviation_bound,
                     spans: twisted.spans,
                 },
+            )
+        }
+        Sweep::Taper { apex_distance } => {
+            let tapered = crate::extrude::taper::tapered_extrude_impl(
+                topo,
+                face,
+                frame.origin + frame.axis * apex_distance,
+                frame.axis,
+                face_width,
+            )?;
+            (
+                tapered.solid,
+                vec![(tapered.construction, None)],
+                TwistReport::default(),
             )
         }
     };
@@ -1185,26 +1293,48 @@ fn gear_body(
             .ok()
             .map(|i| edge_roles[i].1)
     };
+    let (Some((first, _)), Some((last, _))) = (halves.first(), halves.last()) else {
+        return Err(OperationsError::InvalidInput {
+            reason: "gear extrusion has no construction record".to_owned(),
+        }
+        .into());
+    };
     let mut face_roles = vec![
-        (construction.bottom, GearFaceRole::Cap(GearEnd::Start)),
-        (construction.top, GearFaceRole::Cap(GearEnd::End)),
+        (first.bottom, GearFaceRole::Cap(GearEnd::Start).into()),
+        (last.top, GearFaceRole::Cap(GearEnd::End).into()),
     ];
-    let sides = construction
-        .outer
-        .source_edges()
-        .iter()
-        .zip(&construction.outer_sides)
-        .chain(
+    // A herringbone gear's end half is swept from its start half's top
+    // edges, so those carry the roles across the mid-plane.
+    let mut carried: Vec<(usize, GearFaceRole)> = Vec::new();
+    for (construction, half) in &halves {
+        let wires = std::iter::once((&construction.outer, &construction.outer_sides)).chain(
             construction
                 .holes
                 .iter()
-                .flat_map(|hole| hole.inner.source_edges().iter().zip(&hole.sides)),
+                .map(|hole| (&hole.inner, &hole.sides)),
         );
-    for (&edge, &side) in sides {
-        let role = role_of(edge).ok_or_else(|| OperationsError::InvalidInput {
-            reason: "gear side face has no profile edge in its construction record".to_owned(),
-        })?;
-        face_roles.push((side, role));
+        for (wire, sides) in wires {
+            for ((&edge, &top), &side) in wire
+                .source_edges()
+                .iter()
+                .zip(wire.top_edge_ids())
+                .zip(sides)
+            {
+                let role = role_of(edge)
+                    .or_else(|| {
+                        carried
+                            .iter()
+                            .find(|entry| entry.0 == edge.index())
+                            .map(|entry| entry.1)
+                    })
+                    .ok_or_else(|| OperationsError::InvalidInput {
+                        reason: "gear side face has no profile edge in its construction record"
+                            .to_owned(),
+                    })?;
+                carried.push((top.index(), role));
+                face_roles.push((side, GearFace { role, half: *half }));
+            }
+        }
     }
     Ok((solid, face_roles, twist_bound))
 }

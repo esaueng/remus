@@ -571,6 +571,10 @@ pub struct FaceCache {
     spherical_trim: OnceLock<Option<GreatCircleTrim>>,
     /// The exact trim of a planar face with a curved edge.
     plane_trim: OnceLock<Option<PlanarTrim>>,
+    /// Half-space supports of a sphere patch bounded by two circles.
+    circle_patch: OnceLock<Option<Vec<(Point3, Vec3)>>>,
+    /// Circle-arc trim of a sphere face the narrower sphere paths decline.
+    sphere_arc_trim: OnceLock<Option<sphere_arcs::SphereArcTrim>>,
 }
 
 /// UV images of a cylinder, cone or torus face's trim polygons, as
@@ -998,6 +1002,8 @@ fn count_sphere_cap_crossings_with_trim(
 
 /// Outward arithmetic for the qualified great-circle trim predicate.
 /// Unknown/overflowed arithmetic never decides a containment sign.
+mod sphere_arcs;
+
 mod spherical_trim_math {
     use super::{Point3, Vec3};
 
@@ -1724,9 +1730,44 @@ fn count_great_circle_trim_crossings(
 fn count_sphere_circle_patch_crossings(
     topo: &Topology,
     face_id: FaceId,
+    cache: Option<&FaceCache>,
     hits: &[Point3],
     sphere: &remus_math::surfaces::SphericalSurface,
 ) -> Result<Option<u32>, CheckError> {
+    let owned;
+    let constraints = if let Some(cache) = cache {
+        if let Some(constraints) = cache.circle_patch.get() {
+            constraints
+        } else {
+            let constraints = sphere_circle_patch_constraints(topo, face_id, sphere)?;
+            cache.circle_patch.get_or_init(|| constraints)
+        }
+    } else {
+        owned = sphere_circle_patch_constraints(topo, face_id, sphere)?;
+        &owned
+    };
+    let Some(constraints) = constraints else {
+        return Ok(None);
+    };
+    let mut crossings = 0_u32;
+    for &hit in hits {
+        if constraints.iter().all(|(plane_point, half_normal)| {
+            (hit - *plane_point).dot(*half_normal) >= -HALF_SPACE_EPS
+        }) {
+            crossings += 1;
+        }
+    }
+    Ok(Some(crossings))
+}
+
+/// The two half-space supports of a sphere patch bounded by exactly two
+/// circles, as [`count_sphere_circle_patch_crossings`] tests them; `None`
+/// when the face is not such a patch.
+fn sphere_circle_patch_constraints(
+    topo: &Topology,
+    face_id: FaceId,
+    sphere: &remus_math::surfaces::SphericalSurface,
+) -> Result<Option<Vec<(Point3, Vec3)>>, CheckError> {
     let face = topo.face(face_id)?;
     if !face.inner_wires().is_empty() {
         return Ok(None);
@@ -1797,20 +1838,12 @@ fn count_sphere_circle_patch_crossings(
     // One support plane is the ordinary cap case handled above. Keep this
     // dispatch deliberately narrow: the Issue 2.2 patch is bounded by exactly
     // the primitive equator and the radical plane. Spherical polygons with
-    // three or more supports may be concave and need a winding-aware rule.
+    // three or more supports may be concave; `sphere_arcs` decides those.
     if constraints.len() != 2 || constraints[0].1.cross(constraints[1].1).length() <= 1e-9 {
         return Ok(None);
     }
 
-    let mut crossings = 0_u32;
-    for &hit in hits {
-        if constraints.iter().all(|(plane_point, half_normal)| {
-            (hit - *plane_point).dot(*half_normal) >= -HALF_SPACE_EPS
-        }) {
-            crossings += 1;
-        }
-    }
-    Ok(Some(crossings))
+    Ok(Some(constraints))
 }
 
 /// Count crossings using 3D polygon containment (for faces with planar
@@ -1824,6 +1857,44 @@ fn count_sphere_circle_patch_crossings(
 /// # Errors
 ///
 /// Returns an error if topology lookups fail.
+/// Crossings of sphere hits decided by the face's circle-arc trim
+/// ([`sphere_arcs`]); `None` when the face has another edge kind or some hit
+/// stays undecided.
+fn count_sphere_arc_trim_crossings(
+    topo: &Topology,
+    face_id: FaceId,
+    cache: Option<&FaceCache>,
+    hits: &[Point3],
+    sphere: &remus_math::surfaces::SphericalSurface,
+) -> Result<Option<u32>, CheckError> {
+    if hits.is_empty() {
+        return Ok(Some(0));
+    }
+    let owned;
+    let trim = if let Some(cache) = cache {
+        if let Some(trim) = cache.sphere_arc_trim.get() {
+            trim
+        } else {
+            let trim = sphere_arcs::SphereArcTrim::build(topo, face_id, sphere)?;
+            cache.sphere_arc_trim.get_or_init(|| trim)
+        }
+    } else {
+        owned = sphere_arcs::SphereArcTrim::build(topo, face_id, sphere)?;
+        &owned
+    };
+    let Some(trim) = trim else {
+        return Ok(None);
+    };
+    let mut count = 0;
+    for &hit in hits {
+        let Some(inside) = trim.contains(hit) else {
+            return Ok(None);
+        };
+        count += u32::from(inside);
+    }
+    Ok(Some(count))
+}
+
 fn count_3d_polygon_crossings(
     topo: &Topology,
     face_id: FaceId,
@@ -1983,7 +2054,11 @@ pub fn count_face_ray_crossings_cached(
                 {
                     Ok(count)
                 } else if let Some(count) =
-                    count_sphere_circle_patch_crossings(topo, face_id, points, sph)?
+                    count_sphere_circle_patch_crossings(topo, face_id, cache, points, sph)?
+                {
+                    Ok(count)
+                } else if let Some(count) =
+                    count_sphere_arc_trim_crossings(topo, face_id, cache, points, sph)?
                 {
                     Ok(count)
                 } else {
@@ -1992,23 +2067,76 @@ pub fn count_face_ray_crossings_cached(
             })
         }
         FaceSurface::Torus(tor) => {
-            let tor = tor.clone();
-            let roots = ray_surface::ray_torus(origin, direction, &tor);
-            count_analytic_crossings_with_trim(
-                topo,
-                face_id,
-                trim,
-                cache,
-                &ray_hit_points(origin, direction, &roots),
-                |p| tor.project_point(p),
-                true,
-                None,
-            )
+            let hits = ray_surface::ray_torus(origin, direction, tor);
+            count_quadric_crossings(origin, direction, &hits, |points| {
+                count_analytic_crossings_with_trim(
+                    topo,
+                    face_id,
+                    trim,
+                    cache,
+                    points,
+                    |p| tor.project_point(p),
+                    true,
+                    None,
+                )
+            })
         }
         FaceSurface::Nurbs(surface) => {
             ray_crossings_nurbs_with_trim(topo, face_id, trim, cache, origin, direction, surface)
         }
     }
+}
+
+/// UV trim membership of a point on a cylinder, cone or torus face, by the
+/// same containment the ray crossings use. `None` for other surfaces.
+///
+/// The 3D outer polygon of a full-turn wall (rim, seam, rim, seam) projects
+/// onto a degenerate plane polygon, so only the face's own `(u, v)` decides
+/// these faces (RFC 0008 F4).
+pub fn analytic_uv_trim_contains(
+    topo: &Topology,
+    face_id: FaceId,
+    trim: &FaceTrimData,
+    cache: Option<&FaceCache>,
+    point: Point3,
+) -> Result<Option<bool>, CheckError> {
+    let hits = [point];
+    let count = match topo.face(face_id)?.surface() {
+        FaceSurface::Cylinder(cyl) => count_analytic_crossings_with_trim(
+            topo,
+            face_id,
+            Some(trim),
+            cache,
+            &hits,
+            |p| cyl.project_point(p),
+            false,
+            None,
+        )?,
+        FaceSurface::Cone(cone) => count_analytic_crossings_with_trim(
+            topo,
+            face_id,
+            Some(trim),
+            cache,
+            &hits,
+            |p| cone.project_point(p),
+            false,
+            Some(CONE_APEX_V),
+        )?,
+        FaceSurface::Torus(tor) => count_analytic_crossings_with_trim(
+            topo,
+            face_id,
+            Some(trim),
+            cache,
+            &hits,
+            |p| tor.project_point(p),
+            true,
+            None,
+        )?,
+        FaceSurface::Plane { .. } | FaceSurface::Sphere(_) | FaceSurface::Nurbs(_) => {
+            return Ok(None);
+        }
+    };
+    Ok(Some(count > 0))
 }
 
 /// Whether a planar face has a boundary edge its trim polygon only
@@ -2385,7 +2513,7 @@ fn count_nurbs_hits_with_trim(
     Ok(crossings)
 }
 
-/// Crossings of one ray over a quadric face from its qualified hits.
+/// Crossings of one ray over a quadric or torus face from its qualified hits.
 ///
 /// `count` is the face's trim count over a set of points on the ray. The
 /// transversal hits are counted in one call, exactly as bare roots were. A
@@ -2429,14 +2557,6 @@ fn count_quadric_crossings(
         }
     }
     count(&transversal)
-}
-
-fn ray_hit_points(origin: Point3, direction: Vec3, roots: &[f64]) -> SmallVec<[Point3; 4]> {
-    roots
-        .iter()
-        .filter(|&&t| t > RAY_T_MIN)
-        .map(|&t| origin + direction * t)
-        .collect()
 }
 
 /// Test whether a point on a face's support surface lies within its trims.
@@ -2491,7 +2611,11 @@ pub fn surface_point_in_face(
             {
                 count
             } else if let Some(count) =
-                count_sphere_circle_patch_crossings(topo, face_id, &hits, surface)?
+                count_sphere_circle_patch_crossings(topo, face_id, None, &hits, surface)?
+            {
+                count
+            } else if let Some(count) =
+                count_sphere_arc_trim_crossings(topo, face_id, None, &hits, surface)?
             {
                 count
             } else {

@@ -13,6 +13,7 @@ use crate::TopologyError;
 use crate::edge::EdgeId;
 use crate::face::FaceId;
 use crate::solid::SolidId;
+use remus_math::compact_sort::CompactSort;
 
 /// Precomputed adjacency data for a solid's topology.
 ///
@@ -103,7 +104,7 @@ impl AdjacencyIndex {
         }
 
         for neighbors in face_neighbors.values_mut() {
-            neighbors.sort_unstable_by_key(|id| id.index());
+            neighbors.compact_sort_unstable_by_key(|id| id.index());
             neighbors.dedup();
         }
 

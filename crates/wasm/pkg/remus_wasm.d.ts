@@ -3141,6 +3141,14 @@ export class RemusKernel {
      */
     loftWithOptions(faces: Uint32Array, options: string): number;
     /**
+     * Build a straight bevel gear from a JSON specification, as typed data
+     * (see the module docs for the fields).
+     *
+     * Never throws on a refusal: the envelope's `status` is `"error"` with
+     * a `gear:<reason>` code and the session unchanged.
+     */
+    makeBevelGearDetailed(spec: string): SolidOperationDetailedResult;
+    /**
      * Create a box solid with one corner at the origin and the opposite
      * corner at `(dx, dy, dz)`.
      *

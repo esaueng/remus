@@ -1,12 +1,14 @@
-//! Involute spur, internal and rack gear construction
-//! (`remus_operations::gear`).
+//! Involute spur, helical, herringbone, internal, rack and straight bevel
+//! gear construction (`remus_operations::gear`).
 //!
-//! `makeGearDetailed(spec)` builds a new gear body and
+//! `makeGearDetailed(spec)` builds a new gear body,
+//! `makeBevelGearDetailed(spec)` a straight bevel gear, and
 //! `cutGearTeethDetailed(solid, face, spec)` cuts teeth along the whole
 //! length of a solid's cylindrical face (external teeth on a boss, internal
 //! teeth in a bore). Both return the typed [`SolidOperationDetailedResult`]
 //! envelope; the `executeBatch` / `executeBatchV2` ops of the same names take
-//! the spec as their `args` (`makeGearDetailed`) or as `args.spec` beside
+//! the spec as their `args` (`makeGearDetailed`, `makeBevelGearDetailed`) or
+//! as `args.spec` beside
 //! `args.solid` and `args.face` (`cutGearTeethDetailed`), so direct and batch
 //! results are identical by construction.
 //!
@@ -26,22 +28,45 @@
 //!   "origin": [0, 0, 0], "axis": [0, 0, 1], "xDirection": [1, 0, 0],
 //!   "phase": 0,                   // degrees; circular gears only
 //!   "helixAngle": 0,              // degrees in [0, 45]; circular gears only
-//!   "hand": "right" | "left"      // default "right"
+//!   "hand": "right" | "left",     // default "right"
+//!   "herringbone": false          // needs a helixAngle
 //! }
 //! ```
 //!
 //! A non-zero `helixAngle` makes a helical gear (ISO 21771): `module`,
 //! `pressureAngle` and the coefficients are normal-section values, and the
 //! teeth turn about `axis` as they advance (counter-clockwise for a right
-//! hand). `phase` places the first tooth on the start cap.
+//! hand). `phase` places the first tooth on the start cap. `herringbone`
+//! reverses the hand at the middle of the face width (`hand` is the start
+//! half's); each half's swept faces carry `.start-half` or `.end-half` on
+//! their role, e.g. `tooth[3].flank.plus.end-half`.
 //!
 //! `cutGearTeethDetailed` spec: `kind` (`"external"` for a boss,
 //! `"internal"` for a bore), `teeth`, `faceWidth` (the face's length:
 //! partial spans refuse), `fit` (`"keepDiameter"`, the default, solves the
 //! module so the tip (inner tip) diameter is the cylinder's; `"module"` uses
-//! `module`), the same tooth-form fields as above (including `helixAngle`
-//! and `hand`), and optional `xDirection` and `phase` (default: the face's
+//! `module`), the same tooth-form fields as above (including `helixAngle`,
+//! `hand` and `herringbone`), and optional `xDirection` and `phase` (default: the face's
 //! seam direction).
+//!
+//! `makeBevelGearDetailed` spec (heel values; the apex lies along `axis`
+//! from the heel plane at `origin`, and `cap.start` is the heel):
+//!
+//! ```json
+//! {
+//!   "module": 2, "teeth": 20, "mateTeeth": 40,
+//!   "faceWidth": 8,               // along the pitch cone
+//!   "shaftAngle": 90,             // degrees, default 90
+//!   "pressureAngle": 20, "addendum": 1, "dedendum": 1.25, "backlash": 0,
+//!   "tolerance": 2e-5, "boreDiameter": 10,
+//!   "origin": [0, 0, 0], "axis": [0, 0, 1], "xDirection": [1, 0, 0],
+//!   "phase": 0
+//! }
+//! ```
+//!
+//! Its flanks are certified fits of the spherical involute
+//! (`details.flankDeviationBound`), and `details.geometry` carries the cone
+//! angles in degrees.
 //!
 //! Unknown keys refuse, so a misspelled option never silently falls back to
 //! its default. Angles are degrees at this boundary and radians natively,
@@ -70,8 +95,9 @@ use wasm_bindgen::prelude::*;
 
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::gear::{
-    CylinderGearOptions, GearError, GearFit, GearGeometry, GearKind, GearOutcome, GearParams,
-    GearPlacement, GearRefusal, GearWarning, Hand, cut_gear_teeth, make_gear,
+    BevelGearGeometry, BevelGearOutcome, BevelGearParams, CylinderGearOptions, GearError, GearFit,
+    GearGeometry, GearKind, GearOutcome, GearParams, GearPlacement, GearRefusal, GearWarning, Hand,
+    bevel_gear_geometry, cut_gear_teeth, make_bevel_gear, make_gear,
 };
 
 use crate::error::StructuredWasmError;
@@ -140,6 +166,8 @@ struct GearSpec {
     helix_angle: f64,
     #[serde(default)]
     hand: HandSpec,
+    #[serde(default)]
+    herringbone: bool,
 }
 
 const fn default_pressure_angle() -> f64 {
@@ -184,6 +212,69 @@ impl GearSpec {
             back_depth: self.back_depth,
             helix_angle: self.helix_angle.to_radians(),
             hand: self.hand.into(),
+            herringbone: self.herringbone,
+        };
+        let placement = GearPlacement {
+            origin: self.origin.map_or(defaults.origin, point),
+            axis: self.axis.map_or(defaults.axis, vector),
+            x_direction: self.x_direction.map_or(defaults.x_direction, vector),
+            phase: self.phase.to_radians(),
+        };
+        (params, placement)
+    }
+}
+
+/// The JSON bevel gear specification (see the module docs).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct BevelGearSpec {
+    module: f64,
+    teeth: u32,
+    mate_teeth: u32,
+    face_width: f64,
+    #[serde(default = "default_shaft_angle")]
+    shaft_angle: f64,
+    #[serde(default = "default_pressure_angle")]
+    pressure_angle: f64,
+    #[serde(default = "default_addendum")]
+    addendum: f64,
+    #[serde(default = "default_dedendum")]
+    dedendum: f64,
+    #[serde(default)]
+    backlash: f64,
+    tolerance: Option<f64>,
+    bore_diameter: Option<f64>,
+    #[serde(default)]
+    origin: Option<[f64; 3]>,
+    #[serde(default)]
+    axis: Option<[f64; 3]>,
+    #[serde(default)]
+    x_direction: Option<[f64; 3]>,
+    #[serde(default)]
+    phase: f64,
+}
+
+const fn default_shaft_angle() -> f64 {
+    90.0
+}
+
+impl BevelGearSpec {
+    fn split(self) -> (BevelGearParams, GearPlacement) {
+        let defaults = GearPlacement::default();
+        let point = |p: [f64; 3]| Point3::new(p[0], p[1], p[2]);
+        let vector = |v: [f64; 3]| Vec3::new(v[0], v[1], v[2]);
+        let params = BevelGearParams {
+            module: self.module,
+            teeth: self.teeth,
+            mate_teeth: self.mate_teeth,
+            shaft_angle: self.shaft_angle.to_radians(),
+            face_width: self.face_width,
+            pressure_angle: self.pressure_angle.to_radians(),
+            addendum: self.addendum,
+            dedendum: self.dedendum,
+            backlash: self.backlash,
+            tolerance: self.tolerance,
+            bore_diameter: self.bore_diameter,
         };
         let placement = GearPlacement {
             origin: self.origin.map_or(defaults.origin, point),
@@ -242,6 +333,8 @@ struct CylinderGearSpec {
     helix_angle: f64,
     #[serde(default)]
     hand: HandSpec,
+    #[serde(default)]
+    herringbone: bool,
 }
 
 impl CylinderGearSpec {
@@ -282,6 +375,7 @@ impl CylinderGearSpec {
             back_depth: None,
             helix_angle: self.helix_angle.to_radians(),
             hand: self.hand.into(),
+            herringbone: self.herringbone,
         };
         let options = CylinderGearOptions {
             fit,
@@ -342,6 +436,55 @@ fn geometry_json(geometry: &GearGeometry) -> Value {
         "tipThickness": geometry.tip_thickness,
         "minTeethWithoutUndercut": geometry.min_teeth_without_undercut,
         "minProfileShiftWithoutUndercut": geometry.min_profile_shift_without_undercut,
+    })
+}
+
+fn bevel_details(outcome: &BevelGearOutcome) -> Map<String, Value> {
+    let mut details = Map::new();
+    details.insert("quality".into(), Value::from("approximate"));
+    details.insert(
+        "approximated".into(),
+        Value::from("spherical involute flanks"),
+    );
+    details.insert(
+        "flankDeviationBound".into(),
+        Value::from(outcome.flank_deviation_bound),
+    );
+    details.insert("spansPerFlank".into(), Value::from(outcome.spans_per_flank));
+    details.insert("geometry".into(), bevel_geometry_json(&outcome.geometry));
+    details.insert("warnings".into(), warnings_json(&outcome.geometry.warnings));
+    details.insert(
+        "faceRoles".into(),
+        Value::Array(
+            outcome
+                .face_roles
+                .iter()
+                .map(|(face, role)| json!({ "face": face_id_to_u32(*face), "role": role.name() }))
+                .collect(),
+        ),
+    );
+    details
+}
+
+fn bevel_geometry_json(geometry: &BevelGearGeometry) -> Value {
+    json!({
+        "module": geometry.module,
+        "pitchAngle": geometry.pitch_angle.to_degrees(),
+        "matePitchAngle": geometry.mate_pitch_angle.to_degrees(),
+        "baseConeAngle": geometry.base_cone_angle.to_degrees(),
+        "faceAngle": geometry.face_angle.to_degrees(),
+        "rootAngle": geometry.root_angle.to_degrees(),
+        "outerConeDistance": geometry.outer_cone_distance,
+        "innerConeDistance": geometry.inner_cone_distance,
+        "pitchDiameter": geometry.pitch_diameter,
+        "tipDiameter": geometry.tip_diameter,
+        "rootDiameter": geometry.root_diameter,
+        "apexDistance": geometry.apex_distance,
+        "height": geometry.height,
+        "circularPitch": geometry.circular_pitch,
+        "toothThickness": geometry.tooth_thickness,
+        "tipThickness": geometry.tip_thickness,
+        "virtualTeeth": geometry.virtual_teeth,
     })
 }
 
@@ -413,6 +556,25 @@ impl RemusKernel {
         Ok(result.into_ts()?)
     }
 
+    /// Build a straight bevel gear from a JSON specification, as typed data
+    /// (see the module docs for the fields).
+    ///
+    /// Never throws on a refusal: the envelope's `status` is `"error"` with
+    /// a `gear:<reason>` code and the session unchanged.
+    #[wasm_bindgen(js_name = "makeBevelGearDetailed")]
+    pub fn make_bevel_gear_detailed(
+        &mut self,
+        spec: &str,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        let result = match serde_json::from_str::<Value>(spec) {
+            Ok(value) => self.make_bevel_gear_detailed_impl(&value),
+            Err(error) => SolidOperationDetailedResult::error(
+                StructuredWasmError::invalid_json(&error).with_direct_operation("makeBevelGear"),
+            ),
+        };
+        Ok(result.into_ts()?)
+    }
+
     /// Cut gear teeth along the whole length of a solid's cylindrical face,
     /// as typed data: external teeth on a boss, internal teeth in a bore
     /// (see the module docs for the fields).
@@ -466,6 +628,43 @@ impl RemusKernel {
             }
             Err(error) => {
                 SolidOperationDetailedResult::error(error.with_direct_operation("cutGearTeeth"))
+            }
+        }
+    }
+
+    pub(crate) fn make_bevel_gear_detailed_impl(
+        &mut self,
+        spec: &Value,
+    ) -> SolidOperationDetailedResult {
+        let result = (|| -> Result<(u32, Map<String, Value>), StructuredWasmError> {
+            let spec = BevelGearSpec::deserialize(spec).map_err(|error| {
+                StructuredWasmError::invalid_argument(
+                    format!("invalid bevel gear spec: {error}"),
+                    None,
+                )
+            })?;
+            let (params, placement) = spec.split();
+            let outcome =
+                make_bevel_gear(self.topo_mut(), &params, &placement).map_err(|error| {
+                    // Bevel refusals carry no spur geometry; attach the cone
+                    // dimensions whenever the parameters admit them.
+                    let dimensions = bevel_gear_geometry(&params).ok();
+                    let mut structured = gear_failure(error);
+                    if let Some(geometry) = dimensions {
+                        structured = structured
+                            .with_detail("geometry", bevel_geometry_json(&geometry))
+                            .with_detail("warnings", warnings_json(&geometry.warnings));
+                    }
+                    structured
+                })?;
+            Ok((solid_id_to_u32(outcome.solid), bevel_details(&outcome)))
+        })();
+        match result {
+            Ok((solid, details)) => {
+                SolidOperationDetailedResult::success_with_details(solid, details)
+            }
+            Err(error) => {
+                SolidOperationDetailedResult::error(error.with_direct_operation("makeBevelGear"))
             }
         }
     }

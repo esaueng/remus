@@ -56,6 +56,11 @@ impl ExtrudedWire {
     pub(crate) fn source_edges(&self) -> &[EdgeId] {
         &self.source_edges
     }
+
+    /// The top edge at each post-split position.
+    pub(crate) fn top_edge_ids(&self) -> &[EdgeId] {
+        &self.top_edge_ids
+    }
 }
 
 /// Split closed single-edge wires (e.g. a full circle represented as one
@@ -1815,6 +1820,7 @@ fn reverse_edge_curve(curve: &EdgeCurve) -> Result<EdgeCurve, crate::OperationsE
     })
 }
 
+pub(crate) mod taper;
 pub(crate) mod twist;
 
 #[cfg(test)]

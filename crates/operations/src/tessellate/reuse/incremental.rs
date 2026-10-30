@@ -4,6 +4,7 @@
 //! the existing fresh pass. No geometry is modified here.
 
 use super::super::mesh_ops::HalfEdgeTable;
+use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::{DetLookupHashMap, DetLookupHashSet, DetLookupState};
 
 const MAX_CHANGED_TRIANGLES: usize = 4096;
@@ -160,7 +161,7 @@ fn triangle_key(triangle: &[u32], partition: &[u32]) -> Option<[u32; 3]> {
         *partition.get(triangle[1] as usize)?,
         *partition.get(triangle[2] as usize)?,
     ];
-    key.sort_unstable();
+    key.compact_sort_unstable();
     (key[0] != key[1] && key[1] != key[2]).then_some(key)
 }
 
