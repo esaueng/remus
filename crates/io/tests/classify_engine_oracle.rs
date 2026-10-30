@@ -80,8 +80,8 @@ const NEAR_TRIANGLES: usize = 75;
 /// Pinned wrong counts per body: `(name, algo, check)`. Lower a pin when the
 /// run reports a count below it; never raise one.
 const PINNED: &[(&str, usize, usize)] = &[
-    ("axis2_optional_attrs_cylinder.step#0", 0, 19),
-    ("conical_surface_base_radius_frustum.step#0", 0, 4),
+    ("axis2_optional_attrs_cylinder.step#0", 0, 0),
+    ("conical_surface_base_radius_frustum.step#0", 0, 0),
     ("jolly_fox_partial_cylinder.step#0", 0, 0),
     ("lemon-torus-band.step#0", 361, 0),
     ("lipfuse_2x1_body.step#0", 0, 0),
@@ -96,7 +96,7 @@ const PINNED: &[(&str, usize, usize)] = &[
     ("openzcad_a_export_bored_plate.step#0", 0, 0),
     ("openzcad_e_analytic_fillet_plate.step#0", 0, 0),
     ("openzcad_e_nurbs_fillet_plate.step#0", 150, 6),
-    ("oring_nested_holes.step#0", 0, 5),
+    ("oring_nested_holes.step#0", 0, 0),
     ("scale_platform_v1_linear_spline_edge.step#0", 0, 0),
     ("scoop_bin_box.step#0", 0, 0),
     ("scoop_cavity_0.step#0", 0, 0),
@@ -108,8 +108,8 @@ const PINNED: &[(&str, usize, usize)] = &[
     ("wallcut_body.step#0", 0, 0),
     ("wallcut_tool_0.step#0", 0, 0),
     ("box", 0, 0),
-    ("cylinder", 0, 18),
-    ("cone", 0, 15),
+    ("cylinder", 0, 0),
+    ("cone", 0, 0),
     ("sphere", 0, 0),
     ("box_minus_cylinder", 0, 0),
     ("box_union_sphere", 188, 108),
