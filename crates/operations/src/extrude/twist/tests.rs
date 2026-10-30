@@ -273,3 +273,92 @@ fn a_profile_not_perpendicular_to_the_axis_is_refused() {
     );
     assert!(matches!(result, Err(OperationsError::InvalidInput { .. })));
 }
+
+#[test]
+fn a_herringbone_prism_turns_to_the_mid_plane_and_back() {
+    let mut topo = Topology::new();
+    let face = square(&mut topo, 2.0);
+    let built = herringbone_extrude_impl(
+        &mut topo,
+        face,
+        origin(),
+        Z,
+        10.0,
+        FRAC_PI_2 / 5.0,
+        1e-7,
+        256,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    // Two caps and four swept sides per half; the mid-plane caps are gone.
+    assert_eq!(census(&topo, built.solid), (2, 0, 8));
+    let faces = solid_faces(&topo, built.solid).unwrap();
+    assert!(!faces.contains(&built.lower.top));
+    assert!(!faces.contains(&built.upper.bottom));
+    assert!(built.deviation_bound <= 1e-7);
+    assert_valid_and_watertight(&topo, built.solid);
+    assert_volume(&topo, built.solid, 160.0);
+
+    // The mid-plane has turned 90°; the far cap is back where it started.
+    let points = |verts: &[remus_topology::vertex::VertexId]| -> Vec<Point3> {
+        verts
+            .iter()
+            .map(|&v| topo.vertex(v).unwrap().point())
+            .collect()
+    };
+    let mid = points(&built.lower.outer.top_verts);
+    assert!(
+        mid.iter()
+            .any(|p| (*p - Point3::new(-2.0, 2.0, 5.0)).length() < 1e-12),
+        "{mid:?}"
+    );
+    for p in points(&built.upper.outer.top_verts) {
+        assert!(
+            (p.x().abs() - 2.0).abs() < 1e-12 && (p.y().abs() - 2.0).abs() < 1e-12,
+            "{p:?}"
+        );
+        assert!((p.z() - 10.0).abs() < 1e-12);
+    }
+    // Each half's side faces are separate; the mid-plane edges join them.
+    let classify_at = |p: Point3| classify_point(&topo, built.solid, p, 0.01, 1e-6).unwrap();
+    for z in [2.5, 7.5] {
+        // A quarter of the way up either half, the square has turned 45°.
+        assert_eq!(
+            classify_at(Point3::new(2.7, 0.0, z)),
+            PointClassification::Inside
+        );
+        assert_eq!(
+            classify_at(Point3::new(1.6, 1.6, z)),
+            PointClassification::Outside
+        );
+    }
+}
+
+#[test]
+fn a_herringbone_bore_stays_two_exact_cylinders() {
+    let mut topo = Topology::new();
+    let outer = make_polygon_wire(
+        &mut topo,
+        &[
+            Point3::new(-2.0, -2.0, 0.0),
+            Point3::new(2.0, -2.0, 0.0),
+            Point3::new(2.0, 2.0, 0.0),
+            Point3::new(-2.0, 2.0, 0.0),
+        ],
+        1e-7,
+    )
+    .unwrap();
+    let bore =
+        make_circle_edge_with_ref(&mut topo, origin(), -Z, 1.0, Vec3::new(1.0, 0.0, 0.0), 1e-7)
+            .unwrap();
+    let inner = topo.add_wire(Wire::new(vec![OrientedEdge::new(bore, true)], true).unwrap());
+    let face = topo.add_face(Face::new(
+        outer,
+        vec![inner],
+        FaceSurface::Plane { normal: Z, d: 0.0 },
+    ));
+    let built =
+        herringbone_extrude_impl(&mut topo, face, origin(), Z, 6.0, -0.3, 1e-7, 256).unwrap();
+    assert_eq!(census(&topo, built.solid), (2, 2, 8));
+    assert_valid_and_watertight(&topo, built.solid);
+    assert_volume(&topo, built.solid, (16.0 - PI) * 6.0);
+}

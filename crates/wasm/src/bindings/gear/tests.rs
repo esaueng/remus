@@ -447,3 +447,43 @@ fn helical_teeth_on_a_boss_solve_the_normal_module() {
     let batch = cut_batch(&mut batch_kernel, batch_blank, batch_face, &spec);
     assert_eq!(batch["ok"], direct);
 }
+
+#[test]
+fn herringbone_gears_name_both_halves_direct_and_batch() {
+    let spec = json!({
+        "kind": "external", "module": 2.0, "teeth": 20, "faceWidth": 8.0,
+        "helixAngle": 20.0, "herringbone": true
+    });
+    let mut direct_kernel = RemusKernel::new();
+    let direct = envelope(&mut direct_kernel, &spec);
+    assert_eq!(direct["status"], "ok", "{direct}");
+    let roles: Vec<&str> = direct["details"]["faceRoles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["role"].as_str().unwrap())
+        .collect();
+    for name in [
+        "cap.start",
+        "cap.end",
+        "tooth[0].flank.plus.start-half",
+        "tooth[0].flank.plus.end-half",
+        "root[19].end-half",
+    ] {
+        assert!(roles.contains(&name), "{name}: {roles:?}");
+    }
+    assert_valid(&direct_kernel, handle(&direct["value"]));
+
+    let mut batch_kernel = RemusKernel::new();
+    let batch = batch_v2(&mut batch_kernel, &spec);
+    assert_eq!(batch["ok"], direct);
+
+    // Without a helix angle there is no herringbone, and the session is kept.
+    let before = live_counts(&direct_kernel);
+    let flat = envelope(
+        &mut direct_kernel,
+        &json!({ "kind": "external", "module": 2.0, "teeth": 20, "faceWidth": 5.0, "herringbone": true }),
+    );
+    assert_eq!(flat["code"], "gear:invalid-parameter", "{flat}");
+    assert_eq!(live_counts(&direct_kernel), before);
+}

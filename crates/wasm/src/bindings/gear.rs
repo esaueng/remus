@@ -1,4 +1,4 @@
-//! Involute spur, internal and rack gear construction
+//! Involute spur, helical, herringbone, internal and rack gear construction
 //! (`remus_operations::gear`).
 //!
 //! `makeGearDetailed(spec)` builds a new gear body and
@@ -26,21 +26,25 @@
 //!   "origin": [0, 0, 0], "axis": [0, 0, 1], "xDirection": [1, 0, 0],
 //!   "phase": 0,                   // degrees; circular gears only
 //!   "helixAngle": 0,              // degrees in [0, 45]; circular gears only
-//!   "hand": "right" | "left"      // default "right"
+//!   "hand": "right" | "left",     // default "right"
+//!   "herringbone": false          // needs a helixAngle
 //! }
 //! ```
 //!
 //! A non-zero `helixAngle` makes a helical gear (ISO 21771): `module`,
 //! `pressureAngle` and the coefficients are normal-section values, and the
 //! teeth turn about `axis` as they advance (counter-clockwise for a right
-//! hand). `phase` places the first tooth on the start cap.
+//! hand). `phase` places the first tooth on the start cap. `herringbone`
+//! reverses the hand at the middle of the face width (`hand` is the start
+//! half's); each half's swept faces carry `.start-half` or `.end-half` on
+//! their role, e.g. `tooth[3].flank.plus.end-half`.
 //!
 //! `cutGearTeethDetailed` spec: `kind` (`"external"` for a boss,
 //! `"internal"` for a bore), `teeth`, `faceWidth` (the face's length:
 //! partial spans refuse), `fit` (`"keepDiameter"`, the default, solves the
 //! module so the tip (inner tip) diameter is the cylinder's; `"module"` uses
-//! `module`), the same tooth-form fields as above (including `helixAngle`
-//! and `hand`), and optional `xDirection` and `phase` (default: the face's
+//! `module`), the same tooth-form fields as above (including `helixAngle`,
+//! `hand` and `herringbone`), and optional `xDirection` and `phase` (default: the face's
 //! seam direction).
 //!
 //! Unknown keys refuse, so a misspelled option never silently falls back to
@@ -140,6 +144,8 @@ struct GearSpec {
     helix_angle: f64,
     #[serde(default)]
     hand: HandSpec,
+    #[serde(default)]
+    herringbone: bool,
 }
 
 const fn default_pressure_angle() -> f64 {
@@ -184,6 +190,7 @@ impl GearSpec {
             back_depth: self.back_depth,
             helix_angle: self.helix_angle.to_radians(),
             hand: self.hand.into(),
+            herringbone: self.herringbone,
         };
         let placement = GearPlacement {
             origin: self.origin.map_or(defaults.origin, point),
@@ -242,6 +249,8 @@ struct CylinderGearSpec {
     helix_angle: f64,
     #[serde(default)]
     hand: HandSpec,
+    #[serde(default)]
+    herringbone: bool,
 }
 
 impl CylinderGearSpec {
@@ -282,6 +291,7 @@ impl CylinderGearSpec {
             back_depth: None,
             helix_angle: self.helix_angle.to_radians(),
             hand: self.hand.into(),
+            herringbone: self.herringbone,
         };
         let options = CylinderGearOptions {
             fit,

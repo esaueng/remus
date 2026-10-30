@@ -69,7 +69,7 @@ fn assert_roles_are_unique_and_typed(topo: &Topology, outcome: &GearOutcome, tee
     let mut flanks = 0;
     for (face, role) in &outcome.face_roles {
         let surface = topo.face(*face).unwrap().surface();
-        match role {
+        match role.role {
             GearFaceRole::Flank { .. } => {
                 flanks += 1;
                 assert!(matches!(surface, FaceSurface::Nurbs(_)), "{}", role.name());
@@ -165,7 +165,7 @@ fn teeth_on_the_hub_of_a_stepped_bored_shaft_keep_every_other_feature() {
     let tips: BTreeSet<_> = outcome
         .face_roles
         .iter()
-        .filter(|(_, role)| matches!(role, GearFaceRole::Tip { .. }))
+        .filter(|(_, face)| matches!(face.role, GearFaceRole::Tip { .. }))
         .map(|(face, _)| *face)
         .collect();
     for face in solid_faces(&topo, outcome.solid).unwrap() {
@@ -405,7 +405,47 @@ fn helical_teeth_on_a_boss_keep_its_diameter_and_match_the_standalone_gear() {
     let flanks = outcome
         .face_roles
         .iter()
-        .filter(|(_, role)| matches!(role, GearFaceRole::Flank { .. }))
+        .filter(|(_, face)| matches!(face.role, GearFaceRole::Flank { .. }))
         .count();
     assert_eq!(flanks, 40, "every flank keeps its role through the fuse");
+}
+
+#[test]
+fn herringbone_teeth_on_a_boss_keep_its_diameter_and_match_the_standalone_gear() {
+    let mut topo = Topology::new();
+    let blank = make_cylinder(&mut topo, 11.0, 6.0).unwrap();
+    let face = cylinder_face(&topo, blank, 11.0);
+    let params = GearParams {
+        helix_angle: 15.0_f64.to_radians(),
+        herringbone: true,
+        ..spur(20, 6.0)
+    };
+    let outcome = cut_gear_teeth(
+        &mut topo,
+        blank,
+        face,
+        &params,
+        &CylinderGearOptions::default(),
+    )
+    .unwrap();
+    assert_valid_and_watertight(&topo, outcome.solid);
+    let g = &outcome.geometry;
+    assert!((g.tip_diameter.unwrap() - 22.0).abs() < 1e-9);
+    let mut standalone = params.clone();
+    standalone.module = g.module;
+    let expected = outline_area(&standalone) * 6.0;
+    let got = crate::measure::solid_volume(&topo, outcome.solid, 1e-4).unwrap();
+    assert!(
+        ((got - expected) / expected).abs() < 1e-6,
+        "{got} vs {expected}"
+    );
+    let flanks = outcome
+        .face_roles
+        .iter()
+        .filter(|(_, face)| matches!(face.role, GearFaceRole::Flank { .. }))
+        .count();
+    assert_eq!(
+        flanks, 80,
+        "both halves' flanks keep their roles through the fuse"
+    );
 }

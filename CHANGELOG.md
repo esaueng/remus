@@ -29,6 +29,13 @@ historical predecessor-line records, retained for provenance. The
   `flankDeviationBound` covers the exact involute helicoid. Results report
   `transverseModule`, `helixAngle`, `lead` and `spansAlongAxis`. Helical
   racks refuse for now.
+* **operations,wasm:** herringbone gears. `GearParams::herringbone`
+  (`herringbone: true`) reverses a helical gear's hand at the middle of the
+  face width, standalone or cut into a boss or bore. The two twisted halves
+  share their mid-plane edges and form one solid without a boolean. Each
+  half's swept faces carry `.start-half` or `.end-half` on their role.
+  `GearOutcome::face_roles` now pairs each face with a `GearFace` (its
+  `GearFaceRole` and the half) instead of a bare `GearFaceRole`.
 * **math:** `nurbs::screw` fits helices and screw-motion swept surfaces as
   NURBS with a proven bound; fits sharing one plan share their knots, so
   neighbouring faces and edges match exactly.

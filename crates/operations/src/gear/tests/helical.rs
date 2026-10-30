@@ -99,14 +99,14 @@ fn flank_points_lie_on_the_exact_involute_helicoid() {
         let pitch = TAU / f64::from(params.teeth);
         let mut checked = 0;
         for (face, role) in &outcome.face_roles {
-            let GearFaceRole::Flank { tooth, side } = role else {
+            let GearFaceRole::Flank { tooth, side } = role.role else {
                 continue;
             };
             let FaceSurface::Nurbs(surface) = topo.face(*face).unwrap().surface() else {
                 panic!("a helical flank must be a swept surface");
             };
-            let center = placement.phase + f64::from(*tooth) * pitch;
-            let sign = if *side == ToothSide::Plus { 1.0 } else { -1.0 };
+            let center = placement.phase + f64::from(tooth) * pitch;
+            let sign = if side == ToothSide::Plus { 1.0 } else { -1.0 };
             let (u0, u1) = surface.domain_u();
             let (v0, v1) = surface.domain_v();
             for i in 0..=12 {
