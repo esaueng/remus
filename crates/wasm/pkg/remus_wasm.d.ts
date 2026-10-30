@@ -3480,6 +3480,22 @@ export class RemusKernel {
      */
     makeWire(edge_handles: Uint32Array, closed: boolean): number;
     /**
+     * Build a cylindrical involute (ZI) worm from a JSON specification, as
+     * typed data (see the module docs for the fields).
+     *
+     * Never throws on a refusal: the envelope's `status` is `"error"` with
+     * a `gear:<reason>` code and the session unchanged.
+     */
+    makeWormDetailed(spec: string): SolidOperationDetailedResult;
+    /**
+     * Build the helical wheel that meshes with a worm from a JSON
+     * specification, as typed data (see the module docs for the fields).
+     *
+     * Never throws on a refusal: the envelope's `status` is `"error"` with
+     * a `gear:<reason>` code and the session unchanged.
+     */
+    makeWormWheelDetailed(spec: string): SolidOperationDetailedResult;
+    /**
      * Compute the full mass properties of a solid (unit density).
      *
      * Returns a JSON string containing
