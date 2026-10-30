@@ -50,6 +50,9 @@ pub struct FilletBuilder<'a> {
     edge_sets: Vec<(Vec<EdgeId>, RadiusLaw)>,
     /// Opposite common-tangent branch for a proven external reconstruction.
     external_support_side: bool,
+    /// Whether a chain refused as a seam crossing may be built as one band
+    /// along a shared face (`rail_chain`).
+    rail_chains: bool,
 }
 
 impl<'a> FilletBuilder<'a> {
@@ -61,6 +64,7 @@ impl<'a> FilletBuilder<'a> {
             solid,
             edge_sets: Vec::new(),
             external_support_side: false,
+            rail_chains: true,
         }
     }
 
@@ -71,6 +75,17 @@ impl<'a> FilletBuilder<'a> {
     /// default.
     pub fn use_external_support_side(&mut self) -> &mut Self {
         self.external_support_side = true;
+        self
+    }
+
+    /// Refuse a chain that crosses a tangent seam as this builder did before
+    /// rail chains, instead of building it as one band along a shared face.
+    ///
+    /// A caller that validates the result can run this first, so every
+    /// selection that built or refused before keeps that outcome, and try the
+    /// rail chain only for the seam-crossing refusal.
+    pub fn without_rail_chains(&mut self) -> &mut Self {
+        self.rail_chains = false;
         self
     }
 
@@ -111,6 +126,7 @@ impl<'a> FilletBuilder<'a> {
     #[allow(clippy::too_many_lines)]
     pub fn build(self) -> Result<BlendResult, BlendError> {
         let external_support_side = self.external_support_side;
+        let rail_chains = self.rail_chains;
         // Keep each edge set beside its RadiusLaw via a shared index.
         let mut seeds_by_law: Vec<Vec<EdgeId>> = Vec::with_capacity(self.edge_sets.len());
         let mut laws: Vec<RadiusLaw> = Vec::with_capacity(self.edge_sets.len());
@@ -262,7 +278,9 @@ impl<'a> FilletBuilder<'a> {
             // A lone constant-radius chain whose second face changes along the
             // way may still be one band; keep its spine for that.
             let rail_candidate = match laws[*law_idx] {
-                RadiusLaw::Constant(radius) if chain_work.len() == 1 && !external_support_side => {
+                RadiusLaw::Constant(radius)
+                    if rail_chains && chain_work.len() == 1 && !external_support_side =>
+                {
                     Some((spine.clone(), radius))
                 }
                 _ => None,
