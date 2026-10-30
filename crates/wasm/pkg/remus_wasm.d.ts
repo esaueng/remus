@@ -1699,6 +1699,16 @@ export class RemusKernel {
      */
     cutDetailed(a: number, b: number): SolidOperationDetailedResult;
     /**
+     * Cut gear teeth along the whole length of a solid's cylindrical face,
+     * as typed data: external teeth on a boss, internal teeth in a bore
+     * (see the module docs for the fields).
+     *
+     * The input solid is left in place and a new solid is returned. Never
+     * throws on a refusal: the envelope's `status` is `"error"` with a
+     * `gear:<reason>` code and the session unchanged.
+     */
+    cutGearTeethDetailed(solid: number, face: number, spec: string): SolidOperationDetailedResult;
+    /**
      * Cut solid `b` from `a` with journaled construction history.
      */
     cutJournaled(a: number, b: number): string;
@@ -3333,6 +3343,14 @@ export class RemusKernel {
      * planar, or a hole wire fails validation.
      */
     makeFaceFromWires(outer_wire: number, inner_wire_handles: Uint32Array): number;
+    /**
+     * Build an involute spur gear, internal gear or rack from a JSON
+     * specification, as typed data (see the module docs for the fields).
+     *
+     * Never throws on a refusal: the envelope's `status` is `"error"` with
+     * a `gear:<reason>` code and the session unchanged.
+     */
+    makeGearDetailed(spec: string): SolidOperationDetailedResult;
     /**
      * Create a straight-line edge between two points.
      *
