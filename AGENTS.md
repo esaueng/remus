@@ -712,6 +712,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Growing-holder recipe `volume` contract (B54: closed-form −5440 width step through `executeBatch`) | `bindings/growing_holder_volume_tests.rs` |
 | Store-local boolean switch (`setStoreLocalCuts` / `storeLocalCutsEnabled`, direct and batch) contract tests | `bindings/store_local_switch_tests.rs` |
 | Sweep bindings refuse atomically (`multiSectionSweep` direct and batch; kernel review WASM-6) | `bindings/sweep_transaction_tests.rs` |
+| Batch `sewFaces` without `tolerance` sews at the batch default `TOL`, not 1e-6 (contract test) | `bindings/sew_faces_default_tests.rs` |
 | Direct and both batch contracts for the bounded P-Class 7.1 hollow taper | `bindings/tapered_hollow_sweep_tests.rs` |
 | WASM contract tests for the mixed-notch L-bracket boundary | `bindings/mixed_notch_tests.rs` |
 

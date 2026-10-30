@@ -15,6 +15,12 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
   primitive face, are unchanged. Curved faces still report the stored surface
   normal at `(u, v) = (0, 0)` in a batch, where the direct method refuses.
 
+* Batch `sewFaces` without a `tolerance` now sews at 1e-7, the default of
+  every other batch tolerance, instead of 1e-6. Vertices between about 1e-7
+  and 1e-6 apart are no longer joined unless the call passes `tolerance`
+  explicitly. The direct `sewFaces` always required `tolerance` and is
+  unchanged.
+
 * The kernel class is renamed from `BrepKernel` to `RemusKernel`. The package
   still exports `BrepKernel` as a deprecated alias of the same class (ESM,
   CommonJS and TypeScript) for a transition period; switch to `RemusKernel`,
