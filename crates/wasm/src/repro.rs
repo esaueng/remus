@@ -4,7 +4,7 @@
 //! failure (or any behavior worth pinning) as a replayable artifact: the
 //! operation sequence that produces it plus the invariant results expected
 //! from each step. The runner replays the sequence through the batch dispatch
-//! path ([`BrepKernel::execute_batch_v2`]), so a bundle exercises exactly the
+//! path ([`RemusKernel::execute_batch_v2`]), so a bundle exercises exactly the
 //! contract a JavaScript caller sees, and replays identically on native and
 //! WASM builds.
 //!
@@ -58,7 +58,7 @@
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 /// The bundle schema version this runner reads.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -266,7 +266,7 @@ impl ReproBundle {
 
         let mut first: Option<String> = None;
         for run in 0..DETERMINISM_RUNS {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let output = kernel.execute_batch_v2(&ops_json);
             match &first {
                 None => first = Some(output),

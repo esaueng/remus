@@ -3,8 +3,8 @@ use super::*;
 use remus_topology::journal::{EntityKey, EventDraft, EvolutionDraft};
 use remus_topology::naming::{PersistentRef, Provenance, Resolution, resolve};
 
-fn fixture() -> (BrepKernel, u32, u32, PersistentRef) {
-    let mut kernel = BrepKernel::new();
+fn fixture() -> (RemusKernel, u32, u32, PersistentRef) {
+    let mut kernel = RemusKernel::new();
     let solid = kernel.make_box_solid(10., 8., 4.).unwrap();
     let face = kernel
         .get_solid_faces(solid)
@@ -28,7 +28,7 @@ fn fixture() -> (BrepKernel, u32, u32, PersistentRef) {
 fn points() -> Vec<f64> {
     vec![3., 2., 4., 7., 2., 4., 7., 6., 4., 3., 6., 4.]
 }
-fn invoke(kernel: &mut BrepKernel, route: usize, solid: u32, face: u32, points: &[f64]) -> Value {
+fn invoke(kernel: &mut RemusKernel, route: usize, solid: u32, face: u32, points: &[f64]) -> Value {
     if route == 0 {
         return serde_json::from_str(
             &kernel

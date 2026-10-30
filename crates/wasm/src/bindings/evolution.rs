@@ -15,7 +15,7 @@ use remus_topology::journal::EntryPayload;
 
 use crate::error::{StructuredWasmError, validate_finite};
 use crate::helpers::{get_f64, get_optional_f64, get_u32, get_u32_array};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 fn index_u32(index: usize) -> u32 {
     u32::try_from(index).unwrap_or(u32::MAX)
@@ -306,7 +306,7 @@ fn parse_replacement_surface(
     Ok(FaceSurface::Cylinder(cylinder))
 }
 
-impl BrepKernel {
+impl RemusKernel {
     fn boolean_entity_evolution_json(
         &mut self,
         op: BooleanOp,
@@ -1047,9 +1047,9 @@ impl BrepKernel {
 mod revolve_history_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
-    fn cylinder_profile(kernel: &mut BrepKernel) -> u32 {
+    fn cylinder_profile(kernel: &mut RemusKernel) -> u32 {
         let points = [[0.0, 0.0], [3.0, 0.0], [3.0, 2.0], [0.0, 2.0]];
         let edges = (0..4)
             .map(|index| {
@@ -1066,7 +1066,7 @@ mod revolve_history_tests {
 
     #[test]
     fn revolve_journaled_direct_batch_history_and_refusal_parity() {
-        let mut direct = BrepKernel::new();
+        let mut direct = RemusKernel::new();
         let face = cylinder_profile(&mut direct);
         let payload: serde_json::Value = serde_json::from_str(
             &direct
@@ -1093,7 +1093,7 @@ mod revolve_history_tests {
             direct.get_solid_vertices(solid).unwrap().len()
         );
         for v2 in [false, true] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let face = cylinder_profile(&mut kernel);
             let ops =
                 serde_json::json!([{"op":"revolveJournaled", "args":{"face":face,"angle":360.0}}]);
@@ -1134,7 +1134,7 @@ mod revolve_history_tests {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     // ── Entity evolution (Issue 12) ─────────────────────────────────
 
     /// Fuse with full construction-derived vertex/edge/face history.
@@ -1528,7 +1528,7 @@ fn structured_to_js(error: StructuredWasmError) -> JsError {
 mod grid_pattern_contract_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
     use remus_topology::journal::{EntityEvent, EntityKey, EntityKind, EntryPayload};
     use serde_json::{Value, json};
     use std::collections::{BTreeMap, BTreeSet};
@@ -1539,7 +1539,7 @@ mod grid_pattern_contract_tests {
         u32::try_from(value.as_u64().unwrap()).unwrap()
     }
 
-    fn entities(kernel: &BrepKernel, solid: u32, kind: EntityKind) -> BTreeSet<EntityKey> {
+    fn entities(kernel: &RemusKernel, solid: u32, kind: EntityKind) -> BTreeSet<EntityKey> {
         let handles = match kind {
             EntityKind::Face => kernel.get_solid_faces(solid).unwrap(),
             EntityKind::Edge => kernel.get_solid_edges(solid).unwrap(),
@@ -1554,7 +1554,7 @@ mod grid_pattern_contract_tests {
             .collect()
     }
 
-    fn points(kernel: &BrepKernel, key: EntityKey) -> Vec<Vec<f64>> {
+    fn points(kernel: &RemusKernel, key: EntityKey) -> Vec<Vec<f64>> {
         let index = u32::try_from(key.index).unwrap();
         let vertices = match key.kind {
             EntityKind::Face => kernel.get_face_vertices(index).unwrap(),
@@ -1570,7 +1570,7 @@ mod grid_pattern_contract_tests {
     }
 
     fn assert_shift(
-        kernel: &BrepKernel,
+        kernel: &RemusKernel,
         source: EntityKey,
         subject: EntityKey,
         offset: [f64; 3],
@@ -1593,7 +1593,7 @@ mod grid_pattern_contract_tests {
         }
     }
 
-    fn batch(kernel: &mut BrepKernel, route: u8, ops: Value) -> Value {
+    fn batch(kernel: &mut RemusKernel, route: u8, ops: Value) -> Value {
         serde_json::from_str(&if route == 2 {
             kernel.execute_batch_v2(&ops.to_string())
         } else {
@@ -1602,7 +1602,7 @@ mod grid_pattern_contract_tests {
         .unwrap()
     }
 
-    fn grid(kernel: &mut BrepKernel, route: u8, solid: u32, settings: &Value) -> Value {
+    fn grid(kernel: &mut RemusKernel, route: u8, solid: u32, settings: &Value) -> Value {
         if route == 0 {
             let x = &settings["dirX"];
             let y = &settings["dirY"];
@@ -1637,7 +1637,7 @@ mod grid_pattern_contract_tests {
         }
     }
 
-    fn bound(kernel: &BrepKernel, reference: &str, expected: EntityKey) {
+    fn bound(kernel: &RemusKernel, reference: &str, expected: EntityKey) {
         let resolution: Value =
             serde_json::from_str(&kernel.resolve_ref(reference).unwrap()).unwrap();
         assert_eq!(resolution["status"], "bound", "{reference}: {resolution}");
@@ -1649,7 +1649,7 @@ mod grid_pattern_contract_tests {
     }
 
     fn references(
-        kernel: &BrepKernel,
+        kernel: &RemusKernel,
         op: u32,
         expected: &BTreeSet<EntityKey>,
     ) -> Vec<(String, EntityKey)> {
@@ -1712,7 +1712,7 @@ mod grid_pattern_contract_tests {
                 (2, 3, 1.0, false),
                 (2, 2, 1.0, true),
             ] {
-                let mut kernel = BrepKernel::new();
+                let mut kernel = RemusKernel::new();
                 let source = kernel
                     .make_box_solid(10.0 * scale, 10.0 * scale, 10.0 * scale)
                     .unwrap();
@@ -1817,7 +1817,7 @@ mod grid_pattern_contract_tests {
                 // original and copied-member reference, including E/V.
                 if count_x == 2 && count_y == 3 {
                     let bytes = kernel.serialize_solids(&members).unwrap();
-                    let mut imported = BrepKernel::new();
+                    let mut imported = RemusKernel::new();
                     imported.make_box_solid(1.0, 1.0, 1.0).unwrap();
                     let roots = imported.deserialize_solids(&bytes).unwrap();
                     let imported_keys: BTreeSet<_> = roots
@@ -1900,7 +1900,7 @@ mod grid_pattern_contract_tests {
     #[test]
     fn grid_pattern_journaled_rejects_malformed_counts_and_rolls_back_both_batches() {
         for route in 1..3 {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let source = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
             let retired = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
             let retired_id = kernel.resolve_solid(retired).unwrap();
@@ -2016,9 +2016,9 @@ mod grid_pattern_contract_tests {
 mod evolution_contract_tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
-    fn run(kernel: &mut BrepKernel, ops: serde_json::Value) -> Vec<serde_json::Value> {
+    fn run(kernel: &mut RemusKernel, ops: serde_json::Value) -> Vec<serde_json::Value> {
         let response = kernel.execute_batch(&ops.to_string());
         let parsed: serde_json::Value =
             serde_json::from_str(&response).expect("batch response must be valid JSON");
@@ -2039,7 +2039,7 @@ mod evolution_contract_tests {
     #[test]
     fn whole_body_journaled_fillet_filters_periodic_seams_in_direct_and_batch_routes() {
         for batch in [false, true] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let made = run(
                 &mut kernel,
                 serde_json::json!([
@@ -2087,7 +2087,7 @@ mod evolution_contract_tests {
         for scale in [0.1, 1.0, 10.0] {
             for pipeline in [false, true] {
                 for batch in [false, true] {
-                    let mut kernel = BrepKernel::new();
+                    let mut kernel = RemusKernel::new();
                     let solid = kernel
                         .make_box_solid(10.0 * scale, 10.0 * scale, 10.0 * scale)
                         .unwrap();
@@ -2176,7 +2176,7 @@ mod evolution_contract_tests {
                             .unwrap();
                     assert!((volume - 1000.0 * scale.powi(3)).abs() < 1e-6 * scale.powi(3));
                     let bytes = kernel.serialize_solids(&[solid]).unwrap();
-                    let mut restored = BrepKernel::new();
+                    let mut restored = RemusKernel::new();
                     restored.make_box_solid(1.0, 1.0, 1.0).unwrap();
                     let restored_solid = restored.deserialize_solids(&bytes).unwrap()[0];
                     let restored_id = restored.resolve_solid(restored_solid).unwrap();
@@ -2248,7 +2248,7 @@ mod evolution_contract_tests {
 
     #[test]
     fn journaled_healing_batch_rejects_bad_inputs_without_history_changes() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let id = kernel.resolve_solid(solid).unwrap();
         let keys = remus_operations::journal_ops::solid_entity_keys(kernel.topo(), id).unwrap();
@@ -2306,7 +2306,7 @@ mod evolution_contract_tests {
 
     #[test]
     fn direct_wasm_entity_evolution_types_assembly_rebuilds() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let a = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let b = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         kernel
@@ -2325,7 +2325,7 @@ mod evolution_contract_tests {
 
     #[test]
     fn entity_evolution_surfaces_all_three_claim_strengths() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let results = run(
             &mut kernel,
             serde_json::json!([
@@ -2368,7 +2368,7 @@ mod evolution_contract_tests {
 
     #[test]
     fn journaled_blends_and_patterns_populate_the_journal() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let results = run(
             &mut kernel,
             serde_json::json!([
@@ -2441,8 +2441,8 @@ mod evolution_contract_tests {
         );
     }
 
-    fn replacement_box() -> (BrepKernel, u32, u32) {
-        let mut kernel = BrepKernel::new();
+    fn replacement_box() -> (RemusKernel, u32, u32) {
+        let mut kernel = RemusKernel::new();
         let source = kernel.make_box_solid(3.0, 5.0, 7.0).unwrap();
         let id = kernel.resolve_solid(source).unwrap();
         let face = remus_topology::explorer::solid_faces(kernel.topo(), id)
@@ -2705,7 +2705,7 @@ mod evolution_contract_tests {
 
     #[test]
     fn replacement_preserves_the_topology_work_budget() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let wire = kernel.make_regular_polygon_wire(10.0, 500).unwrap();
         let profile = kernel.make_face_from_wire(wire).unwrap();
         let source = kernel.extrude_face(profile, 0.0, 0.0, 1.0, 1.0).unwrap();
@@ -2777,7 +2777,7 @@ mod evolution_contract_tests {
     fn defeature_history_has_direct_batch_parity_and_rollback() {
         let mut payloads = Vec::new();
         for batch in [false, true] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let topo = kernel.topo_mut();
             let cube = remus_operations::primitives::make_box(topo, 10.0, 10.0, 10.0).unwrap();
             let tool = remus_operations::primitives::make_cylinder(topo, 1.0, 10.0).unwrap();
@@ -2836,9 +2836,9 @@ mod evolution_contract_tests {
         };
         let mut payloads = Vec::new();
         for batch in [false, true] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let source = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
-            let wall = |kernel: &BrepKernel, solid| {
+            let wall = |kernel: &RemusKernel, solid| {
                 let id = kernel.resolve_solid(solid).unwrap();
                 super::index_u32(
                     remus_topology::explorer::solid_faces(kernel.topo(), id)
@@ -2936,7 +2936,7 @@ mod evolution_contract_tests {
         };
         let mut payloads = Vec::new();
         for batch in [false, true] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let sharp = make_box(kernel.topo_mut(), 10.0, 10.0, 10.0).unwrap();
             let edge = solid_edges(kernel.topo(), sharp).unwrap()[0];
             let solid = fillet_v2(kernel.topo_mut(), sharp, &[edge], 1.0)
@@ -3045,7 +3045,7 @@ mod evolution_contract_tests {
         };
         let mut payloads = Vec::new();
         for batch in [false, true] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let sharp = make_box(kernel.topo_mut(), 10.0, 10.0, 10.0).unwrap();
             let edge = solid_edges(kernel.topo(), sharp).unwrap()[0];
             let mut solid = fillet_v2(kernel.topo_mut(), sharp, &[edge], 1.0)
@@ -3212,7 +3212,7 @@ mod evolution_contract_tests {
         };
         let mut payloads = Vec::new();
         for batch in [false, true] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let block = make_box(kernel.topo_mut(), 40.0, 40.0, 10.0).unwrap();
             let drill = make_cylinder(kernel.topo_mut(), 3.0, 10.0).unwrap();
             transform_solid(
@@ -3222,7 +3222,7 @@ mod evolution_contract_tests {
             )
             .unwrap();
             let source_id = boolean(kernel.topo_mut(), BooleanOp::Cut, block, drill).unwrap();
-            let wall = |kernel: &BrepKernel, solid| {
+            let wall = |kernel: &RemusKernel, solid| {
                 solid_faces(kernel.topo(), solid)
                     .unwrap()
                     .into_iter()
@@ -3300,7 +3300,7 @@ mod evolution_contract_tests {
 
     #[test]
     fn move_faces_journaled_preserves_the_face_count_budget() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let source = kernel.make_box_solid(3.0, 5.0, 7.0).unwrap();
         let id = kernel.resolve_solid(source).unwrap();
         let face = super::index_u32(
@@ -3325,7 +3325,7 @@ mod evolution_contract_tests {
 
     #[test]
     fn move_faces_journaled_preserves_the_topology_work_budget() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let wire = kernel.make_regular_polygon_wire(10.0, 500).unwrap();
         let face = kernel.make_face_from_wire(wire).unwrap();
         let source = kernel.extrude_face(face, 0.0, 0.0, 1.0, 1.0).unwrap();
@@ -3375,7 +3375,7 @@ mod evolution_contract_tests {
 
         let mut payloads = Vec::new();
         for batch in [false, true] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let source = kernel.make_box_solid(3.0, 5.0, 7.0).unwrap();
             let source_id = kernel.resolve_solid(source).unwrap();
             let face = remus_topology::explorer::solid_faces(kernel.topo(), source_id).unwrap()[0];
@@ -3431,7 +3431,7 @@ mod evolution_contract_tests {
 
     #[test]
     fn offset_journaled_has_direct_and_batch_contract_parity() {
-        let mut direct = BrepKernel::new();
+        let mut direct = RemusKernel::new();
         let source = direct.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let payload: serde_json::Value =
             serde_json::from_str(&direct.offset_journaled_js(source, 0.5).unwrap()).unwrap();
@@ -3445,7 +3445,7 @@ mod evolution_contract_tests {
         assert_eq!(entry["detail"]["events"], 6 + 12 + 8);
         assert_eq!(payload["evolution"]["completeness"]["resolved"], true);
 
-        let mut batch = BrepKernel::new();
+        let mut batch = RemusKernel::new();
         run(
             &mut batch,
             serde_json::json!([
@@ -3477,7 +3477,7 @@ mod evolution_contract_tests {
     fn extrude_journaled_has_direct_batch_parity_census_and_rollback() {
         use remus_operations::journal_ops;
 
-        let mut direct = BrepKernel::new();
+        let mut direct = RemusKernel::new();
         let face = direct.make_rectangle(4.0, 2.0).unwrap();
         let payload: serde_json::Value = serde_json::from_str(
             &direct
@@ -3577,7 +3577,7 @@ mod evolution_contract_tests {
 
         // The same payload through both batch contracts on twin kernels.
         for v2 in [false, true] {
-            let mut batch = BrepKernel::new();
+            let mut batch = RemusKernel::new();
             let batch_face = batch.make_rectangle(4.0, 2.0).unwrap();
             assert_eq!(batch_face, face);
             let ops = serde_json::json!([
@@ -3651,7 +3651,7 @@ mod evolution_contract_tests {
     /// and vertex attributed.
     #[test]
     fn offset_journaled_typed_unresolved_survives_every_envelope() {
-        let mut direct = BrepKernel::new();
+        let mut direct = RemusKernel::new();
         let torus = direct.make_torus_solid(3.0, 1.0, 16).unwrap();
         let source_edges: Vec<u64> = direct
             .get_solid_edges(torus)
@@ -3695,7 +3695,7 @@ mod evolution_contract_tests {
 
         // The same record through both batch contracts.
         for v2 in [false, true] {
-            let mut batch = BrepKernel::new();
+            let mut batch = RemusKernel::new();
             let ops = serde_json::json!([
                 {"op": "makeTorus", "args": {"majorRadius": 3.0, "minorRadius": 1.0, "segments": 16}},
                 {"op": "offsetJournaled", "args": {"solid": 0, "distance": 0.3}},
@@ -3713,7 +3713,7 @@ mod evolution_contract_tests {
         }
 
         // A box: everything attributed, nothing unresolved.
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let cube = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
         let payload: serde_json::Value =
             serde_json::from_str(&kernel.offset_journaled_js(cube, 0.25).unwrap()).unwrap();
@@ -3738,7 +3738,7 @@ mod evolution_contract_tests {
     /// publishes no history, beside earlier results that stay usable.
     #[test]
     fn refused_offset_journaled_is_typed_and_atomic_in_batch_v2() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let response = kernel.execute_batch_v2(
             &serde_json::json!([
                 {"op": "makeBox", "args": {"width": 2.0, "height": 2.0, "depth": 2.0}},
@@ -3765,7 +3765,7 @@ mod evolution_contract_tests {
 
     #[test]
     fn chamfer_journaled_severs_edge_refs_like_any_faces_only_entry() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let results = run(
             &mut kernel,
             serde_json::json!([
@@ -3803,7 +3803,7 @@ mod evolution_contract_tests {
         assert_eq!(results[1]["operationKind"], "chamfer");
     }
 
-    fn imprint_handles(kernel: &mut BrepKernel) -> (u32, u32) {
+    fn imprint_handles(kernel: &mut RemusKernel) -> (u32, u32) {
         let target = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let tool = kernel.make_box_solid(6.0, 6.0, 6.0).unwrap();
         kernel
@@ -3821,7 +3821,7 @@ mod evolution_contract_tests {
     fn direct_and_batch_imprint_match_and_surface_the_journal_entry() {
         let mut signatures = Vec::new();
         for batch in [false, true] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let (target, tool) = imprint_handles(&mut kernel);
             let payload = if batch {
                 run(
@@ -3862,7 +3862,7 @@ mod evolution_contract_tests {
 
     #[test]
     fn batch_v2_imprint_preserves_typed_atomic_refusal() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let target = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let counts_before = kernel.topo().allocated_slot_count();
         let response: Vec<serde_json::Value> = serde_json::from_str(
@@ -3886,7 +3886,7 @@ mod evolution_contract_tests {
     #[test]
     fn entity_evolution_face_indices_are_live_in_the_result() {
         use std::collections::BTreeSet;
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let a = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let b = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         kernel
@@ -3958,7 +3958,7 @@ mod evolution_contract_tests {
 
     #[test]
     fn journaled_move_op_resolves_through_naming_and_summary() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let source = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let face = kernel.get_solid_faces(source).unwrap()[0];
         let moved: serde_json::Value = serde_json::from_str(
@@ -4020,7 +4020,7 @@ mod evolution_contract_tests {
         // and every result face/edge/vertex must resolve bound with
         // construction provenance (total F/E/V lineage, not faces-only).
         for batch in [false, true] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let source = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
             let (compound, op) = if batch {
                 let response: serde_json::Value = serde_json::from_str(
@@ -4105,7 +4105,7 @@ mod evolution_contract_tests {
         // inputs, and the source geometry survives. Direct error paths are
         // not exercised natively (JsError cannot construct there); batch is
         // the WASM refusal surface.
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let source = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         for (direction, spacing, count, tag) in [
             ([1.0, 0.0, 0.0], 0.0, 2u32, "spacing"),
@@ -4169,7 +4169,7 @@ mod evolution_contract_tests {
         // Direct and batch must agree, and every result face/edge/vertex must
         // resolve bound with construction provenance (total F/E/V lineage).
         for batch in [false, true] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let source = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
             let (compound, op) = if batch {
                 let response: serde_json::Value = serde_json::from_str(
@@ -4251,7 +4251,7 @@ mod evolution_contract_tests {
         // Disjoint count 3 via an offset box: direct and batch agree on the
         // same compound/op shape and total F/E/V census (18/36/24).
         for batch in [false, true] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let source = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
             let source_id = kernel.resolve_solid(source).unwrap();
             remus_operations::transform::transform_solid(
@@ -4328,7 +4328,7 @@ mod evolution_contract_tests {
         // Refusal cells: batch returns typed errors, and the source survives.
         // Direct error paths are not exercised natively (JsError cannot
         // construct there); batch is the WASM refusal surface.
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let source = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         for (axis, count, tag) in [
             ([0.0, 0.0, 0.0], 2u32, "axis"),

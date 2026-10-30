@@ -152,7 +152,7 @@ wrong:
   `#![cfg(feature = "io")]` and `io` is a **default** feature; bindings are auto-gated, add
   no new cfg.
 - **Skip batch dispatch.** `rg -in 'step|import|export'
-  crates/wasm/src/bindings/batch.rs` has no hits; I/O ops are direct `BrepKernel` methods.
+  crates/wasm/src/bindings/batch.rs` has no hits; I/O ops are direct `RemusKernel` methods.
 - **Round-trip / golden tests go in `crates/io/tests/`** (crate-level), model on
   `cross_format.rs`; golden data in `crates/io/tests/data/`.
 - **Mesh reader convention:** expose both `read_<fmt>(data) -> TriangleMesh` and
@@ -178,7 +178,7 @@ wrong:
 - **tessellation**: watertightness and periodic-band meshing after import.
 - **testing** and **parity-benchmarking**: capturing faithful fixtures (STEP or arena)
   from a real tool scenario.
-- **wasm-bindings**: exposing a new format's import/export on `BrepKernel`.
+- **wasm-bindings**: exposing a new format's import/export on `RemusKernel`.
 
 ## Reference
 

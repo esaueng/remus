@@ -6,7 +6,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::error::StructuredWasmError;
 use crate::helpers::{get_f64_array, get_u32, parse_points_checked};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 fn count(coordinates: usize) -> Result<(), StructuredWasmError> {
     if coordinates > 48 {
@@ -31,7 +31,7 @@ fn handle(index: usize) -> Result<u32, StructuredWasmError> {
     })
 }
 
-impl BrepKernel {
+impl RemusKernel {
     /// This topology-only operation returns its new handles only on success.
     /// Validation refusals expose counts, not private result entities. Keep an
     /// already checkpoint-shared owner on Err; an unshared call keeps the
@@ -114,7 +114,7 @@ impl BrepKernel {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Partition one planar convex solid face with a strictly interior convex
     /// 3--16 point ring. `points` is flat world `[x,y,z,...]` data.
     /// Returns JSON `{solid,innerFace,surroundFace,op}`. Both patches retain

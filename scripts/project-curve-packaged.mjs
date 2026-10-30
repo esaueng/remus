@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 
 // These witnesses execute generated bindings, including object-valued tsify
 // arguments and results. Native tests cannot exercise that conversion.
-export function runProjectCurvePackaged({ BrepKernel }) {
+export function runProjectCurvePackaged({ RemusKernel }) {
   const frame = { origin: [0, 0, 4], xAxis: [1, 0, 0], normal: [0, 0, 1] };
   const near = (actual, expected) => {
     assert.equal(actual.length, expected.length);
@@ -34,7 +34,7 @@ export function runProjectCurvePackaged({ BrepKernel }) {
     return response.ok;
   };
   for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const solid = kernel.makeBox(10, 8, 4);
       const face = Array.from(kernel.getSolidFaces(solid))
@@ -285,7 +285,7 @@ export function runProjectCurvePackaged({ BrepKernel }) {
   // alone can introduce an unaccounted mutation between the two edits.
   for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const mode of ['face', 'solid', 'mixed', 'approximate-face']) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       try {
         const outer = kernel.makeBox(10, 8, 4);
         const inner = kernel.makeBox(1, 1, 1);
@@ -369,14 +369,14 @@ export function runProjectCurvePackaged({ BrepKernel }) {
       }
     }
   }
-  runPlanarBezierFaceProjectionPackaged({ BrepKernel });
-  runPlanarBezierChainProjectionPackaged({ BrepKernel });
+  runPlanarBezierFaceProjectionPackaged({ RemusKernel });
+  runPlanarBezierChainProjectionPackaged({ RemusKernel });
   console.log('ok - packaged projection objects, clipping, exact and approximate images, trim refusals and scoped history continuity');
 }
 
 // The expected image is a weighted Bernstein polynomial evaluated independently
 // of either the kernel's source evaluator or its projection implementation.
-export function runPlanarBezierFaceProjectionPackaged({ BrepKernel }) {
+export function runPlanarBezierFaceProjectionPackaged({ RemusKernel }) {
   const routes = ['direct', 'executeBatch', 'executeBatchV2'];
   const apply = (m, p) => [0, 1, 2].map(i => m[4*i]*p[0] + m[4*i+1]*p[1] + m[4*i+2]*p[2] + m[4*i+3]);
   const pose = (placed) => {
@@ -419,7 +419,7 @@ export function runPlanarBezierFaceProjectionPackaged({ BrepKernel }) {
   let cells=0;
   for (const route of routes) for (const scale of [0.001,1,1000]) for (const placed of [false,true]) {
     for (const degree of [2,8]) for (const domain of [[0,1],[10,20]]) {
-      const kernel=new BrepKernel();
+      const kernel=new RemusKernel();
       try {
         const matrix=pose(placed), point=p=>apply(matrix,p.map(value=>value*scale));
         const vector=p=>[0,1,2].map(i=>matrix[4*i]*p[0]+matrix[4*i+1]*p[1]+matrix[4*i+2]*p[2]);
@@ -479,7 +479,7 @@ export function runPlanarBezierFaceProjectionPackaged({ BrepKernel }) {
   }
   assert.equal(cells,72);
   for (const route of routes) for (const budget of [false,true]) for (const shared of [false,true]) {
-    const kernel=new BrepKernel();
+    const kernel=new RemusKernel();
     try {
       const solid=kernel.makeBox(10,8,4),face=Array.from(kernel.getSolidFaces(solid)).find(id=>kernel.getFaceNormal(id)[2]>0.9);
       const degree=budget?8:2, controls=Array.from({length:degree+1},(_,i)=>[2+6*i/degree,(!budget&&i===1)?10:2,7]);
@@ -504,7 +504,7 @@ export function runPlanarBezierFaceProjectionPackaged({ BrepKernel }) {
     } finally {kernel.free();}
   }
   for (const route of routes) for (const variant of ['tiny2d','longFrame','farFrame','rayCancellation']) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const solid = kernel.makeBox(variant === 'rayCancellation' ? 4 : 10,8,4);
       const face = Array.from(kernel.getSolidFaces(solid)).find(id=>kernel.getFaceNormal(id)[2]>0.9);
@@ -556,7 +556,7 @@ export function runPlanarBezierFaceProjectionPackaged({ BrepKernel }) {
 
 // Stored Bézier windows, without knot insertion or shared kernel evaluators
 // in the oracle. The same generated package is exercised through all routes.
-export function runPlanarBezierChainProjectionPackaged({ BrepKernel }) {
+export function runPlanarBezierChainProjectionPackaged({ RemusKernel }) {
   const bernstein = (points, weights, q) => {
     const p = points.length - 1, numerator = [0, 0, 0];
     let denominator = 0, choose = 1;
@@ -573,7 +573,7 @@ export function runPlanarBezierChainProjectionPackaged({ BrepKernel }) {
   let cells = 0;
   for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const scale of [0.001, 1, 1000]) for (const degree of [1, 2, 8]) for (const spans of [2, 8]) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       try {
         const solid = kernel.makeBox(10 * scale, 8 * scale, 4 * scale);
         const face = Array.from(kernel.getSolidFaces(solid)).find(id => kernel.getFaceNormal(id)[2] > 0.9);
@@ -617,7 +617,7 @@ export function runPlanarBezierChainProjectionPackaged({ BrepKernel }) {
       } finally { kernel.free(); }
     }
     for (const variant of ['laterHull', 'laterDegenerate', 'spans', 'controls']) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       try {
         const solid = kernel.makeBox(10, 8, 4), face = Array.from(kernel.getSolidFaces(solid)).find(id => kernel.getFaceNormal(id)[2] > 0.9);
         const spans = variant === 'spans' ? 9 : 2, degree = 2, count = spans * degree + 1;

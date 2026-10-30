@@ -81,27 +81,27 @@ const projectRoot = resolve(__dirname, '..');
 // so Node treats it correctly even with "type": "module" in package.json.
 const require = createRequire(import.meta.url);
 const {
-  BrepKernel,
+  RemusKernel,
   OperationCancellationToken,
   decodeEvolutionPayload,
 } = require(resolve(projectRoot, 'crates/wasm/pkg/remus_wasm_node.cjs'));
 const { RemusIo } = require(resolve(projectRoot, 'crates/wasm-io/pkg/remus_wasm_io_node.cjs'));
 
-runSecurityResourceRegressions({ BrepKernel, RemusIo });
-runPackageQueueWitness({ BrepKernel, RemusIo });
-runPointedConeCutPackaged({ BrepKernel });
-runTruckNurbsReusePackaged({ BrepKernel });
-runWasmRayNurbsPackaged({ BrepKernel });
-runWasmParserReferencesPackaged({ BrepKernel });
-runVariableFilletInputPackaged({ BrepKernel });
-runVariableFilletBoundariesPackaged({ BrepKernel });
-runTaperedHollowSweepPackaged({ BrepKernel });
-runOpseqF3Packaged({ BrepKernel });
-runOpseqF17Packaged({ BrepKernel });
-runOpseqSphereCapPackaged({ BrepKernel });
-runOpseqTorusPropertiesPackaged({ BrepKernel });
-runDocumentCopyPackaged({ BrepKernel, RemusIo });
-runBoundedTabRolloverPackaged({ BrepKernel, decodeEvolutionPayload });
+runSecurityResourceRegressions({ RemusKernel, RemusIo });
+runPackageQueueWitness({ RemusKernel, RemusIo });
+runPointedConeCutPackaged({ RemusKernel });
+runTruckNurbsReusePackaged({ RemusKernel });
+runWasmRayNurbsPackaged({ RemusKernel });
+runWasmParserReferencesPackaged({ RemusKernel });
+runVariableFilletInputPackaged({ RemusKernel });
+runVariableFilletBoundariesPackaged({ RemusKernel });
+runTaperedHollowSweepPackaged({ RemusKernel });
+runOpseqF3Packaged({ RemusKernel });
+runOpseqF17Packaged({ RemusKernel });
+runOpseqSphereCapPackaged({ RemusKernel });
+runOpseqTorusPropertiesPackaged({ RemusKernel });
+runDocumentCopyPackaged({ RemusKernel, RemusIo });
+runBoundedTabRolloverPackaged({ RemusKernel, decodeEvolutionPayload });
 runPackagedPreviewWorkContract({
   kernelPackage: resolve(projectRoot, 'crates/wasm/pkg'),
   ioPackage: resolve(projectRoot, 'crates/wasm-io/pkg'),
@@ -141,7 +141,7 @@ const bodies = (kernel, ...solids) => kernel.serializeSolids(Uint32Array.from(so
   header.setUint32(20 + jsonLength, bin.length, true);
   header.setUint32(24 + jsonLength, 0x004e4942, true);
   glb.set(bin, 28 + jsonLength);
-  const kernel = new BrepKernel();
+  const kernel = new RemusKernel();
   try {
     const solids = kernel.deserializeSolids(io.importGlb(glb));
     assert.equal(solids.length, 1);
@@ -172,7 +172,7 @@ const assertCompleteEvolution = (payload, label) => {
 // Legacy constraints must be refused before storage, including when circles
 // select the GCS conversion path. The same session must remain usable.
 {
-  const kernel = new BrepKernel();
+  const kernel = new RemusKernel();
   try {
     for (const circle of [false, true]) {
       const sketch = kernel.sketchNew();
@@ -195,8 +195,8 @@ const assertCompleteEvolution = (payload, label) => {
 }
 
 // 1. Kernel creation
-const kernel = new BrepKernel();
-console.log('ok - BrepKernel created');
+const kernel = new RemusKernel();
+console.log('ok - RemusKernel created');
 assert.equal(typeof kernel.exportStep, 'undefined', 'translators must not ship in the kernel');
 assert.equal(typeof kernel.serializeSolids, 'function', 'arena codec must ship in the kernel');
 console.log('ok - RemusIo created; kernel module carries the arena codec only');
@@ -205,7 +205,7 @@ console.log('ok - RemusIo created; kernel module carries the arena codec only');
 // though corners of the sphere's enclosing box do not. Protect the emitted
 // artifact's whole-carrier support certificate and the enclosed cavity.
 {
-  const cavityKernel = new BrepKernel();
+  const cavityKernel = new RemusKernel();
   const cylinder = cavityKernel.makeCylinder(10, 20);
   const sphere = cavityKernel.makeSphere(8, 32);
   cavityKernel.transformSolid(sphere, new Float64Array([
@@ -242,7 +242,7 @@ console.log('ok - RemusIo created; kernel module carries the arena codec only');
 // A large shared translation must preserve the spherical cavity, rather
 // than merely returning a valid-looking cylinder that contains its centre.
 for (const translation of [1e13, -1e13]) {
-  const cavityKernel = new BrepKernel();
+  const cavityKernel = new RemusKernel();
   const cylinder = cavityKernel.makeCylinder(10, 20);
   const sphere = cavityKernel.makeSphere(8, 32);
   for (const [solid, z] of [[cylinder, translation], [sphere, translation + 10]]) {
@@ -276,7 +276,7 @@ console.log('ok - far translated sphere/cylinder cuts retain true cavities');
 // the established exact Fuse pipeline still returns the complete cylinder.
 for (const swapped of [false, true]) {
   for (const batch of [false, true]) {
-    const contactKernel = new BrepKernel();
+    const contactKernel = new RemusKernel();
     const cylinder = contactKernel.makeCylinder(10, 20);
     const sphere = contactKernel.makeSphere(8, 32);
     contactKernel.transformSolid(sphere, new Float64Array([
@@ -320,8 +320,8 @@ console.log('ok - axial sphere/cylinder contact preserves direct and batch exact
     { op: 'volume', args: { solid: 0, deflection: 0.1 } },
     { op: 'volume', args: { solid: 99, deflection: 0.1 } },
   ]);
-  const legacy = JSON.parse(new BrepKernel().executeBatch(input));
-  const v2 = JSON.parse(new BrepKernel().executeBatchV2(input));
+  const legacy = JSON.parse(new RemusKernel().executeBatch(input));
+  const v2 = JSON.parse(new RemusKernel().executeBatchV2(input));
   assert.deepEqual(v2.slice(0, 2), legacy.slice(0, 2));
   assert.equal(typeof legacy[2].error, 'string');
   assert.equal(v2[2].error.code, 'invalid_handle');
@@ -341,7 +341,7 @@ assert.equal(typeof boxId, 'number', 'makeBox should return a number handle');
 console.log(`ok - makeBox(10, 20, 30) -> handle ${boxId}`);
 
 {
-  const k = new BrepKernel();
+  const k = new RemusKernel();
   const cylinder = k.makeCylinder(1, 2);
   const measured = k.pointToSolidDistance(1, 0, 5, cylinder);
   assert.ok(Math.abs(measured[0] - 3) < 1e-7, `trimmed cylinder: ${measured}`);
@@ -389,7 +389,7 @@ console.log('ok - oversized WASM work counts fail closed in direct and batch API
 // preserve the exact result while each malformed positional argument refuses
 // before touching the input topology.
 {
-  const budgetKernel = new BrepKernel();
+  const budgetKernel = new RemusKernel();
   const a = budgetKernel.makeBox(2, 2, 2);
   const b = budgetKernel.makeBox(1, 1, 1);
   const bounded = budgetKernel.booleanWithQuality(
@@ -562,7 +562,7 @@ console.log('ok - opposing planar pairs and moveFaces direct edit');
 // source and its checkpoint remain usable. The
 // successful paths also prove exact volume and source-handle preservation.
 {
-  const editKernel = new BrepKernel();
+  const editKernel = new RemusKernel();
   const source = editKernel.makeBox(10, 10, 10);
   const sourceFace = Array.from(editKernel.getSolidFaces(source)).find((face) => {
     if (editKernel.getSurfaceType(face) !== 'plane') return false;
@@ -726,7 +726,7 @@ console.log(`ok - meshQuality: watertight, euler=${quality.eulerCharacteristic}`
 // Successful STEP imports expose bounded, edge-local healing without changing
 // the legacy handles-only import contract.
 {
-  const reportKernel = new BrepKernel();
+  const reportKernel = new RemusKernel();
   const step = readFileSync(
     resolve(projectRoot, 'crates/io/tests/data/shapr_untrimmed_nurbs_domain.step'),
   );
@@ -817,7 +817,7 @@ console.log(`ok - meshQuality: watertight, euler=${quality.eulerCharacteristic}`
 }
 
 // 11. Analytic preservation through an OpenZCAD-shaped flange boolean.
-runOpenZcadAnalyticFlangeBooleanRegression({ BrepKernel });
+runOpenZcadAnalyticFlangeBooleanRegression({ RemusKernel });
 
 // 12. Versioned fillet/chamfer evolution contract on the shipped package.
 //
@@ -826,12 +826,12 @@ runOpenZcadAnalyticFlangeBooleanRegression({ BrepKernel });
 // pins the requirement that provenance does not change exact geometry,
 // topology post-processing, tolerances, or engine selection.
 for (const operation of ['fillet', 'chamfer']) {
-  const plainKernel = new BrepKernel();
+  const plainKernel = new RemusKernel();
   const plainSource = plainKernel.makeBox(10, 10, 10);
   const plainEdge = plainKernel.getSolidEdges(plainSource)[0];
   const plainResult = plainKernel[operation](plainSource, Uint32Array.of(plainEdge), 1);
 
-  const evolutionKernel = new BrepKernel();
+  const evolutionKernel = new RemusKernel();
   const evolutionSource = evolutionKernel.makeBox(10, 10, 10);
   const evolutionEdge = evolutionKernel.getSolidEdges(evolutionSource)[0];
   const method = `${operation}WithEvolution`;
@@ -885,7 +885,7 @@ for (const operation of ['fillet', 'chamfer']) {
 // both public WASM routes as a real journal evolution entry, never a barrier
 // (B18). Every result entity is attributed or typed unresolved.
 {
-  const directKernel = new BrepKernel();
+  const directKernel = new RemusKernel();
   const source = directKernel.makeBox(2, 2, 2);
   const direct = JSON.parse(directKernel.offsetJournaled(source, 0.5));
   assert.ok(Math.abs(directKernel.volume(direct.solid, DEFLECTION) - 27) < 1e-9);
@@ -905,7 +905,7 @@ for (const operation of ['fillet', 'chamfer']) {
     [6, 12, 8],
   );
 
-  const batchKernel = new BrepKernel();
+  const batchKernel = new RemusKernel();
   const batch = JSON.parse(
     batchKernel.executeBatch(
       JSON.stringify([
@@ -922,7 +922,7 @@ for (const operation of ['fillet', 'chamfer']) {
 
   // A torus's two seams share one incidence: typed unresolved, never guessed,
   // and identical through the direct binding and executeBatchV2.
-  const torusKernel = new BrepKernel();
+  const torusKernel = new RemusKernel();
   const torus = torusKernel.makeTorus(3, 1, 16);
   const seams = Array.from(torusKernel.getSolidEdges(torus));
   const torusDirect = JSON.parse(torusKernel.offsetJournaled(torus, 0.3));
@@ -935,7 +935,7 @@ for (const operation of ['fillet', 'chamfer']) {
     assert.deepEqual(edge.candidates, seams);
   }
   const torusBatch = JSON.parse(
-    new BrepKernel().executeBatchV2(
+    new RemusKernel().executeBatchV2(
       JSON.stringify([
         { op: 'makeTorus', args: { majorRadius: 3, minorRadius: 1, segments: 16 } },
         { op: 'offsetJournaled', args: { solid: 0, distance: 0.3 } },
@@ -953,7 +953,7 @@ for (const operation of ['fillet', 'chamfer']) {
 // legacy op, and the witnesses below pin direct/batch code parity through
 // it (the Rust contract tests pin the same equality natively).
 {
-  const k = new BrepKernel();
+  const k = new RemusKernel();
   const a = k.makeBox(2, 2, 2);
   const b = k.makeBox(1, 1, 1);
   for (const [label, call, legacyOp, expectedVolume] of [
@@ -968,7 +968,7 @@ for (const operation of ['fillet', 'chamfer']) {
     assert.deepEqual(result.details, {});
     assert.ok(Math.abs(k.volume(result.value, DEFLECTION) - expectedVolume) < 1e-9);
 
-    const batchKernel = new BrepKernel();
+    const batchKernel = new RemusKernel();
     const batch = JSON.parse(
       batchKernel.executeBatchV2(
         JSON.stringify([
@@ -1033,7 +1033,7 @@ for (const operation of ['fillet', 'chamfer']) {
 // name exactly, and rolls a refusal back.
 {
   const twin = (label, direct, batchOp, check) => {
-    const directKernel = new BrepKernel();
+    const directKernel = new RemusKernel();
     const box = directKernel.makeBox(10, 10, 10);
     const edge = directKernel.getSolidEdges(box)[0];
     const face = directKernel.getSolidFaces(box)[0];
@@ -1044,7 +1044,7 @@ for (const operation of ['fillet', 'chamfer']) {
     assert.equal(result.details.quality, 'exact', `${label}: exact analytic input`);
     check(directKernel, result);
 
-    const batchKernel = new BrepKernel();
+    const batchKernel = new RemusKernel();
     const batch = JSON.parse(
       batchKernel.executeBatchV2(
         JSON.stringify([
@@ -1132,7 +1132,7 @@ for (const operation of ['fillet', 'chamfer']) {
   // The variable engine's constant-law wall is a NURBS fit: disclosed, and
   // refused under exactOnly with the model untouched.
   {
-    const k = new BrepKernel();
+    const k = new RemusKernel();
     const box = k.makeBox(10, 10, 10);
     const edge = k.getSolidEdges(box)[0];
     const spec = [{ edge, law: 'constant', start: 1, end: 1 }];
@@ -1152,7 +1152,7 @@ for (const operation of ['fillet', 'chamfer']) {
     assert.equal(disclosed.details.engine, undefined);
     assert.ok(disclosed.details.approximateFaces.length > 0);
 
-    const batchKernel = new BrepKernel();
+    const batchKernel = new RemusKernel();
     const batch = JSON.parse(
       batchKernel.executeBatchV2(
         JSON.stringify([
@@ -1168,7 +1168,7 @@ for (const operation of ['fillet', 'chamfer']) {
   }
 
   // Refusals are data with the kernel code, and leave the model untouched.
-  const refusalKernel = new BrepKernel();
+  const refusalKernel = new RemusKernel();
   const box = refusalKernel.makeBox(10, 10, 10);
   const edge = refusalKernel.getSolidEdges(box)[0];
   const before = refusalKernel.volume(box, DEFLECTION);
@@ -1197,14 +1197,14 @@ for (const operation of ['fillet', 'chamfer']) {
 // conversion (180 degrees succeeds with exactly half the full volume; 0
 // and above-360 degrees refuse).
 {
-  const k = new BrepKernel();
+  const k = new RemusKernel();
   const face = k.makeRectangle(2, 3);
   const extruded = k.extrudeDetailed(face, 0, 0, 1, 5);
   assert.equal(extruded.status, 'ok');
   assert.equal(extruded.details.quality, 'exact');
   assert.ok(Math.abs(k.volume(extruded.value, DEFLECTION) - 30) < 1e-6);
 
-  const batchKernel = new BrepKernel();
+  const batchKernel = new RemusKernel();
   assert.equal(batchKernel.makeRectangle(2, 3), face);
   const batch = JSON.parse(
     batchKernel.executeBatchV2(
@@ -1219,7 +1219,7 @@ for (const operation of ['fillet', 'chamfer']) {
   ])));
   assert.equal(malformed[0].error.code, 'invalid_argument');
   assert.equal(malformed[0].ok, undefined);
-  const legacyBatchKernel = new BrepKernel();
+  const legacyBatchKernel = new RemusKernel();
   assert.equal(legacyBatchKernel.makeRectangle(2, 3), face);
   const legacyBatch = JSON.parse(
     legacyBatchKernel.executeBatch(
@@ -1230,7 +1230,7 @@ for (const operation of ['fillet', 'chamfer']) {
   );
   assert.deepEqual(legacyBatch[0].ok, extruded);
 
-  const legacyKernel = new BrepKernel();
+  const legacyKernel = new RemusKernel();
   assert.equal(legacyKernel.makeRectangle(2, 3), face);
   const legacy = JSON.parse(
     legacyKernel.executeBatchV2(
@@ -1256,14 +1256,14 @@ for (const operation of ['fillet', 'chamfer']) {
 {
   const rect = [0, 0, 0, 2, 0, 0, 2, 5, 0, 0, 5, 0];
   const full = Math.PI * 2 * 2 * 5;
-  const k = new BrepKernel();
+  const k = new RemusKernel();
   const face = k.makePolygon(Float64Array.from(rect));
   const revolved = k.revolveDetailed(face, 0, 0, 0, 0, 1, 0, 360);
   assert.equal(revolved.status, 'ok');
   assert.equal(revolved.details.quality, 'exact');
   assert.ok(Math.abs(k.volume(revolved.value, DEFLECTION) - full) / full < 1e-6);
 
-  const batchKernel = new BrepKernel();
+  const batchKernel = new RemusKernel();
   assert.equal(batchKernel.makePolygon(Float64Array.from(rect)), face);
   const batch = JSON.parse(
     batchKernel.executeBatchV2(
@@ -1297,7 +1297,7 @@ for (const operation of ['fillet', 'chamfer']) {
 }
 
 {
-  const k = new BrepKernel();
+  const k = new RemusKernel();
   const edge = k.makeNurbsEdge(
     0, 0, 0, 0, 0, 0, 2,
     Float64Array.from([0, 0, 0, 1, 2, 3, 4, 4, 4]),
@@ -1318,7 +1318,7 @@ for (const operation of ['fillet', 'chamfer']) {
 }
 
 {
-  const k = new BrepKernel();
+  const k = new RemusKernel();
   const spline = k.makeNurbsEdge(
     2, 0, 0, 2, 2, 0, 2,
     Float64Array.from([0, 0, 0, 1, 1, 1]),
@@ -1342,7 +1342,7 @@ for (const operation of ['fillet', 'chamfer']) {
 }
 
 {
-  const k = new BrepKernel();
+  const k = new RemusKernel();
   const arc = k.makeCircleArc3d(10, 0, -3, 10, 0, 3, 10, 0, 0, 0, -1, 0);
   const diameter = k.makeLineEdge(10, 0, 3, 10, 0, -3);
   const face = k.makePlanarFaceFromWire(k.makeWire(Uint32Array.of(arc, diameter), true));
@@ -1355,7 +1355,7 @@ for (const operation of ['fillet', 'chamfer']) {
 }
 
 {
-  const k = new BrepKernel();
+  const k = new RemusKernel();
   const circle = k.makeCircleEdge(10, 0, 0, 0, 0, 1, 1);
   const face = k.makePlanarFaceFromWire(k.makeWire(Uint32Array.of(circle), true));
   const direct = k.revolveDetailed(face, 0, 0, 10, 0, 1, 0, 360);
@@ -1388,7 +1388,7 @@ for (const operation of ['fillet', 'chamfer']) {
     /contradictory claims/,
   );
 
-  const failureKernel = new BrepKernel();
+  const failureKernel = new RemusKernel();
   const failureSource = failureKernel.makeBox(10, 10, 10);
   const failureEdge = failureKernel.getSolidEdges(failureSource)[0];
   const before = failureKernel.volume(failureSource, DEFLECTION);
@@ -1407,7 +1407,7 @@ for (const operation of ['fillet', 'chamfer']) {
 {
   const results = [];
   for (const batch of [false, true]) {
-    const groupKernel = new BrepKernel();
+    const groupKernel = new RemusKernel();
     try {
       const source = groupKernel.makeBox(10, 10, 10);
       const edge = groupKernel.getSolidEdges(source)[0];
@@ -1443,7 +1443,7 @@ for (const operation of ['fillet', 'chamfer']) {
     'crates/io/tests/data/mambo_b12_period_winding_torus.step',
   );
   const step = readFileSync(stepPath);
-  const periodicKernel = new BrepKernel();
+  const periodicKernel = new RemusKernel();
   const imported = Array.from(periodicKernel.deserializeSolids(io.importStep(step)));
   assert.equal(imported.length, 1, 'MAMBO B12 STEP must contain one solid');
   const solid = imported[0];
@@ -1455,7 +1455,7 @@ for (const operation of ['fillet', 'chamfer']) {
   assert.equal(quality.isWatertight, true);
 
   const roundTrip = io.exportStep(bodies(periodicKernel, solid));
-  const roundKernel = new BrepKernel();
+  const roundKernel = new RemusKernel();
   const [roundSolid] = Array.from(roundKernel.deserializeSolids(io.importStep(roundTrip)));
   assert.ok(Math.abs(roundKernel.volume(roundSolid, 0.01) - exactVolume) < 1e-9);
 
@@ -1474,7 +1474,7 @@ for (const operation of ['fillet', 'chamfer']) {
 
 // 14. CAx-IF STEP validation properties through the translator module.
 {
-  const sourceKernel = new BrepKernel();
+  const sourceKernel = new RemusKernel();
   const sourceSolid = sourceKernel.makeBox(2, 3, 4);
   const stepBytes = io.exportStepWithOptions(
     bodies(sourceKernel, sourceSolid),
@@ -1486,7 +1486,7 @@ for (const operation of ['fillet', 'chamfer']) {
     /CAx-IF Rec\.Pracs\.---Geometric and Assembly Validation Properties---4\.6---2023-04-21/,
   );
 
-  const directKernel = new BrepKernel();
+  const directKernel = new RemusKernel();
   const validated = io.importStepWithValidation(stepBytes, undefined, undefined, undefined);
   const direct = JSON.parse(validated.report);
   assert.equal(direct.solidCount, 1);
@@ -1526,7 +1526,7 @@ for (const operation of ['fillet', 'chamfer']) {
 
   // The kernel module no longer registers the translator batch ops.
   const batch = JSON.parse(
-    new BrepKernel().executeBatchV2(
+    new RemusKernel().executeBatchV2(
       JSON.stringify([
         { op: 'makeBox', args: { width: 1, height: 2, depth: 3 } },
         { op: 'importStepWithValidation', args: { data: malformed } },
@@ -1544,7 +1544,7 @@ for (const operation of ['fillet', 'chamfer']) {
 // resize is an exact refusal today. The public direct/batch query must agree,
 // and the refusal must not silently damage the imported body.
 {
-  const hammerKernel = new BrepKernel();
+  const hammerKernel = new RemusKernel();
   const step = readFileSync(
     resolve(projectRoot, 'crates/io/tests/data/shapr3d_hammer_holder.step'),
   );
@@ -1605,7 +1605,7 @@ for (const operation of ['fillet', 'chamfer']) {
 // rims, planar winding and complementary NURBS lettering branches. The full
 // 46 -> 50 mm reconstruction remains a separate acceptance gate.
 {
-  const kernel = new BrepKernel();
+  const kernel = new RemusKernel();
   const step = readFileSync(resolve(projectRoot, 'crates/io/tests/data/shapr3d_hammer_holder.step'));
   const [source] = Array.from(kernel.deserializeSolids(io.importStep(step)));
   const sourceBytes = kernel.serializeSolids(new Uint32Array([source]));
@@ -1718,62 +1718,62 @@ for (const operation of ['fillet', 'chamfer']) {
 }
 
 // 15. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
-runOpenZcadCylindricalFaceResizeRegression({ BrepKernel, decodeEvolutionPayload, RemusIo });
+runOpenZcadCylindricalFaceResizeRegression({ RemusKernel, decodeEvolutionPayload, RemusIo });
 
-runWideSphereCapRegression({ BrepKernel, RemusIo });
-runSphereCylinderWallRegression({ BrepKernel, RemusIo });
-runOffsetConeSphereRegression({ BrepKernel });
-runOffsetSphereCylinderRegression({ BrepKernel });
+runWideSphereCapRegression({ RemusKernel, RemusIo });
+runSphereCylinderWallRegression({ RemusKernel, RemusIo });
+runOffsetConeSphereRegression({ RemusKernel });
+runOffsetSphereCylinderRegression({ RemusKernel });
 
-runOffsetTorusSphereRegression({ BrepKernel });
-runTorusNotchRegression({ BrepKernel });
-runTangencyBandRegression({ BrepKernel });
-runPartialCylinderResizeRegression({ BrepKernel, RemusIo });
-runDirectEditHistoryRegression({ BrepKernel, RemusIo });
-runSurfaceReplacementHistoryRegression({ BrepKernel, RemusIo });
-runCylindricalRadiusHistoryRegression({ BrepKernel, RemusIo });
-runBlendResizeHistoryRegression({ BrepKernel, RemusIo });
-runDraftHistoryRegression({ BrepKernel, RemusIo });
-runDefeatureHistoryRegression({ BrepKernel, RemusIo });
-runHealingHistoryRegression({ BrepKernel, RemusIo });
-runUnifyHistoryRegression({ BrepKernel });
-runSewingHistoryRegression({ BrepKernel });
-runInnerWireHistoryRegression({ BrepKernel });
-runSplitVertexRefusalRegression({ BrepKernel });
-runBooleanScaleRegression({ BrepKernel });
-runAnisotropicBooleanRegression({ BrepKernel });
-runZeroAreaMeshExportRegression({ BrepKernel, RemusIo });
+runOffsetTorusSphereRegression({ RemusKernel });
+runTorusNotchRegression({ RemusKernel });
+runTangencyBandRegression({ RemusKernel });
+runPartialCylinderResizeRegression({ RemusKernel, RemusIo });
+runDirectEditHistoryRegression({ RemusKernel, RemusIo });
+runSurfaceReplacementHistoryRegression({ RemusKernel, RemusIo });
+runCylindricalRadiusHistoryRegression({ RemusKernel, RemusIo });
+runBlendResizeHistoryRegression({ RemusKernel, RemusIo });
+runDraftHistoryRegression({ RemusKernel, RemusIo });
+runDefeatureHistoryRegression({ RemusKernel, RemusIo });
+runHealingHistoryRegression({ RemusKernel, RemusIo });
+runUnifyHistoryRegression({ RemusKernel });
+runSewingHistoryRegression({ RemusKernel });
+runInnerWireHistoryRegression({ RemusKernel });
+runSplitVertexRefusalRegression({ RemusKernel });
+runBooleanScaleRegression({ RemusKernel });
+runAnisotropicBooleanRegression({ RemusKernel });
+runZeroAreaMeshExportRegression({ RemusKernel, RemusIo });
 
 // 16. B6 plane-section/split packaged-runtime witnesses (actual WASM execution,
 // not native contract tests): ordinary/coincident/empty sections, cavity and
 // through-hole hole counts, degenerate InvalidInput, split halves with
 // volume-sum/material oracles, and typed refusals with session preservation.
-runB6SectionSplitPackaged({ BrepKernel });
+runB6SectionSplitPackaged({ RemusKernel });
 
 // 17. Journaled circular-pattern packaged-runtime witnesses (actual WASM
 // execution, not native contract tests): origin count-2 and offset count-3
 // copies through direct, batch v1 and batch v2 with rotated-vertex,
 // volume/census, original-versus-generated, journal, and typed-refusal
 // oracles plus session preservation.
-runCircularPatternPackaged({ BrepKernel });
-runGridPatternPackaged({ BrepKernel });
-runRevolveHistoryPackaged({ BrepKernel });
-runPlanarImprintPackaged({ BrepKernel });
-runProjectCurvePackaged({ BrepKernel });
-runNextKernelCorrectnessPackaged({ BrepKernel });
-runMaximumDistancePackaged({ BrepKernel });
-runDraftAnalysisPackaged({ BrepKernel });
+runCircularPatternPackaged({ RemusKernel });
+runGridPatternPackaged({ RemusKernel });
+runRevolveHistoryPackaged({ RemusKernel });
+runPlanarImprintPackaged({ RemusKernel });
+runProjectCurvePackaged({ RemusKernel });
+runNextKernelCorrectnessPackaged({ RemusKernel });
+runMaximumDistancePackaged({ RemusKernel });
+runDraftAnalysisPackaged({ RemusKernel });
 
-runKernelCorrectnessPackaged({ BrepKernel });
-runOpseqF5Packaged({ BrepKernel });
-runOpseqF6Packaged({ BrepKernel });
-runOpseqOffsetWallPackaged({ BrepKernel });
-runOpseqOffsetRefusalPackaged({ BrepKernel });
-runOpseqF10Packaged({ BrepKernel });
-runOpseqF13Packaged({ BrepKernel });
+runKernelCorrectnessPackaged({ RemusKernel });
+runOpseqF5Packaged({ RemusKernel });
+runOpseqF6Packaged({ RemusKernel });
+runOpseqOffsetWallPackaged({ RemusKernel });
+runOpseqOffsetRefusalPackaged({ RemusKernel });
+runOpseqF10Packaged({ RemusKernel });
+runOpseqF13Packaged({ RemusKernel });
 
-runWasmRayTorusPackaged({ BrepKernel });
+runWasmRayTorusPackaged({ RemusKernel });
 
-runLinkedSketchPackaged({ BrepKernel });
+runLinkedSketchPackaged({ RemusKernel });
 
 console.log('\nAll smoke tests passed');

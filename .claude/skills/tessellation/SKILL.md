@@ -79,7 +79,7 @@ A full-revolution periodic wall carrying two hole loops that CROSS each other (f
 
 ## Per-face mesh cache (PERF-D01)
 
-`tessellate/face_cache.rs` replays a face's stage-D mesh when its content key (surface, wires, final boundary chains, tolerances) matches a previous capture: exactly, or as a rigid translate whose chart input is bit-identical. It is per thread and opt-in (`enable_face_mesh_cache`); `BrepKernel::new` turns it on, so WASM and the wasm crate's tests mesh through it. When chasing a tessellation difference, rule it out first with `disable_face_mesh_cache()` and compare; `face_mesh_cache_stats()` counts hits, misses, refused translates and uncacheable faces. A new mesher must only append to the shared pool (never rewrite boundary normals or weld onto another face's interior vertex) or capture will, correctly, refuse it.
+`tessellate/face_cache.rs` replays a face's stage-D mesh when its content key (surface, wires, final boundary chains, tolerances) matches a previous capture: exactly, or as a rigid translate whose chart input is bit-identical. It is per thread and opt-in (`enable_face_mesh_cache`); `RemusKernel::new` turns it on, so WASM and the wasm crate's tests mesh through it. When chasing a tessellation difference, rule it out first with `disable_face_mesh_cache()` and compare; `face_mesh_cache_stats()` counts hits, misses, refused translates and uncacheable faces. A new mesher must only append to the shared pool (never rewrite boundary normals or weld onto another face's interior vertex) or capture will, correctly, refuse it.
 
 ## GPU path: keep faces analytic
 

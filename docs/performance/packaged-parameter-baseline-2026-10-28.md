@@ -53,7 +53,7 @@ observations; the small pools establish no tail-confidence claim. At n=16,
 the empirical nearest-rank p95 is the largest retained sample.
 
 Node `require` reads/compiles/instantiates the WASM module. That module load,
-`new BrepKernel()` and empty-checkpoint setup are outside all tick timings.
+`new RemusKernel()` and empty-checkpoint setup are outside all tick timings.
 Their separate p50 observations across eight processes per variant are:
 
 | Variant | Node require / WASM initialization (ms) | Kernel constructor (ms) | Empty-checkpoint setup (ms) |

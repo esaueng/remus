@@ -19,7 +19,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::error::StructuredWasmError;
 use crate::helpers::{get_f64, get_u32};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 const MAX_OPTIONS_BYTES: usize = 4096;
 const MAX_REUSE_WORK: usize = 10_000_000;
@@ -218,7 +218,7 @@ fn reduction_value(geometry: Value, removed: usize, bound: f64, work: usize) -> 
     ])
 }
 
-impl BrepKernel {
+impl RemusKernel {
     fn reuse_curve(&self, args: &Value) -> Result<&NurbsCurve, StructuredWasmError> {
         let edge = self.resolve_edge(get_u32(args, "edge")?)?;
         match self.topo.edge(edge)?.curve() {
@@ -331,7 +331,7 @@ impl BrepKernel {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Returns reduced U carrier geometry and a certified bound as a JSON envelope.
     #[wasm_bindgen(js_name = "surfaceKnotRemoveU")]
     pub fn surface_knot_remove_u(&self, face: u32, knot: f64, options_json: &str) -> String {
@@ -396,8 +396,8 @@ mod tests {
     use remus_topology::builder::{make_nurbs_edge_from_curve, make_nurbs_face};
     use serde_json::json;
 
-    fn fixture() -> (BrepKernel, u32, u32) {
-        let mut kernel = BrepKernel::new();
+    fn fixture() -> (RemusKernel, u32, u32) {
+        let mut kernel = RemusKernel::new();
         let curve = NurbsCurve::new(
             2,
             vec![2., 2., 2., 5., 5., 5.],
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn analytic_carriers_refuse_without_implicit_nurbs_conversion() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         kernel.make_box_solid(1., 1., 1.).unwrap();
         let edge = edge_id_to_u32(kernel.topo.edge_id_from_index(0).unwrap());
         let face = face_id_to_u32(kernel.topo.face_id_from_index(0).unwrap());

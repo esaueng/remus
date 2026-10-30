@@ -20,14 +20,14 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
-fn run(kernel: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn run(kernel: &mut RemusKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let json = serde_json::Value::Array(ops.to_vec()).to_string();
     serde_json::from_str(&kernel.execute_batch(&json)).unwrap()
 }
 
-fn run_v2(kernel: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn run_v2(kernel: &mut RemusKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let json = serde_json::Value::Array(ops.to_vec()).to_string();
     serde_json::from_str(&kernel.execute_batch_v2(&json)).unwrap()
 }
@@ -39,7 +39,7 @@ fn op(name: &str, args: serde_json::Value) -> serde_json::Value {
 /// Extruded L-bracket fixture (exact task dimensions). Polygon construction
 /// uses the direct binding (infallible here, so no off-wasm `JsError`
 /// arises); every fallible step below goes through batch.
-fn make_l_bracket(kernel: &mut BrepKernel) -> u32 {
+fn make_l_bracket(kernel: &mut RemusKernel) -> u32 {
     let face = kernel
         .make_polygon(vec![
             0.0, 0.0, 0.0, 40.0, 0.0, 0.0, 40.0, 8.0, 0.0, 8.0, 8.0, 0.0, 8.0, 50.0, 0.0, 0.0,
@@ -56,7 +56,7 @@ fn make_l_bracket(kernel: &mut BrepKernel) -> u32 {
     u32::try_from(out[0]["ok"].as_u64().unwrap()).unwrap()
 }
 
-fn edge_handles(kernel: &mut BrepKernel, solid: u32) -> Vec<u32> {
+fn edge_handles(kernel: &mut RemusKernel, solid: u32) -> Vec<u32> {
     let out = run(
         kernel,
         &[op("solidEdges", serde_json::json!({"solid": solid}))],
@@ -69,7 +69,7 @@ fn edge_handles(kernel: &mut BrepKernel, solid: u32) -> Vec<u32> {
         .collect()
 }
 
-fn volume(kernel: &mut BrepKernel, solid: u32) -> f64 {
+fn volume(kernel: &mut RemusKernel, solid: u32) -> f64 {
     let out = run(
         kernel,
         &[op(
@@ -89,7 +89,7 @@ fn volume(kernel: &mut BrepKernel, solid: u32) -> f64 {
 /// identical to the independent reference by STEP exchange (1.2e-5).
 #[test]
 fn mixed_notch_whole_edge_fillet_succeeds_on_both_contracts() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let solid = make_l_bracket(&mut kernel);
     let edges = edge_handles(&mut kernel, solid);
     assert_eq!(
@@ -148,7 +148,7 @@ fn mixed_notch_whole_edge_fillet_succeeds_on_both_contracts() {
 /// Whole-edge chamfer succeeds through batch with the native closed form.
 #[test]
 fn mixed_notch_whole_edge_chamfer_matches_native_closed_form() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let solid = make_l_bracket(&mut kernel);
     let edges = edge_handles(&mut kernel, solid);
     let out = run(
@@ -169,7 +169,7 @@ fn mixed_notch_whole_edge_chamfer_matches_native_closed_form() {
 /// Rib-on-plate fixture through batch: 60x50x6 plate plus one 6x20x18 rib
 /// standing at x=[12,18], y=[10,30], z=[6,24] (translation matrix, row-major
 /// 16 elements). The four rib-base vertices are convex-singleton mirrors.
-fn make_rib_plate(kernel: &mut BrepKernel) -> u32 {
+fn make_rib_plate(kernel: &mut RemusKernel) -> u32 {
     let out = run(
         kernel,
         &[
@@ -208,7 +208,7 @@ fn make_rib_plate(kernel: &mut BrepKernel) -> u32 {
 /// contracts agree on the exact route (native pins 20046.9186 at r=1).
 #[test]
 fn rib_mirror_whole_edge_fillet_succeeds_on_both_contracts() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let solid = make_rib_plate(&mut kernel);
     let before = volume(&mut kernel, solid);
     assert!(

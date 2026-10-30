@@ -49,8 +49,8 @@ export function score(c, observations) {
 }
 
 function wasmAttempt(c, modulePath) {
-  const { BrepKernel } = createRequire(import.meta.url)(modulePath);
-  const kernel = new BrepKernel();
+  const { RemusKernel } = createRequire(import.meta.url)(modulePath);
+  const kernel = new RemusKernel();
   try {
     const empty = kernel.workflowStateSnapshot();
     const seed = JSON.parse(kernel.executeBatchV2(JSON.stringify([

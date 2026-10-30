@@ -47,7 +47,7 @@ use remus_topology::face::{FaceId, FaceSurface};
 
 use crate::error::{StructuredWasmError, WasmError, validate_finite};
 use crate::handles::solid_id_to_u32;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::types::SolidOperationDetailedResult;
 
 /// Quality label of every successful construction result.
@@ -218,7 +218,7 @@ fn ensure_exact_revolve_profile(
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Extrude a planar face along a direction vector, as typed data.
     ///
     /// Additive twin of [`extrude`](Self::extrude_face): the same validation
@@ -269,7 +269,7 @@ impl BrepKernel {
 }
 
 /// Natively-testable bodies shared by the direct twins and the batch ops.
-impl BrepKernel {
+impl RemusKernel {
     pub(crate) fn extrude_detailed_impl(
         &mut self,
         face: u32,

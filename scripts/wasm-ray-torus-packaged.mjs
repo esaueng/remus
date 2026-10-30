@@ -1,10 +1,10 @@
 /** Periodic and trimmed torus ray-query contracts in the shipping wasm32 module. */
 import assert from 'node:assert/strict';
 
-export function runWasmRayTorusPackaged({ BrepKernel }) {
+export function runWasmRayTorusPackaged({ RemusKernel }) {
   let cells = 0;
   for (const scale of [0.1, 1, 10]) for (const placed of [false, true]) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const torus = kernel.makeTorus(10 * scale, 3 * scale, 32);
       const tool = kernel.makeBox(8 * scale, 8 * scale, 8 * scale);

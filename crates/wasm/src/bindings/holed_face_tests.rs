@@ -33,18 +33,18 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 // ── batch plumbing ────────────────────────────────────────────────
 
 /// Run a batch and return every result entry.
-fn run(k: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn run(k: &mut RemusKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let json = serde_json::Value::Array(ops.to_vec()).to_string();
     serde_json::from_str(&k.execute_batch(&json)).unwrap()
 }
 
 /// Run a batch, require every op to succeed, and return the `ok` payloads.
-fn run_all_ok(k: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn run_all_ok(k: &mut RemusKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let results = run(k, ops);
     for (i, r) in results.iter().enumerate() {
         assert!(
@@ -60,7 +60,7 @@ fn run_all_ok(k: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::
 }
 
 /// Run a batch whose LAST op must fail, and return that failure message.
-fn run_expect_last_error(k: &mut BrepKernel, ops: &[serde_json::Value]) -> String {
+fn run_expect_last_error(k: &mut RemusKernel, ops: &[serde_json::Value]) -> String {
     let results = run(k, ops);
     for (i, r) in results.iter().enumerate().take(ops.len() - 1) {
         assert!(
@@ -271,8 +271,13 @@ enum FaceApi {
 
 /// Build `outer` + `holes`, make a face by `api`, extrude by `depth`, and
 /// return the kernel plus the solid handle.
-fn extrude_holed_face(outer: &Loop, holes: &[Loop], api: FaceApi, depth: f64) -> (BrepKernel, u32) {
-    let mut k = BrepKernel::new();
+fn extrude_holed_face(
+    outer: &Loop,
+    holes: &[Loop],
+    api: FaceApi,
+    depth: f64,
+) -> (RemusKernel, u32) {
+    let mut k = RemusKernel::new();
     let mut ops: Vec<serde_json::Value> = Vec::new();
 
     let outer_first = outer.build_ops(&mut ops);
@@ -371,7 +376,7 @@ const VOLUME_DEFLECTION_FINE: f64 = 1e-4;
 /// fails the test.
 #[allow(clippy::too_many_arguments)]
 fn assert_solid(
-    k: &mut BrepKernel,
+    k: &mut RemusKernel,
     solid: u32,
     expected_faces: usize,
     expected_flipped_faces: usize,
@@ -467,7 +472,7 @@ fn assert_solid(
     // `deflection` would land above the cap and collapse to the SAME mesh,
     // making the comparison vacuous, so the pair is fixed rather than
     // derived (see the two constants above).
-    let measure_volume = |k: &mut BrepKernel, defl: f64| -> f64 {
+    let measure_volume = |k: &mut RemusKernel, defl: f64| -> f64 {
         run_all_ok(
             k,
             &[op(
@@ -812,8 +817,8 @@ fn extruded_annulus_shell_orientation_is_consistent() {
 // ── validation: what addHolesToFace used to accept silently ───────
 
 /// Build an outer square wire and return `(kernel, outer_wire_handle)`.
-fn kernel_with_outer_square(half: f64) -> (BrepKernel, u32) {
-    let mut k = BrepKernel::new();
+fn kernel_with_outer_square(half: f64) -> (RemusKernel, u32) {
+    let mut k = RemusKernel::new();
     let outer = square(half, true);
     let mut ops = Vec::new();
     outer.build_ops(&mut ops);
@@ -831,7 +836,7 @@ fn kernel_with_outer_square(half: f64) -> (BrepKernel, u32) {
 }
 
 /// Build a loop's wire in an existing kernel and return its handle.
-fn build_wire(k: &mut BrepKernel, l: &Loop, closed: bool) -> u32 {
+fn build_wire(k: &mut RemusKernel, l: &Loop, closed: bool) -> u32 {
     let mut ops = Vec::new();
     l.build_ops(&mut ops);
     let edges = run_all_ok(k, &ops);
@@ -852,7 +857,7 @@ fn make_wire_rejects_a_non_boolean_closed_argument() {
     // flagged CLOSED — the opposite of what the caller asked for — and
     // `Wire::new` performs no closure validation, so nothing downstream
     // would have noticed except, by luck, `validate_hole_wires`.
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let mut ops = Vec::new();
     square(10.0, true).build_ops(&mut ops);
     let edges = run_all_ok(&mut k, &ops);
@@ -1026,7 +1031,7 @@ fn a_hole_crossing_a_concave_outer_boundary_is_rejected() {
     // the norm for the glyph case this API exists to serve, and every other
     // containment test here uses a convex square — where a straddling hole
     // necessarily puts a corner outside, so the point test alone suffices.
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let outer_wire = build_wire(&mut k, &u_shaped_outer(), true);
     let bar = Loop {
         start: (-8.0, 0.0),
@@ -1056,7 +1061,7 @@ fn a_hole_crossing_a_concave_outer_boundary_is_rejected() {
 fn a_hole_wholly_inside_a_concave_outer_wire_is_still_accepted() {
     // Guard against the crossing test over-rejecting: a hole inside one arm
     // of the 'U' is legitimate and must pass.
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let outer_wire = build_wire(&mut k, &u_shaped_outer(), true);
     let in_arm = Loop {
         start: (-9.0, 0.0),
@@ -1114,7 +1119,7 @@ fn a_self_intersecting_hole_wire_is_rejected() {
 
 #[test]
 fn a_self_intersecting_outer_wire_is_rejected() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let bowtie = Loop {
         start: (-10.0, -10.0),
         segs: vec![
@@ -1383,7 +1388,7 @@ fn make_face_from_wires_with_no_holes_is_a_plain_planar_face() {
 
 #[test]
 fn make_face_from_wires_rejects_a_non_planar_outer_wire() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let skew = Loop {
         start: (0.0, 0.0),
         segs: vec![
@@ -1428,7 +1433,7 @@ fn nurbs_knot_spans_preserve_batch_face_and_thicken_direction() {
     for scale in [1e-3, 1.0, 1e3] {
         for forward in [true, false] {
             for face_op in ["makePlanarFaceFromWire", "makeFaceFromWires"] {
-                let mut k = BrepKernel::new();
+                let mut k = RemusKernel::new();
                 let mut points = [
                     [0.1, 0.0],
                     [100.0, 100.0],
@@ -1589,7 +1594,7 @@ fn batch_nonuniform_nurbs_circle_extrudes_outward_in_both_directions() {
                     args[end] = value;
                 }
             }
-            let mut k = BrepKernel::new();
+            let mut k = RemusKernel::new();
             let edges = run_all_ok(
                 &mut k,
                 &[

@@ -399,7 +399,7 @@ per-hole costs:
   returns a clone of the first result, so a hit is bit-identical to
   recomputing.
   - It is opt-in and per thread, like the face-integral, volume, NURBS-area
-    and face-mesh memos. `BrepKernel::new` enables it module-wide.
+    and face-mesh memos. `RemusKernel::new` enables it module-wide.
   - It is bounded at 4096 pcurves by default, oldest dropped first.
   - An unchanged hole rim is a hit on every later cut of the same face.
 - **Hole containment.** A one-edge round hole has no chord polygon, so

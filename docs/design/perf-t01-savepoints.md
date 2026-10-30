@@ -80,7 +80,7 @@ The operations wrapper normalizes winding before committing. Native facade
 `Model::fuse` delegates through `Model::boolean` to `boolean_with_context`, whose
 transaction has the same boundary; it adds no facade snapshot.
 
-Direct WASM `BrepKernel::fuse` resolves handles, calls `topo_mut`, then the same
+Direct WASM `RemusKernel::fuse` resolves handles, calls `topo_mut`, then the same
 native `boolean`. Batch `executeBatch` processes each item independently through
 `dispatch_with_rollback`; its `fuse` arm calls the native operation directly.
 Thus uncheckpointed baseline clone counts are 1/2 for native/direct WASM

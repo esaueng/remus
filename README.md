@@ -40,10 +40,10 @@ assert!(step.starts_with("ISO-10303-21;"));
 ```
 
 ```js
-import { BrepKernel } from 'remus-wasm';
+import { RemusKernel } from 'remus-wasm';
 import { RemusIo } from 'remus-wasm-io';
 
-const kernel = new BrepKernel();
+const kernel = new RemusKernel();
 
 // Primitives are anchored at the origin, so this cylinder rounds off the
 // block's corner. Use `transformSolid` to place it somewhere else.

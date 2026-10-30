@@ -624,7 +624,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 ### L4: wasm (`crates/wasm/src/`)
 | Task | File(s) |
 |------|---------|
-| `BrepKernel` struct, constructor, private helpers | `kernel.rs` |
+| `RemusKernel` struct, constructor, private helpers | `kernel.rs` |
 | Error types, validation helpers (`validate_positive`, `validate_finite`) | `error.rs` |
 | Shape type wrappers (`JsMesh`, `JsEdgeLines`, `JsPoint3`, `JsVec3`) | `shapes.rs` |
 | Entity handle resolution (`resolve_*`) & ID converters | `handles.rs` |
@@ -812,7 +812,7 @@ Add `#[allow(clippy::too_many_lines)]` above complex CAD operations rather than
 artificially splitting them.
 
 ### WASM binding blocks
-Multiple `#[wasm_bindgen] impl BrepKernel` blocks are needed — one for public
+Multiple `#[wasm_bindgen] impl RemusKernel` blocks are needed — one for public
 JS-exposed methods, one for private helpers. This is a wasm-bindgen requirement.
 
 ### Wildcard match arms
@@ -883,7 +883,7 @@ Pattern: see `primitives.rs` (`make_box`, `make_cylinder`, etc.)
    }
    ```
 2. **Add WASM binding** in `wasm/src/kernel.rs`:
-   - Add method to `impl BrepKernel` with `#[wasm_bindgen]`
+   - Add method to `impl RemusKernel` with `#[wasm_bindgen]`
    - Use `validate_positive` / `validate_finite` from `error.rs`
 3. **Add test** in the same file or a dedicated test module
 4. **Add to batch dispatch** in `kernel.rs` `dispatch_op` if applicable
@@ -923,17 +923,17 @@ Pattern: see `extrude.rs` (basic), `boolean/` (complex)
 ### Recipe 4: Add a new WASM binding
 
 Pick the appropriate `bindings/` module (or create a new one). Each module adds
-methods to `BrepKernel` via a separate `#[wasm_bindgen] impl` block.
+methods to `RemusKernel` via a separate `#[wasm_bindgen] impl` block.
 
 ```rust
 // In bindings/my_domain.rs:
 use wasm_bindgen::prelude::*;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::error::{WasmError, validate_positive};
 use crate::handles::solid_id_to_u32;
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     #[wasm_bindgen(js_name = "myOperation")]
     pub fn my_operation(&mut self, param: f64) -> Result<u32, JsError> {
         validate_positive(param, "param")?;
@@ -944,7 +944,7 @@ impl BrepKernel {
 ```
 
 Key points:
-- `BrepKernel` is the `core` tier: confirm the capability's
+- `RemusKernel` is the `core` tier: confirm the capability's
   [tier](#wasm-module-tiers) is `core` before adding it here
 - Use `js_name` for camelCase JS naming
 - Validate inputs with helpers from `error.rs`

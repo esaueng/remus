@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { kernelClass } from '../../scripts/kernel-class.cjs';
 import { runNpm } from './npm-cli.mjs';
 import { performance } from 'node:perf_hooks';
 import {
@@ -350,7 +351,7 @@ function wasmSplitObservation(c, kernelEntry, ioEntry, fixtures) {
   const started = performance.now();
   const kernelRequire = createRequire(kernelEntry);
   const ioRequire = createRequire(ioEntry);
-  const { BrepKernel } = kernelRequire(kernelEntry);
+  const RemusKernel = kernelClass(kernelRequire(kernelEntry));
   const { RemusIo } = ioRequire(ioEntry);
   const base = (outcome) => ({
     schemaVersion: 1,
@@ -364,7 +365,7 @@ function wasmSplitObservation(c, kernelEntry, ioEntry, fixtures) {
 
   try {
     if (c.id === 'split/step-import-box') {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       try {
         const io = new RemusIo();
         const arena = io.importStep(Buffer.from(fixtures.boxStep));
@@ -391,7 +392,7 @@ function wasmSplitObservation(c, kernelEntry, ioEntry, fixtures) {
       }
     }
     if (c.id === 'split/box-hollow-roundtrip') {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       try {
         const io = new RemusIo();
         const box = kernel.makeBox(2, 3, 4);
@@ -401,7 +402,7 @@ function wasmSplitObservation(c, kernelEntry, ioEntry, fixtures) {
         const hollow = kernel.cut(outer, inner);
         const doc = kernel.serializeSolids(Uint32Array.from([box, hollow]));
         const step = io.exportStep(doc);
-        const kernel2 = new BrepKernel();
+        const kernel2 = new RemusKernel();
         try {
           const handles = Array.from(kernel2.deserializeSolids(io.importStep(step)));
           assert.equal(handles.length, 2);
@@ -439,7 +440,7 @@ function wasmSplitObservation(c, kernelEntry, ioEntry, fixtures) {
       }
     }
     if (c.id === 'split/periodic-seam') {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       try {
         const io = new RemusIo();
         const arena = io.importStep(Buffer.from(fixtures.plateStep));
@@ -462,7 +463,7 @@ function wasmSplitObservation(c, kernelEntry, ioEntry, fixtures) {
       }
     }
     if (c.id === 'split/malformed-refusal') {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       try {
         const io = new RemusIo();
         const keep = kernel.makeBox(2, 3, 4);
@@ -497,7 +498,7 @@ function wasmSplitObservation(c, kernelEntry, ioEntry, fixtures) {
       }
     }
     if (c.id === 'split/arena-truncation') {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       try {
         const keep = kernel.makeBox(2, 3, 4);
         const beforeVol = kernel.volume(keep, 0.05);
@@ -532,8 +533,8 @@ function wasmSplitObservation(c, kernelEntry, ioEntry, fixtures) {
       }
     }
     if (c.id === 'split/two-session-isolation') {
-      const kernelA = new BrepKernel();
-      const kernelB = new BrepKernel();
+      const kernelA = new RemusKernel();
+      const kernelB = new RemusKernel();
       try {
         const io = new RemusIo();
         const facesBeforeB = 0;

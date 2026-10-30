@@ -82,7 +82,7 @@ a Remus type counts toward that crate:
 | --- | ---: |
 | std/core/alloc/hashbrown generics with no Remus type in the name | 32.4% |
 | `remus_operations` | 19.0% |
-| Binding layer and glue (`BrepKernel`, wasm-bindgen, serde, tsify) | 14.9% |
+| Binding layer and glue (`RemusKernel`, wasm-bindgen, serde, tsify) | 14.9% |
 | `remus_algo` | 11.4% |
 | math, topology, check, blend, heal, offset, sketch, io, geometry | 19.3% |
 | Other (`robust`, std formatting/panic, `remus_wasm`, misc.) | 3.0% |

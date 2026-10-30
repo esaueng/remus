@@ -38,9 +38,9 @@ function quantities() {
     2 * (Math.PI * 7 * Math.hypot(5.5, 2) + Math.PI * (r * r + 2.5 ** 2))
       - lens * (1 + Math.hypot(1, k) / k)];
 }
-function fixture(BrepKernel, api, scale, placed, swapped, mirrored, operation = 'fuse') {
+function fixture(RemusKernel, api, scale, placed, swapped, mirrored, operation = 'fuse') {
   const label = `F17 ${api} ${operation} scale=${scale} placed=${placed} swapped=${swapped} mirrored=${mirrored}`;
-  const kernel = new BrepKernel(), run = (op, args, direct) => invoke(kernel, api, op, args, direct, label);
+  const kernel = new RemusKernel(), run = (op, args, direct) => invoke(kernel, api, op, args, direct, label);
   try {
     const args = { bottomRadius: 4.5 * scale, topRadius: 2.5 * scale, height: 5.5 * scale };
     const a = run('makeCone', args, [args.bottomRadius, args.topRadius, args.height]);
@@ -169,18 +169,18 @@ function fixture(BrepKernel, api, scale, placed, swapped, mirrored, operation = 
     return true;
   } finally { kernel.free(); }
 }
-export function runOpseqF17Packaged({ BrepKernel }) {
+export function runOpseqF17Packaged({ RemusKernel }) {
   const failures = [];
   let accepted = 0, refused = 0;
   for (const api of ['direct', 'executeBatch', 'executeBatchV2']) for (const mirrored of [false, true]) {
     for (const scale of [0.001, 1, 1000]) for (const placed of [false, true]) for (const swapped of [false, true]) {
-      try { if (fixture(BrepKernel, api, scale, placed, swapped, mirrored)) accepted++; else refused++; }
+      try { if (fixture(RemusKernel, api, scale, placed, swapped, mirrored)) accepted++; else refused++; }
       catch (error) { failures.push(error); }
     }
   }
   for (const api of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const [operation, mirrored] of [['cut', false], ['intersect', false], ['intersect', true]]) {
-      try { fixture(BrepKernel, api, 1, false, false, mirrored, operation); }
+      try { fixture(RemusKernel, api, 1, false, false, mirrored, operation); }
       catch (error) { failures.push(error); }
     }
   }

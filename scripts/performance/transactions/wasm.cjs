@@ -14,7 +14,7 @@ WebAssembly.Instance = new Proxy(OriginalInstance, {
 });
 const wasm = require(path.resolve(pkg));
 WebAssembly.Instance = OriginalInstance;
-const k = new wasm.BrepKernel();
+const k = new wasm.RemusKernel();
 for (let i = 0; i < size; i++) k.makeBox(1, 1, 1);
 const a = k.makeBox(1, 1, 1), b = k.makeBox(1, 1, 1);
 const c = Math.SQRT1_2;
