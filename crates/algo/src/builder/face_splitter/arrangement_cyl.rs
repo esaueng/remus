@@ -1186,7 +1186,7 @@ fn emit_cylinder_wire(
                 .all(|h| arrangement.half_edges[*h].source.use_id == use_id)
             {
                 let mut undirected: Vec<usize> = halves.iter().map(|h| h / 2).collect();
-                undirected.sort_unstable();
+                undirected.compact_sort_unstable();
                 undirected.dedup();
                 if undirected.len() == 2 {
                     return true;

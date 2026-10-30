@@ -17,6 +17,7 @@ use remus_topology::shell::{Shell, ShellId};
 use remus_topology::solid::{Solid, SolidId};
 
 use crate::error::OffsetError;
+use remus_math::compact_sort::CompactSort;
 
 /// Exact result of the bounded self-intersection-removal pass.
 #[derive(Debug)]
@@ -152,7 +153,7 @@ pub fn remove_folded_uniform_l_prism_region(
     let collapsed = &components[folded_index];
     let retained = &components[retained_index];
     let mut removable: Vec<_> = removable_faces.iter().map(|face| face.index()).collect();
-    removable.sort_unstable();
+    removable.compact_sort_unstable();
     removable.dedup();
     let collapsed_indices: Vec<_> = collapsed.faces.iter().map(|face| face.index()).collect();
     if removable != collapsed_indices {
@@ -193,7 +194,7 @@ pub fn remove_folded_uniform_l_prism_region(
     remus_topology::validation::validate_shell_closed(topo.shell(rebuilt_shell)?, topo)?;
     let result = topo.add_solid(Solid::new(rebuilt_shell, Vec::new()));
     let mut removed_faces = collapsed.faces.clone();
-    removed_faces.sort_unstable_by_key(|face| face.index());
+    removed_faces.compact_sort_unstable_by_key(|face| face.index());
     Ok(SelfIntersectionRemoval {
         solid: result,
         removed_faces,
@@ -250,7 +251,7 @@ fn shell_components(
     tolerance: f64,
 ) -> Result<Vec<Component>, OffsetError> {
     let mut faces = topo.shell(shell_id)?.faces().to_vec();
-    faces.sort_unstable_by_key(|face| face.index());
+    faces.compact_sort_unstable_by_key(|face| face.index());
     let mut edge_owner: BTreeMap<usize, usize> = BTreeMap::new();
     let mut parent: Vec<_> = (0..faces.len()).collect();
     for (position, face_id) in faces.iter().copied().enumerate() {

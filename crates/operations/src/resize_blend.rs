@@ -231,7 +231,7 @@ pub(crate) fn resize_blend_with_entity_evolution(
             .iter()
             .filter_map(|(&output, sources)| {
                 let mut sources = sources.clone();
-                sources.sort_unstable();
+                sources.compact_sort_unstable();
                 sources.dedup();
                 (sources == supports).then_some(output)
             })
@@ -656,6 +656,8 @@ fn face_edges(topo: &Topology, face: FaceId) -> Result<Vec<EdgeId>, OperationsEr
     for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
         edges.extend(topo.wire(wire)?.edges().iter().map(OrientedEdge::edge));
     }
+    // hot: 1,024+ calls in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     edges.sort_unstable_by_key(|edge| edge.index());
     edges.dedup();
     Ok(edges)
@@ -663,6 +665,8 @@ fn face_edges(topo: &Topology, face: FaceId) -> Result<Vec<EdgeId>, OperationsEr
 
 fn distinct_faces(faces: &[FaceId]) -> Vec<FaceId> {
     let mut result = faces.to_vec();
+    // hot: 4,608+ calls in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     result.sort_unstable_by_key(|face| face.index());
     result.dedup();
     result
@@ -860,7 +864,7 @@ pub fn blend_region(
     }
 
     let mut faces: Vec<FaceId> = band.into_iter().collect();
-    faces.sort_unstable_by_key(|face| face.index());
+    faces.compact_sort_unstable_by_key(|face| face.index());
     let supports = blend_region_supports(topo, solid, &faces)?;
     if supports.len() < 2 {
         return Err(reconstruction(format!(
@@ -900,7 +904,7 @@ fn blend_region_supports(
     }
 
     let mut supports: Vec<FaceId> = supports.into_iter().collect();
-    supports.sort_unstable_by_key(|support| support.index());
+    supports.compact_sort_unstable_by_key(|support| support.index());
     Ok(supports)
 }
 
@@ -922,6 +926,276 @@ pub(crate) struct BlendMoveEntities {
     pub solid: SolidId,
     pub evolution: EvolutionMap,
     pub boundary_pairs: Vec<(EntityKey, EntityKey)>,
+}
+
+/// One rim blend of a resized cylindrical wall, removed to its sharp rim.
+struct RimBlendPlan {
+    radius: f64,
+    /// Signed volume the blend adds to its sharp rim.
+    volume_effect: f64,
+    /// Unit normal and offset of the planar cap the blend rolls onto. The
+    /// radial move leaves the cap's plane where it is.
+    cap: (Vec3, f64),
+    edge_count: usize,
+}
+
+/// Resize a full-turn bore together with the constant-radius blends that roll
+/// off its rims onto planar caps perpendicular to its axis.
+///
+/// Such a rim blend is a coaxial torus whose section — a quarter round in the
+/// corner between wall and cap — is the same at any wall radius, so the
+/// remove/rebuild path of [`move_planar_faces_with_blends`] applies: every
+/// rim band is removed to its sharp rim, the sharp wall is resized, and the
+/// same radius is rolled back onto the rims. The resized hole keeps its
+/// blends instead of the wall moving away from them, and the thin resize
+/// sleeve never has to cut through a blend.
+///
+/// `Ok(None)` for a boss, or when the bore has no tangent blend neighbour or
+/// one that is not such a rim blend; the caller then resizes the wall alone.
+/// Bosses stay on that path for now: shrinking a boss that stands on a plate
+/// leaves the plate's annulus as a second coplanar face that face unification
+/// does not merge, so the rims could not be found again. Once every rim blend
+/// of a bore qualifies, each refusal is returned rather than falling back.
+pub(crate) fn resize_cylindrical_face_with_blends(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    new_radius: f64,
+) -> Result<Option<SolidId>, OperationsError> {
+    let face_data = topo.face(face)?;
+    let FaceSurface::Cylinder(wall) = face_data.surface().clone() else {
+        return Ok(None);
+    };
+    let reversed = face_data.is_reversed();
+    if !reversed {
+        return Ok(None);
+    }
+    let _discovery_memo = DiscoveryMemoScope::enter();
+    let band_count = rim_blend_band_count(topo, solid, face, &wall)?;
+    if band_count == 0 {
+        return Ok(None);
+    }
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let source_counts = remus_topology::explorer::solid_entity_counts(topo, solid)?;
+        let mut current = solid;
+        let mut selected = face;
+        let mut current_volume = None;
+        let mut plans = Vec::with_capacity(band_count);
+        while let Some(seed) = adjacent_blend_seed(topo, current, &[selected])? {
+            let band = describe_band(topo, current, seed)?;
+            let cap = rim_blend_cap(topo, &band, selected, &wall)?.ok_or_else(|| {
+                reconstruction("a resized wall's rim blend stopped qualifying after a removal")
+            })?;
+            let sharp = remove_blend_region(topo, current, &band)?;
+            validate_exact_result(topo, sharp.solid, "sharp rim reconstruction")?;
+            let stage_volume = stage_volume_of(topo, current, current_volume)?;
+            let sharp_volume = crate::measure::solid_volume(topo, sharp.solid, 0.05)?;
+            current_volume = Some(sharp_volume);
+            validate_volume_progress(stage_volume, sharp_volume, sharp_volume, band.radius, 0.0)?;
+            selected = remap_faces(&[selected], &sharp.face_map, "resized wall")?[0];
+            plans.push(RimBlendPlan {
+                radius: band.radius,
+                volume_effect: stage_volume - sharp_volume,
+                cap,
+                edge_count: sharp.edges.len(),
+            });
+            current = sharp.solid;
+        }
+        if plans.len() != band_count {
+            return Err(reconstruction(format!(
+                "removed {} rim blends from the resized wall; {band_count} were recognized",
+                plans.len()
+            )));
+        }
+
+        // The sharp wall has no blend neighbour left, so this resizes the
+        // wall alone, under that path's own volume and wall checks.
+        current = crate::push_pull::resize_cylindrical_face(topo, current, selected, new_radius)?;
+        let mut current_volume = crate::measure::solid_volume(topo, current, 0.05)?;
+        let shift = new_radius - wall.radius();
+        for plan in plans.iter().rev() {
+            let wall_face = resized_wall(topo, current, &wall, new_radius, reversed)?;
+            let cap_face = rim_cap_face(topo, current, wall_face, plan.cap)?;
+            let mut edges = shared_edges(topo, current, wall_face, cap_face)?;
+            edges.compact_sort_unstable_by_key(|edge| edge.index());
+            edges.dedup();
+            if edges.len() != plan.edge_count {
+                return Err(reconstruction(format!(
+                    "resized wall meets its cap along {} sharp edges; expected {}",
+                    edges.len(),
+                    plan.edge_count
+                )));
+            }
+            let rebuilt = rebuild_blend_edges(topo, current, &edges, plan.radius, plan.radius, false)?;
+            validate_exact_result(topo, rebuilt.solid, "resized rim blend reconstruction")?;
+            let rebuilt_volume = crate::measure::solid_volume(topo, rebuilt.solid, 0.05)?;
+            // Pappus: the quarter-round section, of area r²(1 - π/4), keeps
+            // its shape and moves `shift` farther from the axis.
+            let section = plan.radius * plan.radius * (1.0 - std::f64::consts::FRAC_PI_4);
+            let effect = plan.volume_effect
+                + plan.volume_effect.signum() * std::f64::consts::TAU * section * shift;
+            validate_expected_volume(
+                current_volume + effect,
+                rebuilt_volume,
+                "resized rim blend volume effect",
+            )?;
+            current_volume = rebuilt_volume;
+            current = rebuilt.solid;
+        }
+
+        let final_counts = remus_topology::explorer::solid_entity_counts(topo, current)?;
+        if final_counts != source_counts {
+            return Err(reconstruction(format!(
+                "blend-aware cylindrical resize changed (faces, edges, vertices) from {source_counts:?} to {final_counts:?}"
+            )));
+        }
+        resized_wall(topo, current, &wall, new_radius, reversed)?;
+        Ok(current)
+    })
+    .map(Some)
+}
+
+/// The number of distinct rim blend bands tangent to `face`, or zero when any
+/// tangent blend is not a rim blend [`rim_blend_cap`] qualifies.
+fn rim_blend_band_count(
+    topo: &Topology,
+    solid: SolidId,
+    face: FaceId,
+    wall: &remus_math::surfaces::CylindricalSurface,
+) -> Result<usize, OperationsError> {
+    let adjacency = solid_adjacency(topo, solid)?;
+    let mut bands: Vec<Vec<FaceId>> = Vec::new();
+    for edge in face_edges(topo, face)? {
+        for candidate in distinct_faces(adjacency.faces_for_edge(edge)) {
+            if candidate == face
+                || blend_surface(topo.face(candidate)?.surface()).is_none()
+                || !tangent_across(topo, edge, face, candidate)?
+                || bands.iter().any(|band| band.contains(&candidate))
+            {
+                continue;
+            }
+            let Ok(band) = describe_band(topo, solid, candidate) else {
+                return Ok(0);
+            };
+            if rim_blend_cap(topo, &band, face, wall)?.is_none() {
+                return Ok(0);
+            }
+            bands.push(band.faces);
+        }
+    }
+    Ok(bands.len())
+}
+
+/// The planar cap of a rim blend between `wall` and a plane perpendicular to
+/// its axis, as a unit normal and offset; `None` for any other band.
+fn rim_blend_cap(
+    topo: &Topology,
+    band: &BandDescription,
+    wall_face: FaceId,
+    wall: &remus_math::surfaces::CylindricalSurface,
+) -> Result<Option<(Vec3, f64)>, OperationsError> {
+    let tol = Tolerance::new();
+    let Ok(axis) = wall.axis().normalize() else {
+        return Ok(None);
+    };
+    let [first, second] = band.supports.as_slice() else {
+        return Ok(None);
+    };
+    let cap = match (*first == wall_face, *second == wall_face) {
+        (true, false) => *second,
+        (false, true) => *first,
+        _ => return Ok(None),
+    };
+    let FaceSurface::Plane { normal, d } = *topo.face(cap)?.surface() else {
+        return Ok(None);
+    };
+    let length = normal.length();
+    if length <= f64::EPSILON || (normal.dot(axis).abs() / length) < 1.0 - tol.angular {
+        return Ok(None);
+    }
+    for &band_face in &band.faces {
+        let FaceSurface::Torus(torus) = topo.face(band_face)?.surface() else {
+            return Ok(None);
+        };
+        let offset = torus.center() - wall.origin();
+        if torus.z_axis().cross(axis).length() > tol.angular
+            || (offset - axis * offset.dot(axis)).length() > tol.linear
+        {
+            return Ok(None);
+        }
+    }
+    Ok(Some((normal * (1.0 / length), d / length)))
+}
+
+/// The one wall of `solid` on `wall`'s axis at `radius`, facing as before.
+fn resized_wall(
+    topo: &Topology,
+    solid: SolidId,
+    wall: &remus_math::surfaces::CylindricalSurface,
+    radius: f64,
+    reversed: bool,
+) -> Result<FaceId, OperationsError> {
+    let tol = Tolerance::new();
+    let Ok(axis) = wall.axis().normalize() else {
+        return Err(reconstruction("resized wall has a degenerate axis"));
+    };
+    let mut walls = Vec::new();
+    for candidate in remus_topology::explorer::solid_faces(topo, solid)? {
+        let data = topo.face(candidate)?;
+        let FaceSurface::Cylinder(cylinder) = data.surface() else {
+            continue;
+        };
+        let offset = cylinder.origin() - wall.origin();
+        if data.is_reversed() == reversed
+            && tol.approx_eq(cylinder.radius(), radius)
+            && cylinder.axis().cross(axis).length() <= tol.angular
+            && (offset - axis * offset.dot(axis)).length() <= tol.linear
+        {
+            walls.push(candidate);
+        }
+    }
+    match walls.as_slice() {
+        [wall] => Ok(*wall),
+        _ => Err(reconstruction(format!(
+            "resized solid has {} walls at radius {radius}; exactly one is required",
+            walls.len()
+        ))),
+    }
+}
+
+/// The planar face on `cap` sharing an edge with `wall`.
+fn rim_cap_face(
+    topo: &Topology,
+    solid: SolidId,
+    wall: FaceId,
+    (normal, offset): (Vec3, f64),
+) -> Result<FaceId, OperationsError> {
+    let tol = Tolerance::new();
+    let adjacency = solid_adjacency(topo, solid)?;
+    let mut caps = Vec::new();
+    for edge in face_edges(topo, wall)? {
+        for candidate in distinct_faces(adjacency.faces_for_edge(edge)) {
+            let FaceSurface::Plane { normal: n, d } = *topo.face(candidate)?.surface() else {
+                continue;
+            };
+            let length = n.length();
+            if candidate != wall
+                && length > f64::EPSILON
+                && (n * (1.0 / length)).dot(normal) >= 1.0 - tol.angular
+                && (d / length - offset).abs() <= tol.linear
+                && !caps.contains(&candidate)
+            {
+                caps.push(candidate);
+            }
+        }
+    }
+    match caps.as_slice() {
+        [cap] => Ok(*cap),
+        _ => Err(reconstruction(format!(
+            "resized wall meets {} faces on its rim blend's cap plane; exactly one is required",
+            caps.len()
+        ))),
+    }
 }
 
 /// Exact construction data for a caller-proven explicit blend-face union.
@@ -956,7 +1230,7 @@ pub(crate) fn remove_recognized_blend_faces(
         .into_iter()
         .collect();
     let mut explicit = faces.to_vec();
-    explicit.sort_unstable_by_key(|face| face.index());
+    explicit.compact_sort_unstable_by_key(|face| face.index());
     explicit.dedup();
     if explicit.iter().any(|face| !solid_faces.contains(face)) {
         return Err(invalid(
@@ -997,7 +1271,7 @@ pub(crate) fn remove_recognized_blend_faces(
     let mut boundary_history = sharp.boundary_history.ok_or_else(|| {
         reconstruction("recognized blend union has no construction boundary history")
     })?;
-    boundary_history.sort_unstable();
+    boundary_history.compact_sort_unstable();
     boundary_history.dedup();
     Ok(RecognizedBlendRemoval {
         solid: sharp.solid,
@@ -1451,7 +1725,7 @@ pub(crate) fn construction_boundary_pairs(
     let mut groups = BTreeMap::<Vec<usize>, Vec<usize>>::new();
     for (edge, faces) in &new_edges {
         let mut key: Vec<_> = faces.iter().map(|face| face.index()).collect();
-        key.sort_unstable();
+        key.compact_sort_unstable();
         key.dedup();
         groups.entry(key).or_default().push(*edge);
     }
@@ -1465,7 +1739,7 @@ pub(crate) fn construction_boundary_pairs(
         else {
             return Ok(Vec::new());
         };
-        key.sort_unstable();
+        key.compact_sort_unstable();
         key.dedup();
         let Some(candidates) = groups.get(&key) else {
             return Ok(Vec::new());
@@ -1494,7 +1768,7 @@ pub(crate) fn construction_boundary_pairs(
     }
     let mut vertex_groups = BTreeMap::<Vec<usize>, Vec<usize>>::new();
     for (vertex, mut edges) in target_vertices {
-        edges.sort_unstable();
+        edges.compact_sort_unstable();
         vertex_groups.entry(edges).or_default().push(vertex);
     }
     let mut source_vertices = BTreeMap::<usize, Vec<usize>>::new();
@@ -1513,7 +1787,7 @@ pub(crate) fn construction_boundary_pairs(
     let mut vertex_map = HashMap::new();
     let mut used_vertices = HashSet::new();
     for (vertex, mut edges) in source_vertices {
-        edges.sort_unstable();
+        edges.compact_sort_unstable();
         let Some(candidates) = vertex_groups.get(&edges) else {
             return Ok(Vec::new());
         };
@@ -1549,8 +1823,8 @@ pub(crate) fn construction_boundary_pairs(
             .iter()
             .map(|&wire| mapped_wire_cycle(topo, wire, None))
             .collect::<Result<Vec<_>, _>>()?;
-        before_holes.sort_unstable();
-        after_holes.sort_unstable();
+        before_holes.compact_sort_unstable();
+        after_holes.compact_sort_unstable();
         if before_holes != after_holes {
             return Ok(Vec::new());
         }
@@ -1614,11 +1888,11 @@ fn adjacent_blend_seed(
     let selected: HashSet<FaceId> = selected_faces.iter().copied().collect();
     let adjacency = solid_adjacency(topo, solid)?;
     let mut ordered = selected_faces.to_vec();
-    ordered.sort_unstable_by_key(|face| face.index());
+    ordered.compact_sort_unstable_by_key(|face| face.index());
     for selected_face in ordered {
         for edge in face_edges(topo, selected_face)? {
             let mut adjacent = distinct_faces(adjacency.faces_for_edge(edge));
-            adjacent.sort_unstable_by_key(|face| face.index());
+            adjacent.compact_sort_unstable_by_key(|face| face.index());
             for candidate in adjacent {
                 if selected.contains(&candidate)
                     || blend_surface(topo.face(candidate)?.surface()).is_none()
@@ -1644,11 +1918,11 @@ fn adjacent_analytic_blend_seed(
     let selected: HashSet<FaceId> = selected_faces.iter().copied().collect();
     let adjacency = solid_adjacency(topo, solid)?;
     let mut ordered = selected_faces.to_vec();
-    ordered.sort_unstable_by_key(|face| face.index());
+    ordered.compact_sort_unstable_by_key(|face| face.index());
     for selected_face in ordered {
         for edge in face_edges(topo, selected_face)? {
             let mut adjacent = distinct_faces(adjacency.faces_for_edge(edge));
-            adjacent.sort_unstable_by_key(|face| face.index());
+            adjacent.compact_sort_unstable_by_key(|face| face.index());
             for candidate in adjacent {
                 if selected.contains(&candidate)
                     || blend_surface(topo.face(candidate)?.surface()).is_none()
@@ -1783,7 +2057,7 @@ fn translation_invariant_blend_region(
     let mut translated_nurbs_supports = HashSet::new();
     // Face order, not set order, so a refusal always names the same face.
     let mut ordered_region: Vec<FaceId> = region.iter().copied().collect();
-    ordered_region.sort_unstable_by_key(|face| face.index());
+    ordered_region.compact_sort_unstable_by_key(|face| face.index());
     for blend_face in ordered_region {
         for edge in face_edges(topo, blend_face)? {
             for adjacent in distinct_faces(adjacency.faces_for_edge(edge)) {
@@ -1898,7 +2172,7 @@ fn translated_faces_volume_change(
     let reference = remus_check::properties::integration_reference(before, solid)?;
     let order = remus_check::properties::PropertiesOptions::default().gauss_order;
     let mut ordered: Vec<FaceId> = faces.iter().copied().collect();
-    ordered.sort_unstable_by_key(|face| face.index());
+    ordered.compact_sort_unstable_by_key(|face| face.index());
     let mut change = 0.0;
     let mut area = 0.0;
     for face in ordered {
@@ -2526,7 +2800,7 @@ fn describe_band_face_lineage(
             }
         }
         let mut supports: Vec<_> = supports.into_iter().collect();
-        supports.sort_unstable_by_key(|face| face.index());
+        supports.compact_sort_unstable_by_key(|face| face.index());
         if supports.is_empty() {
             exact = false;
         }
@@ -2570,7 +2844,7 @@ fn remap_construction_lineage(
 
 fn canonical_faces(faces: &[FaceId]) -> Vec<usize> {
     let mut indices: Vec<_> = faces.iter().map(|face| face.index()).collect();
-    indices.sort_unstable();
+    indices.compact_sort_unstable();
     indices.dedup();
     indices
 }
@@ -2635,7 +2909,7 @@ fn conservative_move_evolution(
     let mut proven_sources = HashSet::new();
     let mut proven_results = HashSet::new();
     for (&result, candidates) in &mut candidates_by_result {
-        candidates.sort_unstable();
+        candidates.compact_sort_unstable();
         candidates.dedup();
         if let [source] = candidates.as_slice() {
             evolution.add_modified(*source, result);
@@ -2648,7 +2922,7 @@ fn conservative_move_evolution(
         .map(|face| face.index())
         .filter(|source| !proven_sources.contains(source))
         .collect();
-    uncertain_sources.sort_unstable();
+    uncertain_sources.compact_sort_unstable();
     for result in result_faces {
         if !proven_results.contains(&result.index()) {
             evolution.add_unresolved(result.index(), uncertain_sources.clone());
@@ -2733,7 +3007,7 @@ fn resolve_support_pair_edges(
     let mut edges = Vec::new();
     for pair in &plan.support_pairs {
         let mut shared = shared_edges(topo, solid, pair.first, pair.second)?;
-        shared.sort_unstable_by_key(|edge| edge.index());
+        shared.compact_sort_unstable_by_key(|edge| edge.index());
         shared.dedup();
         if shared.len() != pair.edge_count {
             return Err(reconstruction(format!(
@@ -2746,7 +3020,7 @@ fn resolve_support_pair_edges(
         }
         edges.extend(shared);
     }
-    edges.sort_unstable_by_key(|edge| edge.index());
+    edges.compact_sort_unstable_by_key(|edge| edge.index());
     edges.dedup();
     Ok(edges)
 }
@@ -2983,7 +3257,7 @@ fn prove_spring_chain(
         ));
     }
 
-    endpoints.sort_unstable_by_key(|vertex| vertex.index());
+    endpoints.compact_sort_unstable_by_key(|vertex| vertex.index());
     // Walk the topology from one terminal to the other. The resulting vertex
     // order is later proved strictly monotone on the common line, excluding
     // overlapping/backtracking chains such as 0→2→1→3.
@@ -3075,7 +3349,7 @@ fn prove_spring_chain(
         .into_iter()
         .filter_map(|(vertex, edges)| (edges.len() == 2).then_some(vertex))
         .collect();
-    interior_vertices.sort_unstable_by_key(|vertex| vertex.index());
+    interior_vertices.compact_sort_unstable_by_key(|vertex| vertex.index());
     Ok(Some(SpringChain {
         edges: ordered_edges,
         endpoints: [endpoints[0], endpoints[1]],
@@ -3360,7 +3634,7 @@ fn heal_cylinder_plane_strip(
             .copied()
             .filter(|face| *face != band_face)
             .collect();
-        neighbors.sort_unstable_by_key(|face| face.index());
+        neighbors.compact_sort_unstable_by_key(|face| face.index());
         neighbors.dedup();
         if neighbors.len() != 1 {
             return Ok(None);
@@ -3371,7 +3645,7 @@ fn heal_cylinder_plane_strip(
         cross_neighbor.insert(cross, neighbors[0]);
     }
     let mut endfaces: Vec<FaceId> = cross_neighbor.values().copied().collect();
-    endfaces.sort_unstable_by_key(|face| face.index());
+    endfaces.compact_sort_unstable_by_key(|face| face.index());
     endfaces.dedup();
     // A compound R8 end groups one cylindrical cross-neighbor with the planar
     // crosses sharing its band vertices; every other end must be a single
@@ -3529,7 +3803,7 @@ fn heal_cylinder_plane_strip(
                     }
                 }
             }
-            lines.sort_unstable_by_key(|edge| edge.index());
+            lines.compact_sort_unstable_by_key(|edge| edge.index());
             lines.dedup();
             lines
         };
@@ -3576,7 +3850,7 @@ fn heal_cylinder_plane_strip(
                     .copied()
                     .filter(|face| *face != band_face)
                     .collect();
-                adjacent.sort_unstable_by_key(|face| face.index());
+                adjacent.compact_sort_unstable_by_key(|face| face.index());
                 adjacent.dedup();
                 adjacent == vec![obl, r8] || adjacent == vec![r8, obl]
             })
@@ -3757,10 +4031,10 @@ fn heal_cylinder_plane_strip(
                 .copied()
                 .filter(|face| *face != band_face)
                 .collect();
-            adjacent.sort_unstable_by_key(|face| face.index());
+            adjacent.compact_sort_unstable_by_key(|face| face.index());
             adjacent.dedup();
             let mut expected = [obl, sy];
-            expected.sort_unstable_by_key(|face| face.index());
+            expected.compact_sort_unstable_by_key(|face| face.index());
             if adjacent != expected {
                 return Err(reconstruction(format!(
                     "kept line at D joins faces {:?}, not the oblique/support pair",
@@ -3818,6 +4092,8 @@ fn heal_cylinder_plane_strip(
             (entry.west.index(), entry.west_point),
             (entry.r8.index(), entry.p2),
         ];
+        // ties: the key is a face index and the payload a point, so equal keys would order distinct points.
+        #[allow(clippy::disallowed_methods)]
         keys.sort_unstable_by_key(|(key, _)| *key);
         for (key, point) in keys {
             end_keys.push(key);
@@ -4118,7 +4394,7 @@ fn heal_cylinder_plane_strip(
     let mut rebuilt_wires: HashSet<WireId> = HashSet::new();
     let mut edge_replacements: HashMap<EdgeId, EdgeId> = HashMap::new();
     let mut ordered_adjacent: Vec<FaceId> = wound_adjacent.iter().copied().collect();
-    ordered_adjacent.sort_unstable_by_key(|face| face.index());
+    ordered_adjacent.compact_sort_unstable_by_key(|face| face.index());
     for &face in &ordered_adjacent {
         let face_data = topo.face(face)?;
         let wires: Vec<WireId> = std::iter::once(face_data.outer_wire())
@@ -4597,7 +4873,7 @@ fn heal_planar_band(
             edges.push(edge);
         }
     }
-    edges.sort_unstable_by_key(|edge| edge.index());
+    edges.compact_sort_unstable_by_key(|edge| edge.index());
     edges.dedup();
     if edges.len() != expected_edges {
         return Err(reconstruction(format!(
@@ -4958,7 +5234,7 @@ fn heal_plane_cylinder_band(
             )
         })
         .collect();
-    seam_candidates.sort_unstable_by_key(|edge| edge.index());
+    seam_candidates.compact_sort_unstable_by_key(|edge| edge.index());
     seam_candidates.dedup();
     let [old_seam] = seam_candidates.as_slice() else {
         return Err(reconstruction(format!(
@@ -5272,7 +5548,7 @@ fn rebuild_closed_periodic_support(
             candidates.push((oriented.edge(), contact));
         }
     }
-    candidates.sort_unstable();
+    candidates.compact_sort_unstable();
     candidates.dedup();
     let source = match candidates.as_slice() {
         // Zero or several ambiguous seam sources mean no single seam to

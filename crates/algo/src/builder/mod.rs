@@ -1394,7 +1394,7 @@ pub fn build_fuse_n(
             }
         }
         for list in &mut rivals {
-            list.sort_unstable();
+            list.compact_sort_unstable();
             list.dedup();
         }
         rivals

@@ -1,4 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::disallowed_methods
+)]
 //! Independent review regressions for the P74 projection public contract.
 use remus_math::{
     curves::{Circle3D, Ellipse3D, Parabola3D},

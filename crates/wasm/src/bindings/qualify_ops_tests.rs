@@ -108,7 +108,7 @@ fn kernel_volume(kernel: &RemusKernel, solid: u32) -> f64 {
     remus_operations::measure::solid_volume(kernel.topo(), solid, 0.001).expect("volume")
 }
 
-/// The wall of `solid` whose stored plane normal is closest to `target`.
+/// The wall of `solid` whose outward normal is closest to `target`.
 fn wall_by_normal(k: &mut RemusKernel, solid: u32, target: [f64; 3]) -> u32 {
     let faces = run_all_ok(
         k,

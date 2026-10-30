@@ -87,6 +87,8 @@ impl PoolIndex {
                 entries.push((cell_of(p, cell), u32::try_from(gid).ok()?));
             }
         }
+        // hot: ~69,000 n*log2(n) work, n up to 2,312 in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         entries.sort_unstable();
         Some(Self {
             cell,
@@ -150,6 +152,8 @@ impl PoolIndex {
             }
             cells.push(cell_of(p, self.cell));
         }
+        // hot: ~48,000 n*log2(n) work in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         cells.sort_unstable();
         cells.dedup();
         let scan = scan_is_cheaper(pool_len, cells.len().saturating_mul(WALK_IR_PER_CELL));
@@ -171,6 +175,8 @@ impl PoolIndex {
                 }
             }
         }
+        // hot: ~304,000 n*log2(n) work, n up to 189 in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         runs.sort_unstable();
         let mut out: Vec<u32> = self.non_finite.clone();
         let mut rest = self.entries.as_slice();
@@ -189,6 +195,8 @@ impl PoolIndex {
             out.extend(rest[..within].iter().map(|&(_, gid)| gid));
             rest = &rest[within..];
         }
+        // hot: ~19,000 n*log2(n) work in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         out.sort_unstable();
         out.dedup();
         Some(out)

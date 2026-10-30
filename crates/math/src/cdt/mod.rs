@@ -383,6 +383,8 @@ impl Cdt {
                 (hilbert_xy_to_d(n, gx.min(n - 1), gy.min(n - 1)), i)
             })
             .collect();
+        // ties: points sharing a Hilbert cell tie, and their insertion order shapes the triangulation.
+        #[allow(clippy::disallowed_methods)]
         order.sort_unstable_by_key(|&(h, _)| h);
 
         // Insert in Hilbert order, storing results in original order.

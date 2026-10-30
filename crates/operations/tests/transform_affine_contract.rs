@@ -24,7 +24,12 @@
 //! fixture. The fitted-sphere path is exercised only through the
 //! latitude-band fixture; every other assertion demands exact output.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::disallowed_methods
+)]
 
 use std::collections::BTreeMap;
 use std::f64::consts::TAU;

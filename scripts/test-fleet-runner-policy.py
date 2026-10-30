@@ -13,7 +13,7 @@ import test_jane_helper_workflows
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ('.github/actions/fleet-guard/action.yml', '.github/workflows/trusted-vps.yml',
-           '.github/workflows/fleet-ci-v7.yml')
+           workflow_path('ci').relative_to(ROOT).as_posix())
 V6_LANDED = '05fca2fc1029be782afe41ee6ebbeae812e5e40c'
 
 

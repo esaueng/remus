@@ -223,7 +223,7 @@ fn unify_same_domain_impl(
     // processes. Each group's first element is its minimum face index (members
     // are pushed in 0..n order), giving a stable key to sort on.
     let mut merge_groups: Vec<Vec<usize>> = groups.into_values().filter(|g| g.len() > 1).collect();
-    merge_groups.sort_unstable_by_key(|g| g[0]);
+    merge_groups.compact_sort_unstable_by_key(|g| g[0]);
 
     if merge_groups.is_empty() {
         return Ok((
@@ -431,13 +431,13 @@ fn record_consumed_boundaries(
             candidates.extend([edge.start(), edge.end()]);
         }
     }
-    history.removed_edges.sort_unstable();
+    history.removed_edges.compact_sort_unstable();
     history.removed_edges.dedup();
     history.removed_vertices = candidates
         .into_iter()
         .filter(|vertex| !live_vertices.contains(vertex))
         .collect();
-    history.removed_vertices.sort_unstable();
+    history.removed_vertices.compact_sort_unstable();
     Ok(())
 }
 

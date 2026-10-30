@@ -36,6 +36,7 @@ use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::data::{EdgeClass, OffsetData};
 use crate::error::OffsetError;
+use remus_math::compact_sort::CompactSort;
 
 /// Below this sine the two faces meeting at an edge have (anti-)parallel
 /// normals, so the rolling ball sweeps either nothing or a half turn about a
@@ -188,7 +189,7 @@ fn collect_joint_edges(
 ) -> Result<Vec<JointEdge>, OffsetError> {
     let edge_faces = remus_topology::explorer::edge_to_face_map(topo, solid)?;
     let mut edge_indices: Vec<usize> = edge_faces.keys().copied().collect();
-    edge_indices.sort_unstable();
+    edge_indices.compact_sort_unstable();
 
     let mut joint_edges = Vec::with_capacity(edge_indices.len());
     for edge_index in edge_indices {

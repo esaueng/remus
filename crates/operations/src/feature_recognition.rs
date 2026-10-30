@@ -470,7 +470,7 @@ fn detect_holes(
             axial_max,
         });
     }
-    cylinders.sort_unstable_by_key(|info| info.face.index());
+    cylinders.compact_sort_unstable_by_key(|info| info.face.index());
 
     let mut groups: Vec<Vec<CylinderFaceInfo>> = Vec::new();
     for cylinder in cylinders {
@@ -502,7 +502,7 @@ fn detect_holes(
     }
 
     for mut group in groups {
-        group.sort_unstable_by_key(|info| info.face.index());
+        group.compact_sort_unstable_by_key(|info| info.face.index());
         let axis = group[0].axis;
         let mut positive_cap = false;
         let mut negative_cap = false;

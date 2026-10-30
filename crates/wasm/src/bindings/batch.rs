@@ -165,6 +165,9 @@ type BatchItemResult = Result<serde_json::Value, StructuredWasmError>;
 enum BatchOpKind {
     ReadOnly,
     Mutating,
+    /// Changes per-thread session configuration, not topology. A refused
+    /// item restores the configuration it found ([`RemusKernel::run_session_setting`]).
+    Session,
 }
 
 /// Classify operations before doing any work that scales with topology size.
@@ -270,8 +273,10 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "gcsSolve"
         | "gcsSolveDetailed"
         | "gcsDof" => Some(BatchOpKind::ReadOnly),
-        // Session settings: they never touch the topology.
-        "setStoreLocalCuts" | "storeLocalCutsEnabled" => Some(BatchOpKind::ReadOnly),
+        // Session settings: they never touch the topology, but the setter
+        // changes module state that a refused item must not leave behind.
+        "setStoreLocalCuts" => Some(BatchOpKind::Session),
+        "storeLocalCutsEnabled" => Some(BatchOpKind::ReadOnly),
         "makeBox"
         | "makeCompound"
         | "fuseJournaled"
@@ -328,6 +333,11 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "resizeCylindricalFace"
         | "extrude"
         | "extrudeDetailed"
+        | "makeGearDetailed"
+        | "makeBevelGearDetailed"
+        | "makeWormDetailed"
+        | "makeWormWheelDetailed"
+        | "cutGearTeethDetailed"
         | "imprintPlanarPolygon"
         | "revolve"
         | "revolveDetailed"
@@ -549,6 +559,22 @@ impl RemusKernel {
         result
     }
 
+    /// Runs a `Session` operation: read-only on the topology, and a refusal
+    /// restores the store-local boolean switch to the value it had on entry.
+    /// The switch is per thread, outside the topology, so no topology
+    /// rollback covers it.
+    pub(super) fn run_session_setting(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> BatchItemResult,
+    ) -> BatchItemResult {
+        let store_local_cuts = remus_operations::boolean::thread_store_local_cuts_enabled();
+        let result = self.run_read_only(operation);
+        if result.is_err() {
+            remus_operations::boolean::set_thread_store_local_cuts(store_local_cuts);
+        }
+        result
+    }
+
     /// Runs one batch operation, undoing its topology changes if it fails.
     ///
     /// Mutating operations run in a mutation-local rollback scope that
@@ -566,6 +592,8 @@ impl RemusKernel {
     ) -> BatchItemResult {
         if kind == BatchOpKind::ReadOnly {
             self.run_read_only(|kernel| kernel.dispatch_op(op, args))
+        } else if kind == BatchOpKind::Session {
+            self.run_session_setting(|kernel| kernel.dispatch_op(op, args))
         } else {
             let refusal = if matches!(op, "fuse" | "cut" | "intersect") {
                 Refusal::Exact
@@ -1773,6 +1801,25 @@ impl RemusKernel {
                 serde_json::to_value(self.extrude_detailed_impl(f, dx, dy, dz, dist))
                     .map_err(StructuredWasmError::from)
             }
+            "makeGearDetailed" => serde_json::to_value(self.make_gear_detailed_impl(args))
+                .map_err(StructuredWasmError::from),
+            "makeBevelGearDetailed" => {
+                serde_json::to_value(self.make_bevel_gear_detailed_impl(args))
+                    .map_err(StructuredWasmError::from)
+            }
+            "makeWormDetailed" => serde_json::to_value(self.make_worm_detailed_impl(args))
+                .map_err(StructuredWasmError::from),
+            "makeWormWheelDetailed" => {
+                serde_json::to_value(self.make_worm_wheel_detailed_impl(args))
+                    .map_err(StructuredWasmError::from)
+            }
+            "cutGearTeethDetailed" => {
+                let solid = get_u32(args, "solid")?;
+                let face = get_u32(args, "face")?;
+                let spec = args.get("spec").cloned().unwrap_or(serde_json::Value::Null);
+                serde_json::to_value(self.cut_gear_teeth_detailed_impl(solid, face, &spec))
+                    .map_err(StructuredWasmError::from)
+            }
             "revolveDetailed" => {
                 let f = get_u32(args, "face")?;
                 let angle_degrees = get_f64(args, "angle")?;
@@ -2627,10 +2674,12 @@ impl RemusKernel {
                 }))
             }
             "getFaceNormal" => {
-                // The face's stored surface normal at its outer-wire start (a
-                // plane's constant normal; curved surfaces report the normal
-                // at parameter-space origin). Enough to pick a wall by
-                // direction from a batch script.
+                // A planar face reports its outward normal, oriented by the
+                // `reversed` flag exactly as the direct `getFaceNormal`
+                // (boolean results carry reversed walls whose stored plane
+                // normal points into the material). A curved face still
+                // reports its stored surface normal at parameter-space origin,
+                // where the direct method refuses (RFC 0010 drift D1b).
                 let f = get_u32(args, "face")?;
                 let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
                 let face = self
@@ -2638,10 +2687,9 @@ impl RemusKernel {
                     .face(face_id)
                     .map_err(crate::error::WasmError::from)
                     .map_err(StructuredWasmError::from)?;
-                let normal = match face.surface() {
-                    remus_topology::face::FaceSurface::Plane { normal, .. } => *normal,
-                    other => other.normal(0.0, 0.0),
-                };
+                let normal = face
+                    .effective_plane_normal()
+                    .unwrap_or_else(|| face.surface().normal(0.0, 0.0));
                 Ok(serde_json::json!([normal.x(), normal.y(), normal.z()]))
             }
             "getFaceDraftAngle" => {
@@ -4203,6 +4251,16 @@ mod batch_contract_tests {
             Some(BatchOpKind::ReadOnly)
         );
         assert_eq!(batch_op_kind("makeBox"), Some(BatchOpKind::Mutating));
+        // The store-local setter changes per-thread state no topology
+        // rollback covers; its getter is a plain read.
+        assert_eq!(
+            batch_op_kind("setStoreLocalCuts"),
+            Some(BatchOpKind::Session)
+        );
+        assert_eq!(
+            batch_op_kind("storeLocalCutsEnabled"),
+            Some(BatchOpKind::ReadOnly)
+        );
         assert_eq!(batch_op_kind("moveFaces"), Some(BatchOpKind::Mutating));
         assert_eq!(batch_op_kind("notAnOperation"), None);
     }

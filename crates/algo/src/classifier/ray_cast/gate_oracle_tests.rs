@@ -88,9 +88,76 @@ fn ray_face_crossing_reference(
     (1, boundary_graze)
 }
 
+/// The circular segments of `arcs` (one per segment of `verts`, or none)
+/// holding `hit`, and whether `hit` lies within `near` of one of those arcs,
+/// brute force: a segment's arc lies on the far side of its chord from the
+/// circle centre, so a hit there and inside the circle is in the segment.
+fn arc_segments_reference(
+    hit: Point3,
+    verts: &[Point3],
+    arcs: &[Option<ChordArc>],
+    normal: Vec3,
+    near: f64,
+) -> (usize, bool) {
+    let mut held = 0;
+    let mut graze = false;
+    for (i, arc) in arcs.iter().enumerate() {
+        let Some(arc) = arc else { continue };
+        let a = verts[i];
+        let b = verts[(i + 1) % verts.len()];
+        let centre = (b - a).cross(arc.center - a).dot(normal);
+        let side = (b - a).cross(hit - a).dot(normal);
+        if centre == 0.0 || side * centre > 0.0 {
+            continue;
+        }
+        let distance = (hit - arc.center).length();
+        held += usize::from(distance < arc.radius);
+        graze |= (distance - arc.radius).abs() <= near;
+    }
+    (held, graze)
+}
+
+/// [`ray_face_crossing_reference`] with each loop's arc chords: a hit in an
+/// odd number of a loop's circular segments flips that loop's polygon test.
+fn ray_face_crossing_arcs_reference(
+    origin: Point3,
+    ray_dir: Vec3,
+    outer: &Loop,
+    holes: &[Loop],
+    normal: Vec3,
+    d: f64,
+    tol: Tolerance,
+) -> (i32, bool) {
+    let hole_pts: Vec<Vec<Point3>> = holes.iter().map(|h| h.pts.clone()).collect();
+    let polygon =
+        ray_face_crossing_reference(origin, ray_dir, &outer.pts, &hole_pts, normal, d, tol);
+    let near = 10.0 * tol.linear;
+    let denom = normal.dot(ray_dir);
+    let numer = d - dot_normal_point(normal, origin);
+    let t = numer / denom;
+    if denom.abs() < tol.angular || t <= tol.linear {
+        return polygon;
+    }
+    let hit = Point3::new(
+        origin.x() + ray_dir.x() * t,
+        origin.y() + ray_dir.y() * t,
+        origin.z() + ray_dir.z() * t,
+    );
+    let mut graze = polygon.1;
+    let mut inside = |l: &Loop| {
+        let (held, arc_graze) = arc_segments_reference(hit, &l.pts, &l.arcs, normal, near);
+        graze |= arc_graze;
+        point_in_face_3d(hit, &l.pts, &normal) != (held % 2 == 1)
+    };
+    let in_outer = inside(outer);
+    let in_hole = holes.iter().map(&mut inside).fold(false, |any, h| any | h);
+    (i32::from(in_outer && !in_hole), graze)
+}
+
 /// The pre-gate crossing test of one collected face: planar faces through
-/// the verbatim copy above (reading the polygons the face was built from),
-/// every other face through the unchanged analytic tests.
+/// the verbatim copy above (reading the polygons the face was built from)
+/// with their arc chords, every other face through the unchanged analytic
+/// tests.
 fn crossing_reference(
     origin: Point3,
     ray_dir: Vec3,
@@ -100,18 +167,15 @@ fn crossing_reference(
     match geom {
         FaceGeom::Planar {
             normal, d, face, ..
-        } => {
-            let holes: Vec<Vec<Point3>> = face.loops.holes.iter().map(|h| h.pts.clone()).collect();
-            ray_face_crossing_reference(
-                origin,
-                ray_dir,
-                &face.loops.outer.pts,
-                &holes,
-                *normal,
-                *d,
-                tol,
-            )
-        }
+        } => ray_face_crossing_arcs_reference(
+            origin,
+            ray_dir,
+            &face.loops.outer,
+            &face.loops.holes,
+            *normal,
+            *d,
+            tol,
+        ),
         other => ray_geom_crossings(origin, ray_dir, other, tol),
     }
 }

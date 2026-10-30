@@ -12,7 +12,7 @@ from unittest import mock
 
 from fleet_workflows import (
     FAMILIES, ROOT, PREFIX, parse_reference, validate_calls, validate_reference,
-    workflow_calls, workflow_manifest, workflow_path,
+    RETIRED, workflow_calls, workflow_manifest, workflow_path, workflow_text,
 )
 from test_jane_helper_workflows import STAGE
 from test_fleet_actions_stage import FleetActionsStageTests
@@ -42,6 +42,8 @@ def historical_workflow(family, text):
 
 
 def retained_workflow(filename):
+    if filename in RETIRED:
+        return workflow_text(filename)
     path = ROOT / '.github/workflows' / filename
     if path.exists():
         return path.read_text()
@@ -226,7 +228,7 @@ class FleetWorkflowTests(unittest.TestCase):
                 self.assertEqual(source.count('"labels":"ci-server-jane"'), 1)
                 expected = source.replace(old_guard, new_guard).replace(
                     '"labels":"ci-server-jane"', '"labels":"ci-server-jane-5gb"')
-                actual = (ROOT / ".github/workflows" / new).read_text()
+                actual = workflow_text(new)
                 self.assertEqual(actual, expected,
                                  "Only the reviewed guard pin and Jane selector may change")
                 self.assertEqual(actual.count(new_guard), guard_count)

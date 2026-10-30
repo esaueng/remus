@@ -4,7 +4,12 @@
 //! stable typed refusal. A crash, a partial success, an untyped error, a mesh
 //! leak, or a plausible-looking result with the wrong volume fails the suite.
 
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::disallowed_methods
+)]
 
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::TAU;

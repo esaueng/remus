@@ -10,6 +10,7 @@ use remus_topology::vertex::VertexId;
 
 use crate::ds::{GfaArena, Interference};
 use crate::error::AlgoError;
+use remus_math::compact_sort::CompactSort;
 
 /// Shared across every source pair in an N-way pave-filling pass.
 pub(super) struct VertexPairBudget {
@@ -95,7 +96,7 @@ fn candidate_rows(
     if !radius.is_finite() {
         return Ok(None);
     }
-    sorted.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    sorted.compact_sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
     context.check_cancelled()?;
     let mut rows = Vec::with_capacity(verts_a.len());
     let mut count = 0usize;
@@ -180,6 +181,8 @@ pub(super) fn perform_with_context(
                     .iter()
                     .map(|&(_, rank)| rank),
             );
+            // hot: 16,384+ calls in one criterion --test + native perf pass.
+            #[allow(clippy::disallowed_methods)]
             row_ranks.sort_unstable();
         } else {
             row_ranks.extend(0..verts_b.len());

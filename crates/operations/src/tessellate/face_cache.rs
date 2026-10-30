@@ -115,6 +115,7 @@ use remus_topology::face::{FaceId, FaceSurface};
 
 use super::PointMergeMap;
 use super::{MERGE_GRID, TriangleMesh, point_merge_key};
+use remus_math::compact_sort::CompactSort;
 
 /// Default bound on retained face meshes.
 pub const DEFAULT_FACE_MESH_CACHE_ENTRIES: usize = 4096;
@@ -753,7 +754,7 @@ pub(super) fn face_key(
     b.surface(face.surface());
 
     let mut by_gid: Vec<(u32, u32)> = gid_ordinals.into_iter().collect();
-    by_gid.sort_unstable();
+    by_gid.compact_sort_unstable();
     Ok((
         b.finish(translation, signature),
         FaceBoundary { gids, by_gid },
@@ -1375,7 +1376,7 @@ impl Session {
                 return;
             };
             let mut faces: Vec<(FaceId, SessionFace)> = self.faces.into_iter().collect();
-            faces.sort_unstable_by_key(|(face, _)| face.index());
+            faces.compact_sort_unstable_by_key(|(face, _)| face.index());
             for (_, state) in faces {
                 if let Some(mut entry) = state.pending {
                     entry.boundary_normals = state.normals;

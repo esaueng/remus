@@ -306,8 +306,9 @@ fn prepared_matches_across_translations_and_scales() {
                 let qz = p.z() - cz;
                 let d = (r - qx.hypot(qy)).min(qz).min(h - qz);
                 // The tolerance is absolute while the geometry scales: keep
-                // the truth band proportional to the scale.
-                let band = (1e-4 * scale).max(1e-9);
+                // the truth band proportional to the scale, and never inside
+                // the classifier's own absolute boundary band.
+                let band = (1e-4 * scale).max(2.0 * ClassifyOptions::default().tolerance);
                 if d.abs() < band { None } else { Some(d > 0.0) }
             },
             &format!("scaled-cylinder-{scale:e}"),

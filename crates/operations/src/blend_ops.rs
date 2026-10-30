@@ -382,7 +382,7 @@ pub(crate) fn validate_blend_volume(
         let (t0, t1) =
             crate::authoritative_edge_domain(edge_data, "blend-volume angle-adjusted reach")?;
         let mut faces = adjacency.faces_for_edge(edge).to_vec();
-        faces.sort_unstable_by_key(|face| face.index());
+        faces.compact_sort_unstable_by_key(|face| face.index());
         faces.dedup();
         let mut edge_reach = reach;
         if let [face_a, face_b] = faces.as_slice() {
@@ -921,7 +921,7 @@ fn cavity_spine_is_straight(
         return Ok(false);
     };
     let mut supports = adjacency.faces_for_edge(edges[0]).to_vec();
-    supports.sort_unstable();
+    supports.compact_sort_unstable();
     if supports.len() != 2 || supports[0] == supports[1] {
         return Ok(false);
     }
@@ -932,7 +932,7 @@ fn cavity_spine_is_straight(
     let mut uses = DetHashMap::default();
     for &edge in edges {
         let mut faces = adjacency.faces_for_edge(edge).to_vec();
-        faces.sort_unstable();
+        faces.compact_sort_unstable();
         if faces != supports {
             return Ok(false);
         }
@@ -1533,18 +1533,9 @@ fn fillet_group(
     // choice. Run it transactionally as well so a failed legacy attempt can
     // never contaminate the repaired concave fallback below.
     let legacy_refusal = match attempt_with_lazy_material_guard(topo, solid, edges, radius, |t| {
-        let mut builder = FilletBuilder::new(t, solid);
-        builder.add_edges(edges, radius);
-        let result = builder.build()?;
-        validate_complete_blend(
-            t,
-            "fillet",
-            solid,
-            &result,
-            edges,
-            BlendSize::Fillet { radius },
-        )?;
-        Ok(result)
+        walking_fillet(t, solid, edges, radius, |builder| {
+            builder.add_edges(edges, radius);
+        })
     }) {
         Ok(result) => return Ok(result),
         Err(error) => error,
@@ -1575,8 +1566,34 @@ fn fillet_group(
     }
 
     attempt_with_lazy_material_guard(topo, solid, edges, radius, |t| {
+        walking_fillet(t, solid, edges, radius, |builder| {
+            builder.add_edges_with_law(edges, remus_blend::radius_law::RadiusLaw::Constant(radius));
+        })
+    })
+}
+
+/// The walking builder, validated, with rail chains only as a last resort.
+///
+/// It first runs exactly as it did before rail chains, so every selection
+/// that built or refused then keeps that outcome. Only a chain it refuses as
+/// a seam crossing is built again as one band along a shared face, and when
+/// that band fails validation the seam-crossing refusal stands: a prefixed
+/// bracket's tab-base chain at a radius past its reach is recognised as a
+/// rail chain, builds a self-intersecting wire, and must still report
+/// `unsupported-seam-crossing`, not the postcondition's `invalid-input`.
+fn walking_fillet(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    radius: f64,
+    configure: impl Fn(&mut FilletBuilder<'_>),
+) -> Result<BlendResult, OperationsError> {
+    let build = |t: &mut Topology, rail_chains: bool| {
         let mut builder = FilletBuilder::new(t, solid);
-        builder.add_edges_with_law(edges, remus_blend::radius_law::RadiusLaw::Constant(radius));
+        configure(&mut builder);
+        if !rail_chains {
+            builder.without_rail_chains();
+        }
         let result = builder.build()?;
         validate_complete_blend(
             t,
@@ -1587,7 +1604,18 @@ fn fillet_group(
             BlendSize::Fillet { radius },
         )?;
         Ok(result)
-    })
+    };
+    let refusal = match transactional(topo, |t| build(t, false)) {
+        Ok(result) => return Ok(result),
+        Err(error) => error,
+    };
+    if !matches!(
+        refusal,
+        OperationsError::Blend(BlendError::UnsupportedSeamCrossing { .. })
+    ) {
+        return Err(refusal);
+    }
+    transactional(topo, |t| build(t, true)).or(Err(refusal))
 }
 
 type FeatureSeedGeometry =

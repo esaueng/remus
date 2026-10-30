@@ -14,6 +14,7 @@ pub mod construction_imprint;
 pub mod draft_analysis;
 pub mod evolution;
 pub mod gcs_sketch;
+pub mod gear;
 pub mod heal;
 #[cfg(feature = "io")]
 pub mod io;
@@ -44,6 +45,8 @@ mod batch_optional_args_tests;
 mod face_digest_tests;
 #[cfg(test)]
 mod face_move_preview_tests;
+#[cfg(test)]
+mod face_normal_contract_tests;
 #[cfg(test)]
 mod fillet_fail_closed_tests;
 #[cfg(test)]

@@ -159,6 +159,8 @@ Quick reference — find the right file for any task:
 | Certified NURBS reduction contracts and interval Bernstein bounds | `nurbs/reuse.rs`, `nurbs/reuse_bounds.rs` |
 | Opt-in curve/surface knot simplification and U/V removal | `nurbs/reduction.rs`, `nurbs/reduction/tests.rs` |
 | Certified adaptive Hermite cubic approximation | `nurbs/cubic_fit.rs`, `nurbs/cubic_fit/tests.rs` |
+| Certified piecewise cubic Hermite fit of a parametric curve with a closed-form fourth-derivative bound (C¹ double-knot B-spline, proven remainder) | `nurbs/hermite_fit.rs`, `nurbs/hermite_fit/tests.rs` |
+| Certified NURBS fits of screw-motion sweeps: helices and swept surfaces sharing one span plan, so neighbouring fits match bit for bit (twisted extrusions, helical gears) | `nurbs/screw.rs`, `nurbs/screw/tests.rs` |
 | Bezier decomposition | `nurbs/decompose.rs` |
 | Bezier clipping intersection | `nurbs/bezier_clip.rs` |
 | Closed-form oracles for the Bezier-clip helpers and recursion work counts (tests) | `nurbs/bezier_clip/mutation_oracle_tests.rs` |
@@ -189,6 +191,7 @@ Quick reference — find the right file for any task:
 | Filtered exact predicates | `filtered.rs` |
 | Float tolerance | `tolerance.rs` |
 | Geometric predicates (orient2d/3d) | `predicates.rs` |
+| Qualified ray–cylinder/cone/sphere intersection (cancellation-free quadratic, relative tangency band) and ray–torus (merged double roots as tangential): transversal/tangential/unclassified hits (RFC 0008 §3.2) | `ray.rs`, `ray/tests.rs` |
 | Ray-triangle intersection | `ray_triangle.rs` |
 | 2D polygon offset | `polygon_offset.rs` |
 | 2D polygon ops (clip, fillet, chamfer) | `polygon2d.rs` |
@@ -204,7 +207,7 @@ Quick reference — find the right file for any task:
 | Gauss-Legendre quadrature | `quadrature.rs` |
 | Operation tolerance and resource policy | `context.rs` |
 | Deterministic hashing (seed-stable maps/sets) | `det_hash.rs` |
-| Stable sorts compiled once for all comparators (`CompactSort`, for cold sorts; keeps WASM code size down) | `compact_sort.rs` |
+| Stable and unstable sorts compiled once for all comparators (`CompactSort`, for cold sorts; keeps WASM code size down) | `compact_sort.rs` |
 | Correctly rounded `fma` that stays fast on `wasm32` (bit-identical to `mul_add`) | `fma.rs` |
 | Structured diagnostics (category, code, `ToDiagnostic`) | `diagnostic.rs` |
 | Qualified intersection results (contact kind, quality) | `intersect.rs` |
@@ -276,7 +279,7 @@ Quick reference — find the right file for any task:
 | Pave block splitting + edge creation | `pave_filler/make_blocks.rs`, `make_split_edges.rs` |
 | FaceInfo population | `pave_filler/fill_face_info.rs` |
 | Builder (face splitting + assembly) | `builder/mod.rs`, `builder/assemble.rs` |
-| Face splitting (UV-space) | `builder/face_splitter/` (mod, containment, conversion, edge_splitting, sampling, special_cases), `builder/classify_2d.rs` |
+| Face splitting (UV-space); exact line/arc planar loop containment (`point_in_planar_loop`) | `builder/face_splitter/` (mod, containment, conversion, edge_splitting, sampling, special_cases), `builder/classify_2d.rs` |
 | Native equator partition and whole-interval circular rim coverage oracles | `builder/face_splitter/special_cases/equator_partition_tests.rs` |
 | Isolated exact-event UV arrangement and cylinder-strip quotient | `builder/face_splitter/arrangement.rs`, `builder/face_splitter/arrangement/` (geometry, regions, periodic) |
 | Production UV arrangement dispatch and guards | `builder/face_splitter/arrangement_prod.rs` |
@@ -336,6 +339,7 @@ Quick reference — find the right file for any task:
 | Copy-on-write boundary rewrites, so a blend never edits faces its input still uses | `body_edit.rs` |
 | Shared builder utilities | `builder_utils.rs` |
 | G1-continuous fillet edge-chain expansion | `g1_chain.rs` |
+| One band along a concave tangent chain whose second face changes (a boss seam over an earlier round): supports switched at bisected stations, the rail trimmed across its seam edge and closed back to the chain end | `rail_chain.rs` |
 | Verbatim per-call G1 chain expansion kept as an oracle for the shared `G1ChainIndex` (tests) | `g1_chain/tests.rs` |
 | Read-only analytic blend queries | `query.rs` |
 | Exact face-face blend bands for disjoint planar support patches | `face_face.rs` |
@@ -405,6 +409,7 @@ Quick reference — find the right file for any task:
 | Knot-span boxes of NURBS faces and the ray prefilter they drive: a forward ray clear of every box gets no hit, so the prepared crossing count skips the face (boxes scanned in groups; faces past 400 spans left to the solver) | `classify/prepared/ray_prefilter.rs` |
 | Persistent whole-topology classification cache (`ClassificationCache`, PERF-Q02) | `classify/cache.rs` |
 | Narrow-bump far-flank crossing through the classifier's NURBS ray path (tests) | `classify/boundary/nurbs_bump_ray_tests.rs` |
+| Exact trim of sphere faces bounded by circle arcs on the sphere, any number of supports, non-convex or reversed (first crossing along a great-circle walk) | `classify/boundary/sphere_arcs.rs` |
 | Boundary skeleton that makes a ray through an edge or vertex abstain from the classification vote | `classify/graze.rs` |
 | CheckId enum, ValidationReport, severity | `validate/checks.rs` |
 | Wire topological checks | `validate/wire.rs` |
@@ -424,12 +429,14 @@ Quick reference — find the right file for any task:
 | Bucketed trim-loop segment lookup for trimmed quadrature (O06) | `properties/face_integrator/loop_index.rs` |
 | Exact boundary reduction (Green's theorem) of cylinder, cone, sphere and torus face areas behind `analytic_face_area`, with the trimmed quadrature as fallback | `properties/face_integrator/boundary_area.rs` |
 | Bit-identity oracle for the NURBS row and grid quadrature (per-axis basis tables) against the verbatim per-abscissa `integrate_parametric` (tests) | `properties/face_integrator/nurbs_rows_oracle_tests.rs` |
+| Bit-identity oracle for `integrate_parametric` with its sliced request out of line and its knot-aligned path reached through `as_nurbs`, against the verbatim previous function (tests) | `properties/face_integrator/parametric_split_oracle_tests.rs` |
 | Independent polynomial Green-moment and authoritative-trim oracles (tests) | `properties/face_integrator/polynomial_boundary_tests.rs` |
 | Properties orchestrator (volume, area, CoM) | `properties/mod.rs` |
 | Opt-in content-keyed memo of fixed-order face integrals (`FaceIntegralCache`, PERF-V02 subset) | `properties/face_cache.rs` |
 | Point-to-surface distance (all analytic types) | `distance/analytic.rs` |
 | Edge-to-edge distance | `distance/edge.rs` |
 | Point-to-solid, solid-to-solid distance | `distance/mod.rs` |
+| Exact planar trim membership for line and circle boundaries (nested holes alternate), shared by face distance and the classifier's plane hits | `distance/plane_trim.rs` |
 | Bounded global maximum-distance witnesses for planar polyhedra and complete spheres | `distance/maximum.rs` |
 | Conservative face bounds for distance pruning | `distance/face_bounds.rs` |
 | Operation-local prepared context for repeated point-to-solid distance (`PreparedDistanceSolid`, `DistanceScratch`, `DistanceOptions`) | `distance/prepared.rs` |
@@ -493,6 +500,19 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Opt-in store-local cut, fuse and intersect: the GFA on the faces the tool touches, spliced onto the untouched ones (stage 4 of the local boolean), and its equivalence oracle tests | `boolean/store_local.rs`, `boolean/store_local_tests.rs` |
 | Mesh boolean (co-refinement) | `mesh_boolean.rs` |
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
+| Twisted extrusion: the straight extrusion's topology with the top cap turned, fitted helix edges and certified swept side faces (lands concentric with the axis stay exact cylinders while they sweep less than a full turn, and are swept like the rest past it); herringbone: two opposite-hand halves glued at their shared mid-plane edges | `extrude/twist.rs`, `extrude/twist/tests.rs` |
+| Tapered extrusion toward an apex: the straight extrusion's topology with the far cap scaled about the apex; lines sweep to planes through it, concentric circles to exact cones, other curves to ruled NURBS (a concentric hole stays a cylinder) | `extrude/taper.rs`, `extrude/taper/tests.rs` |
+| Involute spur, helical, herringbone, internal (ring) and rack gears as one extruded (helical: twisted; herringbone: twisted both ways) outline: dimensions, warnings, typed refusals, certified flank fit | `gear.rs` |
+| Gear outlines in the local frame: involute flanks, closed-form root fillets, tooth replication, rack profile | `gear/profile.rs` |
+| Gear oracles: closed-form dimensions, exact-involute Green area, pitch-circle thickness probes, fit bound, rack trapezoid volume, construction face roles, refusals (tests) | `gear/tests.rs` |
+| Helical gear oracles: ISO 21771 closed forms, Cavalieri volumes, flank points against the exact involute helicoid, hand and twist direction, refusals (tests) | `gear/tests/helical.rs` |
+| Herringbone gear oracles: Cavalieri volumes, each half's flank points on its own involute helicoid, far cap in line with the start cap, unique half-qualified roles, refusals (tests) | `gear/tests/herringbone.rs` |
+| Straight bevel gears: pitch cone from the tooth ratio and shaft angle, certified fit of the spherical involute centrally projected onto the flat heel, tapered toward the apex | `gear/bevel.rs` |
+| Bevel gear oracles: closed-form cone angles and mate pitch angles, cap areas against the exact spherical-involute heel outline, apex-sweep volumes, flank points on the exact spherical-involute cones, pitch-cone classification, roles, refusals (tests) | `gear/bevel/tests.rs` |
+| Cylindrical involute (ZI) worms: the involute helical gear with the starts as teeth and helix angle 90° − lead angle (a many-turn twisted extrusion), axial-module conventions, and the crossed-helical wheel that meshes with it | `gear/worm.rs` |
+| Worm oracles: closed-form dimensions, Cavalieri volumes, flank points on the exact involute helicoid, axial thread thickness and pitch read off the body by classification, hand, the matching wheel's dimensions and clearance, roles, refusals (tests) | `gear/tests/worm.rs` |
+| Gear teeth along the whole length of an existing boss or bore: keep-diameter or given-module fit, exact tooth-band material proof, tube cut then gear-ring fuse on one coaxial seam, roles carried through the fuse | `gear/cylinder.rs` |
+| Teeth-on-cylinder oracles: standalone-gear and closed-form volumes on a boss, a stepped bored shaft and a bored ring, turn-down fit and phase probes, cross-hole and partial-span refusals (tests) | `gear/cylinder/tests.rs` |
 | Helical sweep | `helix.rs` |
 | Chamfer, Fillet | `chamfer.rs`, `fillet/` (mod, rolling_ball, g1_chain, geometry, radius_law, helpers, notch_torus, tests) |
 | Rolling-ball arc stripe between a plane and a coaxial cylinder as an exact torus, or a sphere triangle at the band's own radius (a fillet riding an earlier band's end) | `fillet/arc_torus.rs` |
@@ -505,6 +525,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Bounded interior planar polygon imprint with complete construction history | `imprint/polygon.rs`, `imprint/polygon/interval.rs` |
 | Directional curve projection onto faces, solids, sketch planes (P-Class 7.4: sweep-plane sections, coaxial circles, fitted-arc cell, clipping/seams, sketch-plane maps) | `project_curve.rs` |
 | P-Class 7.4 acceptance oracles (exact cells, approximate disclosure, refusals, solid/2D paths) | `tests/qualify_project_curve.rs` |
+| Small cylindrical resizes: thin-sleeve cut and fuse below the chord sagitta, rim-rounded bores carrying their rounds, closed-form volumes (tests) | `tests/resize_cylinder_small_delta.rs` |
 | Transform, Mirror, Copy | `transform.rs`, `mirror.rs`, `copy.rs` |
 | Pcurves carried into a transformed face's UV chart (exact plane chart map, revolved-carrier `u` rotation, re-derived lift counts) | `transform/pcurves.rs` |
 | Map-based solid copy paths kept verbatim as differential oracles for `CopyPlan` (tests) | `copy/tests/legacy_oracle.rs` |
@@ -523,6 +544,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Independent global maximum-distance oracles (tests) | `distance/maximum_tests.rs` |
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
 | Differential oracle for the interior grid's boundary scans: the `(i + 1) % n` indexed containment and clearance loops kept verbatim (tests) | `tessellate/nonplanar/polygon_scan_oracle_tests.rs` |
+| Projection retry for a NURBS face whose coarse seed grid fails: a narrow strip swept many turns, retried from a node in every knot span (tests) | `tessellate/nonplanar/frame_projection_tests.rs` |
 | Interior grid samples reused at emission: meshes with the reuse on and off compared bit for bit (tests) | `tessellate/nonplanar/interior_sample_tests.rs` |
 | Signed native vector-area qualification for a hemisphere chart | `tessellate/nonplanar/sphere_chart_orientation.rs` |
 | Independent spherical-patch geometry and shared-boundary oracles | `tessellate/nonplanar/sphere_chart_tests.rs` |
@@ -574,7 +596,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Prepared face moves: repeated moves of one source selection to new distances, distance-independent analysis read once (`PreparedFaceMove`) | `prepared_move.rs` |
 | Work-count guards for interactive face moves: writes independent of unrelated bodies, constant slots per drag tick (tests) | `prepared_move/tests/scaling.rs` |
 | Exact support-surface replacement with topology-preserving re-limitation | `replace_surface.rs` |
-| Exact constant-radius blend-band resizing | `resize_blend.rs` |
+| Exact constant-radius blend-band resizing; a bore resize that carries its rim rounds (`resize_cylindrical_face_with_blends`) | `resize_blend.rs` |
 | Fillets onto earlier bands: remove them, fillet, rebuild largest first, so fillet order does not matter (the cascade's last fallback) | `resize_blend/fillet_reorder.rs` |
 | Differential oracle for the blend move's translation path: the whole-document scratch-copy version kept verbatim, also with its copy-validation refusal forced through a test hook (tests) | `resize_blend/translation_oracle_tests.rs` |
 | Blend-translation move carrying an imported edge's stamped endpoint certificate through the strict arena I/O gate (tests) | `resize_blend/endpoint_certificate_tests.rs` |
@@ -639,8 +661,10 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Typed modifier results (`moveFacesDetailed`, `filletDetailed`, `chamferDetailed`, `shellDetailed`, `offsetDetailed`, and the `filletV2`/`chamferV2`/`chamferDistanceAngle`/`filletVariable` twins) | `bindings/modifier_detailed.rs` |
 | `faceContentDigests` contract: drag ticks keep the digests of untouched faces (tests) | `bindings/face_digest_tests.rs` |
 | Source-relative live face moves preserve accepted geometry on refusal (tests) | `bindings/face_move_preview_tests.rs` |
+| Batch `getFaceNormal` returns the outward normal of reversed planar faces, matching the direct method (tests) | `bindings/face_normal_contract_tests.rs` |
 | Differential oracle: the modifier twins' full-copy rollback envelope kept verbatim, against the rollback scope (tests) | `bindings/modifier_detailed/envelope_oracle_tests.rs` |
 | Typed construction results (`extrudeDetailed`, `revolveDetailed`) | `bindings/construction_detailed.rs` |
+| Gear construction from a JSON spec: new bodies (`makeGearDetailed`), straight bevel gears (`makeBevelGearDetailed`), worms and their wheels (`makeWormDetailed`, `makeWormWheelDetailed`) and teeth on an existing cylinder (`cutGearTeethDetailed`), direct and batch | `bindings/gear.rs` |
 | Live planar polygon imprint, direct and both batch adapters | `bindings/construction_imprint.rs` |
 | Transform, copy, mirror, pattern | `bindings/transforms.rs` |
 | Typed affine transform results and refusals | `bindings/transform_detailed.rs` |
@@ -1018,11 +1042,17 @@ Workspace-level strict lints:
 - `panic = "deny"` — no panic
 - `clippy::pedantic`, `clippy::nursery` = warn
 - `missing_docs` = warn
-- `clippy::disallowed_methods` forbids `sort_by` / `sort_by_key` in the kernel
+- `clippy::disallowed_methods` forbids `sort_by` / `sort_by_key` and
+  `sort_unstable` / `sort_unstable_by` / `sort_unstable_by_key` in the kernel
   crates (math through operations; their own `clippy.toml`): use
-  `remus_math::compact_sort::CompactSort`. A measured hot sort keeps `sort_by`
-  behind a statement-level `#[allow(clippy::disallowed_methods)]` with a
-  `// hot: <evidence>` line. Test code is exempt.
+  `remus_math::compact_sort::CompactSort`. The stable `compact_sort_by*` keep
+  `sort_by`'s order, ties included. The unstable `compact_sort_unstable*`
+  match `sort_unstable*` only where no two distinguishable elements compare
+  equal (ties only between identical values, or unique keys), so convert an
+  unstable sort only after checking that. A measured hot sort keeps the std
+  sort behind a statement-level `#[allow(clippy::disallowed_methods)]` with a
+  `// hot: <evidence>` line; an unstable sort whose tie order can reach its
+  result keeps it with a `// ties: <reason>` line. Test code is exempt.
 
 ## Testing
 

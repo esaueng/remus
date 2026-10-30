@@ -9,7 +9,12 @@
 //! Each assertion below is a fact about the construction, not a recording of
 //! what the code happened to output.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::disallowed_methods
+)]
 
 use std::collections::HashSet;
 
