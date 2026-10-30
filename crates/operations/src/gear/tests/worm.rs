@@ -152,9 +152,8 @@ fn flank_points_lie_on_the_exact_involute_helicoid() {
                     let deviation = (rho * offset * alpha.cos()).abs();
                     assert!(
                         deviation <= outcome.flank_deviation_bound + 1e-9,
-                        "{starts} starts, {}: {deviation:e} > {:e}",
-                        role.name(),
-                        outcome.flank_deviation_bound
+                        "{starts} starts, {}: a flank point is off the helicoid",
+                        role.name()
                     );
                     checked += 1;
                 }
@@ -209,19 +208,20 @@ fn the_axial_section_shows_the_thread_thickness_and_pitch() {
     let g = &outcome.geometry;
     let runs = material_runs(&topo, outcome.solid, 0.5 * g.pitch_diameter, 1.0, 23.0);
     // Three whole threads cross the reference cylinder between 1 and 23.
-    assert_eq!(runs.len(), 6, "{runs:?}");
+    assert_eq!(runs.len(), 6, "material runs along the axial line");
     for pair in runs.chunks(2) {
         assert!(
             (pair[1] - pair[0] - g.axial_thickness).abs() < 1e-4,
-            "thread {} long, expected {}",
-            pair[1] - pair[0],
-            g.axial_thickness
+            "a thread's axial thickness is off"
         );
     }
     // Two starts: neighbouring threads one axial pitch apart.
     for pairs in runs.chunks(2).collect::<Vec<_>>().windows(2) {
         let spacing = 0.5 * (pairs[1][0] + pairs[1][1] - pairs[0][0] - pairs[0][1]);
-        assert!((spacing - g.axial_pitch).abs() < 1e-4, "spacing {spacing}");
+        assert!(
+            (spacing - g.axial_pitch).abs() < 1e-4,
+            "neighbouring threads are not one axial pitch apart"
+        );
     }
 }
 
