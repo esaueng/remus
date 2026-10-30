@@ -16,6 +16,7 @@ use remus_topology::solid::SolidId;
 use crate::builder::FaceClass;
 use crate::error::AlgoError;
 use crate::perf::RayWork;
+use remus_math::compact_sort::CompactSort;
 
 /// Per-face geometry used for ray crossing tests.
 enum FaceGeom {
@@ -1428,7 +1429,7 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
                 // large angular gap (a genuine partial patch leaves at least
                 // its own missing arc; sampled rim circles leave only the
                 // inter-sample spacing).
-                us.sort_unstable_by(f64::total_cmp);
+                us.compact_sort_unstable_by(f64::total_cmp);
                 let mut u_gap = -1.0_f64;
                 for i in 0..us.len() {
                     let next = us[(i + 1) % us.len()];
@@ -1442,7 +1443,7 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
                     // two-rim band is SIDE-AMBIGUOUS from boundary vertices
                     // alone (the rims bound either half), so it keeps the
                     // polygon fallback rather than guessing.
-                    vs.sort_unstable_by(f64::total_cmp);
+                    vs.compact_sort_unstable_by(f64::total_cmp);
                     let mut gap = -1.0_f64;
                     for i in 0..vs.len() {
                         let next = vs[(i + 1) % vs.len()];

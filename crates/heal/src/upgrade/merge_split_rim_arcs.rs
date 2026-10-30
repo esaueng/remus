@@ -20,6 +20,7 @@ use remus_topology::vertex::VertexId;
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::HealError;
+use remus_math::compact_sort::CompactSort;
 
 /// Merge unambiguous full-turn cycles of open circular arcs into closed edges.
 ///
@@ -141,7 +142,7 @@ pub fn merge_split_rim_arcs(
     }
 
     let mut seeds: Vec<EdgeId> = arcs.keys().copied().collect();
-    seeds.sort_unstable();
+    seeds.compact_sort_unstable();
     let mut visited = HashSet::new();
     let mut candidates = Vec::new();
 
@@ -173,7 +174,7 @@ pub fn merge_split_rim_arcs(
                 }
             }
         }
-        component.sort_unstable();
+        component.compact_sort_unstable();
         if let Some(candidate) = candidate_cycle(
             topo,
             component,
@@ -278,7 +279,7 @@ fn certify_candidate_geometry(
     linear_tol: f64,
 ) -> Result<(), HealError> {
     let mut edge_ids: Vec<_> = candidate.edges.iter().copied().collect();
-    edge_ids.sort_unstable();
+    edge_ids.compact_sort_unstable();
     for edge_id in edge_ids {
         let arc = &arcs[&edge_id];
         let bound = aligned_arc_deviation_bound(&arc.circle, arc.domain, &candidate.circle)
@@ -469,6 +470,8 @@ fn has_near_midpoints(
             (radial.dot(v_axis).atan2(radial.dot(u_axis)), midpoint)
         })
         .collect();
+    // ties: midpoints at one angle tie, and which of them end up adjacent decides the window test.
+    #[allow(clippy::disallowed_methods)]
     midpoints.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
 
     midpoints

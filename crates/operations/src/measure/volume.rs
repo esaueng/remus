@@ -357,6 +357,8 @@ fn edge_census(indices: &[u32]) -> EdgeCensus {
         let bucket = &mut keyed[starts[v]..starts[v + 1]];
         #[cfg(test)]
         CENSUS_BUCKET_WORK.with(|work| work.set(work.get() + bucket.len() * bucket.len()));
+        // hot: 2,560+ calls, ~30,000 n*log2(n) work in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         bucket.sort_unstable();
         for run in bucket.chunk_by(|a, b| a >> 2 == b >> 2) {
             if run.len() != 2 {
@@ -3094,6 +3096,8 @@ fn directed_edges_cancel<K: Copy + Ord>(triangles: impl IntoIterator<Item = [K; 
             }
         }
     }
+    // hot: ~12,000 n*log2(n) work, n up to 204 in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     uses.sort_unstable_by_key(|&(key, _)| key);
     uses.chunk_by(|x, y| x.0 == y.0)
         .all(|run| run.iter().map(|&(_, sign)| sign).sum::<i64>() == 0)

@@ -25,6 +25,7 @@ use remus_topology::solid::SolidId;
 use crate::OperationsError;
 use crate::defeature::DefeatureOutcome;
 use crate::resize_blend::ResizeBlendError;
+use remus_math::compact_sort::CompactSort;
 
 #[derive(Clone)]
 struct AffineCap {
@@ -56,7 +57,7 @@ fn face_edges(topo: &Topology, face: FaceId) -> Result<Vec<EdgeId>, OperationsEr
                 .map(remus_topology::wire::OrientedEdge::edge),
         );
     }
-    edges.sort_unstable_by_key(|edge| edge.index());
+    edges.compact_sort_unstable_by_key(|edge| edge.index());
     edges.dedup();
     Ok(edges)
 }
@@ -72,7 +73,7 @@ fn other_face(
         .copied()
         .filter(|face| *face != band)
         .collect();
-    others.sort_unstable_by_key(|face| face.index());
+    others.compact_sort_unstable_by_key(|face| face.index());
     others.dedup();
     let [other] = others.as_slice() else {
         return None;
@@ -203,7 +204,7 @@ fn classify_affine_caps(
     }
 
     let mut cap_faces: Vec<_> = cap_contacts.keys().copied().collect();
-    cap_faces.sort_unstable_by_key(|face| face.index());
+    cap_faces.compact_sort_unstable_by_key(|face| face.index());
     let mut caps = Vec::new();
     for cap in cap_faces {
         if !solid_faces.contains(&cap) || !topo.face(cap)?.inner_wires().is_empty() {
@@ -386,7 +387,7 @@ fn compose_boundary_history(
         })?;
         composed.push((original, target));
     }
-    composed.sort_unstable();
+    composed.compact_sort_unstable();
     composed.dedup();
     Ok(composed)
 }

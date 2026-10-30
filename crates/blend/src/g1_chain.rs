@@ -16,6 +16,7 @@ use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 
 use crate::builder_utils::{cylinder_of, plane_of};
+use remus_math::compact_sort::CompactSort;
 
 /// Cosine threshold shared by the edge-tangent and face-normal continuity
 /// tests: about 10 degrees of deviation. A true G1 joint scores 1.0 exactly.
@@ -220,7 +221,7 @@ impl<'a> G1ChainIndex<'a> {
         }
         // Deduplicate vertex_to_edges (each edge appears once per adjacent face).
         for edges in vertex_to_edges.values_mut() {
-            edges.sort_unstable_by_key(|e: &EdgeId| e.index());
+            edges.compact_sort_unstable_by_key(|e: &EdgeId| e.index());
             edges.dedup_by_key(|e: &mut EdgeId| e.index());
         }
         Ok(Self {
@@ -346,7 +347,7 @@ pub fn expand_g1_chain_with(
         .iter()
         .filter_map(|idx| edge_ids.get(idx).copied())
         .collect();
-    result.sort_unstable_by_key(|e| e.index());
+    result.compact_sort_unstable_by_key(|e| e.index());
     Ok(result)
 }
 
@@ -423,7 +424,7 @@ fn order_chain(topo: &Topology, edges: Vec<EdgeId>) -> Result<Vec<EdgeId>, crate
         }
     }
     for list in incident.values_mut() {
-        list.sort_unstable_by_key(|e: &EdgeId| e.index());
+        list.compact_sort_unstable_by_key(|e: &EdgeId| e.index());
     }
 
     // Prefer a free end so an open chain runs end to end; fall back to the

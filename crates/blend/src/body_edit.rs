@@ -35,6 +35,7 @@ use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{Wire, WireId};
 
 use crate::BlendError;
+use remus_math::compact_sort::CompactSort;
 
 /// What one blend build was handed, fixed before it allocates anything.
 pub struct EditScope {
@@ -67,7 +68,7 @@ impl EditScope {
         // Arena order is part of rewrite ordering, regardless of the caller's
         // face order. All later allocations have indices above this prefix.
         let mut input_faces: Vec<FaceId> = input_faces.into_iter().collect();
-        input_faces.sort_unstable_by_key(|face| face.index());
+        input_faces.compact_sort_unstable_by_key(|face| face.index());
         input_faces.dedup();
         let mut input_vertices = DetHashSet::default();
         for &face in &input_faces {

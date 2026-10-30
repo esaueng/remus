@@ -19,6 +19,7 @@ use remus_math::det_hash::{DetHashMap, DetHashSet};
 use super::SubFace;
 use crate::ds::{GfaArena, Rank};
 use crate::error::AlgoError;
+use remus_math::compact_sort::CompactSort;
 use remus_math::tolerance::Tolerance;
 use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
@@ -663,8 +664,10 @@ pub fn detect_same_domain_with_shells(
     // HashMap, so without sorting the pair order varies per run and
     // propagates into face ordering in the result shell (drove 100–500×
     // perf variance in `bench_boolean_64_holes`).
+    // ties: one face pair can be pushed with different orientation or overlap flags.
+    #[allow(clippy::disallowed_methods)]
     pairs.sort_unstable_by_key(|p| (p.idx_a, p.idx_b));
-    within_rank_dups.sort_unstable_by_key(|d| (d.representative, d.duplicate));
+    within_rank_dups.compact_sort_unstable_by_key(|d| (d.representative, d.duplicate));
 
     log::debug!(
         "detect_same_domain: {} cross-rank pairs, {} within-rank duplicates (edge-set hash)",
@@ -901,6 +904,8 @@ fn compute_edge_set_quantized(
         pairs.push(pair);
     }
 
+    // hot: 36,864+ calls, ~292,000 n*log2(n) work in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     pairs.sort_unstable();
     Some(pairs)
 }
@@ -1908,6 +1913,8 @@ fn for_each_overlap_candidate_pair(
     // Retain candidates for only one left-hand face at a time. Dense input can
     // still require quadratic narrow-phase work, but its broad-phase memory is
     // now linear rather than an unbounded cache of every candidate pair.
+    // hot: ~299,000 n*log2(n) work, n up to 3,944 in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     ranges.sort_unstable_by_key(|&(idx, _, _)| idx);
     for &(idx, expanded, cells) in &ranges {
         let mut candidates = DetHashSet::default();
@@ -1932,6 +1939,8 @@ fn for_each_overlap_candidate_pair(
             }));
         }
         let mut candidates: Vec<_> = candidates.into_iter().collect();
+        // hot: 36,864+ calls, ~2,556,000 n*log2(n) work, n up to 823 in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         candidates.sort_unstable();
         for other in candidates {
             visit(idx, other);

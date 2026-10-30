@@ -4324,6 +4324,8 @@ fn arrangement_regions_from_inputs(
     // the reversed twin as an inner wire of its direct container.
     let face_key = |f: &[usize], twin: bool| -> Vec<usize> {
         let mut k: Vec<usize> = f.iter().map(|&h| if twin { h ^ 1 } else { h }).collect();
+        // hot: 17,408+ calls, ~139,000 n*log2(n) work in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         k.sort_unstable();
         k
     };
@@ -4969,7 +4971,7 @@ fn split_cylinder_band_by_arrangement(
         .iter()
         .map(|f| {
             let mut segs: Vec<usize> = f.iter().map(|&h| halfs[h].seg_id).collect();
-            segs.sort_unstable();
+            segs.compact_sort_unstable();
             segs
         })
         .collect();
@@ -8527,7 +8529,7 @@ fn split_face_2d_impl(
                 (tag, endpoints, midpoint)
             })
             .collect();
-        keys.sort_unstable();
+        keys.compact_sort_unstable();
         keys
     };
     for hole in holes {

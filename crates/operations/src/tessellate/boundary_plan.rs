@@ -268,7 +268,7 @@ impl BoundaryPlan {
         circle_floor: bool,
     ) -> Self {
         let mut edge_order: Vec<usize> = edge_points.keys().copied().collect();
-        edge_order.sort_unstable();
+        edge_order.compact_sort_unstable();
 
         let mut authorities: DetHashMap<usize, EdgeAuthority> = DetHashMap::default();
         for &edge_idx in &edge_order {
@@ -467,7 +467,7 @@ impl BoundaryPlan {
                 .extend(request.splits);
         }
         let mut keys: Vec<(u32, u32)> = grouped.keys().copied().collect();
-        keys.sort_unstable();
+        keys.compact_sort_unstable();
 
         let mut total_points: usize = 0;
         let mut merged: BoundarySplits = DetHashMap::default();
@@ -486,7 +486,7 @@ impl BoundaryPlan {
             total_points += deduped.len();
             if total_points > MAX_BOUNDARY_REFINEMENT_POINTS {
                 let mut contributing: Vec<u32> = sources.into_iter().collect();
-                contributing.sort_unstable();
+                contributing.compact_sort_unstable();
                 return Err(crate::OperationsError::InvalidInput {
                     reason: format!(
                         "boundary reconciliation exceeds its {MAX_BOUNDARY_REFINEMENT_POINTS}-point work budget ({} points from faces {contributing:?}); increase tolerances",
@@ -504,7 +504,7 @@ impl BoundaryPlan {
         // merged run (rather than one job's run at a time) keeps the second
         // job's points from missing their insertion window.
         let mut splice_keys: Vec<(u32, u32)> = merged.keys().copied().collect();
-        splice_keys.sort_unstable();
+        splice_keys.compact_sort_unstable();
         for key in &splice_keys {
             let Some(run) = merged.get(key) else {
                 continue;

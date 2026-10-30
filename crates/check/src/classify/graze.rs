@@ -119,6 +119,8 @@ impl BoundarySkeleton {
                 );
             }
         }
+        // hot: 11,264+ calls, ~1,239,000 n*log2(n) work, n up to 120 in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         ids.sort_unstable();
         ids.dedup();
 

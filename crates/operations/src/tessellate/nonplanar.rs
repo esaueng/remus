@@ -599,6 +599,8 @@ pub(super) fn tessellate_revolution_band_shared(
             };
             ids.extend_from_slice(edge_ids);
         }
+        // hot: ~20,000 n*log2(n) work in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         ids.sort_unstable();
         ids.dedup();
         if ids.len() < 3 {
@@ -843,6 +845,8 @@ pub(super) fn tessellate_cone_apex_fan_shared(
     // Order the rim by its angle around the cone axis so consecutive pairs are
     // adjacent on the circle. The ids are distinct, so an unstable sort is both
     // equivalent and cheaper (no merge buffer, less codegen).
+    // ties: rim vertices at one angle tie, and their order picks the consecutive pairs.
+    #[allow(clippy::disallowed_methods)]
     rim.sort_unstable_by(|&a, &b| {
         let ua = cone.project_point(merged.positions[a as usize]).0;
         let ub = cone.project_point(merged.positions[b as usize]).0;

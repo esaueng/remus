@@ -30,6 +30,7 @@ use remus_topology::wire::OrientedEdge;
 
 use crate::boolean::{FaceSpec, assemble_solid_mixed_with_history};
 use crate::dot_normal_point;
+use remus_math::compact_sort::CompactSort;
 
 /// Operation name carried by [`crate::OperationsError::Unsupported`] refusals.
 const OP: &str = "shell";
@@ -1028,7 +1029,7 @@ fn shell_with_evolution_impl(
     // — the cup's rim came back with two or three inner wires depending on the
     // process, which moved its measured volume by hundreds of units. Sort so
     // the rim is decomposed the same way every run.
-    boundary_edge_ids.sort_unstable_by_key(|e| e.index());
+    boundary_edge_ids.compact_sort_unstable_by_key(|e| e.index());
 
     if boundary_edge_ids.is_empty() {
         // No open boundary — shell is already closed (no open faces, or all faces present).
