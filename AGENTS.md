@@ -160,6 +160,7 @@ Quick reference — find the right file for any task:
 | Opt-in curve/surface knot simplification and U/V removal | `nurbs/reduction.rs`, `nurbs/reduction/tests.rs` |
 | Certified adaptive Hermite cubic approximation | `nurbs/cubic_fit.rs`, `nurbs/cubic_fit/tests.rs` |
 | Certified piecewise cubic Hermite fit of a parametric curve with a closed-form fourth-derivative bound (C¹ double-knot B-spline, proven remainder) | `nurbs/hermite_fit.rs`, `nurbs/hermite_fit/tests.rs` |
+| Certified NURBS fits of screw-motion sweeps: helices and swept surfaces sharing one span plan, so neighbouring fits match bit for bit (twisted extrusions, helical gears) | `nurbs/screw.rs`, `nurbs/screw/tests.rs` |
 | Bezier decomposition | `nurbs/decompose.rs` |
 | Bezier clipping intersection | `nurbs/bezier_clip.rs` |
 | Closed-form oracles for the Bezier-clip helpers and recursion work counts (tests) | `nurbs/bezier_clip/mutation_oracle_tests.rs` |
@@ -495,9 +496,11 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Opt-in store-local cut, fuse and intersect: the GFA on the faces the tool touches, spliced onto the untouched ones (stage 4 of the local boolean), and its equivalence oracle tests | `boolean/store_local.rs`, `boolean/store_local_tests.rs` |
 | Mesh boolean (co-refinement) | `mesh_boolean.rs` |
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
-| Involute spur, internal (ring) and rack gears as one extruded outline: dimensions, warnings, typed refusals, certified flank fit | `gear.rs` |
+| Twisted extrusion: the straight extrusion's topology with the top cap turned, fitted helix edges and certified swept side faces (lands concentric with the axis stay exact cylinders) | `extrude/twist.rs`, `extrude/twist/tests.rs` |
+| Involute spur, helical, internal (ring) and rack gears as one extruded (helical: twisted) outline: dimensions, warnings, typed refusals, certified flank fit | `gear.rs` |
 | Gear outlines in the local frame: involute flanks, closed-form root fillets, tooth replication, rack profile | `gear/profile.rs` |
 | Gear oracles: closed-form dimensions, exact-involute Green area, pitch-circle thickness probes, fit bound, rack trapezoid volume, construction face roles, refusals (tests) | `gear/tests.rs` |
+| Helical gear oracles: ISO 21771 closed forms, Cavalieri volumes, flank points against the exact involute helicoid, hand and twist direction, refusals (tests) | `gear/tests/helical.rs` |
 | Gear teeth along the whole length of an existing boss or bore: keep-diameter or given-module fit, exact tooth-band material proof, tube cut then gear-ring fuse on one coaxial seam, roles carried through the fuse | `gear/cylinder.rs` |
 | Teeth-on-cylinder oracles: standalone-gear and closed-form volumes on a boss, a stepped bored shaft and a bored ring, turn-down fit and phase probes, cross-hole and partial-span refusals (tests) | `gear/cylinder/tests.rs` |
 | Helical sweep | `helix.rs` |
