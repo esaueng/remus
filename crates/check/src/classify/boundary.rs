@@ -734,10 +734,16 @@ impl NurbsUvTrim {
 }
 
 /// True when a hit lands in one of the face's holes (3D polygon variant).
+/// Whether `hit` lies in a hole. Nested inner wires alternate void and
+/// material (an island inside a cavity opening), so a hit is in a hole when
+/// an odd number of hole loops contain it.
 fn hit_in_hole_3d(holes: &[Vec<Point3>], hit: Point3, normal: Vec3) -> bool {
     holes
         .iter()
-        .any(|hole| point_in_polygon_3d(&hit, hole, &normal))
+        .filter(|hole| point_in_polygon_3d(&hit, hole, &normal))
+        .count()
+        % 2
+        == 1
 }
 
 /// Count crossings for analytic (non-planar) faces using UV containment.

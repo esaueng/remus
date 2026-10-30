@@ -121,7 +121,9 @@ impl PlanarTrim {
     }
 
     /// Whether `point`, on the face's plane, lies in the face. The parity
-    /// test visits the outer loop and every hole independently.
+    /// test visits the outer loop and every hole independently. Nested holes
+    /// alternate void and material, so the point is in the face when an even
+    /// number of holes contain it.
     ///
     /// # Errors
     ///
@@ -136,12 +138,11 @@ impl PlanarTrim {
         if !loop_contains(&self.outer, point, x, y)? {
             return Ok(false);
         }
+        let mut in_holes = 0usize;
         for hole in &self.holes {
-            if loop_contains(hole, point, x, y)? {
-                return Ok(false);
-            }
+            in_holes += usize::from(loop_contains(hole, point, x, y)?);
         }
-        Ok(true)
+        Ok(in_holes % 2 == 0)
     }
 }
 

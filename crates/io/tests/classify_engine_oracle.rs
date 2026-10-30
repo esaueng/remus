@@ -96,7 +96,7 @@ const PINNED: &[(&str, usize, usize)] = &[
     ("openzcad_a_export_bored_plate.step#0", 0, 0),
     ("openzcad_e_analytic_fillet_plate.step#0", 0, 0),
     ("openzcad_e_nurbs_fillet_plate.step#0", 150, 6),
-    ("oring_nested_holes.step#0", 0, 5),
+    ("oring_nested_holes.step#0", 0, 0),
     ("scale_platform_v1_linear_spline_edge.step#0", 0, 0),
     ("scoop_bin_box.step#0", 0, 0),
     ("scoop_cavity_0.step#0", 0, 0),
