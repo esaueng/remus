@@ -10,10 +10,12 @@ use std::sync::OnceLock;
 
 use smallvec::SmallVec;
 
+use remus_math::intersect::ContactKind;
 use remus_math::nurbs::intersection::LineSurfaceSeedGrid;
 use remus_math::nurbs::projection::{SurfaceSeedGrid, project_point_to_surface_with_grid};
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::predicates::point_in_polygon;
+use remus_math::ray::RayHit;
 use remus_math::traits::ParametricSurface;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
@@ -1935,32 +1937,34 @@ pub fn count_face_ray_crossings_cached(
             topo, face_id, trim, cache, origin, direction, *normal, *d,
         ),
         FaceSurface::Cylinder(cyl) => {
-            let cyl = cyl.clone();
-            let roots = ray_surface::ray_cylinder(origin, direction, &cyl);
-            count_analytic_crossings_with_trim(
-                topo,
-                face_id,
-                trim,
-                cache,
-                &ray_hit_points(origin, direction, &roots),
-                |p| cyl.project_point(p),
-                false,
-                None,
-            )
+            let hits = ray_surface::ray_cylinder(origin, direction, cyl);
+            count_quadric_crossings(origin, direction, &hits, |points| {
+                count_analytic_crossings_with_trim(
+                    topo,
+                    face_id,
+                    trim,
+                    cache,
+                    points,
+                    |p| cyl.project_point(p),
+                    false,
+                    None,
+                )
+            })
         }
         FaceSurface::Cone(cone) => {
-            let cone = cone.clone();
-            let roots = ray_surface::ray_cone(origin, direction, &cone);
-            count_analytic_crossings_with_trim(
-                topo,
-                face_id,
-                trim,
-                cache,
-                &ray_hit_points(origin, direction, &roots),
-                |p| cone.project_point(p),
-                false,
-                Some(CONE_APEX_V),
-            )
+            let hits = ray_surface::ray_cone(origin, direction, cone);
+            count_quadric_crossings(origin, direction, &hits, |points| {
+                count_analytic_crossings_with_trim(
+                    topo,
+                    face_id,
+                    trim,
+                    cache,
+                    points,
+                    |p| cone.project_point(p),
+                    false,
+                    Some(CONE_APEX_V),
+                )
+            })
         }
         FaceSurface::Sphere(sph) => {
             // A spherical cap's boundary is planar, and the plane cuts the
@@ -1968,38 +1972,24 @@ pub fn count_face_ray_crossings_cached(
             // against that plane, with no polygon involved. Take it when the
             // boundary really is planar; fall back to the chorded polygon for a
             // lune or a boolean-made spherical triangle, whose boundary is not.
-            let sph = sph.clone();
-            let roots = ray_surface::ray_sphere(origin, direction, &sph);
-            if let Some(count) = count_sphere_cap_crossings_with_trim(
-                topo,
-                face_id,
-                trim,
-                &ray_hit_points(origin, direction, &roots),
-                &sph,
-            )? {
-                Ok(count)
-            } else if let Some(count) = count_great_circle_trim_crossings(
-                topo,
-                face_id,
-                cache,
-                &ray_hit_points(origin, direction, &roots),
-            )? {
-                Ok(count)
-            } else if let Some(count) = count_sphere_circle_patch_crossings(
-                topo,
-                face_id,
-                &ray_hit_points(origin, direction, &roots),
-                &sph,
-            )? {
-                Ok(count)
-            } else {
-                count_3d_polygon_crossings_with_trim(
-                    topo,
-                    face_id,
-                    trim,
-                    &ray_hit_points(origin, direction, &roots),
-                )
-            }
+            let hits = ray_surface::ray_sphere(origin, direction, sph);
+            count_quadric_crossings(origin, direction, &hits, |points| {
+                if let Some(count) =
+                    count_sphere_cap_crossings_with_trim(topo, face_id, trim, points, sph)?
+                {
+                    Ok(count)
+                } else if let Some(count) =
+                    count_great_circle_trim_crossings(topo, face_id, cache, points)?
+                {
+                    Ok(count)
+                } else if let Some(count) =
+                    count_sphere_circle_patch_crossings(topo, face_id, points, sph)?
+                {
+                    Ok(count)
+                } else {
+                    count_3d_polygon_crossings_with_trim(topo, face_id, trim, points)
+                }
+            })
         }
         FaceSurface::Torus(tor) => {
             let tor = tor.clone();
@@ -2393,6 +2383,52 @@ fn count_nurbs_hits_with_trim(
     }
 
     Ok(crossings)
+}
+
+/// Crossings of one ray over a quadric face from its qualified hits.
+///
+/// `count` is the face's trim count over a set of points on the ray. The
+/// transversal hits are counted in one call, exactly as bare roots were. A
+/// tangential contact adds no crossing as long as the trim answers alike at
+/// both ends of its root window (both roots inside: two crossings; both
+/// outside: none). One that straddles the trim, or an unclassified contact
+/// the trim may contain, leaves the parity open: the ray abstains with the
+/// same refusal as a NURBS graze, and the vote loop draws another ray.
+fn count_quadric_crossings(
+    origin: Point3,
+    direction: Vec3,
+    hits: &[RayHit],
+    mut count: impl FnMut(&[Point3]) -> Result<u32, CheckError>,
+) -> Result<u32, CheckError> {
+    let abstain = || CheckError::ClassificationFailed(super::NURBS_RAY_GRAZE.into());
+    let mut transversal = SmallVec::<[Point3; 4]>::new();
+    for hit in hits {
+        if hit.kind == ContactKind::Transversal {
+            if hit.t > RAY_T_MIN {
+                transversal.push(origin + direction * hit.t);
+            }
+            continue;
+        }
+        if !hit.spread.is_finite() {
+            return Err(abstain());
+        }
+        let (lo, hi) = (hit.t - hit.spread, hit.t + hit.spread);
+        if hi <= RAY_T_MIN {
+            continue;
+        }
+        let mut inside = |t: f64| -> Result<bool, CheckError> {
+            Ok(t > RAY_T_MIN && count(&[origin + direction * t])? > 0)
+        };
+        let resolved = if hit.kind == ContactKind::Tangential && lo > RAY_T_MIN {
+            inside(lo)? == inside(hi)?
+        } else {
+            !(inside(lo)? || inside(hit.t)? || inside(hi)?)
+        };
+        if !resolved {
+            return Err(abstain());
+        }
+    }
+    count(&transversal)
 }
 
 fn ray_hit_points(origin: Point3, direction: Vec3, roots: &[f64]) -> SmallVec<[Point3; 4]> {
