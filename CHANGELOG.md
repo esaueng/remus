@@ -20,6 +20,15 @@ historical predecessor-line records, retained for provenance. The
   kept. A feature crossing the tooth band, or a span over part of the face,
   refuses with a typed `gear:<reason>` code. Gear results now name every gear
   face (`faceRoles`, e.g. `tooth[3].flank.plus`) and report the `module`.
+* **operations,wasm:** helical gears. `GearParams::helix_angle` and `hand`
+  (`helixAngle` in degrees, `hand: "right" | "left"`) make external and
+  internal helical gears, standalone or cut into a boss or bore (ISO 21771:
+  normal module, pressure angle and coefficients). The transverse profile
+  turns along the axis; lands concentric with the axis stay exact cylinders,
+  and flanks and fillets are certified swept surfaces whose
+  `flankDeviationBound` covers the exact involute helicoid. Results report
+  `transverseModule`, `helixAngle`, `lead` and `spansAlongAxis`. Helical
+  racks refuse for now.
 * **math:** `nurbs::screw` fits helices and screw-motion swept surfaces as
   NURBS with a proven bound; fits sharing one plan share their knots, so
   neighbouring faces and edges match exactly.

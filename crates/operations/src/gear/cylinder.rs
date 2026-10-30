@@ -36,7 +36,7 @@ use remus_topology::wire::{OrientedEdge, Wire};
 
 use super::{
     Frame, GearError, GearKind, GearOutcome, GearParams, GearPlacement, GearRefusal, GearWarning,
-    circular, flank_bound, gear_body, gear_geometry, local_outline,
+    circular, flank_bound, gear_body, gear_geometry, local_outline, twist,
 };
 use crate::OperationsError;
 use crate::boolean::{BooleanOp, boolean, boolean_with_evolution};
@@ -186,6 +186,8 @@ pub fn cut_gear_teeth(
     let z = f64::from(params.teeth);
     let mut resolved = params.clone();
     if options.fit == GearFit::KeepDiameter {
+        // Tip diameter per normal module: `z/cos β ± 2(h_a ± x)`.
+        let z = z / params.helix_angle.cos();
         let per_module = match kind {
             GearKind::External => z + 2.0 * (params.addendum + params.profile_shift),
             _ => z - 2.0 * (params.addendum - params.profile_shift),
@@ -298,8 +300,16 @@ pub fn cut_gear_teeth(
         let cut = tube(topo, &frame, seam, band.0, band.1, width)?;
         let kept = boolean(topo, BooleanOp::Cut, solid, cut)?;
         let local = local_outline(&build_params, &geometry, options.phase)?;
-        let (flank_deviation_bound, spans_per_flank) = flank_bound(&local.outline, &geometry);
-        let (ring, ring_roles) = gear_body(topo, local, &frame, seam, width)?;
+        let (profile_bound, spans_per_flank) = flank_bound(&local.outline, &geometry);
+        let (ring, ring_roles, twisted) = gear_body(
+            topo,
+            local,
+            &frame,
+            seam,
+            width,
+            twist(&build_params, &geometry),
+        )?;
+        let flank_deviation_bound = profile_bound + twisted.bound;
         let (result, map) = boolean_with_evolution(topo, BooleanOp::Fuse, kept, ring)?;
 
         // A ring face keeps its role only when the fuse maps it to exactly
@@ -332,6 +342,7 @@ pub fn cut_gear_teeth(
             geometry: geometry.clone(),
             flank_deviation_bound,
             spans_per_flank,
+            spans_along_axis: twisted.spans,
             face_roles,
         })
     })

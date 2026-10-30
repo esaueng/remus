@@ -24,16 +24,24 @@
 //!   "rimDiameter": 60,            // internal, required
 //!   "backDepth": 4,               // rack only, default 2 · module
 //!   "origin": [0, 0, 0], "axis": [0, 0, 1], "xDirection": [1, 0, 0],
-//!   "phase": 0                    // degrees; circular gears only
+//!   "phase": 0,                   // degrees; circular gears only
+//!   "helixAngle": 0,              // degrees in [0, 45]; circular gears only
+//!   "hand": "right" | "left"      // default "right"
 //! }
 //! ```
+//!
+//! A non-zero `helixAngle` makes a helical gear (ISO 21771): `module`,
+//! `pressureAngle` and the coefficients are normal-section values, and the
+//! teeth turn about `axis` as they advance (counter-clockwise for a right
+//! hand). `phase` places the first tooth on the start cap.
 //!
 //! `cutGearTeethDetailed` spec: `kind` (`"external"` for a boss,
 //! `"internal"` for a bore), `teeth`, `faceWidth` (the face's length:
 //! partial spans refuse), `fit` (`"keepDiameter"`, the default, solves the
 //! module so the tip (inner tip) diameter is the cylinder's; `"module"` uses
-//! `module`), the same tooth-form fields as above, and optional
-//! `xDirection` and `phase` (default: the face's seam direction).
+//! `module`), the same tooth-form fields as above (including `helixAngle`
+//! and `hand`), and optional `xDirection` and `phase` (default: the face's
+//! seam direction).
 //!
 //! Unknown keys refuse, so a misspelled option never silently falls back to
 //! its default. Angles are degrees at this boundary and radians natively,
@@ -41,7 +49,9 @@
 //!
 //! Success carries `details.quality`: `"approximate"` for circular gears,
 //! whose involute flanks are certified cubic B-splines (the proven bound is
-//! `details.flankDeviationBound`), and `"exact"` for a rack, whose flanks
+//! `details.flankDeviationBound`; for a helical gear it bounds the distance
+//! to the exact involute helicoid, and `details.spansAlongAxis` counts the
+//! twist's spans), and `"exact"` for a rack, whose flanks
 //! are planes. `details.geometry` holds the closed-form dimensions
 //! (including the solved `module`), `details.warnings` the guideline
 //! warnings, and `details.faceRoles` a `{face, role}` entry per gear face
@@ -61,13 +71,30 @@ use wasm_bindgen::prelude::*;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::gear::{
     CylinderGearOptions, GearError, GearFit, GearGeometry, GearKind, GearOutcome, GearParams,
-    GearPlacement, GearRefusal, GearWarning, cut_gear_teeth, make_gear,
+    GearPlacement, GearRefusal, GearWarning, Hand, cut_gear_teeth, make_gear,
 };
 
 use crate::error::StructuredWasmError;
 use crate::handles::{face_id_to_u32, solid_id_to_u32};
 use crate::kernel::RemusKernel;
 use crate::types::SolidOperationDetailedResult;
+
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum HandSpec {
+    #[default]
+    Right,
+    Left,
+}
+
+impl From<HandSpec> for Hand {
+    fn from(hand: HandSpec) -> Self {
+        match hand {
+            HandSpec::Right => Self::Right,
+            HandSpec::Left => Self::Left,
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -109,6 +136,10 @@ struct GearSpec {
     x_direction: Option<[f64; 3]>,
     #[serde(default)]
     phase: f64,
+    #[serde(default)]
+    helix_angle: f64,
+    #[serde(default)]
+    hand: HandSpec,
 }
 
 const fn default_pressure_angle() -> f64 {
@@ -151,6 +182,8 @@ impl GearSpec {
             bore_diameter: self.bore_diameter,
             rim_diameter: self.rim_diameter,
             back_depth: self.back_depth,
+            helix_angle: self.helix_angle.to_radians(),
+            hand: self.hand.into(),
         };
         let placement = GearPlacement {
             origin: self.origin.map_or(defaults.origin, point),
@@ -205,6 +238,10 @@ struct CylinderGearSpec {
     x_direction: Option<[f64; 3]>,
     #[serde(default)]
     phase: f64,
+    #[serde(default)]
+    helix_angle: f64,
+    #[serde(default)]
+    hand: HandSpec,
 }
 
 impl CylinderGearSpec {
@@ -243,6 +280,8 @@ impl CylinderGearSpec {
             bore_diameter: None,
             rim_diameter: None,
             back_depth: None,
+            helix_angle: self.helix_angle.to_radians(),
+            hand: self.hand.into(),
         };
         let options = CylinderGearOptions {
             fit,
@@ -269,6 +308,10 @@ fn outcome_details(outcome: &GearOutcome, kind: GearKind) -> Map<String, Value> 
         Value::from(outcome.flank_deviation_bound),
     );
     details.insert("spansPerFlank".into(), Value::from(outcome.spans_per_flank));
+    details.insert(
+        "spansAlongAxis".into(),
+        Value::from(outcome.spans_along_axis),
+    );
     details.insert("geometry".into(), geometry_json(&outcome.geometry));
     details.insert("warnings".into(), warnings_json(&outcome.geometry.warnings));
     details.insert(
@@ -287,6 +330,9 @@ fn outcome_details(outcome: &GearOutcome, kind: GearKind) -> Map<String, Value> 
 fn geometry_json(geometry: &GearGeometry) -> Value {
     json!({
         "module": geometry.module,
+        "transverseModule": geometry.transverse_module,
+        "helixAngle": geometry.helix_angle.to_degrees(),
+        "lead": geometry.lead,
         "pitchDiameter": geometry.pitch_diameter,
         "baseDiameter": geometry.base_diameter,
         "tipDiameter": geometry.tip_diameter,
