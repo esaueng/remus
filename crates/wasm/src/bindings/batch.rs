@@ -333,6 +333,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "resizeCylindricalFace"
         | "extrude"
         | "extrudeDetailed"
+        | "makeGearDetailed"
         | "imprintPlanarPolygon"
         | "revolve"
         | "revolveDetailed"
@@ -1796,6 +1797,8 @@ impl RemusKernel {
                 serde_json::to_value(self.extrude_detailed_impl(f, dx, dy, dz, dist))
                     .map_err(StructuredWasmError::from)
             }
+            "makeGearDetailed" => serde_json::to_value(self.make_gear_detailed_impl(args))
+                .map_err(StructuredWasmError::from),
             "revolveDetailed" => {
                 let f = get_u32(args, "face")?;
                 let angle_degrees = get_f64(args, "angle")?;

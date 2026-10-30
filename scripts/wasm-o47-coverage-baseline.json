@@ -1612,6 +1612,16 @@
       "reason": "topology constructor; O4.7 solid twin pending"
     },
     {
+      "js": "makeGearDetailed",
+      "rust": "make_gear_detailed",
+      "file": "bindings/gear.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "typed solid envelope by construction; no legacy throwing method to twin"
+    },
+    {
       "js": "makeLineEdge",
       "rust": "make_line_edge",
       "file": "bindings/shapes.rs",
