@@ -5,5 +5,7 @@ import { __wbg_set_wasm } from "./remus_wasm_bg.js";
 __wbg_set_wasm(wasm);
 wasm.__wbindgen_start();
 export {
-    BrepKernel, JsEdgeLines, JsGroupedMesh, JsMesh, JsPoint3, JsVec3, KernelDocumentCopy, OperationCancellationToken, clearLastPanicMessage, decodeEvolutionPayload, lastPanicMessage, setLogLevel
+    JsEdgeLines, JsGroupedMesh, JsMesh, JsPoint3, JsVec3, KernelDocumentCopy, OperationCancellationToken, RemusKernel, clearLastPanicMessage, decodeEvolutionPayload, lastPanicMessage, setLogLevel
 } from "./remus_wasm_bg.js";
+/** @deprecated Renamed to `RemusKernel`; this alias will be removed. */
+export { RemusKernel as BrepKernel } from "./remus_wasm_bg.js";

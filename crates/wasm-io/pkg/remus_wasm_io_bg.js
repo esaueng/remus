@@ -430,7 +430,7 @@ export class StepImportResult {
         }
     }
     /**
-     * Sheet roots as an arena document for `BrepKernel.deserializeSheets`.
+     * Sheet roots as an arena document for `RemusKernel.deserializeSheets`.
      * Empty when the file held no sheets.
      * @returns {Uint8Array}
      */
@@ -441,7 +441,7 @@ export class StepImportResult {
         return v1;
     }
     /**
-     * Solid roots as an arena document for `BrepKernel.deserializeSolids`.
+     * Solid roots as an arena document for `RemusKernel.deserializeSolids`.
      * Empty when the file held no solids.
      * @returns {Uint8Array}
      */

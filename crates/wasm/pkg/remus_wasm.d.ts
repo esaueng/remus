@@ -908,12 +908,240 @@ export type EvolutionProvenanceV1 = "construction" | "unavailable";
 
 
 /**
+ * Edge polylines for wireframe rendering, exposed to JavaScript.
+ *
+ * Positions are flattened to `[x, y, z, x, y, z, ...]` format.
+ * Offsets are float-array indices into `positions` (already multiplied by 3).
+ */
+export class JsEdgeLines {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Return all data in a single packed buffer for efficient FFI transfer.
+     *
+     * Layout: `[pos_bytes: u32 LE, off_bytes: u32 LE,
+     *          positions: f64 LE..., offsets: u32 LE...]`
+     */
+    packedBuffer(): Uint8Array;
+    /**
+     * Number of edges.
+     */
+    readonly edgeCount: number;
+    /**
+     * Start index into the flattened positions array for each edge polyline.
+     *
+     * The i-th edge's positions span from `positions[offsets[i]]` to
+     * `positions[offsets[i+1]]` (or to the end for the last edge).
+     * Each offset is already a float-array index (vertex index × 3).
+     */
+    readonly offsets: Uint32Array;
+    /**
+     * Flattened vertex positions as `[x, y, z, ...]`.
+     */
+    readonly positions: Float64Array;
+}
+
+/**
+ * A triangle mesh with per-face triangle grouping, exposed to JavaScript.
+ *
+ * The binary counterpart to the JSON `tessellateSolidGrouped`: positions and
+ * normals are packed `Float32Array`s and indices/`faceOffsets` are
+ * `Uint32Array`s, so the whole mesh crosses the WASM boundary as bulk memory
+ * copies instead of a JSON string round-trip. `f32` matches what mesh
+ * consumers (GPU vertex buffers) use, halving the transfer versus `f64`.
+ */
+export class JsGroupedMesh {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Move face offsets out once; subsequent getters return an empty array.
+     */
+    takeFaceOffsets(): Uint32Array;
+    /**
+     * Move triangle indices out once without cloning their Rust allocation.
+     */
+    takeIndices(): Uint32Array;
+    /**
+     * Move positions out once; returned JS storage remains owned after free.
+     */
+    takePositions(): Float32Array;
+    /**
+     * Per-face start offsets into `indices`: `faceOffsets[i]` is the start of
+     * face `i`, and the final element equals `indices.length`.
+     */
+    readonly faceOffsets: Uint32Array;
+    /**
+     * Triangle indices (groups of 3).
+     */
+    readonly indices: Uint32Array;
+    /**
+     * Flattened per-vertex normals as `[nx, ny, nz, ...]`.
+     */
+    readonly normals: Float32Array;
+    /**
+     * Flattened vertex positions as `[x, y, z, ...]`.
+     */
+    readonly positions: Float32Array;
+}
+
+/**
+ * A triangle mesh exposed to JavaScript.
+ *
+ * Positions and normals are flattened to `[x, y, z, x, y, z, ...]` format
+ * for efficient WASM transfer and direct use as GPU vertex buffers.
+ */
+export class JsMesh {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Return all mesh data in a single packed buffer for efficient FFI transfer.
+     *
+     * Layout: `[pos_bytes: u32 LE, norm_bytes: u32 LE, idx_bytes: u32 LE,
+     *          positions: f64 LE..., normals: f64 LE..., indices: u32 LE...]`
+     *
+     * This avoids three separate `.clone()` + FFI copies that the individual
+     * getters (`positions`, `normals`, `indices`) would incur.
+     */
+    packedBuffer(): Uint8Array;
+    /**
+     * Triangle indices (groups of 3).
+     */
+    readonly indices: Uint32Array;
+    /**
+     * Flattened per-vertex normals as `[nx, ny, nz, ...]`.
+     */
+    readonly normals: Float64Array;
+    /**
+     * Flattened vertex positions as `[x, y, z, ...]`.
+     */
+    readonly positions: Float64Array;
+    /**
+     * Number of triangles in the mesh.
+     */
+    readonly triangleCount: number;
+    /**
+     * Number of vertices in the mesh.
+     */
+    readonly vertexCount: number;
+}
+
+/**
+ * A 3D point exposed to JavaScript.
+ */
+export class JsPoint3 {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Create a new 3D point.
+     */
+    constructor(x: number, y: number, z: number);
+    /**
+     * X coordinate.
+     */
+    x: number;
+    /**
+     * Y coordinate.
+     */
+    y: number;
+    /**
+     * Z coordinate.
+     */
+    z: number;
+}
+
+/**
+ * A 3D vector exposed to JavaScript.
+ */
+export class JsVec3 {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Compute the length of this vector.
+     */
+    length(): number;
+    /**
+     * Create a new 3D vector.
+     */
+    constructor(x: number, y: number, z: number);
+    /**
+     * X component.
+     */
+    x: number;
+    /**
+     * Y component.
+     */
+    y: number;
+    /**
+     * Z component.
+     */
+    z: number;
+}
+
+/**
+ * A selected document copied into a fresh kernel, with ordered root remaps.
+ *
+ * Read the roots and call `takeKernel()` once. Each root belongs exclusively
+ * to that new owner. Freeing this object before taking the kernel drops the
+ * copied document; freeing it afterwards leaves the taken kernel intact.
+ */
+export class KernelDocumentCopy {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Transfer the new kernel to the caller. A second call throws.
+     */
+    takeKernel(): RemusKernel;
+    /**
+     * Sheet roots corresponding to the requested sheets, including aliases.
+     */
+    readonly sheets: Uint32Array;
+    /**
+     * Solid roots corresponding to the requested solids, including aliases.
+     */
+    readonly solids: Uint32Array;
+    /**
+     * Wire roots corresponding to the requested wires, including aliases.
+     */
+    readonly wires: Uint32Array;
+}
+
+/**
+ * A one-shot cooperative cancellation signal for a modeling operation.
+ *
+ * Clones share one monotonic flag. Native multithreaded hosts can signal it
+ * concurrently; cancelling before a call also refuses that call without
+ * touching topology. A single-threaded browser worker cannot process a new
+ * JS call while WASM is running, so active browser cancellation still needs
+ * the app's worker/shared-memory transport.
+ */
+export class OperationCancellationToken {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Requests cancellation. The request cannot be reset.
+     */
+    cancel(): void;
+    /**
+     * Whether cancellation has been requested.
+     */
+    isCancelled(): boolean;
+    /**
+     * Creates an uncancelled token.
+     */
+    constructor();
+}
+
+/**
  * The B-Rep modeling kernel.
  *
  * Owns all topological state. JavaScript holds this reference and
  * invokes methods to create, transform, and query geometry.
  */
-export class BrepKernel {
+export class RemusKernel {
     free(): void;
     [Symbol.dispose](): void;
     /**
@@ -4739,234 +4967,6 @@ export class BrepKernel {
 }
 
 /**
- * Edge polylines for wireframe rendering, exposed to JavaScript.
- *
- * Positions are flattened to `[x, y, z, x, y, z, ...]` format.
- * Offsets are float-array indices into `positions` (already multiplied by 3).
- */
-export class JsEdgeLines {
-    private constructor();
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * Return all data in a single packed buffer for efficient FFI transfer.
-     *
-     * Layout: `[pos_bytes: u32 LE, off_bytes: u32 LE,
-     *          positions: f64 LE..., offsets: u32 LE...]`
-     */
-    packedBuffer(): Uint8Array;
-    /**
-     * Number of edges.
-     */
-    readonly edgeCount: number;
-    /**
-     * Start index into the flattened positions array for each edge polyline.
-     *
-     * The i-th edge's positions span from `positions[offsets[i]]` to
-     * `positions[offsets[i+1]]` (or to the end for the last edge).
-     * Each offset is already a float-array index (vertex index × 3).
-     */
-    readonly offsets: Uint32Array;
-    /**
-     * Flattened vertex positions as `[x, y, z, ...]`.
-     */
-    readonly positions: Float64Array;
-}
-
-/**
- * A triangle mesh with per-face triangle grouping, exposed to JavaScript.
- *
- * The binary counterpart to the JSON `tessellateSolidGrouped`: positions and
- * normals are packed `Float32Array`s and indices/`faceOffsets` are
- * `Uint32Array`s, so the whole mesh crosses the WASM boundary as bulk memory
- * copies instead of a JSON string round-trip. `f32` matches what mesh
- * consumers (GPU vertex buffers) use, halving the transfer versus `f64`.
- */
-export class JsGroupedMesh {
-    private constructor();
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * Move face offsets out once; subsequent getters return an empty array.
-     */
-    takeFaceOffsets(): Uint32Array;
-    /**
-     * Move triangle indices out once without cloning their Rust allocation.
-     */
-    takeIndices(): Uint32Array;
-    /**
-     * Move positions out once; returned JS storage remains owned after free.
-     */
-    takePositions(): Float32Array;
-    /**
-     * Per-face start offsets into `indices`: `faceOffsets[i]` is the start of
-     * face `i`, and the final element equals `indices.length`.
-     */
-    readonly faceOffsets: Uint32Array;
-    /**
-     * Triangle indices (groups of 3).
-     */
-    readonly indices: Uint32Array;
-    /**
-     * Flattened per-vertex normals as `[nx, ny, nz, ...]`.
-     */
-    readonly normals: Float32Array;
-    /**
-     * Flattened vertex positions as `[x, y, z, ...]`.
-     */
-    readonly positions: Float32Array;
-}
-
-/**
- * A triangle mesh exposed to JavaScript.
- *
- * Positions and normals are flattened to `[x, y, z, x, y, z, ...]` format
- * for efficient WASM transfer and direct use as GPU vertex buffers.
- */
-export class JsMesh {
-    private constructor();
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * Return all mesh data in a single packed buffer for efficient FFI transfer.
-     *
-     * Layout: `[pos_bytes: u32 LE, norm_bytes: u32 LE, idx_bytes: u32 LE,
-     *          positions: f64 LE..., normals: f64 LE..., indices: u32 LE...]`
-     *
-     * This avoids three separate `.clone()` + FFI copies that the individual
-     * getters (`positions`, `normals`, `indices`) would incur.
-     */
-    packedBuffer(): Uint8Array;
-    /**
-     * Triangle indices (groups of 3).
-     */
-    readonly indices: Uint32Array;
-    /**
-     * Flattened per-vertex normals as `[nx, ny, nz, ...]`.
-     */
-    readonly normals: Float64Array;
-    /**
-     * Flattened vertex positions as `[x, y, z, ...]`.
-     */
-    readonly positions: Float64Array;
-    /**
-     * Number of triangles in the mesh.
-     */
-    readonly triangleCount: number;
-    /**
-     * Number of vertices in the mesh.
-     */
-    readonly vertexCount: number;
-}
-
-/**
- * A 3D point exposed to JavaScript.
- */
-export class JsPoint3 {
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * Create a new 3D point.
-     */
-    constructor(x: number, y: number, z: number);
-    /**
-     * X coordinate.
-     */
-    x: number;
-    /**
-     * Y coordinate.
-     */
-    y: number;
-    /**
-     * Z coordinate.
-     */
-    z: number;
-}
-
-/**
- * A 3D vector exposed to JavaScript.
- */
-export class JsVec3 {
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * Compute the length of this vector.
-     */
-    length(): number;
-    /**
-     * Create a new 3D vector.
-     */
-    constructor(x: number, y: number, z: number);
-    /**
-     * X component.
-     */
-    x: number;
-    /**
-     * Y component.
-     */
-    y: number;
-    /**
-     * Z component.
-     */
-    z: number;
-}
-
-/**
- * A selected document copied into a fresh kernel, with ordered root remaps.
- *
- * Read the roots and call `takeKernel()` once. Each root belongs exclusively
- * to that new owner. Freeing this object before taking the kernel drops the
- * copied document; freeing it afterwards leaves the taken kernel intact.
- */
-export class KernelDocumentCopy {
-    private constructor();
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * Transfer the new kernel to the caller. A second call throws.
-     */
-    takeKernel(): BrepKernel;
-    /**
-     * Sheet roots corresponding to the requested sheets, including aliases.
-     */
-    readonly sheets: Uint32Array;
-    /**
-     * Solid roots corresponding to the requested solids, including aliases.
-     */
-    readonly solids: Uint32Array;
-    /**
-     * Wire roots corresponding to the requested wires, including aliases.
-     */
-    readonly wires: Uint32Array;
-}
-
-/**
- * A one-shot cooperative cancellation signal for a modeling operation.
- *
- * Clones share one monotonic flag. Native multithreaded hosts can signal it
- * concurrently; cancelling before a call also refuses that call without
- * touching topology. A single-threaded browser worker cannot process a new
- * JS call while WASM is running, so active browser cancellation still needs
- * the app's worker/shared-memory transport.
- */
-export class OperationCancellationToken {
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * Requests cancellation. The request cannot be reset.
-     */
-    cancel(): void;
-    /**
-     * Whether cancellation has been requested.
-     */
-    isCancelled(): boolean;
-    /**
-     * Creates an uncancelled token.
-     */
-    constructor();
-}
-
-/**
  * Clears the stored panic message so later reads reflect only new panics.
  */
 export function clearLastPanicMessage(): void;
@@ -5012,3 +5012,7 @@ export function lastPanicMessage(): string | undefined;
  * validation diagnostics without flooding the console.
  */
 export function setLogLevel(level: string): void;
+/** @deprecated Renamed to `RemusKernel`; this alias will be removed. */
+export declare const BrepKernel: typeof RemusKernel;
+/** @deprecated Renamed to `RemusKernel`; this alias will be removed. */
+export type BrepKernel = RemusKernel;
