@@ -36,6 +36,15 @@ historical predecessor-line records, retained for provenance. The
   half's swept faces carry `.start-half` or `.end-half` on their role.
   `GearOutcome::face_roles` now pairs each face with a `GearFace` (its
   `GearFaceRole` and the half) instead of a bare `GearFaceRole`.
+* **operations,wasm:** straight bevel gears. `make_bevel_gear` /
+  `makeBevelGearDetailed` build a gear on a pitch cone set by its tooth
+  count, its mate's and the shaft angle (default 90°), with teeth tapering to
+  the cone apex and a flat heel and toe. Flanks are certified fits of the
+  spherical involute (`quality: "approximate"`, with a proven
+  `flankDeviationBound`); tip and root lands are exact cones. Results report
+  the cone angles and distances; refusals carry them when the parameters
+  admit them. The new tapered extrusion (`extrude::taper`) sweeps a planar
+  profile toward an apex.
 * **math:** `nurbs::screw` fits helices and screw-motion swept surfaces as
   NURBS with a proven bound; fits sharing one plan share their knots, so
   neighbouring faces and edges match exactly.

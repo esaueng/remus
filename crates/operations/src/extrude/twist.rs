@@ -365,7 +365,11 @@ fn plan_wire(
 
 /// Replace `curve`'s end control points by the edge's vertex positions, so
 /// its swept boundary helices are the vertical edges' helices exactly.
-fn snap(curve: NurbsCurve, start: Point3, end: Point3) -> Result<NurbsCurve, OperationsError> {
+pub(super) fn snap(
+    curve: NurbsCurve,
+    start: Point3,
+    end: Point3,
+) -> Result<NurbsCurve, OperationsError> {
     let mut points = curve.control_points().to_vec();
     let scale = points
         .iter()
@@ -389,7 +393,7 @@ fn snap(curve: NurbsCurve, start: Point3, end: Point3) -> Result<NurbsCurve, Ope
 
 /// The arc of `circle` over `[t0, t1]` as rational quadratic Bézier spans
 /// of at most a quarter turn each, parameterized over `[0, 1]`.
-fn arc_nurbs(
+pub(super) fn arc_nurbs(
     circle: &remus_math::curves::Circle3D,
     t0: f64,
     t1: f64,

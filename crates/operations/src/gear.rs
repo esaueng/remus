@@ -50,9 +50,14 @@ use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::OperationsError;
 
+mod bevel;
 mod cylinder;
 mod profile;
 
+pub use bevel::{
+    BevelGearGeometry, BevelGearOutcome, BevelGearParams, MAX_FACE_ANGLE_DEG, bevel_gear_geometry,
+    make_bevel_gear,
+};
 pub use cylinder::{CylinderGearOptions, GearFit, cut_gear_teeth};
 
 use profile::{CircularTooth, RackTooth, Segment};
@@ -725,6 +730,24 @@ struct TwistReport {
     spans: usize,
 }
 
+/// How a gear's outline is swept along its axis.
+#[derive(Debug, Clone, Copy)]
+enum Sweep {
+    /// A straight extrusion (spur gears, racks).
+    Straight,
+    /// A twisted extrusion (helical and herringbone gears).
+    Twist(Twist),
+    /// A tapered extrusion toward the apex this far along the axis from the
+    /// outline (bevel gears).
+    Taper { apex_distance: f64 },
+}
+
+impl From<Option<Twist>> for Sweep {
+    fn from(twist: Option<Twist>) -> Self {
+        twist.map_or(Self::Straight, Self::Twist)
+    }
+}
+
 /// How a helical gear's transverse profile turns along its axis.
 #[derive(Debug, Clone, Copy)]
 struct Twist {
@@ -1070,7 +1093,7 @@ fn build(
         frame,
         frame.x,
         params.face_width,
-        twist(params, geometry),
+        twist(params, geometry).into(),
     )?;
     Ok(GearOutcome {
         solid,
@@ -1108,7 +1131,7 @@ fn gear_body(
     frame: &Frame,
     circle_ref: Vec3,
     face_width: f64,
-    twist: Option<Twist>,
+    sweep: Sweep,
 ) -> Result<GearBody, GearError> {
     let vertex_tol = Tolerance::new().linear;
     let LocalOutline {
@@ -1197,13 +1220,13 @@ fn gear_body(
         }
     };
     // The extruded halves, each with the half its sides are named for.
-    let (solid, halves, twist_bound) = match twist {
-        None => {
+    let (solid, halves, twist_bound) = match sweep {
+        Sweep::Straight => {
             let (solid, construction) =
                 crate::extrude::extrude_impl(topo, face, frame.axis, face_width)?;
             (solid, vec![(construction, None)], TwistReport::default())
         }
-        Some(twist) if twist.herringbone => {
+        Sweep::Twist(twist) if twist.herringbone => {
             let built = crate::extrude::twist::herringbone_extrude_impl(
                 topo,
                 face,
@@ -1227,7 +1250,7 @@ fn gear_body(
                 },
             )
         }
-        Some(twist) => {
+        Sweep::Twist(twist) => {
             let twisted = crate::extrude::twist::twisted_extrude_impl(
                 topo,
                 face,
@@ -1246,6 +1269,20 @@ fn gear_body(
                     bound: twisted.deviation_bound,
                     spans: twisted.spans,
                 },
+            )
+        }
+        Sweep::Taper { apex_distance } => {
+            let tapered = crate::extrude::taper::tapered_extrude_impl(
+                topo,
+                face,
+                frame.origin + frame.axis * apex_distance,
+                frame.axis,
+                face_width,
+            )?;
+            (
+                tapered.solid,
+                vec![(tapered.construction, None)],
+                TwistReport::default(),
             )
         }
     };
