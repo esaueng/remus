@@ -160,7 +160,11 @@ pub fn fillet(
             Some(cylinder.clone()),
             seam_angles(topo, chain.rail, cylinder)?,
         ),
-        _ => (None, Vec::new()),
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => (None, Vec::new()),
     };
     let mut surfaces = vec![(rail_surface.clone(), rail_data.is_reversed())];
     for support in &chain.supports {
@@ -997,7 +1001,10 @@ fn closure_edge(
             return Ok(Some(topo.add_edge(Edge::new(from, to, EdgeCurve::Line))));
         }
         FaceSurface::Cylinder(cylinder) => cylinder,
-        _ => return Ok(None),
+        FaceSurface::Nurbs(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => return Ok(None),
     };
     let axis = cylinder.axis();
     let origin = cylinder.origin();
