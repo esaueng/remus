@@ -307,7 +307,7 @@ pub fn cut_gear_teeth(
             &frame,
             seam,
             width,
-            twist(&build_params, &geometry),
+            twist(&build_params, &geometry).into(),
         )?;
         let flank_deviation_bound = profile_bound + twisted.bound;
         let (result, map) = boolean_with_evolution(topo, BooleanOp::Fuse, kept, ring)?;

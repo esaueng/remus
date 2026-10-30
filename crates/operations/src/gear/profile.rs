@@ -115,7 +115,7 @@ impl Segment {
 }
 
 /// First (`false`) or last (`true`) control point: the curve's end points.
-fn curve_end(curve: &NurbsCurve, last: bool) -> Point3 {
+pub(super) fn curve_end(curve: &NurbsCurve, last: bool) -> Point3 {
     let points = curve.control_points();
     if last {
         points[points.len() - 1]
@@ -136,7 +136,7 @@ pub(super) fn map_curve(
     )?)
 }
 
-fn mirror(p: Point3) -> Point3 {
+pub(super) fn mirror(p: Point3) -> Point3 {
     Point3::new(p.x(), -p.y(), 0.0)
 }
 
@@ -148,12 +148,12 @@ fn rotate(p: Point3, cos: f64, sin: f64) -> Point3 {
     )
 }
 
-fn polar(radius: f64, angle: f64) -> Point3 {
+pub(super) fn polar(radius: f64, angle: f64) -> Point3 {
     let (sin, cos) = angle.sin_cos();
     Point3::new(radius * cos, radius * sin, 0.0)
 }
 
-fn angle_of(p: Point3) -> f64 {
+pub(super) fn angle_of(p: Point3) -> f64 {
     p.y().atan2(p.x())
 }
 
@@ -576,7 +576,7 @@ pub(super) fn internal_outline(space: &CircularTooth) -> Result<Outline, GearErr
 /// about the center (a root land for external gears, a tip land for
 /// internal ones). Role tooth indices in `period` and `between` are offsets
 /// from the period's own index.
-fn replicate(
+pub(super) fn replicate(
     period: &[(Segment, GearFaceRole)],
     between: GearFaceRole,
     teeth: u32,

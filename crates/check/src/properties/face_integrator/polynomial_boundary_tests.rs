@@ -219,35 +219,183 @@ fn degree_six_green_moments_match_exact_polynomial_integrals() {
     }
 }
 
+/// `x = tⁿ, y = t − tⁿ` as a degree-`n` Bézier at `z = 5`: control points
+/// `(0, i/n)` and `(1, 0)` last.
+fn power_cusp(n: usize, weights: Vec<f64>) -> NurbsCurve {
+    let points = (0..=n)
+        .map(|i| {
+            if i == n {
+                Point3::new(1.0, 0.0, 5.0)
+            } else {
+                Point3::new(0.0, i as f64 / n as f64, 5.0)
+            }
+        })
+        .collect();
+    NurbsCurve::new(
+        n,
+        [vec![0.0; n + 1], vec![1.0; n + 1]].concat(),
+        points,
+        weights,
+    )
+    .unwrap()
+}
+
+fn outer_moments(topo: &Topology, face: FaceId) -> Option<[f64; 10]> {
+    planar_wire_monomial_moments(
+        topo,
+        topo.face(face).unwrap().outer_wire(),
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+    )
+    .unwrap()
+}
+
 #[test]
-fn unsupported_rational_and_high_degree_boundaries_keep_the_approximate_fallback() {
-    for (degree, weights) in [(3, vec![1.0, 1e6, 1.0, 1.0]), (7, vec![1.0; 8])] {
-        let points = (0..=degree)
-            .map(|i| {
-                let y = if i == 0 || i == degree {
-                    0.0
-                } else {
-                    (i % 3 + 1) as f64
-                };
-                Point3::new(i as f64, y, 5.0)
-            })
-            .collect();
-        let mut knots = vec![0.0; degree + 1];
-        knots.extend(vec![1.0; degree + 1]);
-        let curve = NurbsCurve::new(degree, knots, points, weights).unwrap();
-        let (topo, face) = capped_curve(curve, (0.0, 1.0), false);
-        let got = integrate_planar_face_exact(
-            &topo,
-            face,
-            Vec3::new(0.0, 0.0, 1.0),
-            Point3::new(0.0, 0.0, 0.0),
-        )
-        .unwrap();
+fn degree_seven_green_moments_converge_on_exact_polynomial_integrals() {
+    // Past the exact rule's degree six, the adaptive rule. For x = t⁷,
+    // y = t − t⁷ closed by y = 0, M_ij = 7/(j+1) ∫₀¹ t^(7i+6) (t − t⁷)^(j+1) dt,
+    // expanded binomially: an oracle with no quadrature in it.
+    let n = 7;
+    let (topo, face) = capped_curve(power_cusp(n, vec![1.0; n + 1]), (0.0, 1.0), false);
+    let moments = outer_moments(&topo, face).expect("the adaptive rule certifies a polynomial");
+    let exponents = [
+        (0, 0),
+        (1, 0),
+        (0, 1),
+        (2, 0),
+        (1, 1),
+        (0, 2),
+        (3, 0),
+        (2, 1),
+        (1, 2),
+        (0, 3),
+    ];
+    for ((i, j), actual) in exponents.into_iter().zip(moments) {
+        let (a, m) = (n * i + n - 1, j + 1);
+        let mut binomial = 1.0;
+        let mut integral = 0.0;
+        for k in 0..=m {
+            let sign = if k % 2 == 0 { 1.0 } else { -1.0 };
+            integral += sign * binomial / (a + m - k + n * k + 1) as f64;
+            binomial = binomial * (m - k) as f64 / (k + 1) as f64;
+        }
+        let expected = n as f64 / m as f64 * integral;
         assert!(
-            got.is_none(),
-            "degree {degree} must retain the existing approximation"
+            (actual - expected).abs() < 1e-14,
+            "M{i}{j}: {actual} vs {expected}"
         );
     }
+}
+
+/// The chord polygon's area of `curve` closed by its chord, whose error is
+/// even in the step, Richardson-extrapolated over two step halvings: an
+/// oracle with no Gauss rule in it.
+fn extrapolated_shoelace(curve: &NurbsCurve) -> f64 {
+    let shoelace = |samples: u32| {
+        let mut twice = 0.0;
+        for k in 0..samples {
+            let a = curve.evaluate(f64::from(k) / f64::from(samples));
+            let b = curve.evaluate(f64::from(k + 1) / f64::from(samples));
+            twice += a.x() * b.y() - b.x() * a.y();
+        }
+        (twice / 2.0).abs()
+    };
+    let (coarse, mid, fine) = (shoelace(1 << 12), shoelace(1 << 13), shoelace(1 << 14));
+    let once = [(4.0 * mid - coarse) / 3.0, (4.0 * fine - mid) / 3.0];
+    (16.0 * once[1] - once[0]) / 15.0
+}
+
+#[test]
+fn rational_boundaries_converge_on_an_extrapolated_shoelace_area() {
+    // No fixed rule is exact for a rational span; the adaptive one certifies
+    // itself and must land on the independent oracle.
+    let curve = power_cusp(3, vec![1.0, 3.0, 0.5, 1.0]);
+    let expected = extrapolated_shoelace(&curve);
+    let (topo, face) = capped_curve(curve, (0.0, 1.0), false);
+    let moments = outer_moments(&topo, face).expect("a smooth rational span certifies");
+    assert!(
+        (moments[0] - expected).abs() < 1e-12 * expected,
+        "{} vs {expected}",
+        moments[0]
+    );
+    let exact_area = integrate_planar_face_exact(
+        &topo,
+        face,
+        Vec3::new(0.0, 0.0, 1.0),
+        Point3::new(0.0, 0.0, 0.0),
+    )
+    .unwrap()
+    .expect("the exact planar path takes the certified rule")
+    .area;
+    // Its own in-plane frame, so equal to rounding rather than bits.
+    assert!(
+        (exact_area - expected).abs() < 1e-12 * expected,
+        "{exact_area}"
+    );
+    assert_eq!(
+        planar_face_exact_area(&topo, face).unwrap(),
+        Some(exact_area)
+    );
+}
+
+#[test]
+fn an_extreme_rational_weight_refuses_or_converges_but_never_misreads() {
+    // A 1e6 weight packs the curve's turn into a sliver of its parameter;
+    // the rule may refuse it (the face keeps its sampled fallback) but must
+    // not certify a wrong value.
+    let curve = power_cusp(3, vec![1.0, 1e6, 1.0, 1.0]);
+    let expected = extrapolated_shoelace(&curve);
+    let (topo, face) = capped_curve(curve, (0.0, 1.0), false);
+    if let Some(moments) = outer_moments(&topo, face) {
+        assert!(
+            (moments[0] - expected).abs() < 1e-12 * expected,
+            "{} vs {expected}",
+            moments[0]
+        );
+    }
+}
+
+#[test]
+fn an_adaptive_cell_that_never_converges_refuses() {
+    // A non-finite integrand never compares as converged, so bisection runs
+    // to its depth cap and refuses rather than accumulating anything.
+    let nan = |_: f64| (Point3::new(f64::NAN, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
+    let (origin, e1, e2) = (
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+    );
+    let (whole, _) = green_cell_moments((0.0, 1.0), &nan, origin, e1, e2);
+    let mut adaptive = AdaptiveGreen {
+        eval: &nan,
+        origin,
+        e1,
+        e2,
+        allowance: [1.0; 10],
+        cells: 0,
+    };
+    let mut out = [0.0; 10];
+    assert!(!adaptive.cell(&mut out, (0.0, 1.0), &whole, 0));
+    assert_eq!((out, adaptive.cells), ([0.0; 10], 0));
+}
+
+#[test]
+fn an_edge_past_its_cell_budget_refuses() {
+    // A converged cell still counts against the budget, so an edge cannot
+    // spend more than its share of the error allowance.
+    let line = |u: f64| (Point3::new(u, u, 0.0), Vec3::new(1.0, 1.0, 0.0));
+    let mut adaptive = AdaptiveGreen {
+        eval: &line,
+        origin: Point3::new(0.0, 0.0, 0.0),
+        e1: Vec3::new(1.0, 0.0, 0.0),
+        e2: Vec3::new(0.0, 1.0, 0.0),
+        allowance: [1.0; 10],
+        cells: ADAPTIVE_GREEN_MAX_CELLS,
+    };
+    let (whole, _) =
+        green_cell_moments((0.0, 1.0), &line, adaptive.origin, adaptive.e1, adaptive.e2);
+    assert!(!adaptive.cell(&mut [0.0; 10], (0.0, 1.0), &whole, 0));
 }
 
 // Four wire edges share positions but deliberately retain separate vertex
