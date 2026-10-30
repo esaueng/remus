@@ -431,6 +431,7 @@ Quick reference — find the right file for any task:
 | Point-to-surface distance (all analytic types) | `distance/analytic.rs` |
 | Edge-to-edge distance | `distance/edge.rs` |
 | Point-to-solid, solid-to-solid distance | `distance/mod.rs` |
+| Exact planar trim membership for line and circle boundaries (nested holes alternate), shared by face distance and the classifier's plane hits | `distance/plane_trim.rs` |
 | Bounded global maximum-distance witnesses for planar polyhedra and complete spheres | `distance/maximum.rs` |
 | Conservative face bounds for distance pruning | `distance/face_bounds.rs` |
 | Operation-local prepared context for repeated point-to-solid distance (`PreparedDistanceSolid`, `DistanceScratch`, `DistanceOptions`) | `distance/prepared.rs` |
