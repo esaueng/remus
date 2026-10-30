@@ -24,6 +24,8 @@ mod boundary_area;
 mod loop_index;
 #[cfg(test)]
 mod nurbs_rows_oracle_tests;
+#[cfg(test)]
+mod parametric_split_oracle_tests;
 mod sphere_latitude;
 
 use loop_index::{IntervalIndex, winding_number_over};
@@ -4014,6 +4016,79 @@ macro_rules! quadrature_sample {
     };
 }
 
+/// The sliced request of [`integrate_parametric`]: a trimmed domain with
+/// non-default refinement controls or a refined NURBS carrier, refined over
+/// the trim's u breaks and the carrier's knots; `None` for the fixed rule.
+///
+/// Out of line and over a trait object, so the per-carrier copies of the
+/// fixed-rule loops do not each carry this setup. It runs only on
+/// non-default controls, and [`adaptive::integrate_sliced`] takes a trait
+/// object already.
+#[inline(never)]
+fn integrate_sliced_request(
+    surface: &dyn ParametricSurface,
+    u_range: (f64, f64),
+    v_range: (f64, f64),
+    rule: IntegrationRule<'_>,
+    sign: f64,
+    trim: &UvTrim<'_>,
+    scale: PatchScale,
+) -> Option<Result<FaceContribution, CheckError>> {
+    // Trimmed domains and NURBS carriers refine as sliced domains (an
+    // untrimmed NURBS patch is one constant span per knot-aligned window);
+    // untrimmed analytic rectangles refine by quadrants.
+    let options = if trim.splits_domain() {
+        rule.requested_refinement()
+    } else if rule.knots.is_some() {
+        rule.adaptive
+    } else {
+        None
+    }?;
+    let mut breaks = if trim.splits_domain() {
+        trim.u_breaks(u_range)
+    } else {
+        vec![u_range.0, u_range.1]
+    };
+    let (knots_u, knots_v) = rule.knots.unwrap_or((&[], &[]));
+    breaks.extend(interior_knots(knots_u, u_range));
+    breaks.compact_sort_by(f64::total_cmp);
+    breaks.dedup();
+    let inner_knots = interior_knots(knots_v, v_range);
+    // With cells aligned to the knots, one Gauss rule per knot span is the
+    // natural starting cell; refinement supplies any further resolution.
+    #[allow(clippy::cast_precision_loss)]
+    let start = if rule.knots.is_some() {
+        PatchScale {
+            u: scale.u * PATCHES_PER_KNOT_SPAN as f64,
+            v: scale.v * PATCHES_PER_KNOT_SPAN as f64,
+        }
+    } else {
+        scale
+    };
+    let spans = |u: f64| {
+        if trim.splits_domain() {
+            trim.v_spans(u, v_range)
+        } else {
+            vec![v_range]
+        }
+    };
+    Some(adaptive::integrate_sliced(
+        surface,
+        &adaptive::Sliced {
+            breaks: &breaks,
+            inner_knots: &inner_knots,
+            outer_scale: start.u,
+            inner_scale: start.v,
+            spans: &spans,
+            outer_is_v: false,
+        },
+        sign,
+        options,
+        rule.reference,
+        rule.cone_apex,
+    ))
+}
+
 /// Integrate a parametric surface over a UV domain by Gauss quadrature,
 /// keeping only what `trim` accepts.
 ///
@@ -4038,60 +4113,10 @@ fn $name<S: ParametricSurface, const AREA_ONLY: bool>(
     trim: &UvTrim<'_>,
     scale: PatchScale,
 ) -> Result<FaceContribution, CheckError> {
-    // Trimmed domains and NURBS carriers refine as sliced domains (an
-    // untrimmed NURBS patch is one constant span per knot-aligned window);
-    // untrimmed analytic rectangles refine by quadrants.
-    let sliced = if trim.splits_domain() {
-        rule.requested_refinement()
-    } else if rule.knots.is_some() {
-        rule.adaptive
-    } else {
-        None
-    };
-    if let Some(options) = sliced {
-        let mut breaks = if trim.splits_domain() {
-            trim.u_breaks(u_range)
-        } else {
-            vec![u_range.0, u_range.1]
-        };
-        let (knots_u, knots_v) = rule.knots.unwrap_or((&[], &[]));
-        breaks.extend(interior_knots(knots_u, u_range));
-        breaks.compact_sort_by(f64::total_cmp);
-        breaks.dedup();
-        let inner_knots = interior_knots(knots_v, v_range);
-        // With cells aligned to the knots, one Gauss rule per knot span is the
-        // natural starting cell; refinement supplies any further resolution.
-        #[allow(clippy::cast_precision_loss)]
-        let start = if rule.knots.is_some() {
-            PatchScale {
-                u: scale.u * PATCHES_PER_KNOT_SPAN as f64,
-                v: scale.v * PATCHES_PER_KNOT_SPAN as f64,
-            }
-        } else {
-            scale
-        };
-        let spans = |u: f64| {
-            if trim.splits_domain() {
-                trim.v_spans(u, v_range)
-            } else {
-                vec![v_range]
-            }
-        };
-        return adaptive::integrate_sliced(
-            surface,
-            &adaptive::Sliced {
-                breaks: &breaks,
-                inner_knots: &inner_knots,
-                outer_scale: start.u,
-                inner_scale: start.v,
-                spans: &spans,
-                outer_is_v: false,
-            },
-            sign,
-            options,
-            rule.reference,
-            rule.cone_apex,
-        );
+    if let Some(contribution) =
+        integrate_sliced_request(surface, u_range, v_range, rule, sign, trim, scale)
+    {
+        return contribution;
     }
     if !trim.splits_domain()
         && let Some(options) = rule.adaptive
@@ -4106,9 +4131,12 @@ fn $name<S: ParametricSurface, const AREA_ONLY: bool>(
             rule.cone_apex,
         );
     }
+    // Only NURBS carriers have knots; going through `as_nurbs` keeps this
+    // path out of the analytic copies, where it is a constant `None`.
     if let Some(knots) = rule.knots
+        && let Some(nurbs) = surface.as_nurbs()
         && let Some(contribution) = integrate_knot_aligned::<_, AREA_ONLY>(
-            surface, u_range, v_range, rule, sign, trim, scale, knots,
+            nurbs, u_range, v_range, rule, sign, trim, scale, knots,
         )?
     {
         return Ok(contribution);
