@@ -335,6 +335,8 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "extrudeDetailed"
         | "makeGearDetailed"
         | "makeBevelGearDetailed"
+        | "makeWormDetailed"
+        | "makeWormWheelDetailed"
         | "cutGearTeethDetailed"
         | "imprintPlanarPolygon"
         | "revolve"
@@ -1803,6 +1805,12 @@ impl RemusKernel {
                 .map_err(StructuredWasmError::from),
             "makeBevelGearDetailed" => {
                 serde_json::to_value(self.make_bevel_gear_detailed_impl(args))
+                    .map_err(StructuredWasmError::from)
+            }
+            "makeWormDetailed" => serde_json::to_value(self.make_worm_detailed_impl(args))
+                .map_err(StructuredWasmError::from),
+            "makeWormWheelDetailed" => {
+                serde_json::to_value(self.make_worm_wheel_detailed_impl(args))
                     .map_err(StructuredWasmError::from)
             }
             "cutGearTeethDetailed" => {

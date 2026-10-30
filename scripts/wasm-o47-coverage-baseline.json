@@ -1782,6 +1782,26 @@
       "reason": "topology constructor; O4.7 solid twin pending"
     },
     {
+      "js": "makeWormDetailed",
+      "rust": "make_worm_detailed",
+      "file": "bindings/gear.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "typed solid envelope by construction; no legacy throwing method to twin"
+    },
+    {
+      "js": "makeWormWheelDetailed",
+      "rust": "make_worm_wheel_detailed",
+      "file": "bindings/gear.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "typed solid envelope by construction; no legacy throwing method to twin"
+    },
+    {
       "js": "mergeCoincidentVertices",
       "rust": "merge_coincident_vertices",
       "file": "bindings/transforms.rs",

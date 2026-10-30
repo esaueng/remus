@@ -589,3 +589,144 @@ fn bevel_refusals_carry_cone_dimensions_and_keep_the_session() {
     }
     assert_eq!(live_counts(&kernel), before);
 }
+
+fn worm_envelope(kernel: &mut RemusKernel, op: &str, spec: &Value) -> Value {
+    let result = match op {
+        "makeWormDetailed" => kernel.make_worm_detailed_impl(spec),
+        _ => kernel.make_worm_wheel_detailed_impl(spec),
+    };
+    serde_json::to_value(result).unwrap()
+}
+
+fn worm_batch(kernel: &mut RemusKernel, op: &str, args: &Value) -> Value {
+    let ops = json!([{ "op": op, "args": args }]);
+    let results: Value = serde_json::from_str(&kernel.execute_batch_v2(&ops.to_string())).unwrap();
+    results[0].clone()
+}
+
+#[test]
+fn worms_and_their_wheels_report_dimensions_and_roles_direct_and_batch() {
+    let worm = json!({
+        "module": 2.0, "starts": 2, "diameterFactor": 10.0, "length": 12.0,
+        "boreDiameter": 6.0, "hand": "left"
+    });
+    let mut direct_kernel = RemusKernel::new();
+    let direct = worm_envelope(&mut direct_kernel, "makeWormDetailed", &worm);
+    assert_eq!(direct["status"], "ok", "{direct}");
+    let details = &direct["details"];
+    assert_eq!(details["quality"], "approximate");
+    assert_eq!(details["approximated"], "involute helicoid flanks");
+    let bound = details["flankDeviationBound"].as_f64().unwrap();
+    assert!(bound > 0.0 && bound <= 1e-5 * 2.0 * 1.01, "{bound}");
+    assert!(details["spansAlongAxis"].as_u64().unwrap() >= 1);
+    // tan γ = z₁/q = 0.2, in degrees at this boundary.
+    let geometry = &details["geometry"];
+    let gamma = 0.2_f64.atan();
+    assert!((geometry["leadAngle"].as_f64().unwrap() - gamma.to_degrees()).abs() < 1e-12);
+    assert!((geometry["pitchDiameter"].as_f64().unwrap() - 20.0).abs() < 1e-12);
+    assert!((geometry["lead"].as_f64().unwrap() - 4.0 * std::f64::consts::PI).abs() < 1e-12);
+    let roles: Vec<&str> = details["faceRoles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["role"].as_str().unwrap())
+        .collect();
+    for name in [
+        "cap.start",
+        "cap.end",
+        "bore",
+        "tooth[1].flank.plus",
+        "root[0]",
+    ] {
+        assert!(roles.contains(&name), "{name}: {roles:?}");
+    }
+    let solid = handle(&direct["value"]);
+    assert_eq!(roles.len(), faces_of(&direct_kernel, solid).len());
+    assert_valid(&direct_kernel, solid);
+    let mut batch_kernel = RemusKernel::new();
+    assert_eq!(
+        worm_batch(&mut batch_kernel, "makeWormDetailed", &worm)["ok"],
+        direct
+    );
+
+    let wheel = json!({
+        "module": 2.0, "starts": 2, "diameterFactor": 10.0, "hand": "left",
+        "teeth": 30, "faceWidth": 10.0, "boreDiameter": 12.0
+    });
+    let direct = worm_envelope(&mut direct_kernel, "makeWormWheelDetailed", &wheel);
+    assert_eq!(direct["status"], "ok", "{direct}");
+    let geometry = &direct["details"]["geometry"];
+    assert!((geometry["helixAngle"].as_f64().unwrap() - gamma.to_degrees()).abs() < 1e-12);
+    assert!((geometry["module"].as_f64().unwrap() - 2.0 * gamma.cos()).abs() < 1e-12);
+    assert!((geometry["transverseModule"].as_f64().unwrap() - 2.0).abs() < 1e-12);
+    assert!((geometry["pitchDiameter"].as_f64().unwrap() - 60.0).abs() < 1e-12);
+    assert!((geometry["centerDistance"].as_f64().unwrap() - 40.0).abs() < 1e-12);
+    assert_valid(&direct_kernel, handle(&direct["value"]));
+    assert_eq!(
+        worm_batch(&mut batch_kernel, "makeWormWheelDetailed", &wheel)["ok"],
+        direct
+    );
+}
+
+#[test]
+fn worm_refusals_carry_dimensions_and_keep_the_session() {
+    let mut kernel = RemusKernel::new();
+    let before = live_counts(&kernel);
+    let bored = json!({
+        "module": 2.0, "starts": 1, "diameterFactor": 10.0, "length": 10.0, "boreDiameter": 16.0
+    });
+    let result = worm_envelope(&mut kernel, "makeWormDetailed", &bored);
+    assert_eq!(result["code"], "gear:bore-too-large", "{result}");
+    assert_eq!(result["details"]["argument"], "boreDiameter");
+    assert_eq!(result["details"]["operation"], "makeWorm");
+    assert!(
+        (result["details"]["geometry"]["rootDiameter"]
+            .as_f64()
+            .unwrap()
+            - 15.0)
+            .abs()
+            < 1e-12
+    );
+    assert!(result["value"].is_null());
+    assert_eq!(
+        worm_batch(&mut kernel, "makeWormDetailed", &bored)["ok"],
+        result
+    );
+
+    // A lead angle past 45° has no worm to show.
+    let steep = json!({ "module": 2.0, "starts": 4, "diameterFactor": 3.0, "length": 10.0 });
+    let result = worm_envelope(&mut kernel, "makeWormDetailed", &steep);
+    assert_eq!(result["code"], "gear:invalid-parameter", "{result}");
+    assert!(result["details"].get("geometry").is_none());
+
+    let few = json!({
+        "module": 2.0, "starts": 1, "diameterFactor": 10.0, "teeth": 2, "faceWidth": 8.0
+    });
+    let result = worm_envelope(&mut kernel, "makeWormWheelDetailed", &few);
+    assert_eq!(result["code"], "gear:invalid-parameter", "{result}");
+    assert_eq!(result["details"]["operation"], "makeWormWheel");
+
+    for (op, spec) in [
+        (
+            "makeWormDetailed",
+            json!({ "module": 2.0, "starts": 1, "diameterFactor": 10.0, "length": 10.0, "teeth": 3 }),
+        ),
+        (
+            "makeWormWheelDetailed",
+            json!({ "module": 2.0, "starts": 1, "diameterFactor": 10.0, "teeth": 30, "faceWidth": 8.0, "length": 4.0 }),
+        ),
+        (
+            "makeWormDetailed",
+            json!({ "module": 2.0, "starts": 1.5, "diameterFactor": 10.0, "length": 10.0 }),
+        ),
+    ] {
+        let malformed = worm_envelope(&mut kernel, op, &spec);
+        assert_eq!(malformed["code"], "invalid_argument", "{spec}: {malformed}");
+        assert_eq!(
+            worm_batch(&mut kernel, op, &spec)["ok"],
+            malformed,
+            "{spec}"
+        );
+    }
+    assert_eq!(live_counts(&kernel), before);
+}
