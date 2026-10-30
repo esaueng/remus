@@ -14,6 +14,12 @@ historical predecessor-line records, retained for provenance. The
   `quality: "approximate"` with a proven `flankDeviationBound` (racks are
   exact). Dimensions, guideline warnings and typed `gear:<reason>` refusals
   are returned as data.
+* **operations,wasm:** `cut_gear_teeth` / `cutGearTeethDetailed` cut gear
+  teeth along the whole length of a solid's boss (external) or bore
+  (internal), keeping its diameter or using a given module; the input solid is
+  kept. A feature crossing the tooth band, or a span over part of the face,
+  refuses with a typed `gear:<reason>` code. Gear results now name every gear
+  face (`faceRoles`, e.g. `tooth[3].flank.plus`) and report the `module`.
 * **math:** `nurbs::hermite_fit::fit_cubic_hermite` fits a parametric curve
   with uniform cubic Hermite spans and a proven remainder bound from a
   caller-supplied fourth-derivative bound.

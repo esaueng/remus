@@ -199,3 +199,172 @@ fn malformed_specs_refuse_as_invalid_arguments() {
     assert!(zero_module["details"].get("geometry").is_none());
     assert_eq!(live_counts(&kernel), before);
 }
+
+fn faces_of(kernel: &RemusKernel, solid: u32) -> Vec<u32> {
+    let id = kernel.resolve_solid(solid).unwrap();
+    remus_topology::explorer::solid_faces(kernel.topo(), id)
+        .unwrap()
+        .into_iter()
+        .map(crate::handles::face_id_to_u32)
+        .collect()
+}
+
+/// The boss cylinder face of a `makeCylinder` solid.
+fn side_face(kernel: &RemusKernel, solid: u32) -> u32 {
+    faces_of(kernel, solid)
+        .into_iter()
+        .find(|&face| {
+            let id = kernel.resolve_face(face).unwrap();
+            matches!(
+                kernel.topo().face(id).unwrap().surface(),
+                remus_topology::face::FaceSurface::Cylinder(_)
+            )
+        })
+        .unwrap()
+}
+
+#[test]
+fn new_gears_name_every_face_once() {
+    let mut kernel = RemusKernel::new();
+    let result = envelope(
+        &mut kernel,
+        &json!({ "kind": "external", "module": 1.0, "teeth": 12, "faceWidth": 2.0, "boreDiameter": 3.0 }),
+    );
+    assert_eq!(result["status"], "ok", "{result}");
+    let roles = result["details"]["faceRoles"].as_array().unwrap();
+    let faces = faces_of(&kernel, handle(&result["value"]));
+    assert_eq!(roles.len(), faces.len());
+    let named: std::collections::BTreeSet<_> = roles.iter().map(|r| handle(&r["face"])).collect();
+    assert_eq!(named, faces.iter().copied().collect());
+    let names: std::collections::BTreeSet<_> =
+        roles.iter().map(|r| r["role"].as_str().unwrap()).collect();
+    assert_eq!(names.len(), roles.len());
+    assert!(names.contains("tooth[11].flank.plus") && names.contains("bore"));
+    assert!((result["details"]["geometry"]["module"].as_f64().unwrap() - 1.0).abs() < 1e-15);
+}
+
+fn cut_batch(kernel: &mut RemusKernel, solid: u32, face: u32, spec: &Value) -> Value {
+    let ops = json!([{ "op": "cutGearTeethDetailed", "args": { "solid": solid, "face": face, "spec": spec } }]);
+    let results: Value = serde_json::from_str(&kernel.execute_batch_v2(&ops.to_string())).unwrap();
+    results[0].clone()
+}
+
+#[test]
+fn teeth_on_a_boss_match_between_direct_and_batch_and_solve_the_module() {
+    let spec = json!({ "kind": "external", "teeth": 20, "faceWidth": 6.0, "phase": 4.5 });
+    let mut direct_kernel = RemusKernel::new();
+    let blank = direct_kernel.make_cylinder_solid(11.0, 6.0).unwrap();
+    let face = side_face(&direct_kernel, blank);
+    let direct =
+        serde_json::to_value(direct_kernel.cut_gear_teeth_detailed_impl(blank, face, &spec))
+            .unwrap();
+    assert_eq!(direct["status"], "ok", "{direct}");
+    assert!((direct["details"]["geometry"]["module"].as_f64().unwrap() - 1.0).abs() < 1e-12);
+    assert!(
+        (direct["details"]["geometry"]["tipDiameter"]
+            .as_f64()
+            .unwrap()
+            - 22.0)
+            .abs()
+            < 1e-9
+    );
+    let roles = direct["details"]["faceRoles"].as_array().unwrap();
+    assert_eq!(
+        roles
+            .iter()
+            .filter(|r| r["role"].as_str().unwrap().contains(".flank."))
+            .count(),
+        40
+    );
+    let solid = handle(&direct["value"]);
+    assert_ne!(solid, blank, "the input solid is kept");
+    assert_valid(&direct_kernel, solid);
+
+    let mut batch_kernel = RemusKernel::new();
+    let batch_blank = batch_kernel.make_cylinder_solid(11.0, 6.0).unwrap();
+    let batch_face = side_face(&batch_kernel, batch_blank);
+    let batch = cut_batch(&mut batch_kernel, batch_blank, batch_face, &spec);
+    assert_eq!(batch["ok"], direct);
+}
+
+#[test]
+fn cylinder_refusals_are_typed_and_atomic() {
+    let mut kernel = RemusKernel::new();
+    let blank = kernel.make_cylinder_solid(11.0, 6.0).unwrap();
+    let face = side_face(&kernel, blank);
+    let cap = faces_of(&kernel, blank)
+        .into_iter()
+        .find(|&f| f != face)
+        .unwrap();
+    let before = live_counts(&kernel);
+    let cases = [
+        (
+            face,
+            json!({ "kind": "external", "teeth": 20, "faceWidth": 4.0 }),
+            "gear:partial-span-unsupported",
+        ),
+        (
+            cap,
+            json!({ "kind": "external", "teeth": 20, "faceWidth": 6.0 }),
+            "gear:not-a-cylinder",
+        ),
+        (
+            face,
+            json!({ "kind": "internal", "teeth": 40, "faceWidth": 6.0 }),
+            "gear:invalid-parameter",
+        ),
+        (
+            face,
+            json!({ "kind": "external", "teeth": 20, "faceWidth": 6.0, "fit": "module", "module": 1.2 }),
+            "gear:cylinder-too-small",
+        ),
+        (
+            face,
+            json!({ "kind": "external", "teeth": 20, "faceWidth": 6.0, "module": 1.0 }),
+            "invalid_argument",
+        ),
+        (
+            face,
+            json!({ "kind": "external", "teeth": 20, "faceWidth": 6.0, "fit": "module" }),
+            "invalid_argument",
+        ),
+        (
+            face,
+            json!({ "kind": "rack", "teeth": 20, "faceWidth": 6.0 }),
+            "invalid_argument",
+        ),
+        (
+            face,
+            json!({ "kind": "external", "teeth": 20, "faceWidth": 6.0, "startOffset": 1.0 }),
+            "invalid_argument",
+        ),
+    ];
+    for (target, spec, code) in cases {
+        let direct =
+            serde_json::to_value(kernel.cut_gear_teeth_detailed_impl(blank, target, &spec))
+                .unwrap();
+        assert_eq!(direct["status"], "error", "{spec}: {direct}");
+        assert_eq!(direct["code"], code, "{spec}: {direct}");
+        assert_eq!(direct["details"]["operation"], "cutGearTeeth");
+        assert_eq!(live_counts(&kernel), before, "{spec}");
+        assert_eq!(
+            cut_batch(&mut kernel, blank, target, &spec)["ok"],
+            direct,
+            "{spec}"
+        );
+    }
+    let partial = serde_json::to_value(kernel.cut_gear_teeth_detailed_impl(
+        blank,
+        face,
+        &json!({ "kind": "external", "teeth": 20, "faceWidth": 4.0 }),
+    ))
+    .unwrap();
+    assert_eq!(partial["details"]["argument"], "faceWidth");
+    let missing = cut_batch(
+        &mut kernel,
+        blank,
+        9999,
+        &json!({ "kind": "external", "teeth": 20, "faceWidth": 6.0 }),
+    );
+    assert_eq!(missing["ok"]["status"], "error");
+}

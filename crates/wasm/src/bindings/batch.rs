@@ -334,6 +334,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "extrude"
         | "extrudeDetailed"
         | "makeGearDetailed"
+        | "cutGearTeethDetailed"
         | "imprintPlanarPolygon"
         | "revolve"
         | "revolveDetailed"
@@ -1799,6 +1800,13 @@ impl RemusKernel {
             }
             "makeGearDetailed" => serde_json::to_value(self.make_gear_detailed_impl(args))
                 .map_err(StructuredWasmError::from),
+            "cutGearTeethDetailed" => {
+                let solid = get_u32(args, "solid")?;
+                let face = get_u32(args, "face")?;
+                let spec = args.get("spec").cloned().unwrap_or(serde_json::Value::Null);
+                serde_json::to_value(self.cut_gear_teeth_detailed_impl(solid, face, &spec))
+                    .map_err(StructuredWasmError::from)
+            }
             "revolveDetailed" => {
                 let f = get_u32(args, "face")?;
                 let angle_degrees = get_f64(args, "angle")?;

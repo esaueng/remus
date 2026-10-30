@@ -6,6 +6,7 @@ use crate::measure::solid_volume;
 use crate::tessellate::{is_watertight, tessellate_solid_with_tolerance};
 use crate::validate::validate_solid;
 use remus_topology::explorer::solid_faces;
+use remus_topology::face::FaceId;
 
 fn spur(teeth: u32) -> GearParams {
     GearParams::standard(GearKind::External, 2.0, teeth, 5.0)
@@ -559,4 +560,105 @@ fn construction_is_deterministic() {
     let va = solid_volume(&a, first.solid, 1e-2).unwrap();
     let vb = solid_volume(&b, second.solid, 1e-2).unwrap();
     assert_eq!(va.to_bits(), vb.to_bits());
+}
+
+/// Polar angle of the mean of a face's boundary vertex directions.
+fn face_angle(topo: &Topology, face: FaceId) -> f64 {
+    let data = topo.face(face).unwrap();
+    let (mut sx, mut sy) = (0.0, 0.0);
+    for oriented in topo.wire(data.outer_wire()).unwrap().edges() {
+        let edge = topo.edge(oriented.edge()).unwrap();
+        let start = if oriented.is_forward() {
+            edge.start()
+        } else {
+            edge.end()
+        };
+        let p = topo.vertex(start).unwrap().point();
+        let r = p.x().hypot(p.y());
+        sx += p.x() / r;
+        sy += p.y() / r;
+    }
+    sy.atan2(sx)
+}
+
+/// Signed angle from `b` to `a`, wrapped into (−π, π].
+fn angle_between(a: f64, b: f64) -> f64 {
+    let d = (a - b).rem_euclid(TAU);
+    if d > PI { d - TAU } else { d }
+}
+
+#[test]
+fn every_face_of_a_new_gear_has_one_unique_construction_role() {
+    let mut external = spur(17);
+    external.bore_diameter = Some(8.0);
+    let mut internal = GearParams::standard(GearKind::Internal, 1.0, 30, 3.0);
+    internal.rim_diameter = Some(40.0);
+    let rack = GearParams::standard(GearKind::Rack, 1.0, 5, 2.0);
+    for (params, phase) in [(external, 0.3), (internal, -0.2), (rack, 0.0)] {
+        let placement = GearPlacement {
+            phase,
+            ..GearPlacement::default()
+        };
+        let (topo, outcome) = build_gear(&params, &placement);
+        let faces = solid_faces(&topo, outcome.solid).unwrap();
+        assert_eq!(outcome.face_roles.len(), faces.len(), "{:?}", params.kind);
+        let roled: std::collections::BTreeSet<_> =
+            outcome.face_roles.iter().map(|(f, _)| *f).collect();
+        assert!(faces.iter().all(|f| roled.contains(f)));
+        let names: std::collections::BTreeSet<_> =
+            outcome.face_roles.iter().map(|(_, r)| r.name()).collect();
+        assert_eq!(
+            names.len(),
+            faces.len(),
+            "{:?}: role names repeat",
+            params.kind
+        );
+        assert!(names.contains("cap.start") && names.contains("cap.end"));
+
+        if params.kind == GearKind::Rack {
+            for k in 0..params.teeth {
+                assert!(names.contains(&format!("tooth[{k}].tip")));
+            }
+            assert!(names.contains("back") && names.contains("root.start"));
+            continue;
+        }
+        let pitch = TAU / f64::from(params.teeth);
+        for (face, role) in &outcome.face_roles {
+            match role {
+                GearFaceRole::Tip { tooth } => {
+                    let center = phase + f64::from(*tooth) * pitch;
+                    let offset = angle_between(face_angle(&topo, *face), center);
+                    assert!(
+                        offset.abs() < 1e-9,
+                        "{} sits {offset} from its tooth ({:?})",
+                        role.name(),
+                        params.kind
+                    );
+                }
+                GearFaceRole::Flank { tooth, side } => {
+                    let center = phase + f64::from(*tooth) * pitch;
+                    let offset = angle_between(face_angle(&topo, *face), center);
+                    let expected_sign = if *side == ToothSide::Plus { 1.0 } else { -1.0 };
+                    assert!(
+                        offset * expected_sign > 0.0 && offset.abs() < 0.5 * pitch,
+                        "{} sits {offset} from its tooth",
+                        role.name()
+                    );
+                    assert!(matches!(
+                        topo.face(*face).unwrap().surface(),
+                        FaceSurface::Nurbs(_)
+                    ));
+                }
+                GearFaceRole::Root { gap } => {
+                    let center = phase + (f64::from(*gap) + 0.5) * pitch;
+                    assert!(
+                        angle_between(face_angle(&topo, *face), center).abs() < 1e-9,
+                        "{}",
+                        role.name()
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
 }
