@@ -1213,9 +1213,10 @@ fn wire_polygon_arcs(
         if !oe.is_forward() {
             pts.reverse();
         }
-        let circle = match edge.curve() {
-            remus_topology::edge::EdgeCurve::Circle(circle) => Some(circle.clone()),
-            _ => None,
+        let circle = if let remus_topology::edge::EdgeCurve::Circle(circle) = edge.curve() {
+            Some(circle.clone())
+        } else {
+            None
         };
         polylines.push((pts, circle));
     }
