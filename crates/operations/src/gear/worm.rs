@@ -366,7 +366,7 @@ fn build(
 }
 
 /// The involute helical wheel with `teeth` teeth and `face_width` that
-/// meshes with `worm` (see the [module docs](self)).
+/// meshes with `worm`, a crossed helical partner (see [`make_worm`]).
 ///
 /// It takes the worm's hand, helix angle `γ`, normal module `m_x·cos γ` and
 /// pressure angle, and addendum, dedendum and root fillet of the same
