@@ -13,6 +13,25 @@ FAMILIES = frozenset({
     "mutation-scope", "osv", "wasm-candidate", "wasm-size",
 })
 PREFIX = "esaueng/remus/.github/workflows/"
+# Superseded callees removed from the tree, with the main commit that landed
+# their final bytes. Historical stage proofs read them from there.
+RETIRED = {
+    "fleet-benchmark-v3.yml": "4e5bd846fae03e87e3d4ca1169e35b18952d4fb9",
+    "fleet-ci-v7.yml": "3d648c419a95680ff5d6c9f46cb749b6a8fe0e5a",
+}
+
+
+def workflow_text(filename: str, root: Path = ROOT) -> str:
+    """Read a checked-in workflow, or a retired one from its landed commit."""
+    path = root / ".github/workflows" / filename
+    if filename not in RETIRED:
+        return path.read_text()
+    if path.exists():
+        raise ValueError(f"Retired workflow is back in the tree: {filename}")
+    return subprocess.check_output(
+        ["git", "show", f"{RETIRED[filename]}:.github/workflows/{filename}"],
+        cwd=root, text=True,
+    )
 
 
 def is_ci_workflow(path: Path) -> bool:

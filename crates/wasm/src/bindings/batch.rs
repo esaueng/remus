@@ -165,6 +165,9 @@ type BatchItemResult = Result<serde_json::Value, StructuredWasmError>;
 enum BatchOpKind {
     ReadOnly,
     Mutating,
+    /// Changes per-thread session configuration, not topology. A refused
+    /// item restores the configuration it found ([`RemusKernel::run_session_setting`]).
+    Session,
 }
 
 /// Classify operations before doing any work that scales with topology size.
@@ -270,8 +273,10 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "gcsSolve"
         | "gcsSolveDetailed"
         | "gcsDof" => Some(BatchOpKind::ReadOnly),
-        // Session settings: they never touch the topology.
-        "setStoreLocalCuts" | "storeLocalCutsEnabled" => Some(BatchOpKind::ReadOnly),
+        // Session settings: they never touch the topology, but the setter
+        // changes module state that a refused item must not leave behind.
+        "setStoreLocalCuts" => Some(BatchOpKind::Session),
+        "storeLocalCutsEnabled" => Some(BatchOpKind::ReadOnly),
         "makeBox"
         | "makeCompound"
         | "fuseJournaled"
@@ -550,6 +555,22 @@ impl RemusKernel {
         result
     }
 
+    /// Runs a `Session` operation: read-only on the topology, and a refusal
+    /// restores the store-local boolean switch to the value it had on entry.
+    /// The switch is per thread, outside the topology, so no topology
+    /// rollback covers it.
+    pub(super) fn run_session_setting(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> BatchItemResult,
+    ) -> BatchItemResult {
+        let store_local_cuts = remus_operations::boolean::thread_store_local_cuts_enabled();
+        let result = self.run_read_only(operation);
+        if result.is_err() {
+            remus_operations::boolean::set_thread_store_local_cuts(store_local_cuts);
+        }
+        result
+    }
+
     /// Runs one batch operation, undoing its topology changes if it fails.
     ///
     /// Mutating operations run in a mutation-local rollback scope that
@@ -567,6 +588,8 @@ impl RemusKernel {
     ) -> BatchItemResult {
         if kind == BatchOpKind::ReadOnly {
             self.run_read_only(|kernel| kernel.dispatch_op(op, args))
+        } else if kind == BatchOpKind::Session {
+            self.run_session_setting(|kernel| kernel.dispatch_op(op, args))
         } else {
             let refusal = if matches!(op, "fuse" | "cut" | "intersect") {
                 Refusal::Exact
@@ -4206,6 +4229,16 @@ mod batch_contract_tests {
             Some(BatchOpKind::ReadOnly)
         );
         assert_eq!(batch_op_kind("makeBox"), Some(BatchOpKind::Mutating));
+        // The store-local setter changes per-thread state no topology
+        // rollback covers; its getter is a plain read.
+        assert_eq!(
+            batch_op_kind("setStoreLocalCuts"),
+            Some(BatchOpKind::Session)
+        );
+        assert_eq!(
+            batch_op_kind("storeLocalCutsEnabled"),
+            Some(BatchOpKind::ReadOnly)
+        );
         assert_eq!(batch_op_kind("moveFaces"), Some(BatchOpKind::Mutating));
         assert_eq!(batch_op_kind("notAnOperation"), None);
     }

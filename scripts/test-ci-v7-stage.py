@@ -24,10 +24,11 @@ import subprocess
 import unittest
 from pathlib import Path
 
+from fleet_workflows import workflow_text
+
 ROOT = Path(__file__).resolve().parents[1]
 V6_LANDED = "05fca2fc1029be782afe41ee6ebbeae812e5e40c"
 V6_PATH = ".github/workflows/fleet-ci-v6.yml"
-V7 = ROOT / ".github/workflows/fleet-ci-v7.yml"
 
 CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"
 RUST_CACHE = "Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2"
@@ -170,7 +171,7 @@ def jobs(text):
                            text.split("\njobs:\n", 1)[1], re.M | re.S))
 
 
-TEXT = V7.read_text()
+TEXT = workflow_text("fleet-ci-v7.yml")
 JOBS = jobs(TEXT)
 
 
