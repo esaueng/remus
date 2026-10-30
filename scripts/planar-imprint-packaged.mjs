@@ -53,13 +53,13 @@ function mesh(k, solid, scale, expected) {
   for (const value of uses.values()) assert.deepEqual(value, [2, 0]);
   close(volume, expected, 'independent mesh volume');
 }
-export function runPlanarImprintPackaged({ BrepKernel }) {
-  assert.equal(typeof BrepKernel.prototype.imprintPlanarPolygon, 'function');
+export function runPlanarImprintPackaged({ RemusKernel }) {
+  assert.equal(typeof RemusKernel.prototype.imprintPlanarPolygon, 'function');
   let cells = 0;
   for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const scale of [0.001, 1, 1000]) {
       for (const placed of [false, true]) for (const reversed of [false, true]) {
-        const k = new BrepKernel();
+        const k = new RemusKernel();
         try {
           // Journal the initial box through a face move before capturing refs.
           const initial = k.makeBox(10 * scale, 8 * scale, 3 * scale);
@@ -119,7 +119,7 @@ export function runPlanarImprintPackaged({ BrepKernel }) {
       }
     }
     // A real boolean cavity: the untouched inner shell keeps its exact handle.
-    const k = new BrepKernel();
+    const k = new RemusKernel();
     try {
       const outer = k.makeBox(10, 8, 4), inner = k.makeBox(2, 2, 2);
       k.transformSolid(inner, [1, 0, 0, 4, 0, 1, 0, 3, 0, 0, 1, 1, 0, 0, 0, 1]);

@@ -22,7 +22,7 @@ function invoke(kernel, api, op, args, direct, label) {
   return cell.ok;
 }
 
-export function runOpseqOffsetWallPackaged({ BrepKernel }) {
+export function runOpseqOffsetWallPackaged({ RemusKernel }) {
   let passed = 0;
   for (const api of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const offsetOp of ['offsetSolid', 'offsetSolidV2']) {
@@ -36,7 +36,7 @@ export function runOpseqOffsetWallPackaged({ BrepKernel }) {
           for (const scale of [1, 1000]) {
             for (const placed of [false, true]) {
               const label = `offset wall ${api}/${offsetOp} radii=${r0}/${r1} h=${h} d=${d} scale=${scale} placed=${placed}`;
-              const kernel = new BrepKernel();
+              const kernel = new RemusKernel();
               const run = (op, args, direct) => invoke(kernel, api, op, args, direct, label);
               try {
                 const source = r0 === r1

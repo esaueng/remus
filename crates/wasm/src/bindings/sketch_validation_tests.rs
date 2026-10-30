@@ -10,11 +10,11 @@
 use remus_operations::sketch::Constraint;
 
 use crate::error::WasmError;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 /// A legacy sketch holding `n` free points along the x axis.
-fn legacy_sketch(n: u32) -> (BrepKernel, u32) {
-    let mut kernel = BrepKernel::new();
+fn legacy_sketch(n: u32) -> (RemusKernel, u32) {
+    let mut kernel = RemusKernel::new();
     let sketch = kernel.sketch_new().unwrap();
     for i in 0..n {
         kernel
@@ -24,12 +24,12 @@ fn legacy_sketch(n: u32) -> (BrepKernel, u32) {
     (kernel, sketch)
 }
 
-fn stored(kernel: &BrepKernel, sketch: u32) -> (usize, usize) {
+fn stored(kernel: &RemusKernel, sketch: u32) -> (usize, usize) {
     let sk = kernel.sketches.get(sketch as usize).unwrap();
     (sk.constraints.len(), sk.deferred_constraints.len())
 }
 
-fn refused(kernel: &mut BrepKernel, sketch: u32, json: &str) -> WasmError {
+fn refused(kernel: &mut RemusKernel, sketch: u32, json: &str) -> WasmError {
     let before = stored(kernel, sketch);
     let error = kernel
         .sketch_add_constraint_impl(sketch, json)
@@ -173,7 +173,7 @@ fn unbuildable_deferred_constraints_are_refused_when_added() {
     serde_json::from_str::<serde_json::Value>(&kernel.sketch_dof(sketch).unwrap()).unwrap();
 }
 
-fn batch(kernel: &mut BrepKernel, ops: &serde_json::Value) -> Vec<serde_json::Value> {
+fn batch(kernel: &mut RemusKernel, ops: &serde_json::Value) -> Vec<serde_json::Value> {
     serde_json::from_str(&kernel.execute_batch_v2(&ops.to_string())).unwrap()
 }
 
@@ -198,13 +198,13 @@ fn ellipse_sign_ops(a0: f64) -> serde_json::Value {
 /// from `a = 3` it reported convergence on the collapsed `a = 0`.
 #[test]
 fn gcs_solve_never_publishes_a_non_positive_ellipse_semiaxis() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let results = batch(&mut kernel, &ellipse_sign_ops(5.0));
     assert_eq!(results[7]["ok"]["converged"], true, "{:?}", results[7]);
     let a = results[8]["ok"][2].as_f64().unwrap();
     assert!((a - 1.0).abs() < 1e-9, "a = {a}");
 
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let results = batch(&mut kernel, &ellipse_sign_ops(3.0));
     let message = results[7]["error"]["message"].as_str().unwrap_or_default();
     assert!(

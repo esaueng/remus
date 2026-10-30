@@ -5,9 +5,9 @@ use remus_math::vec::{Point3, Vec3};
 use remus_topology::face::{Face, FaceSurface};
 
 use crate::handles::{face_id_to_u32, solid_id_to_u32};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
-fn fixture(kernel: &mut BrepKernel) -> (u32, u32) {
+fn fixture(kernel: &mut RemusKernel) -> (u32, u32) {
     let topo = kernel.topo_mut();
     let square = |half: f64| {
         vec![
@@ -33,7 +33,7 @@ fn fixture(kernel: &mut BrepKernel) -> (u32, u32) {
     (face_id_to_u32(profile), path)
 }
 
-fn counts(kernel: &BrepKernel) -> [usize; 6] {
+fn counts(kernel: &RemusKernel) -> [usize; 6] {
     let topo = kernel.topo();
     [
         topo.num_vertices(),
@@ -45,7 +45,7 @@ fn counts(kernel: &BrepKernel) -> [usize; 6] {
     ]
 }
 
-fn assert_frustum(kernel: &BrepKernel, handle: u32) {
+fn assert_frustum(kernel: &RemusKernel, handle: u32) {
     let solid = kernel.resolve_solid(handle).unwrap();
     assert_eq!(solid_id_to_u32(solid), handle);
     let volume = remus_operations::measure::solid_volume(kernel.topo(), solid, 0.01).unwrap();
@@ -78,7 +78,7 @@ fn assert_frustum(kernel: &BrepKernel, handle: u32) {
 
 #[test]
 fn tapered_hollow_sweep_direct_and_both_batch_contracts() {
-    let mut direct = BrepKernel::new();
+    let mut direct = RemusKernel::new();
     let (profile, path) = fixture(&mut direct);
     let result = direct
         .sweep_with_options(
@@ -93,7 +93,7 @@ fn tapered_hollow_sweep_direct_and_both_batch_contracts() {
     assert_frustum(&direct, result);
 
     for version_two in [false, true] {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let (profile, path) = fixture(&mut kernel);
         let program = serde_json::json!([{"op": "sweepWithOptions", "args": {
             "profile": profile, "pathEdge": path, "contactMode": "fixed",
@@ -116,7 +116,7 @@ fn tapered_hollow_sweep_direct_and_both_batch_contracts() {
 #[test]
 fn tapered_hollow_sweep_refusal_keeps_live_state_and_history() {
     for version_two in [false, true] {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let (profile, path) = fixture(&mut kernel);
         let before = counts(&kernel);
         let history = kernel.topo().journal().snapshot();
@@ -180,7 +180,7 @@ fn sweep_native_domains_direct_and_both_batch_contracts() {
         (0.0, 1e308, 16),
     ] {
         for route in 0..3 {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let (profile, _) = fixture(&mut kernel);
             let edge = kernel
                 .make_nurbs_edge_impl(
@@ -229,7 +229,7 @@ fn sweep_native_domains_direct_and_both_batch_contracts() {
 
 #[test]
 fn guided_native_domain_mismatch_is_typed_and_keeps_checkpoint_ownership() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let (profile, spine_edge) = fixture(&mut kernel);
     let aux = kernel
         .make_nurbs_edge_impl(
@@ -308,7 +308,7 @@ fn guided_native_domain_mismatch_is_typed_and_keeps_checkpoint_ownership() {
 fn sweep_late_refusal_preserves_shared_ownership_and_unshared_private_slot_safety() {
     use remus_topology::wire::{OrientedEdge, Wire};
     for checkpointed in [false, true] {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let edge = remus_topology::builder::make_circle_edge(
             kernel.topo_mut(),
             Point3::new(0.0, 0.0, 0.0),

@@ -53,13 +53,13 @@ function resolved(kernel, references, solid) {
   }
 }
 
-export function runRevolveHistoryPackaged({ BrepKernel }) {
-  assert.equal(typeof BrepKernel.prototype.revolveJournaled, 'function');
+export function runRevolveHistoryPackaged({ RemusKernel }) {
+  assert.equal(typeof RemusKernel.prototype.revolveJournaled, 'function');
   let cells = 0;
   for (const route of routes) {
     for (const scale of [0.001, 1, 1000]) {
       for (const points of profiles) {
-        const kernel = new BrepKernel();
+        const kernel = new RemusKernel();
         try {
           const face = profile(kernel, points, scale);
           const before = kernel.checkpoint();
@@ -112,7 +112,7 @@ export function runRevolveHistoryPackaged({ BrepKernel }) {
     }
   }
   for (const route of routes) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const face = profile(kernel, profiles[0], 1);
       const journal = kernel.journalSummary();

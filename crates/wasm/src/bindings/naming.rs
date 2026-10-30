@@ -25,7 +25,7 @@ use remus_topology::naming::{PersistentRef, Provenance, Resolution, resolve};
 use crate::error::StructuredWasmError;
 use crate::error::validate_finite;
 use crate::helpers::{get_optional_bool, get_optional_f64, get_u32};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 /// Visibility note: `pub(crate)` triggers `clippy::redundant_pub_crate`
 /// because `bindings` is a private module; kept to make the
@@ -124,7 +124,7 @@ fn propagation_json(report: JournalAttributePropagation) -> serde_json::Value {
     })
 }
 
-impl BrepKernel {
+impl RemusKernel {
     fn journaled_boolean_json(
         &mut self,
         op: BooleanOp,
@@ -384,7 +384,7 @@ impl BrepKernel {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     // ── Persistent naming (RFC 0003) ────────────────────────────────
 
     /// Fuse two solids with journaled construction history.
@@ -475,7 +475,7 @@ impl BrepKernel {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Serializes "the `index`-th `kind` output of journal operation
     /// `op`" as a portable reference string (versioned JSON, opaque).
     #[wasm_bindgen(js_name = "makeOperationOutputRef")]
@@ -560,9 +560,9 @@ fn structured_to_js(error: StructuredWasmError) -> JsError {
 mod naming_contract_tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
-    fn run(kernel: &mut BrepKernel, ops: serde_json::Value) -> Vec<serde_json::Value> {
+    fn run(kernel: &mut RemusKernel, ops: serde_json::Value) -> Vec<serde_json::Value> {
         let response = kernel.execute_batch(&ops.to_string());
         let parsed: serde_json::Value =
             serde_json::from_str(&response).expect("batch response must be valid JSON");
@@ -585,7 +585,7 @@ mod naming_contract_tests {
     /// serialized reference.
     #[test]
     fn names_survive_a_journaled_fuse_end_to_end() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let results = run(
             &mut kernel,
             serde_json::json!([
@@ -675,7 +675,7 @@ mod naming_contract_tests {
     /// A barrier severs journal resolution, honestly and typed.
     #[test]
     fn barriers_sever_resolution_as_data_not_errors() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let results = run(
             &mut kernel,
             serde_json::json!([
@@ -707,7 +707,7 @@ mod naming_contract_tests {
     /// Signature references: capture, discriminate, resolve — inferred.
     #[test]
     fn signature_refs_capture_and_discriminate() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let results = run(
             &mut kernel,
             serde_json::json!([

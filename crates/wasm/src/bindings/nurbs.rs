@@ -11,7 +11,7 @@ use remus_math::vec::Point3;
 use crate::error::{WasmError, validate_finite, validate_work_count, validate_work_product};
 use crate::handles::{edge_id_to_u32, face_id_to_u32};
 use crate::helpers::{parse_point_grid, parse_points};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 /// Weights within this absolute distance of `1.0` are treated as unit.
 const WEIGHT_UNIT_TOL: f64 = 1e-12;
@@ -173,7 +173,7 @@ fn rows_coincide(a: &[Point3], b: &[Point3]) -> bool {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Interpolate a NURBS curve through points and create an edge.
     ///
     /// Uses chord-length parameterization with the given degree.
@@ -421,7 +421,7 @@ impl BrepKernel {
     }
 }
 
-impl BrepKernel {
+impl RemusKernel {
     /// Return parity surface data only for intrinsically free-form faces,
     /// else JSON `null`. Pure: resolves the face without touching the arena.
     pub(crate) fn free_form_surface_data_parity(
@@ -456,11 +456,11 @@ mod tests {
 
     use crate::handles::{edge_id_to_u32, face_id_to_u32};
     use crate::helpers::TOL;
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
     use super::*;
 
-    fn dispatch_ok(k: &mut BrepKernel, op: &str, args: serde_json::Value) -> serde_json::Value {
+    fn dispatch_ok(k: &mut RemusKernel, op: &str, args: serde_json::Value) -> serde_json::Value {
         let batch = serde_json::json!([{ "op": op, "args": args }]);
         let out = k.execute_batch(&batch.to_string());
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
@@ -476,7 +476,7 @@ mod tests {
         cp + degree + 1
     }
 
-    fn entity_counts(k: &BrepKernel) -> (usize, usize, usize) {
+    fn entity_counts(k: &RemusKernel) -> (usize, usize, usize) {
         (
             k.topo.num_faces(),
             k.topo.num_edges(),
@@ -486,7 +486,7 @@ mod tests {
 
     #[test]
     fn curve_data_round_trips_cubic_nurbs() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let cps = vec![
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(1.0, 2.0, 0.0),
@@ -582,7 +582,7 @@ mod tests {
         NurbsCurve::new(degree, knots, cps, weights).unwrap()
     }
 
-    fn extract(k: &mut BrepKernel, handle: u32) -> serde_json::Value {
+    fn extract(k: &mut RemusKernel, handle: u32) -> serde_json::Value {
         let before = entity_counts(k);
         let data = dispatch_ok(k, "getNurbsCurveData", serde_json::json!({"edge": handle}));
         assert_eq!(before, entity_counts(k), "query must not mutate topology");
@@ -591,7 +591,7 @@ mod tests {
 
     #[test]
     fn interpolated_curve_data_never_null() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let points = vec![
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(1.0, 2.0, 0.5),
@@ -617,7 +617,7 @@ mod tests {
 
     #[test]
     fn approximated_curve_data_never_null() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let points: Vec<Point3> = (0..8)
             .map(|i| {
                 let t = f64::from(i) / 7.0;
@@ -636,7 +636,7 @@ mod tests {
 
     #[test]
     fn lspia_curve_data_never_null() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let points: Vec<Point3> = (0..10)
             .map(|i| {
                 let t = f64::from(i) / 9.0;
@@ -655,7 +655,7 @@ mod tests {
 
     #[test]
     fn two_point_interpolation_degree_clamped() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let points = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 3.0, 1.0)];
         let curve = remus_math::nurbs::fitting::interpolate(&points, 3).unwrap();
         let eid = make_nurbs_edge_from_curve(k.topo_mut(), &curve, TOL);
@@ -671,7 +671,7 @@ mod tests {
 
     #[test]
     fn fitted_straight_curve_keeps_explicit_poles() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let points: Vec<Point3> = (0..5)
             .map(|i| {
                 let t = f64::from(i) / 4.0;
@@ -693,7 +693,7 @@ mod tests {
 
     #[test]
     fn circle_edge_extracts_rational_quadratic() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let radius = 2.5;
         let circle = remus_math::curves::Circle3D::new(
             Point3::new(0.0, 0.0, 0.0),
@@ -740,7 +740,7 @@ mod tests {
 
     #[test]
     fn surface_data_round_trips_nurbs_face() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let mut grid = Vec::new();
         for i in 0..4 {
             let mut row = Vec::new();
@@ -808,7 +808,7 @@ mod tests {
 
     #[test]
     fn planar_face_extracts_unit_degree1_grid() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = remus_operations::primitives::make_box(k.topo_mut(), 4.0, 6.0, 2.0).unwrap();
         let faces = remus_topology::explorer::solid_faces(&k.topo, solid).unwrap();
         let handle = face_id_to_u32(faces[0]);
@@ -831,7 +831,7 @@ mod tests {
 
     #[test]
     fn cylinder_cap_face_extracts_unit_degree1_grid() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let radius = 3.0;
         let height = 5.0;
         let solid =
@@ -875,14 +875,14 @@ mod tests {
         assert!(dy >= 2.0 * radius - 1e-9, "cap v-extent {dy}");
     }
 
-    fn first_analytic_face(k: &BrepKernel, solid: remus_topology::solid::SolidId) -> u32 {
+    fn first_analytic_face(k: &RemusKernel, solid: remus_topology::solid::SolidId) -> u32 {
         let faces = remus_topology::explorer::solid_faces(&k.topo, solid).unwrap();
         face_id_to_u32(faces[0])
     }
 
     #[test]
     fn parity_planar_face_returns_null() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = remus_operations::primitives::make_box(k.topo_mut(), 4.0, 6.0, 2.0).unwrap();
         let handle = first_analytic_face(&k, solid);
 
@@ -898,7 +898,7 @@ mod tests {
 
     #[test]
     fn parity_analytic_faces_return_null() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let cyl = remus_operations::primitives::make_cylinder(k.topo_mut(), 3.0, 5.0).unwrap();
         let cone = remus_operations::primitives::make_cone(k.topo_mut(), 3.0, 1.0, 5.0).unwrap();
         let sphere = remus_operations::primitives::make_sphere(k.topo_mut(), 2.0, 16).unwrap();
@@ -923,7 +923,7 @@ mod tests {
 
     #[test]
     fn parity_nurbs_face_extracts_full_data() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let mut grid = Vec::new();
         for i in 0..4 {
             let mut row = Vec::new();
@@ -1015,7 +1015,7 @@ mod tests {
 
     #[test]
     fn cylinder_side_face_extracts_periodic_rational() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let radius = 3.0;
         let height = 5.0;
         let solid =

@@ -30,7 +30,7 @@ _SPEC.loader.exec_module(gate)  # type: ignore[union-attr]
 REPO = Path(__file__).resolve().parents[1]
 
 MUT_EXPORT = """#[wasm_bindgen]
-impl BrepKernel {{
+impl RemusKernel {{
     #[wasm_bindgen(js_name = "{js}")]
     pub fn {rust}(&mut self, solid: u32) -> Result<u32, JsError> {{
         Ok(solid)
@@ -39,7 +39,7 @@ impl BrepKernel {{
 """
 
 QUERY_EXPORT = """#[wasm_bindgen]
-impl BrepKernel {{
+impl RemusKernel {{
     #[wasm_bindgen(js_name = "{js}")]
     pub fn {rust}(&self, solid: u32) -> Result<u32, JsError> {{
         Ok(solid)
@@ -50,7 +50,7 @@ impl BrepKernel {{
 ASYNC_MUT_EXPORT = MUT_EXPORT.replace("pub fn", "pub async fn")
 
 BATCH_RS = """use wasm_bindgen::prelude::*;
-impl BrepKernel {{
+impl RemusKernel {{
     fn dispatch_op(&mut self, op: &str) -> u32 {{
         match op {{
             "{ops}" => 0,
@@ -61,7 +61,7 @@ impl BrepKernel {{
 """
 
 TWIN_EXPORT = """#[wasm_bindgen]
-impl BrepKernel {{
+impl RemusKernel {{
     #[wasm_bindgen(js_name = "{js}")]
     pub fn {rust}(&mut self, a: u32, b: u32) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {{
         todo!()
@@ -152,7 +152,7 @@ class O47CoverageFixtures(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="o47-gap-") as directory:
             root = Path(directory)
             (root / "lib.rs").write_text(
-                '#[wasm_bindgen]\nimpl BrepKernel {\n'
+                '#[wasm_bindgen]\nimpl RemusKernel {\n'
                 '#[wasm_bindgen(js_name = "doThing")]\n'
                 + gap + declaration + '\n}\n',
                 encoding="utf-8",
@@ -836,7 +836,7 @@ print(json.dumps({"exports": exports,
         twin = TWIN_EXPORT.format(js="fuseDetailed", rust="fuse_detailed")
         sources = {
             "impl": ('#[cfg(feature = "io")]\n' + twin).replace(
-                "impl BrepKernel {", "impl BrepKernel\n{"
+                "impl RemusKernel {", "impl RemusKernel\n{"
             ),
             "module": ('#[cfg(feature = "io")]\nmod optional {\n' + twin + '}\n').replace(
                 "mod optional {", "mod optional\n{"
@@ -1211,7 +1211,7 @@ print(json.dumps({"exports": exports,
                 "    fn dispatch_op", '    #[cfg(feature = "io")]\n    fn dispatch_op'
             ),
             "impl": batch.replace(
-                "impl BrepKernel", '#[cfg(feature = "io")]\nimpl BrepKernel'
+                "impl RemusKernel", '#[cfg(feature = "io")]\nimpl RemusKernel'
             ),
             "file": '#![cfg(feature = "io")]\n' + batch,
             "parent_module": batch,
@@ -1486,7 +1486,7 @@ print(json.dumps({"exports": exports,
             {
                 "bindings/operations.rs": (
                     "#[wasm_bindgen]\n"
-                    "impl BrepKernel {\n"
+                    "impl RemusKernel {\n"
                     "    #[wasm_bindgen]\n"
                     "    pub fn bare_export(&mut self, solid: u32) -> Result<u32, JsError> {\n"
                     "        Ok(solid)\n"
@@ -1505,7 +1505,7 @@ print(json.dumps({"exports": exports,
             {
                 "bindings/operations.rs": (
                     "#[wasm_bindgen]\n"
-                    "impl BrepKernel {\n"
+                    "impl RemusKernel {\n"
                     "    #[wasm_bindgen]\n"
                     "    pub async fn bare_async(&mut self, solid: u32) -> Result<u32, JsError> {\n"
                     "        Ok(solid)\n"
@@ -1526,7 +1526,7 @@ print(json.dumps({"exports": exports,
                     {
                         "bindings/operations.rs": (
                             "#[wasm_bindgen]\n"
-                            "impl BrepKernel {\n"
+                            "impl RemusKernel {\n"
                             f"    pub {qualifier}fn default_named(&mut self, solid: u32) -> Result<u32, JsError> {{\n"
                             "        Ok(solid)\n"
                             "    }\n"
@@ -1543,7 +1543,7 @@ print(json.dumps({"exports": exports,
         directory = make_tree(
             {
                 "bindings/operations.rs": (
-                    "impl BrepKernel {\n"
+                    "impl RemusKernel {\n"
                     "    pub fn internal_helper(&mut self) {}\n"
                     "}\n"
                 ),
@@ -1559,7 +1559,7 @@ print(json.dumps({"exports": exports,
                 "bindings/operations.rs": (
                     "mod feature {\n"
                     "    #[wasm_bindgen]\n"
-                    "    impl BrepKernel {\n"
+                    "    impl RemusKernel {\n"
                     "        #[wasm_bindgen(js_name = \"named\")]\n"
                     "        pub fn named(&self) -> &'static str { \"}\" }\n"
                     "        pub fn default_mutation(&mut self, solid: u32) -> u32 { solid }\n"

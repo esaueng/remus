@@ -35,7 +35,7 @@
     clippy::print_stderr
 )]
 
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 /// Parse the batch result JSON and return the parsed array.
 fn parse_batch(result: &str) -> serde_json::Value {
@@ -101,7 +101,7 @@ fn translate_matrix(x: f64, y: f64, z: f64) -> String {
 /// Solids: 0=box, 1=cylinder, 2-5=copies, 6=compoundCut result
 #[test]
 fn compound_cut_4_cylinders() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let result = k.execute_batch(
         r#"[
         {"op": "makeBox", "args": {"width": 42, "height": 42, "depth": 5}},
@@ -123,7 +123,7 @@ fn compound_cut_4_cylinders() {
 ///         5-6=y-cutouts, 7=compoundCut result
 #[test]
 fn compound_cut_wall_cutouts() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let result = k.execute_batch(
         r#"[
         {"op": "makeBox", "args": {"width": 20, "height": 20, "depth": 10}},
@@ -146,7 +146,7 @@ fn compound_cut_wall_cutouts() {
 ///         4-5=box-copies, 6=compoundCut result
 #[test]
 fn compound_cut_inserts_mixed() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let result = k.execute_batch(
         r#"[
         {"op": "makeBox", "args": {"width": 30, "height": 30, "depth": 8}},
@@ -172,7 +172,7 @@ fn compound_cut_inserts_mixed() {
 ///         6-8=y-dividers, 9-14=cut results
 #[test]
 fn sequential_cut_many_dividers() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let result = k.execute_batch(
         r#"[
         {"op": "makeBox", "args": {"width": 40, "height": 40, "depth": 10}},
@@ -203,7 +203,7 @@ fn sequential_cut_many_dividers() {
 /// Solids: 0=box, 1=cylinder, 2-6=copies, 7=compoundCut result
 #[test]
 fn compound_cut_slotted() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let result = k.execute_batch(
         r#"[
         {"op": "makeBox", "args": {"width": 30, "height": 10, "depth": 5}},
@@ -225,7 +225,7 @@ fn compound_cut_slotted() {
 /// Solids: 0=box, 1=cylinder, 2-10=copies, 11=compoundCut result
 #[test]
 fn compound_cut_honeycomb() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let mut ops: Vec<String> = vec![
         r#"{"op": "makeBox", "args": {"width": 30, "height": 30, "depth": 3}}"#.to_string(),
         r#"{"op": "makeCylinder", "args": {"radius": 2.0, "height": 6.0}}"#.to_string(),
@@ -262,7 +262,7 @@ fn compound_cut_honeycomb() {
 /// Split into batches because fillet may fail, shifting handles.
 #[test]
 fn fillet_then_compound_cut() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     // Batch 1: create box + query edges + fillet first edge.
     let r1 = k.execute_batch(
         r#"[
@@ -304,7 +304,7 @@ fn fillet_then_compound_cut() {
 /// Solids: 0=box, 1=cylinder, 2-6=copies, 7-11=cut results
 #[test]
 fn sequential_cut_5_cylinders() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let result = k.execute_batch(
         r#"[
         {"op": "makeBox", "args": {"width": 20, "height": 20, "depth": 8}},
@@ -333,7 +333,7 @@ fn sequential_cut_5_cylinders() {
 ///         4=cylinder, 5-6=cyl-copies, 7=compoundCut result
 #[test]
 fn compound_cut_after_fuse() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let result = k.execute_batch(
         r#"[
         {"op": "makeBox", "args": {"width": 10, "height": 10, "depth": 10}},
@@ -358,7 +358,7 @@ fn compound_cut_after_fuse() {
 /// Solids: 0=box, 2=overlapping copy, 3=disjoint copy, 4=fuseAll result.
 #[test]
 fn fuse_all_mixed_overlap_and_disjoint() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let result = k.execute_batch(
         r#"[
         {"op": "makeBox", "args": {"width": 10, "height": 10, "depth": 10}},
@@ -395,7 +395,7 @@ fn fuse_all_mixed_overlap_and_disjoint() {
 /// Split into batches because fillet may fail, shifting handles.
 #[test]
 fn batch_fuse_cut_fillet_compound() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     // Batch 1: create two boxes, fuse them.
     // Solids: 0=box1, 1=box2, 2=box2-copy (translated), 3=fused
     let r1 = k.execute_batch(
@@ -446,7 +446,7 @@ fn batch_fuse_cut_fillet_compound() {
 /// Solids: 0=box, 1=cylinder, 2-5=copies, 6=compoundCut result
 #[test]
 fn compound_cut_then_measure() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let result = k.execute_batch(
         r#"[
         {"op": "makeBox", "args": {"width": 20, "height": 20, "depth": 5}},
@@ -484,7 +484,7 @@ fn compound_cut_then_measure() {
 /// Solids: 0=box, 1=cylinder, 2-4=copies, 5-7=cut results
 #[test]
 fn sequential_booleans_volume_accuracy() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let result = k.execute_batch(
         r#"[
         {"op": "makeBox", "args": {"width": 10, "height": 10, "depth": 10}},
@@ -521,7 +521,7 @@ fn sequential_booleans_volume_accuracy() {
 /// Uses `solidEdges` to get edge handles for the fillet.
 #[test]
 fn fillet_box_bbox_unchanged() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     // Get box bbox and edge handles.
     let r1 = k.execute_batch(
         r#"[
@@ -570,7 +570,7 @@ fn fillet_box_bbox_unchanged() {
 /// Solids: 0=box, 1=cylinder, 2=cyl-copy, 3=cut result
 #[test]
 fn compound_cut_bbox_accurate() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let result = k.execute_batch(
         r#"[
         {"op": "makeBox", "args": {"width": 20, "height": 20, "depth": 10}},
@@ -616,7 +616,7 @@ fn compound_cut_bbox_accurate() {
 /// Solids: 0=box, 1=filleted, 2=lip_box, 3=fused
 #[test]
 fn gridfinity_lip_fillet_fuse_volume() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
 
     // Batch 1: create box + query edges.
     let r1 = k.execute_batch(
@@ -702,7 +702,7 @@ const WALL_HEIGHT: f64 = 21.0; // 3 height units
 ///
 /// The wire goes counterclockwise (normal = +Z) with 4 line edges and
 /// 4 quarter-circle arc edges.
-fn make_rounded_rect_face(k: &mut BrepKernel, w: f64, d: f64, r: f64, z: f64) -> u32 {
+fn make_rounded_rect_face(k: &mut RemusKernel, w: f64, d: f64, r: f64, z: f64) -> u32 {
     let hw = w / 2.0;
     let hd = d / 2.0;
     let r = r.min(hw).min(hd).max(0.05); // clamp to valid range
@@ -844,7 +844,7 @@ fn section_dims(inset: f64) -> (f64, f64, f64) {
 /// which left the lip narrower than the wall and disjoint from the body, so
 /// the fuse dropped it.) Only the INNER sections taper to form the stacking
 /// ledge. Two sections (bottom extension + peak) suffice for a flush tube.
-fn make_outer_sections(k: &mut BrepKernel) -> Vec<u32> {
+fn make_outer_sections(k: &mut RemusKernel) -> Vec<u32> {
     let mut faces = Vec::new();
     let sections: [(f64, f64); 2] = [(Z_EXT, 0.0), (Z_PEAK, 0.0)];
     for &(z, inset) in &sections {
@@ -857,7 +857,7 @@ fn make_outer_sections(k: &mut BrepKernel) -> Vec<u32> {
 /// Build 5 inner sections (outer + WALL inset) and return face handles.
 ///
 /// When `z_offset` is non-zero, shifts all Z heights to avoid coplanar caps.
-fn make_inner_sections_offset(k: &mut BrepKernel, z_offset: f64) -> Vec<u32> {
+fn make_inner_sections_offset(k: &mut RemusKernel, z_offset: f64) -> Vec<u32> {
     let mut faces = Vec::new();
     let sections: [(f64, f64); 5] = [
         (Z_EXT + z_offset, INSET_BOTTOM + WALL),
@@ -874,7 +874,7 @@ fn make_inner_sections_offset(k: &mut BrepKernel, z_offset: f64) -> Vec<u32> {
 }
 
 /// Build 5 inner sections with same Z heights as outer (coplanar caps).
-fn make_inner_sections(k: &mut BrepKernel) -> Vec<u32> {
+fn make_inner_sections(k: &mut RemusKernel) -> Vec<u32> {
     make_inner_sections_offset(k, 0.0)
 }
 
@@ -884,7 +884,7 @@ fn make_inner_sections(k: &mut BrepKernel) -> Vec<u32> {
 /// Expected: valid solid, Euler=2, reasonable volume.
 #[test]
 fn gridfinity_d1_lip_ring_loft_cut() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
 
     let outer_faces = make_outer_sections(&mut k);
     let inner_faces = make_inner_sections(&mut k);
@@ -1031,7 +1031,7 @@ fn gridfinity_d1_lip_ring_loft_cut() {
 /// If this fails, the issue is in the boolean engine itself, not loft geometry.
 #[test]
 fn gridfinity_d1a_concentric_box_cut() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     // Outer box: 20×20×10, inner box: 14×14×8 centered (3mm wall)
     let result = k.execute_batch(
         r#"[
@@ -1064,7 +1064,7 @@ fn gridfinity_d1a_concentric_box_cut() {
 /// whether it also affects simple extrusions with many coplanar caps.
 #[test]
 fn gridfinity_d1a1c_octagon_cut() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
 
     // Create octagonal faces at Z=0 centered at origin
     let outer_r = 20.75; // half of 41.5
@@ -1112,7 +1112,7 @@ fn gridfinity_d1a1c_octagon_cut() {
 /// Tests coplanar face handling when inner box shares Z planes with outer.
 #[test]
 fn gridfinity_d1a2_concentric_box_coplanar() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     // Outer box: 20×20×10, inner box: 14×14×10 centered (coplanar top & bottom)
     let result = k.execute_batch(
         r#"[
@@ -1140,7 +1140,7 @@ fn gridfinity_d1a2_concentric_box_coplanar() {
 /// If D1 fails but D1b passes, the bug is in coplanar face handling.
 #[test]
 fn gridfinity_d1b_lip_ring_no_coplanar() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
 
     let outer_faces = make_outer_sections(&mut k);
     // Shift inner Z by 0.1mm — inner sticks out 0.1mm above and below outer
@@ -1203,7 +1203,7 @@ fn gridfinity_d1b_lip_ring_no_coplanar() {
 /// Expected: Euler preserved, bbox Z unchanged from D1.
 #[test]
 fn gridfinity_d2_lip_ring_with_fillet() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
 
     let outer_faces = make_outer_sections(&mut k);
     let inner_faces = make_inner_sections(&mut k);
@@ -1309,7 +1309,7 @@ fn gridfinity_d2_lip_ring_with_fillet() {
 /// the mesh boolean.
 #[test]
 fn gridfinity_d3_shelled_box_with_lip() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
 
     // Build the shelled rounded-rect box body (centered at origin).
     let box_face = make_rounded_rect_face(&mut k, OUTER_DIM, OUTER_DIM, CORNER_R, 0.0);
@@ -1432,7 +1432,7 @@ fn gridfinity_d3_shelled_box_with_lip() {
 /// `BOX_CORNER_RADIUS`) and the fillet targets a peak rim edge.
 #[test]
 fn gridfinity_d5_box_with_filleted_lip() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
 
     // Step 1: rounded-rectangle box body (matches the tool / D4), then shell.
     let box_face = make_rounded_rect_face(&mut k, OUTER_DIM, OUTER_DIM, CORNER_R, 0.0);
@@ -1715,7 +1715,7 @@ fn gridfinity_d5_box_with_filleted_lip() {
 /// Expected: genus-0 manifold (adjusted Euler == 2), faces < 200, volume.
 #[test]
 fn gridfinity_d4_full_1x1_bin() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
 
     // Step 1: Build box body (rounded-rectangle extrusion)
     // First create a rounded-rect face at Z=0, then extrude up
@@ -1859,7 +1859,7 @@ fn gridfinity_d4_full_1x1_bin() {
 /// Box volume sanity check.
 #[test]
 fn box_volume_sanity() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let result = k.execute_batch(
         r#"[
         {"op": "makeBox", "args": {"width": 10, "height": 10, "depth": 10}},
@@ -1890,7 +1890,7 @@ fn box_volume_sanity() {
 #[test]
 fn rounded_shelled_body_classifies_cavity_outside() {
     use remus_math::vec::Point3;
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let bf = make_rounded_rect_face(&mut k, OUTER_DIM, OUTER_DIM, CORNER_R, 0.0);
     let bs = parse_batch(&k.execute_batch(&format!(
         r#"[{{"op":"extrude","args":{{"face":{bf},"dz":1.0,"distance":{WALL_HEIGHT}}}}}]"#
@@ -1946,7 +1946,7 @@ fn rounded_shelled_body_classifies_cavity_outside() {
 /// produces for the d5 peak-rim fillet, with full validation detail.
 #[test]
 fn zz_probe_d5_rolling_ball_result_quality() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
 
     let outer_faces = make_outer_sections(&mut k);
     let inner_faces = make_inner_sections(&mut k);

@@ -19,7 +19,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::error::{StructuredWasmError, WasmError, validate_finite, validate_work_count};
 use crate::handles::solid_id_to_u32;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 /// Live prepared moves one kernel holds at most; a drag needs one.
 pub const MAX_PREPARED_MOVES: usize = 16;
@@ -33,7 +33,7 @@ pub struct PreparedMoves {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Prepare repeated moves of `faces` of `solid` for an interactive drag.
     ///
     /// Reads, once, everything a face move takes from the source rather than
@@ -97,7 +97,7 @@ impl BrepKernel {
 }
 
 /// Natively testable bodies of the bindings above.
-impl BrepKernel {
+impl RemusKernel {
     pub(crate) fn prepare_move_faces_impl(
         &mut self,
         solid: u32,

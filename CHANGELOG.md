@@ -20,6 +20,12 @@ historical predecessor-line records, retained for provenance. The
 
 ### ⚠ BREAKING CHANGES
 
+* **wasm:** the kernel class is renamed from `BrepKernel`, the predecessor
+  line's name, to `RemusKernel`. JavaScript consumers keep a deprecated
+  `BrepKernel` alias of the same class in `remus-wasm` (ESM, CommonJS and
+  TypeScript) for a transition period; switch to `RemusKernel`, since a later
+  release removes the alias. Native Rust callers of `remus-wasm` get no alias.
+
 * **math (Rust callers):** `approximate_lspia` and
   `approximate_surface_lspia` now return `LspiaFit` and `LspiaSurfaceFit`.
   Read the fitted geometry from `.curve` or `.surface`, and inspect
@@ -35,10 +41,10 @@ historical predecessor-line records, retained for provenance. The
   estimates rather than global certificates.
   Nested bodies measure boundary separation, as point-to-solid queries do.
 
-* **wasm (native Rust callers):** `BrepKernel::checkpoint`, `gcs_new`,
+* **wasm (native Rust callers):** `RemusKernel::checkpoint`, `gcs_new`,
   `sketch_new`, and `assembly_new` now return `Result<u32, JsError>` so handle
   exhaustion fails before allocating. JavaScript keeps the number-or-throw
-  contract. `BrepKernel::new` retains its existing signature. Checkpoint IDs
+  contract. `RemusKernel::new` retains its existing signature. Checkpoint IDs
   are opaque: retain the returned ID; `checkpointCount` counts live checkpoints
   and is not an allocation cursor.
 

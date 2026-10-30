@@ -45,7 +45,7 @@ pub struct StepImportResult {
 
 #[wasm_bindgen]
 impl StepImportResult {
-    /// Solid roots as an arena document for `BrepKernel.deserializeSolids`.
+    /// Solid roots as an arena document for `RemusKernel.deserializeSolids`.
     /// Empty when the file held no solids.
     #[wasm_bindgen(getter)]
     #[must_use]
@@ -53,7 +53,7 @@ impl StepImportResult {
         self.solids.clone()
     }
 
-    /// Sheet roots as an arena document for `BrepKernel.deserializeSheets`.
+    /// Sheet roots as an arena document for `RemusKernel.deserializeSheets`.
     /// Empty when the file held no sheets.
     #[wasm_bindgen(getter)]
     #[must_use]
@@ -161,7 +161,7 @@ fn utf8<'a>(data: &'a [u8], format: &str) -> Result<&'a str, IoWasmError> {
 fn load_document(bytes: &[u8]) -> Result<(Topology, DeserializedDocument), IoWasmError> {
     if bytes.is_empty() {
         return Err(IoWasmError::invalid(
-            "body document is empty (serialize bodies with BrepKernel first)",
+            "body document is empty (serialize bodies with RemusKernel first)",
         ));
     }
     let mut topo = Topology::new();

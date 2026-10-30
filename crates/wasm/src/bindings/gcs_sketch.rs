@@ -19,7 +19,7 @@ use wasm_bindgen::prelude::*;
 use remus_sketch::{ArcId, CircleId, Constraint, EllipseId, LineId, PointId};
 
 use crate::error::{WasmError, validate_work_count};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::state::GcsSketchState;
 
 /// Fetch a handle from a per-sketch handle table, mapping out-of-range
@@ -254,7 +254,7 @@ fn parse_gcs_constraint(
 
 /// Natively-testable implementations (`JsError` cannot be constructed on
 /// non-wasm targets, so the `#[wasm_bindgen]` wrappers below stay thin).
-impl BrepKernel {
+impl RemusKernel {
     fn gcs_sketch(&self, sketch: u32) -> Result<&GcsSketchState, WasmError> {
         self.gcs_sketches
             .get(sketch as usize)
@@ -715,7 +715,7 @@ impl BrepKernel {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Create a new typed GCS sketch. Returns a sketch handle.
     ///
     /// This is the successor to the legacy `sketch*` API: the constraint
@@ -951,7 +951,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     #[test]
     fn restore_retires_sketch_and_every_entity_handle_without_rewinding() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let empty = k.checkpoint().unwrap();
         let stale_sketch = k.gcs_new().unwrap();
         let stale_point = k.gcs_add_point_impl(stale_sketch, 1.0, 2.0, false).unwrap();
@@ -1003,9 +1003,9 @@ mod tests {
         assert_position(&k, sketch, point, [88.0, 77.0]);
     }
 
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
-    fn assert_position(kernel: &BrepKernel, sketch: u32, point: u32, expected: [f64; 2]) {
+    fn assert_position(kernel: &RemusKernel, sketch: u32, point: u32, expected: [f64; 2]) {
         let actual = kernel.gcs_point_position_impl(sketch, point).unwrap();
         for (actual, expected) in actual.into_iter().zip(expected) {
             assert!((actual - expected).abs() < 1e-9, "{actual} != {expected}");
@@ -1014,7 +1014,7 @@ mod tests {
 
     #[test]
     fn restore_keeps_diagnostic_handles_and_failed_allocation_high_water() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let sketch = k.gcs_new().unwrap();
         let point = k.gcs_add_point_impl(sketch, 5.0, 7.0, false).unwrap();
         let retained = k
@@ -1074,7 +1074,7 @@ mod tests {
 
     #[test]
     fn gcs_dense_budget_direct_and_batch_refuse_atomically() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         k.gcs_sketches.get_mut(s as usize).unwrap().sys =
             remus_sketch::GcsSystem::with_limits(remus_sketch::GcsLimits {
@@ -1128,7 +1128,7 @@ mod tests {
     /// contact-point entity in the system.
     #[test]
     fn tangent_line_circle_solves_without_contact_point() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
 
         let c = k.gcs_add_point_impl(s, 5.0, 4.0, true).unwrap();
@@ -1166,7 +1166,7 @@ mod tests {
     /// Two free points forced symmetric about a fixed center point.
     #[test]
     fn symmetric_about_point_solves() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
 
         let center = k.gcs_add_point_impl(s, 1.0, 2.0, true).unwrap();
@@ -1191,7 +1191,7 @@ mod tests {
     /// could not express directly.
     #[test]
     fn tangent_line_arc_solves() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
 
         // Arc: center fixed at origin, start/end free near radius 5.
@@ -1240,7 +1240,7 @@ mod tests {
     /// pointOnCircle with a solver-driven radius.
     #[test]
     fn point_on_circle_adjusts_radius() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let circle = k.gcs_add_circle_impl(s, c, 2.0).unwrap();
@@ -1262,7 +1262,7 @@ mod tests {
     /// Removing a constraint restores a degree of freedom.
     #[test]
     fn remove_constraint_restores_dof() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let a = k.gcs_add_point_impl(s, 0.0, 0.0, false).unwrap();
         let b = k.gcs_add_point_impl(s, 3.0, 0.0, false).unwrap();
@@ -1286,7 +1286,7 @@ mod tests {
     /// Every documented constraint tag parses and adds.
     #[test]
     fn all_twenty_four_constraint_types_parse() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let p0 = k.gcs_add_point_impl(s, 0.0, 0.0, false).unwrap();
         let p1 = k.gcs_add_point_impl(s, 1.0, 0.0, false).unwrap();
@@ -1351,7 +1351,7 @@ mod tests {
     /// Unknown types and bad handles produce typed errors.
     #[test]
     fn invalid_constraints_error() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         assert!(
             k.gcs_add_constraint_impl(s, r#"{"type":"warp","a":0}"#)
@@ -1369,7 +1369,7 @@ mod tests {
     /// GCS sketches participate in checkpoint/restore.
     #[test]
     fn checkpoint_restores_gcs_sketch_state() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let a = k.gcs_add_point_impl(s, 1.0, 2.0, false).unwrap();
 
@@ -1392,7 +1392,7 @@ mod tests {
     /// misuse only insofar as the value must be positive and finite.
     #[test]
     fn circle_radius_constraint_drives_radius() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let circle = k.gcs_add_circle_impl(s, c, 1.0).unwrap();
@@ -1411,7 +1411,7 @@ mod tests {
     /// Non-positive and non-finite radii are refused at the binding boundary.
     #[test]
     fn circle_radius_rejects_bad_values() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let circle = k.gcs_add_circle_impl(s, c, 1.0).unwrap();
@@ -1444,7 +1444,7 @@ mod tests {
     /// Two circles driven to a common radius through one dimension.
     #[test]
     fn equal_radius_circle_circle_solves() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let c1 = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let c2 = k.gcs_add_point_impl(s, 30.0, 0.0, true).unwrap();
@@ -1470,7 +1470,7 @@ mod tests {
     /// `equalLength` ties a free edge to a pinned one.
     #[test]
     fn equal_length_solves() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let a0 = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let a1 = k.gcs_add_point_impl(s, 3.0, 4.0, true).unwrap();
@@ -1496,7 +1496,7 @@ mod tests {
     /// `midpoint` centres a point on an edge.
     #[test]
     fn midpoint_solves() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let a = k.gcs_add_point_impl(s, -4.0, 2.0, true).unwrap();
         let b = k.gcs_add_point_impl(s, 10.0, 8.0, true).unwrap();
@@ -1520,7 +1520,7 @@ mod tests {
     /// `symmetric` mirrors a free point across an axis line.
     #[test]
     fn symmetric_solves() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         // Axis x = 2.
         let ax = k.gcs_add_point_impl(s, 2.0, -1.0, true).unwrap();
@@ -1547,7 +1547,7 @@ mod tests {
     /// constraint, as OpenZCAD is expected to do.
     #[test]
     fn point_lock_composes_from_fix_x_and_fix_y() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let p = k.gcs_add_point_impl(s, 5.0, 5.0, false).unwrap();
         k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":1.5}}"#))
@@ -1569,7 +1569,7 @@ mod tests {
     /// and keys each residual to the handle the caller holds.
     #[test]
     fn solve_detailed_reports_under_constrained() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let a = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let b = k.gcs_add_point_impl(s, 3.0, 0.0, false).unwrap();
@@ -1600,7 +1600,7 @@ mod tests {
     /// A consistent duplicate is redundant, not a conflict.
     #[test]
     fn solve_detailed_reports_redundant() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let p = k.gcs_add_point_impl(s, 5.0, 7.0, false).unwrap();
         k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
@@ -1623,7 +1623,7 @@ mod tests {
     /// back. No single constraint is named as the conflict.
     #[test]
     fn solve_detailed_rolls_back_and_blames_nobody() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let p = k.gcs_add_point_impl(s, 1.25, -4.5, false).unwrap();
         let c1 = k
@@ -1659,7 +1659,7 @@ mod tests {
     /// summarised separately.
     #[test]
     fn solve_detailed_excludes_internal_arc_constraints() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let a0 = k.gcs_add_point_impl(s, 5.0, 0.0, false).unwrap();
@@ -1687,7 +1687,7 @@ mod tests {
     /// Removing a constraint restores DOF and drops it from the report.
     #[test]
     fn solve_detailed_tracks_constraint_removal() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let p = k.gcs_add_point_impl(s, 0.0, 0.0, false).unwrap();
         k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
@@ -1718,7 +1718,7 @@ mod tests {
     #[test]
     fn solve_detailed_is_deterministic() {
         let build = || {
-            let mut k = BrepKernel::new();
+            let mut k = RemusKernel::new();
             let s = k.gcs_new().unwrap();
             let a = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
             let b = k.gcs_add_point_impl(s, 3.1, 0.7, false).unwrap();
@@ -1777,7 +1777,7 @@ mod tests {
     /// Bad arguments to the detailed path are rejected the same way.
     #[test]
     fn solve_detailed_validates_arguments() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         assert!(k.gcs_solve_detailed_impl(s, 100, 0.0).is_err());
         assert!(k.gcs_solve_detailed_impl(s, 100, -1e-9).is_err());
@@ -1789,7 +1789,7 @@ mod tests {
     /// does not roll back. Only the new path is transactional.
     #[test]
     fn plain_solve_still_publishes_its_final_iterate() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let p = k.gcs_add_point_impl(s, 1.25, -4.5, false).unwrap();
         k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
@@ -1812,7 +1812,7 @@ mod tests {
     /// Angle solves through the binding with an independent angle oracle.
     #[test]
     fn b16_angle_solves_via_binding() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let o = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let x = k.gcs_add_point_impl(s, 4.0, 0.0, true).unwrap();
@@ -1840,7 +1840,7 @@ mod tests {
     /// Point-line distance solves through the binding.
     #[test]
     fn b16_point_line_distance_solves_via_binding() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let a = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let b = k.gcs_add_point_impl(s, 4.0, 0.0, true).unwrap();
@@ -1864,7 +1864,7 @@ mod tests {
     #[test]
     fn b16_solve_detailed_redundant_and_rollback_via_binding() {
         // Redundant: duplicate FixX.
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let p = k.gcs_add_point_impl(s, 0.0, 0.0, false).unwrap();
         k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
@@ -1879,7 +1879,7 @@ mod tests {
         assert_eq!(d.classification, "redundant");
 
         // Rollback: contradictory FixX restores the pre-solve point.
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let p = k.gcs_add_point_impl(s, 1.25, -4.5, false).unwrap();
         k.gcs_add_constraint_impl(s, &format!(r#"{{"type":"fixX","point":{p},"value":2.0}}"#))
@@ -1897,7 +1897,7 @@ mod tests {
     #[test]
     fn b16_translated_tangency_via_binding() {
         let (tx, ty) = (1_000_000.0, -1_000_000.0);
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let a = k.gcs_add_point_impl(s, tx, ty, true).unwrap();
         let b = k.gcs_add_point_impl(s, tx + 4.0, ty, true).unwrap();
@@ -1933,7 +1933,7 @@ mod tests {
     /// Ellipse creation validates, query reads back, mutation edits.
     #[test]
     fn ellipse_add_query_mutate_validates() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 1.0, 2.0, true).unwrap();
         let e = k.gcs_add_ellipse_impl(s, c, 3.0, 2.0, 0.5).unwrap();
@@ -1994,7 +1994,7 @@ mod tests {
     /// Driven ellipse solves through the binding with an independent oracle.
     #[test]
     fn ellipse_driven_solve_via_binding() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let e = k.gcs_add_ellipse_impl(s, c, 1.0, 1.0, 0.0).unwrap();
@@ -2029,7 +2029,7 @@ mod tests {
     /// Line tangent to an ellipse through the binding (contact composition).
     #[test]
     fn ellipse_tangent_solves_via_binding() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let e = k.gcs_add_ellipse_impl(s, c, 4.0, 2.0, 0.0).unwrap();
@@ -2079,7 +2079,7 @@ mod tests {
     /// GCS checkpoint/restore covers ellipse entities and their scalars.
     #[test]
     fn checkpoint_restores_gcs_ellipse_state() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 1.0, 2.0, true).unwrap();
         let e = k.gcs_add_ellipse_impl(s, c, 3.0, 2.0, 0.5).unwrap();

@@ -7,6 +7,11 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### ⚠ BREAKING CHANGES
 
+* The kernel class is renamed from `BrepKernel` to `RemusKernel`. The package
+  still exports `BrepKernel` as a deprecated alias of the same class (ESM,
+  CommonJS and TypeScript) for a transition period; switch to `RemusKernel`,
+  since a later release removes the alias. Native Rust callers get no alias.
+
 * `solidToSolidDistance` now requires complete native sphere pairs or
   straight-edged planar boundaries, including certified affine NURBS planes.
   Other curved pairs fail instead of returning sampled/chord estimates as
@@ -19,7 +24,7 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
   the next ID. For native Rust callers, `checkpoint`, `gcs_new`, `sketch_new`,
   and `assembly_new` now return `Result<u32, JsError>` to report exhaustion
   before allocation. JavaScript keeps its number-or-throw contract, and
-  `BrepKernel::new` keeps its existing signature.
+  `RemusKernel::new` keeps its existing signature.
 
 * `shell` is now exact-only: a solid whose kept faces include a NURBS face
   fails with category `unsupported` instead of returning a handle to a body

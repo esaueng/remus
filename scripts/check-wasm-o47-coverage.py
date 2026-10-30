@@ -483,12 +483,12 @@ def macro_body_contains(code_lines: list[str], index: int) -> bool:
 
 
 def wasm_impl_lines(lines: list[str], depths: list[int]) -> set[int]:
-    """Direct method lines inside exported `BrepKernel` impls."""
+    """Direct method lines inside exported `RemusKernel` impls."""
     result: set[int] = set()
     for index, line in enumerate(lines[:-1]):
         if line.strip() != "#[wasm_bindgen]":
             continue
-        if not re.match(r"^\s*impl\s+BrepKernel\s*\{", lines[index + 1]):
+        if not re.match(r"^\s*impl\s+RemusKernel\s*\{", lines[index + 1]):
             continue
         base_depth = depths[index + 1]
         cursor = index + 2

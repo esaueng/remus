@@ -114,10 +114,10 @@ const assertSectionOnPlane = (kernel, face, px, py, pz, nx, ny, nz, label) => {
   }
 };
 
-export function runB6SectionSplitPackaged({ BrepKernel }) {
+export function runB6SectionSplitPackaged({ RemusKernel }) {
   // 1. Ordinary positive section, direct + batch: 4-box at z=2 => 1 face, area 16.
   {
-    const direct = new BrepKernel();
+    const direct = new RemusKernel();
     const box = direct.makeBox(4, 4, 4);
     assertClose(direct.volume(box, DEFLECTION), 64, 'box input volume');
     assert.equal(direct.validateSolid(box), 0, 'box input valid');
@@ -129,7 +129,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
     assertSectionOnPlane(direct, faces[0], 0, 0, 2, 0, 0, 1, 'direct box section plane');
     assert.equal(direct.validateSolid(box), 0, 'input stays valid after section');
 
-    const batch = new BrepKernel();
+    const batch = new RemusKernel();
     const program = JSON.stringify([
       { op: 'makeBox', args: { width: 4, height: 4, depth: 4 } },
       { op: 'section', args: { solid: 0, px: 0, py: 0, pz: 2, nx: 0, ny: 0, nz: 1 } },
@@ -149,7 +149,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
   // 2. Cavity section with hole, direct + batch: hollow through cavity z=2 => area 12, 1 hole.
   // A lost inner boundary would read as 16 with 0 holes.
   {
-    const direct = new BrepKernel();
+    const direct = new RemusKernel();
     const { hollow } = makeHollowDirect(direct);
     assertClose(direct.volume(hollow, DEFLECTION), 56, 'hollow input volume');
     assert.equal(direct.validateSolid(hollow), 0, 'hollow input valid');
@@ -159,7 +159,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
     assertClose(direct.faceArea(faces[0], DEFLECTION), 12, 'direct cavity section area');
     assertSectionOnPlane(direct, faces[0], 0, 0, 2, 0, 0, 1, 'direct cavity section plane');
 
-    const batch = new BrepKernel();
+    const batch = new RemusKernel();
     const program = JSON.stringify([
       { op: 'makeBox', args: { width: 4, height: 4, depth: 4 } },
       { op: 'makeBox', args: { width: 2, height: 2, depth: 2 } },
@@ -185,7 +185,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
 
   // 3. Through-hole sections: plate through hole z=1 => 96 with 1 hole; clear x=1 => 20, 0 holes.
   {
-    const direct = new BrepKernel();
+    const direct = new RemusKernel();
     const { holed } = makeHoledPlateDirect(direct);
     assertClose(direct.volume(holed, DEFLECTION), 192, 'holed-plate input volume');
     assert.equal(direct.validateSolid(holed), 0, 'holed-plate input valid');
@@ -200,7 +200,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
     assert.equal(faceHoleCount(direct, clear[0]), 0, 'clear section has no hole');
     assertClose(direct.faceArea(clear[0], DEFLECTION), 20, 'plate clear section area');
 
-    const batch = new BrepKernel();
+    const batch = new RemusKernel();
     const program = JSON.stringify([
       { op: 'makeBox', args: { width: 10, height: 10, depth: 2 } },
       { op: 'makeBox', args: { width: 2, height: 2, depth: 4 } },
@@ -222,13 +222,13 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
   // 4. Supported empty section: miss at z=50 => empty face-list success (direct + batch).
   // This is the section side of the section/split contract split: split misses refuse.
   {
-    const direct = new BrepKernel();
+    const direct = new RemusKernel();
     const box = direct.makeBox(4, 4, 4);
     const faces = Array.from(direct.section(box, 0, 0, 50, 0, 0, 1));
     assert.equal(faces.length, 0, 'direct miss must be an empty success');
     assertClose(direct.volume(box, DEFLECTION), 64, 'input preserved after empty section');
 
-    const batch = new BrepKernel();
+    const batch = new RemusKernel();
     const program = JSON.stringify([
       { op: 'makeBox', args: { width: 4, height: 4, depth: 4 } },
       { op: 'section', args: { solid: 0, px: 0, py: 0, pz: 50, nx: 0, ny: 0, nz: 1 } },
@@ -242,7 +242,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
 
   // 5. Boundary cases with documented contracts: coincident outline + vertex-touch empty.
   {
-    const direct = new BrepKernel();
+    const direct = new RemusKernel();
     const box = direct.makeBox(4, 4, 4);
     const coincident = Array.from(direct.section(box, 0, 0, 0, 0, 0, 1));
     assert.equal(coincident.length, 1, 'coincident face must return its outline');
@@ -254,7 +254,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
     assertClose(direct.volume(box, DEFLECTION), 64, 'input preserved after boundary sections');
     assert.equal(direct.validateSolid(box), 0, 'input still validates');
 
-    const batch = new BrepKernel();
+    const batch = new RemusKernel();
     const program = JSON.stringify([
       { op: 'makeBox', args: { width: 4, height: 4, depth: 4 } },
       { op: 'section', args: { solid: 0, px: 0, py: 0, pz: 0, nx: 0, ny: 0, nz: 1 } },
@@ -269,7 +269,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
   // 6. Degenerate typed refusal: edge-touch section has no closed wire (InvalidInput).
   // Direct throws; batch carries the typed error; the session survives with handles intact.
   {
-    const direct = new BrepKernel();
+    const direct = new RemusKernel();
     const box = direct.makeBox(4, 4, 4);
     const beforeCounts = Array.from(direct.getEntityCounts(box));
     const beforeFaces = Array.from(direct.getSolidFaces(box));
@@ -283,7 +283,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
     assert.deepEqual(Array.from(direct.getEntityCounts(box)), beforeCounts, 'direct census preserved');
     assert.deepEqual(Array.from(direct.getSolidFaces(box)), beforeFaces, 'direct handles preserved');
 
-    const batch = new BrepKernel();
+    const batch = new RemusKernel();
     const program = JSON.stringify([
       { op: 'makeBox', args: { width: 4, height: 4, depth: 4 } },
       { op: 'section', args: { solid: 0, px: 0, py: 0, pz: 2, nx: 1, ny: 1, nz: 0 } },
@@ -304,7 +304,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
   // Independent oracles: hand halves, volume sum, all-plane census, watertight mesh,
   // material side, input preservation; direct/batch agreement is additional.
   {
-    const direct = new BrepKernel();
+    const direct = new RemusKernel();
     const box = direct.makeBox(4, 4, 4);
     const inputCounts = Array.from(direct.getEntityCounts(box));
     const halves = Array.from(direct.split(box, 0, 0, 2, 0, 0, 1));
@@ -335,7 +335,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
     assertClose(direct.volume(box, DEFLECTION), 64, 'direct input preserved');
     assert.deepEqual(Array.from(direct.getEntityCounts(box)), inputCounts, 'direct input census');
 
-    const batch = new BrepKernel();
+    const batch = new RemusKernel();
     const program = JSON.stringify([
       { op: 'makeBox', args: { width: 4, height: 4, depth: 4 } },
       { op: 'split', args: { solid: 0, px: 0, py: 0, pz: 2, nx: 0, ny: 0, nz: 1 } },
@@ -375,7 +375,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
   // 8. Through-hole split clear of the hole: plate x=1 => 172 + 20.
   // If the hole were filled, the positive half would read 180 instead of 172.
   {
-    const direct = new BrepKernel();
+    const direct = new RemusKernel();
     const { holed } = makeHoledPlateDirect(direct);
     const halves = Array.from(direct.split(holed, 1, 0, 0, 1, 0, 0));
     assert.equal(halves.length, 2, 'plate split must return two halves');
@@ -394,7 +394,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
     assert.equal(direct.classifyPoint(neg, 0.5, 5, 1, TOL), 'inside', 'thin-slab probe in negative');
     assert.equal(direct.classifyPoint(pos, 0.5, 5, 1, TOL), 'outside', 'thin-slab probe outside positive');
 
-    const batch = new BrepKernel();
+    const batch = new RemusKernel();
     const program = JSON.stringify([
       { op: 'makeBox', args: { width: 10, height: 10, depth: 2 } },
       { op: 'makeBox', args: { width: 2, height: 2, depth: 4 } },
@@ -425,7 +425,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
 
   // 9a. Typed split refusal: cavity shells are outside the qualified subset (Unsupported).
   {
-    const direct = new BrepKernel();
+    const direct = new RemusKernel();
     const { hollow } = makeHollowDirect(direct);
     const beforeCounts = Array.from(direct.getEntityCounts(hollow));
     assert.throws(
@@ -438,7 +438,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
     assert.deepEqual(Array.from(direct.getEntityCounts(hollow)), beforeCounts, 'direct census');
     assert.ok(Array.from(direct.getSolidFaces(hollow)).length > 0, 'direct handles resolve');
 
-    const batch = new BrepKernel();
+    const batch = new RemusKernel();
     const program = JSON.stringify([
       { op: 'makeBox', args: { width: 4, height: 4, depth: 4 } },
       { op: 'makeBox', args: { width: 2, height: 2, depth: 2 } },
@@ -459,7 +459,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
 
   // 9b. Typed split refusal through the hole mouth: inner-wire crossing (Unsupported).
   {
-    const direct = new BrepKernel();
+    const direct = new RemusKernel();
     const { holed } = makeHoledPlateDirect(direct);
     assert.throws(
       () => direct.split(holed, 5, 0, 0, 1, 0, 0),
@@ -469,7 +469,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
     assertClose(direct.volume(holed, DEFLECTION), 192, 'plate preserved after inner-wire refusal');
     assert.equal(direct.validateSolid(holed), 0, 'plate still validates');
 
-    const batch = new BrepKernel();
+    const batch = new RemusKernel();
     const program = JSON.stringify([
       { op: 'makeBox', args: { width: 10, height: 10, depth: 2 } },
       { op: 'makeBox', args: { width: 2, height: 2, depth: 4 } },
@@ -487,7 +487,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
 
   // 9c. Split miss refuses while section miss succeeds: the two contracts differ by design.
   {
-    const direct = new BrepKernel();
+    const direct = new RemusKernel();
     const box = direct.makeBox(4, 4, 4);
     const empty = Array.from(direct.section(box, 0, 0, 50, 0, 0, 1));
     assert.equal(empty.length, 0, 'section miss is an empty success');
@@ -498,7 +498,7 @@ export function runB6SectionSplitPackaged({ BrepKernel }) {
     );
     assertClose(direct.volume(box, DEFLECTION), 64, 'input preserved across both miss contracts');
 
-    const batch = new BrepKernel();
+    const batch = new RemusKernel();
     const program = JSON.stringify([
       { op: 'makeBox', args: { width: 4, height: 4, depth: 4 } },
       { op: 'section', args: { solid: 0, px: 0, py: 0, pz: 50, nx: 0, ny: 0, nz: 1 } },
@@ -523,7 +523,7 @@ if (process.argv[1] && process.argv[1].endsWith('b6-section-split-packaged.mjs')
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const projectRoot = resolve(__dirname, '..');
   const require = createRequire(import.meta.url);
-  const { BrepKernel } = require(resolve(projectRoot, 'crates/wasm/pkg/remus_wasm_node.cjs'));
-  runB6SectionSplitPackaged({ BrepKernel });
+  const { RemusKernel } = require(resolve(projectRoot, 'crates/wasm/pkg/remus_wasm_node.cjs'));
+  runB6SectionSplitPackaged({ RemusKernel });
   console.log('\nAll B6 section/split packaged witnesses passed');
 }

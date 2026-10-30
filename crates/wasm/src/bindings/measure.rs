@@ -8,7 +8,7 @@ use remus_math::vec::Point3;
 use remus_operations::measure;
 
 use crate::error::{WasmError, validate_finite, validate_positive};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 /// Deepest refinement `massProperties` accepts; the native integrator caps any
 /// larger request at this safety depth, so the binding refuses it instead of
@@ -149,7 +149,7 @@ fn detailed_sheet_validation_result(
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     // ── Measurement ───────────────────────────────────────────────
 
     /// Compute the axis-aligned bounding box of a solid.
@@ -730,7 +730,7 @@ impl BrepKernel {
     }
 }
 
-impl BrepKernel {
+impl RemusKernel {
     pub(crate) fn sheet_volume_impl(&self, sheet: u32, deflection: f64) -> Result<f64, WasmError> {
         let sheet_id = self.resolve_shell(sheet)?;
         Ok(measure::body_volume(
@@ -745,7 +745,7 @@ impl BrepKernel {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
     fn batch_has_error(result: &str, idx: usize) -> bool {
         let parsed: serde_json::Value = serde_json::from_str(result).unwrap();
@@ -797,7 +797,7 @@ mod tests {
 
     #[test]
     fn box_inertia_tensor_matches_analytic_result() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
         let inertia = kernel.inertia_tensor(solid).unwrap();
         let expected = [50.0, 0.0, 0.0, 0.0, 40.0, 0.0, 0.0, 0.0, 26.0];
@@ -815,7 +815,7 @@ mod tests {
 
     #[test]
     fn box_volume_matches_w_times_h_times_d() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 2, "height": 3, "depth": 4}},
@@ -832,7 +832,7 @@ mod tests {
 
     #[test]
     fn unit_box_volume_is_one() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 1, "height": 1, "depth": 1}},
@@ -849,7 +849,7 @@ mod tests {
 
     #[test]
     fn volume_invalid_handle_is_error() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(r#"[{"op": "volume", "args": {"solid": 9999}}]"#);
         assert!(batch_has_error(&r, 0));
     }
@@ -860,7 +860,7 @@ mod tests {
     fn box_surface_area_matches_formula() {
         let (w, h, d) = (2.0_f64, 3.0_f64, 4.0_f64);
         let expected = 2.0 * (w * h + w * d + h * d);
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 2, "height": 3, "depth": 4}},
@@ -880,7 +880,7 @@ mod tests {
         let (radius, height) = (3.0_f64, 10.0_f64);
         let expected = 2.0 * std::f64::consts::PI * radius * (radius + height);
         let expected_cap = std::f64::consts::PI * radius * radius;
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = k.make_cylinder_solid(radius, height).unwrap();
         let faces = k.get_solid_faces(solid).unwrap();
 
@@ -921,7 +921,7 @@ mod tests {
 
     #[test]
     fn surface_area_invalid_handle_is_error() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(r#"[{"op": "surfaceArea", "args": {"solid": 9999}}]"#);
         assert!(batch_has_error(&r, 0));
     }
@@ -930,7 +930,7 @@ mod tests {
 
     #[test]
     fn box_bounding_box_corner_at_origin() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 2, "height": 3, "depth": 5}},
@@ -965,7 +965,7 @@ mod tests {
 
     #[test]
     fn bounding_box_invalid_handle_is_error() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(r#"[{"op": "boundingBox", "args": {"solid": 9999}}]"#);
         assert!(batch_has_error(&r, 0));
     }
@@ -975,7 +975,7 @@ mod tests {
     #[test]
     fn box_center_of_mass_is_geometric_center() {
         let (w, h, d) = (4.0_f64, 6.0_f64, 2.0_f64);
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 4, "height": 6, "depth": 2}},
@@ -1009,7 +1009,7 @@ mod tests {
 
     #[test]
     fn box_mass_properties_match_closed_form() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 2, "height": 3, "depth": 4}},
@@ -1060,7 +1060,7 @@ mod tests {
     fn cylinder_mass_properties_match_closed_form() {
         // Exercises the curved-surface (patch-tiled trimmed quadrature) and
         // exact circular-cap (Green's theorem) paths end to end.
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeCylinder", "args": {"radius": 3, "height": 10}},
@@ -1097,7 +1097,7 @@ mod tests {
     fn b20_bored_box_direct_and_batch_parity_across_scales() {
         use std::f64::consts::PI;
         for scale in [1e-3_f64, 1.0, 1e3] {
-            let mut k = BrepKernel::new();
+            let mut k = RemusKernel::new();
             let plate = k
                 .make_box_solid(20.0 * scale, 20.0 * scale, 20.0 * scale)
                 .unwrap();
@@ -1197,7 +1197,7 @@ mod tests {
     fn torus_periodic_pocket_mass_matches_sections_through_direct_body_and_both_batches() {
         let expected = 336.286_642_360_514_2;
         for entry_point in 0..3 {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let solid = if entry_point == 0 {
                 let torus = kernel.make_torus_solid(5.0, 2.0, 16).unwrap();
                 let cylinder = kernel.make_cylinder_solid(5.5, 7.5).unwrap();
@@ -1285,7 +1285,7 @@ mod tests {
         }
     }
 
-    fn batch_v2(k: &mut BrepKernel, script: &str) -> serde_json::Value {
+    fn batch_v2(k: &mut RemusKernel, script: &str) -> serde_json::Value {
         serde_json::from_str(&k.execute_batch_v2(script)).unwrap()
     }
 
@@ -1314,7 +1314,7 @@ mod tests {
             r#"{"op": "makeCylinder", "args": {"radius": 3, "height": 10}}"#,
             r#"{"op": "makeTorus", "args": {"majorRadius": 3, "minorRadius": 1}}"#,
         ] {
-            let mut k = BrepKernel::new();
+            let mut k = RemusKernel::new();
             let r = k.execute_batch(&format!(
                 r#"[{build},
                     {{"op": "massProperties", "args": {{"solid": 0}}}},
@@ -1364,7 +1364,7 @@ mod tests {
                 false,
             ),
         ] {
-            let mut k = BrepKernel::new();
+            let mut k = RemusKernel::new();
             let r = batch_v2(
                 &mut k,
                 &format!(
@@ -1402,7 +1402,7 @@ mod tests {
 
     #[test]
     fn batch_mass_properties_unreachable_tolerance_refuses_typed() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = batch_v2(
             &mut k,
             r#"[{"op": "makeSphere", "args": {"radius": 2}},
@@ -1433,7 +1433,7 @@ mod tests {
             ("gaussOrder", "4.5"),
             ("gaussOrder", "[8]"),
         ] {
-            let mut k = BrepKernel::new();
+            let mut k = RemusKernel::new();
             let r = batch_v2(
                 &mut k,
                 &format!(
@@ -1454,7 +1454,7 @@ mod tests {
 
     #[test]
     fn mass_properties_invalid_handle_is_error() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(r#"[{"op": "massProperties", "args": {"solid": 9999}}]"#);
         assert!(batch_has_error(&r, 0));
     }
@@ -1485,7 +1485,7 @@ mod tests {
         }
         for entry_point in 0..3 {
             for byte_limited in [false, true] {
-                let mut kernel = BrepKernel::new();
+                let mut kernel = RemusKernel::new();
                 disable_face_mesh_cache();
                 let _guard = CacheGuard;
                 let handle = kernel.make_box_solid(1.0, 2.0, 3.0).unwrap();
@@ -1547,7 +1547,7 @@ mod tests {
 
     #[test]
     fn box_mesh_quality_is_watertight() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 2, "height": 2, "depth": 2}},
@@ -1565,7 +1565,7 @@ mod tests {
 
     #[test]
     fn cylinder_mesh_quality_is_watertight_genus0() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeCylinder", "args": {"radius": 3, "height": 10}},
@@ -1592,7 +1592,7 @@ mod tests {
 
         for scale in [0.1_f64, 1.0, 10.0] {
             for (bore_radius, unit_volume) in cases {
-                let mut k = BrepKernel::new();
+                let mut k = RemusKernel::new();
                 let operations = serde_json::json!([
                     {"op": "makeCylinder", "args": {
                         "radius": 3.0 * scale, "height": 30.0 * scale
@@ -1677,14 +1677,14 @@ mod tests {
 
     #[test]
     fn mesh_quality_invalid_handle_is_error() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(r#"[{"op": "meshQuality", "args": {"solid": 9999}}]"#);
         assert!(batch_has_error(&r, 0));
     }
 
     #[test]
     fn mesh_quality_rejects_nonpositive_angular_tolerance() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 1, "height": 1, "depth": 1}},
@@ -1735,7 +1735,7 @@ mod tests {
 
     #[test]
     fn classify_point_inside_box() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 4, "height": 4, "depth": 4}},
@@ -1748,7 +1748,7 @@ mod tests {
 
     #[test]
     fn classify_point_outside_box() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 1, "height": 1, "depth": 1}},
@@ -1761,7 +1761,7 @@ mod tests {
 
     #[test]
     fn classify_point_returns_valid_string() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 2, "height": 2, "depth": 2}},
@@ -1778,7 +1778,7 @@ mod tests {
 
     #[test]
     fn classify_point_invalid_handle_is_error() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[{"op": "classifyPoint", "args": {"solid": 9999, "x": 0, "y": 0, "z": 0}}]"#,
         );

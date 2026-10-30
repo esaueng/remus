@@ -53,7 +53,7 @@ use crate::error::{
 };
 use crate::handles::{face_id_to_u32, solid_id_to_u32};
 use crate::helpers::panic_message;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::types::SolidOperationDetailedResult;
 
 /// Quality label of an exact result.
@@ -62,7 +62,7 @@ const QUALITY_EXACT: &str = "exact";
 const QUALITY_APPROXIMATE: &str = "approximate";
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Move selected faces and return an exact result or a typed refusal.
     ///
     /// Additive twin of [`moveFaces`](Self::move_faces_binding), with the same
@@ -179,7 +179,7 @@ impl BrepKernel {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Fillet edges on the v2 walking engine alone and return exact,
     /// disclosed-approximate, or refused results as typed data.
     ///
@@ -279,7 +279,7 @@ impl BrepKernel {
 }
 
 /// Natively-testable bodies shared by the direct twins and the batch ops.
-impl BrepKernel {
+impl RemusKernel {
     pub(crate) fn move_faces_detailed_impl(
         &mut self,
         solid: u32,
@@ -617,7 +617,7 @@ impl BrepKernel {
         if self.poisoned {
             return SolidOperationDetailedResult::error(
                 StructuredWasmError::operation_failed(
-                    "Kernel poisoned after panic. Create a new BrepKernel instance.",
+                    "Kernel poisoned after panic. Create a new RemusKernel instance.",
                 )
                 .with_direct_operation(operation),
             );

@@ -6,7 +6,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::error::StructuredWasmError;
 use crate::handles::face_id_to_u32;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::types::{DraftAngleResult, PlanarFaceDraftResult};
 
 fn failure(error: DraftAnalysisError) -> StructuredWasmError {
@@ -49,7 +49,7 @@ fn direct_error(error: StructuredWasmError) -> JsError {
     }
 }
 
-impl BrepKernel {
+impl RemusKernel {
     pub(crate) fn face_draft_result(
         &self,
         face: u32,
@@ -94,7 +94,7 @@ impl BrepKernel {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Signed local surface-carrier draft in radians, as a JSON string
     /// `{angleRadians,outwardNormal}`. `(u,v)` does not test trimmed membership.
     /// Negative draft is not a global undercut or accessibility verdict.

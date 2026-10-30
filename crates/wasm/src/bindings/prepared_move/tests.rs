@@ -5,11 +5,11 @@ use remus_topology::explorer::solid_faces;
 
 use super::MAX_PREPARED_MOVES;
 use crate::handles::face_id_to_u32;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 /// A box whose top face a drag moves: its handles are the same in every
 /// kernel built the same way.
-fn fixture(kernel: &mut BrepKernel) -> (u32, u32) {
+fn fixture(kernel: &mut RemusKernel) -> (u32, u32) {
     let solid = kernel.make_box_solid(10.0, 6.0, 4.0).unwrap();
     let id = kernel.resolve_solid(solid).unwrap();
     let face = solid_faces(kernel.topo(), id)
@@ -32,10 +32,10 @@ fn fixture(kernel: &mut BrepKernel) -> (u32, u32) {
 /// JSON, the same result document, the same refusal text.
 #[test]
 fn prepared_drag_matches_move_faces_journaled_across_restores() {
-    let mut plain = BrepKernel::new();
+    let mut plain = RemusKernel::new();
     let (source, face) = fixture(&mut plain);
     let plain_checkpoint = plain.checkpoint_impl().unwrap();
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     assert_eq!(fixture(&mut kernel), (source, face));
     let checkpoint = kernel.checkpoint_impl().unwrap();
     let prepared = kernel.prepare_move_faces_impl(source, &[face]).unwrap();
@@ -77,7 +77,7 @@ fn prepared_drag_matches_move_faces_journaled_across_restores() {
 
 #[test]
 fn a_changed_source_refuses_until_the_drag_restores_it() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let (source, face) = fixture(&mut kernel);
     let checkpoint = kernel.checkpoint_impl().unwrap();
     let prepared = kernel.prepare_move_faces_impl(source, &[face]).unwrap();
@@ -104,7 +104,7 @@ fn a_changed_source_refuses_until_the_drag_restores_it() {
 
 #[test]
 fn handles_are_bounded_released_and_never_reused() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let (source, face) = fixture(&mut kernel);
     let handles: Vec<u32> = (0..MAX_PREPARED_MOVES)
         .map(|_| kernel.prepare_move_faces_impl(source, &[face]).unwrap())
