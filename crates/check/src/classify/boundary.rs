@@ -2018,7 +2018,7 @@ pub fn count_face_ray_crossings_cached(
 /// The 3D outer polygon of a full-turn wall (rim, seam, rim, seam) projects
 /// onto a degenerate plane polygon, so only the face's own `(u, v)` decides
 /// these faces (RFC 0008 F4).
-pub(crate) fn analytic_uv_trim_contains(
+pub fn analytic_uv_trim_contains(
     topo: &Topology,
     face_id: FaceId,
     trim: &FaceTrimData,
