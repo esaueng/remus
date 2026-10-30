@@ -12,7 +12,9 @@
 //!   by ±1e-3 and ±2e-4 × the diagonal along the facet normal.
 //! * Oracle: parity of watertight ray–triangle hits on a mesh at deflection
 //!   2e-5 × the diagonal, along five irrational directions. A point counts
-//!   only when all five agree.
+//!   only when all five agree and it lies farther than [`NEAR_MESH`]
+//!   deflections from the mesh (a grid point can land on the true surface,
+//!   where the inscribed mesh cannot decide it).
 //!
 //! Each engine's per-body wrong counts are pinned in [`PINNED`]. They may only
 //! go down: a count above its pin fails, a count below it is reported so the
@@ -66,6 +68,9 @@ use remus_topology::solid::SolidId;
 /// Fine meshes above this many triangles are skipped (RFC 0008 section 2.2).
 const MAX_TRIANGLES: usize = 400_000;
 
+/// Points closer to the fine mesh than this many deflections are ambiguous.
+const NEAR_MESH: f64 = 3.0;
+
 /// Grid points per axis.
 const GRID: usize = 7;
 
@@ -75,8 +80,8 @@ const NEAR_TRIANGLES: usize = 75;
 /// Pinned wrong counts per body: `(name, algo, check)`. Lower a pin when the
 /// run reports a count below it; never raise one.
 const PINNED: &[(&str, usize, usize)] = &[
-    ("axis2_optional_attrs_cylinder.step#0", 0, 20),
-    ("conical_surface_base_radius_frustum.step#0", 0, 5),
+    ("axis2_optional_attrs_cylinder.step#0", 0, 19),
+    ("conical_surface_base_radius_frustum.step#0", 0, 4),
     ("jolly_fox_partial_cylinder.step#0", 0, 0),
     ("lemon-torus-band.step#0", 361, 0),
     ("lipfuse_2x1_body.step#0", 0, 0),
@@ -103,8 +108,8 @@ const PINNED: &[(&str, usize, usize)] = &[
     ("wallcut_body.step#0", 0, 0),
     ("wallcut_tool_0.step#0", 0, 0),
     ("box", 0, 0),
-    ("cylinder", 0, 19),
-    ("cone", 0, 18),
+    ("cylinder", 0, 18),
+    ("cone", 0, 15),
     ("sphere", 0, 0),
     ("box_minus_cylinder", 0, 0),
     ("box_union_sphere", 188, 108),
@@ -215,10 +220,12 @@ struct MeshOracle<'a> {
     mesh: &'a TriangleMesh,
     bvh: Bvh,
     directions: [Vec3; 5],
+    /// Distance below which a point is too close to the mesh to decide.
+    near: f64,
 }
 
 impl<'a> MeshOracle<'a> {
-    fn new(mesh: &'a TriangleMesh) -> Self {
+    fn new(mesh: &'a TriangleMesh, near: f64) -> Self {
         let boxes: Vec<(usize, Aabb3)> = (0..mesh.indices.len() / 3)
             .map(|k| (k, Aabb3::from_points(Self::triangle(mesh, k))))
             .collect();
@@ -226,15 +233,29 @@ impl<'a> MeshOracle<'a> {
             mesh,
             bvh: Bvh::build(&boxes),
             directions: oracle_directions(),
+            near,
         }
+    }
+
+    fn is_near(&self, point: Point3, scratch: &mut Vec<usize>) -> bool {
+        let probe = Aabb3::from_points([point]).expanded(self.near);
+        self.bvh.query_overlap_into(&probe, scratch);
+        scratch.iter().any(|&k| {
+            let [a, b, c] = Self::triangle(self.mesh, k);
+            (closest_point_on_triangle(point, a, b, c) - point).length() < self.near
+        })
     }
 
     fn triangle(mesh: &TriangleMesh, k: usize) -> [Point3; 3] {
         [0, 1, 2].map(|i| mesh.positions[mesh.indices[3 * k + i] as usize])
     }
 
-    /// `Some(inside)` when all five ray parities agree.
+    /// `Some(inside)` when the point is clear of the mesh and all five ray
+    /// parities agree.
     fn classify(&self, point: Point3, scratch: &mut Vec<usize>) -> Option<bool> {
+        if self.is_near(point, scratch) {
+            return None;
+        }
         let mut verdict = None;
         for direction in self.directions {
             self.bvh.query_ray_into(point, direction, scratch);
@@ -255,6 +276,41 @@ impl<'a> MeshOracle<'a> {
         }
         verdict
     }
+}
+
+/// Closest point on a triangle (Ericson, Real-Time Collision Detection,
+/// 5.1.5).
+#[allow(clippy::many_single_char_names)]
+fn closest_point_on_triangle(p: Point3, a: Point3, b: Point3, c: Point3) -> Point3 {
+    let (ab, ac, ap) = (b - a, c - a, p - a);
+    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = p - b;
+    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1.mul_add(d4, -(d3 * d2));
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return a + ab * (d1 / (d1 - d3));
+    }
+    let cp = p - c;
+    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5.mul_add(d2, -(d1 * d6));
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return a + ac * (d2 / (d2 - d6));
+    }
+    let va = d3.mul_add(d6, -(d5 * d4));
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    let denom = 1.0 / (va + vb + vc);
+    a + ab * (vb * denom) + ac * (vc * denom)
 }
 
 fn mesh_bounds(mesh: &TriangleMesh) -> Aabb3 {
@@ -324,7 +380,8 @@ fn score_body(name: &str, topo: &Topology, solid: SolidId) -> Option<BodyScore> 
     let coarse = tessellate_solid(topo, solid, 0.1).ok()?;
     let bounds = mesh_bounds(&coarse);
     let diagonal = (bounds.max - bounds.min).length();
-    let mesh = match tessellate_solid(topo, solid, 2e-5 * diagonal) {
+    let deflection = 2e-5 * diagonal;
+    let mesh = match tessellate_solid(topo, solid, deflection) {
         Ok(mesh) => mesh,
         Err(error) => {
             eprintln!("{name}: skipped, fine mesh failed: {error}");
@@ -338,7 +395,7 @@ fn score_body(name: &str, topo: &Topology, solid: SolidId) -> Option<BodyScore> 
         );
         return None;
     }
-    let oracle = MeshOracle::new(&mesh);
+    let oracle = MeshOracle::new(&mesh, NEAR_MESH * deflection);
     let prepared = PreparedSolid::prepare(topo, solid).unwrap();
     let geoms = RayCastGeoms::new(topo, solid).ok();
     let options = ClassifyOptions::default();
