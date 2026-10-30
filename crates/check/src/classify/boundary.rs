@@ -2011,6 +2011,58 @@ pub fn count_face_ray_crossings_cached(
     }
 }
 
+/// UV trim membership of a point on a cylinder, cone or torus face, by the
+/// same containment the ray crossings use. `None` for other surfaces.
+///
+/// The 3D outer polygon of a full-turn wall (rim, seam, rim, seam) projects
+/// onto a degenerate plane polygon, so only the face's own `(u, v)` decides
+/// these faces (RFC 0008 F4).
+pub fn analytic_uv_trim_contains(
+    topo: &Topology,
+    face_id: FaceId,
+    trim: &FaceTrimData,
+    cache: Option<&FaceCache>,
+    point: Point3,
+) -> Result<Option<bool>, CheckError> {
+    let hits = [point];
+    let count = match topo.face(face_id)?.surface() {
+        FaceSurface::Cylinder(cyl) => count_analytic_crossings_with_trim(
+            topo,
+            face_id,
+            Some(trim),
+            cache,
+            &hits,
+            |p| cyl.project_point(p),
+            false,
+            None,
+        )?,
+        FaceSurface::Cone(cone) => count_analytic_crossings_with_trim(
+            topo,
+            face_id,
+            Some(trim),
+            cache,
+            &hits,
+            |p| cone.project_point(p),
+            false,
+            Some(CONE_APEX_V),
+        )?,
+        FaceSurface::Torus(tor) => count_analytic_crossings_with_trim(
+            topo,
+            face_id,
+            Some(trim),
+            cache,
+            &hits,
+            |p| tor.project_point(p),
+            true,
+            None,
+        )?,
+        FaceSurface::Plane { .. } | FaceSurface::Sphere(_) | FaceSurface::Nurbs(_) => {
+            return Ok(None);
+        }
+    };
+    Ok(Some(count > 0))
+}
+
 /// Whether a planar face has a boundary edge its trim polygon only
 /// approximates: anything but a straight line.
 fn planar_face_has_curved_edge(topo: &Topology, face_id: FaceId) -> Result<bool, CheckError> {
