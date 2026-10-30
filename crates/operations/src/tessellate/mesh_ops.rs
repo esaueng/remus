@@ -9,6 +9,7 @@ use remus_topology::solid::SolidId;
 
 use super::TriangleMesh;
 use super::edge_sampling::sample_edge;
+use remus_math::compact_sort::CompactSort;
 
 /// 1µm position-quantization grid for coincident-triangle dedupe: tight
 /// enough that legitimately distinct CAD features (down to ~10µm geometry
@@ -827,7 +828,7 @@ pub(super) fn fill_sub_deflection_triangular_gaps(
     if boundary.is_empty() {
         return;
     }
-    boundary.sort_unstable();
+    boundary.compact_sort_unstable();
     let boundary_map: DetHashMap<(u32, u32), usize> = boundary
         .iter()
         .map(|&(a, b, triangle)| ((a, b), triangle))
@@ -852,12 +853,12 @@ pub(super) fn fill_sub_deflection_triangular_gaps(
                 continue;
             };
             let mut key = [a, b, c];
-            key.sort_unstable();
+            key.compact_sort_unstable();
             if !seen.insert(key) {
                 continue;
             }
             let mut sources = [ab_triangle, bc_triangle, ca_triangle];
-            sources.sort_unstable();
+            sources.compact_sort_unstable();
             if sources[0] == sources[2] {
                 continue;
             }

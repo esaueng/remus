@@ -32,7 +32,12 @@
 //! construction, not judgement calls. An `unresolved` entry appearing here means
 //! a fact was lost, not that an ambiguity was found.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::disallowed_methods
+)]
 
 use std::collections::HashSet;
 

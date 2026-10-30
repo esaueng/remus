@@ -6560,7 +6560,7 @@ fn shared_vertex_points(topo: &Topology, a: &[FaceId], b: &[FaceId]) -> Vec<Poin
         .into_iter()
         .filter(|(index, _)| in_b.contains_key(index))
         .collect();
-    shared.sort_unstable_by_key(|(index, _)| *index);
+    shared.compact_sort_unstable_by_key(|(index, _)| *index);
     shared
         .into_iter()
         .filter_map(|(_, vid)| {

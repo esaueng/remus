@@ -1,6 +1,11 @@
 //! P-Class 5.2 regressions for blends between curved analytic supports.
 
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::disallowed_methods
+)]
 
 use remus_math::mat::Mat4;
 use remus_operations::blend_ops::fillet_v2;

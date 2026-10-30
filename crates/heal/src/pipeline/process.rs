@@ -10,6 +10,7 @@ use super::registry::OperatorRegistry;
 use crate::HealError;
 use crate::context::HealContext;
 use crate::fix::FixResult;
+use remus_math::compact_sort::CompactSort;
 
 /// The entity scopes and explicit replacement records of one completed step.
 #[derive(Debug, Clone)]
@@ -44,7 +45,7 @@ fn entity_keys(
             .into_iter()
             .map(|id| EntityKey::vertex(id.index())),
     );
-    keys.sort_unstable();
+    keys.compact_sort_unstable();
     keys.dedup();
     Ok(keys)
 }

@@ -1720,7 +1720,7 @@ fn validate_rebuilt_wires(
             .iter()
             .map(|&wire| topo.wire(wire).map(|item| item.edges().len()))
             .collect::<Result<Vec<_>, _>>()?;
-        actual.sort_unstable();
+        actual.compact_sort_unstable();
         if &actual != expected {
             return Err(OffsetError::TopologyChange {
                 face: Some(face),
@@ -1774,7 +1774,7 @@ fn wire_shape(topo: &Topology, face: FaceId) -> Result<Vec<usize>, OffsetError> 
         .into_iter()
         .map(|wire| Ok(topo.wire(wire)?.edges().len()))
         .collect::<Result<Vec<_>, OffsetError>>()?;
-    shape.sort_unstable();
+    shape.compact_sort_unstable();
     Ok(shape)
 }
 

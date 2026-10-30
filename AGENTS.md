@@ -207,7 +207,7 @@ Quick reference — find the right file for any task:
 | Gauss-Legendre quadrature | `quadrature.rs` |
 | Operation tolerance and resource policy | `context.rs` |
 | Deterministic hashing (seed-stable maps/sets) | `det_hash.rs` |
-| Stable sorts compiled once for all comparators (`CompactSort`, for cold sorts; keeps WASM code size down) | `compact_sort.rs` |
+| Stable and unstable sorts compiled once for all comparators (`CompactSort`, for cold sorts; keeps WASM code size down) | `compact_sort.rs` |
 | Correctly rounded `fma` that stays fast on `wasm32` (bit-identical to `mul_add`) | `fma.rs` |
 | Structured diagnostics (category, code, `ToDiagnostic`) | `diagnostic.rs` |
 | Qualified intersection results (contact kind, quality) | `intersect.rs` |
@@ -1030,11 +1030,17 @@ Workspace-level strict lints:
 - `panic = "deny"` — no panic
 - `clippy::pedantic`, `clippy::nursery` = warn
 - `missing_docs` = warn
-- `clippy::disallowed_methods` forbids `sort_by` / `sort_by_key` in the kernel
+- `clippy::disallowed_methods` forbids `sort_by` / `sort_by_key` and
+  `sort_unstable` / `sort_unstable_by` / `sort_unstable_by_key` in the kernel
   crates (math through operations; their own `clippy.toml`): use
-  `remus_math::compact_sort::CompactSort`. A measured hot sort keeps `sort_by`
-  behind a statement-level `#[allow(clippy::disallowed_methods)]` with a
-  `// hot: <evidence>` line. Test code is exempt.
+  `remus_math::compact_sort::CompactSort`. The stable `compact_sort_by*` keep
+  `sort_by`'s order, ties included. The unstable `compact_sort_unstable*`
+  match `sort_unstable*` only where no two distinguishable elements compare
+  equal (ties only between identical values, or unique keys), so convert an
+  unstable sort only after checking that. A measured hot sort keeps the std
+  sort behind a statement-level `#[allow(clippy::disallowed_methods)]` with a
+  `// hot: <evidence>` line; an unstable sort whose tie order can reach its
+  result keeps it with a `// ties: <reason>` line. Test code is exempt.
 
 ## Testing
 

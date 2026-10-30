@@ -1895,6 +1895,8 @@ pub(crate) fn face_components(topo: &Topology, solid: SolidId) -> Vec<Vec<FaceId
     // shuffled face order, which percolates through the boolean pipeline
     // and makes `compound_cut_*` tests flaky.
     for neighbors in &mut adj {
+        // hot: 31,744+ calls, ~556,000 n*log2(n) work, n up to 364 in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         neighbors.sort_unstable();
         neighbors.dedup();
     }

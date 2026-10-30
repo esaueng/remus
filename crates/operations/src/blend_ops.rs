@@ -382,7 +382,7 @@ pub(crate) fn validate_blend_volume(
         let (t0, t1) =
             crate::authoritative_edge_domain(edge_data, "blend-volume angle-adjusted reach")?;
         let mut faces = adjacency.faces_for_edge(edge).to_vec();
-        faces.sort_unstable_by_key(|face| face.index());
+        faces.compact_sort_unstable_by_key(|face| face.index());
         faces.dedup();
         let mut edge_reach = reach;
         if let [face_a, face_b] = faces.as_slice() {
@@ -921,7 +921,7 @@ fn cavity_spine_is_straight(
         return Ok(false);
     };
     let mut supports = adjacency.faces_for_edge(edges[0]).to_vec();
-    supports.sort_unstable();
+    supports.compact_sort_unstable();
     if supports.len() != 2 || supports[0] == supports[1] {
         return Ok(false);
     }
@@ -932,7 +932,7 @@ fn cavity_spine_is_straight(
     let mut uses = DetHashMap::default();
     for &edge in edges {
         let mut faces = adjacency.faces_for_edge(edge).to_vec();
-        faces.sort_unstable();
+        faces.compact_sort_unstable();
         if faces != supports {
             return Ok(false);
         }

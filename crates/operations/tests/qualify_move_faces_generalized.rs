@@ -5,7 +5,8 @@
     clippy::cast_sign_loss,
     clippy::expect_used,
     clippy::panic,
-    clippy::unwrap_used
+    clippy::unwrap_used,
+    clippy::disallowed_methods
 )]
 
 use std::collections::{BTreeSet, HashMap};

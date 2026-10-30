@@ -456,6 +456,8 @@ fn last_visit_targets(faces: &[(usize, FaceId)]) -> Vec<FaceId> {
         .enumerate()
         .map(|(visit, &(source, _))| (source, visit))
         .collect();
+    // hot: 3,072+ calls, ~46,000 n*log2(n) work, n up to 574 in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     visits.sort_unstable();
     for run in visits.chunk_by(|a, b| a.0 == b.0) {
         if let [.., (_, last)] = run
@@ -557,6 +559,8 @@ fn matches_by_position(
             };
             keys.push((edge, snapshot.forward));
         }
+        // hot: ~44,000 n*log2(n) work in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         keys.sort_unstable();
         let skipped = &coedges[alignment.outer..alignment.outer + alignment.skip];
         for &coedge in skipped {
@@ -583,6 +587,8 @@ fn matches_by_position(
             .all(|(i, key)| keys().take(i).all(|other| other != key))
     } else {
         let mut sorted: Vec<_> = keys().collect();
+        // hot: ~26,000 n*log2(n) work in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         sorted.sort_unstable();
         sorted.windows(2).all(|pair| pair[0] != pair[1])
     }

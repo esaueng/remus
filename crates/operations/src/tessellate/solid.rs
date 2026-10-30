@@ -1312,8 +1312,10 @@ fn build_boundary_plan(
                     }
                 }
             }
-            lines.sort_unstable();
+            lines.compact_sort_unstable();
             lines.dedup();
+            // hot: ~66,000 n*log2(n) work, n up to 1,216 in one criterion --test + native perf pass.
+            #[allow(clippy::disallowed_methods)]
             curved_samples.sort_unstable();
             curved_samples.dedup();
             if !lines.is_empty() && !curved_samples.is_empty() {
@@ -1543,7 +1545,7 @@ fn tessellate_faces_core(
     // keeping all downstream iteration deterministic regardless of
     // insertion-order hashing.
     let mut edge_indices: Vec<usize> = edge_face_map.keys().copied().collect();
-    edge_indices.sort_unstable();
+    edge_indices.compact_sort_unstable();
     let mut reuse_session = reuse::Session::begin(retention);
     let edge_keys = if reuse_session.is_some() {
         Some(

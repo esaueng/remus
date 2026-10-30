@@ -107,7 +107,7 @@ where
             }
         }
     }
-    seeds.sort_unstable_by_key(|face| face.index());
+    seeds.compact_sort_unstable_by_key(|face| face.index());
     seeds.dedup();
     if seeds.is_empty() {
         return Ok(None);
@@ -247,7 +247,7 @@ fn band_group(
         if !grown {
             break;
         }
-        band.faces.sort_unstable_by_key(|face| face.index());
+        band.faces.compact_sort_unstable_by_key(|face| face.index());
         band.faces.dedup();
         merged = true;
     }
@@ -317,7 +317,7 @@ fn rebuild_edges(
 }
 
 fn distinct_edges(mut edges: Vec<EdgeId>) -> Vec<EdgeId> {
-    edges.sort_unstable_by_key(|edge| edge.index());
+    edges.compact_sort_unstable_by_key(|edge| edge.index());
     edges.dedup();
     edges
 }

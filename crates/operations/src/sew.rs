@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::Point3;
 use remus_topology::BodyClass;
@@ -287,7 +288,7 @@ fn sew_rebuilt_faces(
 
         // Two non-adjacent corners can also merge without any single edge
         // collapsing, which pinches the loop and reuses its edges.
-        corners.sort_unstable();
+        corners.compact_sort_unstable();
         if corners.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(crate::OperationsError::InvalidInput {
                 reason: format!(

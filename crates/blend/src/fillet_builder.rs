@@ -37,6 +37,7 @@ use crate::walker::{
     Walker, WalkerConfig, approximate_blend_surface, approximate_blend_surface_linear_v,
 };
 use crate::{BlendError, BlendFaceOrigins, BlendResult};
+use remus_math::compact_sort::CompactSort;
 
 /// Builder for fillet (rounding) operations on solid edges.
 ///
@@ -550,7 +551,7 @@ impl<'a> FilletBuilder<'a> {
         // replay determinism); iterating the HashSet here made it vary run to
         // run, so fix the order by id before appending.
         let mut touched_in_order: Vec<FaceId> = touched_faces.iter().copied().collect();
-        touched_in_order.sort_unstable();
+        touched_in_order.compact_sort_unstable();
         for fid in touched_in_order {
             let replacement = face_replacements.get(&fid).copied();
             result_faces.push(replacement.unwrap_or(fid));
@@ -731,7 +732,7 @@ fn stitch_end(
     // Case B retains the last matching sub-edge. Hash-set iteration would
     // change those choices. Neither search should visit unrelated wires.
     let mut wire_ids: Vec<_> = live.iter().copied().collect();
-    wire_ids.sort_unstable_by_key(|wire| wire.index());
+    wire_ids.compact_sort_unstable_by_key(|wire| wire.index());
     let mut case_a: Option<(remus_topology::wire::WireId, Vec<usize>, VertexId, VertexId)> = None;
     'outer: for &wid in &wire_ids {
         #[cfg(test)]

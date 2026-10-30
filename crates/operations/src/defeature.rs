@@ -133,7 +133,7 @@ pub(crate) fn defeature_with_history(
         .iter()
         .map(|(&src, out)| (src, out.index()))
         .collect();
-    mapped.sort_unstable();
+    mapped.compact_sort_unstable();
     let accounted: BTreeSet<usize> = mapped.iter().map(|&(src, _)| src).collect();
     for (src, out) in mapped {
         evolution.add_modified(src, out);

@@ -292,7 +292,7 @@ impl EvolutionMap {
         fn index_map(m: &HashMap<usize, Vec<usize>>) -> String {
             // Sort so the encoding is deterministic across runs.
             let mut keys: Vec<usize> = m.keys().copied().collect();
-            keys.sort_unstable();
+            keys.compact_sort_unstable();
             keys.iter()
                 .map(|k| {
                     let vals: Vec<String> = m[k].iter().map(ToString::to_string).collect();
@@ -312,7 +312,7 @@ impl EvolutionMap {
             .collect();
 
         let mut deleted: Vec<usize> = self.deleted.iter().copied().collect();
-        deleted.sort_unstable();
+        deleted.compact_sort_unstable();
         let deleted_vals: Vec<String> = deleted.iter().map(ToString::to_string).collect();
 
         format!(
