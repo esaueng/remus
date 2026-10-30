@@ -157,6 +157,14 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **algo:** the point classifier now reads a torus fillet band as its exact
+  torus when a rim of the band is split into arcs, as STEP writers emit a
+  full-revolution fillet whose rim meets a neighbouring face's seam. It used
+  to fall back to a flat boundary polygon that horizontal rays never crossed,
+  so points level with such a fillet classified Outside. A boolean then
+  dropped the faces sampled there: resizing the bore or wall of an imported
+  revolved part refused with `exact_only_unattainable`.
+
 * **algo:** the ray-cast point classifier no longer double-counts crossings
   near the rims of a partial cylinder face whose trim is not a rectangle in
   its `(u, v)` chart (a helical gear's tip and root lands, bounded by
