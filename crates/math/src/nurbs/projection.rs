@@ -395,9 +395,9 @@ impl SurfaceSeedGrid {
     /// on an axis of many spans a node can lie a span or more from the
     /// answer, and Newton from there settles on another stationary point of
     /// the distance: a cubic flank of 28 spans read an edge lying on it as
-    /// 6.7e-3 off. Each axis here takes every distinct knot and
-    /// [`SPAN_SEED_SAMPLES`] intervals per span, never fewer nodes than the
-    /// coarse grid, and at most [`MAX_SPAN_SEED_AXIS`] (uniform past that).
+    /// 6.7e-3 off. Each axis here takes every distinct knot and four
+    /// intervals per span, never fewer nodes than the coarse grid, and at
+    /// most 257 nodes (uniform past that).
     /// It costs one evaluation per node, so build it once per surface and
     /// only where the coarse seed has been seen to miss.
     #[must_use]
