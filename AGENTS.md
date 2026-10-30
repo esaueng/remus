@@ -191,7 +191,7 @@ Quick reference — find the right file for any task:
 | Filtered exact predicates | `filtered.rs` |
 | Float tolerance | `tolerance.rs` |
 | Geometric predicates (orient2d/3d) | `predicates.rs` |
-| Qualified ray–cylinder/cone/sphere intersection: cancellation-free quadratic, relative tangency band, transversal/tangential/unclassified hits (RFC 0008 §3.2) | `ray.rs`, `ray/tests.rs` |
+| Qualified ray–cylinder/cone/sphere intersection (cancellation-free quadratic, relative tangency band) and ray–torus (merged double roots as tangential): transversal/tangential/unclassified hits (RFC 0008 §3.2) | `ray.rs`, `ray/tests.rs` |
 | Ray-triangle intersection | `ray_triangle.rs` |
 | 2D polygon offset | `polygon_offset.rs` |
 | 2D polygon ops (clip, fillet, chamfer) | `polygon2d.rs` |
