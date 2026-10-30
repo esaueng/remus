@@ -80,7 +80,7 @@ enum TrimLoop {
 
 /// The outer loop and holes of one planar face, seen from one plane normal.
 #[derive(Debug, Clone)]
-pub(crate) struct PlanarTrim {
+pub struct PlanarTrim {
     normal: Vec3,
     /// The in-plane ray direction and its normal, `None` for a degenerate
     /// plane normal (every query then refuses).
@@ -97,11 +97,7 @@ impl PlanarTrim {
     /// Returns an error if a referenced topology entity is missing. Edge
     /// kinds and domains that cannot be decided are refused by
     /// [`PlanarTrim::contains`] when a query reaches them.
-    pub(crate) fn build(
-        topo: &Topology,
-        face_id: FaceId,
-        normal: Vec3,
-    ) -> Result<Self, CheckError> {
+    pub fn build(topo: &Topology, face_id: FaceId, normal: Vec3) -> Result<Self, CheckError> {
         let face = topo.face(face_id)?;
         // The frame's axes do not depend on its origin.
         let axes = remus_math::frame::Frame3::from_normal(Point3::new(0.0, 0.0, 0.0), normal)
@@ -130,7 +126,7 @@ impl PlanarTrim {
     /// Refuses a degenerate normal, edge curves other than lines and
     /// circles, invalid edge domains, and ray events it cannot resolve
     /// exactly.
-    pub(crate) fn contains(&self, point: Point3) -> Result<bool, CheckError> {
+    pub fn contains(&self, point: Point3) -> Result<bool, CheckError> {
         let Some((x, y)) = self.axes else {
             remus_math::frame::Frame3::from_normal(point, self.normal)?;
             return Err(CheckError::DistanceFailed("degenerate plane normal".into()));
@@ -142,7 +138,7 @@ impl PlanarTrim {
         for hole in &self.holes {
             in_holes += usize::from(loop_contains(hole, point, x, y)?);
         }
-        Ok(in_holes % 2 == 0)
+        Ok(in_holes.is_multiple_of(2))
     }
 }
 
@@ -151,7 +147,7 @@ impl PlanarTrim {
 /// # Errors
 ///
 /// As [`PlanarTrim::build`] and [`PlanarTrim::contains`].
-pub(crate) fn plane_point_in_face(
+pub fn plane_point_in_face(
     topo: &Topology,
     face_id: FaceId,
     point: Point3,
@@ -188,7 +184,7 @@ fn build_loop(topo: &Topology, wire_id: WireId, y: Vec3) -> Result<TrimLoop, Che
                 curve.evaluate_with_endpoints(b, start, end),
             )),
             EdgeCurve::Circle(circle) => {
-                edges.push(TrimEdge::Arc(TrimCircle::new(circle, y), a, b))
+                edges.push(TrimEdge::Arc(TrimCircle::new(circle, y), a, b));
             }
             EdgeCurve::Line
             | EdgeCurve::Ellipse(_)

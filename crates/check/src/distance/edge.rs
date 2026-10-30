@@ -8,7 +8,7 @@ use crate::CheckError;
 
 /// Algebraic qualification of a clamped degree-one affine NURBS edge.
 /// This admits the exact line conversion without sampled recognition.
-pub(crate) fn is_linear_curve(curve: &EdgeCurve) -> bool {
+pub fn is_linear_curve(curve: &EdgeCurve) -> bool {
     match curve {
         EdgeCurve::Line => true,
         EdgeCurve::NurbsCurve(curve) => {
