@@ -151,6 +151,13 @@ impl View {
     /// lands inside the solid, i.e. a face is between it and the camera. A
     /// classification error is propagated rather than silently read as
     /// "visible", so a degenerate solid surfaces instead of yielding wrong HLR.
+    ///
+    /// At a silhouette the step runs tangent to the face, so a short step
+    /// can stay within the classifier's tolerance of it and read
+    /// `OnBoundary`. The gap off a curved face grows with the square of the
+    /// step, so the probe doubles its step up to [`OCCLUSION_RETRIES`] times;
+    /// a probe that stays on the boundary (a face edge-on to the view) is
+    /// visible, as before.
     fn is_hidden(
         &self,
         topo: &Topology,
@@ -159,12 +166,21 @@ impl View {
         deflection: f64,
         p: Point3,
     ) -> Result<bool, crate::OperationsError> {
-        Ok(
-            classify_point(topo, solid, p - self.dir * eps, deflection, 1e-7)?
-                == PointClassification::Inside,
-        )
+        let mut step = eps;
+        for _ in 0..=OCCLUSION_RETRIES {
+            match classify_point(topo, solid, p - self.dir * step, deflection, 1e-7)? {
+                PointClassification::Inside => return Ok(true),
+                PointClassification::Outside => return Ok(false),
+                PointClassification::OnBoundary => step *= 2.0,
+            }
+        }
+        Ok(false)
     }
 }
+
+/// Doublings of the occlusion step tried when a probe lands on the boundary
+/// (at most 16 times the step).
+const OCCLUSION_RETRIES: usize = 4;
 
 /// Step length for the occlusion probe — far enough to clear the boundary
 /// tolerance, small relative to the model. Keyed to the model extent and
