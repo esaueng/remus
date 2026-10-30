@@ -106,8 +106,15 @@ fn concave_section_area(big: f64, r: f64) -> f64 {
 }
 
 /// A round boss standing against a block, filleted where its side meets the
-/// block's wall. Wherever the cylinder's parameter seam happens to sit, the
-/// body gains exactly the filled corner, and the band is an exact cylinder.
+/// block's wall. The body gains exactly the filled corner and the band is an
+/// exact cylinder, wherever the cylinder's parameter seam sits and whether
+/// the boss ends flush with the block or rises past it.
+///
+/// Rising past it, the fillet stops where the block's top face crosses the
+/// boss, so the boss is trimmed by an L — the contact ruling, then the arc of
+/// the boss in that face — rather than by one curve between two of its edges.
+/// The mirrored body walks the boss's wire the other way round that L; the
+/// upside-down one puts the open end at the bottom.
 #[test]
 fn concave_line_where_a_boss_meets_a_wall() {
     let (big, r, height) = (6.0, 1.0, 24.0);
@@ -119,42 +126,65 @@ fn concave_line_where_a_boss_meets_a_wall() {
         "{section}"
     );
 
-    for seam_degrees in [0.0, -30.0, 180.0] {
-        let label = format!("seam at {seam_degrees} degrees");
-        let mut topo = Topology::new();
-        let boss = make_cylinder(&mut topo, big, height).unwrap();
-        transform_solid(&mut topo, boss, &rotation_about_z(seam_degrees)).unwrap();
-        let block = make_box(&mut topo, 30.0, 18.0, height).unwrap();
-        let body = boolean(&mut topo, BooleanOp::Fuse, boss, block).unwrap();
-        let line = edge_between(
-            &topo,
-            body,
-            Point3::new(big, 0.0, 0.0),
-            Point3::new(big, 0.0, height),
-        );
-        let before = solid_volume(&topo, body, MEASURE_DEFLECTION).unwrap();
+    let identity = rotation_about_z(0.0);
+    let mirrored = Mat4([
+        [-1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]);
+    let upside_down = Mat4([
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]);
+    let cases = [
+        ("flush", height, identity),
+        ("taller", height + 4.0, identity),
+        ("taller, mirrored", height + 4.0, mirrored),
+        ("taller, upside down", height + 4.0, upside_down),
+    ];
+    for (shape, boss_height, placement) in cases {
+        for seam_degrees in [0.0, -30.0, 180.0] {
+            let label = format!("{shape}, seam at {seam_degrees} degrees");
+            let mut topo = Topology::new();
+            let boss = make_cylinder(&mut topo, big, boss_height).unwrap();
+            transform_solid(&mut topo, boss, &rotation_about_z(seam_degrees)).unwrap();
+            let block = make_box(&mut topo, 30.0, 18.0, height).unwrap();
+            let body = boolean(&mut topo, BooleanOp::Fuse, boss, block)
+                .unwrap_or_else(|e| panic!("{label}: fuse: {e:?}"));
+            transform_solid(&mut topo, body, &placement).unwrap();
+            let line = edge_between(
+                &topo,
+                body,
+                placement.mul_point(Point3::new(big, 0.0, 0.0)),
+                placement.mul_point(Point3::new(big, 0.0, height)),
+            );
+            let before = solid_volume(&topo, body, MEASURE_DEFLECTION).unwrap();
 
-        let result = fillet_cascade(&mut topo, body, &[line], r)
-            .unwrap_or_else(|e| panic!("{label}: {}: {e}", blend_failure_code(&e)));
-        assert!(result.failed.is_empty(), "{label}: partial blend");
-        assert_valid_closed(&topo, result.solid, &label);
+            let result = fillet_cascade(&mut topo, body, &[line], r)
+                .unwrap_or_else(|e| panic!("{label}: {}: {e}", blend_failure_code(&e)));
+            assert!(result.failed.is_empty(), "{label}: partial blend");
+            assert_valid_closed(&topo, result.solid, &label);
 
-        let band = bands(&topo, body, result.solid, r);
-        assert_eq!(band.len(), 1, "{label}: one exact cylindrical band");
-        let FaceSurface::Cylinder(band) = topo.face(band[0]).unwrap().surface() else {
-            unreachable!()
-        };
-        assert!(
-            band.axis().cross(Vec3::new(0.0, 0.0, 1.0)).length() < 1e-12,
-            "{label}"
-        );
+            let band = bands(&topo, body, result.solid, r);
+            assert_eq!(band.len(), 1, "{label}: one exact cylindrical band");
+            let FaceSurface::Cylinder(band) = topo.face(band[0]).unwrap().surface() else {
+                unreachable!()
+            };
+            assert!(
+                band.axis().cross(Vec3::new(0.0, 0.0, 1.0)).length() < 1e-12,
+                "{label}"
+            );
 
-        let gained = solid_volume(&topo, result.solid, MEASURE_DEFLECTION).unwrap() - before;
-        let expected = section * height;
-        assert!(
-            (gained - expected).abs() < 1e-6 * before,
-            "{label}: gained {gained}, expected {expected}"
-        );
+            let gained = solid_volume(&topo, result.solid, MEASURE_DEFLECTION).unwrap() - before;
+            let expected = section * height;
+            assert!(
+                (gained - expected).abs() < 1e-6 * before,
+                "{label}: gained {gained}, expected {expected}"
+            );
+        }
     }
 }
 
@@ -222,16 +252,16 @@ fn convex_line_where_a_flat_meets_a_shaft() {
     );
 }
 
-/// The boss taller than the block: the fillet's top end stops part-way up the
-/// boss, where the block's top face crosses it, so the boss's face would be
-/// trimmed by an L (the contact ruling, then the section circle) rather than
-/// by one curve between two of its edges. Not supported yet; it must refuse
-/// by its typed code and leave the input untouched rather than build a wrong
-/// body.
+/// The boss rising past the block at BOTH ends: each end of the fillet stops
+/// part-way along the boss, so the strip to remove is bounded by two section
+/// arcs and touches the boss's boundary only at the spine's own vertices. Not
+/// supported yet; it must refuse by its typed code and leave the input
+/// untouched rather than build a wrong body.
 #[test]
-fn boss_taller_than_the_wall_refuses_cleanly() {
+fn boss_past_the_wall_at_both_ends_refuses_cleanly() {
     let mut topo = Topology::new();
-    let boss = make_cylinder(&mut topo, 6.0, 28.0).unwrap();
+    let boss = make_cylinder(&mut topo, 6.0, 32.0).unwrap();
+    transform_solid(&mut topo, boss, &Mat4::translation(0.0, 0.0, -4.0)).unwrap();
     let block = make_box(&mut topo, 30.0, 18.0, 24.0).unwrap();
     let body = boolean(&mut topo, BooleanOp::Fuse, boss, block).unwrap();
     let line = edge_between(
@@ -242,7 +272,7 @@ fn boss_taller_than_the_wall_refuses_cleanly() {
     );
     let faces_before = solid_faces(&topo, body).unwrap();
     let Err(error) = fillet_cascade(&mut topo, body, &[line], 1.0) else {
-        panic!("the taller boss built; tighten this test to the result");
+        panic!("the boss past both ends built; tighten this test to the result");
     };
     assert_eq!(blend_failure_code(&error), "trimming-failure", "{error}");
     assert_eq!(solid_faces(&topo, body).unwrap(), faces_before);

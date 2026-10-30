@@ -1062,6 +1062,36 @@ pub fn trim_face_general(
     };
     let scale = (contact_3d[1] - contact_3d[0]).length().max(1.0);
     let fit_tolerance = 50.0 * remus_math::tolerance::Tolerance::new().linear * scale;
+    // One end reaches the boundary and the other stops inside the face: the
+    // fillet ends where an end face crosses this one part-way along it.
+    if (start.tolerance > fit_tolerance) != (end.tolerance > fit_tolerance) {
+        let (anchored, open_point, open_parameter) = if start.tolerance <= fit_tolerance {
+            (&start_hits, contact_3d[1], contact_t1)
+        } else {
+            (&end_hits, contact_3d[0], contact_t0)
+        };
+        // Candidates are sorted by residual, so the first is the best fit.
+        if let Some(anchored) = anchored.first()
+            && anchored.tolerance <= fit_tolerance
+            && let Some(result) = trim_with_section_closure(
+                topo,
+                edit,
+                face_id,
+                &SectionClosure {
+                    surface: &surface,
+                    reversed,
+                    oriented_edges: &oriented_edges,
+                    contact,
+                    anchored,
+                    open_point,
+                    open_parameter,
+                    avoid_edges,
+                },
+            )?
+        {
+            return Ok(result);
+        }
+    }
     if start.tolerance > fit_tolerance || end.tolerance > fit_tolerance {
         log::warn!(
             "curved trim {face_id:?}: endpoint residuals {} and {} exceed {fit_tolerance}",
@@ -1217,6 +1247,235 @@ pub fn trim_face_general(
         new_vertices: vec![va, vb],
         contact_edge: Some(contact_eid),
     })
+}
+
+/// A curved trim whose contact stops inside the face at one end.
+struct SectionClosure<'a> {
+    surface: &'a FaceSurface,
+    reversed: bool,
+    oriented_edges: &'a [OrientedEdge],
+    contact: &'a NurbsCurve,
+    /// The end that reaches a boundary edge.
+    anchored: &'a BoundaryHit,
+    /// The other end: inside the face.
+    open_point: Point3,
+    open_parameter: f64,
+    avoid_edges: &'a [EdgeId],
+}
+
+/// Trim a cylinder face along a contact that reaches its boundary at one end
+/// only, closing the cut back to the spine's end vertex along the face.
+///
+/// This is a fillet whose end face crosses the support part-way along it: a
+/// boss standing against a block and rising above it is filleted where it
+/// meets the block's wall, and the fillet stops at the block's top face while
+/// the boss carries on upward. The removed strip is then bounded by the
+/// contact ruling and by the section of the boss in the end face's plane, an
+/// arc from the contact's open end back to the spine's end vertex. The face
+/// keeps everything else, including what rises past the end.
+///
+/// Topology decides the kept side: the spine edge lies on the removed side,
+/// and the removed run between the anchored hit and the spine end may hold
+/// nothing else. Returns `Ok(None)`, before any mutation, whenever the
+/// configuration is not that one — another surface, a contact end off the
+/// end vertex's section, or a boundary that does not run hit, spine, vertex.
+#[allow(clippy::too_many_lines)]
+fn trim_with_section_closure(
+    topo: &mut Topology,
+    edit: &mut BodyEdit<'_>,
+    face_id: FaceId,
+    closure: &SectionClosure<'_>,
+) -> Result<Option<TrimResult>, BlendError> {
+    use remus_math::curves::Circle3D;
+    use std::f64::consts::{PI, TAU};
+
+    let FaceSurface::Cylinder(cylinder) = closure.surface else {
+        return Ok(None);
+    };
+    let edges = closure.oriented_edges;
+    let n = edges.len();
+    let anchored_idx = closure.anchored.edge_idx;
+    if n < 3 || closure.avoid_edges.contains(&edges[anchored_idx].edge()) {
+        return Ok(None);
+    }
+
+    // The spine end vertex nearest the open end, and the wire position of the
+    // spine edge that reaches it.
+    let mut spine_end: Option<(usize, VertexId, bool)> = None;
+    let mut best = f64::INFINITY;
+    for (position, oe) in edges.iter().enumerate() {
+        if !closure.avoid_edges.contains(&oe.edge()) {
+            continue;
+        }
+        let edge = topo.edge(oe.edge())?;
+        for (vertex, ends_here) in [
+            (oe.oriented_end(edge), true),
+            (oe.oriented_start(edge), false),
+        ] {
+            let distance = (topo.vertex(vertex)?.point() - closure.open_point).length();
+            if distance < best {
+                best = distance;
+                spine_end = Some((position, vertex, ends_here));
+            }
+        }
+    }
+    let Some((spine_pos, end_vertex, spine_ends_at_vertex)) = spine_end else {
+        return Ok(None);
+    };
+    let end_point = topo.vertex(end_vertex)?.point();
+
+    // The section: the circle of the cylinder through the end vertex,
+    // perpendicular to the axis. The open end must lie on it.
+    let axis = cylinder.axis();
+    let origin = cylinder.origin();
+    let radius = cylinder.radius();
+    let height = axis.dot(end_point - origin);
+    let tolerance = 1e-7 * radius.max(1.0);
+    let open_height = axis.dot(closure.open_point - origin);
+    let center = origin + axis * height;
+    let off_axis = |p: Point3| {
+        let d = p - center;
+        (d - axis * axis.dot(d)).length()
+    };
+    if (open_height - height).abs() > tolerance
+        || (off_axis(closure.open_point) - radius).abs() > tolerance
+        || (off_axis(end_point) - radius).abs() > tolerance
+    {
+        return Ok(None);
+    }
+    let Ok(circle) = Circle3D::new(center, axis, radius) else {
+        return Ok(None);
+    };
+    let t_open = circle.project(closure.open_point);
+    let t_end = circle.project(end_point);
+    // The removed strip is the short way round: a fillet's contact never sets
+    // back half a turn.
+    let delta = (t_end - t_open + PI).rem_euclid(TAU) - PI;
+    if delta.abs() <= tolerance / radius {
+        return Ok(None);
+    }
+
+    // Every position strictly between the anchored hit and the spine edge,
+    // on the side being removed, must itself be a spine edge; the kept run
+    // must hold none.
+    let step = |position: usize, forward: bool| {
+        if forward {
+            (position + 1) % n
+        } else {
+            (position + n - 1) % n
+        }
+    };
+    // Kept run: away from the spine edge, from the end vertex round to the
+    // anchored edge.
+    let kept_forward = spine_ends_at_vertex;
+    let mut kept: Vec<usize> = Vec::new();
+    let mut position = step(spine_pos, kept_forward);
+    while position != anchored_idx {
+        if position == spine_pos || closure.avoid_edges.contains(&edges[position].edge()) {
+            return Ok(None);
+        }
+        kept.push(position);
+        position = step(position, kept_forward);
+    }
+    let mut removed = step(anchored_idx, kept_forward);
+    while removed != spine_pos {
+        if !closure.avoid_edges.contains(&edges[removed].edge()) {
+            return Ok(None);
+        }
+        removed = step(removed, kept_forward);
+    }
+
+    // --- Mutation starts here. ---
+    let anchored_vertex = topo.add_vertex(Vertex::new(
+        closure.anchored.point_3d,
+        closure.anchored.tolerance,
+    ));
+    let open_vertex = topo.add_vertex(Vertex::new(closure.open_point, VERTEX_TOL));
+    let (sub_before, sub_after) = split_edge_at(
+        topo,
+        edit,
+        Some(face_id),
+        &edges[anchored_idx],
+        anchored_vertex,
+    )?;
+
+    // Store both new curves over increasing intervals and read them in the
+    // direction the wire needs.
+    let (contact_edge, contact_from_anchor) =
+        if closure.anchored.contact_parameter < closure.open_parameter {
+            (
+                crate::builder_utils::add_certified_curve_edge(
+                    topo,
+                    anchored_vertex,
+                    open_vertex,
+                    EdgeCurve::NurbsCurve(closure.contact.clone()),
+                    (closure.anchored.contact_parameter, closure.open_parameter),
+                )?,
+                true,
+            )
+        } else {
+            (
+                crate::builder_utils::add_certified_curve_edge(
+                    topo,
+                    open_vertex,
+                    anchored_vertex,
+                    EdgeCurve::NurbsCurve(closure.contact.clone()),
+                    (closure.open_parameter, closure.anchored.contact_parameter),
+                )?,
+                false,
+            )
+        };
+    let (section_edge, section_from_open) = if delta > 0.0 {
+        (
+            crate::builder_utils::add_certified_curve_edge(
+                topo,
+                open_vertex,
+                end_vertex,
+                EdgeCurve::Circle(circle),
+                (t_open, t_open + delta),
+            )?,
+            true,
+        )
+    } else {
+        (
+            crate::builder_utils::add_certified_curve_edge(
+                topo,
+                end_vertex,
+                open_vertex,
+                EdgeCurve::Circle(circle),
+                (t_open + delta, t_open),
+            )?,
+            false,
+        )
+    };
+
+    // Forward kept run: end vertex → … → anchored edge's first half →
+    // contact (anchor → open) → section (open → end vertex). Backward kept
+    // run: the same loop read the other way.
+    let mut loop_edges: Vec<OrientedEdge> = Vec::with_capacity(kept.len() + 3);
+    if kept_forward {
+        loop_edges.extend(kept.iter().map(|&position| edges[position]));
+        loop_edges.push(sub_before);
+        loop_edges.push(OrientedEdge::new(contact_edge, contact_from_anchor));
+        loop_edges.push(OrientedEdge::new(section_edge, section_from_open));
+    } else {
+        loop_edges.push(OrientedEdge::new(section_edge, !section_from_open));
+        loop_edges.push(OrientedEdge::new(contact_edge, !contact_from_anchor));
+        loop_edges.push(sub_after);
+        loop_edges.extend(kept.iter().rev().map(|&position| edges[position]));
+    }
+    let wire_id = topo.add_wire(Wire::new(loop_edges, true)?);
+    let inner_wires = topo.face(face_id)?.inner_wires().to_vec();
+    let mut face = Face::new(wire_id, inner_wires, closure.surface.clone());
+    face.set_reversed(closure.reversed);
+    let trimmed_face = topo.add_face(face);
+
+    Ok(Some(TrimResult {
+        trimmed_face,
+        new_edges: vec![sub_before.edge(), sub_after.edge(), section_edge],
+        new_vertices: vec![anchored_vertex, open_vertex],
+        contact_edge: Some(contact_edge),
+    }))
 }
 
 /// Create an untrimmed result (face returned as-is).
