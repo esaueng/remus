@@ -406,6 +406,7 @@ Quick reference — find the right file for any task:
 | Knot-span boxes of NURBS faces and the ray prefilter they drive: a forward ray clear of every box gets no hit, so the prepared crossing count skips the face (boxes scanned in groups; faces past 400 spans left to the solver) | `classify/prepared/ray_prefilter.rs` |
 | Persistent whole-topology classification cache (`ClassificationCache`, PERF-Q02) | `classify/cache.rs` |
 | Narrow-bump far-flank crossing through the classifier's NURBS ray path (tests) | `classify/boundary/nurbs_bump_ray_tests.rs` |
+| Exact trim of sphere faces bounded by circle arcs on the sphere, any number of supports, non-convex or reversed (first crossing along a great-circle walk) | `classify/boundary/sphere_arcs.rs` |
 | Boundary skeleton that makes a ray through an edge or vertex abstain from the classification vote | `classify/graze.rs` |
 | CheckId enum, ValidationReport, severity | `validate/checks.rs` |
 | Wire topological checks | `validate/wire.rs` |
