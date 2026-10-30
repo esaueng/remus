@@ -96,6 +96,14 @@
 //! lead angle. Its `details.geometry` is a helical gear's plus
 //! `centerDistance`, the distance between the crossed axes. The pair is a
 //! crossed helical drive (point contact), not a hobbed throated wheel.
+//! `"throated": true` builds it on a throated blank: across the throat (half
+//! way across the face, where the worm sits) the tips follow the torus that
+//! keeps the worm's root clearance, either side of it they stand at
+//! `outsideDiameter` (default the throat diameter plus one module). Its
+//! geometry adds `throatDiameter`, `outsideDiameter`, `throatRadius` and
+//! `throatWidth`, its details `throatCurveBound` (the certified fit of the
+//! curves where the flanks meet the throat), and its roles
+//! `tooth[k].throat` and `tooth[k].tip.start-half` / `.end-half`.
 //! Worm flanks are certified fits of the involute helicoid, and its
 //! `details.geometry` carries the lead angle in degrees.
 //!
@@ -128,8 +136,9 @@ use remus_math::vec::{Point3, Vec3};
 use remus_operations::gear::{
     BevelGearGeometry, BevelGearOutcome, BevelGearParams, CylinderGearOptions, GearError, GearFit,
     GearGeometry, GearKind, GearOutcome, GearParams, GearPlacement, GearRefusal, GearWarning, Hand,
-    WormGeometry, WormOutcome, WormParams, bevel_gear_geometry, cut_gear_teeth, make_bevel_gear,
-    make_gear, make_worm, worm_geometry, worm_wheel,
+    ThroatedWheelOptions, WormGeometry, WormOutcome, WormParams, bevel_gear_geometry,
+    cut_gear_teeth, make_bevel_gear, make_gear, make_throated_worm_wheel, make_worm, worm_geometry,
+    worm_wheel,
 };
 
 use crate::error::StructuredWasmError;
@@ -412,6 +421,9 @@ struct WormWheelSpec {
     backlash: f64,
     tolerance: Option<f64>,
     bore_diameter: Option<f64>,
+    #[serde(default)]
+    throated: bool,
+    outside_diameter: Option<f64>,
     #[serde(default)]
     origin: Option<[f64; 3]>,
     #[serde(default)]
@@ -961,7 +973,48 @@ impl RemusKernel {
                     None,
                 )
             })?;
+            let (throated, outside_diameter) = (spec.throated, spec.outside_diameter);
             let (worm, wheel, placement) = spec.split();
+            if throated {
+                let options = ThroatedWheelOptions {
+                    outside_diameter,
+                    backlash: wheel.backlash,
+                    tolerance: wheel.tolerance,
+                    bore_diameter: wheel.bore_diameter,
+                };
+                let outcome = make_throated_worm_wheel(
+                    self.topo_mut(),
+                    &worm,
+                    wheel.teeth,
+                    wheel.face_width,
+                    &options,
+                    &placement,
+                )
+                .map_err(gear_failure)?;
+                let mut details = outcome_details(&outcome.gear, GearKind::External);
+                details.insert(
+                    "throatCurveBound".into(),
+                    Value::from(outcome.throat_curve_bound),
+                );
+                if let Some(Value::Object(geometry)) = details.get_mut("geometry") {
+                    for (key, value) in [
+                        ("centerDistance", outcome.center_distance),
+                        ("throatDiameter", outcome.throat_diameter),
+                        ("outsideDiameter", outcome.outside_diameter),
+                        ("throatRadius", outcome.throat_radius),
+                        ("throatWidth", outcome.throat_width),
+                    ] {
+                        geometry.insert(key.into(), Value::from(value));
+                    }
+                }
+                return Ok((solid_id_to_u32(outcome.gear.solid), details));
+            }
+            if outside_diameter.is_some() {
+                return Err(StructuredWasmError::invalid_argument(
+                    "only a throated worm wheel takes an outside diameter",
+                    Some("outsideDiameter"),
+                ));
+            }
             let matched = worm_wheel(&worm, wheel.teeth, wheel.face_width).map_err(gear_failure)?;
             let params = GearParams {
                 backlash: wheel.backlash,

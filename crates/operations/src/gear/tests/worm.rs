@@ -362,3 +362,231 @@ fn worm_parameters_out_of_range_are_refused() {
     };
     assert_eq!(worm_refusal(&tight), GearRefusal::ToleranceTooTight);
 }
+
+fn throated(
+    starts: u32,
+    teeth: u32,
+    face_width: f64,
+    options: &ThroatedWheelOptions,
+) -> (Topology, ThroatedWheelOutcome) {
+    let worm = worm(starts, 10.0, 20.0, Hand::Right);
+    let mut topo = Topology::new();
+    let outcome = make_throated_worm_wheel(
+        &mut topo,
+        &worm,
+        teeth,
+        face_width,
+        options,
+        &GearPlacement::default(),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    (topo, outcome)
+}
+
+/// The exact volume of a throated wheel by Cavalieri: each section at
+/// height `s` is the wheel's profile truncated at
+/// `R(s) = min(r_e, a − √(ρ² − (s − b/2)²))`, so its area is the exact
+/// (Green's theorem) area of the same wheel with its tip at `R(s)`,
+/// integrated over the throat with composite Gauss–Legendre.
+fn throated_volume(
+    starts: u32,
+    teeth: u32,
+    face_width: f64,
+    options: &ThroatedWheelOptions,
+    outcome: &ThroatedWheelOutcome,
+) -> f64 {
+    let worm = worm(starts, 10.0, 20.0, Hand::Right);
+    let matched = worm_wheel(&worm, teeth, face_width).unwrap();
+    let pitch_radius = 0.5 * worm.module * f64::from(teeth);
+    let area = |tip: f64| {
+        exact_profile_area(&GearParams {
+            addendum: (tip - pitch_radius) / matched.params.module,
+            backlash: options.backlash,
+            bore_diameter: options.bore_diameter,
+            ..matched.params.clone()
+        })
+    };
+    let (a, rho) = (outcome.center_distance, outcome.throat_radius);
+    let r_e = 0.5 * outcome.outside_diameter;
+    let (c, w) = (0.5 * face_width, 0.5 * outcome.throat_width);
+    let outside = area(r_e) * (face_width - 2.0 * w);
+    let pieces = 16;
+    let mut throat = 0.0;
+    for piece in 0..pieces {
+        let lo = c - w + 2.0 * w * f64::from(piece) / f64::from(pieces);
+        let hi = lo + 2.0 * w / f64::from(pieces);
+        for point in remus_math::quadrature::gauss_legendre_points(8) {
+            let s = 0.5 * (lo + hi) + 0.5 * (hi - lo) * point.x;
+            let u = s - c;
+            let tip = a - u.mul_add(-u, rho * rho).sqrt();
+            throat += 0.5 * (hi - lo) * point.w * area(tip);
+        }
+    }
+    outside + throat
+}
+
+#[test]
+fn throated_wheels_are_valid_and_match_the_section_integral() {
+    let plain = ThroatedWheelOptions::default();
+    let bored = ThroatedWheelOptions {
+        bore_diameter: Some(12.0),
+        outside_diameter: Some(57.5),
+        backlash: 0.05,
+        ..ThroatedWheelOptions::default()
+    };
+    for (starts, teeth, width, options) in [(1, 30, 14.0, &plain), (2, 26, 12.0, &bored)] {
+        let (topo, outcome) = throated(starts, teeth, width, options);
+        let g = &outcome;
+        // a = (q + z₂)·m_x/2; the throat sits h_a·m_x above the pitch circle.
+        assert!((g.center_distance - (10.0 + f64::from(teeth))).abs() < 1e-12);
+        assert!((g.throat_diameter - 2.0 * f64::from(teeth) - 4.0).abs() < 1e-12);
+        assert!((g.throat_radius - (g.center_distance - 0.5 * g.throat_diameter)).abs() < 1e-12);
+        let tolerance = 1e-5 * 2.0 * (f64::from(starts) / 10.0).atan().cos();
+        assert!(g.gear.flank_deviation_bound <= tolerance * 1.01);
+        assert!(g.throat_curve_bound > 0.0 && g.throat_curve_bound <= 0.5 * tolerance * 1.01);
+        assert_valid_and_watertight(&topo, g.gear.solid);
+        let expected = throated_volume(starts, teeth, width, options, g);
+        let volume = solid_volume(&topo, g.gear.solid, 1e-4).unwrap();
+        assert!(
+            ((volume - expected) / expected).abs() < 1e-6,
+            "{starts} starts: the volume is off the section integral"
+        );
+        // Per tooth: two tip strips and a torus patch.
+        let mut tori = 0;
+        for face in solid_faces(&topo, g.gear.solid).unwrap() {
+            if matches!(topo.face(face).unwrap().surface(), FaceSurface::Torus(_)) {
+                tori += 1;
+            }
+        }
+        assert_eq!(tori, teeth as usize);
+    }
+}
+
+#[test]
+fn the_throat_wraps_the_worm_and_the_rim_stands_outside_it() {
+    let (topo, outcome) = throated(1, 30, 14.0, &ThroatedWheelOptions::default());
+    let rate = (0.1_f64).atan().tan() / 30.0;
+    let pitch = TAU / 30.0;
+    // Tooth 0's middle at height s turns by the twist.
+    let at = |r: f64, s: f64| classify(&topo, outcome.gear.solid, r, rate * s, s);
+    let throat = 0.5 * outcome.throat_diameter;
+    let outside = 0.5 * outcome.outside_diameter;
+    // Half way across, the tip stops at the throat diameter.
+    assert_eq!(at(throat - 0.05, 7.0), PointClassification::Inside);
+    assert_eq!(at(throat + 0.05, 7.0), PointClassification::Outside);
+    // By the caps the tips reach the outside diameter.
+    assert_eq!(at(outside - 0.05, 0.5), PointClassification::Inside);
+    assert_eq!(at(outside - 0.05, 13.5), PointClassification::Inside);
+    // The space between teeth stays open.
+    assert_eq!(
+        classify(
+            &topo,
+            outcome.gear.solid,
+            throat - 0.5,
+            rate * 7.0 + 0.5 * pitch,
+            7.0
+        ),
+        PointClassification::Outside
+    );
+}
+
+#[test]
+fn throat_curves_lie_on_the_torus_and_the_flanks() {
+    let (topo, outcome) = throated(1, 30, 14.0, &ThroatedWheelOptions::default());
+    let (a, rho) = (outcome.center_distance, outcome.throat_radius);
+    let bound = outcome.throat_curve_bound;
+    let mut checked = 0;
+    for (face, role) in &outcome.gear.face_roles {
+        if !matches!(role.role, GearFaceRole::Throat { .. }) {
+            continue;
+        }
+        let data = topo.face(*face).unwrap();
+        for oriented in topo.wire(data.outer_wire()).unwrap().edges() {
+            let edge = topo.edge(oriented.edge()).unwrap();
+            let EdgeCurve::NurbsCurve(curve) = edge.curve() else {
+                continue;
+            };
+            let (t0, t1) = curve.domain();
+            for i in 0..=16 {
+                let p = curve.evaluate(t0 + (t1 - t0) * f64::from(i) / 16.0);
+                let off = (p.x().hypot(p.y()) - a).hypot(p.z() - 7.0) - rho;
+                assert!(off.abs() <= bound + 1e-9, "a throat curve is off the torus");
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 30 * 2 * 17);
+}
+
+#[test]
+fn every_face_of_a_throated_wheel_has_one_unique_role() {
+    let options = ThroatedWheelOptions {
+        bore_diameter: Some(10.0),
+        ..ThroatedWheelOptions::default()
+    };
+    let (topo, outcome) = throated(1, 24, 12.0, &options);
+    let faces = solid_faces(&topo, outcome.gear.solid).unwrap();
+    assert_eq!(outcome.gear.face_roles.len(), faces.len());
+    let names: std::collections::BTreeSet<_> = outcome
+        .gear
+        .face_roles
+        .iter()
+        .map(|(_, role)| role.name())
+        .collect();
+    assert_eq!(names.len(), faces.len());
+    for name in [
+        "tooth[0].throat",
+        "tooth[23].tip.start-half",
+        "tooth[5].tip.end-half",
+        "tooth[3].flank.plus",
+        "root[0]",
+        "bore",
+    ] {
+        assert!(names.contains(name), "{name} missing");
+    }
+}
+
+#[test]
+fn throats_out_of_range_are_refused() {
+    let worm = worm(1, 10.0, 20.0, Hand::Right);
+    let refuse = |teeth: u32, width: f64, options: ThroatedWheelOptions| {
+        let mut topo = Topology::new();
+        match make_throated_worm_wheel(
+            &mut topo,
+            &worm,
+            teeth,
+            width,
+            &options,
+            &GearPlacement::default(),
+        ) {
+            Err(GearError::Refused { code, .. }) => {
+                assert_eq!(topo.num_faces(), 0, "a refusal must roll back");
+                code
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    };
+    // The outside diameter must clear the throat.
+    let flat = ThroatedWheelOptions {
+        outside_diameter: Some(64.0),
+        ..ThroatedWheelOptions::default()
+    };
+    assert_eq!(refuse(30, 14.0, flat), GearRefusal::InvalidParameter);
+    // A face no wider than the throat.
+    assert_eq!(
+        refuse(30, 7.0, ThroatedWheelOptions::default()),
+        GearRefusal::InvalidParameter
+    );
+    // Tips pointed at the outside diameter.
+    let tall = ThroatedWheelOptions {
+        outside_diameter: Some(70.0),
+        ..ThroatedWheelOptions::default()
+    };
+    assert_eq!(refuse(30, 14.0, tall), GearRefusal::PointedTip);
+    // A bore reaching the root.
+    let bored = ThroatedWheelOptions {
+        bore_diameter: Some(56.0),
+        ..ThroatedWheelOptions::default()
+    };
+    assert_eq!(refuse(30, 14.0, bored), GearRefusal::BoreTooLarge);
+}
