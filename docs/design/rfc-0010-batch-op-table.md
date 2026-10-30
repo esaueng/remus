@@ -1,7 +1,7 @@
 # RFC 0010 Declarative batch op table
 
 Status: proposed (design only, no production code in this PR).
-Baseline: `origin/main` at `c00e940` (#1358, `BrepKernel` renamed to
+Baseline: `origin/main` at `c00e940` (#1358, the kernel class rename to
 `RemusKernel`) on 2026-10-30. Line numbers identify that baseline; the named
 arm or function is authoritative when later edits move them.
 
