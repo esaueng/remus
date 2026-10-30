@@ -315,9 +315,8 @@ fn flanks_lie_on_the_exact_spherical_involute_cones() {
                 let deviation = (distance * polar.sin() * offset).abs();
                 assert!(
                     deviation <= 2.0 * outcome.flank_deviation_bound + 1e-9,
-                    "{}: {deviation:e} > 2·{:e}",
-                    named.name(),
-                    outcome.flank_deviation_bound
+                    "{}: off the exact spherical-involute cone",
+                    named.name()
                 );
                 checked += 1;
             }
