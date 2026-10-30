@@ -111,3 +111,39 @@ fn bore_resizes_through_the_fillet_band() {
         );
     }
 }
+
+/// The R16.5 neck runs from the concave fillet's equator to the top, the R20
+/// band between the two convex fillets' equators; both stand around the bore.
+/// Growing either used to fuse a solid cylinder, which filled the bore, and
+/// the band's tool caps lie on its fillets' equator rims, whose sampled plane
+/// sections slit the fillet faces along their own boundary.
+#[test]
+fn outer_walls_resize_through_the_fillet_bands() {
+    let neck = (16.5, 50.0 - 30.156_854_249);
+    let band = (20.0, 23.343_145_751 - 5.656_854_249);
+    for ((radius, height), new_radii) in [
+        (neck, [15.0, 16.0, 17.0, 17.5, 20.0]),
+        (band, [18.0, 19.5, 20.5, 21.0, 24.0]),
+    ] {
+        for new_radius in new_radii {
+            let mut topo = Topology::new();
+            let solid = load(&mut topo);
+            let before = solid_volume(&topo, solid, DEFLECTION).unwrap();
+            let face = wall(&topo, solid, radius);
+            let resized = resize_cylindrical_face(&mut topo, solid, face, new_radius)
+                .unwrap_or_else(|error| panic!("R{radius} -> R{new_radius}: {error}"));
+            let shell = topo
+                .shell(topo.solid(resized).unwrap().outer_shell())
+                .unwrap();
+            validate_shell_closed(shell, &topo).unwrap();
+            wall(&topo, resized, new_radius);
+            wall(&topo, resized, 12.5);
+            let expected = PI.mul_add((new_radius * new_radius - radius * radius) * height, before);
+            let after = solid_volume(&topo, resized, DEFLECTION).unwrap();
+            assert!(
+                (after - expected).abs() <= expected * 1e-3,
+                "R{radius} -> R{new_radius}: volume {after}, expected {expected}"
+            );
+        }
+    }
+}
