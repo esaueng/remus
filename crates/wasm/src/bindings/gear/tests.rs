@@ -13,19 +13,19 @@ use serde_json::{Value, json};
 use remus_operations::gear::{GearKind, GearParams, GearPlacement, make_gear};
 use remus_topology::Topology;
 
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
-fn envelope(kernel: &mut BrepKernel, spec: &Value) -> Value {
+fn envelope(kernel: &mut RemusKernel, spec: &Value) -> Value {
     serde_json::to_value(kernel.make_gear_detailed_impl(spec)).unwrap()
 }
 
-fn batch_v2(kernel: &mut BrepKernel, args: &Value) -> Value {
+fn batch_v2(kernel: &mut RemusKernel, args: &Value) -> Value {
     let ops = json!([{ "op": "makeGearDetailed", "args": args }]);
     let results: Value = serde_json::from_str(&kernel.execute_batch_v2(&ops.to_string())).unwrap();
     results[0].clone()
 }
 
-fn live_counts(kernel: &BrepKernel) -> (usize, usize, usize, usize) {
+fn live_counts(kernel: &RemusKernel) -> (usize, usize, usize, usize) {
     let topo = kernel.topo();
     (
         topo.num_vertices(),
@@ -41,7 +41,7 @@ fn native_volume(params: &GearParams) -> f64 {
     remus_operations::measure::solid_volume(&topo, outcome.solid, 1e-2).unwrap()
 }
 
-fn assert_valid(kernel: &BrepKernel, solid: u32) {
+fn assert_valid(kernel: &RemusKernel, solid: u32) {
     let id = kernel.resolve_solid(solid).unwrap();
     let report = remus_operations::validate::validate_solid(kernel.topo(), id).unwrap();
     assert!(report.is_valid(), "{:?}", report.issues);
@@ -53,7 +53,7 @@ fn handle(value: &Value) -> u32 {
 
 #[test]
 fn external_gear_reports_approximate_flanks_with_their_bound_and_dimensions() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let spec = json!({ "kind": "external", "module": 2.0, "teeth": 20, "faceWidth": 5.0 });
     let result = envelope(&mut kernel, &spec);
     assert_eq!(result["status"], "ok", "{result}");
@@ -85,9 +85,9 @@ fn batch_and_direct_results_are_identical() {
         "boreDiameter": 6.0, "origin": [1.0, 2.0, 3.0], "axis": [0.0, 1.0, 0.0],
         "xDirection": [1.0, 0.0, 0.0], "phase": 7.5
     });
-    let mut direct_kernel = BrepKernel::new();
+    let mut direct_kernel = RemusKernel::new();
     let direct = envelope(&mut direct_kernel, &spec);
-    let mut batch_kernel = BrepKernel::new();
+    let mut batch_kernel = RemusKernel::new();
     let batch = batch_v2(&mut batch_kernel, &spec);
     assert_eq!(direct["status"], "ok", "{direct}");
     assert_eq!(batch["ok"], direct);
@@ -96,7 +96,7 @@ fn batch_and_direct_results_are_identical() {
 
 #[test]
 fn rack_is_exact_and_internal_gear_needs_its_rim() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let rack = envelope(
         &mut kernel,
         &json!({ "kind": "rack", "module": 1.0, "teeth": 9, "faceWidth": 3.0 }),
@@ -127,7 +127,7 @@ fn rack_is_exact_and_internal_gear_needs_its_rim() {
 
 #[test]
 fn profile_refusals_carry_dimensions_and_leave_the_session_unchanged() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let before = live_counts(&kernel);
     let pointed = json!({
         "kind": "external", "module": 2.0, "teeth": 8, "faceWidth": 5.0, "profileShift": 1.2
@@ -159,7 +159,7 @@ fn profile_refusals_carry_dimensions_and_leave_the_session_unchanged() {
 
 #[test]
 fn undercut_warning_names_the_avoiding_shift() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let result = envelope(
         &mut kernel,
         &json!({ "kind": "external", "module": 1.0, "teeth": 10, "faceWidth": 2.0 }),
@@ -173,7 +173,7 @@ fn undercut_warning_names_the_avoiding_shift() {
 
 #[test]
 fn malformed_specs_refuse_as_invalid_arguments() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let before = live_counts(&kernel);
     for spec in [
         json!({ "kind": "external", "module": 2.0, "teeth": 20, "faceWidth": 5.0, "boreDiamter": 4.0 }),

@@ -51,7 +51,7 @@ use remus_operations::gear::{
 
 use crate::error::StructuredWasmError;
 use crate::handles::solid_id_to_u32;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::types::SolidOperationDetailedResult;
 
 #[derive(Debug, Deserialize)]
@@ -208,7 +208,7 @@ fn gear_failure(error: GearError) -> StructuredWasmError {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Build an involute spur gear, internal gear or rack from a JSON
     /// specification, as typed data (see the module docs for the fields).
     ///
@@ -229,7 +229,7 @@ impl BrepKernel {
     }
 }
 
-impl BrepKernel {
+impl RemusKernel {
     pub(crate) fn make_gear_detailed_impl(&mut self, spec: &Value) -> SolidOperationDetailedResult {
         let result = (|| -> Result<(u32, Map<String, Value>), StructuredWasmError> {
             let spec = GearSpec::deserialize(spec).map_err(|error| {
