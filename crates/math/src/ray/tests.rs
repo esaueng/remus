@@ -414,3 +414,149 @@ proptest! {
         prop_assert!((hits[0].t - lambda * r).abs() <= hits[0].spread + 1e-9 * r);
     }
 }
+
+/// Hits within `window` of `t` from a torus solve.
+fn near_torus(hits: &[RayHit], t: f64, window: f64) -> Vec<RayHit> {
+    hits.iter()
+        .copied()
+        .filter(|h| (h.t - t).abs() <= window)
+        .collect()
+}
+
+/// Whether the hits near a contact give a certified odd parity there: exactly
+/// one transversal root and nothing else. A tangent contact must never.
+fn reads_as_one_crossing(local: &[RayHit]) -> bool {
+    local.len() == 1 && local[0].kind == ContactKind::Transversal
+}
+
+/// Tangent lines to a torus, on the convex outer part (exterior tangency) and
+/// on the saddle-shaped inner part including the inner equator, across
+/// scales and translations. `intersect_line_torus` merges a double root into
+/// one root for a large share of them (about 18% of the outer ones before
+/// this change); `ray_torus` must never return such a contact as a single
+/// transversal crossing.
+#[test]
+fn torus_tangent_lines_never_read_as_one_crossing() {
+    let mut merged = 0usize;
+    let mut total = 0usize;
+    for &s in &[1e-3, 0.37, 1.0, 13.0, 1e3] {
+        for &offset in &[0.0, 1e3, 1e6] {
+            // Past a 1e6 coordinate-to-tube ratio the quartic solve itself
+            // (an absolute finite-difference Newton polish and residual
+            // filter) misplaces near-tangent roots; that is not this layer's.
+            if offset > 1e6 * s {
+                continue;
+            }
+            let by = shift(offset);
+            let tor =
+                ToroidalSurface::new(Point3::new(by.x(), by.y(), by.z()), 3.0 * s, s).unwrap();
+            for iu in 0..24 {
+                for iv in 0..24 {
+                    for it in 0..4 {
+                        let u = 0.1 + f64::from(iu) * 0.26;
+                        // v = π exactly is on the grid: the inner equator.
+                        let v = f64::from(iv) * std::f64::consts::TAU / 24.0;
+                        let p = tor.evaluate(u, v);
+                        let n = tor.normal(u, v);
+                        let d = tangent_dir(n, 0.2 + f64::from(it) * 0.8);
+                        let origin = p - d * (2.0 * s);
+                        let hits = ray_torus(origin, d, &tor);
+                        let local = near_torus(&hits, 2.0 * s, 0.05 * s);
+                        total += 1;
+                        let plain =
+                            crate::analytic_intersection::intersect_line_torus(&tor, origin, d);
+                        if plain
+                            .iter()
+                            .filter(|&&t| (t - 2.0 * s).abs() <= 0.05 * s)
+                            .count()
+                            == 1
+                        {
+                            merged += 1;
+                        }
+                        // True parity over the window, from the implicit's
+                        // sign at its ends. Near an asymptotic direction of
+                        // the saddle-shaped inner part the line also crosses
+                        // close by, so the window may hold an odd count.
+                        let implicit = |t: f64| {
+                            let q = origin + d * t - tor.center();
+                            let rho = q.x().hypot(q.y());
+                            (rho - tor.major_radius()).hypot(q.z()) - tor.minor_radius()
+                        };
+                        let (f0, f1) = (implicit(1.95 * s), implicit(2.05 * s));
+                        if f0.abs() > 1e-6 * s && f1.abs() > 1e-6 * s && f0.signum() == f1.signum()
+                        {
+                            assert!(
+                                !reads_as_one_crossing(&local),
+                                "s {s:e} offset {offset:e} u {u} v {v}: {hits:?}"
+                            );
+                        }
+                        // Same roots as the plain solve, in the same order.
+                        assert_eq!(hits.len(), plain.len());
+                        for (h, t) in hits.iter().zip(&plain) {
+                            assert_eq!(h.t.to_bits(), t.to_bits());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // The fixture exercises the merged case it guards against.
+    assert!(
+        merged > total / 20,
+        "only {merged} of {total} tangents merged"
+    );
+}
+
+/// Merged double roots carry an even multiplicity.
+#[test]
+fn torus_tangent_through_tube_top_reports_an_even_multiplicity() {
+    // Horizontal line along +y over the tube top at x = R: tangent at (R, 0, r).
+    let tor = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 1.0).unwrap();
+    let counted = crate::analytic_intersection::intersect_line_torus_counted(
+        &tor,
+        Point3::new(3.0, -2.0, 1.0),
+        Vec3::new(0.0, 1.0, 0.0),
+    );
+    let local: Vec<_> = counted
+        .iter()
+        .filter(|(t, _)| (t - 2.0).abs() < 1e-3)
+        .collect();
+    let total: usize = local.iter().map(|(_, m)| m).sum();
+    assert!(total.is_multiple_of(2), "{counted:?}");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    /// Random secants of a random torus through two known surface points,
+    /// crossing at a resolvable angle: both come back transversal at the
+    /// constructed parameters.
+    #[test]
+    fn torus_secants_match_their_construction(
+        s in log_uniform(1e-3, 1e3),
+        center in offset_vec(),
+        (u1, v1) in (0.0..std::f64::consts::TAU, 0.0..std::f64::consts::TAU),
+        (u2, v2) in (0.0..std::f64::consts::TAU, 0.0..std::f64::consts::TAU),
+        lambda in 0.1..10.0_f64,
+    ) {
+        let c = Point3::new(center.x(), center.y(), center.z());
+        let tor = ToroidalSurface::new(c, 3.0 * s, s).unwrap();
+        let (p1, p2) = (tor.evaluate(u1, v1), tor.evaluate(u2, v2));
+        let chord = p2 - p1;
+        let len = chord.length();
+        prop_assume!(len > 0.5 * s);
+        let d = chord * (1.0 / len);
+        // Keep crossings well away from tangency at both points.
+        prop_assume!(tor.normal(u1, v1).dot(d).abs() > 0.2);
+        prop_assume!(tor.normal(u2, v2).dot(d).abs() > 0.2);
+        prop_assume!(l1(c) < 1e5 * s);
+        let origin = p1 - d * (lambda * len);
+        let hits = ray_torus(origin, d, &tor);
+        for t in [lambda * len, (lambda + 1.0) * len] {
+            let tol = 1e-6 * s;
+            let local = near_torus(&hits, t, tol);
+            prop_assert_eq!(local.len(), 1, "t {} in {:?}", t, hits);
+            prop_assert_eq!(local[0].kind, ContactKind::Transversal);
+        }
+    }
+}

@@ -1983,18 +1983,19 @@ pub fn count_face_ray_crossings_cached(
             })
         }
         FaceSurface::Torus(tor) => {
-            let tor = tor.clone();
-            let roots = ray_surface::ray_torus(origin, direction, &tor);
-            count_analytic_crossings_with_trim(
-                topo,
-                face_id,
-                trim,
-                cache,
-                &ray_hit_points(origin, direction, &roots),
-                |p| tor.project_point(p),
-                true,
-                None,
-            )
+            let hits = ray_surface::ray_torus(origin, direction, tor);
+            count_quadric_crossings(origin, direction, &hits, |points| {
+                count_analytic_crossings_with_trim(
+                    topo,
+                    face_id,
+                    trim,
+                    cache,
+                    points,
+                    |p| tor.project_point(p),
+                    true,
+                    None,
+                )
+            })
         }
         FaceSurface::Nurbs(surface) => {
             ray_crossings_nurbs_with_trim(topo, face_id, trim, cache, origin, direction, surface)
@@ -2310,7 +2311,7 @@ fn count_nurbs_hits_with_trim(
     Ok(crossings)
 }
 
-/// Crossings of one ray over a quadric face from its qualified hits.
+/// Crossings of one ray over a quadric or torus face from its qualified hits.
 ///
 /// `count` is the face's trim count over a set of points on the ray. The
 /// transversal hits are counted in one call, exactly as bare roots were. A
@@ -2354,14 +2355,6 @@ fn count_quadric_crossings(
         }
     }
     count(&transversal)
-}
-
-fn ray_hit_points(origin: Point3, direction: Vec3, roots: &[f64]) -> SmallVec<[Point3; 4]> {
-    roots
-        .iter()
-        .filter(|&&t| t > RAY_T_MIN)
-        .map(|&t| origin + direction * t)
-        .collect()
 }
 
 /// Test whether a point on a face's support surface lies within its trims.
