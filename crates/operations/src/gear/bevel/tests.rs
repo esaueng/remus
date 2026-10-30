@@ -218,18 +218,20 @@ fn bevel_gears_are_valid_and_sweep_their_exact_heel_area() {
             .bore_diameter
             .map_or(0.0, |bore| PI * 0.25 * bore * bore);
         // The built caps against the exact heel outline and its toe image.
+        // The messages name the check, not the measured areas: CodeQL reads
+        // the trim certifier (`certify_curve_authority`) feeding them as a
+        // credential and flags printing them.
         let exact = exact_heel_area(&params);
         let (heel, toe) = cap_areas(&topo, outcome.solid);
         let toe_exact = exact * c.scale * c.scale - bore_area;
         assert!(
             ((heel - (exact - bore_area)) / exact).abs() < 1e-8,
-            "z {}: heel {heel} vs exact {}",
-            params.teeth,
-            exact - bore_area
+            "z {}: heel cap off the exact outline",
+            params.teeth
         );
         assert!(
             ((toe - toe_exact) / toe_exact).abs() < 1e-8,
-            "z {}: toe {toe} vs exact {toe_exact}",
+            "z {}: toe cap off the exact outline",
             params.teeth
         );
         let expected = bore_area.mul_add(-outcome.geometry.height, sweep_volume(exact, &params));
@@ -241,7 +243,7 @@ fn bevel_gears_are_valid_and_sweep_their_exact_heel_area() {
             - 2.0 / 3.0 * bore_area * outcome.geometry.height;
         assert!(
             ((from_caps - expected) / expected).abs() < 1e-8,
-            "z {}: cap divergence {from_caps} vs exact {expected}",
+            "z {}: cap divergence off the exact volume",
             params.teeth
         );
         // The volume path reads the rational ruled flanks to about 1e-5
