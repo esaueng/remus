@@ -274,6 +274,8 @@ export const remuskernel_makeTangentArc3d: (a: number, b: number, c: number, d: 
 export const remuskernel_makeTorus: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const remuskernel_makeVertex: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const remuskernel_makeWire: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const remuskernel_makeWormDetailed: (a: number, b: number, c: number) => [number, number, number];
+export const remuskernel_makeWormWheelDetailed: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_massProperties: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
 export const remuskernel_measureCurvatureAtEdge: (a: number, b: number, c: number) => [number, number, number, number];
 export const remuskernel_measureCurvatureAtSurface: (a: number, b: number, c: number, d: number) => [number, number, number, number];

@@ -5918,6 +5918,42 @@ class RemusKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Build a cylindrical involute (ZI) worm from a JSON specification, as
+     * typed data (see the module docs for the fields).
+     *
+     * Never throws on a refusal: the envelope's `status` is `"error"` with
+     * a `gear:<reason>` code and the session unchanged.
+     * @param {string} spec
+     * @returns {SolidOperationDetailedResult}
+     */
+    makeWormDetailed(spec) {
+        const ptr0 = passStringToWasm0(spec, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_makeWormDetailed(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Build the helical wheel that meshes with a worm from a JSON
+     * specification, as typed data (see the module docs for the fields).
+     *
+     * Never throws on a refusal: the envelope's `status` is `"error"` with
+     * a `gear:<reason>` code and the session unchanged.
+     * @param {string} spec
+     * @returns {SolidOperationDetailedResult}
+     */
+    makeWormWheelDetailed(spec) {
+        const ptr0 = passStringToWasm0(spec, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_makeWormWheelDetailed(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Compute the full mass properties of a solid (unit density).
      *
      * Returns a JSON string containing
