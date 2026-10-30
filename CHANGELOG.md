@@ -145,6 +145,14 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **algo:** the ray-cast point classifier no longer double-counts crossings
+  near the rims of a partial cylinder face whose trim is not a rectangle in
+  its `(u, v)` chart (a helical gear's tip and root lands, bounded by
+  helices): it tests the hit against the face's trim polygon instead of the
+  rectangle spanning every angle the face reaches. Rectangular patches keep
+  their model. A cut against a helical gear's bore discarded a coplanar cap
+  and left an open shell.
+
 * **algo:** exact booleans against coaxial tubes, the steps of cutting gear
   teeth into an existing cylinder. A turned groove whose tube caps lie inside
   the cylinder and whose outer wall stands outside it no longer refuses
