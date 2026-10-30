@@ -24,8 +24,10 @@ historical predecessor-line records, retained for provenance. The
   (`helixAngle` in degrees, `hand: "right" | "left"`) make external and
   internal helical gears, standalone or cut into a boss or bore (ISO 21771:
   normal module, pressure angle and coefficients). The transverse profile
-  turns along the axis; lands concentric with the axis stay exact cylinders,
-  and flanks and fillets are certified swept surfaces whose
+  turns along the axis; lands concentric with the axis stay exact cylinders
+  while they sweep less than a full turn (longer ones are swept, since a
+  cylinder face cannot cover itself twice), and flanks and fillets are
+  certified swept surfaces whose
   `flankDeviationBound` covers the exact involute helicoid. Results report
   `transverseModule`, `helixAngle`, `lead` and `spansAlongAxis`. Helical
   racks refuse for now.
