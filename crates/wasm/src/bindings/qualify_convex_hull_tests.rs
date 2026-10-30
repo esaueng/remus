@@ -15,7 +15,7 @@ use remus_math::vec::Point3;
 use remus_operations::measure::solid_volume;
 use remus_topology::explorer::solid_entity_counts;
 
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 fn flat(points: &[Point3]) -> Vec<f64> {
     let mut out = Vec::with_capacity(points.len() * 3);
@@ -72,7 +72,7 @@ fn direct_convex_hull_matches_closed_forms_across_scales() {
             ("tet", tet_points(scale), scale.powi(3) / 6.0),
             ("octa", octa_points(scale), 4.0 / 3.0 * scale.powi(3)),
         ] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let handle = kernel.convex_hull(flat(&points)).unwrap();
             let solid = kernel.resolve_solid(handle).unwrap();
             let volume = solid_volume(kernel.topo(), solid, 0.01 * scale).expect("hull volume");
@@ -107,7 +107,7 @@ fn batch_convex_hull_degenerate_refuses_typed() {
         {"op": "volume", "args": {"solid": 0, "deflection": 0.01}},
     ])
     .to_string();
-    let response = parse(&BrepKernel::new().execute_batch_v2(&program));
+    let response = parse(&RemusKernel::new().execute_batch_v2(&program));
     assert_relative(
         "box before hull refusals",
         response[1]["ok"].as_f64().expect("box volume"),
@@ -115,7 +115,7 @@ fn batch_convex_hull_degenerate_refuses_typed() {
         1e-12,
     );
     // Direct success path still works natively: a valid hull builds.
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let handle = kernel.convex_hull(flat(&tet_points(1.0))).unwrap();
     assert_eq!(kernel.validate_solid(handle).unwrap(), 0);
 }
@@ -126,7 +126,7 @@ fn batch_convex_hull_degenerate_refuses_typed() {
 fn minkowski_sum_has_direct_batch_parity_across_scales() {
     for scale in [1e-3, 1.0, 1e3] {
         // Direct: box + box.
-        let mut direct = BrepKernel::new();
+        let mut direct = RemusKernel::new();
         let a = direct.make_box_solid(scale, scale, scale).unwrap();
         let b = direct.make_box_solid(scale, scale, scale).unwrap();
         let sum = direct.minkowski_sum(a, b).unwrap();
@@ -150,8 +150,8 @@ fn minkowski_sum_has_direct_batch_parity_across_scales() {
             {"op": "validateSolid", "args": {"solid": 2}},
         ])
         .to_string();
-        let first = BrepKernel::new().execute_batch_v2(&program);
-        let second = BrepKernel::new().execute_batch_v2(&program);
+        let first = RemusKernel::new().execute_batch_v2(&program);
+        let second = RemusKernel::new().execute_batch_v2(&program);
         assert_eq!(
             first, second,
             "batch minkowskiSum replay must be deterministic at scale {scale}"
@@ -169,7 +169,7 @@ fn minkowski_sum_has_direct_batch_parity_across_scales() {
         // Direct: tet + tet and octa + octa via hull operands.
         // (`convexHull` has no batch dispatch, so the hull-operand path is
         // pinned direct-only here.)
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let t1 = kernel.convex_hull(flat(&tet_points(scale))).unwrap();
         let t2 = kernel.convex_hull(flat(&tet_points(scale))).unwrap();
         let tet_sum = kernel.minkowski_sum(t1, t2).unwrap();
@@ -204,7 +204,7 @@ fn batch_minkowski_sum_foreign_handle_refuses_typed() {
         {"op": "volume", "args": {"solid": 0, "deflection": 0.01}},
     ])
     .to_string();
-    let response = parse(&BrepKernel::new().execute_batch_v2(&program));
+    let response = parse(&RemusKernel::new().execute_batch_v2(&program));
     assert_eq!(response[0]["ok"], 0);
     assert!(
         response[1].get("error").is_some(),

@@ -21,11 +21,11 @@ function expectedUnion() {
   return 4 * Math.PI * (r ** 3 + big ** 3) / 3 - lens;
 }
 
-export function runOpseqSphereCapPackaged({ BrepKernel }) {
+export function runOpseqSphereCapPackaged({ RemusKernel }) {
   let cells = 0;
   for (const api of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const scale of [0.001, 1, 1000]) for (const placed of [false, true]) for (const swapped of [false, true]) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       const label = `closed sphere cap ${api} scale=${scale} placed=${placed} swapped=${swapped}`;
       try {
         const a = run(kernel, api, 'makeSphere', { radius: 4.5 * scale, segments: 16 }, () => kernel.makeSphere(4.5 * scale, 16));

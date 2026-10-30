@@ -11,9 +11,9 @@ function topologyState(kernel, solid) {
   };
 }
 
-export function runWasmParserReferencesPackaged({ BrepKernel }) {
+export function runWasmParserReferencesPackaged({ RemusKernel }) {
   for (const surface of ['direct', 'directDetailed', 'executeBatch', 'executeBatchV2']) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     const solid = kernel.makeBox(10, 10, 10);
     const edge = kernel.getSolidEdges(solid)[0];
     const specs = [
@@ -49,7 +49,7 @@ export function runWasmParserReferencesPackaged({ BrepKernel }) {
   for (const surface of ['filletVariable', 'filletVariableDetailed']) {
     let expected;
     for (const law of ['constant', undefined]) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       const solid = kernel.makeBox(10, 10, 10);
       const edge = kernel.getSolidEdges(solid)[0];
       const json = JSON.stringify([{ edge, law, radius: 1 }]);
@@ -63,7 +63,7 @@ export function runWasmParserReferencesPackaged({ BrepKernel }) {
     }
   }
   for (const point of [2 ** 32, 2 ** 32 + 1, -1, 0.5, null, '0']) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     const sketch = kernel.sketchNew();
     kernel.sketchAddPoint(sketch, 1, 2, false);
     kernel.sketchAddPoint(sketch, 3, 4, false);
@@ -77,7 +77,7 @@ export function runWasmParserReferencesPackaged({ BrepKernel }) {
   // Legacy sketch bindings are direct-only; executeBatch exposes typed GCS.
   for (const field of ['p3', 'p4']) {
     for (const invalid of [2 ** 32, 2 ** 32 + 1, -1, 0.5, '0']) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       const solid = kernel.makeBox(1, 1, 1);
       const sketch = kernel.sketchNew();
       const points = [[0, 0], [1, 0], [0, 1], [1, 1]];
@@ -97,7 +97,7 @@ export function runWasmParserReferencesPackaged({ BrepKernel }) {
   // WASM-8): an unrepresentable reference is refused before storage, and the
   // sketch and session stay unchanged and solvable.
   for (const field of ['line0', 'line1', 'arc', 'point']) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     const solid = kernel.makeBox(1, 1, 1);
     const sketch = kernel.sketchNew();
     const points = [[0, 0], [1, 0], [0, 1], [1, 1]];

@@ -56,10 +56,10 @@ const addConstraint = (list, sketch, constraint) => {
   list.push({ op: 'gcsAddConstraint', args: { sketch, constraint } });
 };
 
-export function runEllipsePackaged({ BrepKernel }) {
+export function runEllipsePackaged({ RemusKernel }) {
   // 1. Driven ellipse through all three routes.
   for (const route of ['direct', 'batchV1', 'batchV2']) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       let params;
       let detailed;
@@ -115,7 +115,7 @@ export function runEllipsePackaged({ BrepKernel }) {
 
   // 2. Tangent placement with an independent geometric oracle.
   for (const route of ['direct', 'batchV1', 'batchV2']) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       let qpos;
       if (route === 'direct') {
@@ -207,7 +207,7 @@ export function runEllipsePackaged({ BrepKernel }) {
   // 3. Failed detailed solve rolls back identically on all routes; errors
   //    are typed (V2 codes) without poisoning siblings.
   for (const route of ['direct', 'batchV1', 'batchV2']) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       let detailed;
       let params;
@@ -251,7 +251,7 @@ export function runEllipsePackaged({ BrepKernel }) {
   // 4. Typed refusal: non-positive semiaxis + unknown constraint type fail
   //    closed (V2: invalid_argument) while siblings still run.
   {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const program = [
         { op: 'gcsNew', args: {} },
@@ -265,7 +265,7 @@ export function runEllipsePackaged({ BrepKernel }) {
       assert.ok('error' in v1[2] && v1[2].error.includes('semiaxis'), `a=0 message: ${JSON.stringify(v1[2])}`);
       assert.ok('ok' in v1[3], 'sibling still runs');
       assert.ok('error' in v1[4], 'unknown type fails');
-      const kernel2 = new BrepKernel();
+      const kernel2 = new RemusKernel();
       try {
         const v2 = JSON.parse(kernel2.executeBatchV2(JSON.stringify(program)));
         assert.equal(v2[2].error.code, 'invalid_argument', JSON.stringify(v2[2]));
@@ -282,7 +282,7 @@ export function runEllipsePackaged({ BrepKernel }) {
 
   // 5. Drag sequence: set ellipse params between solves (browser pattern).
   {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const s = kernel.gcsNew();
       const c = kernel.gcsAddPoint(s, 0, 0, true);
@@ -320,7 +320,7 @@ if (process.argv[1] && process.argv[1].endsWith('ellipse-packaged.mjs')) {
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const projectRoot = resolve(__dirname, '..');
   const require = createRequire(import.meta.url);
-  const { BrepKernel } = require(resolve(projectRoot, 'crates/wasm/pkg/remus_wasm_node.cjs'));
-  runEllipsePackaged({ BrepKernel });
+  const { RemusKernel } = require(resolve(projectRoot, 'crates/wasm/pkg/remus_wasm_node.cjs'));
+  runEllipsePackaged({ RemusKernel });
   console.log('\nAll ellipse packaged witnesses passed');
 }

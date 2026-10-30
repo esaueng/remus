@@ -5,10 +5,10 @@ const bytes = (kernel, roots) => Buffer.from(kernel.serializeSolids(roots));
 const stats = (kernel) => JSON.parse(kernel.checkpointMemoryStats());
 
 /** Exercise the fresh-owner boundary against either local or installed packages. */
-export function runDocumentCopyPackaged({ BrepKernel, RemusIo }, { onObservation = () => {} } = {}) {
-  assert.equal(typeof BrepKernel.prototype.copyDocument, 'function');
+export function runDocumentCopyPackaged({ RemusKernel, RemusIo }, { onObservation = () => {} } = {}) {
+  assert.equal(typeof RemusKernel.prototype.copyDocument, 'function');
   for (const scale of [0.001, 1, 1000]) {
-    const source = new BrepKernel();
+    const source = new RemusKernel();
     let destination;
     let copy;
     try {
@@ -65,7 +65,7 @@ export function runDocumentCopyPackaged({ BrepKernel, RemusIo }, { onObservation
     }
   }
 
-  const mixed = new BrepKernel();
+  const mixed = new RemusKernel();
   let mixedTransfer;
   let mixedNext;
   try {
@@ -86,7 +86,7 @@ export function runDocumentCopyPackaged({ BrepKernel, RemusIo }, { onObservation
 
   // Read exact carrier/trim/authority/attribute/history bytes on a real model.
   const io = new RemusIo();
-  const holder = new BrepKernel();
+  const holder = new RemusKernel();
   let holderCopy;
   let nextHolder;
   try {
@@ -109,7 +109,7 @@ export function runDocumentCopyPackaged({ BrepKernel, RemusIo }, { onObservation
   }
 
   // Creating a new owner must not re-enable module-wide disabled reuse.
-  const source = new BrepKernel();
+  const source = new RemusKernel();
   let transfer;
   let taken;
   try {
@@ -135,7 +135,7 @@ export function runDocumentCopyPackaged({ BrepKernel, RemusIo }, { onObservation
 
   // An actual WASM edit/restore lifecycle uses the returned owner and drops
   // the previous one each cycle. No timing or linear-memory-shrink assertion.
-  let kernel = new BrepKernel();
+  let kernel = new RemusKernel();
   let solid = kernel.makeBox(2, 3, 4);
   const canonical = bytes(kernel, [solid]);
   const observations = [];

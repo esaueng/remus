@@ -12,11 +12,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use serde_json::{Value, json};
 
 /// Run one batch operation and return its `ok` payload.
-fn call(kernel: &mut BrepKernel, op: &str, args: Value) -> Value {
+fn call(kernel: &mut RemusKernel, op: &str, args: Value) -> Value {
     let json = json!([{"op": op, "args": args}]).to_string();
     let out: Vec<Value> = serde_json::from_str(&kernel.execute_batch(&json)).unwrap();
     out[0]
@@ -31,7 +31,7 @@ fn handle(v: &Value) -> u32 {
 
 /// A closed polygon face through `points` (line edges, closed wire,
 /// planar face), as the adapter builds sketch profiles.
-fn polygon_face(kernel: &mut BrepKernel, points: &[[f64; 3]]) -> u32 {
+fn polygon_face(kernel: &mut RemusKernel, points: &[[f64; 3]]) -> u32 {
     let edges: Vec<u32> = (0..points.len())
         .map(|i| {
             let (a, b) = (points[i], points[(i + 1) % points.len()]);
@@ -60,7 +60,7 @@ fn translation(x: f64, y: f64, z: f64) -> Value {
     ])
 }
 
-fn moved(kernel: &mut BrepKernel, solid: u32, matrix: Value) -> u32 {
+fn moved(kernel: &mut RemusKernel, solid: u32, matrix: Value) -> u32 {
     handle(&call(
         kernel,
         "copyAndTransformSolid",
@@ -69,7 +69,7 @@ fn moved(kernel: &mut BrepKernel, solid: u32, matrix: Value) -> u32 {
 }
 
 /// The countersunk U-bracket of OpenZCAD's `syntheticHolderSolid`.
-fn holder(kernel: &mut BrepKernel) -> u32 {
+fn holder(kernel: &mut RemusKernel) -> u32 {
     let profile = [
         [0.0, 0.0, 0.0],
         [60.0, 0.0, 0.0],
@@ -129,7 +129,7 @@ fn holder(kernel: &mut BrepKernel) -> u32 {
 /// The recipe along x at `width`: each end carved from a copy of the source
 /// by its box mask and moved, the floor section rebuilt, one `fuseAll`, and
 /// the unified union kept when it validates.
-fn recipe(kernel: &mut BrepKernel, source: u32, width: f64) -> u32 {
+fn recipe(kernel: &mut RemusKernel, source: u32, width: f64) -> u32 {
     let mut piece = |negative: bool| {
         let copy = moved(kernel, source, translation(0.0, 0.0, 0.0));
         // The envelope (−0.5..60.5, 0..32, 0..20) grown by 1 + 5 % of 61.
@@ -205,7 +205,7 @@ fn closed_form(width: f64) -> f64 {
     160.0_f64.mul_add(width - 44.0, 864.0 * 20.0 - 2.0 * (bore + sink) + 9.6)
 }
 
-fn volume(kernel: &mut BrepKernel, solid: u32, deflection: f64) -> f64 {
+fn volume(kernel: &mut RemusKernel, solid: u32, deflection: f64) -> f64 {
     call(
         kernel,
         "volume",
@@ -217,7 +217,7 @@ fn volume(kernel: &mut BrepKernel, solid: u32, deflection: f64) -> f64 {
 
 #[test]
 fn growing_holder_volume_change_is_the_floor_section() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let source = holder(&mut kernel);
     let base = recipe(&mut kernel, source, 44.0);
     let narrow = recipe(&mut kernel, source, 10.0);

@@ -11,10 +11,10 @@
 
 use serde_json::{Value, json};
 
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 /// Run one batch operation and return its `ok` payload.
-fn call(kernel: &mut BrepKernel, op: &str, args: Value) -> Value {
+fn call(kernel: &mut RemusKernel, op: &str, args: Value) -> Value {
     let json = json!([{"op": op, "args": args}]).to_string();
     let out: Vec<Value> = serde_json::from_str(&kernel.execute_batch(&json)).unwrap();
     out[0]
@@ -27,7 +27,7 @@ fn handle(v: &Value) -> u32 {
     u32::try_from(v.as_u64().unwrap_or_else(|| panic!("not a handle: {v}"))).unwrap()
 }
 
-fn translated(kernel: &mut BrepKernel, solid: u32, x: f64, y: f64, z: f64) -> u32 {
+fn translated(kernel: &mut RemusKernel, solid: u32, x: f64, y: f64, z: f64) -> u32 {
     let matrix = json!([
         1.0, 0.0, 0.0, x, 0.0, 1.0, 0.0, y, 0.0, 0.0, 1.0, z, 0.0, 0.0, 0.0, 1.0
     ]);
@@ -40,7 +40,7 @@ fn translated(kernel: &mut BrepKernel, solid: u32, x: f64, y: f64, z: f64) -> u3
 }
 
 /// A 64 × 64 × 10 plate drilled with a 3 × 3 grid of r = 2 holes.
-fn drilled_plate(kernel: &mut BrepKernel) -> u32 {
+fn drilled_plate(kernel: &mut RemusKernel) -> u32 {
     let mut plate = handle(&call(
         kernel,
         "makeBox",
@@ -70,8 +70,8 @@ fn drilled_plate(kernel: &mut BrepKernel) -> u32 {
     plate
 }
 
-fn counts(kernel: &mut BrepKernel, solid: u32) -> (usize, usize) {
-    let count = |kernel: &mut BrepKernel, op: &str| {
+fn counts(kernel: &mut RemusKernel, solid: u32) -> (usize, usize) {
+    let count = |kernel: &mut RemusKernel, op: &str| {
         call(kernel, op, json!({"solid": solid}))
             .as_array()
             .unwrap_or_else(|| panic!("{op} returned no list"))
@@ -82,7 +82,7 @@ fn counts(kernel: &mut BrepKernel, solid: u32) -> (usize, usize) {
 
 #[test]
 fn store_local_switch_is_off_by_default_and_toggles() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     assert_eq!(
         call(&mut kernel, "storeLocalCutsEnabled", json!({})),
         json!(false)
@@ -105,7 +105,7 @@ fn store_local_switch_is_off_by_default_and_toggles() {
 /// which is returned.
 fn same_solid_both_ways(op: &str, size: (f64, f64, f64), at: (f64, f64, f64)) -> f64 {
     let _restore = RestoreSwitch(remus_operations::boolean::thread_store_local_cuts_enabled());
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     kernel.set_store_local_cuts(false);
     let plate = drilled_plate(&mut kernel);
     let tool = handle(&call(
@@ -184,7 +184,7 @@ fn same_solid_both_ways(op: &str, size: (f64, f64, f64), at: (f64, f64, f64)) ->
             );
         }
     }
-    let volume = |kernel: &mut BrepKernel, solid: u32| {
+    let volume = |kernel: &mut RemusKernel, solid: u32| {
         call(
             kernel,
             "volume",
@@ -244,11 +244,11 @@ impl Drop for RestoreSwitch {
 #[test]
 fn store_local_setting_is_shared_across_kernels_and_survives_item_refusal() {
     let _restore = RestoreSwitch(remus_operations::boolean::thread_store_local_cuts_enabled());
-    let mut first = BrepKernel::new();
+    let mut first = RemusKernel::new();
     first.set_store_local_cuts(false);
     call(&mut first, "setStoreLocalCuts", json!({"enabled":true}));
     // Constructing another kernel does not silently reset this module setting.
-    let mut second = BrepKernel::new();
+    let mut second = RemusKernel::new();
     assert!(second.store_local_cuts_enabled());
     let blank = handle(&call(
         &mut second,
@@ -281,7 +281,7 @@ fn store_local_switch_preserves_evolution_journal_and_reference_contracts() {
     let _restore = RestoreSwitch(remus_operations::boolean::thread_store_local_cuts_enabled());
     for op in ["cutWithEntityEvolution", "cutJournaled"] {
         let run = |enabled: bool| {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             kernel.set_store_local_cuts(false);
             let plate = drilled_plate(&mut kernel);
             let tool = handle(&call(

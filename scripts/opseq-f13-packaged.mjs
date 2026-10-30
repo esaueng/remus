@@ -52,9 +52,9 @@ function entersBox(triangle, side) {
   return polygon.length > 0;
 }
 
-function checkFixture(BrepKernel, api, scale, placed, side, h, theta, operation, reverse = false) {
+function checkFixture(RemusKernel, api, scale, placed, side, h, theta, operation, reverse = false) {
   const label = `F13 ${api} scale=${scale} placed=${placed} side=${side} h=${h} theta=${theta} ${operation} reverse=${reverse}`;
-  const kernel = new BrepKernel();
+  const kernel = new RemusKernel();
   const run = (op, args, direct) => {
     if (api === 'direct') return kernel[op === 'transform' ? 'transformSolid' : op](...direct);
     const cell = JSON.parse(kernel[api](JSON.stringify([{ op, args }])))[0];
@@ -156,21 +156,21 @@ function checkFixture(BrepKernel, api, scale, placed, side, h, theta, operation,
   } finally { kernel.free(); }
 }
 
-export function runOpseqF13Packaged({ BrepKernel }) {
+export function runOpseqF13Packaged({ RemusKernel }) {
   let cells = 0;
   for (const api of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const scale of [0.001, 1]) for (const placed of [false, true]) {
       for (const [operation, reverse] of [['cut', false], ['fuse', false], ['fuse', true], ['intersect', false]]) {
-        checkFixture(BrepKernel, api, scale, placed, 1, 2.5, originalAngle, operation, reverse); cells++;
+        checkFixture(RemusKernel, api, scale, placed, 1, 2.5, originalAngle, operation, reverse); cells++;
       }
     }
     // h=2.45 at unit scale and the literal h=2.5 at1000x are separate
     // pre-mesh equator-orientation defects, retained as native ready-repros.
     for (const placed of [false, true]) for (const [operation, reverse] of [['cut', false], ['fuse', false], ['fuse', true], ['intersect', false]]) {
-      checkFixture(BrepKernel, api, 1000, placed, 1, 2.55, originalAngle, operation, reverse); cells++;
+      checkFixture(RemusKernel, api, 1000, placed, 1, 2.55, originalAngle, operation, reverse); cells++;
     }
     for (const [side, h, theta] of [[0.9, 2.5, originalAngle], [1.05, 2.5, originalAngle], [1, 2.55, originalAngle], [1, 2.5, 0.47], [1, 2.5, 0.58]]) {
-      for (const operation of ['cut', 'fuse']) { checkFixture(BrepKernel, api, 1, false, side, h, theta, operation); cells++; }
+      for (const operation of ['cut', 'fuse']) { checkFixture(RemusKernel, api, 1, false, side, h, theta, operation); cells++; }
     }
   }
   console.log(`ok - F13 ${cells} direct/both-batch cells: material, quantities and three raw mesh deflections`);
@@ -180,8 +180,8 @@ export function runOpseqF13Packaged({ BrepKernel }) {
  * explicitly to replay the complete unchanged oracle on the adjacent angle
  * bits 3fe0c152382d7365. Both baseline and fresh packages have 16 same-sense
  * equator edges before meshing; no assertion is relaxed for this witness. */
-export function reproduceF13UpstreamRoundedAngle({ BrepKernel }) {
+export function reproduceF13UpstreamRoundedAngle({ RemusKernel }) {
   for (const operation of ['cut', 'fuse']) {
-    checkFixture(BrepKernel, 'direct', 1000, false, 1, 2.55, 0.5235987755982988, operation);
+    checkFixture(RemusKernel, 'direct', 1000, false, 1, 2.55, 0.5235987755982988, operation);
   }
 }

@@ -1,12 +1,12 @@
 //! Checkpoint accounting and consume-once outputs retain modeling behavior.
 #![allow(clippy::unwrap_used)]
-use remus_wasm::kernel::BrepKernel;
+use remus_wasm::kernel::RemusKernel;
 
 #[test]
 fn checkpoint_accounting_distinguishes_shared_and_copied_arenas() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     kernel.make_box_solid(2., 3., 4.).unwrap();
-    let stats = |kernel: &BrepKernel| -> serde_json::Value {
+    let stats = |kernel: &RemusKernel| -> serde_json::Value {
         serde_json::from_str(&kernel.checkpoint_memory_stats().unwrap()).unwrap()
     };
     let original = stats(&kernel);
@@ -33,7 +33,7 @@ fn checkpoint_accounting_distinguishes_shared_and_copied_arenas() {
 
 #[test]
 fn grouped_output_is_consumed_once_without_changing_existing_getters() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let solid = kernel.make_box_solid(2., 3., 4.).unwrap();
     let mut mesh = kernel
         .tessellate_solid_grouped_binary(solid, 0.08, Some(0.06))

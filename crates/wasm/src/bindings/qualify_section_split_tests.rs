@@ -18,7 +18,7 @@
 
 use remus_operations::measure::{face_area, solid_volume};
 
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 fn assert_relative(label: &str, actual: f64, expected: f64, limit: f64) {
     let relative = (actual - expected).abs() / expected.abs().max(1e-300);
@@ -44,7 +44,7 @@ fn translation_matrix(tx: f64, ty: f64, tz: f64) -> Vec<f64> {
 /// Direct `section` on a unit 4-box at z=2: one face, area 16, on the plane.
 #[test]
 fn direct_section_box_transverse_matches_area() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let solid = kernel.make_box_solid(4.0, 4.0, 4.0).unwrap();
     let faces = kernel
         .section_solid(solid, 0.0, 0.0, 2.0, 0.0, 0.0, 1.0)
@@ -65,7 +65,7 @@ fn direct_section_box_transverse_matches_area() {
 /// the same boolean-constructed cavity the native matrix qualifies.
 #[test]
 fn batch_section_hollow_through_cavity_has_hole() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let program = serde_json::json!([
         {"op": "makeBox", "args": {"width": 4.0, "height": 4.0, "depth": 4.0}},
         {"op": "makeBox", "args": {"width": 2.0, "height": 2.0, "depth": 2.0}},
@@ -98,7 +98,7 @@ fn batch_section_hollow_through_cavity_has_hole() {
 /// Batch miss returns the documented empty-face-list success.
 #[test]
 fn batch_section_miss_returns_empty() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let program = serde_json::json!([
         {"op": "makeBox", "args": {"width": 4.0, "height": 4.0, "depth": 4.0}},
         {"op": "section", "args": {"solid": 0, "px": 0.0, "py": 0.0, "pz": 50.0, "nx": 0.0, "ny": 0.0, "nz": 1.0}},
@@ -111,7 +111,7 @@ fn batch_section_miss_returns_empty() {
 
 #[test]
 fn direct_and_batch_cylinder_sections_outside_caps_are_empty() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let solid = kernel.make_cylinder_solid(1.0, 2.0).unwrap();
     assert!(
         kernel
@@ -132,7 +132,7 @@ fn direct_and_batch_cylinder_sections_outside_caps_are_empty() {
 
 #[test]
 fn batch_cylinder_cap_crossing_has_explicit_refusal() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let program = serde_json::json!([
         {"op":"makeCylinder","args":{"radius":1.0,"height":2.0}},
         {"op":"section","args":{"solid":0,"px":0.0,"py":0.0,"pz":0.1,"nx":1.0,"ny":0.0,"nz":1.0}}
@@ -148,7 +148,7 @@ fn batch_cylinder_cap_crossing_has_explicit_refusal() {
 /// Batch edge-touch section refuses typed (`InvalidInput`, no closed wire).
 #[test]
 fn batch_section_edge_touch_refuses_typed() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let program = serde_json::json!([
         {"op": "makeBox", "args": {"width": 4.0, "height": 4.0, "depth": 4.0}},
         {"op": "section", "args": {"solid": 0, "px": 0.0, "py": 0.0, "pz": 2.0, "nx": 1.0, "ny": 1.0, "nz": 0.0}},
@@ -178,7 +178,7 @@ fn batch_section_edge_touch_refuses_typed() {
 #[test]
 fn direct_and_batch_split_box_match_halves() {
     // Direct.
-    let mut direct = BrepKernel::new();
+    let mut direct = RemusKernel::new();
     let solid = direct.make_box_solid(4.0, 4.0, 4.0).unwrap();
     let halves = direct
         .split_solid(solid, 0.0, 0.0, 2.0, 0.0, 0.0, 1.0)
@@ -192,7 +192,7 @@ fn direct_and_batch_split_box_match_halves() {
     assert_relative("direct split neg", direct_neg, 32.0, 1e-9);
 
     // Batch: the same cut through `execute_batch_v2`, pinned to direct bits.
-    let mut batch = BrepKernel::new();
+    let mut batch = RemusKernel::new();
     let program = serde_json::json!([
         {"op": "makeBox", "args": {"width": 4.0, "height": 4.0, "depth": 4.0}},
         {"op": "split", "args": {"solid": 0, "px": 0.0, "py": 0.0, "pz": 2.0, "nx": 0.0, "ny": 0.0, "nz": 1.0}},
@@ -221,7 +221,7 @@ fn direct_and_batch_split_box_match_halves() {
 /// measures 56 afterwards.
 #[test]
 fn batch_split_cavity_refuses_typed_and_preserves_session() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let program = serde_json::json!([
         {"op": "makeBox", "args": {"width": 4.0, "height": 4.0, "depth": 4.0}},
         {"op": "makeBox", "args": {"width": 2.0, "height": 2.0, "depth": 2.0}},
@@ -259,7 +259,7 @@ fn batch_split_cavity_refuses_typed_and_preserves_session() {
 /// negative half (the thin slab most sensitive to plane placement).
 #[test]
 fn batch_split_plate_clear_of_hole_matches_closed_form() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let program = serde_json::json!([
         {"op": "makeBox", "args": {"width": 10.0, "height": 10.0, "depth": 2.0}},
         {"op": "makeBox", "args": {"width": 2.0, "height": 2.0, "depth": 4.0}},

@@ -82,7 +82,7 @@ a Remus type counts toward that crate:
 | --- | ---: |
 | std/core/alloc/hashbrown generics with no Remus type in the name | 32.4% |
 | `remus_operations` | 19.0% |
-| Binding layer and glue (`BrepKernel`, wasm-bindgen, serde, tsify) | 14.9% |
+| Binding layer and glue (`RemusKernel`, wasm-bindgen, serde, tsify) | 14.9% |
 | `remus_algo` | 11.4% |
 | math, topology, check, blend, heal, offset, sketch, io, geometry | 19.3% |
 | Other (`robust`, std formatting/panic, `remus_wasm`, misc.) | 3.0% |
@@ -330,3 +330,56 @@ there the step-1 ceiling leaves about 3.1 MB raw (≈ 6 weeks at 0.5 MB/week)
 and 1.2 MB gzip (≈ 7 weeks), and mobile-class cold load drops by about
 0.16 s. Keeping new cold code on `CompactSort` and new capabilities on the
 tier rule is what keeps that runway.
+
+## Growth attribution (2026-10-29)
+
+The kernel grew from 9,412,128 B (v2026.1.57, built just after #1031) to
+11,005,504 B (v2026.1.86) in 16 days, about **0.7 MB raw per week**. That is
+faster than the 0.5 MB/week the runway above assumes. At that rate the
+step-1 review limits are reached in days and the hard limits in about two
+weeks. Both sources were rebuilt with the shipped pipeline and attributed
+with twiggy. Evidence, commands and scripts:
+[`docs/performance/evidence/kernel-size-attribution-2026-10-29/`](../performance/evidence/kernel-size-attribution-2026-10-29/README.md).
+The rebuilds land within 0.3% of the shipped packages, so absolute bytes are
+approximate.
+
+| Shipped-equivalent | Base `89a3eac5` | Cur `d8195032` | Growth |
+| --- | ---: | ---: | ---: |
+| Raw | 9,386,948 | 10,974,155 | +1,587,207 |
+| gzip (Node defaults) | 3,481,345 | 4,079,297 | +597,952 |
+| Brotli q11 | 2,484,589 | 2,904,757 | +420,168 |
+
+**Most of the growth is new code, not generic bloat.** 1,370 new functions
+add 1.26 MB and 724 removed functions take away 0.21 MB. Existing functions
+grew by 1.03 MB in total and shrank by 0.43 MB.
+
+| Group (after `wasm-opt`) | Growth | Largest modules |
+| --- | ---: | --- |
+| `remus_operations` | +569 KB (34%) | tessellate +96K, blend_ops +92K (fillet cascade), resize_blend +84K, fillet +50K, measure +47K, thicken +41K, project_curve +38K, section +37K; push_pull −48K, defeature −44K |
+| `remus_algo` | +221 KB | pave_filler +160K (phase-FF seeding, circular-cap and curved-section clipping) |
+| `remus_check` | +218 KB | properties +138K (face integrator), classify +70K |
+| `remus_topology` | +140 KB | validation +60K (`check_same_parameter_strict_with_tolerance`, 61 KB), transaction +38K (`run_transacted`, 44 KB) |
+| std/core/alloc/hashbrown generics | +114 KB | sorts, hash maps |
+| `remus_math` | +78 KB | nurbs +70K |
+| `remus_wasm` | +74 KB | bindings +68K (batch `dispatch_op` +15K) |
+| data segments | +36 KB | |
+
+**Recoverable duplication, about 100–150 KB raw (estimate):**
+
+1. `integrate_parametric` (`crates/check/src/properties/face_integrator.rs`)
+   is monomorphized 11 times, 81.7 KB in total, of which twiggy counts about
+   68.7 KB as duplication.
+2. **The sort lint has a gap.** The kernel crates' `clippy.toml` disallows
+   `sort_by` and `sort_by_key` but not `sort_unstable*`. Since `89a3eac5`,
+   non-test kernel code gained 22 `sort_unstable`, 12 `sort_unstable_by_key`
+   and 8 `sort_by` call sites. The `core::slice::sort` families grew by
+   +52.6 KB and 35 copies (579 KB in 396 copies → 632 KB in 431). Closing the
+   gap needs an unstable `CompactSort`: substituting the stable one can
+   reorder ties and change geometry output.
+3. **Opt-in memo modules** grew from 59 KB to 107 KB. Performance caches
+   should be declared on the `WASM-Size:` line like any other capability.
+4. **hashbrown instantiations** grew by 18 KB across 44 new copies.
+
+Trimming these restores weeks, not months, of runway. The trend comes from
+qualified features landing in core, so the remaining levers are the ceiling,
+an explicit growth budget, and structural splitting.

@@ -3,7 +3,7 @@
 use remus_math::vec::Point3;
 
 use crate::handles::face_id_to_u32;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::kernel::test_fixtures::{kernel_with_box, kernel_with_cylinder};
 
 // ── get_solid_faces ───────────────────────────────────────────
@@ -213,7 +213,7 @@ use remus_topology::face::FaceSurface;
 /// Build the toBREP JSON for a solid using the same logic as
 /// `to_brep`, but returning `serde_json::Value` directly so the
 /// test can run on non-wasm targets.
-fn build_brep_json(k: &crate::kernel::BrepKernel, solid: u32) -> serde_json::Value {
+fn build_brep_json(k: &crate::kernel::RemusKernel, solid: u32) -> serde_json::Value {
     let solid_id = k.resolve_solid(solid).unwrap();
     let faces = remus_topology::explorer::solid_faces(&k.topo, solid_id).unwrap();
     let edges = remus_topology::explorer::solid_edges(&k.topo, solid_id).unwrap();
@@ -437,7 +437,7 @@ fn to_brep_cylinder_surface_params() {
 
 #[test]
 fn to_brep_sphere_surface_params() {
-    let mut k = crate::kernel::BrepKernel::new();
+    let mut k = crate::kernel::RemusKernel::new();
     let id = remus_operations::primitives::make_sphere(k.topo_mut(), 3.0, 16).unwrap();
     #[allow(clippy::cast_possible_truncation)]
     let solid = id.index() as u32;
@@ -462,7 +462,7 @@ fn to_brep_sphere_surface_params() {
 
 #[test]
 fn to_brep_cone_surface_params() {
-    let mut k = crate::kernel::BrepKernel::new();
+    let mut k = crate::kernel::RemusKernel::new();
     let id = remus_operations::primitives::make_cone(k.topo_mut(), 2.0, 0.5, 4.0).unwrap();
     #[allow(clippy::cast_possible_truncation)]
     let solid = id.index() as u32;
@@ -492,7 +492,7 @@ fn nurbs_quarter_circle_arc_reports_circle_type() {
     // "CIRCLE" (so brepjs's curveAxis resolves it), not "BSPLINE_CURVE".
     // Unit quarter circle as a rational quadratic Bezier (weights
     // [1, cos45°, 1]).
-    let mut k = crate::kernel::BrepKernel::new();
+    let mut k = crate::kernel::RemusKernel::new();
     let w = std::f64::consts::FRAC_1_SQRT_2;
     let edge = k
         .make_nurbs_edge(
@@ -513,7 +513,7 @@ fn nurbs_quarter_circle_arc_reports_circle_type() {
 
 #[test]
 fn to_brep_torus_surface_params() {
-    let mut k = crate::kernel::BrepKernel::new();
+    let mut k = crate::kernel::RemusKernel::new();
     let id = remus_operations::primitives::make_torus(k.topo_mut(), 5.0, 1.0, 16).unwrap();
     #[allow(clippy::cast_possible_truncation)]
     let solid = id.index() as u32;
@@ -542,7 +542,7 @@ fn to_brep_torus_surface_params() {
 }
 
 fn closed_polygon_wire(
-    k: &mut crate::kernel::BrepKernel,
+    k: &mut crate::kernel::RemusKernel,
     pts: &[Point3],
 ) -> remus_topology::wire::WireId {
     remus_topology::builder::make_polygon_wire(k.topo_mut(), pts, 1e-7).unwrap()
@@ -550,7 +550,7 @@ fn closed_polygon_wire(
 
 #[test]
 fn surface_type_noncoplanar_wire_is_not_plane() {
-    let mut k = crate::kernel::BrepKernel::new();
+    let mut k = crate::kernel::RemusKernel::new();
     let wid = closed_polygon_wire(
         &mut k,
         &[
@@ -567,7 +567,7 @@ fn surface_type_noncoplanar_wire_is_not_plane() {
 
 #[test]
 fn surface_type_planar_square_wire_is_plane() {
-    let mut k = crate::kernel::BrepKernel::new();
+    let mut k = crate::kernel::RemusKernel::new();
     let wid = closed_polygon_wire(
         &mut k,
         &[
@@ -584,7 +584,7 @@ fn surface_type_planar_square_wire_is_plane() {
 
 #[test]
 fn make_planar_face_from_wire_rejects_noncoplanar() {
-    let mut k = crate::kernel::BrepKernel::new();
+    let mut k = crate::kernel::RemusKernel::new();
     let wid = closed_polygon_wire(
         &mut k,
         &[
@@ -702,17 +702,17 @@ fn fillet_arc_span_is_the_quarter_arc_not_the_complement() {
 // `JsError` cannot be constructed on non-wasm targets, so the batch API is
 // the only natively-testable surface.
 
-fn batch_run(k: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn batch_run(k: &mut RemusKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let json = serde_json::Value::Array(ops.to_vec()).to_string();
     serde_json::from_str(&k.execute_batch(&json)).unwrap()
 }
 
-fn batch_ok(k: &mut BrepKernel, op: &str, args: serde_json::Value) -> serde_json::Value {
+fn batch_ok(k: &mut RemusKernel, op: &str, args: serde_json::Value) -> serde_json::Value {
     let results = batch_ok_all(k, &[op_name_args(op, args)]);
     results.into_iter().next().unwrap()
 }
 
-fn batch_ok_all(k: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn batch_ok_all(k: &mut RemusKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let results = batch_run(k, ops);
     for (i, r) in results.iter().enumerate() {
         assert!(
@@ -731,7 +731,7 @@ fn op_name_args(op: &str, args: serde_json::Value) -> serde_json::Value {
     serde_json::json!({"op": op, "args": args})
 }
 
-fn batch_faces(k: &mut BrepKernel, solid: serde_json::Value) -> Vec<u32> {
+fn batch_faces(k: &mut RemusKernel, solid: serde_json::Value) -> Vec<u32> {
     let v = &batch_ok(k, "getSolidFaces", serde_json::json!({"solid": solid}));
     v.as_array()
         .unwrap()
@@ -741,7 +741,7 @@ fn batch_faces(k: &mut BrepKernel, solid: serde_json::Value) -> Vec<u32> {
 }
 
 /// The batch `getFaceCurvature` payload of one face, as a JSON object.
-fn face_curvature(k: &mut BrepKernel, face: u32, u: f64, v: f64) -> serde_json::Value {
+fn face_curvature(k: &mut RemusKernel, face: u32, u: f64, v: f64) -> serde_json::Value {
     batch_ok(
         k,
         "getFaceCurvature",
@@ -791,7 +791,7 @@ fn batch_curvature_on_cylinder_wall_matches_closed_form() {
 
 #[test]
 fn batch_curvature_on_sphere_is_umbilic_positive() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let out = batch_ok_all(
         &mut k,
         &[op_name_args(
@@ -815,7 +815,7 @@ fn batch_curvature_on_sphere_is_umbilic_positive() {
 
 #[test]
 fn batch_curvature_on_torus_special_parallels() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let out = batch_ok_all(
         &mut k,
         &[op_name_args(
@@ -875,7 +875,7 @@ fn batch_min_radius_on_planar_face_is_infinite() {
 
 #[test]
 fn batch_curvature_error_at_cone_apex() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let out = batch_ok_all(
         &mut k,
         &[op_name_args(
@@ -915,7 +915,7 @@ fn batch_curvature_error_at_cone_apex() {
 // domain rather than the edge's trim of it, so a quarter fillet arc reads as
 // a full turn"). Batch carries the same span the direct binding returns.
 
-fn batch_edge_span(k: &mut BrepKernel, edge: u32) -> (f64, f64) {
+fn batch_edge_span(k: &mut RemusKernel, edge: u32) -> (f64, f64) {
     let span = batch_ok(k, "getEdgeParamSpan", serde_json::json!({"edge": edge}));
     let pair = span.as_array().unwrap();
     assert_eq!(pair.len(), 2, "span must be [t0, t1]: {span}");

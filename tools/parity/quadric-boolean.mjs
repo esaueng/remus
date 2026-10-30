@@ -197,9 +197,9 @@ export function scoreCase(c, observations) {
 }
 
 function wasmObservation(c, modulePath) {
-  const { BrepKernel } = createRequire(import.meta.url)(modulePath);
+  const { RemusKernel } = createRequire(import.meta.url)(modulePath);
   const initStarted = performance.now();
-  const kernel = new BrepKernel();
+  const kernel = new RemusKernel();
   const coldInitMs = performance.now() - initStarted;
   try {
     const batchStarted = performance.now();

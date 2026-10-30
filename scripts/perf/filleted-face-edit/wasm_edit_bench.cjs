@@ -8,6 +8,7 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { performance } = require('node:perf_hooks');
+const { kernelClass } = require('../../kernel-class.cjs');
 
 const TARGET_AREA = 1045.930731242697;
 // Native/WASM planar sampling differs by ~1.2e-6 mm² on this imported face.
@@ -223,7 +224,7 @@ function main(argv = process.argv.slice(2), recognitionObserver = null) {
     policy: { displayDeflection: DISPLAY_DEFLECTION, displayAngle: DISPLAY_ANGLE,
       measureDeflection: MEASURE_DEFLECTION, distance: '5 + iteration * 0.02',
       selectionAreaTolerance: SELECTION_AREA_TOLERANCE,
-      sampleKernel: 'new BrepKernel + deserializeSolids(source serializeSolids document)',
+      sampleKernel: 'new RemusKernel + deserializeSolids(source serializeSolids document)',
       workflow: args.order,
       order: args.order === 'geometry-first' ?
         ['move', 'validate', 'bbox', 'meshKernel', 'meshTransfer', 'volume', 'recognize'] :
@@ -231,14 +232,14 @@ function main(argv = process.argv.slice(2), recognitionObserver = null) {
       cacheLimits: 'production defaults; face display mesh cache 32 MiB; no benchmark override' },
   };
   if (recognitionObserver) meta.recognitionDiagnostic = recognitionObserver.name;
-  const { BrepKernel } = require(path.join(args['kernel-pkg'], 'remus_wasm_node.cjs'));
+  const RemusKernel = kernelClass(require(path.join(args['kernel-pkg'], 'remus_wasm_node.cjs')));
   const { RemusIo } = require(path.join(args['io-pkg'], 'remus_wasm_io_node.cjs'));
   const io = new RemusIo();
   let imported;
   const importStart = performance.now();
   try { imported = io.importStep(fs.readFileSync(args.fixture)); } finally { io.free(); }
   meta.importMs = performance.now() - importStart;
-  const sourceKernel = new BrepKernel();
+  const sourceKernel = new RemusKernel();
   try {
     const roots = sourceKernel.deserializeSolids(imported);
     assert(roots.length === 1, `Expected one imported solid; found ${roots.length}`);
@@ -261,7 +262,7 @@ function main(argv = process.argv.slice(2), recognitionObserver = null) {
       meshKernel: sourceGrouped.ms, meshTransfer: sourceMesh.ms, recognize: sourceFeatures.ms };
     const records = [];
     for (let i = 0; i < args.warmup + args.samples; i++) {
-      const constructor = timed(() => new BrepKernel());
+      const constructor = timed(() => new RemusKernel());
       const kernel = constructor.result;
       try {
         const restoration = timed(() => kernel.deserializeSolids(sourceDocument));

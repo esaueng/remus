@@ -14,7 +14,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::error::{StructuredWasmError, WasmError};
 use crate::helpers::get_u32;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::state::GcsSketchState;
 use crate::types::SketchFrame;
 
@@ -131,7 +131,7 @@ fn frame_json(frame: Frame3) -> SketchFrame {
     }
 }
 
-impl BrepKernel {
+impl RemusKernel {
     fn linked_state(&self, sketch: u32) -> Result<&GcsSketchState, StructuredWasmError> {
         self.gcs_sketches
             .get(sketch as usize)
@@ -567,7 +567,7 @@ mod ellipse_tests {
     use serde_json::{Value, json};
 
     struct Fixture {
-        k: BrepKernel,
+        k: RemusKernel,
         sketch: u32,
         source_solid: SolidId,
         attachment_solid: SolidId,
@@ -577,7 +577,7 @@ mod ellipse_tests {
         external: ExternalEllipseHandles,
     }
 
-    fn row(k: &mut BrepKernel, v2: bool, op: &str, args: Value) -> Value {
+    fn row(k: &mut RemusKernel, v2: bool, op: &str, args: Value) -> Value {
         let program = json!([{"op":op,"args":args}]).to_string();
         let text = if v2 {
             k.execute_batch_v2(&program)
@@ -586,19 +586,19 @@ mod ellipse_tests {
         };
         serde_json::from_str::<Vec<Value>>(&text).unwrap().remove(0)
     }
-    fn call(k: &mut BrepKernel, v2: bool, op: &str, args: Value) -> Value {
+    fn call(k: &mut RemusKernel, v2: bool, op: &str, args: Value) -> Value {
         let result = row(k, v2, op, args);
         assert!(result.get("ok").is_some(), "{result}");
         result["ok"].clone()
     }
-    fn output(k: &BrepKernel, op: OpId, key: EntityKey) -> String {
+    fn output(k: &RemusKernel, op: OpId, key: EntityKey) -> String {
         let reference = (0..100).map(|i| PersistentRef::operation_output(op, key.kind, i))
             .find(|r| matches!(resolve(k.topo(),r), Resolution::Bound { entity, .. } if entity == key)).unwrap();
         String::from_utf8(remus_io::naming_io::serialize_persistent_ref(&reference).unwrap())
             .unwrap()
     }
     fn fixture(v2: bool) -> Fixture {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let boxed = remus_operations::primitives::make_box(k.topo_mut(), 10.0, 8.0, 4.0).unwrap();
         let edge = make_ellipse_edge_with_ref(
             k.topo_mut(),
@@ -1011,7 +1011,7 @@ mod ellipse_tests {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Attach an existing GCS sketch to one construction-resolved planar face.
     /// Frame axes must be unit and perpendicular; this slice supports parallel
     /// plane moves. The reference uses the existing versioned JSON codec.
@@ -1100,7 +1100,7 @@ mod tests {
     use remus_topology::journal::{EntityKey, EventDraft, EvolutionDraft};
     use remus_topology::naming::{Resolution, resolve};
 
-    fn batch(k: &mut BrepKernel, ops: serde_json::Value) -> Vec<serde_json::Value> {
+    fn batch(k: &mut RemusKernel, ops: serde_json::Value) -> Vec<serde_json::Value> {
         serde_json::from_str(&k.execute_batch(&ops.to_string())).unwrap()
     }
 
@@ -1110,7 +1110,7 @@ mod tests {
     }
 
     fn assert_refusal(
-        k: &mut BrepKernel,
+        k: &mut RemusKernel,
         op: &str,
         args: serde_json::Value,
         kernel_code: &str,
@@ -1142,14 +1142,14 @@ mod tests {
     }
 
     fn setup() -> (
-        BrepKernel,
+        RemusKernel,
         u32,
         remus_topology::SolidId,
         remus_topology::FaceId,
         PersistentRef,
         ExternalLineHandles,
     ) {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = remus_operations::primitives::make_box(k.topo_mut(), 10.0, 8.0, 4.0).unwrap();
         let top = solid_faces(k.topo(), solid).unwrap().into_iter().find(|&f| matches!(k.topo().face(f).unwrap().surface(), FaceSurface::Plane { normal, .. } if normal.z()>0.99)).unwrap();
         let right = solid_faces(k.topo(), solid).unwrap().into_iter().find(|&f| matches!(k.topo().face(f).unwrap().surface(), FaceSurface::Plane { normal, .. } if normal.x()>0.99)).unwrap();
@@ -1667,7 +1667,7 @@ mod circle_tests {
         assert_eq!(encoded["externalCircles"], 0);
     }
 
-    fn row(k: &mut BrepKernel, v2: bool, op: &str, args: Value) -> Value {
+    fn row(k: &mut RemusKernel, v2: bool, op: &str, args: Value) -> Value {
         let program = json!([{"op":op,"args":args}]).to_string();
         let text = if v2 {
             k.execute_batch_v2(&program)
@@ -1676,19 +1676,19 @@ mod circle_tests {
         };
         serde_json::from_str::<Vec<Value>>(&text).unwrap().remove(0)
     }
-    fn call(k: &mut BrepKernel, v2: bool, op: &str, args: Value) -> Value {
+    fn call(k: &mut RemusKernel, v2: bool, op: &str, args: Value) -> Value {
         let r = row(k, v2, op, args);
         assert!(r.get("ok").is_some(), "{r}");
         r["ok"].clone()
     }
-    fn reference(k: &BrepKernel, op: remus_topology::journal::OpId, key: EntityKey) -> String {
+    fn reference(k: &RemusKernel, op: remus_topology::journal::OpId, key: EntityKey) -> String {
         let r = (0..100)
             .map(|i| PersistentRef::operation_output(op, key.kind, i))
             .find(|r| matches!(resolve(k.topo(),r),Resolution::Bound{entity,..}if entity==key))
             .unwrap();
         String::from_utf8(remus_io::naming_io::serialize_persistent_ref(&r).unwrap()).unwrap()
     }
-    fn bore(k: &BrepKernel, solid: remus_topology::SolidId) -> FaceId {
+    fn bore(k: &RemusKernel, solid: remus_topology::SolidId) -> FaceId {
         remus_topology::explorer::solid_faces(k.topo(), solid)
             .unwrap()
             .into_iter()
@@ -1703,13 +1703,13 @@ mod circle_tests {
     fn setup(
         v2: bool,
     ) -> (
-        BrepKernel,
+        RemusKernel,
         u32,
         remus_topology::SolidId,
         ExternalCircleHandles,
         String,
     ) {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let boxed = remus_operations::primitives::make_box(k.topo_mut(), 10.0, 8.0, 4.0).unwrap();
         let tool = remus_operations::primitives::make_cylinder(k.topo_mut(), 2.0, 6.0).unwrap();
         remus_operations::transform::transform_solid(
@@ -1754,7 +1754,7 @@ mod circle_tests {
         (k, sketch, seeded.solid, handles, edge_ref)
     }
     fn consumer(
-        k: &mut BrepKernel,
+        k: &mut RemusKernel,
         v2: bool,
         sketch: u32,
         external: &ExternalCircleHandles,

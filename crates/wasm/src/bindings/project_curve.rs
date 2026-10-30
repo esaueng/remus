@@ -22,7 +22,7 @@ use wasm_bindgen::prelude::*;
 use crate::error::StructuredWasmError;
 use crate::handles::{edge_id_to_u32, face_id_to_u32};
 use crate::helpers::{get_f64, get_u32, get_u32_array};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::types::{
     PlaneCurve2d, ProjectCurveOptions, ProjectedCurves, ProjectedEdge, ProjectionQuality,
     SketchFrame, SolidProjection, SourceProjection,
@@ -327,7 +327,7 @@ fn resolution_error(error: crate::error::WasmError, index: Option<usize>) -> Str
     }
 }
 
-impl BrepKernel {
+impl RemusKernel {
     /// Face projection changes topology only and publishes result handles only
     /// on success. Keep an already checkpoint-shared owner on refusal, before
     /// the outer transaction or native snapshot can trigger Rc::make_mut.
@@ -510,7 +510,7 @@ impl BrepKernel {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Project one edge along a direction onto a face's trimmed region.
     /// Returns the §8 typed ProjectedCurves object. Refusals throw with the
     /// stable `project-curve:<code>` prefix; omitted options use defaults.
@@ -587,14 +587,14 @@ fn structured_to_js(error: StructuredWasmError) -> JsError {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
-    fn batch(kernel: &mut BrepKernel, ops: &str) -> Vec<serde_json::Value> {
+    fn batch(kernel: &mut RemusKernel, ops: &str) -> Vec<serde_json::Value> {
         let response = kernel.execute_batch(ops);
         serde_json::from_str(&response).expect("batch response parses")
     }
 
-    fn batch_v2(kernel: &mut BrepKernel, ops: &str) -> Vec<serde_json::Value> {
+    fn batch_v2(kernel: &mut RemusKernel, ops: &str) -> Vec<serde_json::Value> {
         let response = kernel.execute_batch_v2(ops);
         serde_json::from_str(&response).expect("batch v2 response parses")
     }
@@ -603,7 +603,7 @@ mod tests {
     fn batch_projection_keeps_retained_reference_through_next_journaled_edit() {
         for v2 in [false, true] {
             for onto_solid in [false, true] {
-                let mut kernel = BrepKernel::new();
+                let mut kernel = RemusKernel::new();
                 let made = batch(
                     &mut kernel,
                     r#"[
@@ -650,7 +650,7 @@ mod tests {
         }
     }
 
-    fn box_top_face(kernel: &mut BrepKernel) -> (u32, u32) {
+    fn box_top_face(kernel: &mut RemusKernel) -> (u32, u32) {
         let made = batch(
             kernel,
             r#"[{"op":"makeBox","args":{"width":10.0,"height":8.0,"depth":4.0}}]"#,
@@ -680,7 +680,7 @@ mod tests {
 
     #[test]
     fn batch_exact_segment_projection_reports_quality_and_range() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let (_solid, face) = box_top_face(&mut kernel);
         // A free segment above the box, built from two vertices and an edge.
         let made = batch(
@@ -703,7 +703,7 @@ mod tests {
 
     #[test]
     fn batch_refusals_carry_project_curve_codes() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let (_solid, face) = box_top_face(&mut kernel);
         let made = batch(
             &mut kernel,
@@ -736,7 +736,7 @@ mod tests {
 
     #[test]
     fn batch_sketch_plane_line_is_read_only_and_exact() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let made = batch(
             &mut kernel,
             r#"[{"op":"makeLineEdge","args":{"x1":0.0,"y1":0.0,"z1":4.0,"x2":10.0,"y2":0.0,"z2":4.0}}]"#,
@@ -758,7 +758,7 @@ mod tests {
 
     #[test]
     fn typed_helper_and_batch_projection_agree() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let (_solid, face) = box_top_face(&mut kernel);
         let made = batch(
             &mut kernel,
@@ -791,7 +791,7 @@ mod tests {
         );
     }
 
-    fn counts(kernel: &BrepKernel) -> (usize, usize, usize, usize) {
+    fn counts(kernel: &RemusKernel) -> (usize, usize, usize, usize) {
         (
             kernel.topo().num_vertices(),
             kernel.topo().num_edges(),
@@ -800,7 +800,7 @@ mod tests {
         )
     }
 
-    fn line_above_box(kernel: &mut BrepKernel) -> u32 {
+    fn line_above_box(kernel: &mut RemusKernel) -> u32 {
         batch(
             kernel,
             r#"[{"op":"makeLineEdge","args":{"x1":1,"y1":2,"z1":7,"x2":8,"y2":5,"z2":9}}]"#,
@@ -811,12 +811,12 @@ mod tests {
 
     #[test]
     fn typed_projection_schema_matches_batch_for_all_three_operations() {
-        let mut direct = BrepKernel::new();
+        let mut direct = RemusKernel::new();
         let (solid, face) = box_top_face(&mut direct);
         let edge = line_above_box(&mut direct);
         let frame = serde_json::json!({"origin":[0,0,4], "xAxis":[1,0,0], "normal":[0,0,1]});
         let options = serde_json::json!({"planeFrame":frame});
-        let mut via_batch = BrepKernel::new();
+        let mut via_batch = RemusKernel::new();
         via_batch.topo = direct.topo().clone().into();
         let typed = serde_json::to_value(
             direct
@@ -880,7 +880,7 @@ mod tests {
 
     #[test]
     fn malformed_option_and_frame_fields_refuse_without_mutation() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let (_solid, face) = box_top_face(&mut kernel);
         let edge = line_above_box(&mut kernel);
         let before = counts(&kernel);
@@ -949,7 +949,7 @@ mod tests {
 
     #[test]
     fn stale_handle_refusals_keep_projection_codes_and_source_indices() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let (solid, face) = box_top_face(&mut kernel);
         let edge = line_above_box(&mut kernel);
         let before = counts(&kernel);
@@ -1041,7 +1041,11 @@ mod tests {
         }
     }
 
-    fn face_bezier_input(kernel: &mut BrepKernel, outside: bool, degree: usize) -> (u32, u32, u32) {
+    fn face_bezier_input(
+        kernel: &mut RemusKernel,
+        outside: bool,
+        degree: usize,
+    ) -> (u32, u32, u32) {
         let (solid, face) = box_top_face(kernel);
         let points: Vec<f64> = (0..=degree)
             .flat_map(|i| {
@@ -1076,7 +1080,7 @@ mod tests {
     fn face_bezier_refusal_preserves_checkpoint_owner_and_taxonomy() {
         for route in 0..3 {
             for budget in [false, true] {
-                let mut kernel = BrepKernel::new();
+                let mut kernel = RemusKernel::new();
                 let (solid, face, edge) =
                     face_bezier_input(&mut kernel, !budget, if budget { 8 } else { 2 });
                 let checkpoint = kernel.checkpoint().unwrap();
@@ -1160,7 +1164,7 @@ mod tests {
 
     #[test]
     fn face_bezier_success_retains_checkpoint_and_publishes_only_valid_image() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let (_, face, edge) = face_bezier_input(&mut kernel, false, 3);
         let checkpoint = kernel.checkpoint().unwrap();
         let owner = std::rc::Rc::as_ptr(&kernel.topo);

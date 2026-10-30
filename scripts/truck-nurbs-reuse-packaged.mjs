@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 
 // Independent analytic fixtures authored for this project, without imported data.
-export function runTruckNurbsReusePackaged({ BrepKernel }) {
-  const kernel = new BrepKernel();
+export function runTruckNurbsReusePackaged({ RemusKernel }) {
+  const kernel = new RemusKernel();
   const curve = kernel.interpolatePoints(
     Float64Array.from([0, 0, 0, 1, 0, 0, 2, 0, 0]), 2,
   );

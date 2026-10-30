@@ -29,12 +29,12 @@ use remus_math::curves::Circle3D;
 use remus_math::vec::{Point3, Vec3};
 
 use crate::handles::face_id_to_u32;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::types::SolidOperationDetailedResult;
 
 type Counts = (usize, usize, usize, usize, usize);
 
-fn counts(kernel: &BrepKernel) -> Counts {
+fn counts(kernel: &RemusKernel) -> Counts {
     let topo = kernel.topo();
     (
         topo.num_vertices(),
@@ -48,7 +48,7 @@ fn counts(kernel: &BrepKernel) -> Counts {
 /// Live entity counts, without the handle high-water mark: a rollback after
 /// an attempt that allocated keeps those slots retired so no stale handle
 /// can alias a later entity.
-fn live_counts(kernel: &BrepKernel) -> (usize, usize, usize, usize) {
+fn live_counts(kernel: &RemusKernel) -> (usize, usize, usize, usize) {
     let (vertices, edges, faces, solids, _) = counts(kernel);
     (vertices, edges, faces, solids)
 }
@@ -57,11 +57,11 @@ fn envelope(result: SolidOperationDetailedResult) -> Value {
     serde_json::to_value(result).unwrap()
 }
 
-fn batch_v2(kernel: &mut BrepKernel, ops: &Value) -> Value {
+fn batch_v2(kernel: &mut RemusKernel, ops: &Value) -> Value {
     serde_json::from_str(&kernel.execute_batch_v2(&ops.to_string())).unwrap()
 }
 
-fn batch_legacy(kernel: &mut BrepKernel, ops: &Value) -> Value {
+fn batch_legacy(kernel: &mut RemusKernel, ops: &Value) -> Value {
     serde_json::from_str(&kernel.execute_batch(&ops.to_string())).unwrap()
 }
 
@@ -78,7 +78,7 @@ fn handle(value: &Value) -> u32 {
     u32::try_from(value.as_u64().unwrap()).unwrap()
 }
 
-fn volume(kernel: &BrepKernel, solid: u32, deflection: f64) -> f64 {
+fn volume(kernel: &RemusKernel, solid: u32, deflection: f64) -> f64 {
     kernel.volume(solid, deflection).unwrap()
 }
 
@@ -91,13 +91,13 @@ fn deflection_for(scale: f64) -> f64 {
 // ── Fixture builders ────────────────────────────────────────────────
 
 /// Axis-aligned rectangle face in the XY plane, centered at the origin.
-fn rect_face(kernel: &mut BrepKernel, w: f64, h: f64) -> u32 {
+fn rect_face(kernel: &mut RemusKernel, w: f64, h: f64) -> u32 {
     kernel.make_rectangle(w, h).unwrap()
 }
 
 /// Exact-circle disc face in the XY plane (a true `Circle` edge, not the
 /// NURBS-arc `makeCircleFace`), centered at `(cx, cy, 0)`.
-fn disc_face(kernel: &mut BrepKernel, cx: f64, cy: f64, r: f64) -> u32 {
+fn disc_face(kernel: &mut RemusKernel, cx: f64, cy: f64, r: f64) -> u32 {
     let edge = kernel
         .make_circle_edge(cx, cy, 0.0, 0.0, 0.0, 1.0, r)
         .unwrap();
@@ -105,7 +105,7 @@ fn disc_face(kernel: &mut BrepKernel, cx: f64, cy: f64, r: f64) -> u32 {
     kernel.make_planar_face_from_wire(wire).unwrap()
 }
 
-fn generic_closed_nurbs_face(kernel: &mut BrepKernel) -> u32 {
+fn generic_closed_nurbs_face(kernel: &mut RemusKernel) -> u32 {
     let edge = kernel
         .make_nurbs_edge_impl(
             0.0,
@@ -127,7 +127,7 @@ fn generic_closed_nurbs_face(kernel: &mut BrepKernel) -> u32 {
     kernel.make_planar_face_from_wire(wire).unwrap()
 }
 
-fn open_spline_profile_face(kernel: &mut BrepKernel) -> u32 {
+fn open_spline_profile_face(kernel: &mut RemusKernel) -> u32 {
     let spline = kernel
         .make_nurbs_edge_impl(
             2.0,
@@ -152,7 +152,7 @@ fn open_spline_profile_face(kernel: &mut BrepKernel) -> u32 {
     kernel.make_planar_face_from_wire(wire).unwrap()
 }
 
-fn recognized_nurbs_circle_face(kernel: &mut BrepKernel) -> u32 {
+fn recognized_nurbs_circle_face(kernel: &mut RemusKernel) -> u32 {
     let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
     let nurbs = circle_to_nurbs(&circle, 0.0, std::f64::consts::TAU).unwrap();
     let (start_param, end_param) = nurbs.domain();
@@ -180,7 +180,7 @@ fn recognized_nurbs_circle_face(kernel: &mut BrepKernel) -> u32 {
     kernel.make_planar_face_from_wire(wire).unwrap()
 }
 
-fn analytic_arc_profile_face(kernel: &mut BrepKernel) -> u32 {
+fn analytic_arc_profile_face(kernel: &mut RemusKernel) -> u32 {
     let arc = kernel
         .make_circle_arc_3d(
             10.0, 0.0, -3.0, 10.0, 0.0, 3.0, 10.0, 0.0, 0.0, 0.0, -1.0, 0.0,
@@ -193,7 +193,7 @@ fn analytic_arc_profile_face(kernel: &mut BrepKernel) -> u32 {
     kernel.make_planar_face_from_wire(wire).unwrap()
 }
 
-fn elliptical_hole_face(kernel: &mut BrepKernel) -> u32 {
+fn elliptical_hole_face(kernel: &mut RemusKernel) -> u32 {
     let outer = kernel
         .make_polygon_wire(vec![
             -5.0, -5.0, 0.0, 5.0, -5.0, 0.0, 5.0, 5.0, 0.0, -5.0, 5.0, 0.0,
@@ -209,14 +209,14 @@ fn elliptical_hole_face(kernel: &mut BrepKernel) -> u32 {
 /// Rectangle face with corners `(x0, y0)`, `(x1, y0)`, `(x1, y1)`,
 /// `(x0, y1)` in the XY plane (`z = 0`). Used for revolve profiles whose
 /// radial extent must be placed relative to the axis.
-fn offset_rect_face(kernel: &mut BrepKernel, x0: f64, x1: f64, y0: f64, y1: f64) -> u32 {
+fn offset_rect_face(kernel: &mut RemusKernel, x0: f64, x1: f64, y0: f64, y1: f64) -> u32 {
     kernel
         .make_polygon(vec![x0, y0, 0.0, x1, y0, 0.0, x1, y1, 0.0, x0, y1, 0.0])
         .unwrap()
 }
 
 /// Outer rectangle with a single exact-circle hole, in the XY plane.
-fn holed_rect_face(kernel: &mut BrepKernel, ow: f64, oh: f64, hole_r: f64) -> u32 {
+fn holed_rect_face(kernel: &mut RemusKernel, ow: f64, oh: f64, hole_r: f64) -> u32 {
     let hw = ow / 2.0;
     let hh = oh / 2.0;
     let outer = kernel
@@ -230,7 +230,7 @@ fn holed_rect_face(kernel: &mut BrepKernel, ow: f64, oh: f64, hole_r: f64) -> u3
 }
 
 /// The analytic cylinder side face of a fresh cylinder solid.
-fn cylinder_side_face(kernel: &mut BrepKernel, r: f64, h: f64) -> u32 {
+fn cylinder_side_face(kernel: &mut RemusKernel, r: f64, h: f64) -> u32 {
     use remus_topology::face::FaceSurface;
     let solid = kernel.make_cylinder_solid(r, h).unwrap();
     let solid_id = kernel.resolve_solid(solid).unwrap();
@@ -256,7 +256,7 @@ struct Carriers {
 }
 
 /// Result faces by carrier family.
-fn count_carriers(kernel: &BrepKernel, solid: u32) -> Carriers {
+fn count_carriers(kernel: &RemusKernel, solid: u32) -> Carriers {
     use remus_topology::face::FaceSurface;
     let solid_id = kernel.resolve_solid(solid).unwrap();
     let faces = remus_topology::explorer::solid_faces(kernel.topo(), solid_id).unwrap();
@@ -299,17 +299,17 @@ fn assert_exact_success(direct: &Value, operation: &str) -> u32 {
 /// Direct/batch parity for one extrude call: `build` runs the same direct
 /// face construction on three fresh kernels so the face handle matches.
 fn check_extrude_parity(
-    build: impl Fn(&mut BrepKernel) -> u32,
+    build: impl Fn(&mut RemusKernel) -> u32,
     dx: f64,
     dy: f64,
     dz: f64,
     dist: f64,
-) -> (BrepKernel, u32, Value) {
-    let mut direct_kernel = BrepKernel::new();
+) -> (RemusKernel, u32, Value) {
+    let mut direct_kernel = RemusKernel::new();
     let face = build(&mut direct_kernel);
     let direct = envelope(direct_kernel.extrude_detailed_impl(face, dx, dy, dz, dist));
 
-    let mut v2_kernel = BrepKernel::new();
+    let mut v2_kernel = RemusKernel::new();
     let v2_face = build(&mut v2_kernel);
     assert_eq!(v2_face, face);
     let v2 = batch_v2(
@@ -318,7 +318,7 @@ fn check_extrude_parity(
     );
     assert_eq!(v2[0]["ok"], direct, "direct/executeBatchV2 parity");
 
-    let mut legacy_kernel = BrepKernel::new();
+    let mut legacy_kernel = RemusKernel::new();
     let legacy_face = build(&mut legacy_kernel);
     assert_eq!(legacy_face, face);
     let legacy = batch_legacy(
@@ -334,7 +334,7 @@ fn check_extrude_parity(
 /// [`check_extrude_parity`].
 #[allow(clippy::too_many_arguments)]
 fn check_revolve_parity(
-    build: impl Fn(&mut BrepKernel) -> u32,
+    build: impl Fn(&mut RemusKernel) -> u32,
     ox: f64,
     oy: f64,
     oz: f64,
@@ -342,12 +342,12 @@ fn check_revolve_parity(
     ay: f64,
     az: f64,
     angle: f64,
-) -> (BrepKernel, u32, Value) {
-    let mut direct_kernel = BrepKernel::new();
+) -> (RemusKernel, u32, Value) {
+    let mut direct_kernel = RemusKernel::new();
     let face = build(&mut direct_kernel);
     let direct = envelope(direct_kernel.revolve_detailed_impl(face, ox, oy, oz, ax, ay, az, angle));
 
-    let mut v2_kernel = BrepKernel::new();
+    let mut v2_kernel = RemusKernel::new();
     let v2_face = build(&mut v2_kernel);
     assert_eq!(v2_face, face);
     let v2 = batch_v2(
@@ -356,7 +356,7 @@ fn check_revolve_parity(
     );
     assert_eq!(v2[0]["ok"], direct, "direct/executeBatchV2 parity");
 
-    let mut legacy_kernel = BrepKernel::new();
+    let mut legacy_kernel = RemusKernel::new();
     let legacy_face = build(&mut legacy_kernel);
     assert_eq!(legacy_face, face);
     let legacy = batch_legacy(
@@ -395,7 +395,7 @@ fn extrude_rectangle_matches_area_times_distance_at_all_scales() {
         assert_eq!(carriers.nurbs, 0, "scale {scale}");
 
         // Same engine path as the legacy op: identical committed geometry.
-        let mut legacy_kernel = BrepKernel::new();
+        let mut legacy_kernel = RemusKernel::new();
         let legacy_face = rect_face(&mut legacy_kernel, w, h);
         let legacy = batch_v2(
             &mut legacy_kernel,
@@ -452,7 +452,7 @@ fn extrude_negative_distance_extrudes_opposite_with_same_volume() {
     let (w, h, dist) = (2.0, 3.0, 5.0);
     let expected = w * h * dist;
 
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let face = rect_face(&mut kernel, w, h);
     let direct = envelope(kernel.extrude_detailed_impl(face, 0.0, 0.0, 1.0, -dist));
     let result = assert_exact_success(&direct, "extrude");
@@ -464,7 +464,7 @@ fn extrude_rigid_placement_preserves_volume() {
     let expected = 2.0 * 3.0 * 5.0;
 
     // Translated placement: rectangle corners offset by (100, -50, 25).
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let face = kernel
         .make_polygon(vec![
             100.0, -50.0, 25.0, 102.0, -50.0, 25.0, 102.0, -47.0, 25.0, 100.0, -47.0, 25.0,
@@ -475,7 +475,7 @@ fn extrude_rigid_placement_preserves_volume() {
     assert!((volume(&kernel, result, 0.01) - expected).abs() / expected < 1e-6);
 
     // Rotated placement: rectangle in the XZ plane extruded along +Y.
-    let mut rotated = BrepKernel::new();
+    let mut rotated = RemusKernel::new();
     let rface = rotated
         .make_polygon(vec![
             0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 2.0, 0.0, 3.0, 0.0, 0.0, 3.0,
@@ -520,7 +520,7 @@ fn revolve_rectangle_full_gives_cylinder() {
     assert_eq!(carriers.nurbs, 0);
 
     // Same handle and geometry as the legacy op on an identical kernel.
-    let mut legacy_kernel = BrepKernel::new();
+    let mut legacy_kernel = RemusKernel::new();
     let legacy_face = offset_rect_face(&mut legacy_kernel, 0.0, w, 0.0, h);
     let legacy = batch_v2(
         &mut legacy_kernel,
@@ -565,7 +565,7 @@ fn revolve_partial_gives_sector_fraction() {
     let (ox, oy, oz, dx, dy, dz) = y_axis();
 
     for (angle, fraction) in [(90.0, 0.25), (180.0, 0.5)] {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let face = offset_rect_face(&mut kernel, 0.0, w, 0.0, h);
         let direct = envelope(kernel.revolve_detailed_impl(face, ox, oy, oz, dx, dy, dz, angle));
         let result = assert_exact_success(&direct, "revolve");
@@ -620,7 +620,7 @@ fn revolve_scales_and_translated_placement() {
         let expected = std::f64::consts::PI * w * w * h;
         let deflection = deflection_for(scale);
 
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let face = offset_rect_face(&mut kernel, 0.0, w, 0.0, h);
         let direct =
             envelope(kernel.revolve_detailed_impl(face, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 360.0));
@@ -632,7 +632,7 @@ fn revolve_scales_and_translated_placement() {
     // Translated placement: axis and profile shifted together by (10, 20, 30).
     let (w, h) = (2.0, 5.0);
     let expected = std::f64::consts::PI * w * w * h;
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let face = kernel
         .make_polygon(vec![
             10.0, 20.0, 30.0, 12.0, 20.0, 30.0, 12.0, 25.0, 30.0, 10.0, 25.0, 30.0,
@@ -669,7 +669,7 @@ fn degrees_to_radians_conversion_is_exact() {
     );
 
     // 360 succeeds (inclusive upper bound).
-    let mut full_kernel = BrepKernel::new();
+    let mut full_kernel = RemusKernel::new();
     let full_face = offset_rect_face(&mut full_kernel, 0.0, w, 0.0, h);
     let full_result =
         envelope(full_kernel.revolve_detailed_impl(full_face, ox, oy, oz, dx, dy, dz, 360.0));
@@ -683,7 +683,7 @@ fn degrees_to_radians_conversion_is_exact() {
 
 #[test]
 fn closed_spline_profile_refuses_chorded_extrusion() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let face = generic_closed_nurbs_face(&mut kernel);
     let before = counts(&kernel);
     let detailed = envelope(kernel.extrude_detailed_impl(face, 0.0, 0.0, 1.0, 2.0));
@@ -699,7 +699,7 @@ fn closed_spline_profile_refuses_chorded_extrusion() {
     assert_eq!(batch[0]["ok"], detailed, "direct/batch refusal parity");
     assert_eq!(counts(&kernel), before, "batch refusal mutated the profile");
 
-    let mut legacy_kernel = BrepKernel::new();
+    let mut legacy_kernel = RemusKernel::new();
     let legacy_face = generic_closed_nurbs_face(&mut legacy_kernel);
     let legacy = batch_v2(
         &mut legacy_kernel,
@@ -713,7 +713,7 @@ fn closed_spline_profile_refuses_chorded_extrusion() {
 
 #[test]
 fn recognized_nurbs_circle_keeps_exact_extrusion() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let face = recognized_nurbs_circle_face(&mut kernel);
     let result = envelope(kernel.extrude_detailed_impl(face, 0.0, 0.0, 1.0, 2.0));
     let solid = assert_exact_success(&result, "extrude");
@@ -722,7 +722,7 @@ fn recognized_nurbs_circle_keeps_exact_extrusion() {
 
 #[test]
 fn open_spline_profile_refuses_chorded_revolution() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let face = open_spline_profile_face(&mut kernel);
     let before = counts(&kernel);
     let direct = envelope(kernel.revolve_detailed_impl(face, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 360.0));
@@ -736,7 +736,7 @@ fn open_spline_profile_refuses_chorded_revolution() {
     assert_eq!(batch[0]["ok"], direct);
     assert_eq!(counts(&kernel), before);
 
-    let mut legacy_kernel = BrepKernel::new();
+    let mut legacy_kernel = RemusKernel::new();
     let legacy_face = open_spline_profile_face(&mut legacy_kernel);
     let legacy = batch_v2(
         &mut legacy_kernel,
@@ -750,7 +750,7 @@ fn open_spline_profile_refuses_chorded_revolution() {
 
 #[test]
 fn analytic_arc_profile_keeps_exact_full_revolution() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let face = analytic_arc_profile_face(&mut kernel);
     let full = envelope(kernel.revolve_detailed_impl(face, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 360.0));
     let solid = assert_exact_success(&full, "revolve");
@@ -762,7 +762,7 @@ fn analytic_arc_profile_keeps_exact_full_revolution() {
 
 #[test]
 fn circle_revolution_refuses_axis_outside_profile_plane() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let face = disc_face(&mut kernel, 10.0, 0.0, 1.0);
     let before = counts(&kernel);
     let direct = envelope(kernel.revolve_detailed_impl(face, 0.0, 0.0, 10.0, 0.0, 1.0, 0.0, 360.0));
@@ -779,7 +779,7 @@ fn circle_revolution_refuses_axis_outside_profile_plane() {
 
 #[test]
 fn elliptical_hole_refuses_chorded_extrusion() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let face = elliptical_hole_face(&mut kernel);
     let before = counts(&kernel);
     let detailed = envelope(kernel.extrude_detailed_impl(face, 0.0, 0.0, 1.0, 2.0));
@@ -789,7 +789,7 @@ fn elliptical_hole_refuses_chorded_extrusion() {
 
 #[test]
 fn closed_profiles_without_exact_torus_path_refuse_revolution() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let face = generic_closed_nurbs_face(&mut kernel);
     let before = counts(&kernel);
     let spline = envelope(kernel.revolve_detailed_impl(face, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 360.0));
@@ -813,7 +813,7 @@ fn closed_profiles_without_exact_torus_path_refuse_revolution() {
 
 #[test]
 fn detailed_batch_rejects_malformed_optional_numbers_without_mutation() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let face = rect_face(&mut kernel, 2.0, 3.0);
     let before = counts(&kernel);
 
@@ -855,7 +855,7 @@ fn detailed_batch_rejects_malformed_optional_numbers_without_mutation() {
 
 #[test]
 fn argument_refusals_are_typed_data() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let face = rect_face(&mut kernel, 2.0, 3.0);
     let before = counts(&kernel);
 
@@ -924,7 +924,7 @@ fn argument_refusals_are_typed_data() {
 
 #[test]
 fn handle_refusals_match_legacy_batch_v2_and_preserve_handles() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let face = rect_face(&mut kernel, 2.0, 3.0);
     let before = counts(&kernel);
     let invalid = u32::MAX;
@@ -933,7 +933,7 @@ fn handle_refusals_match_legacy_batch_v2_and_preserve_handles() {
     // Handles are per-type arena indices, so a foreign handle with an
     // overlapping index would alias the local entity by design; only a
     // non-overlapping index is a refusal.
-    let mut foreign = BrepKernel::new();
+    let mut foreign = RemusKernel::new();
     let _ = rect_face(&mut foreign, 2.0, 3.0);
     let foreign_face = rect_face(&mut foreign, 4.0, 5.0);
     assert!(
@@ -1037,7 +1037,7 @@ fn handle_refusals_match_legacy_batch_v2_and_preserve_handles() {
 /// reports, with the legacy code and rollback.
 #[test]
 fn unsupported_partial_revolve_refuses_with_rollback() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let face = cylinder_side_face(&mut kernel, 2.0, 5.0);
     let before = live_counts(&kernel);
     let before_counts = counts(&kernel);
@@ -1078,7 +1078,7 @@ fn every_success_reports_exact_with_no_approximate_branch() {
     // this test states the envelope rule once: no construction twin takes
     // an exactOnly/approximation knob, so no call can commit an approximate
     // body. A future sampled-refit path must add disclosure first.
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let face = rect_face(&mut kernel, 2.0, 3.0);
     let extruded = envelope(kernel.extrude_detailed_impl(face, 0.0, 0.0, 1.0, 2.0));
     assert_eq!(extruded["details"]["quality"], "exact");
@@ -1086,7 +1086,7 @@ fn every_success_reports_exact_with_no_approximate_branch() {
     assert!(extruded["details"].get("sampledFaces").is_none());
     assert!(extruded["details"].get("deflection").is_none());
 
-    let mut revolved_kernel = BrepKernel::new();
+    let mut revolved_kernel = RemusKernel::new();
     let rface = offset_rect_face(&mut revolved_kernel, 0.0, 2.0, 0.0, 5.0);
     let revolved =
         envelope(revolved_kernel.revolve_detailed_impl(rface, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 360.0));

@@ -22,9 +22,9 @@ function assertStale(kernel, surface, sketch, point, label) {
     /invalid|retired|not found/i, label);
 }
 
-function identityWitnesses(BrepKernel) {
+function identityWitnesses(RemusKernel) {
   for (const surface of surfaces) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     const retained = invoke(kernel, surface, 'gcsNew', {}, []);
     const retainedPoint = invoke(kernel, surface, 'gcsAddPoint',
       { sketch: retained, x: 3, y: 4, fixed: true }, [retained, 3, 4, true]);
@@ -61,7 +61,7 @@ function identityWitnesses(BrepKernel) {
   }
 
   // Checkpoints and top-level auxiliary stores have opaque public handles.
-  const kernel = new BrepKernel();
+  const kernel = new RemusKernel();
   const first = kernel.checkpoint();
   const staleCheckpoint = kernel.checkpoint();
   const staleLegacy = kernel.sketchNew();
@@ -84,7 +84,7 @@ function identityWitnesses(BrepKernel) {
   assert.throws(() => kernel.restore(freshCheckpoint), /invalid/i);
   kernel.free();
 
-  const assemblyKernel = new BrepKernel();
+  const assemblyKernel = new RemusKernel();
   const part = assemblyKernel.makeBox(2, 3, 4);
   const assembly = assemblyKernel.assemblyNew('retained');
   const assemblyCheckpoint = assemblyKernel.checkpoint();
@@ -104,7 +104,7 @@ function identityWitnesses(BrepKernel) {
   for (const surface of surfaces.slice(1)) {
     for (const oversized of [2 ** 32, 2 ** 32 + 1, Number.MAX_SAFE_INTEGER]) {
       for (const operation of ['fuseAll', 'compoundCut']) {
-        const kernel = new BrepKernel();
+        const kernel = new RemusKernel();
         const solid = kernel.makeBox(2, 3, 4);
         const before = kernel.serializeSolids(Uint32Array.of(solid));
         for (const handles of [[oversized], [solid, oversized]]) {
@@ -121,12 +121,12 @@ function identityWitnesses(BrepKernel) {
   }
 }
 
-function distanceWitnesses(BrepKernel) {
+function distanceWitnesses(RemusKernel) {
   // Full circular rims must ignore their arbitrary parameter seams. The
   // inner rim is correctly clockwise about the annular face's +Z normal.
   // Both point-distance bindings are direct-only; no batch API is added here.
   for (const offset of [0, 10, 100]) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const rim = (radius, normalZ) => kernel.makeWire(Uint32Array.of(
         kernel.makeCircleEdgeWithRef(offset, offset, offset, 0, 0, normalZ, radius, 0, 1, 0),
@@ -177,7 +177,7 @@ function distanceWitnesses(BrepKernel) {
   // Independent full-sphere extrema: closest points face each other along centres.
   for (const surface of surfaces) {
     for (const offset of [0, 10, 100]) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       const first = kernel.makeSphere(1, 16);
       const second = kernel.makeSphere(1, 16);
       kernel.transformSolid(first, translation(offset, offset, offset));
@@ -203,7 +203,7 @@ function distanceWitnesses(BrepKernel) {
   // dispatchers reject that operation. Check its finite trims independently.
   for (const offset of [0, 10, 100]) {
     for (const fixture of ['cylinder', 'holed prism']) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       try {
         let solid;
         let localQuery;
@@ -263,7 +263,7 @@ function distanceWitnesses(BrepKernel) {
   }
 }
 
-function loftWitnesses(BrepKernel) {
+function loftWitnesses(RemusKernel) {
   const positions = (kernel, face) => Array.from(kernel.getFaceVertices(face))
     .flatMap(vertex => Array.from(kernel.getVertexPosition(vertex)));
   const makeSquare = (kernel, z, shift = 0, angle = 0) => {
@@ -274,7 +274,7 @@ function loftWitnesses(BrepKernel) {
   };
   for (const surface of surfaces) {
     for (const smooth of [false, true]) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       const faces = smooth ? [makeSquare(kernel, 1), makeSquare(kernel, 2, 1), makeSquare(kernel, 3)]
         : [makeSquare(kernel, 1), makeSquare(kernel, 3, 0, 0.5)];
       const before = faces.map(face => positions(kernel, face));
@@ -318,10 +318,10 @@ function loftWitnesses(BrepKernel) {
   }
 }
 
-export function runNextKernelCorrectnessPackaged({ BrepKernel }) {
-  identityWitnesses(BrepKernel);
-  distanceWitnesses(BrepKernel);
-  loftWitnesses(BrepKernel);
-  runB79PlanarHolePartitionsPackaged({ BrepKernel });
+export function runNextKernelCorrectnessPackaged({ RemusKernel }) {
+  identityWitnesses(RemusKernel);
+  distanceWitnesses(RemusKernel);
+  loftWitnesses(RemusKernel);
+  runB79PlanarHolePartitionsPackaged({ RemusKernel });
   console.log('ok - checkpoint identities, checked batch handles, analytic distances and valid lofts');
 }

@@ -1,6 +1,6 @@
 //! Domain-aligned binding modules.
 //!
-//! Each module adds `#[wasm_bindgen] impl BrepKernel { ... }` methods
+//! Each module adds `#[wasm_bindgen] impl RemusKernel { ... }` methods
 //! for a specific domain. wasm-bindgen supports multiple impl blocks
 //! across files.
 

@@ -9,5 +9,5 @@ try {
   instance.exports.__wbindgen_start();
   const { version } = await (await fetch('../crates/wasm/pkg/package.json')).json();
   postMessage({runtime: navigator.userAgent, packageVersion: version,
-    results: runBodyEditBenchmark(bindings.BrepKernel)});
+    results: runBodyEditBenchmark(bindings.RemusKernel)});
 } catch(error) {postMessage({error:String(error)});}

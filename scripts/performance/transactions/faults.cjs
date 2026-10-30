@@ -3,7 +3,7 @@ const path = require('node:path');
 const wasm = require(path.resolve(process.argv[2]));
 let cases = 0;
 for (const stage of [1, 2]) for (const batch of [false, true]) for (const gfa of [false, true]) {
-  const k = new wasm.BrepKernel();
+  const k = new wasm.RemusKernel();
   const a = k.makeBox(1,1,1), b = k.makeBox(1,1,1);
   const c = Math.SQRT1_2;
   k.transformSolid(b, new Float64Array(gfa ? [c,-c,0,0.5,c,c,0,0.5-c,0,0,1,0,0,0,0,1] : [1,0,0,0.5,0,1,0,0,0,0,1,0,0,0,0,1]));

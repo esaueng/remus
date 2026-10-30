@@ -12,7 +12,7 @@ See `CLAUDE.md` "Recipe 4: Add a new WASM binding".
 
 ## Multiple impl Blocks
 
-Flag attempts to merge `#[wasm_bindgen] impl BrepKernel` blocks — multiple blocks
+Flag attempts to merge `#[wasm_bindgen] impl RemusKernel` blocks — multiple blocks
 are required by wasm-bindgen.
 
 ## Batch Dispatch

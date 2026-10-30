@@ -43,8 +43,8 @@ function closedMesh(kernel, solid, deflection, label) {
   }
 }
 
-function unprovedBoundaryRefusal(BrepKernel, route) {
-  const kernel = new BrepKernel();
+function unprovedBoundaryRefusal(RemusKernel, route) {
+  const kernel = new RemusKernel();
   const label = `B61 ${route}: unproved large-coordinate boundary`;
   try {
     const solid = kernel.makeBox(1e7, 1e7, 1e7);
@@ -92,11 +92,11 @@ function unprovedBoundaryRefusal(BrepKernel, route) {
   } finally { kernel.free(); }
 }
 
-export function runVariableFilletBoundariesPackaged({ BrepKernel }) {
+export function runVariableFilletBoundariesPackaged({ RemusKernel }) {
   let cells = 0;
   for (const route of routes) for (const scale of [0.001, 1, 1000]) {
     for (const radiusRatio of [1, 9]) for (const placed of [false, true]) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       const label = `B61 ${route} scale=${scale} radius=${radiusRatio} placed=${placed}`;
       try {
         const solid = kernel.makeBox(10 * scale, 10 * scale, 10 * scale);
@@ -168,6 +168,6 @@ export function runVariableFilletBoundariesPackaged({ BrepKernel }) {
       } finally { kernel.free(); }
     }
   }
-  for (const route of routes) unprovedBoundaryRefusal(BrepKernel, route);
+  for (const route of routes) unprovedBoundaryRefusal(RemusKernel, route);
   return { cells, unprovedRefusals: routes.length };
 }

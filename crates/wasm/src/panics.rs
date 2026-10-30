@@ -2,11 +2,11 @@
 //!
 //! On `wasm32-unknown-unknown` the panic strategy is `abort`: a panic inside
 //! any kernel method traps mid-call, so the wasm-bindgen borrow flag on the
-//! `BrepKernel` object is never released and every later method call throws
+//! `RemusKernel` object is never released and every later method call throws
 //! "recursive use of an object detected which would lead to unsafe aliasing
 //! in rust". `catch_unwind` cannot intercept an aborting panic, and the
 //! borrow flag cannot be restored from Rust — the only recovery is creating
-//! a new `BrepKernel`. What CAN be saved is the panic text: the panic hook
+//! a new `RemusKernel`. What CAN be saved is the panic text: the panic hook
 //! still runs before the abort, so this module records the message and
 //! location in a static and exposes them through free functions that stay
 //! callable after the kernel object is poisoned (they never touch its
@@ -79,7 +79,7 @@ mod tests {
         let _guard = PANIC_STATE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _kernel = crate::kernel::BrepKernel::new();
+        let _kernel = crate::kernel::RemusKernel::new();
         clear_last_panic_message();
         assert_eq!(last_panic_message(), None);
 

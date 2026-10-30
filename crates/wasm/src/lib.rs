@@ -4,7 +4,7 @@
 //!
 //! This is layer L3, the public API surface for JavaScript/TypeScript consumers.
 //!
-//! The primary entry point is [`kernel::BrepKernel`], which owns all modeling
+//! The primary entry point is [`kernel::RemusKernel`], which owns all modeling
 //! state and exposes shape creation, operations, and tessellation to JS.
 
 use wasm_bindgen::prelude::*;

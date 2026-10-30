@@ -11,7 +11,7 @@ Deep detail backing SKILL.md. Everything here is verified against the repo; re-v
 1. `check_tools`: requires `wasm-pack`. If a local `wasm-bindgen-cli` is installed it must equal the `WASM_BINDGEN_VERSION` constant, which must match the workspace `Cargo.toml` pin. `check_versions_match` then refuses to build if `crates/wasm` and `crates/wasm-io` declare different versions: the two packages ship in lockstep. `test_size_policy` runs the boundary tests of the size policy and the per-PR size gate (`node --test scripts/test-wasm-size-policy.mjs scripts/test-wasm-size-gate.mjs`) before any module is measured.
 2. Per package, `build_both_targets`: two wasm-pack builds with `RUSTFLAGS="-Dwarnings"` (plus `-C target-feature=+simd128` unless `--no-simd`): `--target bundler --out-dir pkg` (wasm-opt with the flags from the crate's `Cargo.toml`, `-Oz --enable-simd`) and `--target nodejs --out-dir pkg-node --no-opt`. The kernel build passes `--no-default-features` so the format translators stay out of it; `--kernel-io` drops that and produces the pre-split single module.
 3. Per package, `merge_packages`: copies `pkg-node/<stem>.js` into `pkg/` as `<stem>_node.cjs` (renamed to `.cjs` because the bundler package.json has `"type": "module"`), patches `pkg/package.json` (`name`, `main`, `module`, an `exports` map with node/import/default conditions, `files`), then deletes `pkg-node/`.
-4. Per package, `validate_output`: required files exist, `.wasm` size inside the package's `SizeBudget` (kernel: at least 500 KB, then the shared `scripts/wasm-size-policy.mjs` raw/gzip/Brotli policy; translators: 500 KB to 10 MiB raw, no review band), the `.d.ts` exports the package's class (`BrepKernel` / `RemusIo`) with at least `min_methods` methods, and package.json fields.
+4. Per package, `validate_output`: required files exist, `.wasm` size inside the package's `SizeBudget` (kernel: at least 500 KB, then the shared `scripts/wasm-size-policy.mjs` raw/gzip/Brotli policy; translators: 500 KB to 10 MiB raw, no review band), the `.d.ts` exports the package's class (`RemusKernel` / `RemusIo`) with at least `min_methods` methods, and package.json fields.
 5. Once both exist: `node scripts/test-wasm-smoke.mjs` and `node scripts/test-wasm-tarball-consumer.mjs`, which load the pair together.
 
 Output lands in `crates/wasm/pkg/` and `crates/wasm-io/pkg/`, each git-ignored by wasm-pack's own generated `.gitignore` (the refresh workflow force-adds them).
@@ -72,7 +72,7 @@ Handles in batch args are arena indices returned by earlier calls (batched or no
 Two live variants, both hand-rolled with `panic_message` from `crates/wasm/src/helpers.rs`:
 
 - Non-poisoning (fillet): `bindings/operations.rs`, rg: `catch_unwind` in that file. Wraps the body, converts a panic payload into a `JsError` via `panic_message(&panic_info, "Fillet")`, kernel stays usable.
-- Poisoning (`compoundCut`): `bindings/booleans.rs`, in its own impl block. Checks `self.poisoned` first and refuses with "Kernel poisoned after panic. Create a new BrepKernel instance."; on a caught panic sets `self.poisoned = true` because the topology may be half-mutated.
+- Poisoning (`compoundCut`): `bindings/booleans.rs`, in its own impl block. Checks `self.poisoned` first and refuses with "Kernel poisoned after panic. Create a new RemusKernel instance."; on a caught panic sets `self.poisoned = true` because the topology may be half-mutated.
 
 Choose poisoning when the op mutates `self.topo` before the panic-prone phase; choose non-poisoning when the mutation is atomic-ish or recoverable. Either way the point is the same: an uncaught panic across the FFI boundary aborts the whole wasm instance, taking every handle with it.
 
@@ -80,7 +80,7 @@ Choose poisoning when the op mutates `self.topo` before the panic-prone phase; c
 
 Loads `crates/wasm/pkg/remus_wasm_node.cjs` via `createRequire` (CJS from ESM), then asserts in order:
 
-1. `new BrepKernel()` constructs.
+1. `new RemusKernel()` constructs.
 2. `makeBox(10, 20, 30)` returns a number handle.
 3. `volume(box, 0.1)` is within 1e-6 of 6000.
 4. `tessellateSolid` returns non-empty positions and indices, both multiples of 3.
@@ -141,7 +141,7 @@ The release profile is already size-conscious (`codegen-units = 1`, `lto = true`
 
 ## 7. Glossary
 
-- **BrepKernel**: the single WASM-exported modeling context; owns all topology; JS holds only opaque `u32` handles.
+- **RemusKernel**: the single WASM-exported modeling context; owns all topology; JS holds only opaque `u32` handles.
 - **Handle**: a `u32` arena index into the kernel's `Topology`, resolved via `resolve_*` in `crates/wasm/src/handles.rs`. Not a batch result index.
 - **executeBatch / dispatch_op**: the one-boundary-crossing JSON batch API and its string-keyed dispatcher in `bindings/batch.rs`.
 - **Contract test**: a native `cargo test` exercising bindings via `execute_batch` JSON or `_impl` fns, because `JsError`/`JsValue` panic when constructed off-wasm.

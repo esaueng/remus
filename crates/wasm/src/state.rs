@@ -1,4 +1,4 @@
-//! Checkpoint and sketch state types used by [`super::kernel::BrepKernel`].
+//! Checkpoint and sketch state types used by [`super::kernel::RemusKernel`].
 
 use std::collections::BTreeMap;
 use std::rc::Rc;

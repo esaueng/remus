@@ -7,10 +7,10 @@ use wasm_bindgen::prelude::*;
 use crate::error::WasmError;
 use crate::handles::solid_id_to_u32;
 use crate::helpers::{mat4_to_array, parse_mat4};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Create a new empty assembly. Returns an opaque assembly handle.
     #[wasm_bindgen(js_name = "assemblyNew")]
     pub fn assembly_new(&mut self, name: &str) -> Result<u32, JsError> {

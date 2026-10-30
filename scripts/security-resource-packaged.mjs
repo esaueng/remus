@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
-export function runSecurityResourceRegressions({ BrepKernel, RemusIo }) {
-  const kernel = new BrepKernel();
+export function runSecurityResourceRegressions({ RemusKernel, RemusIo }) {
+  const kernel = new RemusKernel();
   const io = new RemusIo();
   try {
     const solid = kernel.makeBox(2, 3, 4);
