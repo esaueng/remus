@@ -125,12 +125,12 @@ export class StepImportResult {
      */
     readonly report: string;
     /**
-     * Sheet roots as an arena document for `BrepKernel.deserializeSheets`.
+     * Sheet roots as an arena document for `RemusKernel.deserializeSheets`.
      * Empty when the file held no sheets.
      */
     readonly sheets: Uint8Array;
     /**
-     * Solid roots as an arena document for `BrepKernel.deserializeSolids`.
+     * Solid roots as an arena document for `RemusKernel.deserializeSolids`.
      * Empty when the file held no solids.
      */
     readonly solids: Uint8Array;

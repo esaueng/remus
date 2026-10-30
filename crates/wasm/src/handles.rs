@@ -7,11 +7,11 @@
 #![allow(clippy::missing_errors_doc)]
 
 use crate::error::WasmError;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 // ── resolve_* methods ─────────────────────────────────────────────
 
-impl BrepKernel {
+impl RemusKernel {
     /// Resolve a `u32` face handle to a typed `FaceId`.
     pub fn resolve_face(&self, handle: u32) -> Result<remus_topology::face::FaceId, WasmError> {
         let index = handle as usize;

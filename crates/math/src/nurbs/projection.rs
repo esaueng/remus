@@ -725,6 +725,32 @@ fn surface_newton_refine(
         // step — never a spurious convergence, so the check stays sound.
         let step = (deriv_u * (u_new - u) + deriv_v * (v_new - v)).length();
         if step < tolerance {
+            // A vanishing partial leaves Gauss–Newton blind along that
+            // parameter: with S_v = 0 the v-row of the system is zero, so
+            // the step is negligible without the point being a foot. A curve
+            // that starts with zero speed does this — an involute leaving
+            // its base circle, carried into a fitted gear flank, projected
+            // points near the flank's root onto the root corner 7e-3 away.
+            // Step on the second derivative instead: |S − P|² ≈ |r|² +
+            // (S_vv·r)·dv² + ¼|S_vv|²·dv⁴ near such a point, which descends
+            // wherever S_vv·r < 0 and is least at dv² = −2·S_vv·r / |S_vv|².
+            if let Some((u_next, v_next, pt_next)) = second_order_step(
+                surface,
+                point,
+                (u, v),
+                (du_len, dv_len),
+                dist,
+                (u_min, u_max, v_min, v_max),
+                (closed_u, closed_v),
+                &advance,
+            ) {
+                u = u_next;
+                v = v_next;
+                if (pt_next - point).length() < tolerance {
+                    return Ok((u, v, pt_next));
+                }
+                continue;
+            }
             let pt = surface.evaluate(u_new, v_new);
             return Ok((u_new, v_new, pt));
         }
@@ -736,6 +762,68 @@ fn surface_newton_refine(
     Err(MathError::ConvergenceFailure {
         iterations: max_iterations,
     })
+}
+
+/// Largest `|S_t| / |S_s|` at which the partial along `t` counts as
+/// vanished: far below any regular parameterization's speed ratio. The
+/// second-order step is tried only where Newton's own step was negligible,
+/// so it replaces a stalled answer and nothing else.
+const VANISHED_PARTIAL: f64 = 1e-9;
+
+/// The second-order step of [`surface_newton_refine`] along a parameter
+/// whose partial has vanished, or `None` when neither partial has, when the
+/// second derivative does not descend, or when neither side of the step
+/// brings the surface within half of `dist`. Returns the new `(u, v)` and the
+/// surface point there.
+#[allow(clippy::too_many_arguments)]
+fn second_order_step(
+    surface: &NurbsSurface,
+    point: Point3,
+    (u, v): (f64, f64),
+    (du_len, dv_len): (f64, f64),
+    dist: f64,
+    (u_min, u_max, v_min, v_max): (f64, f64, f64, f64),
+    (closed_u, closed_v): (bool, bool),
+    advance: &impl Fn(f64, f64, f64, f64, bool) -> f64,
+) -> Option<(f64, f64, Point3)> {
+    let along_v = dv_len <= VANISHED_PARTIAL * du_len;
+    let along_u = du_len <= VANISHED_PARTIAL * dv_len;
+    if along_u == along_v {
+        // Neither has vanished, or both (a collapsed point): Newton's own
+        // regularised step handles those.
+        return None;
+    }
+    let ders = surface.derivatives(u, v, 2);
+    let position = ders[0][0];
+    let r = Point3::new(position.x(), position.y(), position.z()) - point;
+    let second = if along_v { ders[0][2] } else { ders[2][0] };
+    let curvature = second.dot(r);
+    let second_sq = second.dot(second);
+    if !(curvature < 0.0 && second_sq > 0.0) {
+        return None;
+    }
+    let step = (-2.0 * curvature / second_sq).sqrt();
+    let candidate = |sign: f64| {
+        let (u_new, v_new) = if along_v {
+            (u, advance(v, sign * step, v_min, v_max, closed_v))
+        } else {
+            (advance(u, sign * step, u_min, u_max, closed_u), v)
+        };
+        let pt = surface.evaluate(u_new, v_new);
+        (u_new, v_new, pt, (pt - point).length())
+    };
+    let (forward, backward) = (candidate(1.0), candidate(-1.0));
+    let best = if forward.3 <= backward.3 {
+        forward
+    } else {
+        backward
+    };
+    // A stall leaves the point far from its foot, so the step must at least
+    // halve the distance. A point already within a hair of the surface at a
+    // vanished partial (an imported patch's flat row) gains next to nothing
+    // from a long parameter jump along a nearly flat direction, and keeps
+    // Newton's answer.
+    (best.3 <= 0.5 * dist).then_some((best.0, best.1, best.2))
 }
 
 // ---------------------------------------------------------------------------
@@ -1532,6 +1620,69 @@ mod tests {
             "nearest point z should be ≈ 0.05, got z={:.4}",
             res.point.z()
         );
+    }
+
+    /// A ruled patch whose v-direction cubic repeats its first control point,
+    /// so `S_v = 0` along the `v = 0` edge: the involute flank of a gear,
+    /// which leaves its base circle with zero speed.
+    fn zero_speed_patch() -> NurbsSurface {
+        let row = |z: f64| {
+            vec![
+                Point3::new(0.0, 0.0, z),
+                Point3::new(0.0, 0.0, z),
+                Point3::new(1.0, 2.0, z),
+                Point3::new(3.0, 3.0, z),
+            ]
+        };
+        NurbsSurface::new(
+            1,
+            3,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![row(0.0), row(10.0)],
+            vec![vec![1.0; 4]; 2],
+        )
+        .expect("valid zero-speed patch")
+    }
+
+    /// Points on the surface just past the zero-speed edge project onto
+    /// themselves. Gauss-Newton alone has no v-step there and returned the
+    /// edge's corner, 2.6e-2 away for `v = 1/16`.
+    #[test]
+    fn project_past_a_zero_speed_edge() {
+        let s = zero_speed_patch();
+        let grid = SurfaceSeedGrid::for_surface(&s);
+        for (u, v) in [
+            (0.0, 1.0 / 16.0),
+            (0.0, 1.0 / 32.0),
+            (1.0, 1.0 / 16.0),
+            (0.5, 0.1),
+        ] {
+            let on = s.evaluate(u, v);
+            for res in [
+                project_point_to_surface(&s, on, 1e-9).expect("coarse projection"),
+                project_point_to_surface_with_grid(&s, on, 1e-9, &grid).expect("seeded"),
+            ] {
+                assert!(
+                    res.distance < 1e-9,
+                    "S({u}, {v}) projected {:.3e} away to ({}, {})",
+                    res.distance,
+                    res.u,
+                    res.v
+                );
+            }
+        }
+    }
+
+    /// The step only moves when the second derivative descends: a point
+    /// beyond the zero-speed corner still projects onto the corner.
+    #[test]
+    fn zero_speed_corner_stays_the_foot_for_points_behind_it() {
+        let s = zero_speed_patch();
+        let behind = Point3::new(-1.0, -2.0, 4.0);
+        let res = project_point_to_surface(&s, behind, 1e-9).expect("projection");
+        assert!(res.v.abs() < 1e-12, "v = {}", res.v);
+        assert!((res.point - Point3::new(0.0, 0.0, 4.0)).length() < 1e-9);
     }
 }
 

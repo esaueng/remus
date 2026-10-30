@@ -6,7 +6,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::error::{WasmError, validate_finite, validate_work_count};
 use crate::helpers::{json_f64, json_usize, parse_sketch_constraint};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::state::SketchState;
 
 /// Build a `GcsSystem` from a `SketchState`, returning the system along with
@@ -383,7 +383,7 @@ impl DeferredConstraint {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Create a new empty sketch. Returns a sketch index.
     ///
     /// **Deprecated:** prefer the typed `gcs*` API (`gcsNew`, `gcsAddPoint`,
@@ -643,7 +643,7 @@ impl BrepKernel {
     }
 }
 
-impl BrepKernel {
+impl RemusKernel {
     /// Body of `sketchAddConstraint`. Every constraint is parsed and its
     /// indices checked before it is stored; a refusal leaves the sketch
     /// unchanged.

@@ -90,7 +90,7 @@ The new NURBS-area library memo is opt-in per thread, with defaults of 512
 entries and 8 MiB estimated retained key/entry bytes. FIFO eviction enforces
 both limits. This is not a bound on allocator slack, process RSS or WASM
 linear-memory reservation.
-`BrepKernel::new` initializes this memo for browser consumers, alongside the
+`RemusKernel::new` initializes this memo for browser consumers, alongside the
 existing face-integral, volume and face-mesh caches. It stores standalone face
 area readings, not complete feature-recognition results. Repeated initialization
 preserves existing entries, counters and caller-chosen limits, including a zero

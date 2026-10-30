@@ -1,0 +1,76 @@
+total item bytes: base 9,929,386  cur 11,587,696  delta +1,658,310
+
+group                                      base          cur       delta  share of growth
+remus_operations                      2,694,612    3,263,171    +568,559            34.3%
+remus_algo                            1,572,250    1,793,635    +221,385            13.4%
+remus_check                             423,855      642,294    +218,439            13.2%
+remus_topology                          230,132      370,286    +140,154             8.5%
+std/core/alloc/hashbrown              1,193,853    1,307,696    +113,843             6.9%
+other                                   654,636      738,837     +84,201             5.1%
+remus_math                              400,664      478,899     +78,235             4.7%
+remus_wasm                              544,868      618,441     +73,573             4.4%
+custom/name sections                    542,688      613,791     +71,103             4.3%
+data segments                           337,137      373,166     +36,029             2.2%
+remus_blend                             292,415      308,285     +15,870             1.0%
+remus_heal                              284,231      299,979     +15,748             0.9%
+remus_io                                177,591      189,524     +11,933             0.7%
+remus_offset                            186,974      190,513      +3,539             0.2%
+remus_geometry                           61,768       64,442      +2,674             0.2%
+wasm-bindgen glue                        17,284       18,564      +1,280             0.1%
+serde/tsify                              70,356       71,456      +1,100             0.1%
+remus_sketch                            228,248      228,893        +645             0.0%
+robust                                   15,824       15,824          +0             0.0%
+
+Top modules by growth:
+remus_algo::pave_filler                                          360,007     519,619   +159,612
+remus_check::properties                                          237,266     375,741   +138,475
+remus_operations::tessellate                                     457,279     553,329    +96,050
+remus_operations::blend_ops                                      180,207     272,186    +91,979
+remus_operations::resize_blend                                   222,735     307,182    +84,447
+remus_check::classify                                             64,448     134,599    +70,151
+remus_math::nurbs                                                196,860     266,446    +69,586
+remus_wasm::bindings                                             463,568     531,377    +67,809
+remus_topology::validation                                        38,251      98,242    +59,991
+remus_operations::fillet                                          76,655     126,560    +49,905
+remus_algo::builder                                            1,077,783   1,127,413    +49,630
+remus_operations::measure                                        139,539     186,088    +46,549
+remus_operations::thicken                                            950      42,402    +41,452
+remus_topology::transaction                                        6,866      45,226    +38,360
+remus_operations::project_curve                                  139,064     177,022    +37,958
+remus_operations::section                                         24,429      61,313    +36,884
+remus_operations::heal                                            74,792     105,889    +31,097
+remus_operations::transform                                       52,111      82,825    +30,714
+remus_operations::projection                                       3,182      30,389    +27,207
+remus_operations::boolean                                        326,578     347,573    +20,995
+remus_operations::sweep                                           68,475      85,400    +16,925
+remus_topology::builder                                           14,791      30,268    +15,477
+remus_operations::query                                           21,525      34,217    +12,692
+remus_algo::classifier                                            68,191      79,971    +11,780
+remus_io::arena_io                                               132,302     143,843    +11,541
+remus_blend::body_edit                                                 0      10,751    +10,751
+remus_topology::arena                                              5,935      15,463     +9,528
+remus_check::distance                                             38,116      47,102     +8,986
+remus_operations::linked_sketch                                        0       8,936     +8,936
+remus_operations::imprint                                              0       7,945     +7,945
+remus_topology::topology                                          91,341      99,171     +7,830
+remus_topology::journal                                           11,502      18,957     +7,455
+remus_heal::shared                                                     0       7,445     +7,445
+remus_heal::fix                                                  103,786     110,466     +6,680
+remus_blend::fillet_builder                                      102,849     108,231     +5,382
+remus_geometry::bounds                                            12,353      16,690     +4,337
+remus_operations::prepared_move                                        0       3,764     +3,764
+remus_operations::chamfer                                         37,195      40,934     +3,739
+remus_operations::sew                                              5,357       8,105     +2,748
+remus_wasm::kernel                                                12,904      15,543     +2,639
+
+Top modules by shrink:
+remus_operations::push_pull                                      131,558      83,457    -48,101
+remus_operations::defeature                                       47,641       3,381    -44,260
+remus_geometry::convert                                           44,311      41,355     -2,956
+remus_heal::upgrade                                               84,905      82,785     -2,120
+remus_operations::local_wound                                     14,433      12,783     -1,650
+remus_blend::corner                                                9,850       8,442     -1,408
+remus_blend::g1_chain                                             17,112      16,289       -823
+remus_operations::compound_ops                                    22,166      21,526       -640
+remus_math::analytic_intersection                                 75,648      75,052       -596
+remus_offset::self_int                                            14,533      14,011       -522

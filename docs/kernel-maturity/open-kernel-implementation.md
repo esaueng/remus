@@ -553,7 +553,7 @@ so invalidation can be exact rather than heuristic.
 `OperationContext` + journal access; prelude re-exporting the curated
 surface (primitives, booleans with quality/policy, fillet/chamfer v2,
 sweeps, measure, tessellate, STEP, validation, persistent refs); typed
-errors re-exported flat. API shape mirrors the wasm `BrepKernel` (it is
+errors re-exported flat. API shape mirrors the wasm `RemusKernel` (it is
 the proven consumer surface — 299 methods say what users need), minus
 JS-isms. Boundary script + layer table row in the same PR. README
 quickstart becomes a doctest.
@@ -564,7 +564,7 @@ quickstart becomes a doctest.
 boolean), `browser_parity.rs` (the wasm contract fixture, natively). The
 debug probes stay where they are.
 
-**c — WASM delegation (M).** `BrepKernel` methods delegate to the facade
+**c — WASM delegation (M).** `RemusKernel` methods delegate to the facade
 — behavior-neutral refactor proven by the untouched wasm contract-test
 suite. One implementation, two surfaces; native/WASM parity (target
 characteristic 15) becomes structural instead of tested-for.

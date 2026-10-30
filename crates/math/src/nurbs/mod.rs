@@ -12,6 +12,7 @@ pub mod curve;
 pub mod decompose;
 pub mod evaluator;
 pub mod fitting;
+pub mod hermite_fit;
 pub mod intersection;
 pub mod knot_ops;
 pub mod power_basis;

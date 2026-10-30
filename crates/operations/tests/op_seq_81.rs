@@ -28,7 +28,7 @@
 //!   slot and leave their input live; `offsetSolidV2` likewise produces a
 //!   new slot without consuming its input.
 //! - **One format:** a sequence IS a schema-1 reproduction bundle operations
-//!   array ([`BrepKernel::execute_batch_v2`][remus_wasm] compatible, same
+//!   array ([`RemusKernel::execute_batch_v2`][remus_wasm] compatible, same
 //!   shape as `crates/wasm/tests/repro/*.json`). Generation, execution,
 //!   shrinking, and export all operate on that array — no second,
 //!   incompatible reproduction format is introduced. The pre-execution copy
@@ -3074,7 +3074,7 @@ fn execute_sequence(ops: &[Value], limits: &SeqLimits, fault: Fault) -> SeqRepor
 // ── Schema-1 export and pre-execution persistence ────────────────────
 
 /// Wrap an operations array as a schema-1 bundle document replayable via
-/// `BrepKernel::execute_batch_v2` (native runner: `execute_sequence`).
+/// `RemusKernel::execute_batch_v2` (native runner: `execute_sequence`).
 fn to_bundle(name: &str, description: String, ops: &[Value]) -> Value {
     let revision = std::env::var("OPSEQ81_REVISION").unwrap_or_else(|_| "unknown".to_owned());
     json!({

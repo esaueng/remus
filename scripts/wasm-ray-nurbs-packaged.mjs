@@ -1,11 +1,11 @@
 /** Analytic ray-query contracts through the optimized wasm32 package. */
 import assert from 'node:assert/strict';
 
-export function runWasmRayNurbsPackaged({ BrepKernel }) {
+export function runWasmRayNurbsPackaged({ RemusKernel }) {
   let cells = 0;
   for (const kind of ['box', 'cylinder']) for (const scale of [0.1, 1, 10]) {
     for (const placed of [false, true]) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       try {
         const solid = kind === 'box'
           ? kernel.makeBox(6 * scale, 4 * scale, 2 * scale)

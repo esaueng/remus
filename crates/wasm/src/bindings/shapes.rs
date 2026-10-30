@@ -17,10 +17,10 @@ use crate::handles::{
     wire_id_to_u32,
 };
 use crate::helpers::{TOL, parse_points};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     // ── Shape creation ─────────────────────────────────────────────
 
     /// Create a rectangular face on the XY plane centered at the origin.
@@ -895,7 +895,7 @@ impl BrepKernel {
 // Non-exported helpers. `JsError` cannot be constructed on non-wasm targets,
 // so the real work lives here behind a `WasmError` and stays reachable from
 // native tests and from `executeBatch` dispatch.
-impl BrepKernel {
+impl RemusKernel {
     fn solid_from_shell_impl(&mut self, shell: u32) -> Result<u32, WasmError> {
         let shell_id = self.resolve_shell(shell)?;
         let actual = self
@@ -1122,7 +1122,7 @@ mod tests {
 
         // Baseline: the same call with finite endpoints succeeds, so the
         // rejections below are attributable to the poison and nothing else.
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         assert!(
             k.make_nurbs_edge_impl(
                 0.0,
@@ -1140,7 +1140,7 @@ mod tests {
         );
 
         for poison in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let mut k = BrepKernel::new();
+            let mut k = RemusKernel::new();
             let err = k
                 .make_nurbs_edge_impl(
                     poison,
@@ -1167,7 +1167,7 @@ mod tests {
     /// than building an edge whose geometry evaluates to NaN.
     #[test]
     fn make_nurbs_edge_rejects_nonfinite_control_points() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let err = k
             .make_nurbs_edge_impl(
                 0.0,
@@ -1193,7 +1193,7 @@ mod tests {
 
     #[test]
     fn make_nurbs_edge_rejects_mismatched_endpoints_atomically() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let before = (kernel.topo().num_vertices(), kernel.topo().num_edges());
         let error = kernel
             .make_nurbs_edge_impl(
@@ -1218,7 +1218,7 @@ mod tests {
 
     #[test]
     fn circle_arc_preserves_historical_near_closed_snap_with_authority() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let edge = kernel
             .make_circle_arc_3d(
                 1.0,
@@ -1244,7 +1244,7 @@ mod tests {
 
     #[test]
     fn nurbs_edge_preserves_historical_near_closed_snap_with_authority() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let near = TOL * 50.0;
         let edge = kernel
             .make_nurbs_edge_impl(
@@ -1268,7 +1268,7 @@ mod tests {
 
     #[test]
     fn make_wire_refuses_trimless_curved_merge_without_mutation() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let line = remus_topology::builder::make_line_edge(
             kernel.topo_mut(),
             Point3::new(0.0, 0.0, 0.0),
@@ -1305,7 +1305,7 @@ mod tests {
 
     #[test]
     fn make_rectangle_returns_valid_face() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let h = k.make_rectangle(4.0, 2.0).unwrap();
         let fid = k.resolve_face(h).unwrap();
         let face = k.topo.face(fid).unwrap();
@@ -1317,7 +1317,7 @@ mod tests {
 
     #[test]
     fn sheet_body_direct_contract_constructs_measures_meshes_and_refuses_volume() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let face = kernel.make_rectangle(4.0, 2.0).unwrap();
         let face_id = kernel.resolve_face(face).unwrap();
         let surface = remus_math::nurbs::surface::NurbsSurface::new(
@@ -1399,7 +1399,7 @@ mod tests {
 
     #[test]
     fn make_polygon_triangle_returns_valid_face() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let coords = vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
         let h = k.make_polygon(coords).unwrap();
         let fid = k.resolve_face(h).unwrap();
@@ -1427,7 +1427,7 @@ mod tests {
 
     #[test]
     fn make_vertex_stores_position() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let h = k.make_vertex(1.0, 2.0, 3.0).unwrap();
         let vid = k.resolve_vertex(h).unwrap();
         let v = k.topo.vertex(vid).unwrap();
@@ -1446,7 +1446,7 @@ mod tests {
 
     #[test]
     fn make_line_edge_creates_line_curve() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let h = k.make_line_edge(0.0, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap();
         let eid = k.resolve_edge(h).unwrap();
         let edge = k.topo.edge(eid).unwrap();
@@ -1458,7 +1458,7 @@ mod tests {
 
     #[test]
     fn make_line_edge_endpoints_are_distinct_vertices() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let h = k.make_line_edge(0.0, 0.0, 0.0, 3.0, 4.0, 0.0).unwrap();
         let eid = k.resolve_edge(h).unwrap();
         let edge = k.topo.edge(eid).unwrap();
@@ -1469,7 +1469,7 @@ mod tests {
 
     #[test]
     fn make_wire_from_three_edges_succeeds() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let e0 = k.make_line_edge(0.0, 0.0, 0.0, 1.0, 0.0, 0.0).unwrap();
         let e1 = k.make_line_edge(1.0, 0.0, 0.0, 1.0, 1.0, 0.0).unwrap();
         let e2 = k.make_line_edge(1.0, 1.0, 0.0, 0.0, 0.0, 0.0).unwrap();
@@ -1482,7 +1482,7 @@ mod tests {
 
     #[test]
     fn resolve_edge_invalid_handle_is_error() {
-        let k = BrepKernel::new();
+        let k = RemusKernel::new();
         assert!(k.resolve_edge(999).is_err());
     }
 }

@@ -31,7 +31,7 @@ use crate::helpers::{
     TOL, classify_to_string, get_bool, get_f64, get_f64_array, get_optional_bool, get_optional_f64,
     get_u32, get_u32_array, get_u32_array_optional, panic_message, silhouettes_json, try_chamfer,
 };
-use crate::kernel::{BrepKernel, Refusal};
+use crate::kernel::{Refusal, RemusKernel};
 use crate::types::SolidOperationDetailedResult;
 
 /// Maximum encoded JSON accepted by one `executeBatch` call (16 MiB).
@@ -165,6 +165,9 @@ type BatchItemResult = Result<serde_json::Value, StructuredWasmError>;
 enum BatchOpKind {
     ReadOnly,
     Mutating,
+    /// Changes per-thread session configuration, not topology. A refused
+    /// item restores the configuration it found ([`RemusKernel::run_session_setting`]).
+    Session,
 }
 
 /// Classify operations before doing any work that scales with topology size.
@@ -270,8 +273,10 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "gcsSolve"
         | "gcsSolveDetailed"
         | "gcsDof" => Some(BatchOpKind::ReadOnly),
-        // Session settings: they never touch the topology.
-        "setStoreLocalCuts" | "storeLocalCutsEnabled" => Some(BatchOpKind::ReadOnly),
+        // Session settings: they never touch the topology, but the setter
+        // changes module state that a refused item must not leave behind.
+        "setStoreLocalCuts" => Some(BatchOpKind::Session),
+        "storeLocalCutsEnabled" => Some(BatchOpKind::ReadOnly),
         "makeBox"
         | "makeCompound"
         | "fuseJournaled"
@@ -328,6 +333,8 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "resizeCylindricalFace"
         | "extrude"
         | "extrudeDetailed"
+        | "makeGearDetailed"
+        | "cutGearTeethDetailed"
         | "imprintPlanarPolygon"
         | "revolve"
         | "revolveDetailed"
@@ -411,7 +418,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     // ── Batch execution ──────────────────────────────────────────
 
     /// Execute a batch of operations, crossing the JS/WASM boundary once.
@@ -456,7 +463,7 @@ impl BrepKernel {
     }
 }
 
-impl BrepKernel {
+impl RemusKernel {
     fn execute_batch_contract(&mut self, json: &str, contract: BatchContract) -> String {
         let results = self.execute_batch_results(json);
         let serialized = results
@@ -549,11 +556,27 @@ impl BrepKernel {
         result
     }
 
+    /// Runs a `Session` operation: read-only on the topology, and a refusal
+    /// restores the store-local boolean switch to the value it had on entry.
+    /// The switch is per thread, outside the topology, so no topology
+    /// rollback covers it.
+    pub(super) fn run_session_setting(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> BatchItemResult,
+    ) -> BatchItemResult {
+        let store_local_cuts = remus_operations::boolean::thread_store_local_cuts_enabled();
+        let result = self.run_read_only(operation);
+        if result.is_err() {
+            remus_operations::boolean::set_thread_store_local_cuts(store_local_cuts);
+        }
+        result
+    }
+
     /// Runs one batch operation, undoing its topology changes if it fails.
     ///
     /// Mutating operations run in a mutation-local rollback scope that
     /// coordinates with native savepoints (see
-    /// [`BrepKernel::with_kernel_transaction`]): each item commits or rolls
+    /// [`RemusKernel::with_kernel_transaction`]): each item commits or rolls
     /// back on its own. A refused boolean leaves exactly its entry state, as
     /// that family's scope always did; every other family used to restore a
     /// full copy, so its refusal still leaves what that restore left
@@ -566,6 +589,8 @@ impl BrepKernel {
     ) -> BatchItemResult {
         if kind == BatchOpKind::ReadOnly {
             self.run_read_only(|kernel| kernel.dispatch_op(op, args))
+        } else if kind == BatchOpKind::Session {
+            self.run_session_setting(|kernel| kernel.dispatch_op(op, args))
         } else {
             let refusal = if matches!(op, "fuse" | "cut" | "intersect") {
                 Refusal::Exact
@@ -621,7 +646,7 @@ fn plane_frame_axes(normal: Vec3) -> (Vec3, Vec3) {
     (u_axis, v_axis)
 }
 
-impl BrepKernel {
+impl RemusKernel {
     /// Extract a `NurbsCurve` from an edge.
     ///
     /// NURBS edges are returned directly. Line, Circle, and Ellipse edges
@@ -1771,6 +1796,15 @@ impl BrepKernel {
                 let dz = get_optional_f64(args, "dz")?.unwrap_or(1.0);
                 let dist = get_optional_f64(args, "distance")?.unwrap_or(1.0);
                 serde_json::to_value(self.extrude_detailed_impl(f, dx, dy, dz, dist))
+                    .map_err(StructuredWasmError::from)
+            }
+            "makeGearDetailed" => serde_json::to_value(self.make_gear_detailed_impl(args))
+                .map_err(StructuredWasmError::from),
+            "cutGearTeethDetailed" => {
+                let solid = get_u32(args, "solid")?;
+                let face = get_u32(args, "face")?;
+                let spec = args.get("spec").cloned().unwrap_or(serde_json::Value::Null);
+                serde_json::to_value(self.cut_gear_teeth_detailed_impl(solid, face, &spec))
                     .map_err(StructuredWasmError::from)
             }
             "revolveDetailed" => {
@@ -3653,7 +3687,7 @@ mod batch_contract_tests {
                 now.get()
             })
         }
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(1.0, 1.0, 1.0).expect("box fixture");
         let pointer = Rc::as_ptr(&kernel.topo);
         let identity = kernel.topo().cache_identity();
@@ -3687,9 +3721,9 @@ mod batch_contract_tests {
     /// then fails must still roll back, through the copy `topo_mut` made.
     #[test]
     fn read_only_hint_still_restores_an_op_that_mutated() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         kernel.make_box_solid(1.0, 1.0, 1.0).expect("box fixture");
-        let counts = |k: &BrepKernel| {
+        let counts = |k: &RemusKernel| {
             let t = k.topo();
             (
                 t.num_vertices(),
@@ -3715,7 +3749,7 @@ mod batch_contract_tests {
 
     #[test]
     fn detailed_healing_batch_discloses_success_and_typed_refusal() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(1.0, 1.0, 1.0).expect("box fixture");
         let success = parse(
             &kernel.execute_batch_v2(
@@ -3771,7 +3805,7 @@ mod batch_contract_tests {
     #[cfg(feature = "io")]
     #[test]
     fn step_validation_capability_has_export_and_import_batch_companions() {
-        let mut exporting = BrepKernel::new();
+        let mut exporting = RemusKernel::new();
         let export = parse(&exporting.execute_batch_v2(
             r#"[
                 {"op":"makeBox","args":{"width":2,"height":3,"depth":4}},
@@ -3786,7 +3820,7 @@ mod batch_contract_tests {
             "args": { "data": step }
         }]))
         .expect("batch JSON");
-        let mut importing = BrepKernel::new();
+        let mut importing = RemusKernel::new();
         let imported = parse(&importing.execute_batch_v2(&input));
         assert_eq!(
             imported[0]["ok"]["solids"]
@@ -3820,7 +3854,7 @@ mod batch_contract_tests {
     #[cfg(feature = "io")]
     #[test]
     fn sheet_step_batch_companions_preserve_handle_class_and_refuse_solid_shells() {
-        let mut exporting = BrepKernel::new();
+        let mut exporting = RemusKernel::new();
         let face =
             remus_topology::builder::make_rectangle_face(exporting.topo_mut(), 2.0, 1.0, TOL)
                 .expect("trimmed face");
@@ -3852,7 +3886,7 @@ mod batch_contract_tests {
         assert!(step.contains("OPEN_SHELL("));
         assert!(step.contains("B_SPLINE_SURFACE_WITH_KNOTS("));
 
-        let mut wrong_class = BrepKernel::new();
+        let mut wrong_class = RemusKernel::new();
         wrong_class
             .make_box_solid(2.0, 1.0, 1.0)
             .expect("solid fixture");
@@ -3876,7 +3910,7 @@ mod batch_contract_tests {
             "args": { "data": step }
         }]))
         .expect("batch JSON");
-        let mut importing = BrepKernel::new();
+        let mut importing = RemusKernel::new();
         let imported = parse(&importing.execute_batch_v2(&input));
         assert!(
             imported[0]["ok"]["solids"]
@@ -3905,7 +3939,7 @@ mod batch_contract_tests {
         use remus_topology::explorer::solid_faces;
         use remus_topology::face::FaceSurface;
 
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = remus_operations::primitives::make_cylinder(kernel.topo_mut(), 2.0, 3.0)
             .expect("cylinder fixture");
         let cap = solid_faces(kernel.topo(), solid)
@@ -3971,7 +4005,7 @@ mod batch_contract_tests {
         const BOX: &str = r#"{"op":"makeBox","args":{"width":10,"height":10,"depth":10}}"#;
 
         // A well-formed selection still works, so the guard is not just refusing.
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let ok = parse(&kernel.execute_batch(&format!(
             r#"[{BOX},{{"op":"fillet","args":{{"solid":0,"edges":[0],"radius":0.5}}}}]"#
         )));
@@ -3979,7 +4013,7 @@ mod batch_contract_tests {
 
         // An element that is not a handle names its own index instead of
         // vanishing from the selection.
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let dropped = parse(&kernel.execute_batch(&format!(
             r#"[{BOX},{{"op":"fillet","args":{{"solid":0,"edges":[0,"not-a-handle",1],"radius":0.5}}}}]"#
         )));
@@ -3989,7 +4023,7 @@ mod batch_contract_tests {
         );
 
         // 2^32 truncates to 0 under `as u32`, which is a DIFFERENT live entity.
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let wrapped = parse(&kernel.execute_batch(&format!(
             r#"[{BOX},{{"op":"fillet","args":{{"solid":0,"edges":[4294967296],"radius":0.5}}}}]"#
         )));
@@ -3999,14 +4033,14 @@ mod batch_contract_tests {
         );
 
         // chamfer shares the parser.
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let chamfer = parse(&kernel.execute_batch(&format!(
             r#"[{BOX},{{"op":"chamfer","args":{{"solid":0,"edges":[0,null],"distance":0.5}}}}]"#
         )));
         assert_eq!(chamfer[1]["error"], "edges[1] is not a u32");
 
         // An ABSENT optional key keeps its old meaning: an empty selection.
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let absent = parse(&kernel.execute_batch(&format!(
             r#"[{BOX},{{"op":"shell","args":{{"solid":0,"thickness":1.0}}}}]"#
         )));
@@ -4020,7 +4054,7 @@ mod batch_contract_tests {
     fn aggregate_boolean_arrays_reject_wrapping_handles_and_preserve_inputs() {
         for v2 in [false, true] {
             for (operation, array) in [("fuseAll", "solids"), ("compoundCut", "tools")] {
-                let mut kernel = BrepKernel::new();
+                let mut kernel = RemusKernel::new();
                 let target = kernel.make_box_solid(2.0, 2.0, 2.0).expect("target box");
                 let tool = kernel.make_box_solid(1.0, 1.0, 1.0).expect("tool box");
                 kernel
@@ -4125,14 +4159,14 @@ mod batch_contract_tests {
         assert!(get_deflection(&serde_json::json!({"deflection": null})).is_err());
     }
 
-    fn v2_error(kernel: &mut BrepKernel, input: &str) -> serde_json::Value {
+    fn v2_error(kernel: &mut RemusKernel, input: &str) -> serde_json::Value {
         parse(&kernel.execute_batch_v2(input))[0]["error"].clone()
     }
 
     #[test]
     fn v2_errors_carry_the_failure_category() {
         // Category is part of the public v2 contract: pinned per code.
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let cases = [
             (r"not json", "invalid_json", "invalid_input"),
             (r"[{}]", "missing_operation", "invalid_input"),
@@ -4163,7 +4197,7 @@ mod batch_contract_tests {
     fn v2_math_failures_surface_the_kernel_registry_code() {
         // A typed MathError carries its fine-grained native registry code in
         // details.kernelCode, additively to the coarse wire code.
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let error = v2_error(
             &mut kernel,
             r#"[{"op":"makeNurbsEdge","args":{
@@ -4183,7 +4217,7 @@ mod batch_contract_tests {
     #[test]
     fn legacy_batch_contract_is_unchanged_by_categories() {
         // v1 must stay a bare string error with no structured fields.
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let response = parse(
             &kernel.execute_batch(r#"[{"op":"volume","args":{"solid":42,"deflection":0.1}}]"#),
         );
@@ -4203,13 +4237,23 @@ mod batch_contract_tests {
             Some(BatchOpKind::ReadOnly)
         );
         assert_eq!(batch_op_kind("makeBox"), Some(BatchOpKind::Mutating));
+        // The store-local setter changes per-thread state no topology
+        // rollback covers; its getter is a plain read.
+        assert_eq!(
+            batch_op_kind("setStoreLocalCuts"),
+            Some(BatchOpKind::Session)
+        );
+        assert_eq!(
+            batch_op_kind("storeLocalCutsEnabled"),
+            Some(BatchOpKind::ReadOnly)
+        );
         assert_eq!(batch_op_kind("moveFaces"), Some(BatchOpKind::Mutating));
         assert_eq!(batch_op_kind("notAnOperation"), None);
     }
 
     #[test]
     fn planar_pair_query_and_move_faces_round_trip() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel
             .dispatch_op(
                 "makeBox",
@@ -4289,7 +4333,7 @@ mod batch_contract_tests {
         ];
 
         for (input, expected_message) in cases {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let response = parse(&kernel.execute_batch(input));
             assert_eq!(response[0]["error"], expected_message);
             assert!(response[0]["error"].is_string());
@@ -4298,25 +4342,25 @@ mod batch_contract_tests {
 
     #[test]
     fn v2_public_contract_has_stable_codes_messages_and_details() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let invalid_json = v2_error(&mut kernel, "[");
         assert_eq!(invalid_json["code"], "invalid_json");
         assert_eq!(invalid_json["details"]["line"], 1);
         assert_eq!(invalid_json["details"]["column"], 1);
 
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let missing = v2_error(&mut kernel, r"[{}]");
         assert_eq!(missing["code"], "missing_operation");
         assert_eq!(missing["message"], "missing or invalid 'op' field");
         assert_eq!(missing["details"]["operationIndex"], 0);
 
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let unknown = v2_error(&mut kernel, r#"[{"op":"notAnOperation","args":{}}]"#);
         assert_eq!(unknown["code"], "unknown_operation");
         assert_eq!(unknown["details"]["operation"], "notAnOperation");
         assert_eq!(unknown["details"]["operationIndex"], 0);
 
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let argument = v2_error(
             &mut kernel,
             r#"[{"op":"makeBox","args":{"height":2,"depth":3}}]"#,
@@ -4325,7 +4369,7 @@ mod batch_contract_tests {
         assert_eq!(argument["details"]["argument"], "width");
         assert_eq!(argument["details"]["operation"], "makeBox");
 
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let handle = v2_error(
             &mut kernel,
             r#"[{"op":"volume","args":{"solid":42,"deflection":0.1}}]"#,
@@ -4334,7 +4378,7 @@ mod batch_contract_tests {
         assert_eq!(handle["details"]["entity"], "solid");
         assert_eq!(handle["details"]["index"], 42);
 
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let response = parse(&kernel.execute_batch_v2(
             r#"[
                 {"op":"makeBox","args":{"width":1,"height":1,"depth":1}},
@@ -4359,7 +4403,7 @@ mod batch_contract_tests {
             r#","newtonIterations":20,"subdivisionDepth":6,"marchSteps":200,"queueSize":100,"segments":50,"branchesPerDirection":10"#,
             r#","newtonIterations":0,"subdivisionDepth":0,"marchSteps":0,"queueSize":0,"segments":0,"branchesPerDirection":0"#,
         ] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let script = format!(
                 r#"[
                     {{"op":"makeBox","args":{{"width":2,"height":2,"depth":2}}}},
@@ -4383,7 +4427,7 @@ mod batch_contract_tests {
 
     #[test]
     fn batch_general_position_sphere_fuse_is_exact() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let response = parse(&kernel.execute_batch_v2(
             r#"[
                 {"op":"makeSphere","args":{"radius":1,"segments":16}},
@@ -4408,7 +4452,7 @@ mod batch_contract_tests {
 
     #[test]
     fn batch_torus_box_intersect_is_exact() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let response = parse(&kernel.execute_batch_v2(
             r#"[
                 {"op":"makeTorus","args":{"majorRadius":10,"minorRadius":3,"segments":32}},
@@ -4438,7 +4482,7 @@ mod batch_contract_tests {
 
     #[test]
     fn batch_centered_box_sphere_fuse_is_exact() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let response = parse(&kernel.execute_batch_v2(
             r#"[
                 {"op":"makeBox","args":{"width":10,"height":10,"depth":10}},
@@ -4468,7 +4512,7 @@ mod batch_contract_tests {
 
     #[test]
     fn batch_perpendicular_equal_radius_cylinder_intersect_is_exact() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let response = parse(&kernel.execute_batch_v2(
             r#"[
                 {"op":"makeCylinder","args":{"radius":3,"height":20}},
@@ -4507,7 +4551,7 @@ mod batch_contract_tests {
     #[test]
     fn batch_boolean_with_quality_rejects_invalid_newton_iterations() {
         for bad in ["-1", "2.5", r#""twenty""#, "10001", "true"] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let script = format!(
                 r#"[
                     {{"op":"makeBox","args":{{"width":2,"height":2,"depth":2}}}},
@@ -4530,7 +4574,7 @@ mod batch_contract_tests {
     #[test]
     fn batch_boolean_with_quality_rejects_invalid_subdivision_depth() {
         for bad in ["-1", "2.5", r#""deep""#, "10001", "true"] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let script = format!(
                 r#"[
                     {{"op":"makeBox","args":{{"width":2,"height":2,"depth":2}}}},
@@ -4559,7 +4603,7 @@ mod batch_contract_tests {
             "branchesPerDirection",
         ] {
             for bad in ["-1", "2.5", r#""many""#, "10001", "true"] {
-                let mut kernel = BrepKernel::new();
+                let mut kernel = RemusKernel::new();
                 let script = format!(
                     r#"[
                         {{"op":"makeBox","args":{{"width":2,"height":2,"depth":2}}}},
@@ -4602,7 +4646,7 @@ mod batch_contract_tests {
             r#"{"op":"fuseWithEvolution","args":{"solidA":0,"solidB":1}}"#,
             r#"{"op":"fuseAll","args":{"solids":[0,1]}}"#,
         ] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let response = parse(&kernel.execute_batch_v2(&format!(
                 r#"[
                     {{"op":"makeBox","args":{{"width":60,"height":40,"depth":8}}}},
@@ -4635,7 +4679,7 @@ mod batch_contract_tests {
         // for Cut — verified natively — so batch must refuse typed with
         // rollback, while `booleanWithQuality` without `exactOnly` discloses
         // the approximation on the same pair.
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let response = parse(&kernel.execute_batch_v2(
             r#"[
                 {"op":"makeCylinder","args":{"radius":5,"height":10}},
@@ -4663,7 +4707,7 @@ mod batch_contract_tests {
 
     #[test]
     fn tangent_boss_batch_contract_refuses_exact_or_discloses_approximation() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let response = parse(&kernel.execute_batch_v2(
             r#"[
                 {"op":"makeBox","args":{"width":60,"height":40,"depth":8}},
@@ -4791,8 +4835,8 @@ mod batch_contract_tests {
             {"op":"volume","args":{"solid":99,"deflection":0.1}},
             {"op":"notAnOperation","args":{}}
         ]"#;
-        let legacy = parse(&BrepKernel::new().execute_batch(input));
-        let v2 = parse(&BrepKernel::new().execute_batch_v2(input));
+        let legacy = parse(&RemusKernel::new().execute_batch(input));
+        let v2 = parse(&RemusKernel::new().execute_batch_v2(input));
 
         assert_eq!(legacy[0], v2[0]);
         assert_eq!(legacy[1], v2[1]);
@@ -4813,13 +4857,13 @@ mod batch_contract_tests {
             "\0",
         ];
         for input in malformed_documents {
-            let legacy = BrepKernel::new().execute_batch(input);
-            let v2 = BrepKernel::new().execute_batch_v2(input);
+            let legacy = RemusKernel::new().execute_batch(input);
+            let v2 = RemusKernel::new().execute_batch_v2(input);
             assert!(parse(&legacy).is_array());
             assert!(parse(&v2).is_array());
         }
 
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let response =
             parse(&kernel.execute_batch_v2(
                 r#"[{}, {"op":"makeBox","args":{"width":1,"height":1,"depth":1}}]"#,
@@ -4830,7 +4874,7 @@ mod batch_contract_tests {
 
     #[test]
     fn rejects_too_many_operations_before_dispatch() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let operation = serde_json::json!({"op": "volume", "args": {}});
         let json = serde_json::Value::Array(vec![operation; MAX_BATCH_OPERATIONS + 1]).to_string();
         let response = kernel.execute_batch(&json);
@@ -4848,7 +4892,7 @@ mod batch_contract_tests {
 
     #[test]
     fn rejects_oversized_json_before_parsing() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let json = " ".repeat(MAX_BATCH_JSON_BYTES + 1);
         let response = kernel.execute_batch(&json);
         assert!(response.contains("byte limit"));
@@ -4860,7 +4904,7 @@ mod batch_contract_tests {
 
     #[test]
     fn sheet_body_batch_contract_matches_direct_semantics() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let response = parse(&kernel.execute_batch_v2(
             r#"[
                 {"op":"makeBox","args":{"width":4.0,"height":2.0,"depth":1.0}},
@@ -4926,12 +4970,12 @@ mod batch_contract_tests {
 mod rollback_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
     /// Live entity counts across every arena a batch op can touch.
     type Counts = (usize, usize, usize, usize, usize, usize);
 
-    fn counts(k: &BrepKernel) -> Counts {
+    fn counts(k: &RemusKernel) -> Counts {
         let t = k.topo();
         (
             t.num_vertices(),
@@ -4943,8 +4987,8 @@ mod rollback_tests {
         )
     }
 
-    fn kernel_with_box() -> BrepKernel {
-        let mut k = BrepKernel::new();
+    fn kernel_with_box() -> RemusKernel {
+        let mut k = RemusKernel::new();
         let out = k.execute_batch(r#"[{"op":"makeBox","args":{"width":2,"height":2,"depth":2}}]"#);
         assert!(!out.contains("error"), "seed failed: {out}");
         k
@@ -5129,7 +5173,7 @@ mod rollback_tests {
     #[test]
     fn gcs_ellipse_batch_matches_direct() {
         // Direct reference.
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let e = k.gcs_add_ellipse_impl(s, c, 1.0, 1.0, 0.0).unwrap();
@@ -5149,7 +5193,7 @@ mod rollback_tests {
         let direct_diag = k.gcs_solve_detailed_impl(s, 200, 1e-10).unwrap();
 
         // Batch path on a fresh kernel.
-        let mut b = BrepKernel::new();
+        let mut b = RemusKernel::new();
         let out = parse_gcs_out(&b.execute_batch(&ellipse_batch_json()));
         let items = out.as_array().unwrap();
         assert_eq!(items.len(), 10, "{out}");
@@ -5197,8 +5241,8 @@ mod rollback_tests {
     #[test]
     fn gcs_batch_v2_envelope_matches_v1_results() {
         let json = ellipse_batch_json();
-        let mut k1 = BrepKernel::new();
-        let mut k2 = BrepKernel::new();
+        let mut k1 = RemusKernel::new();
+        let mut k2 = RemusKernel::new();
         let v1 = parse_gcs_out(&k1.execute_batch(&json));
         let v2 = parse_gcs_out(&k2.execute_batch_v2(&json));
         assert_eq!(
@@ -5220,7 +5264,7 @@ mod rollback_tests {
             {"op": "gcsAddConstraint", "args": {"sketch": 0, "constraint": {"type": "warp"}}},
         ])
         .to_string();
-        let mut k1 = BrepKernel::new();
+        let mut k1 = RemusKernel::new();
         let legacy = parse_gcs_out(&k1.execute_batch(&json));
         let items = legacy.as_array().unwrap();
         assert_eq!(items.len(), 5);
@@ -5238,7 +5282,7 @@ mod rollback_tests {
         );
         assert!(items[4].get("error").is_some(), "unknown type must fail");
 
-        let mut k2 = BrepKernel::new();
+        let mut k2 = RemusKernel::new();
         let v2 = parse_gcs_out(&k2.execute_batch_v2(&json));
         let items2 = v2.as_array().unwrap();
         assert_eq!(items2[0], items[0]);
@@ -5250,7 +5294,7 @@ mod rollback_tests {
             "GCS input failures project to invalid_input"
         );
         // Direct call fails with the same message the legacy envelope carries.
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.gcs_new().unwrap();
         let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
         let err = k.gcs_add_ellipse_impl(s, c, 0.0, 1.0, 0.0).unwrap_err();
@@ -5262,7 +5306,7 @@ mod rollback_tests {
             {"op": "gcsEllipseParams", "args": {"sketch": 0, "ellipse": 7}},
         ])
         .to_string();
-        let mut k3 = BrepKernel::new();
+        let mut k3 = RemusKernel::new();
         let v3 = parse_gcs_out(&k3.execute_batch_v2(&json));
         assert_eq!(v3[1]["error"]["code"], "invalid_handle");
     }
@@ -5273,7 +5317,7 @@ mod rollback_tests {
         // rolledBack, and the published params are the pre-solve values —
         // identically in direct, batch, and batchV2.
         let build_direct = || {
-            let mut k = BrepKernel::new();
+            let mut k = RemusKernel::new();
             let s = k.gcs_new().unwrap();
             let c = k.gcs_add_point_impl(s, 0.0, 0.0, true).unwrap();
             let e = k.gcs_add_ellipse_impl(s, c, 3.0, 2.0, 0.1).unwrap();
@@ -5305,10 +5349,10 @@ mod rollback_tests {
             {"op": "gcsEllipseParams", "args": {"sketch": 0, "ellipse": 0}},
         ])
         .to_string();
-        let run_batch = |b: &mut BrepKernel, json: &str| b.execute_batch(json);
-        let run_batch_v2 = |b: &mut BrepKernel, json: &str| b.execute_batch_v2(json);
+        let run_batch = |b: &mut RemusKernel, json: &str| b.execute_batch(json);
+        let run_batch_v2 = |b: &mut RemusKernel, json: &str| b.execute_batch_v2(json);
         for run in [run_batch, run_batch_v2] {
-            let mut b = BrepKernel::new();
+            let mut b = RemusKernel::new();
             let out = parse_gcs_out(&run(&mut b, &json));
             let items = out.as_array().unwrap();
             let diag = &items[5]["ok"];

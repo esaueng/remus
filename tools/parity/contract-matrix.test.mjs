@@ -562,3 +562,13 @@ test('missing observations fail instead of passing vacuously', () => {
   assert.throws(() => scoreContractCase(c, null), /missing/);
   assert.throws(() => scoreContractCase(c, { native: null }), /missing/);
 });
+
+test('the kernel class resolves from renamed and pre-rename packages', async () => {
+  const { kernelClass } = await import('../../scripts/kernel-class.cjs');
+  class Renamed {}
+  class Predecessor {}
+  const predecessorName = 'Brep' + 'Kernel';
+  assert.equal(kernelClass({ RemusKernel: Renamed, [predecessorName]: Predecessor }), Renamed);
+  assert.equal(kernelClass({ [predecessorName]: Predecessor }), Predecessor);
+  assert.throws(() => kernelClass({}), /exports no kernel class/);
+});

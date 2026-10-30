@@ -35,7 +35,7 @@
 //! a subsequent supported edit.
 //!
 //! Native-only scope: this file exercises the native
-//! `grid_pattern_journaled` path. Browser (`BrepKernel`) exposure is a
+//! `grid_pattern_journaled` path. Browser (`RemusKernel`) exposure is a
 //! separate remaining integration task and is not claimed here.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

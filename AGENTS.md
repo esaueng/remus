@@ -159,6 +159,7 @@ Quick reference — find the right file for any task:
 | Certified NURBS reduction contracts and interval Bernstein bounds | `nurbs/reuse.rs`, `nurbs/reuse_bounds.rs` |
 | Opt-in curve/surface knot simplification and U/V removal | `nurbs/reduction.rs`, `nurbs/reduction/tests.rs` |
 | Certified adaptive Hermite cubic approximation | `nurbs/cubic_fit.rs`, `nurbs/cubic_fit/tests.rs` |
+| Certified piecewise cubic Hermite fit of a parametric curve with a closed-form fourth-derivative bound (C¹ double-knot B-spline, proven remainder) | `nurbs/hermite_fit.rs`, `nurbs/hermite_fit/tests.rs` |
 | Bezier decomposition | `nurbs/decompose.rs` |
 | Bezier clipping intersection | `nurbs/bezier_clip.rs` |
 | Closed-form oracles for the Bezier-clip helpers and recursion work counts (tests) | `nurbs/bezier_clip/mutation_oracle_tests.rs` |
@@ -430,6 +431,7 @@ Quick reference — find the right file for any task:
 | Point-to-surface distance (all analytic types) | `distance/analytic.rs` |
 | Edge-to-edge distance | `distance/edge.rs` |
 | Point-to-solid, solid-to-solid distance | `distance/mod.rs` |
+| Exact planar trim membership for line and circle boundaries (nested holes alternate), shared by face distance and the classifier's plane hits | `distance/plane_trim.rs` |
 | Bounded global maximum-distance witnesses for planar polyhedra and complete spheres | `distance/maximum.rs` |
 | Conservative face bounds for distance pruning | `distance/face_bounds.rs` |
 | Operation-local prepared context for repeated point-to-solid distance (`PreparedDistanceSolid`, `DistanceScratch`, `DistanceOptions`) | `distance/prepared.rs` |
@@ -493,6 +495,11 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Opt-in store-local cut, fuse and intersect: the GFA on the faces the tool touches, spliced onto the untouched ones (stage 4 of the local boolean), and its equivalence oracle tests | `boolean/store_local.rs`, `boolean/store_local_tests.rs` |
 | Mesh boolean (co-refinement) | `mesh_boolean.rs` |
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
+| Involute spur, internal (ring) and rack gears as one extruded outline: dimensions, warnings, typed refusals, certified flank fit | `gear.rs` |
+| Gear outlines in the local frame: involute flanks, closed-form root fillets, tooth replication, rack profile | `gear/profile.rs` |
+| Gear oracles: closed-form dimensions, exact-involute Green area, pitch-circle thickness probes, fit bound, rack trapezoid volume, construction face roles, refusals (tests) | `gear/tests.rs` |
+| Gear teeth along the whole length of an existing boss or bore: keep-diameter or given-module fit, exact tooth-band material proof, tube cut then gear-ring fuse on one coaxial seam, roles carried through the fuse | `gear/cylinder.rs` |
+| Teeth-on-cylinder oracles: standalone-gear and closed-form volumes on a boss, a stepped bored shaft and a bored ring, turn-down fit and phase probes, cross-hole and partial-span refusals (tests) | `gear/cylinder/tests.rs` |
 | Helical sweep | `helix.rs` |
 | Chamfer, Fillet | `chamfer.rs`, `fillet/` (mod, rolling_ball, g1_chain, geometry, radius_law, helpers, notch_torus, tests) |
 | Rolling-ball arc stripe between a plane and a coaxial cylinder as an exact torus, or a sphere triangle at the band's own radius (a fillet riding an earlier band's end) | `fillet/arc_torus.rs` |
@@ -624,7 +631,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 ### L4: wasm (`crates/wasm/src/`)
 | Task | File(s) |
 |------|---------|
-| `BrepKernel` struct, constructor, private helpers | `kernel.rs` |
+| `RemusKernel` struct, constructor, private helpers | `kernel.rs` |
 | Error types, validation helpers (`validate_positive`, `validate_finite`) | `error.rs` |
 | Shape type wrappers (`JsMesh`, `JsEdgeLines`, `JsPoint3`, `JsVec3`) | `shapes.rs` |
 | Entity handle resolution (`resolve_*`) & ID converters | `handles.rs` |
@@ -641,6 +648,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Source-relative live face moves preserve accepted geometry on refusal (tests) | `bindings/face_move_preview_tests.rs` |
 | Differential oracle: the modifier twins' full-copy rollback envelope kept verbatim, against the rollback scope (tests) | `bindings/modifier_detailed/envelope_oracle_tests.rs` |
 | Typed construction results (`extrudeDetailed`, `revolveDetailed`) | `bindings/construction_detailed.rs` |
+| Gear construction from a JSON spec: new bodies (`makeGearDetailed`) and teeth on an existing cylinder (`cutGearTeethDetailed`), direct and batch | `bindings/gear.rs` |
 | Live planar polygon imprint, direct and both batch adapters | `bindings/construction_imprint.rs` |
 | Transform, copy, mirror, pattern | `bindings/transforms.rs` |
 | Typed affine transform results and refusals | `bindings/transform_detailed.rs` |
@@ -812,7 +820,7 @@ Add `#[allow(clippy::too_many_lines)]` above complex CAD operations rather than
 artificially splitting them.
 
 ### WASM binding blocks
-Multiple `#[wasm_bindgen] impl BrepKernel` blocks are needed — one for public
+Multiple `#[wasm_bindgen] impl RemusKernel` blocks are needed — one for public
 JS-exposed methods, one for private helpers. This is a wasm-bindgen requirement.
 
 ### Wildcard match arms
@@ -883,7 +891,7 @@ Pattern: see `primitives.rs` (`make_box`, `make_cylinder`, etc.)
    }
    ```
 2. **Add WASM binding** in `wasm/src/kernel.rs`:
-   - Add method to `impl BrepKernel` with `#[wasm_bindgen]`
+   - Add method to `impl RemusKernel` with `#[wasm_bindgen]`
    - Use `validate_positive` / `validate_finite` from `error.rs`
 3. **Add test** in the same file or a dedicated test module
 4. **Add to batch dispatch** in `kernel.rs` `dispatch_op` if applicable
@@ -923,17 +931,17 @@ Pattern: see `extrude.rs` (basic), `boolean/` (complex)
 ### Recipe 4: Add a new WASM binding
 
 Pick the appropriate `bindings/` module (or create a new one). Each module adds
-methods to `BrepKernel` via a separate `#[wasm_bindgen] impl` block.
+methods to `RemusKernel` via a separate `#[wasm_bindgen] impl` block.
 
 ```rust
 // In bindings/my_domain.rs:
 use wasm_bindgen::prelude::*;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::error::{WasmError, validate_positive};
 use crate::handles::solid_id_to_u32;
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     #[wasm_bindgen(js_name = "myOperation")]
     pub fn my_operation(&mut self, param: f64) -> Result<u32, JsError> {
         validate_positive(param, "param")?;
@@ -944,7 +952,7 @@ impl BrepKernel {
 ```
 
 Key points:
-- `BrepKernel` is the `core` tier: confirm the capability's
+- `RemusKernel` is the `core` tier: confirm the capability's
   [tier](#wasm-module-tiers) is `core` before adding it here
 - Use `js_name` for camelCase JS naming
 - Validate inputs with helpers from `error.rs`

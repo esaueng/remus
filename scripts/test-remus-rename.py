@@ -57,6 +57,18 @@ class RenameTests(unittest.TestCase):
         self.write("source.rs", "// " + "brep" + "kit\n")
         self.assertEqual(self.check().returncode, 1)
 
+    def test_stale_kernel_class_name_is_rejected(self):
+        self.write("source.rs", "impl " + "Brep" + "Kernel {}\n")
+        result = self.check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("stale kernel class name", result.stdout)
+
+    def test_generated_package_alias_is_exempt(self):
+        self.write("crates/wasm/pkg/remus_wasm.js",
+                   "export { RemusKernel as " + "Brep" + "Kernel } from \"./remus_wasm_bg.js\";\n")
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_unlisted_notice_is_not_exempt(self):
         self.write("other/NOTICE", (self.root / "NOTICE").read_text())
         self.assertEqual(self.check().returncode, 1)

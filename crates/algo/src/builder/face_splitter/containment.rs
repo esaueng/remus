@@ -224,6 +224,28 @@ pub(super) fn find_point_outside_holes(
         }
     }
 
+    // Vertex seeds. An outer polygon sampled from a curved boundary is
+    // inscribed: its edge midpoints sit a sagitta inside the true boundary,
+    // and when the ring is thinner than that sagitta every midpoint seed is
+    // already in the hole (a groove cap r 12..12.5 whose outer circle is an
+    // 8-gon: midpoints at r 11.55, all inside the r 12 hole). The vertices lie
+    // on the boundary itself, so a short step inward from one stays in a ring
+    // of any width the step resolves.
+    for vertex in outer_pts {
+        for k in 1..=99 {
+            let t = f64::from(k) * 0.005;
+            let candidate = Point2::new(
+                vertex.x() * (1.0 - t) + centroid_x * t,
+                vertex.y() * (1.0 - t) + centroid_y * t,
+            );
+            if super::super::classify_2d::point_in_polygon_2d(candidate, outer_pts)
+                && !in_any_hole(candidate)
+            {
+                return candidate;
+            }
+        }
+    }
+
     // Fallback: try vertex midpoints between consecutive outer wire vertices.
     if outer_pts.len() >= 2 {
         let mid = Point2::new(

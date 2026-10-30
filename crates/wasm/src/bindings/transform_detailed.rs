@@ -32,7 +32,7 @@ use remus_operations::transform::{TransformPolicy, TransformReport};
 
 use crate::error::StructuredWasmError;
 use crate::handles::{edge_id_to_u32, face_id_to_u32, solid_id_to_u32};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::types::SolidOperationDetailedResult;
 
 /// Quality label of an exact result.
@@ -156,7 +156,7 @@ pub fn report_details(report: &TransformReport) -> Map<String, Value> {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Transform a solid and return the exact, disclosed-approximate, or
     /// refused result as typed data.
     ///
@@ -206,7 +206,7 @@ impl BrepKernel {
 }
 
 /// Natively-testable bodies shared by the direct twins and the batch ops.
-impl BrepKernel {
+impl RemusKernel {
     pub(crate) fn transform_detailed_impl(
         &mut self,
         solid: u32,
@@ -300,7 +300,7 @@ impl BrepKernel {
 /// Execution records the source face before rollback. A preflight refusal
 /// reruns the read-only plan to name the faces without mutating topology.
 fn enrich_exact_only_refusal(
-    kernel: &BrepKernel,
+    kernel: &RemusKernel,
     error: StructuredWasmError,
     matrix: &[f64],
     solid: u32,

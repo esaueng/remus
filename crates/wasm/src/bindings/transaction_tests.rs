@@ -1,11 +1,11 @@
 //! Coordinated boolean batch commits and retained session-state tests.
 
 #![allow(clippy::unwrap_used)]
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 #[test]
 fn coordinated_boolean_items_commit_independently_and_keep_session_state() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let a = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
     let b = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
     k.transform_solid_binding(
@@ -62,10 +62,10 @@ fn coordinated_boolean_items_commit_independently_and_keep_session_state() {
 mod exact_boolean_gate_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
     fn batch(
-        kernel: &mut BrepKernel,
+        kernel: &mut RemusKernel,
         v2: bool,
         operations: serde_json::Value,
     ) -> serde_json::Value {
@@ -77,7 +77,7 @@ mod exact_boolean_gate_tests {
         serde_json::from_str(&response).unwrap()
     }
 
-    fn cavity_fixture(kernel: &mut BrepKernel, tool_side: f64, second_piece: bool) -> (u32, u32) {
+    fn cavity_fixture(kernel: &mut RemusKernel, tool_side: f64, second_piece: bool) -> (u32, u32) {
         let wall = (10.0 - tool_side) * 0.5;
         let x = wall + if second_piece { 20.0 } else { 0.0 };
         let results = batch(
@@ -121,7 +121,7 @@ mod exact_boolean_gate_tests {
     fn check_cavity_batch(tool_side: f64, second_piece: bool) {
         for operation in ["cutWithEntityEvolution", "cutJournaled"] {
             for v2 in [false, true] {
-                let mut kernel = BrepKernel::new();
+                let mut kernel = RemusKernel::new();
                 let (blank, tool) = cavity_fixture(&mut kernel, tool_side, second_piece);
                 let response = batch(
                     &mut kernel,
@@ -205,7 +205,7 @@ mod exact_boolean_gate_tests {
     fn exact_boolean_gate_refusals_preserve_operands_and_history_in_batch() {
         for operation in ["fuseWithEntityEvolution", "fuseJournaled"] {
             for v2 in [false, true] {
-                let mut kernel = BrepKernel::new();
+                let mut kernel = RemusKernel::new();
                 let a = kernel.make_sphere_solid(3.0, 16).unwrap();
                 let b = kernel.copy_solid(a).unwrap();
                 let before = kernel.serialize_solids(&[a, b]).unwrap();
@@ -329,7 +329,7 @@ pub(super) fn high_water(t: &remus_topology::Topology) -> String {
 }
 
 /// Session state a topology rollback must never touch.
-pub(super) fn session_state(k: &BrepKernel) -> String {
+pub(super) fn session_state(k: &RemusKernel) -> String {
     format!(
         "{:?}{:?}{:?}{:?}{}",
         k.assemblies, k.sketches, k.gcs_sketches, k.checkpoints, k.poisoned
@@ -386,7 +386,7 @@ pub(super) struct Observed {
     gap: bool,
 }
 
-pub(super) fn observe(k: &BrepKernel) -> Observed {
+pub(super) fn observe(k: &RemusKernel) -> Observed {
     remus_topology::validation::validate_boundary_authority(k.topo()).unwrap();
     Observed {
         live: live_state(k.topo()),
@@ -397,14 +397,14 @@ pub(super) fn observe(k: &BrepKernel) -> Observed {
 
 /// Seeds assembly, legacy sketch and GCS sketch state so a rollback that
 /// touched session state would show.
-fn seed_session(k: &mut BrepKernel) {
+fn seed_session(k: &mut RemusKernel) {
     k.assembly_new("retained").unwrap();
     let sketch = k.sketch_new().unwrap();
     k.sketch_add_point(sketch, 1.0, 2.0, false).unwrap();
     k.gcs_new().unwrap();
 }
 
-fn batch(k: &mut BrepKernel, operations: &serde_json::Value) -> serde_json::Value {
+fn batch(k: &mut RemusKernel, operations: &serde_json::Value) -> serde_json::Value {
     serde_json::from_str(&k.execute_batch(&operations.to_string())).unwrap()
 }
 
@@ -413,10 +413,10 @@ fn batch(k: &mut BrepKernel, operations: &serde_json::Value) -> serde_json::Valu
 /// a checkpoint restore), and let the next success commit normally.
 /// `refuse` returns whether the call refused; `succeed` whether it committed.
 fn assert_refusal_rolls_back(
-    k: &mut BrepKernel,
+    k: &mut RemusKernel,
     family: &str,
-    refuse: &mut dyn FnMut(&mut BrepKernel) -> bool,
-    succeed: &mut dyn FnMut(&mut BrepKernel) -> bool,
+    refuse: &mut dyn FnMut(&mut RemusKernel) -> bool,
+    succeed: &mut dyn FnMut(&mut RemusKernel) -> bool,
 ) {
     assert!(succeed(k), "{family}: first success");
     let checkpoint = k.checkpoint().unwrap();
@@ -454,7 +454,7 @@ fn handle(index: usize) -> u32 {
     u32::try_from(index).unwrap()
 }
 
-pub(super) fn fixture(k: &mut BrepKernel) -> Fixture {
+pub(super) fn fixture(k: &mut RemusKernel) -> Fixture {
     use remus_operations::{boolean, primitives, transform};
     seed_session(k);
     let block = k.make_box_solid(10.0, 10.0, 10.0).unwrap();
@@ -597,10 +597,10 @@ pub(super) fn committed(row: &serde_json::Value) -> bool {
 #[test]
 fn batch_refusals_roll_back_exactly_and_items_commit_independently() {
     for v2 in [false, true] {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let f = fixture(&mut k);
         for (family, ok, bad) in batch_cases(&f) {
-            let run = |k: &mut BrepKernel, op: &serde_json::Value| {
+            let run = |k: &mut RemusKernel, op: &serde_json::Value| {
                 let ops = serde_json::Value::Array(vec![op.clone()]);
                 let response = if v2 {
                     k.execute_batch_v2(&ops.to_string())
@@ -626,7 +626,7 @@ fn batch_refusals_roll_back_exactly_and_items_commit_independently() {
 
 #[test]
 fn direct_topology_transaction_refusals_roll_back_exactly() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let f = fixture(&mut k);
     assert_refusal_rolls_back(
         &mut k,
@@ -678,11 +678,71 @@ fn direct_topology_transaction_refusals_roll_back_exactly() {
 }
 
 #[test]
+fn session_setting_refusals_restore_the_store_local_switch() {
+    use remus_operations::boolean::{set_thread_store_local_cuts, thread_store_local_cuts_enabled};
+    use serde_json::json;
+
+    let entry = thread_store_local_cuts_enabled();
+    let mut k = RemusKernel::new();
+    let f = fixture(&mut k);
+    for start in [false, true] {
+        set_thread_store_local_cuts(start);
+        // An injected fault after the setter has flipped the switch: no
+        // batch arm can fail there today, so this pins the scope itself.
+        let before = observe(&k);
+        let result = k.run_session_setting(|k| {
+            k.set_store_local_cuts(!start);
+            assert_eq!(thread_store_local_cuts_enabled(), !start);
+            Err(crate::error::WasmError::InvalidInput {
+                reason: "injected".into(),
+            }
+            .into())
+        });
+        assert!(result.is_err());
+        assert_eq!(thread_store_local_cuts_enabled(), start, "injected fault");
+        assert_eq!(observe(&k), before);
+
+        for v2 in [false, true] {
+            let run = |k: &mut RemusKernel, ops: serde_json::Value| -> serde_json::Value {
+                let response = if v2 {
+                    k.execute_batch_v2(&ops.to_string())
+                } else {
+                    k.execute_batch(&ops.to_string())
+                };
+                serde_json::from_str(&response).unwrap()
+            };
+            // A malformed setter refuses and leaves the switch alone.
+            let rows = run(
+                &mut k,
+                json!([{"op":"setStoreLocalCuts","args":{"enabled":"yes"}}]),
+            );
+            assert!(!committed(&rows[0]), "{rows}");
+            assert_eq!(thread_store_local_cuts_enabled(), start);
+            // Items commit independently: a later refusal does not undo a
+            // committed setter, as it does not undo any committed item.
+            let rows = run(
+                &mut k,
+                json!([
+                    {"op":"setStoreLocalCuts","args":{"enabled":!start}},
+                    {"op":"copySolid","args":{"solid":99_999}},
+                    {"op":"copySolid","args":{"solid":f.block}},
+                ]),
+            );
+            assert!(committed(&rows[0]) && committed(&rows[2]), "{rows}");
+            assert!(!committed(&rows[1]), "{rows}");
+            assert_eq!(thread_store_local_cuts_enabled(), !start);
+            set_thread_store_local_cuts(start);
+        }
+    }
+    set_thread_store_local_cuts(entry);
+}
+
+#[test]
 fn failed_operation_retirements_are_revived_not_sticky() {
     // The documented boundary semantic change: the full-copy boundary
     // restored with checkpoint-barrier semantics, so a failed operation's
     // retirement stayed sticky. The rollback scope undoes it exactly.
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let solid = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
     let id = k.resolve_solid(solid).unwrap();
     let mut legacy = k.topo().clone();
@@ -709,7 +769,7 @@ fn failed_operation_retirements_are_revived_not_sticky() {
 /// profile's edges), then the solid deleted. The shared edges retire with
 /// it, and so do the standalone profile face's index entries, while its
 /// loops and coedges stay live. A sheet body stands beside it.
-pub(super) fn break_fixed_point(k: &mut BrepKernel) {
+pub(super) fn break_fixed_point(k: &mut RemusKernel) {
     let square = |x: f64| {
         vec![
             x,
@@ -740,7 +800,7 @@ fn successful_items_leave_no_undo_records_for_a_checkpoint_to_keep() {
     // right after shares the topology value and would otherwise keep one
     // item's records for its whole life.
     for v2 in [false, true] {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let f = fixture(&mut k);
         for (family, ok, _) in batch_cases(&f) {
             let ops = serde_json::Value::Array(vec![ok]);
@@ -756,7 +816,7 @@ fn successful_items_leave_no_undo_records_for_a_checkpoint_to_keep() {
             assert_eq!(stored.undo_record_count(), 0, "{family}");
         }
     }
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let f = fixture(&mut k);
     k.transform_solid_binding(f.small, SHIFT.to_vec()).unwrap();
     assert_eq!(k.topo().undo_record_count(), 0, "direct transaction");
@@ -768,7 +828,7 @@ fn successful_items_leave_no_undo_records_for_a_checkpoint_to_keep() {
 #[test]
 #[should_panic(expected = "shared inside a boundary rollback scope")]
 fn a_boundary_scope_refuses_to_rewind_a_shared_topology() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let _ = k.with_kernel_transaction(crate::kernel::Refusal::Exact, |k| {
         k.checkpoint().unwrap();
         Err::<(), _>(())
@@ -779,7 +839,7 @@ fn a_boundary_scope_refuses_to_rewind_a_shared_topology() {
 #[test]
 #[should_panic(expected = "replaced inside a boundary rollback scope")]
 fn a_boundary_scope_refuses_to_rewind_a_replaced_topology() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let _ = k.with_kernel_transaction(crate::kernel::Refusal::Exact, |k| {
         k.topo = std::rc::Rc::new(remus_topology::Topology::new());
         Err::<(), _>(())
@@ -814,7 +874,7 @@ pub(super) fn brep_json(missing_vertex: bool) -> String {
 
 #[test]
 fn from_brep_refusals_roll_back_exactly() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     fixture(&mut k);
     let (good, bad) = (brep_json(false), brep_json(true));
     assert_refusal_rolls_back(
@@ -828,7 +888,7 @@ fn from_brep_refusals_roll_back_exactly() {
 // ── Checkpoint restore of the value the kernel still holds ─────────
 
 /// The same short modeling history in each kernel.
-fn shared_history(kernels: [&mut BrepKernel; 2]) -> u32 {
+fn shared_history(kernels: [&mut RemusKernel; 2]) -> u32 {
     let mut small = 0;
     for k in kernels {
         k.make_box_solid(10.0, 10.0, 10.0).unwrap();
@@ -838,7 +898,7 @@ fn shared_history(kernels: [&mut BrepKernel; 2]) -> u32 {
     small
 }
 
-fn assert_same_topology(a: &BrepKernel, b: &BrepKernel, context: &str) {
+fn assert_same_topology(a: &RemusKernel, b: &RemusKernel, context: &str) {
     assert_eq!(
         format!("{:?}", a.topo()),
         format!("{:?}", b.topo()),
@@ -847,14 +907,14 @@ fn assert_same_topology(a: &BrepKernel, b: &BrepKernel, context: &str) {
     assert_eq!(high_water(a.topo()), high_water(b.topo()), "{context}");
 }
 
-fn shares_checkpoint(k: &BrepKernel, saved: u32) -> bool {
+fn shares_checkpoint(k: &RemusKernel, saved: u32) -> bool {
     std::rc::Rc::ptr_eq(&k.topo, &k.checkpoints.get(saved as usize).unwrap().topo)
 }
 
 #[test]
 fn restoring_the_still_shared_value_copies_nothing_and_matches_the_copying_restore() {
-    let mut skipped = BrepKernel::new();
-    let mut copied = BrepKernel::new();
+    let mut skipped = RemusKernel::new();
+    let mut copied = RemusKernel::new();
     let small = shared_history([&mut skipped, &mut copied]);
     let saved = skipped.checkpoint().unwrap();
     assert_eq!(copied.checkpoint().unwrap(), saved);
@@ -892,8 +952,8 @@ fn restoring_a_still_shared_value_off_the_fixed_point_still_restores() {
     // The skip holds only on a restore fixed point: off it, the restore
     // rebuilds the pcurve index, so the still-shared value must be restored
     // (copied) like any other.
-    let mut skipped = BrepKernel::new();
-    let mut copied = BrepKernel::new();
+    let mut skipped = RemusKernel::new();
+    let mut copied = RemusKernel::new();
     shared_history([&mut skipped, &mut copied]);
     for k in [&mut skipped, &mut copied] {
         break_fixed_point(k);

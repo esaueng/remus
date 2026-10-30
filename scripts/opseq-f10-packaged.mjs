@@ -24,9 +24,9 @@ function invoke(kernel, api, op, args, direct, label) {
   return cell.ok;
 }
 
-function checkFixture(BrepKernel, api, scale, placed, swapped, segments = 16, height = 1, fineMesh = false) {
+function checkFixture(RemusKernel, api, scale, placed, swapped, segments = 16, height = 1, fineMesh = false) {
   const label = `F10 ${api} scale=${scale} placed=${placed} swapped=${swapped} segments=${segments} h=${height} fine=${fineMesh}`;
-  const kernel = new BrepKernel();
+  const kernel = new RemusKernel();
   const run = (op, args, direct) => invoke(kernel, api, op, args, direct, label);
   try {
     const sphere = run('makeSphere', { radius: scale, segments }, [scale, segments]);
@@ -170,21 +170,21 @@ function checkFixture(BrepKernel, api, scale, placed, swapped, segments = 16, he
   console.log(`ok - ${label}: material, quantities, opposing B-Rep and raw mesh uses`);
 }
 
-export function runOpseqF10Packaged({ BrepKernel }) {
+export function runOpseqF10Packaged({ RemusKernel }) {
   for (const api of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const scale of [1, 0.001, 1000]) {
       for (const placed of [false, true]) {
-        for (const swapped of [false, true]) checkFixture(BrepKernel, api, scale, placed, swapped);
+        for (const swapped of [false, true]) checkFixture(RemusKernel, api, scale, placed, swapped);
       }
     }
-    for (const segments of [4, 8, 32]) checkFixture(BrepKernel, api, 1, false, false, segments);
-    checkFixture(BrepKernel, api, 1, false, false, 16, 1.25);
+    for (const segments of [4, 8, 32]) checkFixture(RemusKernel, api, 1, false, false, segments);
+    checkFixture(RemusKernel, api, 1, false, false, 16, 1.25);
   }
-  runOpseqF10FineGridPackaged({ BrepKernel });
+  runOpseqF10FineGridPackaged({ RemusKernel });
 }
 
-export function runOpseqF10FineGridPackaged({ BrepKernel }) {
+export function runOpseqF10FineGridPackaged({ RemusKernel }) {
   for (const api of ['direct', 'executeBatch', 'executeBatchV2']) {
-    checkFixture(BrepKernel, api, 0.001, true, false, 16, 1, true);
+    checkFixture(RemusKernel, api, 0.001, true, false, 16, 1, true);
   }
 }

@@ -20,15 +20,15 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use remus_math::vec::Point3;
 
-fn run(kernel: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn run(kernel: &mut RemusKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let json = serde_json::Value::Array(ops.to_vec()).to_string();
     serde_json::from_str(&kernel.execute_batch(&json)).unwrap()
 }
 
-fn run_v2(kernel: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn run_v2(kernel: &mut RemusKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let json = serde_json::Value::Array(ops.to_vec()).to_string();
     serde_json::from_str(&kernel.execute_batch_v2(&json)).unwrap()
 }
@@ -37,7 +37,7 @@ fn op(name: &str, args: serde_json::Value) -> serde_json::Value {
     serde_json::json!({"op": name, "args": args})
 }
 
-fn make_box(kernel: &mut BrepKernel, w: f64, h: f64, d: f64) -> u32 {
+fn make_box(kernel: &mut RemusKernel, w: f64, h: f64, d: f64) -> u32 {
     let out = run(
         kernel,
         &[op(
@@ -48,7 +48,7 @@ fn make_box(kernel: &mut BrepKernel, w: f64, h: f64, d: f64) -> u32 {
     u32::try_from(out[0]["ok"].as_u64().unwrap()).unwrap()
 }
 
-fn edge_handles(kernel: &mut BrepKernel, solid: u32) -> Vec<u32> {
+fn edge_handles(kernel: &mut RemusKernel, solid: u32) -> Vec<u32> {
     let out = run(
         kernel,
         &[op("solidEdges", serde_json::json!({"solid": solid}))],
@@ -61,7 +61,7 @@ fn edge_handles(kernel: &mut BrepKernel, solid: u32) -> Vec<u32> {
         .collect()
 }
 
-fn volume(kernel: &mut BrepKernel, solid: u32) -> f64 {
+fn volume(kernel: &mut RemusKernel, solid: u32) -> f64 {
     let out = run(
         kernel,
         &[op(
@@ -77,7 +77,7 @@ fn convex_fillet_removed(radius: f64, length: f64) -> f64 {
     (1.0 - std::f64::consts::FRAC_PI_4) * radius * radius * length
 }
 
-fn batch_hollow_box(kernel: &mut BrepKernel, corner: [f64; 3], side: f64) -> u32 {
+fn batch_hollow_box(kernel: &mut RemusKernel, corner: [f64; 3], side: f64) -> u32 {
     let blank = make_box(kernel, 20.0, 20.0, 20.0);
     let tool = make_box(kernel, side, side, side);
     let translated = run(
@@ -104,7 +104,7 @@ fn batch_hollow_box(kernel: &mut BrepKernel, corner: [f64; 3], side: f64) -> u32
     solid
 }
 
-fn top_front_edge_handle(kernel: &mut BrepKernel, solid: u32) -> u32 {
+fn top_front_edge_handle(kernel: &mut RemusKernel, solid: u32) -> u32 {
     edge_handles(kernel, solid)
         .into_iter()
         .find(|&handle| {
@@ -122,7 +122,7 @@ fn top_front_edge_handle(kernel: &mut BrepKernel, solid: u32) -> u32 {
         .unwrap()
 }
 
-fn live_counts(kernel: &BrepKernel) -> [usize; 9] {
+fn live_counts(kernel: &RemusKernel) -> [usize; 9] {
     let topo = kernel.topo();
     [
         topo.num_vertices(),
@@ -141,7 +141,7 @@ fn live_counts(kernel: &BrepKernel) -> [usize; 9] {
 fn batch_fillet_refuses_consumed_and_opened_cavities_without_mutation() {
     for (corner, side) in [([9.0, 0.1, 19.7], 0.2), ([9.0, 0.1, 17.9], 2.0)] {
         for operation in ["fillet", "filletV2", "filletJournaled"] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let solid = batch_hollow_box(&mut kernel, corner, side);
             let edge = top_front_edge_handle(&mut kernel, solid);
             let before = kernel.serialize_solids(&[solid]).unwrap();
@@ -174,7 +174,7 @@ fn batch_fillet_refuses_consumed_and_opened_cavities_without_mutation() {
 #[test]
 fn batch_fillet_preserves_a_distant_cavity() {
     for operation in ["fillet", "filletV2"] {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = batch_hollow_box(&mut kernel, [9.0; 3], 2.0);
         let edge = top_front_edge_handle(&mut kernel, solid);
         let input_id = kernel.resolve_solid(solid).unwrap();
@@ -214,7 +214,7 @@ fn batch_fillet_preserves_a_distant_cavity() {
 }
 
 fn origin_setback_specs(
-    kernel: &mut BrepKernel,
+    kernel: &mut RemusKernel,
     solid: u32,
     mismatched: bool,
 ) -> Vec<serde_json::Value> {
@@ -267,7 +267,7 @@ fn origin_setback_specs(
 /// sliver, and leaves the input measuring exactly as before.
 #[test]
 fn batch_fillet_success_changes_the_answer_and_keeps_the_input() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let solid = make_box(&mut k, 10.0, 10.0, 10.0);
     let edges = edge_handles(&mut k, solid);
     let before = volume(&mut k, solid);
@@ -311,7 +311,7 @@ fn batch_fillet_success_changes_the_answer_and_keeps_the_input() {
 /// is wider than the 10 mm faces), raised before any geometry is built.
 #[test]
 fn batch_fillet_variable_oversized_radius_is_a_typed_refusal() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let solid = make_box(&mut k, 10.0, 10.0, 10.0);
     let edges = edge_handles(&mut k, solid);
 
@@ -358,7 +358,7 @@ fn batch_fillet_variable_oversized_radius_is_a_typed_refusal() {
 /// A supported `filletVariable` still works: new handle, closed-form sliver.
 #[test]
 fn batch_fillet_variable_success_is_a_real_fillet() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let solid = make_box(&mut k, 10.0, 10.0, 10.0);
     let edges = edge_handles(&mut k, solid);
 
@@ -381,7 +381,7 @@ fn batch_fillet_variable_success_is_a_real_fillet() {
 
 #[test]
 fn direct_and_batch_variable_setbacks_are_parity_watertight() {
-    let mut direct_kernel = BrepKernel::new();
+    let mut direct_kernel = RemusKernel::new();
     let direct_input = make_box(&mut direct_kernel, 10.0, 10.0, 10.0);
     let direct_specs = origin_setback_specs(&mut direct_kernel, direct_input, false);
     let direct_result = direct_kernel
@@ -392,7 +392,7 @@ fn direct_and_batch_variable_setbacks_are_parity_watertight() {
         .expect("direct filletVariable setback call");
     let direct_volume = volume(&mut direct_kernel, direct_result);
 
-    let mut batch_kernel = BrepKernel::new();
+    let mut batch_kernel = RemusKernel::new();
     let batch_input = make_box(&mut batch_kernel, 10.0, 10.0, 10.0);
     let batch_specs = origin_setback_specs(&mut batch_kernel, batch_input, false);
     let out = run(
@@ -425,7 +425,7 @@ fn direct_and_batch_variable_setbacks_are_parity_watertight() {
 
 #[test]
 fn batch_variable_setback_mismatch_keeps_the_input_and_code() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let input = make_box(&mut kernel, 10.0, 10.0, 10.0);
     let specs = origin_setback_specs(&mut kernel, input, true);
     let out = run_v2(
@@ -447,7 +447,7 @@ fn batch_variable_setback_mismatch_keeps_the_input_and_code() {
 
 #[test]
 fn batch_variable_fillet_malformed_numeric_specs_are_typed_and_atomic() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let solid = make_box(&mut kernel, 10.0, 10.0, 10.0);
     let edge = edge_handles(&mut kernel, solid)[0];
     let before = kernel.serialize_solids(&[solid]).unwrap();
@@ -506,7 +506,7 @@ fn batch_variable_fillet_malformed_numeric_specs_are_typed_and_atomic() {
 
 #[test]
 fn batch_variable_setback_rejects_a_present_nonnumeric_distance() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let input = make_box(&mut kernel, 10.0, 10.0, 10.0);
     let edge = edge_handles(&mut kernel, input)[0];
     let out = run_v2(
@@ -538,7 +538,7 @@ fn batch_variable_setback_rejects_a_present_nonnumeric_distance() {
 /// unchanged, and the box survives.
 #[test]
 fn batch_fillet_v2_support_cliff_names_the_cause() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let solid = make_box(&mut k, 10.0, 10.0, 10.0);
     let edges = edge_handles(&mut k, solid);
 
@@ -580,7 +580,7 @@ fn batch_fillet_v2_support_cliff_names_the_cause() {
 /// so the answer must name the rim edge it could not blend.
 #[test]
 fn batch_fillet_mixed_selection_is_refused_as_a_whole() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     // Plate with a through bore: straight perimeter edges + the bore rim.
     let out = run(
         &mut k,
@@ -678,7 +678,7 @@ fn batch_fillet_mixed_selection_is_refused_as_a_whole() {
 /// in `kernelCode`, input untouched.
 #[test]
 fn batch_chamfer_oversized_distance_is_a_typed_refusal() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let solid = make_box(&mut k, 10.0, 10.0, 10.0);
     let edges = edge_handles(&mut k, solid);
 
@@ -720,7 +720,7 @@ fn batch_chamfer_oversized_distance_is_a_typed_refusal() {
 /// sees no half-recorded state.
 #[test]
 fn batch_journaled_fillet_refusal_leaves_no_trace() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let solid = make_box(&mut k, 10.0, 10.0, 10.0);
     let edges = edge_handles(&mut k, solid);
 

@@ -8,9 +8,9 @@ use remus_topology::explorer::solid_faces;
 use serde_json::{Value, json};
 
 use crate::handles::face_id_to_u32;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
-fn fixture(kernel: &mut BrepKernel) -> (u32, u32) {
+fn fixture(kernel: &mut RemusKernel) -> (u32, u32) {
     let solid = kernel.make_box_solid(10.0, 6.0, 4.0).unwrap();
     let id = kernel.resolve_solid(solid).unwrap();
     let face = solid_faces(kernel.topo(), id)
@@ -28,11 +28,11 @@ fn fixture(kernel: &mut BrepKernel) -> (u32, u32) {
     (solid, face_id_to_u32(face))
 }
 
-fn direct(kernel: &mut BrepKernel, solid: u32, face: u32, distance: f64) -> Value {
+fn direct(kernel: &mut RemusKernel, solid: u32, face: u32, distance: f64) -> Value {
     serde_json::to_value(kernel.move_faces_detailed_impl(solid, &[face], distance)).unwrap()
 }
 
-fn batch(kernel: &mut BrepKernel, solid: u32, face: u32, distance: f64) -> Value {
+fn batch(kernel: &mut RemusKernel, solid: u32, face: u32, distance: f64) -> Value {
     let input = json!([{"op": "moveFacesDetailed", "args": {
         "solid": solid, "faces": [face], "distance": distance
     }}]);
@@ -49,7 +49,7 @@ fn result_solid(result: &Value) -> u32 {
 #[test]
 fn refused_drag_preserves_source_and_last_valid_mesh_then_recovers() {
     for preview in [direct, batch] {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let (source, face) = fixture(&mut kernel);
         let accepted = result_solid(&preview(&mut kernel, source, face, 2.0));
         assert!((kernel.volume(accepted, 0.05).unwrap() - 360.0).abs() < 1e-7);
@@ -83,9 +83,9 @@ fn refused_drag_preserves_source_and_last_valid_mesh_then_recovers() {
 
 #[test]
 fn direct_and_batch_face_move_envelopes_match_on_success_and_refusal() {
-    let mut direct_kernel = BrepKernel::new();
+    let mut direct_kernel = RemusKernel::new();
     let (source, face) = fixture(&mut direct_kernel);
-    let mut batch_kernel = BrepKernel::new();
+    let mut batch_kernel = RemusKernel::new();
     let (batch_source, batch_face) = fixture(&mut batch_kernel);
     for distance in [2.0, -20.0, -1.0, 0.0] {
         assert_eq!(
@@ -97,7 +97,7 @@ fn direct_and_batch_face_move_envelopes_match_on_success_and_refusal() {
 
 #[test]
 fn invalid_face_move_inputs_are_data_and_do_not_change_the_source() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let (source, face) = fixture(&mut kernel);
     let before = kernel.serialize_solids(&[source]).unwrap();
     for (solid, faces, distance) in [

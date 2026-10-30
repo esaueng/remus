@@ -7,7 +7,7 @@ use remus_math::{
     nurbs::intersection::{IntersectionPoint, chain_intersection_points},
     vec::Point3,
 };
-use remus_wasm::kernel::BrepKernel;
+use remus_wasm::kernel::RemusKernel;
 use serde_json::{Value, json};
 
 const CALLS: usize = 150;
@@ -22,7 +22,7 @@ fn near(actual: f64, expected: f64) {
     );
 }
 
-fn batch(kernel: &mut BrepKernel, input: &str, count: usize) -> Vec<Value> {
+fn batch(kernel: &mut RemusKernel, input: &str, count: usize) -> Vec<Value> {
     checked_batch(&kernel.execute_batch(input), count)
 }
 
@@ -38,7 +38,7 @@ fn checked_batch(output: &str, count: usize) -> Vec<Value> {
 }
 
 fn transform(size: usize, direct: bool) -> (u128, Value) {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let seeds = vec![json!({"op":"makeBox", "args":{"width":1.,"height":1.,"depth":1.}}); size];
     let handles = batch(&mut kernel, &serde_json::to_string(&seeds).unwrap(), size);
     let ids: std::collections::BTreeSet<u32> = handles
@@ -171,9 +171,9 @@ fn nurbs(scenario: &str, samples: usize, warmup: usize) {
 /// Returns the kernel, operand handles, one untouched handle with its
 /// expected bounding box, every seeded handle, and the setup cost in ns
 /// (seeding stays outside the timed edit; only its cost is reported).
-fn boolean_doc(size: usize) -> (BrepKernel, u32, u32, u32, [f64; 6], Vec<u32>, u128) {
+fn boolean_doc(size: usize) -> (RemusKernel, u32, u32, u32, [f64; 6], Vec<u32>, u128) {
     let start = Instant::now();
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let seeds = vec![json!({"op":"makeBox", "args":{"width":1.,"height":1.,"depth":1.}}); size + 2];
     let handles = batch(
         &mut kernel,
@@ -238,7 +238,7 @@ fn peak_rss_kib() -> Option<u64> {
         .ok()
 }
 
-fn check_bbox(kernel: &mut BrepKernel, solid: u32, expected: [f64; 6]) {
+fn check_bbox(kernel: &mut RemusKernel, solid: u32, expected: [f64; 6]) {
     let query = json!([{"op":"boundingBox","args":{"solid":solid}}]);
     let values = batch(kernel, &query.to_string(), 1);
     for i in 0..6 {
@@ -246,7 +246,7 @@ fn check_bbox(kernel: &mut BrepKernel, solid: u32, expected: [f64; 6]) {
     }
 }
 
-fn check_volume(kernel: &mut BrepKernel, solid: u32, expected: f64) {
+fn check_volume(kernel: &mut RemusKernel, solid: u32, expected: f64) {
     let query = json!([{"op":"volume","args":{"solid":solid,"deflection":0.01}}]);
     let values = batch(kernel, &query.to_string(), 1);
     near(values[0]["ok"].as_f64().unwrap(), expected);

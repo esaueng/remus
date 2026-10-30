@@ -414,6 +414,16 @@ fn build_sd_grouping(
             if uf.find(i) == uf.find(j) {
                 return; // already grouped (e.g. identical edge sets)
             }
+            // Coextensive full-turn bands are the coincident pair the edge-set
+            // hash finds when the two walls' seams line up. With the seams at
+            // different angles the edge sets differ in the seam line alone, so
+            // pair them here; they cover the same domain, as an edge-set pair.
+            if full_turn_bands_coincide(topo, sub_faces, i, j, tol) {
+                uf.union(i, j);
+                let key = (i.min(j), i.max(j));
+                pair_data.insert(key, same_dir ^ (reversed[i] != reversed[j]));
+                return;
+            }
             if analytic_faces_overlap(topo, sub_faces, i, j, tol) {
                 uf.union(i, j);
                 let key = (i.min(j), i.max(j));
@@ -1557,6 +1567,89 @@ fn unwrap_angles(samples: &[(f64, f64)]) -> Vec<(f64, f64)> {
         prev = uu;
     }
     out
+}
+
+/// The axial span `[v_lo, v_hi]` of a full-turn cylinder band: a face with no
+/// inner wire whose outer wire is circles perpendicular to the axis, centred
+/// on it at the cylinder's radius, plus seam lines parallel to it. Such a
+/// face covers exactly `{v_lo <= v <= v_hi}` whatever its seam angle, so two
+/// bands on one cylinder with equal spans are the same region. Any other
+/// outline returns `None`.
+fn full_turn_band_span(
+    topo: &Topology,
+    face_id: FaceId,
+    cyl: &remus_math::surfaces::CylindricalSurface,
+    tol: Tolerance,
+) -> Option<(f64, f64)> {
+    let face = topo.face(face_id).ok()?;
+    if !face.inner_wires().is_empty() {
+        return None;
+    }
+    let axis = cyl.axis();
+    let wire = topo.wire(face.outer_wire()).ok()?;
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    let mut turn = 0.0;
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge()).ok()?;
+        let sp = topo.vertex(edge.start()).ok()?.point();
+        let ep = topo.vertex(edge.end()).ok()?.point();
+        match edge.curve() {
+            EdgeCurve::Circle(c) => {
+                let (_, v) = cyl.project_point(c.center());
+                let on_axis = (cyl.origin() + axis * v - c.center()).length() <= tol.linear;
+                if !on_axis
+                    || c.normal().cross(axis).length() > tol.angular.max(1e-9)
+                    || (c.radius() - cyl.radius()).abs() > tol.linear
+                {
+                    return None;
+                }
+                lo = lo.min(v);
+                hi = hi.max(v);
+                let (t0, t1) = edge.strict_domain().ok()?;
+                turn += (t1 - t0).abs();
+            }
+            EdgeCurve::Line => {
+                let d = ep - sp;
+                if d.length() > tol.linear && d.normalize().ok()?.cross(axis).length() > 1e-9 {
+                    return None;
+                }
+            }
+            EdgeCurve::Ellipse(_)
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return None,
+        }
+    }
+    // Two full rims: the circle uses sum to two turns.
+    let two_turns = 2.0 * std::f64::consts::TAU;
+    ((turn - two_turns).abs() <= 1e-6 && hi - lo > tol.linear).then_some((lo, hi))
+}
+
+/// Whether sub-faces `i` and `j` are full-turn bands of one cylinder with the
+/// same axial span (see [`full_turn_band_span`]). The caller has already
+/// established that their carriers are the same infinite cylinder.
+fn full_turn_bands_coincide(
+    topo: &Topology,
+    sub_faces: &[SubFace],
+    i: usize,
+    j: usize,
+    tol: Tolerance,
+) -> bool {
+    let Ok(face_i) = topo.face(sub_faces[i].face_id) else {
+        return false;
+    };
+    // Both spans are measured on face i's carrier so they share one origin.
+    let FaceSurface::Cylinder(cyl) = face_i.surface() else {
+        return false;
+    };
+    let (Some((lo_i, hi_i)), Some((lo_j, hi_j))) = (
+        full_turn_band_span(topo, sub_faces[i].face_id, cyl, tol),
+        full_turn_band_span(topo, sub_faces[j].face_id, cyl, tol),
+    ) else {
+        return false;
+    };
+    (lo_i - lo_j).abs() <= tol.linear && (hi_i - hi_j).abs() <= tol.linear
 }
 
 /// Test whether two cylinder/cone sub-faces on the **same** coaxial surface

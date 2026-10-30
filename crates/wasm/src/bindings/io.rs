@@ -10,7 +10,7 @@ use remus_math::diagnostic::{DetailValue, ToDiagnostic};
 use crate::error::{WasmError, validate_positive};
 use crate::handles::{shell_id_to_u32, solid_id_to_u32};
 use crate::helpers::TOL;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 /// Build [`remus_io::ImportLimits`] from optional JS overrides.
 ///
@@ -121,7 +121,7 @@ pub(super) fn step_body_result_json(result: &remus_io::step::StepReadResult) -> 
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     // ── Export ─────────────────────────────────────────────────────
 
     /// Export a solid to 3MF format (ZIP archive as bytes).
@@ -746,7 +746,7 @@ enum IndexedMeshError {
     Io(#[from] remus_io::IoError),
 }
 
-impl BrepKernel {
+impl RemusKernel {
     fn import_indexed_mesh_impl(
         &mut self,
         positions: &[f64],
@@ -878,7 +878,7 @@ mod tests {
 
     use super::*;
 
-    fn import_tetrahedron(kernel: &mut BrepKernel) -> u32 {
+    fn import_tetrahedron(kernel: &mut RemusKernel) -> u32 {
         kernel
             .import_indexed_mesh_impl(
                 &[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
@@ -912,7 +912,7 @@ mod tests {
             let expected = remus_io::arena_io::serialize_solid(&scratch, solid).unwrap();
             let mut compact = remus_topology::Topology::new();
             remus_io::arena_io::deserialize_solid(&expected, &mut compact).unwrap();
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let checkpoint = kernel.checkpoint().unwrap();
             let imported = kernel
                 .import_indexed_mesh_impl(&positions, &indices)
@@ -941,7 +941,7 @@ mod tests {
         use remus_topology::journal::EntityKind;
         use remus_topology::naming::{PersistentRef, Resolution, resolve};
 
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let outer = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
         let inner = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let outer_id = kernel.resolve_solid(outer).unwrap();
@@ -991,7 +991,7 @@ mod tests {
 
     #[test]
     fn indexed_mesh_append_preserves_genuine_preceding_gaps() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let body = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
         let pending = kernel.topo_mut().journal_begin("existing_geometry");
         kernel
@@ -1016,7 +1016,7 @@ mod tests {
 
     #[test]
     fn indexed_mesh_append_keeps_empty_journal_reserved_counters() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let checkpoint = kernel.checkpoint().unwrap();
         let pending = kernel.topo_mut().journal_begin("retired_history");
         let retired = kernel
@@ -1037,7 +1037,7 @@ mod tests {
 
     #[test]
     fn indexed_mesh_expanded_document_stops_at_the_encoding_budget() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let existing = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
         let before = format!("{:?}", kernel.topo());
         let id = kernel.resolve_solid(existing).unwrap();
@@ -1073,7 +1073,7 @@ mod tests {
 
     #[test]
     fn indexed_mesh_refusals_do_not_retain_allocations() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let existing = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
         let before = format!("{:?}", kernel.topo());
         let solid_id = kernel.resolve_solid(existing).unwrap();
@@ -1162,14 +1162,14 @@ mod tests {
 
     #[test]
     fn direct_step_validation_binding_returns_typed_report() {
-        let mut source = BrepKernel::new();
+        let mut source = RemusKernel::new();
         let solid = source.make_box_solid(2.0, 3.0, 4.0).unwrap();
         let step = source
             .export_step_with_options(solid, Some(r#"{"validationProperties":true}"#.to_string()))
             .unwrap();
         assert!(String::from_utf8_lossy(&step).contains("geometric validation property"));
 
-        let mut imported = BrepKernel::new();
+        let mut imported = RemusKernel::new();
         let json = imported
             .import_step_with_validation(&step, None, None, None)
             .unwrap();
@@ -1202,7 +1202,7 @@ mod tests {
 
     #[test]
     fn step_options_binding_writes_custom_metadata() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
         let bytes = kernel
             .export_step_with_options(
@@ -1220,7 +1220,7 @@ mod tests {
 
     #[test]
     fn multi_body_3mf_packages_every_solid() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let a = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let b = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let bytes = kernel.export_3mf_multi(&[a, b], 0.1).unwrap();
@@ -1233,7 +1233,7 @@ mod tests {
 
     #[test]
     fn multi_body_binary_stl_merges_facets() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let a = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let b = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let merged = kernel.export_stl_multi(&[a, b], 0.1).unwrap();
@@ -1246,7 +1246,7 @@ mod tests {
 
     #[test]
     fn multi_body_obj_merges_vertex_streams() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let a = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let b = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let merged = String::from_utf8(kernel.export_obj_multi(&[a, b], 0.1).unwrap()).unwrap();
@@ -1258,7 +1258,7 @@ mod tests {
 
     #[test]
     fn multi_body_glb_is_one_valid_container() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let a = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let b = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let merged = kernel.export_glb_multi(&[a, b], 0.1).unwrap();
@@ -1279,7 +1279,7 @@ mod tests {
     #[test]
     fn imports_ascii_ply_tetrahedron() {
         let ply = b"ply\nformat ascii 1.0\nelement vertex 4\nproperty float x\nproperty float y\nproperty float z\nelement face 4\nproperty list uchar int vertex_indices\nend_header\n0 0 0\n1 0 0\n0 1 0\n0 0 1\n3 0 2 1\n3 0 1 3\n3 1 2 3\n3 2 0 3\n";
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
 
         let solid = kernel.import_ply(ply, None, None).unwrap();
         let solid_id = kernel.resolve_solid(solid).unwrap();
@@ -1292,7 +1292,7 @@ mod tests {
     fn ply_round_trip_preserves_mesh() {
         // Happy-path direct calls are safe under native `cargo test` because
         // `JsError` is only constructed on error paths.
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = {
             let r = k.execute_batch(
                 r#"[{"op": "makeBox", "args": {"width": 2, "height": 3, "depth": 4}}]"#,
@@ -1335,7 +1335,7 @@ mod tests {
 
     #[test]
     fn sheet_step_bindings_preserve_distinct_body_class_and_open_boundary() {
-        let mut source = BrepKernel::new();
+        let mut source = RemusKernel::new();
         let face = remus_topology::builder::make_rectangle_face(source.topo_mut(), 2.0, 1.0, 1e-7)
             .unwrap();
         let surface = remus_math::nurbs::NurbsSurface::new(
@@ -1370,7 +1370,7 @@ mod tests {
         assert!(text.contains("OPEN_SHELL("));
         assert!(text.contains("B_SPLINE_SURFACE_WITH_KNOTS("));
 
-        let mut destination = BrepKernel::new();
+        let mut destination = RemusKernel::new();
         let json = destination.import_step_bodies(&step, None, None).unwrap();
         let result: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(result["solids"].as_array().unwrap().is_empty());

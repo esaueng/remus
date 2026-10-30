@@ -1,7 +1,7 @@
 # PERF-D01 slice: content-keyed per-face mesh reuse across direct edits
 
 Status: production slice implemented (stage-D faces of the solid/sheet
-pipeline), opt-in per thread, enabled by `BrepKernel::new`.
+pipeline), opt-in per thread, enabled by `RemusKernel::new`.
 Branch: `perf/tessellation-reuse`.
 Backlog row: D01 (`optimization-backlog.csv`), building on D03's boundary plan
 (`perf-d03-boundary-plan.md`).
