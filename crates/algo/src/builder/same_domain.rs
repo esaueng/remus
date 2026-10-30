@@ -1166,8 +1166,18 @@ fn planar_faces_overlap(
     // A point landing inside one of the container's inner wires sits in a
     // hole, not on the face — e.g. a frame face whose hole exactly hosts
     // the candidate. Containment through a hole is not overlap.
+    //
+    // A circular hole is decided on the circle itself: its sampled polygon
+    // is inscribed, so a point in the band between chord and arc read as
+    // "not in the hole". That band reaches 1 - cos(pi / SD_EDGE_SAMPLES) of
+    // the radius (7.6% for a lone circle edge), and a thin annulus left by a
+    // coaxial resize sleeve lies entirely inside it: the annulus was paired
+    // with the coplanar face around the hole and the cut dropped both.
     let in_hole = |p: remus_math::vec::Point2, face: &remus_topology::face::Face| -> bool {
         face.inner_wires().iter().any(|&wid| {
+            if let Some(inside) = exact_wire_contains(topo, wid, p, &frame, tol) {
+                return inside;
+            }
             let pts = wire_points(wid);
             if pts.len() < 3 {
                 return false;
@@ -1329,6 +1339,39 @@ fn planar_faces_overlap(
     face_i.inner_wires().is_empty()
         && face_j.inner_wires().is_empty()
         && polygons_overlap_majority(&poly_i, &poly_j, tol)
+}
+
+/// Whether the projected point `p` lies inside the planar wire `wire_id`,
+/// decided exactly on its line and circle edges
+/// ([`super::classify_2d::point_in_planar_loop`]). `None` when the wire
+/// carries another curve, a domain cannot be read, or `p` is too close to the
+/// boundary to decide.
+fn exact_wire_contains(
+    topo: &Topology,
+    wire_id: remus_topology::wire::WireId,
+    p: remus_math::vec::Point2,
+    frame: &super::plane_frame::PlaneFrame,
+    tol: Tolerance,
+) -> Option<bool> {
+    let mut edges = Vec::new();
+    for oe in topo.wire(wire_id).ok()?.edges() {
+        let edge = topo.edge(oe.edge()).ok()?;
+        let sp = topo.vertex(edge.start()).ok()?.point();
+        let ep = topo.vertex(edge.end()).ok()?.point();
+        let domain = stored_sampling_domain(edge, sp, ep)?;
+        let at = |t: f64| {
+            let t = if oe.is_forward() { t } else { 1.0 - t };
+            super::pcurve_compute::evaluate_edge_at_t(edge.curve(), sp, ep, domain, t)
+        };
+        edges.push(super::classify_2d::PlanarLoopEdge::project(
+            edge.curve(),
+            at,
+            edge.start() == edge.end(),
+            frame,
+            tol.angular,
+        )?);
+    }
+    super::classify_2d::point_in_planar_loop(p, &edges, tol.linear * 10.0)
 }
 
 /// Whether two projected face polygons share a genuine 2D region.

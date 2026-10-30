@@ -164,6 +164,19 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **algo,operations:** `resize_cylindrical_face` no longer refuses small radius
+  changes. The resize sleeve leaves a thin annulus on each cap, and two
+  boolean-builder tests read it against the chords of its circles: same-domain
+  detection missed the hole around it and paired it with the coplanar face
+  outside, and the split-cap interior search stepped past it into the hole.
+  Both now decide line and circle boundaries on the curves. A bored cylinder
+  of r 12.25 refused ±0.05 and one of r 24.5 refused ±0.1; every step now
+  resizes to one analytic wall.
+* **operations:** a bore whose rims are rounded onto perpendicular planar caps
+  now carries its rounds to the new radius (remove the rounds, resize the sharp
+  wall, roll the same radius back on) instead of leaving them at the old one.
+  The sleeve cut met the round at its tangent boundary and refused: an r 6 bore
+  with a 1 mm rim round refused every growth. Bosses keep the sleeve path.
 * **algo:** the point classifier now reads a torus fillet band as its exact
   torus when a rim of the band is split into arcs, as STEP writers emit a
   full-revolution fillet whose rim meets a neighbouring face's seam. It used

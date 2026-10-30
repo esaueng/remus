@@ -928,6 +928,276 @@ pub(crate) struct BlendMoveEntities {
     pub boundary_pairs: Vec<(EntityKey, EntityKey)>,
 }
 
+/// One rim blend of a resized cylindrical wall, removed to its sharp rim.
+struct RimBlendPlan {
+    radius: f64,
+    /// Signed volume the blend adds to its sharp rim.
+    volume_effect: f64,
+    /// Unit normal and offset of the planar cap the blend rolls onto. The
+    /// radial move leaves the cap's plane where it is.
+    cap: (Vec3, f64),
+    edge_count: usize,
+}
+
+/// Resize a full-turn bore together with the constant-radius blends that roll
+/// off its rims onto planar caps perpendicular to its axis.
+///
+/// Such a rim blend is a coaxial torus whose section — a quarter round in the
+/// corner between wall and cap — is the same at any wall radius, so the
+/// remove/rebuild path of [`move_planar_faces_with_blends`] applies: every
+/// rim band is removed to its sharp rim, the sharp wall is resized, and the
+/// same radius is rolled back onto the rims. The resized hole keeps its
+/// blends instead of the wall moving away from them, and the thin resize
+/// sleeve never has to cut through a blend.
+///
+/// `Ok(None)` for a boss, or when the bore has no tangent blend neighbour or
+/// one that is not such a rim blend; the caller then resizes the wall alone.
+/// Bosses stay on that path for now: shrinking a boss that stands on a plate
+/// leaves the plate's annulus as a second coplanar face that face unification
+/// does not merge, so the rims could not be found again. Once every rim blend
+/// of a bore qualifies, each refusal is returned rather than falling back.
+pub(crate) fn resize_cylindrical_face_with_blends(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    new_radius: f64,
+) -> Result<Option<SolidId>, OperationsError> {
+    let face_data = topo.face(face)?;
+    let FaceSurface::Cylinder(wall) = face_data.surface().clone() else {
+        return Ok(None);
+    };
+    let reversed = face_data.is_reversed();
+    if !reversed {
+        return Ok(None);
+    }
+    let _discovery_memo = DiscoveryMemoScope::enter();
+    let band_count = rim_blend_band_count(topo, solid, face, &wall)?;
+    if band_count == 0 {
+        return Ok(None);
+    }
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let source_counts = remus_topology::explorer::solid_entity_counts(topo, solid)?;
+        let mut current = solid;
+        let mut selected = face;
+        let mut current_volume = None;
+        let mut plans = Vec::with_capacity(band_count);
+        while let Some(seed) = adjacent_blend_seed(topo, current, &[selected])? {
+            let band = describe_band(topo, current, seed)?;
+            let cap = rim_blend_cap(topo, &band, selected, &wall)?.ok_or_else(|| {
+                reconstruction("a resized wall's rim blend stopped qualifying after a removal")
+            })?;
+            let sharp = remove_blend_region(topo, current, &band)?;
+            validate_exact_result(topo, sharp.solid, "sharp rim reconstruction")?;
+            let stage_volume = stage_volume_of(topo, current, current_volume)?;
+            let sharp_volume = crate::measure::solid_volume(topo, sharp.solid, 0.05)?;
+            current_volume = Some(sharp_volume);
+            validate_volume_progress(stage_volume, sharp_volume, sharp_volume, band.radius, 0.0)?;
+            selected = remap_faces(&[selected], &sharp.face_map, "resized wall")?[0];
+            plans.push(RimBlendPlan {
+                radius: band.radius,
+                volume_effect: stage_volume - sharp_volume,
+                cap,
+                edge_count: sharp.edges.len(),
+            });
+            current = sharp.solid;
+        }
+        if plans.len() != band_count {
+            return Err(reconstruction(format!(
+                "removed {} rim blends from the resized wall; {band_count} were recognized",
+                plans.len()
+            )));
+        }
+
+        // The sharp wall has no blend neighbour left, so this resizes the
+        // wall alone, under that path's own volume and wall checks.
+        current = crate::push_pull::resize_cylindrical_face(topo, current, selected, new_radius)?;
+        let mut current_volume = crate::measure::solid_volume(topo, current, 0.05)?;
+        let shift = new_radius - wall.radius();
+        for plan in plans.iter().rev() {
+            let wall_face = resized_wall(topo, current, &wall, new_radius, reversed)?;
+            let cap_face = rim_cap_face(topo, current, wall_face, plan.cap)?;
+            let mut edges = shared_edges(topo, current, wall_face, cap_face)?;
+            edges.compact_sort_unstable_by_key(|edge| edge.index());
+            edges.dedup();
+            if edges.len() != plan.edge_count {
+                return Err(reconstruction(format!(
+                    "resized wall meets its cap along {} sharp edges; expected {}",
+                    edges.len(),
+                    plan.edge_count
+                )));
+            }
+            let rebuilt = rebuild_blend_edges(topo, current, &edges, plan.radius, plan.radius, false)?;
+            validate_exact_result(topo, rebuilt.solid, "resized rim blend reconstruction")?;
+            let rebuilt_volume = crate::measure::solid_volume(topo, rebuilt.solid, 0.05)?;
+            // Pappus: the quarter-round section, of area r²(1 - π/4), keeps
+            // its shape and moves `shift` farther from the axis.
+            let section = plan.radius * plan.radius * (1.0 - std::f64::consts::FRAC_PI_4);
+            let effect = plan.volume_effect
+                + plan.volume_effect.signum() * std::f64::consts::TAU * section * shift;
+            validate_expected_volume(
+                current_volume + effect,
+                rebuilt_volume,
+                "resized rim blend volume effect",
+            )?;
+            current_volume = rebuilt_volume;
+            current = rebuilt.solid;
+        }
+
+        let final_counts = remus_topology::explorer::solid_entity_counts(topo, current)?;
+        if final_counts != source_counts {
+            return Err(reconstruction(format!(
+                "blend-aware cylindrical resize changed (faces, edges, vertices) from {source_counts:?} to {final_counts:?}"
+            )));
+        }
+        resized_wall(topo, current, &wall, new_radius, reversed)?;
+        Ok(current)
+    })
+    .map(Some)
+}
+
+/// The number of distinct rim blend bands tangent to `face`, or zero when any
+/// tangent blend is not a rim blend [`rim_blend_cap`] qualifies.
+fn rim_blend_band_count(
+    topo: &Topology,
+    solid: SolidId,
+    face: FaceId,
+    wall: &remus_math::surfaces::CylindricalSurface,
+) -> Result<usize, OperationsError> {
+    let adjacency = solid_adjacency(topo, solid)?;
+    let mut bands: Vec<Vec<FaceId>> = Vec::new();
+    for edge in face_edges(topo, face)? {
+        for candidate in distinct_faces(adjacency.faces_for_edge(edge)) {
+            if candidate == face
+                || blend_surface(topo.face(candidate)?.surface()).is_none()
+                || !tangent_across(topo, edge, face, candidate)?
+                || bands.iter().any(|band| band.contains(&candidate))
+            {
+                continue;
+            }
+            let Ok(band) = describe_band(topo, solid, candidate) else {
+                return Ok(0);
+            };
+            if rim_blend_cap(topo, &band, face, wall)?.is_none() {
+                return Ok(0);
+            }
+            bands.push(band.faces);
+        }
+    }
+    Ok(bands.len())
+}
+
+/// The planar cap of a rim blend between `wall` and a plane perpendicular to
+/// its axis, as a unit normal and offset; `None` for any other band.
+fn rim_blend_cap(
+    topo: &Topology,
+    band: &BandDescription,
+    wall_face: FaceId,
+    wall: &remus_math::surfaces::CylindricalSurface,
+) -> Result<Option<(Vec3, f64)>, OperationsError> {
+    let tol = Tolerance::new();
+    let Ok(axis) = wall.axis().normalize() else {
+        return Ok(None);
+    };
+    let [first, second] = band.supports.as_slice() else {
+        return Ok(None);
+    };
+    let cap = match (*first == wall_face, *second == wall_face) {
+        (true, false) => *second,
+        (false, true) => *first,
+        _ => return Ok(None),
+    };
+    let FaceSurface::Plane { normal, d } = *topo.face(cap)?.surface() else {
+        return Ok(None);
+    };
+    let length = normal.length();
+    if length <= f64::EPSILON || (normal.dot(axis).abs() / length) < 1.0 - tol.angular {
+        return Ok(None);
+    }
+    for &band_face in &band.faces {
+        let FaceSurface::Torus(torus) = topo.face(band_face)?.surface() else {
+            return Ok(None);
+        };
+        let offset = torus.center() - wall.origin();
+        if torus.z_axis().cross(axis).length() > tol.angular
+            || (offset - axis * offset.dot(axis)).length() > tol.linear
+        {
+            return Ok(None);
+        }
+    }
+    Ok(Some((normal * (1.0 / length), d / length)))
+}
+
+/// The one wall of `solid` on `wall`'s axis at `radius`, facing as before.
+fn resized_wall(
+    topo: &Topology,
+    solid: SolidId,
+    wall: &remus_math::surfaces::CylindricalSurface,
+    radius: f64,
+    reversed: bool,
+) -> Result<FaceId, OperationsError> {
+    let tol = Tolerance::new();
+    let Ok(axis) = wall.axis().normalize() else {
+        return Err(reconstruction("resized wall has a degenerate axis"));
+    };
+    let mut walls = Vec::new();
+    for candidate in remus_topology::explorer::solid_faces(topo, solid)? {
+        let data = topo.face(candidate)?;
+        let FaceSurface::Cylinder(cylinder) = data.surface() else {
+            continue;
+        };
+        let offset = cylinder.origin() - wall.origin();
+        if data.is_reversed() == reversed
+            && tol.approx_eq(cylinder.radius(), radius)
+            && cylinder.axis().cross(axis).length() <= tol.angular
+            && (offset - axis * offset.dot(axis)).length() <= tol.linear
+        {
+            walls.push(candidate);
+        }
+    }
+    match walls.as_slice() {
+        [wall] => Ok(*wall),
+        _ => Err(reconstruction(format!(
+            "resized solid has {} walls at radius {radius}; exactly one is required",
+            walls.len()
+        ))),
+    }
+}
+
+/// The planar face on `cap` sharing an edge with `wall`.
+fn rim_cap_face(
+    topo: &Topology,
+    solid: SolidId,
+    wall: FaceId,
+    (normal, offset): (Vec3, f64),
+) -> Result<FaceId, OperationsError> {
+    let tol = Tolerance::new();
+    let adjacency = solid_adjacency(topo, solid)?;
+    let mut caps = Vec::new();
+    for edge in face_edges(topo, wall)? {
+        for candidate in distinct_faces(adjacency.faces_for_edge(edge)) {
+            let FaceSurface::Plane { normal: n, d } = *topo.face(candidate)?.surface() else {
+                continue;
+            };
+            let length = n.length();
+            if candidate != wall
+                && length > f64::EPSILON
+                && (n * (1.0 / length)).dot(normal) >= 1.0 - tol.angular
+                && (d / length - offset).abs() <= tol.linear
+                && !caps.contains(&candidate)
+            {
+                caps.push(candidate);
+            }
+        }
+    }
+    match caps.as_slice() {
+        [cap] => Ok(*cap),
+        _ => Err(reconstruction(format!(
+            "resized wall meets {} faces on its rim blend's cap plane; exactly one is required",
+            caps.len()
+        ))),
+    }
+}
+
 /// Exact construction data for a caller-proven explicit blend-face union.
 ///
 /// This stays crate-private so higher-level removal can journal one atomic

@@ -258,6 +258,156 @@ pub fn point_in_polygon_2d(p: Point2, polygon: &[Point2]) -> bool {
     inside
 }
 
+/// One edge of a planar loop, projected into the loop's plane frame, for
+/// [`point_in_planar_loop`].
+#[derive(Debug, Clone, Copy)]
+pub enum PlanarLoopEdge {
+    /// A straight edge, in traversal order.
+    Segment(Point2, Point2),
+    /// A circular arc on `center` and `radius`, from `start` through its
+    /// parametric midpoint `mid` to `end`, in traversal order.
+    Arc {
+        /// Projected circle centre.
+        center: Point2,
+        /// Circle radius.
+        radius: f64,
+        /// Traversal start.
+        start: Point2,
+        /// Arc midpoint.
+        mid: Point2,
+        /// Traversal end.
+        end: Point2,
+    },
+    /// One complete turn of a circle; `sense` is `+1.0` counter-clockwise.
+    Circle {
+        /// Projected circle centre.
+        center: Point2,
+        /// Circle radius.
+        radius: f64,
+        /// Traversal sense in the frame.
+        sense: f64,
+    },
+}
+
+impl PlanarLoopEdge {
+    /// Project one wire edge into `frame`. `at(t)` evaluates the edge at the
+    /// normalized traversal parameter `t` in `[0, 1]`; `closed` says the edge
+    /// is one full turn. `None` for a curve other than a line or a circle
+    /// lying in the frame's plane.
+    pub fn project(
+        curve: &remus_topology::edge::EdgeCurve,
+        at: impl Fn(f64) -> remus_math::vec::Point3,
+        closed: bool,
+        frame: &super::plane_frame::PlaneFrame,
+        angular: f64,
+    ) -> Option<Self> {
+        use remus_topology::edge::EdgeCurve;
+        let point = |t: f64| frame.project(at(t));
+        match curve {
+            EdgeCurve::Line => Some(Self::Segment(point(0.0), point(1.0))),
+            EdgeCurve::Circle(circle) => {
+                let normal = frame.u_axis().cross(frame.v_axis());
+                if circle.normal().cross(normal).length() > angular {
+                    return None;
+                }
+                let center = frame.project(circle.center());
+                let radius = circle.radius();
+                if closed {
+                    let (a, b, c) = (point(0.0), point(1.0 / 3.0), point(2.0 / 3.0));
+                    Some(Self::Circle {
+                        center,
+                        radius,
+                        sense: cross_2d(b - a, c - a).signum(),
+                    })
+                } else {
+                    Some(Self::Arc {
+                        center,
+                        radius,
+                        start: point(0.0),
+                        mid: point(0.5),
+                        end: point(1.0),
+                    })
+                }
+            }
+            EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_)
+            | EdgeCurve::NurbsCurve(_) => None,
+        }
+    }
+}
+
+fn cross_2d(a: Vec2, b: Vec2) -> f64 {
+    a.x() * b.y() - a.y() * b.x()
+}
+
+/// Whether `p` lies inside a closed planar loop of lines and circular arcs,
+/// decided on the arcs themselves rather than their chords.
+///
+/// A sampled polygon of a circular boundary is inscribed, so a point in the
+/// band between chord and arc reads as outside: 1 - cos(pi / n) of the radius
+/// for n samples, which a thin annulus can lie inside entirely. Here the
+/// winding number is summed per edge — a segment adds its subtended angle,
+/// and an arc adds its chord's angle plus a full turn when `p` lies in the
+/// circular segment the arc and chord enclose.
+///
+/// `None` when `p` lies within `eps` of an arc, of a vertex, or of an arc's
+/// chord inside its circle: those cases stay with the caller's polygon test.
+#[must_use]
+pub fn point_in_planar_loop(p: Point2, edges: &[PlanarLoopEdge], eps: f64) -> Option<bool> {
+    use std::f64::consts::TAU;
+    let subtended = |a: Point2, b: Point2| -> Option<f64> {
+        let (da, db) = (a - p, b - p);
+        if da.length() <= eps || db.length() <= eps {
+            return None;
+        }
+        Some(cross_2d(da, db).atan2(da.x() * db.x() + da.y() * db.y()))
+    };
+    let inside_circle = |center: Point2, radius: f64| -> Option<bool> {
+        let offset = (p - center).length();
+        ((offset - radius).abs() > eps).then_some(offset < radius)
+    };
+    if edges.is_empty() {
+        return None;
+    }
+    let mut winding = 0.0;
+    for &edge in edges {
+        match edge {
+            PlanarLoopEdge::Segment(a, b) => winding += subtended(a, b)?,
+            PlanarLoopEdge::Circle {
+                center,
+                radius,
+                sense,
+            } => {
+                if inside_circle(center, radius)? {
+                    winding += TAU * sense;
+                }
+            }
+            PlanarLoopEdge::Arc {
+                center,
+                radius,
+                start,
+                mid,
+                end,
+            } => {
+                let inside = inside_circle(center, radius)?;
+                winding += subtended(start, end)?;
+                let chord = end - start;
+                let side = cross_2d(chord, p - start);
+                if inside && side.abs() <= eps * chord.length() {
+                    return None;
+                }
+                if inside && side * cross_2d(chord, mid - start) > 0.0 {
+                    // The arc and its chord close a loop around `p` in the
+                    // arc's sense.
+                    winding += TAU * cross_2d(mid - start, end - start).signum();
+                }
+            }
+        }
+    }
+    Some((winding / TAU).round() != 0.0)
+}
+
 /// Compute the signed area of a 2D polygon (Shoelace formula).
 ///
 /// Positive area = counterclockwise winding, negative = clockwise.
@@ -419,6 +569,93 @@ mod tests {
         assert_eq!(
             candidate_midpoints(&polygon, candidates),
             candidate_midpoints(&rotated, candidate_edge_indices(&rotated))
+        );
+    }
+
+    fn polar(radius: f64, degrees: f64) -> Point2 {
+        let angle = degrees.to_radians();
+        Point2::new(radius * angle.cos(), radius * angle.sin())
+    }
+
+    #[test]
+    fn circle_loop_decides_the_chord_sagitta_band() {
+        // A thin annulus left by a 0.05 resize of an r 12.3 bore: its interior
+        // lies between the hole circle's inscribed octagon and the circle.
+        let hole = [PlanarLoopEdge::Circle {
+            center: Point2::new(0.0, 0.0),
+            radius: 12.3,
+            sense: -1.0,
+        }];
+        let octagon: Vec<_> = (0..8).map(|k| polar(12.3, 45.0 * f64::from(k))).collect();
+        let sample = polar(12.275, 22.5);
+        assert!(!point_in_polygon_2d(sample, &octagon));
+        assert_eq!(point_in_planar_loop(sample, &hole, 1e-6), Some(true));
+        assert_eq!(
+            point_in_planar_loop(polar(12.325, 22.5), &hole, 1e-6),
+            Some(false)
+        );
+        assert_eq!(point_in_planar_loop(polar(12.3, 10.0), &hole, 1e-6), None);
+    }
+
+    #[test]
+    fn arc_loop_counts_its_circular_segment_in_either_sense() {
+        // A D: the upper half of an r 1 circle closed by its diameter.
+        let arc = PlanarLoopEdge::Arc {
+            center: Point2::new(0.0, 0.0),
+            radius: 1.0,
+            start: polar(1.0, 0.0),
+            mid: polar(1.0, 90.0),
+            end: polar(1.0, 180.0),
+        };
+        let diameter = PlanarLoopEdge::Segment(polar(1.0, 180.0), polar(1.0, 0.0));
+        let forward = [arc, diameter];
+        let reversed = [
+            PlanarLoopEdge::Segment(polar(1.0, 0.0), polar(1.0, 180.0)),
+            PlanarLoopEdge::Arc {
+                center: Point2::new(0.0, 0.0),
+                radius: 1.0,
+                start: polar(1.0, 180.0),
+                mid: polar(1.0, 90.0),
+                end: polar(1.0, 0.0),
+            },
+        ];
+        for edges in [&forward[..], &reversed[..]] {
+            // Beside the arc, outside the chords of any coarse polygon.
+            assert_eq!(
+                point_in_planar_loop(polar(0.99, 60.0), edges, 1e-9),
+                Some(true)
+            );
+            assert_eq!(
+                point_in_planar_loop(polar(1.01, 60.0), edges, 1e-9),
+                Some(false)
+            );
+            assert_eq!(
+                point_in_planar_loop(polar(0.5, -30.0), edges, 1e-9),
+                Some(false)
+            );
+        }
+        // A major arc: three quarters of the circle closed by its chord.
+        let major = [
+            PlanarLoopEdge::Arc {
+                center: Point2::new(0.0, 0.0),
+                radius: 1.0,
+                start: polar(1.0, 0.0),
+                mid: polar(1.0, 135.0),
+                end: polar(1.0, 270.0),
+            },
+            PlanarLoopEdge::Segment(polar(1.0, 270.0), polar(1.0, 0.0)),
+        ];
+        assert_eq!(
+            point_in_planar_loop(Point2::new(0.0, 0.0), &major, 1e-9),
+            Some(true)
+        );
+        assert_eq!(
+            point_in_planar_loop(polar(0.99, 200.0), &major, 1e-9),
+            Some(true)
+        );
+        assert_eq!(
+            point_in_planar_loop(polar(0.9, 315.0), &major, 1e-9),
+            Some(false)
         );
     }
 }
