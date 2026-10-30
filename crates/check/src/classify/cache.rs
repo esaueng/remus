@@ -460,7 +460,7 @@ impl ClassifySource for CachedSource<'_> {
                     owned_trim = super::boundary::FaceTrimData::build(self.topo, *fid)?;
                     &owned_trim
                 };
-                if super::trim_contains_point(trim_ref, point) {
+                if super::face_trim_contains(self.topo, *fid, trim_ref, None, point)? {
                     return Ok(true);
                 }
             }

@@ -349,6 +349,32 @@ pub(crate) fn trim_contains_point(trim: &boundary::FaceTrimData, point: Point3) 
         .any(|hole| crate::util::point_in_polygon_3d(&point, hole, &normal))
 }
 
+/// Trim membership of a point already within tolerance of the face's
+/// support surface: the UV trim for cylinder, cone and torus faces, whose
+/// 3D outer polygon can project degenerately (RFC 0008 F4), else the
+/// projected polygon.
+pub(crate) fn face_trim_contains(
+    topo: &Topology,
+    fid: FaceId,
+    trim: &boundary::FaceTrimData,
+    cache: Option<&boundary::FaceCache>,
+    point: Point3,
+) -> Result<bool, CheckError> {
+    if let Some(inside) = boundary::analytic_uv_trim_contains(topo, fid, trim, cache, point)? {
+        return Ok(inside);
+    }
+    Ok(trim_contains_point(trim, point))
+}
+
+/// Whether a face's boundary trim is decided in its own `(u, v)` by
+/// [`face_trim_contains`] rather than by the projected polygon.
+pub(crate) const fn trim_is_uv_decided(surface: &FaceSurface) -> bool {
+    matches!(
+        surface,
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Torus(_)
+    )
+}
+
 /// Checks if a point is within `tolerance` of any face boundary.
 ///
 /// Uses analytic point-to-surface distance for all surface types, then
@@ -368,6 +394,13 @@ fn is_on_boundary(
                 boundary::qualified_sphere_trim_contains(topo, fid, None, point, tolerance)?
             {
                 if inside {
+                    return Ok(true);
+                }
+                continue;
+            }
+            if trim_is_uv_decided(topo.face(fid)?.surface()) {
+                let trim = boundary::FaceTrimData::build(topo, fid)?;
+                if face_trim_contains(topo, fid, &trim, None, point)? {
                     return Ok(true);
                 }
                 continue;
