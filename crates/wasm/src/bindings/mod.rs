@@ -45,6 +45,8 @@ mod face_digest_tests;
 #[cfg(test)]
 mod face_move_preview_tests;
 #[cfg(test)]
+mod face_normal_contract_tests;
+#[cfg(test)]
 mod fillet_fail_closed_tests;
 #[cfg(test)]
 mod gridfinity_tests;

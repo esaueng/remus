@@ -7,6 +7,14 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### ⚠ BREAKING CHANGES
 
+* Batch `getFaceNormal` (`executeBatch` / `executeBatchV2`) now returns a
+  planar face's outward normal, flipped by the face's `reversed` flag, the
+  same vector as the direct `getFaceNormal`. It used to return the stored
+  plane normal, which points into the material on reversed faces such as the
+  walls a `cut` leaves. Faces that are not reversed, including every
+  primitive face, are unchanged. Curved faces still report the stored surface
+  normal at `(u, v) = (0, 0)` in a batch, where the direct method refuses.
+
 * The kernel class is renamed from `BrepKernel` to `RemusKernel`. The package
   still exports `BrepKernel` as a deprecated alias of the same class (ESM,
   CommonJS and TypeScript) for a transition period; switch to `RemusKernel`,

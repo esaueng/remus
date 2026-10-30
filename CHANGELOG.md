@@ -20,6 +20,16 @@ historical predecessor-line records, retained for provenance. The
 
 ### ⚠ BREAKING CHANGES
 
+* **wasm:** batch `getFaceNormal` (`executeBatch` / `executeBatchV2`) now
+  returns a planar face's outward normal, flipped by the face's `reversed`
+  flag, the same vector as the direct `getFaceNormal`. It used to return the
+  stored plane normal, which points into the material on reversed faces such
+  as the walls a `cut` leaves (a 2×2×2 box cut by a 1×1×4 box reported `[1,0,0]`
+  and `[0,1,0]` for its inner walls instead of `[-1,0,0]` and `[0,-1,0]`).
+  Faces that are not reversed, including every primitive face, are unchanged.
+  Curved faces still report the stored surface normal at `(u, v) = (0, 0)`
+  in a batch, where the direct method refuses.
+
 * **wasm:** the kernel class is renamed from `BrepKernel`, the predecessor
   line's name, to `RemusKernel`. JavaScript consumers keep a deprecated
   `BrepKernel` alias of the same class in `remus-wasm` (ESM, CommonJS and
