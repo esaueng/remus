@@ -1472,6 +1472,16 @@
       "reason": "sweep/loft/pipe family; O4.7 solid twin pending"
     },
     {
+      "js": "makeBevelGearDetailed",
+      "rust": "make_bevel_gear_detailed",
+      "file": "bindings/gear.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "typed solid envelope by construction; no legacy throwing method to twin"
+    },
+    {
       "js": "makeBox",
       "rust": "make_box_solid",
       "file": "bindings/primitives.rs",

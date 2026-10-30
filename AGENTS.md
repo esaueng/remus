@@ -191,7 +191,7 @@ Quick reference — find the right file for any task:
 | Filtered exact predicates | `filtered.rs` |
 | Float tolerance | `tolerance.rs` |
 | Geometric predicates (orient2d/3d) | `predicates.rs` |
-| Qualified ray–cylinder/cone/sphere intersection: cancellation-free quadratic, relative tangency band, transversal/tangential/unclassified hits (RFC 0008 §3.2) | `ray.rs`, `ray/tests.rs` |
+| Qualified ray–cylinder/cone/sphere intersection (cancellation-free quadratic, relative tangency band) and ray–torus (merged double roots as tangential): transversal/tangential/unclassified hits (RFC 0008 §3.2) | `ray.rs`, `ray/tests.rs` |
 | Ray-triangle intersection | `ray_triangle.rs` |
 | 2D polygon offset | `polygon_offset.rs` |
 | 2D polygon ops (clip, fillet, chamfer) | `polygon2d.rs` |
@@ -500,11 +500,14 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Mesh boolean (co-refinement) | `mesh_boolean.rs` |
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
 | Twisted extrusion: the straight extrusion's topology with the top cap turned, fitted helix edges and certified swept side faces (lands concentric with the axis stay exact cylinders); herringbone: two opposite-hand halves glued at their shared mid-plane edges | `extrude/twist.rs`, `extrude/twist/tests.rs` |
+| Tapered extrusion toward an apex: the straight extrusion's topology with the far cap scaled about the apex; lines sweep to planes through it, concentric circles to exact cones, other curves to ruled NURBS (a concentric hole stays a cylinder) | `extrude/taper.rs`, `extrude/taper/tests.rs` |
 | Involute spur, helical, herringbone, internal (ring) and rack gears as one extruded (helical: twisted; herringbone: twisted both ways) outline: dimensions, warnings, typed refusals, certified flank fit | `gear.rs` |
 | Gear outlines in the local frame: involute flanks, closed-form root fillets, tooth replication, rack profile | `gear/profile.rs` |
 | Gear oracles: closed-form dimensions, exact-involute Green area, pitch-circle thickness probes, fit bound, rack trapezoid volume, construction face roles, refusals (tests) | `gear/tests.rs` |
 | Helical gear oracles: ISO 21771 closed forms, Cavalieri volumes, flank points against the exact involute helicoid, hand and twist direction, refusals (tests) | `gear/tests/helical.rs` |
 | Herringbone gear oracles: Cavalieri volumes, each half's flank points on its own involute helicoid, far cap in line with the start cap, unique half-qualified roles, refusals (tests) | `gear/tests/herringbone.rs` |
+| Straight bevel gears: pitch cone from the tooth ratio and shaft angle, certified fit of the spherical involute centrally projected onto the flat heel, tapered toward the apex | `gear/bevel.rs` |
+| Bevel gear oracles: closed-form cone angles and mate pitch angles, cap areas against the exact spherical-involute heel outline, apex-sweep volumes, flank points on the exact spherical-involute cones, pitch-cone classification, roles, refusals (tests) | `gear/bevel/tests.rs` |
 | Gear teeth along the whole length of an existing boss or bore: keep-diameter or given-module fit, exact tooth-band material proof, tube cut then gear-ring fuse on one coaxial seam, roles carried through the fuse | `gear/cylinder.rs` |
 | Teeth-on-cylinder oracles: standalone-gear and closed-form volumes on a boss, a stepped bored shaft and a bored ring, turn-down fit and phase probes, cross-hole and partial-span refusals (tests) | `gear/cylinder/tests.rs` |
 | Helical sweep | `helix.rs` |
@@ -655,7 +658,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Source-relative live face moves preserve accepted geometry on refusal (tests) | `bindings/face_move_preview_tests.rs` |
 | Differential oracle: the modifier twins' full-copy rollback envelope kept verbatim, against the rollback scope (tests) | `bindings/modifier_detailed/envelope_oracle_tests.rs` |
 | Typed construction results (`extrudeDetailed`, `revolveDetailed`) | `bindings/construction_detailed.rs` |
-| Gear construction from a JSON spec: new bodies (`makeGearDetailed`) and teeth on an existing cylinder (`cutGearTeethDetailed`), direct and batch | `bindings/gear.rs` |
+| Gear construction from a JSON spec: new bodies (`makeGearDetailed`), straight bevel gears (`makeBevelGearDetailed`) and teeth on an existing cylinder (`cutGearTeethDetailed`), direct and batch | `bindings/gear.rs` |
 | Live planar polygon imprint, direct and both batch adapters | `bindings/construction_imprint.rs` |
 | Transform, copy, mirror, pattern | `bindings/transforms.rs` |
 | Typed affine transform results and refusals | `bindings/transform_detailed.rs` |

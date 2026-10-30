@@ -487,3 +487,105 @@ fn herringbone_gears_name_both_halves_direct_and_batch() {
     assert_eq!(flat["code"], "gear:invalid-parameter", "{flat}");
     assert_eq!(live_counts(&direct_kernel), before);
 }
+
+fn bevel_envelope(kernel: &mut RemusKernel, spec: &Value) -> Value {
+    serde_json::to_value(kernel.make_bevel_gear_detailed_impl(spec)).unwrap()
+}
+
+fn bevel_batch(kernel: &mut RemusKernel, args: &Value) -> Value {
+    let ops = json!([{ "op": "makeBevelGearDetailed", "args": args }]);
+    let results: Value = serde_json::from_str(&kernel.execute_batch_v2(&ops.to_string())).unwrap();
+    results[0].clone()
+}
+
+#[test]
+fn bevel_gears_report_their_cones_and_roles_direct_and_batch() {
+    let spec = json!({
+        "module": 2.0, "teeth": 20, "mateTeeth": 40, "faceWidth": 8.0, "boreDiameter": 10.0
+    });
+    let mut direct_kernel = RemusKernel::new();
+    let direct = bevel_envelope(&mut direct_kernel, &spec);
+    assert_eq!(direct["status"], "ok", "{direct}");
+    let details = &direct["details"];
+    assert_eq!(details["quality"], "approximate");
+    assert_eq!(details["approximated"], "spherical involute flanks");
+    let bound = details["flankDeviationBound"].as_f64().unwrap();
+    assert!(bound > 0.0 && bound <= 1e-5 * 2.0 * 1.01, "{bound}");
+    assert!(details["spansPerFlank"].as_u64().unwrap() >= 1);
+    // Right-angle pair at 20:40: tan δ = 1/2, degrees at this boundary.
+    let geometry = &details["geometry"];
+    let delta = 0.5_f64.atan().to_degrees();
+    assert!((geometry["pitchAngle"].as_f64().unwrap() - delta).abs() < 1e-12);
+    assert!((geometry["matePitchAngle"].as_f64().unwrap() - (90.0 - delta)).abs() < 1e-12);
+    assert!((geometry["pitchDiameter"].as_f64().unwrap() - 40.0).abs() < 1e-12);
+    let a = 20.0 / 0.5_f64.atan().sin();
+    assert!((geometry["outerConeDistance"].as_f64().unwrap() - a).abs() < 1e-12);
+
+    let roles: Vec<&str> = details["faceRoles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["role"].as_str().unwrap())
+        .collect();
+    for name in [
+        "cap.start",
+        "cap.end",
+        "bore",
+        "tooth[0].flank.plus",
+        "tooth[19].flank.minus",
+        "tooth[0].tip",
+        "root[19]",
+    ] {
+        assert!(roles.contains(&name), "{name}: {roles:?}");
+    }
+    let solid = handle(&direct["value"]);
+    assert_eq!(roles.len(), faces_of(&direct_kernel, solid).len());
+    assert_valid(&direct_kernel, solid);
+
+    let mut batch_kernel = RemusKernel::new();
+    let batch = bevel_batch(&mut batch_kernel, &spec);
+    assert_eq!(batch["ok"], direct);
+}
+
+#[test]
+fn bevel_refusals_carry_cone_dimensions_and_keep_the_session() {
+    let mut kernel = RemusKernel::new();
+    let before = live_counts(&kernel);
+
+    let bore = json!({
+        "module": 2.0, "teeth": 20, "mateTeeth": 40, "faceWidth": 8.0, "boreDiameter": 40.0
+    });
+    let result = bevel_envelope(&mut kernel, &bore);
+    assert_eq!(result["status"], "error", "{result}");
+    assert_eq!(result["code"], "gear:bore-too-large");
+    assert_eq!(result["details"]["argument"], "boreDiameter");
+    assert_eq!(result["details"]["operation"], "makeBevelGear");
+    assert!(
+        result["details"]["geometry"]["rootDiameter"]
+            .as_f64()
+            .unwrap()
+            > 0.0
+    );
+    assert!(result["value"].is_null());
+    assert_eq!(live_counts(&kernel), before);
+    assert_eq!(bevel_batch(&mut kernel, &bore)["ok"], result);
+
+    // A face width reaching the apex has no cone dimensions to show.
+    let long = bevel_envelope(
+        &mut kernel,
+        &json!({ "module": 2.0, "teeth": 20, "mateTeeth": 40, "faceWidth": 60.0 }),
+    );
+    assert_eq!(long["code"], "gear:invalid-parameter", "{long}");
+    assert!(long["details"].get("geometry").is_none());
+
+    for spec in [
+        json!({ "module": 2.0, "teeth": 20, "faceWidth": 8.0 }),
+        json!({ "module": 2.0, "teeth": 20, "mateTeeth": 40, "faceWidth": 8.0, "helixAngle": 10.0 }),
+        json!({ "module": 2.0, "teeth": 20, "mateTeeth": 40.5, "faceWidth": 8.0 }),
+    ] {
+        let malformed = bevel_envelope(&mut kernel, &spec);
+        assert_eq!(malformed["code"], "invalid_argument", "{spec}: {malformed}");
+        assert_eq!(bevel_batch(&mut kernel, &spec)["ok"], malformed, "{spec}");
+    }
+    assert_eq!(live_counts(&kernel), before);
+}

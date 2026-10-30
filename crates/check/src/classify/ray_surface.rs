@@ -5,10 +5,8 @@
 
 // Functions used by boundary.rs for ray-face crossing counts.
 
-use smallvec::SmallVec;
-
 use remus_math::nurbs::surface::NurbsSurface;
-use remus_math::ray::RayHits;
+use remus_math::ray::{RayHit, RayHits};
 use remus_math::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
 use remus_math::vec::{Point3, Vec3};
 
@@ -68,17 +66,11 @@ pub fn ray_sphere(origin: Point3, direction: Vec3, sph: &SphericalSurface) -> Ra
 // Ray-torus
 // ---------------------------------------------------------------------------
 
-/// Intersect a ray with a torus.
-///
-/// Returns up to 4 positive-t values (quartic equation). Delegates to the
-/// residual-verified quartic root finder in `remus_math` — a local Ferrari
-/// solver previously both missed real roots and emitted off-surface spurious
-/// ones for oblique rays at moderate radii, flipping crossing parity.
-pub fn ray_torus(origin: Point3, direction: Vec3, tor: &ToroidalSurface) -> SmallVec<[f64; 4]> {
-    remus_math::analytic_intersection::intersect_line_torus(tor, origin, direction)
-        .into_iter()
-        .filter(|&t| t > RAY_T_MIN)
-        .collect()
+/// Intersect a ray with a torus: every real root, qualified so that a merged
+/// double root is not read as one crossing
+/// ([`remus_math::ray::ray_torus`]), unfiltered by sign.
+pub fn ray_torus(origin: Point3, direction: Vec3, tor: &ToroidalSurface) -> Vec<RayHit> {
+    remus_math::ray::ray_torus(origin, direction, tor)
 }
 
 // ---------------------------------------------------------------------------
@@ -213,24 +205,24 @@ mod tests {
         );
         // t values: origin.x=-5, so t = x - (-5) = x + 5
         assert!(
-            (hits[0] - 1.0).abs() < TOL,
+            (hits[0].t - 1.0).abs() < TOL,
             "t0={}, expected 1.0 (x=-4)",
-            hits[0]
+            hits[0].t
         );
         assert!(
-            (hits[1] - 3.0).abs() < TOL,
+            (hits[1].t - 3.0).abs() < TOL,
             "t1={}, expected 3.0 (x=-2)",
-            hits[1]
+            hits[1].t
         );
         assert!(
-            (hits[2] - 7.0).abs() < TOL,
+            (hits[2].t - 7.0).abs() < TOL,
             "t2={}, expected 7.0 (x=2)",
-            hits[2]
+            hits[2].t
         );
         assert!(
-            (hits[3] - 9.0).abs() < TOL,
+            (hits[3].t - 9.0).abs() < TOL,
             "t3={}, expected 9.0 (x=4)",
-            hits[3]
+            hits[3].t
         );
     }
 
@@ -251,10 +243,18 @@ mod tests {
             hits
         );
         // t = 5 - z_hit. Tube at (3,0,0) has z = ±1, so hits at z=1 (t=4) and z=-1 (t=6).
-        assert!((hits[0] - 4.0).abs() < 0.1, "t0={}, expected ~4.0", hits[0]);
-        assert!((hits[1] - 6.0).abs() < 0.1, "t1={}, expected ~6.0", hits[1]);
+        assert!(
+            (hits[0].t - 4.0).abs() < 0.1,
+            "t0={}, expected ~4.0",
+            hits[0].t
+        );
+        assert!(
+            (hits[1].t - 6.0).abs() < 0.1,
+            "t1={}, expected ~6.0",
+            hits[1].t
+        );
         // Verify hits are on the torus surface
-        for &t in &hits {
+        for t in hits.iter().map(|h| h.t) {
             let p = origin + dir * t;
             let pv = p - tor.center();
             let z = pv.dot(tor.z_axis());
@@ -302,10 +302,10 @@ mod tests {
                 let hits = ray_torus(origin, dir, &tor);
                 // A forward ray from inside the tube must exit: at least one hit.
                 assert!(
-                    !hits.is_empty(),
+                    hits.iter().any(|h| h.t > RAY_T_MIN),
                     "no roots for origin {origin:?} dir {dir:?}"
                 );
-                for &t in &hits {
+                for t in hits.iter().map(|h| h.t) {
                     let p = origin + dir * t;
                     let pv = p - tor.center();
                     let z = pv.dot(tor.z_axis());
