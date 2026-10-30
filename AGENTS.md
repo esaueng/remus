@@ -160,6 +160,7 @@ Quick reference — find the right file for any task:
 | Opt-in curve/surface knot simplification and U/V removal | `nurbs/reduction.rs`, `nurbs/reduction/tests.rs` |
 | Certified adaptive Hermite cubic approximation | `nurbs/cubic_fit.rs`, `nurbs/cubic_fit/tests.rs` |
 | Certified piecewise cubic Hermite fit of a parametric curve with a closed-form fourth-derivative bound (C¹ double-knot B-spline, proven remainder) | `nurbs/hermite_fit.rs`, `nurbs/hermite_fit/tests.rs` |
+| Certified NURBS fits of screw-motion sweeps: helices and swept surfaces sharing one span plan, so neighbouring fits match bit for bit (twisted extrusions, helical gears) | `nurbs/screw.rs`, `nurbs/screw/tests.rs` |
 | Bezier decomposition | `nurbs/decompose.rs` |
 | Bezier clipping intersection | `nurbs/bezier_clip.rs` |
 | Closed-form oracles for the Bezier-clip helpers and recursion work counts (tests) | `nurbs/bezier_clip/mutation_oracle_tests.rs` |

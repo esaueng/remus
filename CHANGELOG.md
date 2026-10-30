@@ -20,6 +20,9 @@ historical predecessor-line records, retained for provenance. The
   kept. A feature crossing the tooth band, or a span over part of the face,
   refuses with a typed `gear:<reason>` code. Gear results now name every gear
   face (`faceRoles`, e.g. `tooth[3].flank.plus`) and report the `module`.
+* **math:** `nurbs::screw` fits helices and screw-motion swept surfaces as
+  NURBS with a proven bound; fits sharing one plan share their knots, so
+  neighbouring faces and edges match exactly.
 * **math:** `nurbs::hermite_fit::fit_cubic_hermite` fits a parametric curve
   with uniform cubic Hermite spans and a proven remainder bound from a
   caller-supplied fourth-derivative bound.

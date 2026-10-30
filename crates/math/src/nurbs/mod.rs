@@ -20,6 +20,7 @@ pub mod projection;
 pub mod reduction;
 pub mod reuse;
 pub(crate) mod reuse_bounds;
+pub mod screw;
 pub mod self_intersection;
 pub mod surface;
 pub mod surface_fitting;
