@@ -27,10 +27,10 @@
 //! cargo test --release -p remus-io --test classify_engine_oracle -- --ignored
 //! ```
 //!
-//! Flip analysis: set `CLASSIFY_ORACLE_DUMP=<file>` to write every scored
-//! verdict, and `CLASSIFY_ORACLE_BASELINE=<file>` to compare against an
-//! earlier dump; any point an engine had right in the baseline and gets
-//! wrong now fails the run.
+//! Flip analysis (corpus test only): set `CLASSIFY_ORACLE_DUMP=<file>` to
+//! write every scored verdict, and `CLASSIFY_ORACLE_BASELINE=<file>` to
+//! compare against an earlier dump; any point an engine had right in the
+//! baseline and gets wrong now fails the run.
 
 #![allow(
     clippy::unwrap_used,
@@ -298,6 +298,7 @@ fn probe_points(mesh: &TriangleMesh, bounds: Aabb3, diagonal: f64) -> Vec<Point3
 
 /// One scored point: oracle verdict, and whether each engine agreed.
 struct Verdict {
+    point: Point3,
     inside: bool,
     algo_right: bool,
     check_right: bool,
@@ -352,6 +353,7 @@ fn score_body(name: &str, topo: &Topology, solid: SolidId) -> Option<BodyScore> 
         let Some(inside) = oracle.classify(point, &mut scratch) else {
             score.ambiguous += 1;
             score.verdicts.push(Verdict {
+                point,
                 inside: false,
                 algo_right: true,
                 check_right: true,
@@ -371,6 +373,7 @@ fn score_body(name: &str, topo: &Topology, solid: SolidId) -> Option<BodyScore> 
             _ => false,
         };
         score.verdicts.push(Verdict {
+            point,
             inside,
             algo_right,
             check_right,
@@ -379,17 +382,20 @@ fn score_body(name: &str, topo: &Topology, solid: SolidId) -> Option<BodyScore> 
     Some(score)
 }
 
-/// Per-point lines `body index oracle algo_right check_right`.
+/// Per-point lines `body index oracle algo_right check_right x y z`.
 fn dump(scores: &BTreeMap<String, BodyScore>) -> String {
     let mut text = String::new();
     for (name, score) in scores {
         for (k, v) in score.verdicts.iter().enumerate() {
             writeln!(
                 text,
-                "{name}\t{k}\t{}\t{}\t{}",
+                "{name}\t{k}\t{}\t{}\t{}\t{:?}\t{:?}\t{:?}",
                 u8::from(v.inside),
                 u8::from(v.algo_right),
-                u8::from(v.check_right)
+                u8::from(v.check_right),
+                v.point.x(),
+                v.point.y(),
+                v.point.z()
             )
             .unwrap();
         }
@@ -403,7 +409,7 @@ fn flips_against(baseline: &str, scores: &BTreeMap<String, BodyScore>) -> Vec<St
     let mut fixed = (0usize, 0usize);
     for line in baseline.lines() {
         let fields: Vec<&str> = line.split('\t').collect();
-        let [name, index, _, algo, check] = fields[..] else {
+        let [name, index, _, algo, check, ..] = fields[..] else {
             continue;
         };
         let Some(score) = scores.get(name) else {
@@ -431,7 +437,8 @@ fn flips_against(baseline: &str, scores: &BTreeMap<String, BodyScore>) -> Vec<St
 }
 
 /// Scores the bodies `keep` accepts and returns how many were scored.
-fn run(keep: &dyn Fn(&str) -> bool) -> usize {
+/// `flips` enables the dump and baseline environment variables.
+fn run(keep: &dyn Fn(&str) -> bool, flips: bool) -> usize {
     let mut bodies = step_bodies(keep);
     bodies.extend(synthetic_bodies(keep));
     let pins: BTreeMap<&str, (usize, usize)> = PINNED
@@ -473,10 +480,16 @@ fn run(keep: &dyn Fn(&str) -> bool) -> usize {
         "{} bodies, {total_points} points: algo {total_algo} wrong, check {total_check} wrong",
         scores.len()
     );
-    if let Ok(path) = std::env::var("CLASSIFY_ORACLE_DUMP") {
+    if let Some(path) = flips
+        .then(|| std::env::var("CLASSIFY_ORACLE_DUMP").ok())
+        .flatten()
+    {
         std::fs::write(path, dump(&scores)).unwrap();
     }
-    if let Ok(path) = std::env::var("CLASSIFY_ORACLE_BASELINE") {
+    if let Some(path) = flips
+        .then(|| std::env::var("CLASSIFY_ORACLE_BASELINE").ok())
+        .flatten()
+    {
         let baseline = std::fs::read_to_string(path).unwrap();
         failures.extend(flips_against(&baseline, &scores));
     }
@@ -487,7 +500,10 @@ fn run(keep: &dyn Fn(&str) -> bool) -> usize {
 /// The bodies of RFC 0008's F1, F2 and F4.
 #[test]
 fn classifier_wrong_counts_do_not_rise_on_defect_bodies() {
-    assert_eq!(run(&|name| FAST_BODIES.contains(&name)), FAST_BODIES.len());
+    assert_eq!(
+        run(&|name| FAST_BODIES.contains(&name), false),
+        FAST_BODIES.len()
+    );
 }
 
 /// The whole corpus.
@@ -496,5 +512,5 @@ fn classifier_wrong_counts_do_not_rise_on_defect_bodies() {
 fn classifier_wrong_counts_do_not_rise_on_corpus() {
     // Five bodies exceed MAX_TRIANGLES: the whole torus, the b12 torus and
     // both wide sphere caps.
-    assert_eq!(run(&|_| true), PINNED.len());
+    assert_eq!(run(&|_| true, true), PINNED.len());
 }
