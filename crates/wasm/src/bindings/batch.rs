@@ -3164,7 +3164,7 @@ impl RemusKernel {
             }
             "sewFaces" => {
                 let face_handles: Vec<u32> = get_u32_array_optional(args, "faces")?;
-                let tol = get_optional_f64(args, "tolerance")?.unwrap_or(1e-6);
+                let tol = get_optional_f64(args, "tolerance")?.unwrap_or(TOL);
                 let face_ids: Vec<_> = face_handles
                     .iter()
                     .map(|&h| self.resolve_face(h).map_err(StructuredWasmError::from))
