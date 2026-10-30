@@ -1422,13 +1422,22 @@ fn resize_cylindrical_face_aligned(
 
     // Growing the wall sweeps it into open space, shrinking it sweeps back
     // through material already there. Either way the material that moves is the
-    // annular sleeve between the two radii over the face's own extent — a plain
-    // cylinder when growing (the sleeve's inner radius is the axis), a tube
-    // when shrinking. Only whether it is added or removed changes.
+    // annular sleeve between the two radii over the face's own extent. Only
+    // whether it is added or removed changes. A growing bore may cut a plain
+    // cylinder (inside the bore there is nothing to remove), but a growing
+    // boss adds a tube: a solid cylinder would also fill any bore inside it.
     let (op, tool) = match (concavity, grows) {
         (Concavity::Boss, true) => (
             BooleanOp::Fuse,
-            place_cylinder(topo, base, axis, seam_direction, new_radius, height)?,
+            make_tube(
+                topo,
+                base,
+                axis,
+                seam_direction,
+                old_radius,
+                new_radius,
+                height,
+            )?,
         ),
         (Concavity::Hole, true) => (
             BooleanOp::Cut,
@@ -3134,6 +3143,35 @@ mod tests {
         assert_volume(&topo, out, 40.0f64.mul_add(40.0 * 10.0, PI * 64.0 * 10.0));
         assert_watertight(&topo, out);
         assert_eq!(face_count(&topo, out, "cylinder"), 1);
+    }
+
+    #[test]
+    fn growing_a_hollow_boss_keeps_its_bore() {
+        // A bore sunk into the boss lies inside the wall being grown. The
+        // material added is the sleeve between the two radii; fusing a solid
+        // cylinder of the new radius filled the bore as well.
+        let mut topo = Topology::new();
+        let bossed = bossed_block(&mut topo);
+        let drill = cylinder_at(&mut topo, 2.0, 10.0, 20.0, 20.0, 14.0);
+        let hollow = boolean(&mut topo, BooleanOp::Cut, bossed, drill).unwrap();
+        let wall = solid_faces(&topo, hollow)
+            .unwrap()
+            .into_iter()
+            .find(|&f| {
+                matches!(topo.face(f).unwrap().surface(),
+                    FaceSurface::Cylinder(c) if (c.radius() - 5.0).abs() < 1e-9)
+            })
+            .unwrap();
+
+        let out = resize_cylindrical_face(&mut topo, hollow, wall, 8.0).unwrap();
+
+        assert_volume(
+            &topo,
+            out,
+            40.0f64.mul_add(40.0 * 10.0, PI * 64.0 * 10.0) - PI * 4.0 * 6.0,
+        );
+        assert_watertight(&topo, out);
+        assert_eq!(face_count(&topo, out, "cylinder"), 2);
     }
 
     #[test]

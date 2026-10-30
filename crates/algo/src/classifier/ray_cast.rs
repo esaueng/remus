@@ -99,14 +99,45 @@ impl FaceGeom {
     /// A planar face with outer polygon `verts`, hole polygons `holes`, and the
     /// supporting plane `normal · x = d`.
     fn planar(verts: Vec<Point3>, holes: Vec<Vec<Point3>>, normal: Vec3, d: f64) -> Self {
+        let outer = (verts, Vec::new());
+        let holes = holes.into_iter().map(|h| (h, Vec::new())).collect();
+        Self::planar_with_arcs(outer, holes, normal, d)
+    }
+
+    /// [`Self::planar`] with the circular arcs each polygon chords, as
+    /// [`wire_polygon_arcs`] reports them.
+    fn planar_with_arcs(
+        outer: (Vec<Point3>, Vec<Option<ChordArc>>),
+        holes: Vec<(Vec<Point3>, Vec<Option<ChordArc>>)>,
+        normal: Vec3,
+        d: f64,
+    ) -> Self {
         let axis = Axis::of(normal);
         Self::Planar {
             normal,
             d,
             axis,
-            face: PlanarFace::new(verts, holes, axis),
+            face: PlanarFace::new(outer, holes, normal, axis),
         }
     }
+}
+
+/// The circle a boundary polygon segment is a chord of.
+///
+/// A planar face bounded by circles is tested against inscribed polygons, and
+/// a chord falls short of its arc by the sagitta: 0.28 mm on the 17-gon of a
+/// 16.5 mm rim, more on a split rim's arcs. A hit in that circular segment
+/// lies inside the face but outside the polygon, so the loop's containment is
+/// flipped there: the polygon and its circular segments together are the
+/// exact region.
+#[derive(Debug, Clone, Copy)]
+struct ChordArc {
+    center: Point3,
+    /// The circle's axis.
+    axis: Vec3,
+    radius: f64,
+    /// How far the arc stands off its chord.
+    sagitta: f64,
 }
 
 /// The coordinate plane a planar face's polygons are projected into: the one
@@ -225,6 +256,8 @@ struct PlanarFace {
     slack: f64,
     /// Every coordinate of every loop is a [`gate_coord`].
     cullable: bool,
+    /// The supporting plane's normal, which orients the arc chords.
+    normal: Vec3,
     loops: Box<PlanarLoops>,
 }
 
@@ -238,14 +271,61 @@ struct PlanarLoops {
 struct Loop {
     pts: Vec<Point3>,
     flat: Vec<Point2>,
+    /// Bounds of the projected loop, its circular segments included.
     bounds: [f64; 4],
+    /// The arc segment `i` (from `pts[i]` to the next point) chords, if any;
+    /// empty when no segment chords an arc.
+    arcs: Vec<Option<ChordArc>>,
 }
 
 impl Loop {
-    fn new(pts: Vec<Point3>, axis: Axis) -> Self {
+    fn new(pts: Vec<Point3>, arcs: Vec<Option<ChordArc>>, axis: Axis) -> Self {
         let flat: Vec<Point2> = pts.iter().map(|&p| axis.project(p)).collect();
-        let bounds = bounds_of(&flat);
-        Self { pts, flat, bounds }
+        let mut bounds = bounds_of(&flat);
+        // An arc lies within its sagitta of its chord.
+        for (i, arc) in arcs.iter().enumerate() {
+            if let Some(arc) = arc {
+                let (a, b) = (flat[i], flat[(i + 1) % flat.len()]);
+                bounds = [
+                    bounds[0].min(a.x().min(b.x()) - arc.sagitta),
+                    bounds[1].min(a.y().min(b.y()) - arc.sagitta),
+                    bounds[2].max(a.x().max(b.x()) + arc.sagitta),
+                    bounds[3].max(a.y().max(b.y()) + arc.sagitta),
+                ];
+            }
+        }
+        Self {
+            pts,
+            flat,
+            bounds,
+            arcs,
+        }
+    }
+
+    /// The circular segments of this loop's arc chords that hold `hit`, and
+    /// whether `hit` lies within `near` of one of those arcs. `normal` is the
+    /// face plane's.
+    fn arc_segments(&self, hit: Point3, normal: Vec3, near: f64) -> (usize, bool) {
+        let n = self.pts.len();
+        let mut held = 0;
+        let mut grazes = false;
+        for (i, arc) in self.arcs.iter().enumerate() {
+            let Some(arc) = arc else { continue };
+            let (a, b) = (self.pts[i], self.pts[(i + 1) % n]);
+            let chord = b - a;
+            // The centre and the arc lie on opposite sides of the chord.
+            let centre_side = chord.cross(arc.center - a).dot(normal);
+            let hit_side = chord.cross(hit - a).dot(normal);
+            if centre_side == 0.0 || hit_side * centre_side > 0.0 {
+                continue;
+            }
+            let distance = (hit - arc.center).length();
+            if distance < arc.radius {
+                held += 1;
+            }
+            grazes |= (distance - arc.radius).abs() <= near;
+        }
+        (held, grazes)
     }
 
     /// Whether some segment lies within `near` of `hit`, computing the
@@ -271,17 +351,25 @@ impl Loop {
 }
 
 impl PlanarFace {
-    fn new(verts: Vec<Point3>, holes: Vec<Vec<Point3>>, axis: Axis) -> Self {
+    fn new(
+        (verts, arcs): (Vec<Point3>, Vec<Option<ChordArc>>),
+        holes: Vec<(Vec<Point3>, Vec<Option<ChordArc>>)>,
+        normal: Vec3,
+        axis: Axis,
+    ) -> Self {
         let mut scale = 0.0_f64;
         let mut cullable = true;
-        for p in verts.iter().chain(holes.iter().flatten()) {
+        for p in verts.iter().chain(holes.iter().flat_map(|h| h.0.iter())) {
             for c in [p.x(), p.y(), p.z()] {
                 cullable &= gate_coord(c);
                 scale = scale.max(c.abs());
             }
         }
-        let outer = Loop::new(verts, axis);
-        let holes: Vec<Loop> = holes.into_iter().map(|h| Loop::new(h, axis)).collect();
+        let outer = Loop::new(verts, arcs, axis);
+        let holes: Vec<Loop> = holes
+            .into_iter()
+            .map(|(h, arcs)| Loop::new(h, arcs, axis))
+            .collect();
         let union_box = holes.iter().fold(outer.bounds, |u, h| {
             [
                 u[0].min(h.bounds[0]),
@@ -294,6 +382,7 @@ impl PlanarFace {
             union_box,
             slack: 16.0 * f64::EPSILON * scale,
             cullable,
+            normal,
             loops: Box::new(PlanarLoops { outer, holes }),
         }
     }
@@ -309,6 +398,17 @@ impl PlanarFace {
     fn polygon_hit(&self, hit: Point3, p: Point2, near: f64) -> (i32, bool) {
         crate::perf::bump_ray_work(RayWork::PolygonTest);
         let PlanarLoops { outer, holes } = &*self.loops;
+        // A hit in an odd number of a loop's circular segments flips the
+        // polygon's verdict (see [`ChordArc`]).
+        let arc_graze = std::cell::Cell::new(false);
+        let arcs_flip = |l: &Loop| {
+            if l.arcs.is_empty() {
+                return false;
+            }
+            let (held, grazes) = l.arc_segments(hit, self.normal, near);
+            arc_graze.set(arc_graze.get() | grazes);
+            held % 2 == 1
+        };
         let (graze, inside) = if self.cullable && gate_applies(near, p) {
             let margin = 2.0 * near + self.slack;
             if outside(p, self.union_box, margin) {
@@ -318,17 +418,18 @@ impl PlanarFace {
             let graze = std::iter::once(outer)
                 .chain(holes)
                 .any(|l| l.grazes(hit, p, near, margin));
-            let inside = |l: &Loop| !outside(p, l.bounds, 0.0) && winds(p, &l.flat);
+            let inside =
+                |l: &Loop| !outside(p, l.bounds, 0.0) && (winds(p, &l.flat) != arcs_flip(l));
             (graze, inside(outer) && !holes.iter().any(inside))
         } else {
             let graze = dist_to_polygon_boundary(hit, &outer.pts) <= near
                 || holes
                     .iter()
                     .any(|h| dist_to_polygon_boundary(hit, &h.pts) <= near);
-            let inside = |l: &Loop| winds(p, &l.flat);
+            let inside = |l: &Loop| winds(p, &l.flat) != arcs_flip(l);
             (graze, inside(outer) && !holes.iter().any(inside))
         };
-        (i32::from(inside), graze)
+        (i32::from(inside), graze || arc_graze.get())
     }
 }
 
@@ -1073,9 +1174,19 @@ fn wire_polygon(
     topo: &Topology,
     wire_id: remus_topology::wire::WireId,
 ) -> Result<Vec<Point3>, AlgoError> {
+    wire_polygon_arcs(topo, wire_id).map(|(verts, _)| verts)
+}
+
+/// [`wire_polygon`] with, for each segment from `verts[i]` to the next
+/// vertex, the circle it is a chord of when its edge is a circular arc.
+fn wire_polygon_arcs(
+    topo: &Topology,
+    wire_id: remus_topology::wire::WireId,
+) -> Result<(Vec<Point3>, Vec<Option<ChordArc>>), AlgoError> {
     let wire = topo.wire(wire_id)?;
 
-    let mut polylines: Vec<Vec<Point3>> = Vec::with_capacity(wire.edges().len());
+    let mut polylines: Vec<(Vec<Point3>, Option<remus_math::curves::Circle3D>)> =
+        Vec::with_capacity(wire.edges().len());
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge())?;
         let raw_start = topo.vertex(edge.start())?.point();
@@ -1102,23 +1213,34 @@ fn wire_polygon(
         if !oe.is_forward() {
             pts.reverse();
         }
-        polylines.push(pts);
+        let circle = match edge.curve() {
+            remus_topology::edge::EdgeCurve::Circle(circle) => Some(circle.clone()),
+            _ => None,
+        };
+        polylines.push((pts, circle));
     }
 
+    // `segs[i]` is the circle of the segment ending at `verts[i + 1]`.
+    let mut segs: Vec<Option<remus_math::curves::Circle3D>> = Vec::new();
     let join_tol = 1e-6;
     let mut used = vec![false; polylines.len()];
-    let mut verts: Vec<Point3> = Vec::with_capacity(polylines.iter().map(Vec::len).sum());
-    let Some(first) = polylines.first() else {
-        return Ok(verts);
+    let mut verts: Vec<Point3> =
+        Vec::with_capacity(polylines.iter().map(|(pts, _)| pts.len()).sum());
+    let Some((first, first_circle)) = polylines.first() else {
+        return Ok((verts, Vec::new()));
     };
     verts.extend_from_slice(first);
+    segs.extend(std::iter::repeat_n(
+        first_circle.clone(),
+        first.len().saturating_sub(1),
+    ));
     used[0] = true;
     for _ in 1..polylines.len() {
         let tail = match verts.last() {
             Some(p) => *p,
             None => break,
         };
-        let next = polylines.iter().enumerate().find_map(|(i, pl)| {
+        let next = polylines.iter().enumerate().find_map(|(i, (pl, _))| {
             if used[i] {
                 return None;
             }
@@ -1134,31 +1256,62 @@ fn wire_polygon(
         });
         let Some((idx, rev)) = next else { break };
         used[idx] = true;
-        let pl = &polylines[idx];
+        let (pl, circle) = &polylines[idx];
         if rev {
             // The reversed polyline minus its first point, without a copy.
             verts.extend(pl.iter().rev().skip(1));
         } else {
             verts.extend_from_slice(&pl[1..]);
         }
+        segs.extend(std::iter::repeat_n(
+            circle.clone(),
+            pl.len().saturating_sub(1),
+        ));
     }
     // Append any unchained polylines so no geometry is silently lost
-    // (matches the previous behavior of emitting all edge samples).
-    for (i, pl) in polylines.iter().enumerate() {
+    // (matches the previous behavior of emitting all edge samples). Their
+    // junctions are not arcs, so no segment of theirs claims one.
+    let chained = polylines.iter().zip(&used).all(|(_, &u)| u);
+    for (i, (pl, _)) in polylines.iter().enumerate() {
         if !used[i] {
             verts.extend_from_slice(pl);
         }
     }
     // Drop the duplicated closing point.
+    let mut closed = false;
     if verts.len() >= 2 {
         let first_pt = verts[0];
         if let Some(last) = verts.last()
             && (*last - first_pt).length() < join_tol
         {
             verts.pop();
+            closed = true;
         }
     }
-    Ok(verts)
+    // Arcs are reported only for a loop chained end to end, whose segments
+    // `segs` describes one for one (the closing segment last).
+    let arcs = if chained && closed && segs.len() == verts.len() {
+        verts
+            .iter()
+            .enumerate()
+            .map(|(i, &a)| {
+                let circle = segs[i].as_ref()?;
+                let b = verts[(i + 1) % verts.len()];
+                let radius = circle.radius();
+                let half = (b - a).length() / 2.0;
+                let sagitta = radius - (radius * radius - half * half).max(0.0).sqrt();
+                Some(ChordArc {
+                    center: circle.center(),
+                    axis: circle.normal(),
+                    radius,
+                    sagitta,
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok((verts, arcs))
 }
 
 /// Collect per-face ray-cast geometry from a solid.
@@ -1491,7 +1644,7 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
             }
         }
 
-        let verts = wire_polygon(topo, face.outer_wire())?;
+        let (verts, outer_arcs) = wire_polygon_arcs(topo, face.outer_wire())?;
         if verts.len() < 3 {
             continue;
         }
@@ -1535,18 +1688,19 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
 
         let mut holes = Vec::with_capacity(face.inner_wires().len());
         for &iw in face.inner_wires() {
-            let hole = wire_polygon(topo, iw)?;
-            if hole.len() >= 3 {
+            let hole = wire_polygon_arcs(topo, iw)?;
+            if hole.0.len() >= 3 {
                 holes.push(hole);
             }
         }
 
-        let raw_normal =
+        let plane_normal =
             if let remus_topology::face::FaceSurface::Plane { normal, .. } = face.surface() {
-                *normal
+                Some(*normal)
             } else {
-                newell_normal(&verts)
+                None
             };
+        let raw_normal = plane_normal.unwrap_or_else(|| newell_normal(&verts));
         let normal = if face.is_reversed() {
             -raw_normal
         } else {
@@ -1554,7 +1708,28 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
         };
 
         let d = dot_normal_point(normal, verts[0]);
-        result.push(FaceGeom::planar(verts, holes, normal, d));
+        // Only a true plane's circular edges lie in the plane the polygon is
+        // tested in; a planar-approximated curved face keeps its chords.
+        let coplanar = |arcs: Vec<Option<ChordArc>>| -> Vec<Option<ChordArc>> {
+            if plane_normal.is_none() {
+                return Vec::new();
+            }
+            arcs.into_iter()
+                .map(|arc| {
+                    arc.filter(|arc| {
+                        arc.axis.cross(normal).length() <= 1e-9
+                            && (dot_normal_point(normal, arc.center) - d).abs()
+                                <= 1e-9 * arc.radius.max(1.0)
+                    })
+                })
+                .collect()
+        };
+        let outer = (verts, coplanar(outer_arcs));
+        let holes = holes
+            .into_iter()
+            .map(|(hole, arcs)| (hole, coplanar(arcs)))
+            .collect();
+        result.push(FaceGeom::planar_with_arcs(outer, holes, normal, d));
     }
 
     Ok(result)
@@ -2524,6 +2699,36 @@ mod tests {
                     (got - want).abs() <= 1e-12,
                     "seam {seam:.4}: solid box bound {got} vs rim extent {want}"
                 );
+            }
+        }
+    }
+
+    /// A cap is tested against the 17-gon inscribed in its rim, whose chords
+    /// fall short of the circle by the sagitta (0.034 at r = 2). A point just
+    /// inside the wall halfway between two polygon vertices sent its axial ray
+    /// through that gap and lost the vote; on a rim of radius 16.5 the gap is
+    /// 0.28, and the cap level with a fillet's rim was dropped from a cut.
+    #[test]
+    fn cap_hits_between_rim_chords_count() {
+        use std::f64::consts::{PI, TAU};
+        for k in 0..4 {
+            let seam = f64::from(k).mul_add(TAU / 7.0, 0.3);
+            let mut topo = Topology::default();
+            let solid = make_seamed_cylinder(&mut topo, seam);
+            for gap in 0..17 {
+                let angle = seam + PI / 17.0 * f64::from(2 * gap + 1);
+                for (radius, votes) in [(1.99_f64, 3), (2.01, 0)] {
+                    let point = Point3::new(
+                        radius.mul_add(angle.cos(), 0.5),
+                        radius.mul_add(angle.sin(), -1.5),
+                        0.1,
+                    );
+                    assert_eq!(
+                        ray_cast_inside_votes(&topo, solid, point).unwrap(),
+                        votes,
+                        "seam {seam:.3}, gap {gap}, radius {radius}"
+                    );
+                }
             }
         }
     }

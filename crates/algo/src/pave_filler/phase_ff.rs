@@ -798,6 +798,17 @@ fn perform_seeded(
                 });
             }
             raw_curves.extend(tangent_rims);
+            // A plane holding one of a torus face's rim circles meets that
+            // face only along the rim: its boundary arcs replace a sampled
+            // trace of it, as a tangent rim does above.
+            let plane_rims = torus_rims_in_plane(topo, fa, fb, tol)?;
+            if !plane_rims.is_empty() {
+                let traced = raw_curves.len();
+                raw_curves.retain(|raw| !is_sampled_trace_of_rim(raw, &plane_rims, tol));
+                if raw_curves.len() < traced {
+                    raw_curves.extend(plane_rims);
+                }
+            }
             // Intersection implementations are allowed to refuse, never to
             // smuggle an invalid parameter span into a sampler that would
             // quietly classify every NaN point as outside and drop the curve.
@@ -6755,6 +6766,111 @@ fn is_marched_trace_of_tangent_rim(
                 return false;
             };
             surf_a.normal(ua, va).cross(surf_b.normal(ub, vb)).length() <= angle_band
+        })
+    })
+}
+
+/// The rim arcs of a torus face that lie in its partner plane, as exact
+/// sections, when the whole face lies on one side of that plane.
+///
+/// A plane at the height of a torus's equator (a cylinder cap level with the
+/// tangent rim of the fillet band beyond it) meets the torus there
+/// transversally, but the face only touches the plane along that rim. Plane ×
+/// torus sections are sampled, and the sampled trace of the rim lies exactly
+/// on the face boundary, where the in-face test that restricts it cannot
+/// decide: some pieces are kept, slitting the torus face along its own
+/// boundary and leaving free edges. The boundary arcs are the whole section,
+/// so they replace the trace and `link_existing` welds them onto the boundary
+/// edges. A face that crosses the plane is left alone: its section there is
+/// real.
+fn torus_rims_in_plane(
+    topo: &Topology,
+    fa: FaceId,
+    fb: FaceId,
+    tol: Tolerance,
+) -> Result<Vec<RawCurve>, AlgoError> {
+    let (torus_face, normal, d) = match (topo.face(fa)?.surface(), topo.face(fb)?.surface()) {
+        (FaceSurface::Torus(_), FaceSurface::Plane { normal, d }) => (fa, *normal, *d),
+        (FaceSurface::Plane { normal, d }, FaceSurface::Torus(_)) => (fb, *normal, *d),
+        // B24: exhaustive over the `FaceSurface` pair — only a torus × plane
+        // pair can hold a torus rim in the plane.
+        (
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_),
+            _,
+        )
+        | (
+            FaceSurface::Torus(_),
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+        ) => return Ok(Vec::new()),
+    };
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let face = topo.face(torus_face)?;
+    let mut rims = Vec::new();
+    let (mut below, mut above) = (false, false);
+    for &wire in std::iter::once(&face.outer_wire()).chain(face.inner_wires()) {
+        for oe in topo.wire(wire)?.edges() {
+            let edge = topo.edge(oe.edge())?;
+            let start = topo.vertex(edge.start())?.point();
+            let end = topo.vertex(edge.end())?.point();
+            let (t0, t1) =
+                super::helpers::authoritative_edge_domain(edge, oe.edge(), "torus rim in plane")?;
+            for k in 0..=4_u8 {
+                let t = (t1 - t0).mul_add(f64::from(k) / 4.0, t0);
+                let p = edge.curve().evaluate_with_endpoints(t, start, end);
+                let side = normal.dot(p - origin) - d;
+                below |= side < -tol.linear;
+                above |= side > tol.linear;
+            }
+            if let EdgeCurve::Circle(circle) = edge.curve()
+                && circle.normal().cross(normal).length() <= tol.angular
+                && (normal.dot(circle.center() - origin) - d).abs() <= tol.linear
+            {
+                let domain = (t0.min(t1), t0.max(t1));
+                rims.push(RawCurve {
+                    curve: edge.curve().clone(),
+                    bbox: circle_bbox(circle),
+                    t_range: domain,
+                    p_start: circle.evaluate(domain.0),
+                    p_end: circle.evaluate(domain.1),
+                });
+            }
+        }
+    }
+    if below && above {
+        return Ok(Vec::new());
+    }
+    Ok(rims)
+}
+
+/// Is `raw` a sampled section that runs along one of `rims` throughout?
+fn is_sampled_trace_of_rim(raw: &RawCurve, rims: &[RawCurve], tol: Tolerance) -> bool {
+    const SAMPLES: u32 = 32;
+    if !matches!(raw.curve, EdgeCurve::NurbsCurve(_)) {
+        return false;
+    }
+    let weld = tol.linear * 100.0;
+    let span = raw.t_range.1 - raw.t_range.0;
+    rims.iter().any(|rim| {
+        let EdgeCurve::Circle(circle) = &rim.curve else {
+            return false;
+        };
+        (0..=SAMPLES).all(|k| {
+            let p = raw_point_at(
+                raw,
+                span.mul_add(f64::from(k) / f64::from(SAMPLES), raw.t_range.0),
+            );
+            let offset = p - circle.center();
+            let height = offset.dot(circle.normal());
+            let radial = (offset - circle.normal() * height).length();
+            height.hypot(radial - circle.radius()) <= weld
         })
     })
 }
