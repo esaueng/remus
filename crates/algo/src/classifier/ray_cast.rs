@@ -51,6 +51,19 @@ enum FaceGeom {
         /// excluded. `None` for a full-period lateral.
         u_gap: Option<(f64, f64)>,
     },
+    /// A partial cylindrical patch whose trim is not a rectangle in its
+    /// `(u, v)` chart, such as a helical gear's tip land bounded by two
+    /// helices. Crossings are the exact ray/cylinder roots whose chart point
+    /// lies inside the trim polygon. The polygon lives in the length-scaled
+    /// chart `(r·u, v)` with `u` unwrapped about `centre_u`. The rectangle
+    /// the `Cylinder` variant assumes is the union over `v` of every angular
+    /// span, which is wider than such a patch near its rims and counts a
+    /// neighbouring patch's crossing twice.
+    TrimmedCylinder {
+        surface: remus_math::surfaces::CylindricalSurface,
+        polygon: Vec<Point2>,
+        centre_u: f64,
+    },
     /// A conical face without inner wires, full-period or partial-arc.
     /// Crossings come from the ray/double-cone quadratic filtered to the
     /// face's slant range (`v` = distance from apex along the generator,
@@ -902,7 +915,10 @@ fn line_clears_carrier(geom: &FaceGeom, origin: Point3, ray_dir: Vec3) -> bool {
         FaceGeom::Torus { surface, .. } | FaceGeom::TrimmedTorus { surface, .. } => {
             torus_line_is_clear(surface, origin, ray_dir)
         }
-        FaceGeom::Planar { .. } | FaceGeom::Cylinder { .. } | FaceGeom::Cone { .. } => false,
+        FaceGeom::Planar { .. }
+        | FaceGeom::Cylinder { .. }
+        | FaceGeom::TrimmedCylinder { .. }
+        | FaceGeom::Cone { .. } => false,
     }
 }
 
@@ -1010,6 +1026,7 @@ fn geom_kind(geom: &FaceGeom) -> String {
     match geom {
         FaceGeom::Planar { face, .. } => face.kind(),
         FaceGeom::Cylinder { v_min, v_max, .. } => format!("Cylinder(v {v_min:.2}..{v_max:.2})"),
+        FaceGeom::TrimmedCylinder { polygon, .. } => format!("TrimmedCylinder({})", polygon.len()),
         FaceGeom::Cone { .. } => "Cone".into(),
         FaceGeom::Torus { .. } => "Torus".into(),
         FaceGeom::TrimmedTorus { .. } => "TrimmedTorus".into(),
@@ -1290,6 +1307,17 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
                         pv_min = pv_min.min(v);
                         pv_max = pv_max.max(v);
                         u_samples.push(u);
+                    }
+                    if pv_min.is_finite()
+                        && pv_max > pv_min
+                        && let Some((polygon, centre_u)) = sheared_cylinder_trim(cyl, &verts)
+                    {
+                        result.push(FaceGeom::TrimmedCylinder {
+                            surface: cyl.clone(),
+                            polygon,
+                            centre_u,
+                        });
+                        continue;
                     }
                     if pv_min.is_finite() && pv_max > pv_min {
                         // `largest_u_gap` returning `None` means the boundary
@@ -1606,6 +1634,11 @@ fn ray_geom_crossings(
             *u_gap,
             tol,
         ),
+        FaceGeom::TrimmedCylinder {
+            surface,
+            polygon,
+            centre_u,
+        } => ray_trimmed_cylinder_crossings(origin, ray_dir, surface, polygon, *centre_u, tol),
         FaceGeom::Cone {
             surface,
             v_min,
@@ -1765,6 +1798,109 @@ fn near_gap_border(u: f64, gap: (f64, f64), eps: f64) -> bool {
         }
     }
     false
+}
+
+/// A partial cylinder patch's trim polygon in the length-scaled chart
+/// `(r·u, v)` with `u` unwrapped along the boundary, and the unwrapped `u`
+/// it centres on, when the trim is NOT a rectangle in that chart. `None`
+/// for a rectangular trim (the [`FaceGeom::Cylinder`] model is exact there
+/// and keeps its calibrated verdicts) and for a boundary that winds around
+/// the axis.
+fn sheared_cylinder_trim(
+    cyl: &remus_math::surfaces::CylindricalSurface,
+    verts: &[Point3],
+) -> Option<(Vec<Point2>, f64)> {
+    use std::f64::consts::{PI, TAU};
+    let radius = cyl.radius();
+    let mut chart: Vec<(f64, f64)> = Vec::with_capacity(verts.len());
+    for &p in verts {
+        let (mut u, v) = cyl.project_point(p);
+        if let Some(&(previous, _)) = chart.last() {
+            u += TAU * ((previous - u) / TAU).round();
+        }
+        chart.push((u, v));
+    }
+    let (&(first, _), &(last, _)) = (chart.first()?, chart.last()?);
+    // A loop that winds around the axis is a full-period band, not a patch.
+    if (last - first).abs() > PI {
+        return None;
+    }
+    let (mut u_lo, mut u_hi, mut v_lo, mut v_hi) = (
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for &(u, v) in &chart {
+        u_lo = u_lo.min(u);
+        u_hi = u_hi.max(u);
+        v_lo = v_lo.min(v);
+        v_hi = v_hi.max(v);
+    }
+    let eps = 1e-7 * radius.max(v_hi.abs()).max(v_lo.abs()).max(1.0);
+    let on_box = |&(u, v): &(f64, f64)| {
+        (radius * (u - u_lo)).abs() <= eps
+            || (radius * (u_hi - u)).abs() <= eps
+            || (v - v_lo).abs() <= eps
+            || (v_hi - v).abs() <= eps
+    };
+    if chart.iter().all(on_box) {
+        return None;
+    }
+    let centre_u = 0.5 * (u_lo + u_hi);
+    let polygon = chart
+        .into_iter()
+        .map(|(u, v)| Point2::new(radius * u, v))
+        .collect();
+    Some((polygon, centre_u))
+}
+
+/// Crossings with a [`FaceGeom::TrimmedCylinder`]: the ray/cylinder roots
+/// (near-tangent rays count as misses, as for a full cylinder) whose chart
+/// point lies inside the trim polygon. A root near the polygon boundary
+/// flags the ray as suspicious.
+fn ray_trimmed_cylinder_crossings(
+    origin: Point3,
+    ray_dir: Vec3,
+    surface: &remus_math::surfaces::CylindricalSurface,
+    polygon: &[Point2],
+    centre_u: f64,
+    tol: Tolerance,
+) -> (i32, bool) {
+    use std::f64::consts::TAU;
+    let near = 10.0 * tol.linear;
+    let axis = surface.axis();
+    let m = origin - surface.origin();
+    let d_perp = ray_dir - axis * ray_dir.dot(axis);
+    let m_perp = m - axis * m.dot(axis);
+    let a = d_perp.dot(d_perp);
+    if a < 1e-14 {
+        return (0, false);
+    }
+    let b = 2.0 * m_perp.dot(d_perp);
+    let c = surface
+        .radius()
+        .mul_add(-surface.radius(), m_perp.dot(m_perp));
+    let disc = b.mul_add(b, -4.0 * a * c);
+    if disc < 1e-12 * a * surface.radius() * surface.radius() {
+        return (0, false);
+    }
+    let sqrt_disc = disc.sqrt();
+    let mut crossings = 0;
+    let mut suspicious = false;
+    for t in [(-b - sqrt_disc) / (2.0 * a), (-b + sqrt_disc) / (2.0 * a)] {
+        if t <= tol.linear {
+            continue;
+        }
+        let (mut u, v) = surface.project_point(origin + ray_dir * t);
+        u += TAU * ((centre_u - u) / TAU).round();
+        let p = Point2::new(surface.radius() * u, v);
+        suspicious |= crate::builder::classify_2d::distance_to_polygon_boundary(p, polygon) <= near;
+        if crate::builder::classify_2d::point_in_polygon_2d(p, polygon) {
+            crossings += 1;
+        }
+    }
+    (crossings, suspicious)
 }
 
 /// Count ray crossings with a full-major-revolution toroidal face.
@@ -2524,6 +2660,59 @@ mod tests {
             classify_ray_cast_cached(&geoms, outside).unwrap(),
             FaceClass::Outside
         );
+    }
+
+    /// A helical-land-like patch: a parallelogram in the cylinder's chart,
+    /// sheared by one radian over its height. The rectangle model would span
+    /// every `u` the patch reaches at any height and count rays that pass
+    /// beside it near its rims.
+    #[test]
+    fn sheared_cylinder_patches_count_only_crossings_inside_their_trim() {
+        let cyl = remus_math::surfaces::CylindricalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+        )
+        .unwrap();
+        let chart = |u: f64, v: f64| Point3::new(2.0 * u.cos(), 2.0 * u.sin(), v);
+        // Boundary samples as `wire_polygon` would give them: corners plus
+        // interior points along each side.
+        let corners = [(0.0, 0.0), (0.5, 0.0), (1.5, 4.0), (1.0, 4.0)];
+        let mut verts = Vec::new();
+        for k in 0..4 {
+            let (a, b) = (corners[k], corners[(k + 1) % 4]);
+            for i in 0..4 {
+                let t = f64::from(i) / 4.0;
+                verts.push(chart(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t));
+            }
+        }
+        let (polygon, centre_u) = sheared_cylinder_trim(&cyl, &verts).unwrap();
+        let tol = Tolerance::default();
+        let ray = |u: f64, v: f64| {
+            let (s, c) = u.sin_cos();
+            ray_trimmed_cylinder_crossings(
+                Point3::new(0.0, 0.0, v),
+                Vec3::new(c, s, 0.0),
+                &cyl,
+                &polygon,
+                centre_u,
+                tol,
+            )
+        };
+        // Near the bottom rim the patch spans u in [0.025, 0.525]; near the
+        // top, [0.975, 1.475].
+        assert_eq!(ray(0.3, 0.1), (1, false));
+        assert_eq!(ray(1.2, 0.1).0, 0);
+        assert_eq!(ray(0.0, 0.1).0, 0);
+        assert_eq!(ray(1.2, 3.9), (1, false));
+        assert_eq!(ray(0.3, 3.9).0, 0);
+
+        // A rectangular patch keeps the rectangle model.
+        let rectangle: Vec<Point3> = [(0.0, 0.0), (0.5, 0.0), (0.5, 4.0), (0.0, 4.0)]
+            .iter()
+            .map(|&(u, v)| chart(u, v))
+            .collect();
+        assert!(sheared_cylinder_trim(&cyl, &rectangle).is_none());
     }
 }
 

@@ -24,6 +24,7 @@ use remus_topology::face::{FaceId, FaceSurface};
 
 use crate::CheckError;
 use crate::classify::ray_surface;
+use crate::distance::plane_trim::PlanarTrim;
 use crate::util::{face_hole_polygons, face_polygon, point_in_polygon_3d};
 
 /// Minimum positive ray parameter to count as a forward hit.
@@ -568,6 +569,8 @@ pub struct FaceCache {
     uv_trim: OnceLock<NurbsUvTrim>,
     analytic_uv_trim: OnceLock<AnalyticUvTrim>,
     spherical_trim: OnceLock<Option<GreatCircleTrim>>,
+    /// The exact trim of a planar face with a curved edge.
+    plane_trim: OnceLock<Option<PlanarTrim>>,
 }
 
 /// UV images of a cylinder, cone or torus face's trim polygons, as
@@ -733,10 +736,16 @@ impl NurbsUvTrim {
 }
 
 /// True when a hit lands in one of the face's holes (3D polygon variant).
+/// Whether `hit` lies in a hole. Nested inner wires alternate void and
+/// material (an island inside a cavity opening), so a hit is in a hole when
+/// an odd number of hole loops contain it.
 fn hit_in_hole_3d(holes: &[Vec<Point3>], hit: Point3, normal: Vec3) -> bool {
     holes
         .iter()
-        .any(|hole| point_in_polygon_3d(&hit, hole, &normal))
+        .filter(|hole| point_in_polygon_3d(&hit, hole, &normal))
+        .count()
+        % 2
+        == 1
 }
 
 /// Count crossings for analytic (non-planar) faces using UV containment.
@@ -1924,9 +1933,9 @@ pub fn count_face_ray_crossings_cached(
 ) -> Result<u32, CheckError> {
     let face = topo.face(face_id)?;
     match face.surface() {
-        FaceSurface::Plane { normal, d } => {
-            ray_plane_crossings_with_trim(topo, face_id, trim, origin, direction, *normal, *d)
-        }
+        FaceSurface::Plane { normal, d } => ray_plane_crossings_with_trim(
+            topo, face_id, trim, cache, origin, direction, *normal, *d,
+        ),
         FaceSurface::Cylinder(cyl) => {
             let hits = ray_surface::ray_cylinder(origin, direction, cyl);
             count_quadric_crossings(origin, direction, &hits, |points| {
@@ -2003,15 +2012,78 @@ pub fn count_face_ray_crossings_cached(
     }
 }
 
+/// Whether a planar face has a boundary edge its trim polygon only
+/// approximates: anything but a straight line.
+fn planar_face_has_curved_edge(topo: &Topology, face_id: FaceId) -> Result<bool, CheckError> {
+    let face = topo.face(face_id)?;
+    for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        for oriented in topo.wire(wire)?.edges() {
+            if !crate::distance::edge::is_linear_curve(topo.edge(oriented.edge())?.curve()) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// The exact trim of a planar face with a curved edge, `None` for a
+/// straight-edged face, whose polygon is already exact.
+fn exact_plane_trim_for(
+    topo: &Topology,
+    face_id: FaceId,
+    normal: Vec3,
+) -> Result<Option<PlanarTrim>, CheckError> {
+    if planar_face_has_curved_edge(topo, face_id)? {
+        PlanarTrim::build(topo, face_id, normal).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Exact trim membership of a plane hit on a face bounded by lines and
+/// circles (RFC 0008 F1). The chorded polygon's inradius falls short of a
+/// circular rim by its sagitta, a band no graze margin covers, so a ray
+/// through that band would miss the cap while crossing the exact wall.
+///
+/// `None` when the face is straight-edged or the exact test declines (another
+/// curve kind, or an event it cannot resolve); the caller then keeps the
+/// polygon.
+fn exact_plane_trim(
+    topo: &Topology,
+    face_id: FaceId,
+    cache: Option<&FaceCache>,
+    hit: Point3,
+    normal: Vec3,
+) -> Result<Option<bool>, CheckError> {
+    let contains = |trim: &PlanarTrim| trim.contains(hit).ok();
+    Ok(match cache {
+        Some(cache) => {
+            let trim = if let Some(trim) = cache.plane_trim.get() {
+                trim
+            } else {
+                let trim = exact_plane_trim_for(topo, face_id, normal)?;
+                cache.plane_trim.get_or_init(|| trim)
+            };
+            trim.as_ref().and_then(contains)
+        }
+        None => exact_plane_trim_for(topo, face_id, normal)?
+            .as_ref()
+            .and_then(contains),
+    })
+}
+
 /// Ray-plane intersection with point-in-polygon boundary test.
 ///
 /// Takes caller-supplied trim data. `None` rebuilds it on demand in the
 /// pre-refactor lazy order: the outer polygon first, hole polygons only when
-/// the hit survives outer containment.
+/// the hit survives outer containment. A face with circular edges is decided
+/// exactly first ([`exact_plane_trim`]).
+#[allow(clippy::too_many_arguments)]
 fn ray_plane_crossings_with_trim(
     topo: &Topology,
     face_id: FaceId,
     trim: Option<&FaceTrimData>,
+    cache: Option<&FaceCache>,
     origin: Point3,
     direction: Vec3,
     normal: Vec3,
@@ -2023,6 +2095,9 @@ fn ray_plane_crossings_with_trim(
     };
 
     let hit = origin + direction * t;
+    if let Some(inside) = exact_plane_trim(topo, face_id, cache, hit, normal)? {
+        return Ok(u32::from(inside));
+    }
     if let Some(cached) = trim {
         return Ok(ray_plane_crossings_with_cached(hit, cached, normal));
     }

@@ -1,8624 +1,4 @@
 /**
- * The B-Rep modeling kernel.
- *
- * Owns all topological state. JavaScript holds this reference and
- * invokes methods to create, transform, and query geometry.
- */
-export class BrepKernel {
-    static __wrap(ptr) {
-        const obj = Object.create(BrepKernel.prototype);
-        obj.__wbg_ptr = ptr;
-        BrepKernelFinalization.register(obj, obj.__wbg_ptr, obj);
-        return obj;
-    }
-    __destroy_into_raw() {
-        const ptr = this.__wbg_ptr;
-        this.__wbg_ptr = 0;
-        BrepKernelFinalization.unregister(this);
-        return ptr;
-    }
-    free() {
-        const ptr = this.__destroy_into_raw();
-        wasm.__wbg_brepkernel_free(ptr, 0);
-    }
-    /**
-     * Add hole wires to an existing face, creating a new face with the same
-     * surface but additional inner wires.
-     *
-     * Every hole wire is validated before the face is built: it must be a
-     * closed loop, lie on the face's surface within tolerance, and — on a
-     * planar face — be contained in the outer wire and disjoint from the
-     * face's other holes. The scope of these checks, and why containment is
-     * planar-only, is documented on
-     * [`holed_face`](crate::holed_face). Hole winding is not
-     * constrained; `extrude` handles either.
-     *
-     * The source face is left untouched — this returns a NEW face handle.
-     *
-     * # Errors
-     *
-     * Returns an error if any handle is invalid, or if a hole wire is open,
-     * off-surface, outside the outer wire, duplicated, or overlapping
-     * another hole.
-     * @param {number} face
-     * @param {Uint32Array} hole_wire_handles
-     * @returns {number}
-     */
-    addHolesToFace(face, hole_wire_handles) {
-        const ptr0 = passArray32ToWasm0(hole_wire_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_addHolesToFace(this.__wbg_ptr, face, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Returns a copy of the reference with a type discriminator
-     * (`"surfaceType"` or `"curveType"`) appended.
-     * @param {string} reference
-     * @param {string} discriminator
-     * @param {string} tag
-     * @returns {string}
-     */
-    addRefDiscriminator(reference, discriminator, tag) {
-        let deferred5_0;
-        let deferred5_1;
-        try {
-            const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ptr1 = passStringToWasm0(discriminator, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len1 = WASM_VECTOR_LEN;
-            const ptr2 = passStringToWasm0(tag, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len2 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_addRefDiscriminator(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
-            var ptr4 = ret[0];
-            var len4 = ret[1];
-            if (ret[3]) {
-                ptr4 = 0; len4 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred5_0 = ptr4;
-            deferred5_1 = len4;
-            return getStringFromWasm0(ptr4, len4);
-        } finally {
-            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
-        }
-    }
-    /**
-     * Get faces adjacent to a given face within a solid.
-     *
-     * Returns an array of face handles.
-     * @param {number} solid
-     * @param {number} face
-     * @returns {Uint32Array}
-     */
-    adjacentFaces(solid, face) {
-        const ret = wasm.brepkernel_adjacentFaces(this.__wbg_ptr, solid, face);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Approximate a curve through points (least-squares).
-     *
-     * Returns an edge handle.
-     * @param {Float64Array} coords
-     * @param {number} degree
-     * @param {number} num_control_points
-     * @returns {number}
-     */
-    approximateCurve(coords, degree, num_control_points) {
-        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_approximateCurve(this.__wbg_ptr, ptr0, len0, degree, num_control_points);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Approximate a curve through points using LSPIA (progressive iteration).
-     *
-     * Returns an edge handle. A fit that does not reach `tolerance` within
-     * `max_iterations` carries the iterate with the smallest maximum
-     * deviation; this binding does not report whether it converged.
-     * @param {Float64Array} coords
-     * @param {number} degree
-     * @param {number} num_control_points
-     * @param {number} tolerance
-     * @param {number} max_iterations
-     * @returns {number}
-     */
-    approximateCurveLspia(coords, degree, num_control_points, tolerance, max_iterations) {
-        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_approximateCurveLspia(this.__wbg_ptr, ptr0, len0, degree, num_control_points, tolerance, max_iterations);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Approximate a grid of points into a NURBS surface using LSPIA.
-     *
-     * Returns a face handle.
-     * @param {Float64Array} coords
-     * @param {number} rows
-     * @param {number} cols
-     * @param {number} degree_u
-     * @param {number} degree_v
-     * @param {number} num_cps_u
-     * @param {number} num_cps_v
-     * @param {number} tolerance
-     * @param {number} max_iterations
-     * @returns {number}
-     */
-    approximateSurfaceLspia(coords, rows, cols, degree_u, degree_v, num_cps_u, num_cps_v, tolerance, max_iterations) {
-        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_approximateSurfaceLspia(this.__wbg_ptr, ptr0, len0, rows, cols, degree_u, degree_v, num_cps_u, num_cps_v, tolerance, max_iterations);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Add a child component to a parent in an assembly.
-     *
-     * Returns the component ID.
-     * @param {number} assembly
-     * @param {number} parent
-     * @param {string} name
-     * @param {number} solid
-     * @param {Float64Array} matrix
-     * @returns {number}
-     */
-    assemblyAddChild(assembly, parent, name, solid, matrix) {
-        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_assemblyAddChild(this.__wbg_ptr, assembly, parent, ptr0, len0, solid, ptr1, len1);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Add a root component to an assembly.
-     *
-     * Returns the component ID.
-     * @param {number} assembly
-     * @param {string} name
-     * @param {number} solid
-     * @param {Float64Array} matrix
-     * @returns {number}
-     */
-    assemblyAddRoot(assembly, name, solid, matrix) {
-        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_assemblyAddRoot(this.__wbg_ptr, assembly, ptr0, len0, solid, ptr1, len1);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Get the bill of materials for an assembly.
-     *
-     * Returns a JSON string: `[{"name": "...", "solidIndex": n, "instanceCount": n}, ...]`.
-     * @param {number} assembly
-     * @returns {string}
-     */
-    assemblyBom(assembly) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_assemblyBom(this.__wbg_ptr, assembly);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Flatten an assembly into `[(solid, matrix), ...]`.
-     *
-     * Returns a JSON string: `[{"solid": u32, "matrix": [16 floats]}, ...]`.
-     * @param {number} assembly
-     * @returns {string}
-     */
-    assemblyFlatten(assembly) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_assemblyFlatten(this.__wbg_ptr, assembly);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Create a new empty assembly. Returns an opaque assembly handle.
-     * @param {string} name
-     * @returns {number}
-     */
-    assemblyNew(name) {
-        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_assemblyNew(this.__wbg_ptr, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Perform a bounded exact boolean between two Compound operands.
-     *
-     * Disjoint fuse, pairwise exact intersect, and a single cut-tool
-     * distributed over target members are qualified. Fuse requiring member
-     * merges and multi-tool Cut fail closed until recursive lineage composition
-     * is available.
-     *
-     * # Errors
-     *
-     * Returns an error for invalid handles, overlapping input members, an
-     * unknown operation, or an unqualified exact configuration.
-     * @param {string} op
-     * @param {number} a
-     * @param {number} b
-     * @returns {number}
-     */
-    booleanCompoundRegions(op, a, b) {
-        const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_booleanCompoundRegions(this.__wbg_ptr, ptr0, len0, a, b);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Perform an exact boolean whose disconnected volumetric regions remain
-     * separate solids in a Compound.
-     *
-     * `op` accepts the same spellings as `booleanWithQuality`. The returned
-     * handle can be expanded with `getCompoundSolids`. This path is exact-only
-     * and fails closed if any region or its construction lineage is invalid.
-     * Existing single-solid `fuse`, `cut`, and `intersect` remain compatible.
-     *
-     * # Errors
-     *
-     * Returns an error for invalid handles, an unknown operation, or an
-     * unqualified exact result.
-     * @param {string} op
-     * @param {number} a
-     * @param {number} b
-     * @returns {number}
-     */
-    booleanRegions(op, a, b) {
-        const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_booleanRegions(this.__wbg_ptr, ptr0, len0, a, b);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Performs a boolean governed by a cooperative cancellation token.
-     *
-     * Cancellation is typed (`operation_cancelled`) and transactional: no
-     * partial topology is retained. Result quality follows
-     * `booleanWithQuality`, including the optional exact-only policy and the
-     * optional SSI work-budget caps. The final four additive arguments cap
-     * marching steps, pending branch seeds, traced segments, and branch
-     * points per direction; omitted or `null` values preserve their kernel
-     * defaults.
-     * @param {string} op
-     * @param {number} a
-     * @param {number} b
-     * @param {OperationCancellationToken} token
-     * @param {boolean | null} [exact_only]
-     * @param {number | null} [newton_iterations]
-     * @param {number | null} [subdivision_depth]
-     * @param {number | null} [march_steps]
-     * @param {number | null} [queue_size]
-     * @param {number | null} [segments]
-     * @param {number | null} [branches_per_direction]
-     * @returns {CancellableBooleanResult}
-     */
-    booleanWithCancellation(op, a, b, token, exact_only, newton_iterations, subdivision_depth, march_steps, queue_size, segments, branches_per_direction) {
-        const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        _assertClass(token, OperationCancellationToken);
-        const ret = wasm.brepkernel_booleanWithCancellation(this.__wbg_ptr, ptr0, len0, a, b, token.__wbg_ptr, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations, !isLikeNone(subdivision_depth), isLikeNone(subdivision_depth) ? 0 : subdivision_depth, !isLikeNone(march_steps), isLikeNone(march_steps) ? 0 : march_steps, !isLikeNone(queue_size), isLikeNone(queue_size) ? 0 : queue_size, !isLikeNone(segments), isLikeNone(segments) ? 0 : segments, !isLikeNone(branches_per_direction), isLikeNone(branches_per_direction) ? 0 : branches_per_direction);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Perform a boolean with disclosed result quality.
-     *
-     * `op` is `"fuse"`/`"union"`, `"cut"`/`"difference"`, or
-     * `"intersect"`/`"intersection"`. The plain `fuse`/`cut`/`intersect`
-     * bindings are exact-only since B21: a pair the exact pipeline cannot
-     * handle returns the typed `exact_only_unattainable` refusal instead of
-     * a mesh. This binding is the explicitly permissive opt-in — it reports
-     * whether the mesh (co-refinement) fallback ran (`quality:
-     * "approximate"` plus the fallback deflection, which discards analytic
-     * surface types), and `exact_only = true` turns that fallback into the
-     * same typed refusal so an exact-or-nothing caller never receives a
-     * faceted body.
-     *
-     * `newton_iterations` optionally caps the coupled Newton refinement
-     * iterations of every NURBS surface-surface intersection inside the
-     * operation (a non-negative integer; `0` disables refinement). Omitted
-     * or `null` keeps the kernel default, reproducing prior behavior.
-     * `subdivision_depth` likewise caps recursive SSI seed subdivision
-     * (`0` disables recursive splitting; omitted or `null` keeps depth 6).
-     * The additive `march_steps`, `queue_size`, `segments`, and
-     * `branches_per_direction` arguments cap the remaining SSI marcher and
-     * branch-exploration work. Omitted or `null` values retain the historical
-     * defaults (200, 100, 50, and 10 respectively).
-     *
-     * # Errors
-     *
-     * Returns an error if a handle is invalid, the op string is unknown,
-     * any work-budget argument is not a non-negative integer within the
-     * public work budget, or (under `exact_only`) the exact pipeline cannot
-     * produce the result.
-     * @param {string} op
-     * @param {number} a
-     * @param {number} b
-     * @param {boolean | null} [exact_only]
-     * @param {number | null} [newton_iterations]
-     * @param {number | null} [subdivision_depth]
-     * @param {number | null} [march_steps]
-     * @param {number | null} [queue_size]
-     * @param {number | null} [segments]
-     * @param {number | null} [branches_per_direction]
-     * @returns {BooleanQualityResult}
-     */
-    booleanWithQuality(op, a, b, exact_only, newton_iterations, subdivision_depth, march_steps, queue_size, segments, branches_per_direction) {
-        const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_booleanWithQuality(this.__wbg_ptr, ptr0, len0, a, b, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations, !isLikeNone(subdivision_depth), isLikeNone(subdivision_depth) ? 0 : subdivision_depth, !isLikeNone(march_steps), isLikeNone(march_steps) ? 0 : march_steps, !isLikeNone(queue_size), isLikeNone(queue_size) ? 0 : queue_size, !isLikeNone(segments), isLikeNone(segments) ? 0 : segments, !isLikeNone(branches_per_direction), isLikeNone(branches_per_direction) ? 0 : branches_per_direction);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Compute the axis-aligned bounding box of a solid.
-     *
-     * Returns `[min_x, min_y, min_z, max_x, max_y, max_z]`.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid or has no vertices.
-     * @param {number} solid
-     * @returns {Float64Array}
-     */
-    boundingBox(solid) {
-        const ret = wasm.brepkernel_boundingBox(this.__wbg_ptr, solid);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Captures an entity's geometric signature as a portable reference
-     * string — the inference-tier recovery anchor. `quantum` is the
-     * tolerance-derived quantization (pass the model's linear
-     * tolerance).
-     * @param {string} kind
-     * @param {number} handle
-     * @param {number} quantum
-     * @returns {string}
-     */
-    captureSignatureRef(kind, handle, quantum) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_captureSignatureRef(this.__wbg_ptr, ptr0, len0, handle, quantum);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * Compute the center of mass of a solid (uniform density).
-     *
-     * Returns `[x, y, z]`. Integrates the exact face geometry, so the
-     * result is deflection-independent; `deflection` is accepted for API
-     * compatibility and ignored.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid has zero volume or integration fails.
-     * @param {number} solid
-     * @param {number} deflection
-     * @returns {Float64Array}
-     */
-    centerOfMass(solid, deflection) {
-        const ret = wasm.brepkernel_centerOfMass(this.__wbg_ptr, solid, deflection);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Chamfer edges of a solid.
-     *
-     * `edge_handles` is an array of edge handles. Returns a solid handle.
-     *
-     * # Errors
-     *
-     * Returns an error if distance is non-positive or edges are invalid.
-     * @param {number} solid
-     * @param {Uint32Array} edge_handles
-     * @param {number} distance
-     * @returns {number}
-     */
-    chamfer(solid, edge_handles, distance) {
-        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_chamfer(this.__wbg_ptr, solid, ptr0, len0, distance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Cut corners of a 2D polygon with flat bevels.
-     *
-     * `coords` is a flat array `[x,y, x,y, ...]`.
-     * `distance` is the chamfer distance from each corner.
-     * Returns a flat array of the chamfered polygon coordinates.
-     * @param {Float64Array} coords
-     * @param {number} distance
-     * @returns {Float64Array}
-     */
-    chamfer2d(coords, distance) {
-        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_chamfer2d(this.__wbg_ptr, ptr0, len0, distance);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v2 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v2;
-    }
-    /**
-     * Chamfer edges and return exact, disclosed-approximate, or refused
-     * results as typed data.
-     *
-     * Additive twin of [`chamfer`](Self::chamfer_solid): the planar bevel
-     * first, then the walking builder, with the legacy method unchanged.
-     * `details.engine` is `planarBevel`, `walking`, or `mixed`; quality and
-     * `exactOnly` follow [`filletDetailed`](Self::fillet_detailed).
-     * @param {number} solid
-     * @param {Uint32Array} edge_handles
-     * @param {number} distance
-     * @param {boolean | null} [exact_only]
-     * @returns {SolidOperationDetailedResult}
-     */
-    chamferDetailed(solid, edge_handles, distance, exact_only) {
-        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_chamferDetailed(this.__wbg_ptr, solid, ptr0, len0, distance, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Chamfer edges with distance and angle using the v2 blend engine.
-     *
-     * Returns a new solid handle.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid or edge handles are invalid, or the
-     * blend computation fails.
-     * @param {number} solid
-     * @param {Uint32Array} edge_handles
-     * @param {number} distance
-     * @param {number} angle
-     * @returns {number}
-     */
-    chamferDistanceAngle(solid, edge_handles, distance, angle) {
-        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_chamferDistanceAngle(this.__wbg_ptr, solid, ptr0, len0, distance, angle);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Distance-angle chamfer on the v2 blend engine, as typed data.
-     *
-     * Additive twin of [`chamferDistanceAngle`](Self::chamfer_distance_angle),
-     * unchanged; `angle` is in radians, inside `(0, π/2)`. Quality,
-     * `details.engine` and `exactOnly` follow
-     * [`filletDetailed`](Self::fillet_detailed).
-     * @param {number} solid
-     * @param {Uint32Array} edge_handles
-     * @param {number} distance
-     * @param {number} angle
-     * @param {boolean | null} [exact_only]
-     * @returns {SolidOperationDetailedResult}
-     */
-    chamferDistanceAngleDetailed(solid, edge_handles, distance, angle, exact_only) {
-        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_chamferDistanceAngleDetailed(this.__wbg_ptr, solid, ptr0, len0, distance, angle, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Distance-angle chamfer with versioned face-evolution tracking data.
-     *
-     * Runs the same engine routing as
-     * [`chamferDistanceAngle`](Self::chamfer_distance_angle) — the planar
-     * bevel for planar-line selections, the walking builder otherwise — so
-     * the returned solid is the same exact B-Rep the non-evolution entry
-     * point produces. Both engines report construction history; when one
-     * cannot, the payload carries explicit unresolved source/result sets
-     * instead of inferring lineage geometrically.
-     *
-     * # Errors
-     *
-     * Returns an error if a handle is invalid, the distance is non-positive,
-     * the angle is outside `(0, π/2)`, or the chamfer fails.
-     * @param {number} solid
-     * @param {Uint32Array} edge_handles
-     * @param {number} distance
-     * @param {number} angle
-     * @returns {FaceEvolutionPayloadV1}
-     */
-    chamferDistanceAngleWithEvolution(solid, edge_handles, distance, angle) {
-        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_chamferDistanceAngleWithEvolution(this.__wbg_ptr, solid, ptr0, len0, distance, angle);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * V2 chamfer journaled as one evolution entry (kind `chamfer`).
-     * @param {number} solid
-     * @param {Uint32Array} edges
-     * @param {number} d1
-     * @param {number} d2
-     * @returns {string}
-     */
-    chamferJournaled(solid, edges, d1, d2) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passArray32ToWasm0(edges, wasm.__wbindgen_malloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_chamferJournaled(this.__wbg_ptr, solid, ptr0, len0, d1, d2);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * Chamfer edges with two distances using the v2 blend engine.
-     *
-     * Returns a new solid handle.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid or edge handles are invalid, or the
-     * blend computation fails.
-     * @param {number} solid
-     * @param {Uint32Array} edge_handles
-     * @param {number} d1
-     * @param {number} d2
-     * @returns {number}
-     */
-    chamferV2(solid, edge_handles, d1, d2) {
-        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_chamferV2(this.__wbg_ptr, solid, ptr0, len0, d1, d2);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Two-distance chamfer on the v2 blend engine, as typed data.
-     *
-     * Additive twin of [`chamferV2`](Self::chamfer_v2), unchanged. Quality,
-     * `details.engine` and `exactOnly` follow
-     * [`filletDetailed`](Self::fillet_detailed).
-     * @param {number} solid
-     * @param {Uint32Array} edge_handles
-     * @param {number} d1
-     * @param {number} d2
-     * @param {boolean | null} [exact_only]
-     * @returns {SolidOperationDetailedResult}
-     */
-    chamferV2Detailed(solid, edge_handles, d1, d2, exact_only) {
-        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_chamferV2Detailed(this.__wbg_ptr, solid, ptr0, len0, d1, d2, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Chamfer edges and return versioned face-evolution tracking data.
-     *
-     * This runs the same production engine cascade as [`chamfer`](Self::chamfer_solid):
-     * the established planar bevel first, then the walking builder for
-     * supported curved topology. The returned solid is therefore the same
-     * exact B-Rep the non-evolution entry point produces.
-     *
-     * Generated bevel/corner faces name the input faces the builder used to
-     * construct them. If an engine cannot provide construction history, the
-     * payload reports explicit unresolved source/result sets instead of
-     * inferring lineage geometrically.
-     *
-     * # Errors
-     *
-     * Returns an error if a handle is invalid, the distance is non-positive,
-     * or the chamfer fails.
-     * @param {number} solid
-     * @param {Uint32Array} edge_handles
-     * @param {number} distance
-     * @returns {FaceEvolutionPayloadV1}
-     */
-    chamferWithEvolution(solid, edge_handles, distance) {
-        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_chamferWithEvolution(this.__wbg_ptr, solid, ptr0, len0, distance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Save a snapshot of the current kernel state.
-     *
-     * Returns an opaque checkpoint ID that can be passed to
-     * `restore` or `discardCheckpoint`.
-     *
-     * The snapshot is a clone of all topology, assembly, and sketch state.
-     * Existing entity handles remain valid after restore. Opaque topology,
-     * session, GCS entity, and assembly component handles allocated after it
-     * are retired and never assigned to later entities. Legacy sketch point,
-     * arc, and circle indices retain their dense-array semantics.
-     *
-     * # Errors
-     *
-     * Returns an error if 33 snapshots are already retained (32 history
-     * snapshots plus one temporary probe) or the checkpoint handle namespace
-     * is exhausted. Discard a checkpoint to free capacity; existing
-     * checkpoints remain valid and restore stays available.
-     * @returns {number}
-     */
-    checkpoint() {
-        const ret = wasm.brepkernel_checkpoint(this.__wbg_ptr);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Returns the number of saved checkpoints.
-     * @returns {number}
-     */
-    checkpointCount() {
-        const ret = wasm.brepkernel_checkpointCount(this.__wbg_ptr);
-        return ret >>> 0;
-    }
-    /**
-     * Accounted live/retained topology bytes and unique NURBS payload bytes.
-     * Excludes allocator overhead, session sketches, pcurves, journals, caches
-     * and GPU data. Includes retired slots. Values are estimates, not RSS.
-     *
-     * # Errors
-     * Returns an error if the diagnostic cannot be serialized.
-     * @returns {string}
-     */
-    checkpointMemoryStats() {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_checkpointMemoryStats(this.__wbg_ptr);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Create a circular pattern of a solid around an axis.
-     *
-     * Returns a compound handle.
-     * @param {number} solid
-     * @param {number} ax
-     * @param {number} ay
-     * @param {number} az
-     * @param {number} count
-     * @returns {number}
-     */
-    circularPattern(solid, ax, ay, az, count) {
-        const ret = wasm.brepkernel_circularPattern(this.__wbg_ptr, solid, ax, ay, az, count);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Circular pattern journaled as one evolution entry (kind
-     * `circular_pattern`). Returns JSON `{"compound", "op"}`.
-     * @param {number} solid
-     * @param {number} ax
-     * @param {number} ay
-     * @param {number} az
-     * @param {number} count
-     * @returns {string}
-     */
-    circularPatternJournaled(solid, ax, ay, az, count) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_circularPatternJournaled(this.__wbg_ptr, solid, ax, ay, az, count);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Classify a point relative to a solid: inside, outside, or on boundary.
-     *
-     * Returns `"inside"`, `"outside"`, or `"boundary"`.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid.
-     * @param {number} solid
-     * @param {number} x
-     * @param {number} y
-     * @param {number} z
-     * @param {number} tolerance
-     * @returns {string}
-     */
-    classifyPoint(solid, x, y, z, tolerance) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_classifyPoint(this.__wbg_ptr, solid, x, y, z, tolerance);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Classify a point using robust dual-method (winding + ray casting).
-     *
-     * Returns "inside", "outside", or "boundary".
-     * @param {number} solid
-     * @param {number} x
-     * @param {number} y
-     * @param {number} z
-     * @param {number} tolerance
-     * @returns {string}
-     */
-    classifyPointRobust(solid, x, y, z, tolerance) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_classifyPointRobust(this.__wbg_ptr, solid, x, y, z, tolerance);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Classify a point relative to a solid using generalized winding numbers.
-     *
-     * Returns "inside", "outside", or "boundary".
-     * @param {number} solid
-     * @param {number} x
-     * @param {number} y
-     * @param {number} z
-     * @param {number} tolerance
-     * @returns {string}
-     */
-    classifyPointWinding(solid, x, y, z, tolerance) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_classifyPointWinding(this.__wbg_ptr, solid, x, y, z, tolerance);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Find common (shared) edges between two adjacent 2D polygons.
-     *
-     * Both polygons are flat arrays `[x,y, x,y, ...]`.
-     * Returns a flat array of common segment endpoints `[x1,y1, x2,y2, ...]`,
-     * or an empty array if no common segments exist.
-     * @param {Float64Array} coords_a
-     * @param {Float64Array} coords_b
-     * @returns {Float64Array}
-     */
-    commonSegment2d(coords_a, coords_b) {
-        const ptr0 = passArrayF64ToWasm0(coords_a, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(coords_b, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_commonSegment2d(this.__wbg_ptr, ptr0, len0, ptr1, len1);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v3 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v3;
-    }
-    /**
-     * Compose (multiply) two 4x4 transformation matrices.
-     *
-     * Returns the composed matrix as a flat 16-element array (row-major).
-     * This computes `a * b`, meaning `b` is applied first, then `a`.
-     *
-     * # Errors
-     *
-     * Returns an error if either matrix doesn't have 16 elements.
-     * @param {Float64Array} matrix_a
-     * @param {Float64Array} matrix_b
-     * @returns {Float64Array}
-     */
-    composeTransforms(matrix_a, matrix_b) {
-        const ptr0 = passArrayF64ToWasm0(matrix_a, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(matrix_b, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_composeTransforms(this.__wbg_ptr, ptr0, len0, ptr1, len1);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v3 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v3;
-    }
-    /**
-     * Cut a target solid by multiple tool solids in a single pass.
-     *
-     * This is more efficient than sequential `cut()` calls when many tools
-     * are applied to the same target — it avoids re-processing unchanged
-     * faces at each step.
-     *
-     * `tool_ids` is a JS `Uint32Array` or array of solid handles.
-     *
-     * Exact-only, like `cut`: a tool the exact engine cannot cut returns the
-     * typed `exact_only_unattainable` refusal rather than a mesh.
-     *
-     * # Errors
-     *
-     * Returns an error if any handle is invalid or the operation fails.
-     * @param {number} target
-     * @param {Uint32Array} tool_ids
-     * @returns {number}
-     */
-    compoundCut(target, tool_ids) {
-        const ptr0 = passArray32ToWasm0(tool_ids, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_compoundCut(this.__wbg_ptr, target, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Convert all analytic geometry in a solid to NURBS representation.
-     *
-     * Replaces planes, cylinders, cones, spheres, tori with NURBS surfaces and
-     * lines, circles, ellipses with NURBS curves. NURBS surfaces and curves
-     * already in the model are left untouched. Returns the number of entities
-     * converted.
-     *
-     * Converts every analytic surface and curve to a NURBS representation.
-     * Stored pcurves are dropped during conversion — callers that depend on
-     * pcurves should recompute them afterwards.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid or conversion fails.
-     * @param {number} solid
-     * @returns {number}
-     */
-    convertToBspline(solid) {
-        const ret = wasm.brepkernel_convertToBspline(this.__wbg_ptr, solid);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Recognize and replace NURBS faces and edges with their analytic
-     * (elementary) forms wherever possible (Plane/Cylinder/Sphere/
-     * Cone/Torus surfaces; Line/Circle/Ellipse edges).
-     *
-     * Inverse of `convertToBspline`: useful after STEP/IGES import
-     * to recover analytic types from B-spline-only exports.
-     * Returns the total number of faces and edges converted.
-     *
-     * # Errors
-     *
-     * Returns an error if topology lookups fail.
-     * @param {number} solid
-     * @returns {number}
-     */
-    convertToElementary(solid) {
-        const ret = wasm.brepkernel_convertToElementary(this.__wbg_ptr, solid);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Build a convex hull solid from a point cloud.
-     *
-     * Uses the Quickhull algorithm for 3D point sets.
-     *
-     * Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if fewer than 4 non-coplanar points are provided.
-     * @param {Float64Array} coords
-     * @returns {number}
-     */
-    convexHull(coords) {
-        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_convexHull(this.__wbg_ptr, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Copy a solid and apply a 4×4 row-major affine transform in one pass.
-     *
-     * Equivalent to `copySolid` + `transformSolid` but performs both in a
-     * single topology traversal, avoiding redundant NURBS clones.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid, the matrix doesn't
-     * have 16 elements, or the matrix is singular.
-     * @param {number} solid
-     * @param {Float64Array} matrix
-     * @returns {number}
-     */
-    copyAndTransformSolid(solid, matrix) {
-        const ptr0 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_copyAndTransformSolid(this.__wbg_ptr, solid, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Copy a solid through an affine transform and return the exact,
-     * disclosed-approximate, or refused result as typed data.
-     *
-     * Additive twin of
-     * [`copyAndTransformSolid`](Self::copy_and_transform_solid): the same
-     * single-pass copy engine and matrix contract, with the legacy
-     * method's return and errors unchanged. On success `value` is the new
-     * solid handle; quality and `exactOnly` follow
-     * [`transformDetailed`](Self::transform_detailed).
-     * @param {number} solid
-     * @param {Float64Array} matrix
-     * @param {boolean | null} [exact_only]
-     * @returns {SolidOperationDetailedResult}
-     */
-    copyAndTransformSolidDetailed(solid, matrix, exact_only) {
-        const ptr0 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_copyAndTransformSolidDetailed(this.__wbg_ptr, solid, ptr0, len0, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Copy selected solid, sheet and wire roots into a fresh kernel.
-     *
-     * Retains exact document data and selected lineage without JSON transport,
-     * omitting unrelated live entities and retired slots. Root order and
-     * duplicate aliases are preserved. `maxEntities`, when supplied, can only
-     * lower the native default entity/reference budget; it is not a byte cap.
-     *
-     * The source and its checkpoints stay intact. The returned kernel has no
-     * checkpoints, sketches, assemblies or prepared moves. Rebuild selections
-     * in that owner from the returned roots. Numeric handles remain scoped to
-     * their kernel; equal numbers in two kernels do not imply equal identity.
-     * Release the old owner and its wrappers explicitly to reclaim its data.
-     * WASM linear memory need not shrink, and both documents coexist while
-     * copying. This does not validate geometric correctness.
-     *
-     * Direct-only: a JSON batch cannot return ownership of another kernel.
-     * @param {Uint32Array} solids
-     * @param {Uint32Array} sheets
-     * @param {Uint32Array} wires
-     * @param {number | null} [max_entities]
-     * @returns {KernelDocumentCopy}
-     */
-    copyDocument(solids, sheets, wires, max_entities) {
-        const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArray32ToWasm0(sheets, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passArray32ToWasm0(wires, wasm.__wbindgen_malloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_copyDocument(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return KernelDocumentCopy.__wrap(ret[0]);
-    }
-    /**
-     * Deep copy a face, returning a new independent face handle.
-     *
-     * The copy shares no sub-entities with the original, so translating it
-     * (to form a pocket or boss profile) does not mutate the donor solid.
-     *
-     * # Errors
-     *
-     * Returns an error if the face handle is invalid.
-     * @param {number} face
-     * @returns {number}
-     */
-    copyFace(face) {
-        const ret = wasm.brepkernel_copyFace(this.__wbg_ptr, face);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Deep copy a solid, returning a new independent solid handle.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid.
-     * @param {number} solid
-     * @returns {number}
-     */
-    copySolid(solid) {
-        const ret = wasm.brepkernel_copySolid(this.__wbg_ptr, solid);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Deep copy a wire, returning a new independent wire handle.
-     *
-     * # Errors
-     *
-     * Returns an error if the wire handle is invalid.
-     * @param {number} wire
-     * @returns {number}
-     */
-    copyWire(wire) {
-        const ret = wasm.brepkernel_copyWire(this.__wbg_ptr, wire);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Elevate the degree of an edge's NURBS curve.
-     *
-     * Returns a new edge handle.
-     * @param {number} edge
-     * @param {number} elevate_by
-     * @returns {number}
-     */
-    curveDegreeElevate(edge, elevate_by) {
-        const ret = wasm.brepkernel_curveDegreeElevate(this.__wbg_ptr, edge, elevate_by);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Insert a knot into an edge's NURBS curve.
-     *
-     * Returns a new edge handle with the refined curve.
-     * @param {number} edge
-     * @param {number} knot
-     * @param {number} times
-     * @returns {number}
-     */
-    curveKnotInsert(edge, knot, times) {
-        const ret = wasm.brepkernel_curveKnotInsert(this.__wbg_ptr, edge, knot, times);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Remove a knot from an edge's NURBS curve.
-     *
-     * Returns a new edge handle with the simplified curve.
-     * @param {number} edge
-     * @param {number} knot
-     * @param {number} tolerance
-     * @returns {number}
-     */
-    curveKnotRemove(edge, knot, tolerance) {
-        const ret = wasm.brepkernel_curveKnotRemove(this.__wbg_ptr, edge, knot, tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Split an edge's NURBS curve at a parameter value.
-     *
-     * Returns two edge handles as `[u32; 2]`.
-     * @param {number} edge
-     * @param {number} u
-     * @returns {Uint32Array}
-     */
-    curveSplit(edge, u) {
-        const ret = wasm.brepkernel_curveSplit(this.__wbg_ptr, edge, u);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Cut (subtract) solid `b` from solid `a`.
-     *
-     * Returns a new solid handle (`u32`).
-     *
-     * Exact-only: when the exact engine cannot handle the pair this returns a
-     * typed refusal (category `quality_refused`, `kernelCode`
-     * `exact_only_unattainable`) instead of silently handing back a mesh. To
-     * accept an approximate result, call `booleanWithQuality` without
-     * `exactOnly`; it discloses the quality and deflection it used.
-     *
-     * # Errors
-     *
-     * Returns an error if either solid handle is invalid or the operation
-     * produces an empty or non-manifold result.
-     * @param {number} a
-     * @param {number} b
-     * @returns {number}
-     */
-    cut(a, b) {
-        const ret = wasm.brepkernel_cut(this.__wbg_ptr, a, b);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Cut solid `b` from solid `a` and return success or failure as typed
-     * data.
-     *
-     * Additive twin of [`cut`](Self::cut); the legacy method keeps its
-     * existing return value and thrown-error behavior.
-     * @param {number} a
-     * @param {number} b
-     * @returns {SolidOperationDetailedResult}
-     */
-    cutDetailed(a, b) {
-        const ret = wasm.brepkernel_cutDetailed(this.__wbg_ptr, a, b);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Cut solid `b` from `a` with journaled construction history.
-     * @param {number} a
-     * @param {number} b
-     * @returns {string}
-     */
-    cutJournaled(a, b) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_cutJournaled(this.__wbg_ptr, a, b);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Cut with full entity history; see `fuseWithEntityEvolution`.
-     * @param {number} a
-     * @param {number} b
-     * @returns {string}
-     */
-    cutWithEntityEvolution(a, b) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_cutWithEntityEvolution(this.__wbg_ptr, a, b);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Cut (subtract) solid `b` from solid `a` and return evolution tracking data.
-     *
-     * Returns a JSON string: `{"solid": <u32>, "evolution": {...}}`.
-     *
-     * # Errors
-     *
-     * Returns an error if either solid handle is invalid or the operation
-     * produces an empty or non-manifold result.
-     * @param {number} a
-     * @param {number} b
-     * @returns {any}
-     */
-    cutWithEvolution(a, b) {
-        const ret = wasm.brepkernel_cutWithEvolution(this.__wbg_ptr, a, b);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Cut (subtract) solid `b` from solid `a` with post-processing options.
-     *
-     * See [`fuse_with_options`](Self::fuse_with_options) for the
-     * `unifyFaces` semantics.
-     *
-     * # Errors
-     *
-     * Returns an error if either solid handle is invalid or the operation
-     * produces an empty or non-manifold result.
-     * @param {number} a
-     * @param {number} b
-     * @param {boolean | null} [unify_faces]
-     * @returns {number}
-     */
-    cutWithOptions(a, b, unify_faces) {
-        const ret = wasm.brepkernel_cutWithOptions(this.__wbg_ptr, a, b, isLikeNone(unify_faces) ? 0xFFFFFF : unify_faces ? 1 : 0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Remove specified faces from a solid (defeaturing).
-     *
-     * `face_handles` is an array of face handles to remove.
-     * Returns a new solid handle.
-     * @param {number} solid
-     * @param {Uint32Array} face_handles
-     * @returns {number}
-     */
-    defeature(solid, face_handles) {
-        const ptr0 = passArray32ToWasm0(face_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_defeature(this.__wbg_ptr, solid, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Remove selected feature faces with construction history.
-     *
-     * Returns JSON `{"solid", "op"}`. Capping retains copied boundary identities
-     * and records consumed boundaries as deleted. Unqualified reconstructed
-     * boundaries remain unresolved. Batch uses `solid` and `faces`.
-     * @param {number} solid
-     * @param {Uint32Array} faces
-     * @returns {string}
-     */
-    defeatureJournaled(solid, faces) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_defeatureJournaled(this.__wbg_ptr, solid, ptr0, len0);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * Retire a solid handle and its unshared topology subtree.
-     *
-     * The handle becomes permanently invalid. This does not compact the
-     * kernel or reclaim arena memory; future entities receive new handles so
-     * a stale handle can never alias a different solid.
-     *
-     * # Errors
-     *
-     * Returns an error if `solid` is not a live solid handle, if a live
-     * compound, comp-solid, or assembly still references it, or if its
-     * topology tree contains an invalid reference.
-     * @param {number} solid
-     */
-    deleteSolid(solid) {
-        const ret = wasm.brepkernel_deleteSolid(this.__wbg_ptr, solid);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Reconstruct one first-class sheet body from a version 4 or 5 arena document.
-     *
-     * # Errors
-     *
-     * Returns an error if the buffer is malformed, does not contain exactly
-     * one sheet root, or reconstruction fails.
-     * @param {Uint8Array} data
-     * @returns {number}
-     */
-    deserializeSheet(data) {
-        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_deserializeSheet(this.__wbg_ptr, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Reconstruct standalone sheet roots from a version 4 or 5 arena document.
-     *
-     * # Errors
-     *
-     * Returns an error if the buffer is malformed, contains another root
-     * class, or reconstruction fails.
-     * @param {Uint8Array} data
-     * @returns {Uint32Array}
-     */
-    deserializeSheets(data) {
-        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_deserializeSheets(this.__wbg_ptr, ptr0, len0);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v2 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v2;
-    }
-    /**
-     * Reconstruct one solid from a version 1 through 5 single-root buffer.
-     *
-     * # Errors
-     *
-     * Returns an error if the buffer is malformed or reconstruction fails.
-     * @param {Uint8Array} data
-     * @returns {number}
-     */
-    deserializeSolid(data) {
-        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_deserializeSolid(this.__wbg_ptr, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Reconstruct solid roots from a version 1 through 5 arena document.
-     *
-     * Every restored entity receives a fresh kernel handle. Documents with
-     * Sheet, wire, and compound roots must be loaded through their dedicated
-     * binding or the native Rust document API.
-     *
-     * # Errors
-     *
-     * Returns an error if the buffer is malformed, exceeds import limits,
-     * contains a non-solid root, or reconstruction fails.
-     * @param {Uint8Array} data
-     * @returns {Uint32Array}
-     */
-    deserializeSolids(data) {
-        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_deserializeSolids(this.__wbg_ptr, ptr0, len0);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v2 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v2;
-    }
-    /**
-     * Reconstruct one first-class wire body from a version 5 arena document.
-     *
-     * # Errors
-     *
-     * Returns an error if the buffer is malformed, does not contain exactly
-     * one wire root, or reconstruction fails.
-     * @param {Uint8Array} data
-     * @returns {number}
-     */
-    deserializeWire(data) {
-        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_deserializeWire(this.__wbg_ptr, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Reconstruct standalone wire roots from a version 5 arena document.
-     *
-     * # Errors
-     *
-     * Returns an error if the buffer is malformed, contains non-wire roots,
-     * or reconstruction fails.
-     * @param {Uint8Array} data
-     * @returns {Uint32Array}
-     */
-    deserializeWires(data) {
-        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_deserializeWires(this.__wbg_ptr, ptr0, len0);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v2 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v2;
-    }
-    /**
-     * Detect surface-level coincident face pairs between two solids
-     * without performing a boolean operation.
-     *
-     * Useful for warning users about same-domain configurations
-     * (face stacks, coaxial cylinders, concentric spheres) before a
-     * boolean. Returns a JSON array string of objects:
-     * `[{"faceA": <u32>, "faceB": <u32>, "sameOrientation": <bool>, "aabbOverlap": <bool>}, ...]`.
-     *
-     * `sameOrientation` is `true` when the surface normals point the
-     * same way at corresponding parametric points (e.g., two coplanar
-     * faces with the same `+z` normal). `aabbOverlap` filters pairs
-     * that are same-domain on the surface but geometrically disjoint.
-     *
-     * # Errors
-     *
-     * Returns an error if either solid handle is invalid or any face /
-     * edge / vertex lookup fails internally.
-     * @param {number} a
-     * @param {number} b
-     * @returns {string}
-     */
-    detectCoincidentFaces(a, b) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_detectCoincidentFaces(this.__wbg_ptr, a, b);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Detect small features (faces below an area threshold).
-     *
-     * Returns an array of face handles.
-     * @param {number} solid
-     * @param {number} area_threshold
-     * @param {number} deflection
-     * @returns {Uint32Array}
-     */
-    detectSmallFeatures(solid, area_threshold, deflection) {
-        const ret = wasm.brepkernel_detectSmallFeatures(this.__wbg_ptr, solid, area_threshold, deflection);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Discard a checkpoint and all checkpoints after it, freeing their memory.
-     *
-     * # Errors
-     *
-     * Returns an error if `checkpoint_id` does not refer to a valid checkpoint.
-     * @param {number} checkpoint_id
-     */
-    discardCheckpoint(checkpoint_id) {
-        const ret = wasm.brepkernel_discardCheckpoint(this.__wbg_ptr, checkpoint_id);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Apply draft angle to faces of a solid.
-     *
-     * `face_handles` is an array of face handles to draft.
-     * `angle_degrees` is in degrees, matching the batch `draft` op.
-     * Returns a solid handle.
-     *
-     * # Errors
-     *
-     * Returns an error if angle is zero or faces are invalid.
-     * @param {number} solid
-     * @param {Uint32Array} face_handles
-     * @param {number} pull_x
-     * @param {number} pull_y
-     * @param {number} pull_z
-     * @param {number} neutral_x
-     * @param {number} neutral_y
-     * @param {number} neutral_z
-     * @param {number} angle_degrees
-     * @returns {number}
-     */
-    draft(solid, face_handles, pull_x, pull_y, pull_z, neutral_x, neutral_y, neutral_z, angle_degrees) {
-        const ptr0 = passArray32ToWasm0(face_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_draft(this.__wbg_ptr, solid, ptr0, len0, pull_x, pull_y, pull_z, neutral_x, neutral_y, neutral_z, angle_degrees);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Draft selected planar faces with construction history.
-     *
-     * `pull_direction` and `neutral_point` each have three components.
-     * The angle is in degrees for both direct and batch calls. Batch uses
-     * `faces`, `pullDirection`, `neutralPoint`, and `angleDegrees`.
-     * Returns JSON `{"solid", "op"}`. Boundary history requires a unique
-     * complete incidence correspondence; ambiguous boundaries stay unresolved.
-     * @param {number} solid
-     * @param {Uint32Array} faces
-     * @param {Float64Array} pull_direction
-     * @param {Float64Array} neutral_point
-     * @param {number} angle_degrees
-     * @returns {string}
-     */
-    draftJournaled(solid, faces, pull_direction, neutral_point, angle_degrees) {
-        let deferred5_0;
-        let deferred5_1;
-        try {
-            const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ptr1 = passArrayF64ToWasm0(pull_direction, wasm.__wbindgen_malloc);
-            const len1 = WASM_VECTOR_LEN;
-            const ptr2 = passArrayF64ToWasm0(neutral_point, wasm.__wbindgen_malloc);
-            const len2 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_draftJournaled(this.__wbg_ptr, solid, ptr0, len0, ptr1, len1, ptr2, len2, angle_degrees);
-            var ptr4 = ret[0];
-            var len4 = ret[1];
-            if (ret[3]) {
-                ptr4 = 0; len4 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred5_0 = ptr4;
-            deferred5_1 = len4;
-            return getStringFromWasm0(ptr4, len4);
-        } finally {
-            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
-        }
-    }
-    /**
-     * Drain up to 4096 phase and boolean-route events as JSON. Route
-     * observations have zero duration and names beginning `boolean.route.`.
-     *
-     * # Errors
-     * Returns an error if events cannot be serialized.
-     * @returns {string}
-     */
-    drainPerformanceTrace() {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_drainPerformanceTrace(this.__wbg_ptr);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Classify one manifold edge of a solid as convex, concave, tangent,
-     * or unknown.
-     *
-     * Returns a JSON string `{ relation, dihedralAngle }` (see the
-     * `EdgeConvexityResult` TypeScript type). `relation` is the kernel's
-     * own quadrant-probe verdict and retires the consumer adapter's
-     * `radialSense` inference with its `'convex'` fallback. `dihedralAngle`
-     * is the signed angle between the two effective outward normals in
-     * radians — positive for convex, negative for concave, near zero for
-     * tangent — and `null` when the relation is `unknown` or the angle is
-     * unavailable. Unknown never guesses: self-seams, non-manifold edges,
-     * degenerate normals, and probes above 25 % of the local edge/face
-     * scale report `unknown` with a `null` angle.
-     *
-     * `probe` is an optional override in model units. Omit it to use the
-     * per-edge default `0.05 * local_scale`, where `local_scale` is
-     * `max(min(face spans), edge span)`; the default keeps the probe local
-     * from 1e-3 through 1e3. A zero, negative, or non-finite probe is a
-     * typed `InvalidInput` refusal. A foreign or deleted solid or edge
-     * handle, or a live edge that belongs to a different solid, is a typed
-     * refusal naming the handle.
-     *
-     * For a whole solid, prefer [`solidEdgeRelations`](Self::solid_edge_relations_binding):
-     * a per-edge loop over this call rebuilds adjacency per edge (the
-     * quadratic trap on a 2 000-edge import), while the bulk call builds it
-     * once.
-     *
-     * # Errors
-     *
-     * Returns an error for a foreign or deleted handle, an invalid probe,
-     * or a topology or classification failure.
-     * @param {number} solid
-     * @param {number} edge
-     * @param {number | null} [probe]
-     * @returns {any}
-     */
-    edgeConvexity(solid, edge, probe) {
-        const ret = wasm.brepkernel_edgeConvexity(this.__wbg_ptr, solid, edge, !isLikeNone(probe), isLikeNone(probe) ? 0 : probe);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Compute the length of an edge.
-     *
-     * # Errors
-     *
-     * Returns an error if the edge handle is invalid.
-     * @param {number} edge
-     * @returns {number}
-     */
-    edgeLength(edge) {
-        const ret = wasm.brepkernel_edgeLength(this.__wbg_ptr, edge);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0];
-    }
-    /**
-     * Get the edge-to-face adjacency map for a solid.
-     *
-     * Returns a JSON string: `{"edgeId": [faceId, ...], ...}`.
-     * @param {number} solid
-     * @returns {string}
-     */
-    edgeToFaceMap(solid) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_edgeToFaceMap(this.__wbg_ptr, solid);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Evaluate a point on an edge curve at parameter `t`.
-     *
-     * Returns `[x, y, z]`.
-     * @param {number} edge
-     * @param {number} t
-     * @returns {Float64Array}
-     */
-    evaluateEdgeCurve(edge, t) {
-        const ret = wasm.brepkernel_evaluateEdgeCurve(this.__wbg_ptr, edge, t);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Evaluate a point and tangent on an edge curve at parameter `t`.
-     *
-     * Returns `[px, py, pz, tx, ty, tz]`.
-     * @param {number} edge
-     * @param {number} t
-     * @returns {Float64Array}
-     */
-    evaluateEdgeCurveD1(edge, t) {
-        const ret = wasm.brepkernel_evaluateEdgeCurveD1(this.__wbg_ptr, edge, t);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Evaluate a point on a face surface at (u, v).
-     *
-     * Returns `[x, y, z]`.
-     * @param {number} face
-     * @param {number} u
-     * @param {number} v
-     * @returns {Float64Array}
-     */
-    evaluateSurface(face, u, v) {
-        const ret = wasm.brepkernel_evaluateSurface(this.__wbg_ptr, face, u, v);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Evaluate the outward surface normal at (u, v) on a face.
-     *
-     * Returns `[nx, ny, nz]`, oriented by the face's `reversed` flag —
-     * boolean and blend assembly routinely emit reversed faces, and the raw
-     * surface normal points inward on those.
-     * @param {number} face
-     * @param {number} u
-     * @param {number} v
-     * @returns {Float64Array}
-     */
-    evaluateSurfaceNormal(face, u, v) {
-        const ret = wasm.brepkernel_evaluateSurfaceNormal(this.__wbg_ptr, face, u, v);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Execute a batch of operations, crossing the JS/WASM boundary once.
-     *
-     * Accepts a JSON string containing an array of operation objects:
-     * ```json
-     * [
-     *   {"op": "makeBox", "args": {"width": 2.0, "height": 2.0, "depth": 2.0}},
-     *   {"op": "fuse", "args": {"solidA": 0, "solidB": 1}},
-     *   {"op": "volume", "args": {"solid": 2, "deflection": 0.1}}
-     * ]
-     * ```
-     *
-     * Returns a JSON string with an array of results:
-     * ```json
-     * [
-     *   {"ok": 0},
-     *   {"ok": 2},
-     *   {"error": "invalid solid id"}
-     * ]
-     * ```
-     *
-     * Operations are executed sequentially; an error in one does not
-     * prevent execution of subsequent operations.
-     * @param {string} json
-     * @returns {string}
-     */
-    executeBatch(json) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_executeBatch(this.__wbg_ptr, ptr0, len0);
-            deferred2_0 = ret[0];
-            deferred2_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Execute a batch and return stable machine-readable error codes.
-     *
-     * The returned JSON string contains the same bare result array and
-     * success envelopes as [`executeBatch`](Self::execute_batch). Error
-     * envelopes are additive structured objects with `code`, the unchanged
-     * human-readable `message`, and an always-present `details` object.
-     * Existing `executeBatch` behavior is unchanged.
-     * @param {string} json
-     * @returns {string}
-     */
-    executeBatchV2(json) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_executeBatchV2(this.__wbg_ptr, ptr0, len0);
-            deferred2_0 = ret[0];
-            deferred2_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Extrude a planar face along a direction vector to create a solid.
-     *
-     * Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if the face handle is invalid or the extrusion fails.
-     * @param {number} face
-     * @param {number} dir_x
-     * @param {number} dir_y
-     * @param {number} dir_z
-     * @param {number} distance
-     * @returns {number}
-     */
-    extrude(face, dir_x, dir_y, dir_z, distance) {
-        const ret = wasm.brepkernel_extrude(this.__wbg_ptr, face, dir_x, dir_y, dir_z, distance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Extrude a planar face along a direction vector, as typed data.
-     *
-     * Additive twin of [`extrude`](Self::extrude_face): the same validation
-     * order (finite `dir_x`, `dir_y`, `dir_z`, `distance`, then the face
-     * handle) and the same engine for exact-supported profiles. Closed
-     * profiles needing line chords refuse with `exact_only_unattainable`;
-     * the legacy method is unchanged. Success has `details.quality: "exact"`.
-     * @param {number} face
-     * @param {number} dir_x
-     * @param {number} dir_y
-     * @param {number} dir_z
-     * @param {number} distance
-     * @returns {SolidOperationDetailedResult}
-     */
-    extrudeDetailed(face, dir_x, dir_y, dir_z, distance) {
-        const ret = wasm.brepkernel_extrudeDetailed(this.__wbg_ptr, face, dir_x, dir_y, dir_z, distance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Extrusion journaled as one construction-derived face, edge and vertex
-     * evolution entry (kind `extrude`).
-     *
-     * Returns JSON `{"solid", "op", "evolution"}`. `evolution` lists every
-     * result face, edge and vertex as `modified` or `generated` (both caps
-     * `modified` from the profile face, every side wall `generated` from
-     * it, shared boundary entities `modified` into themselves, translated
-     * copies `modified` from their source, longitudinal edges `generated`
-     * from the profile face), plus a `completeness` report (`accounted`,
-     * `resolved`, and per-kind `omitted`/`phantom`/`unresolved` lists)
-     * checked against the actual result. Nothing is deleted; the qualified
-     * profile classes leave nothing unresolved.
-     * @param {number} face
-     * @param {number} dir_x
-     * @param {number} dir_y
-     * @param {number} dir_z
-     * @param {number} distance
-     * @returns {string}
-     */
-    extrudeJournaled(face, dir_x, dir_y, dir_z, distance) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_extrudeJournaled(this.__wbg_ptr, face, dir_x, dir_y, dir_z, distance);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Compute the area of a single face.
-     *
-     * Planar faces with line/circle/ellipse/parabola/hyperbola/recognized-
-     * NURBS boundaries and all analytic curved faces integrate their exact
-     * geometry, deflection-independent; `deflection` only controls the
-     * NURBS-face tessellation and the sampled planar fallback.
-     *
-     * # Errors
-     *
-     * Returns an error if the face handle is invalid or tessellation fails.
-     * @param {number} face
-     * @param {number} deflection
-     * @returns {number}
-     */
-    faceArea(face, deflection) {
-        const ret = wasm.brepkernel_faceArea(this.__wbg_ptr, face, deflection);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0];
-    }
-    /**
-     * Exact content digests of faces, one 32-character hex string per face
-     * handle, in input order.
-     *
-     * Equal digests mean the faces have the same content: reversal, support
-     * surface, and complete boundary (curves, trims, tolerances, vertex
-     * positions, pcurves, and the relative arena order of the face's edges,
-     * which the face mesher reads). Handles do not enter, so a consumer can
-     * recognise faces an edit left untouched and keep what it derived from
-     * them. Reals are compared by their bits; there is no tolerance. The
-     * digest is a 128-bit hash, not a cryptographic one.
-     *
-     * # Errors
-     *
-     * Returns an error if a face handle is invalid.
-     * @param {Uint32Array} faces
-     * @returns {string[]}
-     */
-    faceContentDigests(faces) {
-        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_faceContentDigests(this.__wbg_ptr, ptr0, len0);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v2 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v2;
-    }
-    /**
-     * Build an exact standalone blend sheet between two disjoint planar faces.
-     * @param {number} first_face
-     * @param {number} second_face
-     * @param {number} radius
-     * @returns {number}
-     */
-    faceFaceBlend(first_face, second_face, radius) {
-        const ret = wasm.brepkernel_faceFaceBlend(this.__wbg_ptr, first_face, second_face, radius);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Build a face-face blend sheet and verify one prescribed contact line.
-     * @param {number} first_face
-     * @param {number} second_face
-     * @param {number} radius
-     * @param {number} hold_face
-     * @param {number} start_x
-     * @param {number} start_y
-     * @param {number} start_z
-     * @param {number} end_x
-     * @param {number} end_y
-     * @param {number} end_z
-     * @returns {number}
-     */
-    faceFaceBlendWithHoldLine(first_face, second_face, radius, hold_face, start_x, start_y, start_z, end_x, end_y, end_z) {
-        const ret = wasm.brepkernel_faceFaceBlendWithHoldLine(this.__wbg_ptr, first_face, second_face, radius, hold_face, start_x, start_y, start_z, end_x, end_y, end_z);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Material side of one analytic face: `"outward"` (boss-like) or
-     * `"inward"` (bore- or pocket-like).
-     *
-     * The verdict compares the face's effective outward normal against its
-     * radial direction at a boundary sample — no probe, no classification
-     * call. Cylinder and cone walls read against their axis-perpendicular
-     * radial, spheres against the centre radial, tori against the
-     * tube-centre radial. Planes and NURBS have no axis or centre and are a
-     * typed unsupported refusal.
-     *
-     * Edge convexity and face material sense are different questions: a
-     * bore's top rim is convex while its wall is inward. Report both;
-     * never collapse them into one value.
-     *
-     * # Errors
-     *
-     * Returns an error for a foreign or deleted handle, for a face that is
-     * not part of the solid, or a typed unsupported refusal for plane and
-     * NURBS faces.
-     * @param {number} solid
-     * @param {number} face
-     * @returns {string}
-     */
-    faceMaterialSense(solid, face) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_faceMaterialSense(this.__wbg_ptr, solid, face);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Compute the perimeter of a face.
-     *
-     * # Errors
-     *
-     * Returns an error if the face handle is invalid.
-     * @param {number} face
-     * @returns {number}
-     */
-    facePerimeter(face) {
-        const ret = wasm.brepkernel_facePerimeter(this.__wbg_ptr, face);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0];
-    }
-    /**
-     * Get the wires (outer + inner) of a face.
-     *
-     * Returns an array of wire handles.
-     * @param {number} face
-     * @returns {Uint32Array}
-     */
-    faceWires(face) {
-        const ret = wasm.brepkernel_faceWires(this.__wbg_ptr, face);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Fill a 4-sided boundary with a Coons patch surface.
-     *
-     * `boundary_coords` is flat `[x,y,z, ...]` for all 4 curves concatenated.
-     * `curve_lengths` is `[n0, n1, n2, n3]` — number of points per curve.
-     * Returns a face handle.
-     * @param {Float64Array} boundary_coords
-     * @param {Uint32Array} curve_lengths
-     * @returns {number}
-     */
-    fillCoonsPatch(boundary_coords, curve_lengths) {
-        const ptr0 = passArrayF64ToWasm0(boundary_coords, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArray32ToWasm0(curve_lengths, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_fillCoonsPatch(this.__wbg_ptr, ptr0, len0, ptr1, len1);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Fillet (round) edges of a solid.
-     *
-     * `edge_handles` is an array of edge handles. Returns a solid handle.
-     *
-     * # Errors
-     *
-     * Returns an error if radius is non-positive or edges are invalid.
-     * @param {number} solid
-     * @param {Uint32Array} edge_handles
-     * @param {number} radius
-     * @returns {number}
-     */
-    fillet(solid, edge_handles, radius) {
-        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_fillet(this.__wbg_ptr, solid, ptr0, len0, radius);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Round corners of a 2D polygon by inserting arc-approximation vertices.
-     *
-     * `coords` is a flat array `[x,y, x,y, ...]`.
-     * `radius` is the fillet radius.
-     * Returns a flat array of the filleted polygon coordinates.
-     * @param {Float64Array} coords
-     * @param {number} radius
-     * @returns {Float64Array}
-     */
-    fillet2d(coords, radius) {
-        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_fillet2d(this.__wbg_ptr, ptr0, len0, radius);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v2 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v2;
-    }
-    /**
-     * Fillet edges and return exact, disclosed-approximate, or refused
-     * results as typed data.
-     *
-     * Additive twin of [`fillet`](Self::fillet_solid): the same engine
-     * cascade and whole-selection rule, with the legacy method's return
-     * value and thrown errors unchanged. On success `details.engine` names
-     * the blend engine (`walking`, `rollingBall`, or `mixed`). A result
-     * that introduces a NURBS face — a sampled blend wall with no closed
-     * form — reports `quality: "approximate"` and lists those faces under
-     * `approximateFaces`. With `exactOnly: true` such a result is rolled
-     * back and refused (`quality_refused` / `exact_only_unattainable`).
-     * @param {number} solid
-     * @param {Uint32Array} edge_handles
-     * @param {number} radius
-     * @param {boolean | null} [exact_only]
-     * @returns {SolidOperationDetailedResult}
-     */
-    filletDetailed(solid, edge_handles, radius, exact_only) {
-        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_filletDetailed(this.__wbg_ptr, solid, ptr0, len0, radius, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * V2 fillet journaled as one evolution entry (kind `fillet`).
-     *
-     * Returns JSON `{"solid", "op", "isPartial", "failedEdges"}`.
-     * @param {number} solid
-     * @param {Uint32Array} edges
-     * @param {number} radius
-     * @returns {string}
-     */
-    filletJournaled(solid, edges, radius) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passArray32ToWasm0(edges, wasm.__wbindgen_malloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_filletJournaled(this.__wbg_ptr, solid, ptr0, len0, radius);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * Fillet edges using the v2 walking-based blend engine.
-     *
-     * Returns a new solid handle. The engine runs transactionally and the
-     * result is validated before commit; failures carry the stable
-     * machine-readable code prefix from `blend_failure_code`. The current
-     * overflow policy stops at a support-face cliff with
-     * `cliff-encountered`; rollover onto the next face is not yet supported.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid or edge handles are invalid, or the
-     * blend computation fails.
-     * @param {number} solid
-     * @param {Uint32Array} edge_handles
-     * @param {number} radius
-     * @returns {number}
-     */
-    filletV2(solid, edge_handles, radius) {
-        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_filletV2(this.__wbg_ptr, solid, ptr0, len0, radius);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Fillet edges on the v2 walking engine alone and return exact,
-     * disclosed-approximate, or refused results as typed data.
-     *
-     * Additive twin of [`filletV2`](Self::fillet_v2), unchanged. Quality,
-     * `details.engine` and `exactOnly` follow
-     * [`filletDetailed`](Self::fillet_detailed).
-     * @param {number} solid
-     * @param {Uint32Array} edge_handles
-     * @param {number} radius
-     * @param {boolean | null} [exact_only]
-     * @returns {SolidOperationDetailedResult}
-     */
-    filletV2Detailed(solid, edge_handles, radius, exact_only) {
-        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_filletV2Detailed(this.__wbg_ptr, solid, ptr0, len0, radius, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Apply variable-radius fillets to edges.
-     *
-     * `json` is a JSON string: `[{"edge": u32, "law": "constant"|"linear"|"scurve", "start": f64, "end": f64, "startSetback": f64, "endSetback": f64}]`
-     *
-     * Also accepts brepjs-style fields: `startRadius`/`endRadius` as aliases for `start`/`end`.
-     * When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
-     * Missing or `null` numeric fields retain their defaults. Every other supplied
-     * numeric field must be a number, including aliases shadowed by `start`/`end`.
-     * A supplied `law` must be `"constant"`, `"linear"`, or `"scurve"`.
-     *
-     * Returns a new solid handle.
-     *
-     * The call is transactional and validated: every named edge must carry a
-     * blend, the result must validate against the input, and any failure
-     * leaves the topology untouched — the error message carries the stable
-     * machine-readable prefix from `blend_failure_code` (e.g.
-     * `edges-not-blended: …`).
-     * @param {number} solid
-     * @param {string} json
-     * @returns {number}
-     */
-    filletVariable(solid, json) {
-        const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_filletVariable(this.__wbg_ptr, solid, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Variable-radius fillet, as typed data.
-     *
-     * Additive twin of [`filletVariable`](Self::fillet_variable), unchanged:
-     * `json` is the same spec array. That engine carries no engine tag, so
-     * success details hold `quality` (and `approximateFaces`) but no
-     * `engine`; `exactOnly` follows
-     * [`filletDetailed`](Self::fillet_detailed). Malformed JSON is an
-     * `invalid_argument` refusal, not a thrown error.
-     * @param {number} solid
-     * @param {string} json
-     * @param {boolean | null} [exact_only]
-     * @returns {SolidOperationDetailedResult}
-     */
-    filletVariableDetailed(solid, json, exact_only) {
-        const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_filletVariableDetailed(this.__wbg_ptr, solid, ptr0, len0, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Apply a constant-radius fillet and return face-evolution tracking data.
-     *
-     * Returns a validated [`FaceEvolutionPayloadV1`] object. Blend faces
-     * appear under `generated` and surviving faces under `modified`.
-     *
-     * A blend band is listed under **both** faces its rounded edge separated.
-     * It was built between them, so both are its origin; `generated` is an
-     * adjacency record, not an identity, and naming two sources for one new
-     * face is the normal case. A band is never listed under `modified` — it is
-     * not any input face cut back, and a selection stored against one of those
-     * faces must not acquire it.
-     *
-     * The payload exposes construction history only. If an engine cannot
-     * report history, every source/result is explicit under the unresolved
-     * sets with `provenance: "unavailable"`; the binding never infers lineage
-     * from proximity, traversal order, or approximate surface matching.
-     *
-     * # Errors
-     *
-     * Returns an error if a handle is invalid, the radius is non-positive, or
-     * the fillet fails.
-     * @param {number} solid
-     * @param {Uint32Array} edge_handles
-     * @param {number} radius
-     * @returns {FaceEvolutionPayloadV1}
-     */
-    filletWithEvolution(solid, edge_handles, radius) {
-        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_filletWithEvolution(this.__wbg_ptr, solid, ptr0, len0, radius);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Fits approximate cubic carrier geometry with explicit position/derivative tolerances.
-     * @param {number} edge
-     * @param {string} options_json
-     * @returns {string}
-     */
-    fitCubicCurve(edge, options_json) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ptr0 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_fitCubicCurve(this.__wbg_ptr, edge, ptr0, len0);
-            deferred2_0 = ret[0];
-            deferred2_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Fix face orientations to ensure consistent outward normals.
-     *
-     * Returns the number of faces fixed.
-     * @param {number} solid
-     * @returns {number}
-     */
-    fixFaceOrientations(solid) {
-        const ret = wasm.brepkernel_fixFaceOrientations(this.__wbg_ptr, solid);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Heal a solid with a per-fix configuration instead of the fixed
-     * [`healSolid`](Self::heal_solid) recipe.
-     *
-     * `configJson` is `{ "tolerance"?: number, "fixes"?: { <name>: mode } }`
-     * where every mode is `"off"`, `"auto"` (apply when analysis detects the
-     * issue — the default), or `"on"` (always attempt). Unknown fix names
-     * error rather than silently running with defaults. Fix names:
-     * `reorder`, `connectivity`, `closure`, `smallEdges`, `selfIntersection`,
-     * `degenerateEdges`, `gaps2d`, `gaps3d`, `lacking`, `notched`, `tail`,
-     * `intersectingEdges`, `wireOrientation`, `addNaturalBound`,
-     * `missingSeam`, `smallArea`, `duplicateFaces`, `intersectingWires`,
-     * `orientation`, `sameParameter`, `vertexTolerance`, `pcurve`,
-     * `coincidentVertices`, `wireframe`, `splitCommonVertex`, `smallFaces`.
-     *
-     * Returns a JSON string `{ solid, actionsTaken, done, failed, repairs,
-     * verified }` (see the `HealFixResult` TypeScript type); `solid` is the
-     * healed solid's handle and may differ from the input. Success is
-     * committed only after both validators accept the result.
-     * @param {number} solid
-     * @param {string} config_json
-     * @returns {any}
-     */
-    fixShapeWithConfig(solid, config_json) {
-        const ptr0 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_fixShapeWithConfig(this.__wbg_ptr, solid, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Run configured verified healing with entity history.
-     * Returns the `fixShapeWithConfig` report plus `op`. Untracked replacements
-     * remain unresolved. Batch uses `solid` and the JSON string `configJson`.
-     * @param {number} solid
-     * @param {string} config_json
-     * @returns {string}
-     */
-    fixShapeWithConfigJournaled(solid, config_json) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_fixShapeWithConfigJournaled(this.__wbg_ptr, solid, ptr0, len0);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * Reconstruct a solid from a BREP string.
-     *
-     * Accepts both STEP format (from `toBREP`) and JSON format (from
-     * `toBrepJson`). Auto-detects the format: strings starting with `{`
-     * are parsed as JSON, otherwise as STEP.
-     *
-     * Only single-solid STEP files are supported. Multi-solid files will
-     * return only the first solid.
-     *
-     * # Errors
-     *
-     * Returns an error if the data is invalid or reconstruction fails. In
-     * the JSON format every vertex and edge id must be an integer in the
-     * `u32` range, declared once, and every reference (edge endpoints,
-     * outer and inner wire edges) must name a declared id; an unreadable
-     * inner-wire entry is refused rather than skipped. A refusal restores the
-     * live topology; allocated handles stay retired and are never reused.
-     * @param {string} data
-     * @returns {number}
-     */
-    fromBREP(data) {
-        const ptr0 = passStringToWasm0(data, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_fromBREP(this.__wbg_ptr, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Fuse (union) two solids into one.
-     *
-     * Returns a new solid handle (`u32`).
-     *
-     * Exact-only: when the exact engine cannot handle the pair this returns a
-     * typed refusal (category `quality_refused`, `kernelCode`
-     * `exact_only_unattainable`) instead of silently handing back a mesh. To
-     * accept an approximate result, call `booleanWithQuality` without
-     * `exactOnly`; it discloses the quality and deflection it used.
-     *
-     * # Errors
-     *
-     * Returns an error if either solid handle is invalid or the operation
-     * produces an empty or non-manifold result.
-     * @param {number} a
-     * @param {number} b
-     * @returns {number}
-     */
-    fuse(a, b) {
-        const ret = wasm.brepkernel_fuse(this.__wbg_ptr, a, b);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Fuse (union) many solids into one in a single call.
-     *
-     * Faster than a left-fold over `fuse`: overlapping solids are reduced
-     * pairwise in a balanced tree while disjoint groups are merged directly
-     * without a boolean.
-     *
-     * Returns a new solid handle (`u32`). Exact-only, like `fuse`: a
-     * cluster the exact engine cannot fuse returns the typed
-     * `exact_only_unattainable` refusal rather than a mesh.
-     *
-     * # Errors
-     *
-     * Returns an error if any solid handle is invalid, the list is empty,
-     * or a boolean operation produces an empty or non-manifold result.
-     * @param {Uint32Array} solid_handles
-     * @returns {number}
-     */
-    fuseAll(solid_handles) {
-        const ptr0 = passArray32ToWasm0(solid_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_fuseAll(this.__wbg_ptr, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Fuse two solids and return success or failure as typed data.
-     *
-     * Additive twin of [`fuse`](Self::fuse); the legacy method keeps its
-     * existing return value and thrown-error behavior.
-     * @param {number} a
-     * @param {number} b
-     * @returns {SolidOperationDetailedResult}
-     */
-    fuseDetailed(a, b) {
-        const ret = wasm.brepkernel_fuseDetailed(this.__wbg_ptr, a, b);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Fuse two solids with journaled construction history.
-     *
-     * Returns JSON `{"solid": handle, "op": journalOp}`; feed `op` to
-     * `resolveOperationOutput` / `propagateAttributesForOp`.
-     * @param {number} a
-     * @param {number} b
-     * @returns {string}
-     */
-    fuseJournaled(a, b) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_fuseJournaled(this.__wbg_ptr, a, b);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Fuse with full construction-derived vertex/edge/face history.
-     *
-     * Returns JSON `{"solid", "evolution": {"faces", "edges",
-     * "vertices"}}`; edge events are `preserved`/`modified` (with
-     * `from`), `generated` (with the generating `faceA`/`faceB` when
-     * they map), or the honest `unresolved`.
-     * @param {number} a
-     * @param {number} b
-     * @returns {string}
-     */
-    fuseWithEntityEvolution(a, b) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_fuseWithEntityEvolution(this.__wbg_ptr, a, b);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Fuse (union) two solids and return evolution tracking data.
-     *
-     * Returns a JSON string: `{"solid": <u32>, "evolution": {...}}`.
-     * Exact-only, like `fuse`: a pair the exact engine cannot handle
-     * returns the typed `exact_only_unattainable` refusal.
-     *
-     * # Errors
-     *
-     * Returns an error if either solid handle is invalid or the operation
-     * produces an empty or non-manifold result.
-     * @param {number} a
-     * @param {number} b
-     * @returns {any}
-     */
-    fuseWithEvolution(a, b) {
-        const ret = wasm.brepkernel_fuseWithEvolution(this.__wbg_ptr, a, b);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Fuse (union) two solids with post-processing options.
-     *
-     * `unifyFaces` (default `true`) merges adjacent result faces that lie
-     * on the same underlying surface, which keeps face counts low across
-     * chained booleans (e.g. 2871 → ~106 faces on sequential curved-surface
-     * booleans). Pass `false` to keep the raw fragment layout.
-     *
-     * Exact-only, like `fuse`: a pair the exact engine cannot handle
-     * returns the typed `exact_only_unattainable` refusal.
-     *
-     * # Errors
-     *
-     * Returns an error if either solid handle is invalid or the operation
-     * produces an empty or non-manifold result.
-     * @param {number} a
-     * @param {number} b
-     * @param {boolean | null} [unify_faces]
-     * @returns {number}
-     */
-    fuseWithOptions(a, b, unify_faces) {
-        const ret = wasm.brepkernel_fuseWithOptions(this.__wbg_ptr, a, b, isLikeNone(unify_faces) ? 0xFFFFFF : unify_faces ? 1 : 0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Add an arc defined by a center point and start/end points on the arc.
-     * The radius is implicit (`dist(center, start)`); an internal constraint
-     * keeps start and end equidistant from the center. Returns an arc handle.
-     * @param {number} sketch
-     * @param {number} center
-     * @param {number} start
-     * @param {number} end
-     * @returns {number}
-     */
-    gcsAddArc(sketch, center, start, end) {
-        const ret = wasm.brepkernel_gcsAddArc(this.__wbg_ptr, sketch, center, start, end);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Add a circle with a center point and radius (the radius is a solver
-     * parameter). Returns a circle handle.
-     * @param {number} sketch
-     * @param {number} center
-     * @param {number} radius
-     * @returns {number}
-     */
-    gcsAddCircle(sketch, center, radius) {
-        const ret = wasm.brepkernel_gcsAddCircle(this.__wbg_ptr, sketch, center, radius);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Add a constraint from a JSON object string and return a constraint
-     * handle usable with [`gcs_remove_constraint`](Self::gcs_remove_constraint).
-     *
-     * All 35 constraint types are supported. Entity fields are `u32`
-     * handles from the `gcsAdd*` calls. Types and fields:
-     * `coincident{a,b}`, `distance{a,b,value}`,
-     * `pointLineDistance{point,line,value}`, `fixX{point,value}`,
-     * `fixY{point,value}`, `horizontal{line}`, `vertical{line}`,
-     * `angle{l1,l2,value}`, `perpendicular{l1,l2}`, `parallel{l1,l2}`,
-     * `pointOnCircle{point,circle}`, `pointOnArc{point,arc}`,
-     * `tangentLineArc{line,arc,point}`, `tangentArcArc{arc1,arc2,point}`,
-     * `equalRadiusArcArc{arc1,arc2}`, `equalRadiusArcCircle{arc,circle}`,
-     * `arcLength{arc,value}`, `concentricArcArc{arc1,arc2}`,
-     * `concentricArcCircle{arc,circle}`, `circleRadius{circle,value}`,
-     * `equalRadiusCircleCircle{circle1,circle2}`, `equalLength{l1,l2}`,
-     * `midpoint{point,line}`, `symmetric{a,b,axis}`,
-     * `tangentLineCircle{line,circle}`, `symmetricAboutPoint{a,b,center}`,
-     * `pointOnEllipse{point,ellipse}`,
-     * `concentricEllipseEllipse{ellipse1,ellipse2}`,
-     * `concentricEllipseCircle{ellipse,circle}`,
-     * `concentricEllipseArc{ellipse,arc}`,
-     * `tangentLineEllipse{line,ellipse,point}`,
-     * `ellipseAxisA{ellipse,value}`, `ellipseAxisB{ellipse,value}`,
-     * `ellipseAngle{ellipse,value}`, `equalEllipseRadii{ellipse1,ellipse2}`.
-     *
-     * `circleRadius` takes a **radius**, not a diameter, and requires a
-     * positive finite value. There is no first-class point-lock constraint:
-     * compose one from `fixX` + `fixY` on the same point.
-     * @param {number} sketch
-     * @param {string} json
-     * @returns {number}
-     */
-    gcsAddConstraint(sketch, json) {
-        const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_gcsAddConstraint(this.__wbg_ptr, sketch, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Add a full ellipse with a center point, two semiaxes, and an
-     * orientation. `a` and `b` must be positive and finite; `angle` is the
-     * counter-clockwise rotation in radians from `+x` to the `a`-axis.
-     * Unlike arcs, a full ellipse has no endpoints and installs no internal
-     * constraint. Returns an ellipse handle.
-     * @param {number} sketch
-     * @param {number} center
-     * @param {number} a
-     * @param {number} b
-     * @param {number} angle
-     * @returns {number}
-     */
-    gcsAddEllipse(sketch, center, a, b, angle) {
-        const ret = wasm.brepkernel_gcsAddEllipse(this.__wbg_ptr, sketch, center, a, b, angle);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Add a complete construction-linked native circle in the parallel sketch
-     * plane. Both the center and radius are driven read-only inputs; returned
-     * handles can be used by ordinary GCS constraints. Partial/oblique curves
-     * and nonunique construction identity refuse atomically.
-     * @param {number} sketch
-     * @param {string} reference
-     * @returns {ExternalCircleHandles}
-     */
-    gcsAddExternalCircle(sketch, reference) {
-        const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_gcsAddExternalCircle(this.__wbg_ptr, sketch, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Add a complete construction-linked native ellipse in the parallel sketch
-     * plane. Both the center and three scalar parameters are driven read-only inputs; returned
-     * handles can be used by ordinary GCS constraints. Partial/oblique curves
-     * and nonunique construction identity refuse atomically.
-     * @param {number} sketch
-     * @param {string} reference
-     * @returns {ExternalEllipseHandles}
-     */
-    gcsAddExternalEllipse(sketch, reference) {
-        const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_gcsAddExternalEllipse(this.__wbg_ptr, sketch, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Add a fixed external line whose returned handles can be constrained to.
-     * @param {number} sketch
-     * @param {string} reference
-     * @param {string} start_ref
-     * @param {string} end_ref
-     * @returns {ExternalLineHandles}
-     */
-    gcsAddExternalLine(sketch, reference, start_ref, end_ref) {
-        const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(start_ref, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(end_ref, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_gcsAddExternalLine(this.__wbg_ptr, sketch, ptr0, len0, ptr1, len1, ptr2, len2);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Add a line through two existing points. Returns a line handle.
-     * @param {number} sketch
-     * @param {number} p1
-     * @param {number} p2
-     * @returns {number}
-     */
-    gcsAddLine(sketch, p1, p2) {
-        const ret = wasm.brepkernel_gcsAddLine(this.__wbg_ptr, sketch, p1, p2);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Add a point at `(x, y)`. `fixed` points are not moved by the solver.
-     * Returns a point handle.
-     * @param {number} sketch
-     * @param {number} x
-     * @param {number} y
-     * @param {boolean} fixed
-     * @returns {number}
-     */
-    gcsAddPoint(sketch, x, y, fixed) {
-        const ret = wasm.brepkernel_gcsAddPoint(this.__wbg_ptr, sketch, x, y, fixed);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Attach an existing GCS sketch to one construction-resolved planar face.
-     * Frame axes must be unit and perpendicular; this slice supports parallel
-     * plane moves. The reference uses the existing versioned JSON codec.
-     * @param {number} sketch
-     * @param {string} reference
-     * @param {SketchFrame} frame
-     * @returns {LinkedSketchResolution}
-     */
-    gcsAttachToFace(sketch, reference, frame) {
-        const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_gcsAttachToFace(this.__wbg_ptr, sketch, ptr0, len0, frame);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Current radius of a circle.
-     * @param {number} sketch
-     * @param {number} circle
-     * @returns {number}
-     */
-    gcsCircleRadius(sketch, circle) {
-        const ret = wasm.brepkernel_gcsCircleRadius(this.__wbg_ptr, sketch, circle);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0];
-    }
-    /**
-     * Degrees-of-freedom analysis via QR rank detection. Returns a JSON
-     * string `{ dof, rank, numParams, numEquations }` (see the
-     * `GcsDofResult` TypeScript type).
-     * @param {number} sketch
-     * @returns {any}
-     */
-    gcsDof(sketch) {
-        const ret = wasm.brepkernel_gcsDof(this.__wbg_ptr, sketch);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Current ellipse parameters as `[cx, cy, a, b, angle]` (angle in
-     * radians, stored as given — see the `gcsAddEllipse` contract).
-     * @param {number} sketch
-     * @param {number} ellipse
-     * @returns {Float64Array}
-     */
-    gcsEllipseParams(sketch, ellipse) {
-        const ret = wasm.brepkernel_gcsEllipseParams(this.__wbg_ptr, sketch, ellipse);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Create a new typed GCS sketch. Returns a sketch handle.
-     *
-     * This is the successor to the legacy `sketch*` API: the constraint
-     * system persists across calls, entities are typed handles, all 35
-     * constraint types are available, and constraints can be removed.
-     * @returns {number}
-     */
-    gcsNew() {
-        const ret = wasm.brepkernel_gcsNew(this.__wbg_ptr);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Current position of a point as `[x, y]`.
-     * @param {number} sketch
-     * @param {number} point
-     * @returns {Float64Array}
-     */
-    gcsPointPosition(sketch, point) {
-        const ret = wasm.brepkernel_gcsPointPosition(this.__wbg_ptr, sketch, point);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Remove a constraint by handle. The handle becomes stale; the solver
-     * no longer enforces the constraint.
-     * @param {number} sketch
-     * @param {number} constraint
-     */
-    gcsRemoveConstraint(sketch, constraint) {
-        const ret = wasm.brepkernel_gcsRemoveConstraint(this.__wbg_ptr, sketch, constraint);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Atomically refresh every external input; a failed rebind preserves all
-     * previous coordinates. Solve and detailed solve refresh automatically.
-     * @param {number} sketch
-     * @returns {LinkedSketchResolution}
-     */
-    gcsResolveRefs(sketch) {
-        const ret = wasm.brepkernel_gcsResolveRefs(this.__wbg_ptr, sketch);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Move an ellipse's center to `(x, y)` and set its semiaxes and
-     * orientation without solving (e.g. while dragging). `a` and `b` must
-     * be positive and finite; `angle` is finite radians.
-     * @param {number} sketch
-     * @param {number} ellipse
-     * @param {number} x
-     * @param {number} y
-     * @param {number} a
-     * @param {number} b
-     * @param {number} angle
-     */
-    gcsSetEllipse(sketch, ellipse, x, y, a, b, angle) {
-        const ret = wasm.brepkernel_gcsSetEllipse(this.__wbg_ptr, sketch, ellipse, x, y, a, b, angle);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Move a point to `(x, y)` without solving (e.g. while dragging).
-     * @param {number} sketch
-     * @param {number} point
-     * @param {number} x
-     * @param {number} y
-     */
-    gcsSetPoint(sketch, point, x, y) {
-        const ret = wasm.brepkernel_gcsSetPoint(this.__wbg_ptr, sketch, point, x, y);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Solve the constraint system in place with the DogLeg trust-region
-     * solver. Returns a JSON string
-     * `{ converged, iterations, maxResidual }` (see the `GcsSolveResult`
-     * TypeScript type). Read solved geometry back with
-     * [`gcs_point_position`](Self::gcs_point_position),
-     * [`gcs_circle_radius`](Self::gcs_circle_radius), and
-     * [`gcs_ellipse_params`](Self::gcs_ellipse_params).
-     * @param {number} sketch
-     * @param {number} max_iterations
-     * @param {number} tolerance
-     * @returns {any}
-     */
-    gcsSolve(sketch, max_iterations, tolerance) {
-        const ret = wasm.brepkernel_gcsSolve(this.__wbg_ptr, sketch, max_iterations, tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Solve and report what the attempt actually established, transactionally.
-     *
-     * Additive to [`gcs_solve`](Self::gcs_solve), whose behaviour is
-     * unchanged. Two differences matter:
-     *
-     * - **Transactional.** A solve that fails to reach `tolerance` is rolled
-     *   back: the pre-solver free points and radii are restored and `rolledBack`
-     *   is set. Linked external inputs refresh first; a successful refresh
-     *   remains current even when the solve does not converge. The rollback
-     *   baseline and `publishedMaxResidual` use those refreshed fixed inputs.
-     *   A thrown refresh or solver error restores the entire pre-call sketch.
-     *   `gcsSolve` still publishes whatever iterate it stopped on.
-     * - **Measured.** Returns convergence, iteration count, residuals, DOF,
-     *   rank, parameter and equation counts, a per-constraint residual keyed
-     *   by the `gcsAddConstraint` handle, and an overall classification.
-     *
-     * The classification is one of `solved`, `underConstrained`, `redundant`,
-     * or `unsatisfied`. `unsatisfied` reports only that the solver did not
-     * converge — it does **not** single out a conflicting constraint, and a
-     * large per-constraint residual is evidence, not proof, of where the
-     * conflict lies. Kernel-internal arc constraints are excluded from
-     * `constraintResiduals` and summarised by `internalMaxResidual`.
-     *
-     * Returns a JSON string (see the `GcsSolveDiagnostics` TypeScript type).
-     * @param {number} sketch
-     * @param {number} max_iterations
-     * @param {number} tolerance
-     * @returns {any}
-     */
-    gcsSolveDetailed(sketch, max_iterations, tolerance) {
-        const ret = wasm.brepkernel_gcsSolveDetailed(this.__wbg_ptr, sketch, max_iterations, tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Get the analytic surface parameters of a face.
-     *
-     * Returns a JSON string with surface-type-specific parameters.
-     * @param {number} face
-     * @returns {string}
-     */
-    getAnalyticSurfaceParams(face) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_getAnalyticSurfaceParams(this.__wbg_ptr, face);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Return the exact tangency-connected constant-radius blend region.
-     *
-     * The JSON result is `{ "faces": number[], "radius": number }`, with
-     * faces sorted by deterministic arena handle. Cylinder, torus and spherical
-     * corner faces of the same rolling-ball radius are grouped together.
-     *
-     * # Errors
-     *
-     * Returns a typed refusal when `face` is not a proven analytic blend
-     * region of `solid`.
-     * @param {number} solid
-     * @param {number} face
-     * @returns {string}
-     */
-    getBlendRegion(solid, face) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_getBlendRegion(this.__wbg_ptr, solid, face);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Get the solid handles within a compound.
-     *
-     * Returns an array of solid handles (`u32[]`).
-     *
-     * # Errors
-     *
-     * Returns an error if the compound handle is invalid.
-     * @param {number} compound
-     * @returns {Uint32Array}
-     */
-    getCompoundSolids(compound) {
-        const ret = wasm.brepkernel_getCompoundSolids(this.__wbg_ptr, compound);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Get the parameter domain of an edge curve.
-     *
-     * Returns `[t_start, t_end]`.
-     * For line edges: `[0.0, length]`.
-     * For NURBS edges: knot domain.
-     * @param {number} edge
-     * @returns {Float64Array}
-     */
-    getEdgeCurveParameters(edge) {
-        const ret = wasm.brepkernel_getEdgeCurveParameters(this.__wbg_ptr, edge);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Get the curve type of an edge.
-     *
-     * Returns `"LINE"`, `"BSPLINE_CURVE"`, `"CIRCLE"`, or `"ELLIPSE"`.
-     *
-     * For NURBS curves that exactly represent analytic curves, this
-     * returns the underlying analytic type (e.g. `"CIRCLE"` for a
-     * rational NURBS circle).
-     * @param {number} edge
-     * @returns {string}
-     */
-    getEdgeCurveType(edge) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_getEdgeCurveType(this.__wbg_ptr, edge);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Build an edge's NURBS curve data for JS consumption.
-     *
-     * Returns `null` for line edges, or a JSON string with
-     * `{degree, knots, controlPoints, weights}` for NURBS edges.
-     * @param {number} edge
-     * @returns {any}
-     */
-    getEdgeNurbsData(edge) {
-        const ret = wasm.brepkernel_getEdgeNurbsData(this.__wbg_ptr, edge);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * The parameter span the edge ACTUALLY covers on its stored curve.
-     *
-     * Returns `[t_start, t_end]` — a stored trim verbatim, a closed edge as
-     * one full period anchored at its start vertex, and an open edge via the
-     * endpoint-trimmed convention. This differs from
-     * [`getEdgeCurveParameters`](Self::get_edge_curve_parameters), which
-     * reports the raw curve domain (`[0, TAU]` for every circle): a circle
-     * edge's endpoints subtend TWO arcs, and only this span says which one
-     * the edge is — reconstructing it from endpoints alone flips
-     * intentional major arcs. Evaluate points on the span with
-     * [`evaluateEdgeCurve`](Self::evaluate_edge_curve); for NURBS sub-spans
-     * prefer [`sampleEdge`](Self::sample_edge_polyline), which also handles
-     * closed-curve wrapping.
-     *
-     * # Errors
-     *
-     * Returns an error if the edge handle is invalid.
-     * @param {number} edge
-     * @returns {Float64Array}
-     */
-    getEdgeParamSpan(edge) {
-        const ret = wasm.brepkernel_getEdgeParamSpan(this.__wbg_ptr, edge);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Get the vertex *handles* (not positions) of an edge.
-     *
-     * Returns `[start_vertex_handle, end_vertex_handle]`.
-     *
-     * # Errors
-     *
-     * Returns an error if the edge handle is invalid.
-     * @param {number} edge
-     * @returns {Uint32Array}
-     */
-    getEdgeVertexHandles(edge) {
-        const ret = wasm.brepkernel_getEdgeVertexHandles(this.__wbg_ptr, edge);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Get the vertex positions of an edge.
-     *
-     * Returns `[start_x, start_y, start_z, end_x, end_y, end_z]`.
-     *
-     * # Errors
-     *
-     * Returns an error if the edge handle is invalid.
-     * @param {number} edge
-     * @returns {Float64Array}
-     */
-    getEdgeVertices(edge) {
-        const ret = wasm.brepkernel_getEdgeVertices(this.__wbg_ptr, edge);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Get entity counts of a solid: `[faces, edges, vertices]`.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid.
-     * @param {number} solid
-     * @returns {Uint32Array}
-     */
-    getEntityCounts(solid) {
-        const ret = wasm.brepkernel_getEntityCounts(this.__wbg_ptr, solid);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Principal curvatures at `(u, v)` on a face's surface.
-     *
-     * Returns a JSON string `{ k1, k2, gaussian, mean, d1, d2 }` (see the
-     * `FaceCurvatureResult` TypeScript type). Curvatures are sorted
-     * `k1 >= k2` and signed positive for convex-outward relative to the
-     * face's effective outward normal; flipping the face orientation flips
-     * `k1`, `k2`, and `mean`, while `gaussian` is orientation-independent.
-     * `d1`/`d2` are the unit principal directions matching `(k1, k2)`, or
-     * `null` at umbilic points (sphere, plane, near-umbilic NURBS regions)
-     * where every tangent direction is principal.
-     *
-     * `(u, v)` are parameters of the underlying surface, not restricted to
-     * the face's trimmed region. For a plane face the report is identically
-     * zero and the directions are `null`.
-     *
-     * # Errors
-     *
-     * Returns an error if the face handle is invalid or curvature is
-     * undefined at `(u, v)`: a cone at or below its apex, a torus parallel
-     * that degenerates (self-intersecting configurations only), a
-     * non-finite parameter, or a NURBS point where the parametrization
-     * collapses (e.g. a sphere pole).
-     * @param {number} face
-     * @param {number} u
-     * @param {number} v
-     * @returns {any}
-     */
-    getFaceCurvature(face, u, v) {
-        const ret = wasm.brepkernel_getFaceCurvature(this.__wbg_ptr, face, u, v);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Signed local surface-carrier draft in radians, as a JSON string
-     * `{angleRadians,outwardNormal}`. `(u,v)` does not test trimmed membership.
-     * Negative draft is not a global undercut or accessibility verdict.
-     *
-     * # Errors
-     * Refuses invalid handles, pull directions, parameters and undefined normals.
-     * @param {number} face
-     * @param {number} u
-     * @param {number} v
-     * @param {number} pull_x
-     * @param {number} pull_y
-     * @param {number} pull_z
-     * @returns {string}
-     */
-    getFaceDraftAngle(face, u, v, pull_x, pull_y, pull_z) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_getFaceDraftAngle(this.__wbg_ptr, face, u, v, pull_x, pull_y, pull_z);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Get the edge handles of a face.
-     *
-     * Returns an array of edge handles (`u32[]`).
-     * @param {number} face
-     * @returns {Uint32Array}
-     */
-    getFaceEdges(face) {
-        const ret = wasm.brepkernel_getFaceEdges(this.__wbg_ptr, face);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Minimum radius of curvature over a face (`1 / max(|k1|, |k2|)` across
-     * the face's trimmed domain), orientation-independent.
-     *
-     * Exact for the five analytic surface types; a coarse-grid-plus-
-     * refinement approximation for NURBS. A plane face has no curvature and
-     * returns `Infinity`; a cone face reaching its apex returns `0`.
-     *
-     * # Errors
-     *
-     * Returns an error if the face handle is invalid or the face boundary
-     * cannot be projected onto its surface.
-     * @param {number} face
-     * @returns {number}
-     */
-    getFaceMinRadius(face) {
-        const ret = wasm.brepkernel_getFaceMinRadius(this.__wbg_ptr, face);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0];
-    }
-    /**
-     * A face's semantic name, or null.
-     * @param {number} face
-     * @returns {string | undefined}
-     */
-    getFaceName(face) {
-        const ret = wasm.brepkernel_getFaceName(this.__wbg_ptr, face);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        let v1;
-        if (ret[0] !== 0) {
-            v1 = getStringFromWasm0(ret[0], ret[1]).slice();
-            wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
-        }
-        return v1;
-    }
-    /**
-     * Get the outward face normal of a planar face.
-     *
-     * Returns `[nx, ny, nz]`, oriented by the face's `reversed` flag —
-     * boolean and blend assembly routinely emit reversed faces, and the raw
-     * plane normal points inward on those.
-     *
-     * # Errors
-     *
-     * Returns an error if the face is invalid or NURBS.
-     * @param {number} face
-     * @returns {Float64Array}
-     */
-    getFaceNormal(face) {
-        const ret = wasm.brepkernel_getFaceNormal(this.__wbg_ptr, face);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Get the outer wire handle of a face.
-     *
-     * Returns a wire handle (`u32`).
-     * @param {number} face
-     * @returns {number}
-     */
-    getFaceOuterWire(face) {
-        const ret = wasm.brepkernel_getFaceOuterWire(this.__wbg_ptr, face);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Get the vertex handles of a face.
-     *
-     * Returns an array of vertex handles (`u32[]`).
-     * @param {number} face
-     * @returns {Uint32Array}
-     */
-    getFaceVertices(face) {
-        const ret = wasm.brepkernel_getFaceVertices(this.__wbg_ptr, face);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Get all wires of a face (outer wire first, then inner/hole wires).
-     *
-     * # Errors
-     * Returns an error if the face handle is invalid.
-     * @param {number} face
-     * @returns {Uint32Array}
-     */
-    getFaceWires(face) {
-        const ret = wasm.brepkernel_getFaceWires(this.__wbg_ptr, face);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Read-only canonical NURBS data for the curve underlying an edge.
-     *
-     * Analytic curves (line, circle, ellipse) are converted to their exact
-     * NURBS form. Returns a JSON string with `degree`, `controlPoints`,
-     * `weights`, the flat `knots` vector, compressed `distinctKnots` /
-     * `multiplicities`, `rational`, `closed` / `periodic`, and `domain`.
-     * @param {number} edge
-     * @returns {string}
-     */
-    getNurbsCurveData(edge) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_getNurbsCurveData(this.__wbg_ptr, edge);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Read-only canonical NURBS data for the surface underlying a face.
-     *
-     * Analytic surfaces are converted to NURBS (planes/cylinders exact;
-     * cones/spheres/tori via the exact rational forms). Returns a JSON
-     * string with `degreeU`/`degreeV`, the row-major `controlPoints` grid,
-     * the matching `weights` grid, flat `knotsU`/`knotsV`, compressed
-     * distinct-knots/multiplicities per direction, `rational`,
-     * `periodicU`/`periodicV`, and `domainU`/`domainV`.
-     * @param {number} face
-     * @returns {string}
-     */
-    getNurbsSurfaceData(face) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_getNurbsSurfaceData(this.__wbg_ptr, face);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Type-gated read-only B-Spline/NURBS surface data for a face.
-     *
-     * Unlike `getNurbsSurfaceData`, this never converts analytic surfaces:
-     * faces backed by a plane, cylinder, cone, sphere, or torus return the
-     * JSON literal `null`. Only intrinsically free-form (B-Spline/NURBS) faces
-     * yield a record with `degreeU`/`degreeV`, `nbPolesU`/`nbPolesV`, the
-     * row-major `poles` grid (u-major, v-minor) with the matching `weights`
-     * grid, distinct `knotsU`/`knotsV` paired with `multiplicitiesU`/
-     * `multiplicitiesV`, `isPeriodicU`/`isPeriodicV`, and `isRational`.
-     * @param {number} face
-     * @returns {string}
-     */
-    getNurbsSurfaceDataParity(face) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_getNurbsSurfaceDataParity(this.__wbg_ptr, face);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Find opposing parallel planar face pairs with projected overlap.
-     *
-     * Returns JSON records containing both face handles, pair distance,
-     * overlap and face areas, the outward normal of `faceA`, and conservative
-     * blend-border flags.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle or its topology is invalid, or
-     * the shared native face, topology, sampling, or work budget is exceeded.
-     * @param {number} solid
-     * @returns {string}
-     */
-    getOpposingPlanarFacePairs(solid) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_getOpposingPlanarFacePairs(this.__wbg_ptr, solid);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * JSON array of `{face,angleRadians,outwardNormal}` for every outer/cavity
-     * planar face in explorer order. A curved face refuses the whole report.
-     * This read-only query does not change topology, handles or checkpoints.
-     *
-     * # Errors
-     * Refuses invalid handles/pull directions, undefined normals and curved faces.
-     * @param {number} solid
-     * @param {number} pull_x
-     * @param {number} pull_y
-     * @param {number} pull_z
-     * @returns {string}
-     */
-    getPlanarSolidDraft(solid, pull_x, pull_y, pull_z) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_getPlanarSolidDraft(this.__wbg_ptr, solid, pull_x, pull_y, pull_z);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Get the orientation of a shape.
-     *
-     * Returns `"forward"` for all faces (remus faces don't have an
-     * independent orientation flag; the normal direction is canonical).
-     * @param {number} _id
-     * @returns {string}
-     */
-    getShapeOrientation(_id) {
-        let deferred1_0;
-        let deferred1_1;
-        try {
-            const ret = wasm.brepkernel_getShapeOrientation(this.__wbg_ptr, _id);
-            deferred1_0 = ret[0];
-            deferred1_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
-        }
-    }
-    /**
-     * Get the face handles of a shell.
-     *
-     * Returns an array of face handles (`u32[]`).
-     *
-     * # Errors
-     *
-     * Returns an error if the shell handle is invalid.
-     * @param {number} shell
-     * @returns {Uint32Array}
-     */
-    getShellFaces(shell) {
-        const ret = wasm.brepkernel_getShellFaces(this.__wbg_ptr, shell);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Get all edge handles of a solid.
-     *
-     * Returns an array of unique edge handles (`u32[]`).
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid.
-     * @param {number} solid
-     * @returns {Uint32Array}
-     */
-    getSolidEdges(solid) {
-        const ret = wasm.brepkernel_getSolidEdges(this.__wbg_ptr, solid);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Get all face handles of a solid.
-     *
-     * Returns an array of face handles (`u32[]`).
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid.
-     * @param {number} solid
-     * @returns {Uint32Array}
-     */
-    getSolidFaces(solid) {
-        const ret = wasm.brepkernel_getSolidFaces(this.__wbg_ptr, solid);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Get all shell handles of a solid.
-     *
-     * Returns the outer shell first, followed by any inner void shells
-     * (cavities produced by `shell`/hollow operations or boolean cuts).
-     * A simple solid such as a box reports exactly one shell.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid.
-     * @param {number} solid
-     * @returns {Uint32Array}
-     */
-    getSolidShells(solid) {
-        const ret = wasm.brepkernel_getSolidShells(this.__wbg_ptr, solid);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Get all vertex handles of a solid.
-     *
-     * Returns an array of unique vertex handles (`u32[]`).
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid.
-     * @param {number} solid
-     * @returns {Uint32Array}
-     */
-    getSolidVertices(solid) {
-        const ret = wasm.brepkernel_getSolidVertices(this.__wbg_ptr, solid);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Get the UV parameter domain of a face's surface.
-     *
-     * Returns `[u_min, u_max, v_min, v_max]`.
-     * @param {number} face
-     * @returns {Float64Array}
-     */
-    getSurfaceDomain(face) {
-        const ret = wasm.brepkernel_getSurfaceDomain(this.__wbg_ptr, face);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Get the surface type of a face.
-     *
-     * Returns one of: `"plane"`, `"cylinder"`, `"cone"`, `"sphere"`,
-     * `"torus"`, `"bspline"`.
-     *
-     * For NURBS surfaces that exactly represent analytic shapes, this
-     * returns the underlying analytic type (e.g. `"sphere"` for a NURBS
-     * sphere patch).
-     * @param {number} face
-     * @returns {string}
-     */
-    getSurfaceType(face) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_getSurfaceType(this.__wbg_ptr, face);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Get the position of a vertex.
-     *
-     * Returns `[x, y, z]`.
-     *
-     * # Errors
-     *
-     * Returns an error if the vertex handle is invalid.
-     * @param {number} vertex
-     * @returns {Float64Array}
-     */
-    getVertexPosition(vertex) {
-        const ret = wasm.brepkernel_getVertexPosition(this.__wbg_ptr, vertex);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Get the edge handles of a wire in wire traversal order.
-     *
-     * Returns one entry per use in stored order (`u32[]`). When edge handles
-     * are distinct, consecutive entries connect head-to-tail in their
-     * `isEdgeForwardInWire` directions, and the last closes back on the
-     * first on a closed wire. A seam edge used twice appears twice
-     * (cylinder lateral). Its per-use directions cannot be recovered from
-     * `isEdgeForwardInWire`, which reports only the first use.
-     *
-     * # Errors
-     *
-     * Returns an error if the wire handle is invalid.
-     * @param {number} wire
-     * @returns {Uint32Array}
-     */
-    getWireEdges(wire) {
-        const ret = wasm.brepkernel_getWireEdges(this.__wbg_ptr, wire);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Create a 2D grid pattern of a solid.
-     *
-     * Produces `count_x × count_y` copies arranged in a rectangular grid.
-     * @param {number} solid
-     * @param {number} dir_x_x
-     * @param {number} dir_x_y
-     * @param {number} dir_x_z
-     * @param {number} dir_y_x
-     * @param {number} dir_y_y
-     * @param {number} dir_y_z
-     * @param {number} spacing_x
-     * @param {number} spacing_y
-     * @param {number} count_x
-     * @param {number} count_y
-     * @returns {number}
-     */
-    gridPattern(solid, dir_x_x, dir_x_y, dir_x_z, dir_y_x, dir_y_y, dir_y_z, spacing_x, spacing_y, count_x, count_y) {
-        const ret = wasm.brepkernel_gridPattern(this.__wbg_ptr, solid, dir_x_x, dir_x_y, dir_x_z, dir_y_x, dir_y_y, dir_y_z, spacing_x, spacing_y, count_x, count_y);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Grid pattern journaled as one construction-derived F/E/V evolution
-     * entry (kind `grid_pattern`). Returns JSON `{"compound", "op"}`.
-     * Directions are independently normalized and must be nonparallel.
-     * Members are row-major (X changes first), including the original first.
-     * Counts must be positive integers, each and their product at most 10000.
-     * @param {number} solid
-     * @param {number} dxx
-     * @param {number} dxy
-     * @param {number} dxz
-     * @param {number} dyx
-     * @param {number} dyy
-     * @param {number} dyz
-     * @param {number} spacing_x
-     * @param {number} spacing_y
-     * @param {number} count_x
-     * @param {number} count_y
-     * @returns {string}
-     */
-    gridPatternJournaled(solid, dxx, dxy, dxz, dyx, dyy, dyz, spacing_x, spacing_y, count_x, count_y) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_gridPatternJournaled(this.__wbg_ptr, solid, dxx, dxy, dxz, dyx, dyy, dyz, spacing_x, spacing_y, count_x, count_y);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Guided (two-rail) sweep: sweep `face` along a spine, orienting the
-     * profile so its up-vector tracks an auxiliary spine.
-     *
-     * The spine and auxiliary spine are each passed as raw NURBS data
-     * (`degree`, `knots`, flat `control_points`, `weights`). Their original
-     * native domains must match exactly; both curves are sampled at the same
-     * normalized progress across that domain. Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error for a non-finite or malformed curve, a non-planar
-     * profile, or a degenerate path.
-     * @param {number} face
-     * @param {number} spine_degree
-     * @param {Float64Array} spine_knots
-     * @param {Float64Array} spine_control_points
-     * @param {Float64Array} spine_weights
-     * @param {number} aux_degree
-     * @param {Float64Array} aux_knots
-     * @param {Float64Array} aux_control_points
-     * @param {Float64Array} aux_weights
-     * @returns {number}
-     */
-    guidedSweep(face, spine_degree, spine_knots, spine_control_points, spine_weights, aux_degree, aux_knots, aux_control_points, aux_weights) {
-        const ptr0 = passArrayF64ToWasm0(spine_knots, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(spine_control_points, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passArrayF64ToWasm0(spine_weights, wasm.__wbindgen_malloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ptr3 = passArrayF64ToWasm0(aux_knots, wasm.__wbindgen_malloc);
-        const len3 = WASM_VECTOR_LEN;
-        const ptr4 = passArrayF64ToWasm0(aux_control_points, wasm.__wbindgen_malloc);
-        const len4 = WASM_VECTOR_LEN;
-        const ptr5 = passArrayF64ToWasm0(aux_weights, wasm.__wbindgen_malloc);
-        const len5 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_guidedSweep(this.__wbg_ptr, face, spine_degree, ptr0, len0, ptr1, len1, ptr2, len2, aux_degree, ptr3, len3, ptr4, len4, ptr5, len5);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Names of the built-in healing pipeline operators accepted by
-     * [`run_heal_pipeline`](Self::run_heal_pipeline).
-     * @returns {string[]}
-     */
-    healPipelineSteps() {
-        const ret = wasm.brepkernel_healPipelineSteps(this.__wbg_ptr);
-        var v1 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Heal a solid topology.
-     *
-     * Returns the number of issues fixed.
-     * @param {number} solid
-     * @returns {number}
-     */
-    healSolid(solid) {
-        const ret = wasm.brepkernel_healSolid(this.__wbg_ptr, solid);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Heal a solid and return exact repair categories plus a verified-valid
-     * postcondition. Invalid or unverifiable results are rolled back and
-     * returned as typed errors.
-     * @param {number} solid
-     * @returns {any}
-     */
-    healSolidDetailed(solid) {
-        const ret = wasm.brepkernel_healSolidDetailed(this.__wbg_ptr, solid);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Create a helical sweep of a profile face.
-     *
-     * Sweeps the profile along a helix defined by axis, radius, pitch,
-     * and number of turns. Used for generating thread geometry.
-     *
-     * # Errors
-     *
-     * Returns an error if parameters are invalid or the sweep fails.
-     * @param {number} profile
-     * @param {number} axis_origin_x
-     * @param {number} axis_origin_y
-     * @param {number} axis_origin_z
-     * @param {number} axis_dir_x
-     * @param {number} axis_dir_y
-     * @param {number} axis_dir_z
-     * @param {number} radius
-     * @param {number} pitch
-     * @param {number} turns
-     * @returns {number}
-     */
-    helicalSweep(profile, axis_origin_x, axis_origin_y, axis_origin_z, axis_dir_x, axis_dir_y, axis_dir_z, radius, pitch, turns) {
-        const ret = wasm.brepkernel_helicalSweep(this.__wbg_ptr, profile, axis_origin_x, axis_origin_y, axis_origin_z, axis_dir_x, axis_dir_y, axis_dir_z, radius, pitch, turns);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Imprints one solid's intersection edges onto another without removing
-     * material. Returns JSON `{"solid", "op"}` for the new target and its
-     * construction-derived journal entry.
-     * @param {number} target
-     * @param {number} tool
-     * @returns {string}
-     */
-    imprint(target, tool) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_imprint(this.__wbg_ptr, target, tool);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Partition one planar convex solid face with a strictly interior convex
-     * 3--16 point ring. `points` is flat world `[x,y,z,...]` data.
-     * Returns JSON `{solid,innerFace,surroundFace,op}`. Both patches retain
-     * the original plane and material, with exact construction lineage.
-     * @param {number} solid
-     * @param {number} face
-     * @param {Float64Array} points
-     * @returns {string}
-     */
-    imprintPlanarPolygon(solid, face, points) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passArrayF64ToWasm0(points, wasm.__wbindgen_malloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_imprintPlanarPolygon(this.__wbg_ptr, solid, face, ptr0, len0);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * Compute the uniform-density inertia tensor about the center of mass.
-     *
-     * Returns the symmetric 3x3 matrix in row-major order, expressed in the
-     * kernel's global axes. Density is `1`; with the canonical millimetre
-     * length unit, each component has units of `mm^5`.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid, integration fails, or
-     * the solid has effectively zero volume.
-     * @param {number} solid
-     * @returns {Float64Array}
-     */
-    inertiaTensor(solid) {
-        const ret = wasm.brepkernel_inertiaTensor(this.__wbg_ptr, solid);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Interpolate a NURBS curve through points and create an edge.
-     *
-     * Uses chord-length parameterization with the given degree.
-     * Returns an edge handle (`u32`).
-     * @param {Float64Array} coords
-     * @param {number} degree
-     * @returns {number}
-     */
-    interpolatePoints(coords, degree) {
-        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_interpolatePoints(this.__wbg_ptr, ptr0, len0, degree);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Interpolate a grid of points into a NURBS surface.
-     *
-     * `coords` is a flat array `[x,y,z, ...]` of `rows * cols` points.
-     * Returns a face handle.
-     * @param {Float64Array} coords
-     * @param {number} rows
-     * @param {number} cols
-     * @param {number} degree_u
-     * @param {number} degree_v
-     * @returns {number}
-     */
-    interpolateSurface(coords, rows, cols, degree_u, degree_v) {
-        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_interpolateSurface(this.__wbg_ptr, ptr0, len0, rows, cols, degree_u, degree_v);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Intersect two solids, keeping only their common volume.
-     *
-     * Returns a new solid handle (`u32`).
-     *
-     * Exact-only: when the exact engine cannot handle the pair this returns a
-     * typed refusal (category `quality_refused`, `kernelCode`
-     * `exact_only_unattainable`) instead of silently handing back a mesh. To
-     * accept an approximate result, call `booleanWithQuality` without
-     * `exactOnly`; it discloses the quality and deflection it used.
-     *
-     * # Errors
-     *
-     * Returns an error if either solid handle is invalid or the operation
-     * produces an empty result.
-     * @param {number} a
-     * @param {number} b
-     * @returns {number}
-     */
-    intersect(a, b) {
-        const ret = wasm.brepkernel_intersect(this.__wbg_ptr, a, b);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Intersect two solids and return success or failure as typed data.
-     *
-     * Additive twin of [`intersect_solids`](Self::intersect_solids); the
-     * legacy method keeps its existing return value and thrown-error
-     * behavior.
-     * @param {number} a
-     * @param {number} b
-     * @returns {SolidOperationDetailedResult}
-     */
-    intersectDetailed(a, b) {
-        const ret = wasm.brepkernel_intersectDetailed(this.__wbg_ptr, a, b);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Intersect two solids with journaled construction history.
-     * @param {number} a
-     * @param {number} b
-     * @returns {string}
-     */
-    intersectJournaled(a, b) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_intersectJournaled(this.__wbg_ptr, a, b);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Compute the boolean intersection of two 2D polygons.
-     *
-     * Both polygons are flat arrays `[x,y, x,y, ...]`.
-     * Returns a flat array of the intersection polygon coordinates,
-     * or an empty array if they don't intersect.
-     *
-     * Uses the Sutherland-Hodgman algorithm (convex clipper); either
-     * polygon may wind either way.
-     * @param {Float64Array} coords_a
-     * @param {Float64Array} coords_b
-     * @returns {Float64Array}
-     */
-    intersectPolygons2d(coords_a, coords_b) {
-        const ptr0 = passArrayF64ToWasm0(coords_a, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(coords_b, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_intersectPolygons2d(this.__wbg_ptr, ptr0, len0, ptr1, len1);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v3 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v3;
-    }
-    /**
-     * Intersect with full entity history; see `fuseWithEntityEvolution`.
-     * @param {number} a
-     * @param {number} b
-     * @returns {string}
-     */
-    intersectWithEntityEvolution(a, b) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_intersectWithEntityEvolution(this.__wbg_ptr, a, b);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Intersect two solids and return evolution tracking data.
-     *
-     * Returns a JSON string: `{"solid": <u32>, "evolution": {...}}`.
-     *
-     * # Errors
-     *
-     * Returns an error if either solid handle is invalid or the operation
-     * produces an empty result.
-     * @param {number} a
-     * @param {number} b
-     * @returns {any}
-     */
-    intersectWithEvolution(a, b) {
-        const ret = wasm.brepkernel_intersectWithEvolution(this.__wbg_ptr, a, b);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Intersect two solids with post-processing options.
-     *
-     * See [`fuse_with_options`](Self::fuse_with_options) for the
-     * `unifyFaces` semantics.
-     *
-     * # Errors
-     *
-     * Returns an error if either solid handle is invalid or the operation
-     * produces an empty or non-manifold result.
-     * @param {number} a
-     * @param {number} b
-     * @param {boolean | null} [unify_faces]
-     * @returns {number}
-     */
-    intersectWithOptions(a, b, unify_faces) {
-        const ret = wasm.brepkernel_intersectWithOptions(this.__wbg_ptr, a, b, isLikeNone(unify_faces) ? 0xFFFFFF : unify_faces ? 1 : 0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Check if an edge is forward-oriented in a given wire.
-     *
-     * Returns `true` if the edge is forward in the wire, `false` if reversed.
-     * Reports the FIRST use of `edge` in the wire: an edge used twice in one
-     * wire (a seam edge on a cylinder lateral, forward then reversed) reads
-     * as its first use for both occurrences, so the second use is ambiguous
-     * through this query. Planar faces have no seams.
-     * @param {number} edge
-     * @param {number} wire
-     * @returns {boolean}
-     */
-    isEdgeForwardInWire(edge, wire) {
-        const ret = wasm.brepkernel_isEdgeForwardInWire(this.__wbg_ptr, edge, wire);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] !== 0;
-    }
-    /**
-     * Check whether a wire is closed (last edge connects back to first).
-     * @param {number} wire
-     * @returns {boolean}
-     */
-    isWireClosed(wire) {
-        const ret = wasm.brepkernel_isWireClosed(this.__wbg_ptr, wire);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] !== 0;
-    }
-    /**
-     * Journals an explicit barrier over every entity of `solid` for an
-     * operation without evolution records. Returns the journal op id.
-     * @param {string} kind
-     * @param {number} solid
-     * @returns {number}
-     */
-    journalBarrier(kind, solid) {
-        const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_journalBarrier(this.__wbg_ptr, ptr0, len0, solid);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * A read-only summary of the evolution journal: JSON array of
-     * `{"op", "kind", "type", "detail"}` where `type` is `evolution`
-     * (detail: origin, event count), `barrier` (detail: affected
-     * count), or `globalBarrier`.
-     * @returns {string}
-     */
-    journalSummary() {
-        let deferred1_0;
-        let deferred1_1;
-        try {
-            const ret = wasm.brepkernel_journalSummary(this.__wbg_ptr);
-            deferred1_0 = ret[0];
-            deferred1_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
-        }
-    }
-    /**
-     * Lift a 2D curve onto a 3D plane, producing an edge.
-     *
-     * `curve_type`: 0 = Line, 1 = Circle, 2 = Ellipse, 3 = NURBS.
-     * `curve_params` layout varies by type (see docs).
-     * The plane is defined by an origin, x-axis, and normal.
-     * `t_start`/`t_end` specify the parameter range on the 2D curve.
-     *
-     * Returns an edge handle (`u32`).
-     * @param {number} curve_type
-     * @param {Float64Array} curve_params
-     * @param {number} origin_x
-     * @param {number} origin_y
-     * @param {number} origin_z
-     * @param {number} x_axis_x
-     * @param {number} x_axis_y
-     * @param {number} x_axis_z
-     * @param {number} normal_x
-     * @param {number} normal_y
-     * @param {number} normal_z
-     * @param {number} t_start
-     * @param {number} t_end
-     * @returns {number}
-     */
-    liftCurve2dToPlane(curve_type, curve_params, origin_x, origin_y, origin_z, x_axis_x, x_axis_y, x_axis_z, normal_x, normal_y, normal_z, t_start, t_end) {
-        const ptr0 = passArrayF64ToWasm0(curve_params, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_liftCurve2dToPlane(this.__wbg_ptr, curve_type, ptr0, len0, origin_x, origin_y, origin_z, x_axis_x, x_axis_y, x_axis_z, normal_x, normal_y, normal_z, t_start, t_end);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a linear pattern of a solid.
-     *
-     * Returns a compound handle containing all copies.
-     *
-     * # Errors
-     *
-     * Returns an error if inputs are invalid.
-     * @param {number} solid
-     * @param {number} dx
-     * @param {number} dy
-     * @param {number} dz
-     * @param {number} spacing
-     * @param {number} count
-     * @returns {number}
-     */
-    linearPattern(solid, dx, dy, dz, spacing, count) {
-        const ret = wasm.brepkernel_linearPattern(this.__wbg_ptr, solid, dx, dy, dz, spacing, count);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Linear pattern journaled as one evolution entry (kind
-     * `linear_pattern`). Returns JSON `{"compound", "op"}`.
-     * @param {number} solid
-     * @param {number} dx
-     * @param {number} dy
-     * @param {number} dz
-     * @param {number} spacing
-     * @param {number} count
-     * @returns {string}
-     */
-    linearPatternJournaled(solid, dx, dy, dz, spacing, count) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_linearPatternJournaled(this.__wbg_ptr, solid, dx, dy, dz, spacing, count);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Loft two or more profile faces into a solid.
-     *
-     * Takes an array of face handles. Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if fewer than 2 faces or profiles have
-     * different vertex counts.
-     * @param {Uint32Array} faces
-     * @returns {number}
-     */
-    loft(faces) {
-        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_loft(this.__wbg_ptr, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Loft profiles with smooth NURBS interpolation.
-     *
-     * Like `loft()`, but produces smooth NURBS side surfaces for 3+
-     * profiles instead of piecewise-planar quads. The surfaces
-     * interpolate through all intermediate profiles with C1+ continuity.
-     *
-     * Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if fewer than 2 profiles are given, profiles have
-     * different vertex counts, or surface fitting fails.
-     * @param {Uint32Array} faces
-     * @returns {number}
-     */
-    loftSmooth(faces) {
-        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_loftSmooth(this.__wbg_ptr, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Loft profiles with options for start/end points and ruled mode.
-     *
-     * `options` is a JSON string with optional fields:
-     * - `startPoint: [x, y, z]` — apex point before first profile
-     * - `endPoint: [x, y, z]` — apex point after last profile
-     * - `ruled: bool` — true for ruled (linear) surfaces (default), false for smooth
-     * @param {Uint32Array} faces
-     * @param {string} options
-     * @returns {number}
-     */
-    loftWithOptions(faces, options) {
-        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(options, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_loftWithOptions(this.__wbg_ptr, ptr0, len0, ptr1, len1);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a box solid with one corner at the origin and the opposite
-     * corner at `(dx, dy, dz)`.
-     *
-     * Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if any dimension is non-positive or non-finite.
-     * @param {number} dx
-     * @param {number} dy
-     * @param {number} dz
-     * @returns {number}
-     */
-    makeBox(dx, dy, dz) {
-        const ret = wasm.brepkernel_makeBox(this.__wbg_ptr, dx, dy, dz);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a circular polygon approximation on the XY plane.
-     *
-     * The circle is centered at the origin with the given `radius`,
-     * approximated by `segments` straight edges.
-     * Returns a face handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if fewer than 3 segments are specified.
-     * @param {number} radius
-     * @param {number} segments
-     * @returns {number}
-     */
-    makeCircle(radius, segments) {
-        const ret = wasm.brepkernel_makeCircle(this.__wbg_ptr, radius, segments);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a circular arc edge between two points.
-     *
-     * The arc lies on a circle with the given center, normal axis, and
-     * radius derived from `|start − center|`. The arc goes from start
-     * to end counter-clockwise when viewed along the normal.
-     *
-     * Returns an edge handle (`u32`).
-     * @param {number} start_x
-     * @param {number} start_y
-     * @param {number} start_z
-     * @param {number} end_x
-     * @param {number} end_y
-     * @param {number} end_z
-     * @param {number} center_x
-     * @param {number} center_y
-     * @param {number} center_z
-     * @param {number} axis_x
-     * @param {number} axis_y
-     * @param {number} axis_z
-     * @returns {number}
-     */
-    makeCircleArc3d(start_x, start_y, start_z, end_x, end_y, end_z, center_x, center_y, center_z, axis_x, axis_y, axis_z) {
-        const ret = wasm.brepkernel_makeCircleArc3d(this.__wbg_ptr, start_x, start_y, start_z, end_x, end_y, end_z, center_x, center_y, center_z, axis_x, axis_y, axis_z);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a closed circular edge with true `Circle` curve geometry.
-     *
-     * Unlike `makeCircle` (which returns a polygon face approximation),
-     * this creates a single closed edge with an [`EdgeCurve::Circle`]
-     * backing curve and parameter domain `[0, 2π]`. The start and end
-     * vertex are shared at the seam point `circle.evaluate(0.0)`.
-     *
-     * Returns an edge handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if any coordinate is NaN/infinite, `radius` is
-     * non-positive, or the normal vector is zero.
-     * @param {number} cx
-     * @param {number} cy
-     * @param {number} cz
-     * @param {number} nx
-     * @param {number} ny
-     * @param {number} nz
-     * @param {number} radius
-     * @returns {number}
-     */
-    makeCircleEdge(cx, cy, cz, nx, ny, nz, radius) {
-        const ret = wasm.brepkernel_makeCircleEdge(this.__wbg_ptr, cx, cy, cz, nx, ny, nz, radius);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a closed circular edge with a caller-supplied reference x-direction.
-     *
-     * Like [`makeCircleEdge`](Self::make_circle_edge), but `ref_dir = (rx, ry, rz)`
-     * is projected onto the plane perpendicular to the normal to fix the
-     * circle's `u_axis` — which controls the seam vertex position at
-     * `circle.evaluate(0.0)`. Use when downstream code (PCurve computation,
-     * extrusion frame) depends on a specific seam placement.
-     *
-     * `ref_dir` must be non-zero (rejected at this boundary) and ideally
-     * not parallel to the normal — `Frame3::from_normal_and_ref` falls
-     * back to an arbitrary perpendicular when the projection of `ref_dir`
-     * onto the plane is degenerate, defeating the purpose of this call.
-     *
-     * Returns an edge handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if any coordinate is NaN/infinite, `radius` is
-     * non-positive, or the normal vector or `ref_dir` is zero.
-     * @param {number} cx
-     * @param {number} cy
-     * @param {number} cz
-     * @param {number} nx
-     * @param {number} ny
-     * @param {number} nz
-     * @param {number} radius
-     * @param {number} rx
-     * @param {number} ry
-     * @param {number} rz
-     * @returns {number}
-     */
-    makeCircleEdgeWithRef(cx, cy, cz, nx, ny, nz, radius, rx, ry, rz) {
-        const ret = wasm.brepkernel_makeCircleEdgeWithRef(this.__wbg_ptr, cx, cy, cz, nx, ny, nz, radius, rx, ry, rz);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a circular face on the XY plane (using NURBS arcs).
-     *
-     * Returns a face handle.
-     * @param {number} radius
-     * @param {number} segments
-     * @returns {number}
-     */
-    makeCircleFace(radius, segments) {
-        const ret = wasm.brepkernel_makeCircleFace(this.__wbg_ptr, radius, segments);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a compound from multiple solid handles.
-     *
-     * Returns a compound handle (stored as `u32`).
-     * @param {Uint32Array} solid_handles
-     * @returns {number}
-     */
-    makeCompound(solid_handles) {
-        const ptr0 = passArray32ToWasm0(solid_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_makeCompound(this.__wbg_ptr, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a cone or frustum solid centered at the origin, axis along +Z.
-     *
-     * Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if height is non-positive or both radii are zero.
-     * @param {number} bottom_radius
-     * @param {number} top_radius
-     * @param {number} height
-     * @returns {number}
-     */
-    makeCone(bottom_radius, top_radius, height) {
-        const ret = wasm.brepkernel_makeCone(this.__wbg_ptr, bottom_radius, top_radius, height);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a cylinder solid centered at the origin, axis along +Z.
-     *
-     * Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if radius or height is non-positive.
-     * @param {number} radius
-     * @param {number} height
-     * @returns {number}
-     */
-    makeCylinder(radius, height) {
-        const ret = wasm.brepkernel_makeCylinder(this.__wbg_ptr, radius, height);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a trimmed elliptical arc edge.
-     *
-     * The ellipse is defined by `center`, `axis` (plane normal), the
-     * `ref` major-axis direction, and `semi_major`/`semi_minor`. The
-     * `start`/`end` points trim it to the CCW arc between them (they must
-     * lie on the ellipse). Produces an `EdgeCurve::Ellipse` edge — not a
-     * NURBS approximation — so it reports CIRCLE/ELLIPSE-class geometry.
-     *
-     * Returns an edge handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if any coordinate is NaN/infinite, a semi-axis is
-     * non-positive, `semi_minor` exceeds `semi_major`, or `axis`/`ref` is
-     * a zero vector, or an endpoint does not lie on the ellipse.
-     * @param {number} start_x
-     * @param {number} start_y
-     * @param {number} start_z
-     * @param {number} end_x
-     * @param {number} end_y
-     * @param {number} end_z
-     * @param {number} center_x
-     * @param {number} center_y
-     * @param {number} center_z
-     * @param {number} axis_x
-     * @param {number} axis_y
-     * @param {number} axis_z
-     * @param {number} ref_x
-     * @param {number} ref_y
-     * @param {number} ref_z
-     * @param {number} semi_major
-     * @param {number} semi_minor
-     * @returns {number}
-     */
-    makeEllipseArc3d(start_x, start_y, start_z, end_x, end_y, end_z, center_x, center_y, center_z, axis_x, axis_y, axis_z, ref_x, ref_y, ref_z, semi_major, semi_minor) {
-        const ret = wasm.brepkernel_makeEllipseArc3d(this.__wbg_ptr, start_x, start_y, start_z, end_x, end_y, end_z, center_x, center_y, center_z, axis_x, axis_y, axis_z, ref_x, ref_y, ref_z, semi_major, semi_minor);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a closed elliptical edge with true `Ellipse` curve geometry.
-     *
-     * Creates a single closed edge with an [`EdgeCurve::Ellipse`] backing
-     * curve and parameter domain `[0, 2π]`. The start and end vertex are
-     * shared at the seam point `ellipse.evaluate(0.0)`.
-     *
-     * Returns an edge handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if any coordinate is NaN/infinite, either
-     * semi-axis is non-positive, `semi_minor` exceeds `semi_major`, or
-     * the normal vector is zero.
-     * @param {number} cx
-     * @param {number} cy
-     * @param {number} cz
-     * @param {number} nx
-     * @param {number} ny
-     * @param {number} nz
-     * @param {number} semi_major
-     * @param {number} semi_minor
-     * @returns {number}
-     */
-    makeEllipseEdge(cx, cy, cz, nx, ny, nz, semi_major, semi_minor) {
-        const ret = wasm.brepkernel_makeEllipseEdge(this.__wbg_ptr, cx, cy, cz, nx, ny, nz, semi_major, semi_minor);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a closed elliptical edge with a caller-supplied reference major-axis.
-     *
-     * Like [`makeEllipseEdge`](Self::make_ellipse_edge), but `ref_dir = (rx, ry, rz)`
-     * is projected onto the plane perpendicular to the normal to fix the
-     * ellipse's major-axis direction (`u_axis`, carrying `semi_major`).
-     * Use this when the caller has an intended major-axis orientation —
-     * otherwise the default-frame variant chooses an arbitrary
-     * perpendicular, which can cause adapters to fall back to NURBS
-     * approximations to preserve their requested orientation.
-     *
-     * `ref_dir` must be non-zero (rejected at this boundary) and ideally
-     * not parallel to the normal — `Frame3::from_normal_and_ref` falls
-     * back to an arbitrary perpendicular when the projection of `ref_dir`
-     * onto the plane is degenerate, defeating the purpose of this call.
-     *
-     * Returns an edge handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if any coordinate is NaN/infinite, either
-     * semi-axis is non-positive, `semi_minor` exceeds `semi_major`, or
-     * the normal vector or `ref_dir` is zero.
-     * @param {number} cx
-     * @param {number} cy
-     * @param {number} cz
-     * @param {number} nx
-     * @param {number} ny
-     * @param {number} nz
-     * @param {number} semi_major
-     * @param {number} semi_minor
-     * @param {number} rx
-     * @param {number} ry
-     * @param {number} rz
-     * @returns {number}
-     */
-    makeEllipseEdgeWithRef(cx, cy, cz, nx, ny, nz, semi_major, semi_minor, rx, ry, rz) {
-        const ret = wasm.brepkernel_makeEllipseEdgeWithRef(this.__wbg_ptr, cx, cy, cz, nx, ny, nz, semi_major, semi_minor, rx, ry, rz);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create an ellipsoid solid centered at the origin.
-     *
-     * Built by creating a unit sphere and scaling it by `(rx, ry, rz)`.
-     *
-     * # Errors
-     *
-     * Returns an error if any radius is non-positive.
-     * @param {number} rx
-     * @param {number} ry
-     * @param {number} rz
-     * @returns {number}
-     */
-    makeEllipsoid(rx, ry, rz) {
-        const ret = wasm.brepkernel_makeEllipsoid(this.__wbg_ptr, rx, ry, rz);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a face from a wire.
-     *
-     * Samples the wire's edges and attaches a planar surface only if the
-     * geometry lies within tolerance of a single plane; otherwise a
-     * non-planar surface is attached, so `getSurfaceType` never reports
-     * `"plane"` for a non-coplanar wire.
-     *
-     * Returns a face handle (`u32`).
-     * @param {number} wire
-     * @returns {number}
-     */
-    makeFaceFromWire(wire) {
-        const ret = wasm.brepkernel_makeFaceFromWire(this.__wbg_ptr, wire);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a planar face from an outer wire and zero or more hole wires
-     * in one call.
-     *
-     * Equivalent to `makePlanarFaceFromWire` followed by `addHolesToFace`,
-     * but it builds a single face instead of two and runs the same hole
-     * validation once. The outer wire must be planar; each hole wire must
-     * be a closed loop lying on that plane, inside the outer wire, and
-     * disjoint from the other holes (see
-     * [`holed_face`](crate::holed_face)). Hole winding is not
-     * constrained.
-     *
-     * Returns a face handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if a handle is invalid, the outer wire is not
-     * planar, or a hole wire fails validation.
-     * @param {number} outer_wire
-     * @param {Uint32Array} inner_wire_handles
-     * @returns {number}
-     */
-    makeFaceFromWires(outer_wire, inner_wire_handles) {
-        const ptr0 = passArray32ToWasm0(inner_wire_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_makeFaceFromWires(this.__wbg_ptr, outer_wire, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a straight-line edge between two points.
-     *
-     * Returns an edge handle (`u32`).
-     * @param {number} x1
-     * @param {number} y1
-     * @param {number} z1
-     * @param {number} x2
-     * @param {number} y2
-     * @param {number} z2
-     * @returns {number}
-     */
-    makeLineEdge(x1, y1, z1, x2, y2, z2) {
-        const ret = wasm.brepkernel_makeLineEdge(this.__wbg_ptr, x1, y1, z1, x2, y2, z2);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a NURBS curve edge.
-     *
-     * Returns an edge handle (`u32`).
-     * @param {number} start_x
-     * @param {number} start_y
-     * @param {number} start_z
-     * @param {number} end_x
-     * @param {number} end_y
-     * @param {number} end_z
-     * @param {number} degree
-     * @param {Float64Array} knots
-     * @param {Float64Array} control_points
-     * @param {Float64Array} weights
-     * @returns {number}
-     */
-    makeNurbsEdge(start_x, start_y, start_z, end_x, end_y, end_z, degree, knots, control_points, weights) {
-        const ptr0 = passArrayF64ToWasm0(knots, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(control_points, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passArrayF64ToWasm0(weights, wasm.__wbindgen_malloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_makeNurbsEdge(this.__wbg_ptr, start_x, start_y, start_z, end_x, end_y, end_z, degree, ptr0, len0, ptr1, len1, ptr2, len2);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Serializes "the `index`-th `kind` output of journal operation
-     * `op`" as a portable reference string (versioned JSON, opaque).
-     * @param {number} op
-     * @param {string} kind
-     * @param {number} index
-     * @returns {string}
-     */
-    makeOperationOutputRef(op, kind, index) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_makeOperationOutputRef(this.__wbg_ptr, op, ptr0, len0, index);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * Create a strictly planar face from a wire.
-     *
-     * Fails with a "wire is not planar" error if the wire's geometry does
-     * not lie within tolerance of a single plane. Use this for planar-only
-     * construction intent (probing whether a wire is planar).
-     *
-     * Returns a face handle (`u32`).
-     * @param {number} wire
-     * @returns {number}
-     */
-    makePlanarFaceFromWire(wire) {
-        const ret = wasm.brepkernel_makePlanarFaceFromWire(this.__wbg_ptr, wire);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a polygonal face from flat coordinate triples `[x,y,z, ...]`.
-     *
-     * Requires at least 3 points (9 `f64` values).
-     * Returns a face handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if `coords` length is not a multiple of 3,
-     * fewer than 3 points are provided, or the face normal is degenerate.
-     * @param {Float64Array} coords
-     * @returns {number}
-     */
-    makePolygon(coords) {
-        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_makePolygon(this.__wbg_ptr, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a closed polygon wire from flat coordinates.
-     *
-     * Returns a wire handle.
-     * @param {Float64Array} coords
-     * @returns {number}
-     */
-    makePolygonWire(coords) {
-        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_makePolygonWire(this.__wbg_ptr, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a rectangular face on the XY plane centered at the origin.
-     *
-     * Returns a face handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if `width` or `height` is non-positive, NaN,
-     * or infinite, or if the face geometry cannot be constructed.
-     * @param {number} width
-     * @param {number} height
-     * @returns {number}
-     */
-    makeRectangle(width, height) {
-        const ret = wasm.brepkernel_makeRectangle(this.__wbg_ptr, width, height);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a regular polygon wire on the XY plane.
-     *
-     * Returns a wire handle.
-     * @param {number} radius
-     * @param {number} n_sides
-     * @returns {number}
-     */
-    makeRegularPolygonWire(radius, n_sides) {
-        const ret = wasm.brepkernel_makeRegularPolygonWire(this.__wbg_ptr, radius, n_sides);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create and validate a first-class sheet body from face handles.
-     *
-     * Free boundary edges are retained and reported by `validateSheetBody`.
-     * The call rolls back if the faces do not form a valid connected sheet.
-     *
-     * Returns a shell-backed sheet-body handle (`u32`).
-     * @param {Uint32Array} face_handles
-     * @returns {number}
-     */
-    makeSheetBody(face_handles) {
-        const ptr0 = passArray32ToWasm0(face_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_makeSheetBody(this.__wbg_ptr, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a solid from a set of faces by sewing them together.
-     *
-     * Alias for `sewFaces` with a default tolerance. This is the equivalent
-     * of sewing faces into a closed shell and building a solid.
-     * @param {Uint32Array} face_handles
-     * @returns {number}
-     */
-    makeSolid(face_handles) {
-        const ptr0 = passArray32ToWasm0(face_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_makeSolid(this.__wbg_ptr, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a sphere solid centered at the origin.
-     *
-     * Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if radius is non-positive or segments < 4.
-     * @param {number} radius
-     * @param {number} segments
-     * @returns {number}
-     */
-    makeSphere(radius, segments) {
-        const ret = wasm.brepkernel_makeSphere(this.__wbg_ptr, radius, segments);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a circular arc edge defined by start point, tangent direction
-     * at start, and end point.
-     *
-     * If the tangent is parallel to the start→end chord (collinear), falls
-     * back to a straight line edge.
-     *
-     * Returns an edge handle (`u32`).
-     * @param {number} start_x
-     * @param {number} start_y
-     * @param {number} start_z
-     * @param {number} tangent_x
-     * @param {number} tangent_y
-     * @param {number} tangent_z
-     * @param {number} end_x
-     * @param {number} end_y
-     * @param {number} end_z
-     * @returns {number}
-     */
-    makeTangentArc3d(start_x, start_y, start_z, tangent_x, tangent_y, tangent_z, end_x, end_y, end_z) {
-        const ret = wasm.brepkernel_makeTangentArc3d(this.__wbg_ptr, start_x, start_y, start_z, tangent_x, tangent_y, tangent_z, end_x, end_y, end_z);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a torus solid centered at the origin in the XY plane.
-     *
-     * Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if radii are non-positive or minor >= major.
-     * @param {number} major_radius
-     * @param {number} minor_radius
-     * @param {number} segments
-     * @returns {number}
-     */
-    makeTorus(major_radius, minor_radius, segments) {
-        const ret = wasm.brepkernel_makeTorus(this.__wbg_ptr, major_radius, minor_radius, segments);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a vertex at the given position.
-     *
-     * Returns a vertex handle (`u32`).
-     * @param {number} x
-     * @param {number} y
-     * @param {number} z
-     * @returns {number}
-     */
-    makeVertex(x, y, z) {
-        const ret = wasm.brepkernel_makeVertex(this.__wbg_ptr, x, y, z);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Create a closed wire from an ordered array of edge handles.
-     *
-     * Returns a wire handle (`u32`).
-     * @param {Uint32Array} edge_handles
-     * @param {boolean} closed
-     * @returns {number}
-     */
-    makeWire(edge_handles, closed) {
-        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_makeWire(this.__wbg_ptr, ptr0, len0, closed);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Compute the full mass properties of a solid (unit density).
-     *
-     * Returns a JSON string containing
-     * `{ volume, centerOfMass, inertia, principalMoments, principalAxes }`
-     * (see the `MassPropertiesResult` TypeScript type). The inertia tensor
-     * `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]` is taken about the center of mass in
-     * the global axis directions; `principalAxes` is row-major, one unit
-     * vector per ascending principal moment. For just the 3x3 matrix, see
-     * [`inertia_tensor`](Self::inertia_tensor).
-     *
-     * Integration runs on the exact face geometry (analytic and NURBS
-     * surfaces, no tessellation), so there is no deflection parameter.
-     *
-     * # Numerical controls (optional)
-     *
-     * Omitting all three reproduces the historical call exactly
-     * (`gaussOrder = 8`, `adaptiveEps = 1e-6`, `maxDepth = 8`).
-     *
-     * * `adaptiveEps` — positive finite relative tolerance of the
-     *   coarse-versus-refined quadrature estimator, applied to every area,
-     *   volume and moment component per initial patch.
-     * * `maxDepth` — integer `0..=32`: refinement levels beyond the initial
-     *   patches. Larger values are rejected, not clamped.
-     * * `gaussOrder` — integer `1..=20`: the Gauss rule per quadrature cell.
-     *
-     * Untrimmed analytic patches always refine. Trimmed curved faces, NURBS
-     * faces and torus tube bands keep the historical fixed rule while
-     * `adaptiveEps` and `maxDepth` are both at their defaults and refine with
-     * any other pair; passing the default values explicitly is the same as
-     * omitting them. Refinement converges the quadrature over the face's
-     * resolved domain; it does not reduce the chord error of a sampled trim
-     * outline. Exact and sampled planar faces integrate in closed form.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid, a control is out of
-     * range, the requested tolerance cannot be met within `maxDepth` or the
-     * per-face work budget (never an unconverged result), integration
-     * fails, or the solid has zero volume.
-     * @param {number} solid
-     * @param {number | null} [adaptive_eps]
-     * @param {number | null} [max_depth]
-     * @param {number | null} [gauss_order]
-     * @returns {any}
-     */
-    massProperties(solid, adaptive_eps, max_depth, gauss_order) {
-        const ret = wasm.brepkernel_massProperties(this.__wbg_ptr, solid, !isLikeNone(adaptive_eps), isLikeNone(adaptive_eps) ? 0 : adaptive_eps, !isLikeNone(max_depth), isLikeNone(max_depth) ? 0 : max_depth, !isLikeNone(gauss_order), isLikeNone(gauss_order) ? 0 : gauss_order);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Measure curvature of an edge curve at parameter `t`.
-     *
-     * Returns `[curvature, tangent_x, tangent_y, tangent_z, normal_x, normal_y, normal_z]`.
-     * Curvature is 1/radius. For lines, curvature is 0.
-     * @param {number} edge
-     * @param {number} t
-     * @returns {Float64Array}
-     */
-    measureCurvatureAtEdge(edge, t) {
-        const ret = wasm.brepkernel_measureCurvatureAtEdge(this.__wbg_ptr, edge, t);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Measure principal curvatures at (u, v) on a face surface.
-     *
-     * Returns `[k1, k2, d1x, d1y, d1z, d2x, d2y, d2z]` where k1/k2 are
-     * principal curvatures and d1/d2 are the corresponding direction vectors.
-     * @param {number} face
-     * @param {number} u
-     * @param {number} v
-     * @returns {Float64Array}
-     */
-    measureCurvatureAtSurface(face, u, v) {
-        const ret = wasm.brepkernel_measureCurvatureAtSurface(this.__wbg_ptr, face, u, v);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Exact measurement reuse counters and independent area storage bounds,
-     * as camelCase JSON. Existing volume memo bounds are included separately.
-     *
-     * # Errors
-     * Returns an error when the diagnostic cannot be serialized.
-     * @returns {string}
-     */
-    measurementReuseStats() {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_measurementReuseStats(this.__wbg_ptr);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Merge coincident vertices in a solid.
-     *
-     * Returns the number of vertices merged.
-     * @param {number} solid
-     * @param {number} tolerance
-     * @returns {number}
-     */
-    mergeCoincidentVertices(solid, tolerance) {
-        const ret = wasm.brepkernel_mergeCoincidentVertices(this.__wbg_ptr, solid, tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Perform a mesh boolean on raw triangle data.
-     *
-     * Returns a `JsMesh` with the result.
-     * @param {Float64Array} positions_a
-     * @param {Uint32Array} indices_a
-     * @param {Float64Array} positions_b
-     * @param {Uint32Array} indices_b
-     * @param {string} op
-     * @param {number} tolerance
-     * @returns {JsMesh}
-     */
-    meshBoolean(positions_a, indices_a, positions_b, indices_b, op, tolerance) {
-        const ptr0 = passArrayF64ToWasm0(positions_a, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArray32ToWasm0(indices_a, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passArrayF64ToWasm0(positions_b, wasm.__wbindgen_malloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ptr3 = passArray32ToWasm0(indices_b, wasm.__wbindgen_malloc);
-        const len3 = WASM_VECTOR_LEN;
-        const ptr4 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len4 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_meshBoolean(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return JsMesh.__wrap(ret[0]);
-    }
-    /**
-     * Sample edges of a solid into polylines for wireframe rendering.
-     *
-     * Returns a `JsEdgeLines` containing flattened positions and per-edge
-     * offset indices. The `deflection` parameter controls sampling density.
-     *
-     * Smooth edges (between faces on the same underlying surface) are
-     * automatically filtered out to reduce wireframe clutter. These edges
-     * arise from boolean face-splitting and don't represent visible creases.
-     * @param {number} solid
-     * @param {number} deflection
-     * @param {number | null} [angular_tolerance]
-     * @returns {JsEdgeLines}
-     */
-    meshEdges(solid, deflection, angular_tolerance) {
-        const ret = wasm.brepkernel_meshEdges(this.__wbg_ptr, solid, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return JsEdgeLines.__wrap(ret[0]);
-    }
-    /**
-     * Sample ALL edges of a solid (no smooth-edge filtering).
-     *
-     * Same as `meshEdges` but includes edges between co-surface faces.
-     * Useful for debugging topology.
-     * @param {number} solid
-     * @param {number} deflection
-     * @param {number | null} [angular_tolerance]
-     * @returns {JsEdgeLines}
-     */
-    meshEdgesAll(solid, deflection, angular_tolerance) {
-        const ret = wasm.brepkernel_meshEdgesAll(this.__wbg_ptr, solid, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return JsEdgeLines.__wrap(ret[0]);
-    }
-    /**
-     * Tessellate a solid and report position-welded mesh quality metrics.
-     *
-     * Returns a JSON string containing
-     * `{ triangleCount, boundaryEdges, nonManifoldEdges, eulerCharacteristic, isWatertight }`
-     * (see the `MeshQualityResult` TypeScript type). Vertices are welded on a
-     * 1 µm grid before counting, so position-duplicate vertices cannot mask
-     * a leak. Pass the same optional angular tolerance used for rendering or
-     * export so the quality report describes that exact tessellation.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid or tessellation fails.
-     * @param {number} solid
-     * @param {number} deflection
-     * @param {number | null} [angular_tolerance]
-     * @returns {any}
-     */
-    meshQuality(solid, deflection, angular_tolerance) {
-        const ret = wasm.brepkernel_meshQuality(this.__wbg_ptr, solid, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Bounded, module-local mesh reuse counters and storage estimate as
-     * JSON, or `null` when disabled. Contains no geometry or arena handles.
-     * The estimate is separate from checkpoint bytes and is not RSS.
-     *
-     * # Errors
-     * Returns an error if the diagnostic cannot be serialized.
-     * @returns {string}
-     */
-    meshReuseStats() {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_meshReuseStats(this.__wbg_ptr);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Convex Minkowski sum of two solids (`A ⊕ B`).
-     *
-     * Returns the convex hull of all pairwise vertex sums — exact for convex
-     * polytopes (boxes, or a tessellated-sphere rolling tool), a convex
-     * over-approximation otherwise. Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if either handle is invalid, either solid is empty, or
-     * the summed points are degenerate so no hull can be built.
-     * @param {number} solid_a
-     * @param {number} solid_b
-     * @returns {number}
-     */
-    minkowskiSum(solid_a, solid_b) {
-        const ret = wasm.brepkernel_minkowskiSum(this.__wbg_ptr, solid_a, solid_b);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Mirror a solid across a plane.
-     *
-     * Returns a new solid handle.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid or the normal is zero.
-     * @param {number} solid
-     * @param {number} px
-     * @param {number} py
-     * @param {number} pz
-     * @param {number} nx
-     * @param {number} ny
-     * @param {number} nz
-     * @returns {number}
-     */
-    mirror(solid, px, py, pz, nx, ny, nz) {
-        const ret = wasm.brepkernel_mirror(this.__wbg_ptr, solid, px, py, pz, nx, ny, nz);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Move a supported face selection through exact neighbor re-limitation.
-     *
-     * The qualified domain includes coherent planar groups, holed planar
-     * supports with incident analytic fillet bands, and inward coaxial bore
-     * walls. Returns a new solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if any handle is invalid, the faces cannot move as a
-     * coherent group, or the edit does not produce a valid solid.
-     * @param {number} solid
-     * @param {Uint32Array} faces
-     * @param {number} distance
-     * @returns {number}
-     */
-    moveFaces(solid, faces, distance) {
-        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_moveFaces(this.__wbg_ptr, solid, ptr0, len0, distance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Move selected faces and return an exact result or a typed refusal.
-     *
-     * Additive twin of [`moveFaces`](Self::move_faces_binding), with the same
-     * supported geometry and work limits. Distances are relative to `solid`
-     * and `faces`; a drag should keep those source handles fixed. Replace
-     * the displayed preview only on `status: "ok"`. A refusal returns no
-     * solid and preserves both the source and earlier successful previews,
-     * so the caller can retain its last valid frame and try another distance.
-     * @param {number} solid
-     * @param {Uint32Array} faces
-     * @param {number} distance
-     * @returns {SolidOperationDetailedResult}
-     */
-    moveFacesDetailed(solid, faces, distance) {
-        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_moveFacesDetailed(this.__wbg_ptr, solid, ptr0, len0, distance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Move faces with construction history.
-     *
-     * Planar re-limitation and coaxial bore moves include edge and vertex
-     * history. Blend moves retain copy-derived history or a complete, unique
-     * boundary correspondence anchored on construction face identities.
-     * Ambiguous reconstructed boundaries retain faces-only history.
-     * Returns JSON `{"solid", "op"}`.
-     * @param {number} solid
-     * @param {Uint32Array} faces
-     * @param {number} distance
-     * @returns {string}
-     */
-    moveFacesJournaled(solid, faces, distance) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_moveFacesJournaled(this.__wbg_ptr, solid, ptr0, len0, distance);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * `moveFaces` of a prepared selection: moves it `distance` from the
-     * prepared source and returns the new solid handle.
-     *
-     * The result and every refusal are those of `moveFaces` for the same
-     * source, faces and distance; distances are source-relative, as in
-     * `moveFaces`.
-     *
-     * # Errors
-     *
-     * Returns an error for an unknown or released handle, a non-finite
-     * distance, a source that changed since preparation (prepare again), or
-     * any `moveFaces` refusal. A refusal leaves the topology unchanged.
-     * @param {number} prepared
-     * @param {number} distance
-     * @returns {number}
-     */
-    moveFacesPrepared(prepared, distance) {
-        const ret = wasm.brepkernel_moveFacesPrepared(this.__wbg_ptr, prepared, distance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * `moveFacesJournaled` of a prepared selection.
-     *
-     * Returns the same JSON `{"solid", "op"}` and records the same
-     * `move_faces` evolution entry as `moveFacesJournaled` for the same
-     * source, faces and distance.
-     *
-     * # Errors
-     *
-     * As `moveFacesPrepared`; a refusal restores topology and history.
-     * @param {number} prepared
-     * @param {number} distance
-     * @returns {string}
-     */
-    moveFacesPreparedJournaled(prepared, distance) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_moveFacesPreparedJournaled(this.__wbg_ptr, prepared, distance);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Sweep through multiple section profiles along a spine, lofting the
-     * rotation-minimizing-frame-placed profiles.
-     *
-     * `face_handles` and `params` are parallel arrays: each planar profile and
-     * its parameter in `[0, 1]` along the spine (given as raw NURBS data).
-     * `ruled` selects ruled (planar bands) vs smooth (NURBS) lofted sides.
-     *
-     * Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error for fewer than two sections, mismatched array lengths, a
-     * non-finite or out-of-range value, a non-planar profile, or loft failure.
-     * @param {Uint32Array} face_handles
-     * @param {Float64Array} params
-     * @param {number} spine_degree
-     * @param {Float64Array} spine_knots
-     * @param {Float64Array} spine_control_points
-     * @param {Float64Array} spine_weights
-     * @param {boolean} ruled
-     * @returns {number}
-     */
-    multiSectionSweep(face_handles, params, spine_degree, spine_knots, spine_control_points, spine_weights, ruled) {
-        const ptr0 = passArray32ToWasm0(face_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(params, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passArrayF64ToWasm0(spine_knots, wasm.__wbindgen_malloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ptr3 = passArrayF64ToWasm0(spine_control_points, wasm.__wbindgen_malloc);
-        const len3 = WASM_VECTOR_LEN;
-        const ptr4 = passArrayF64ToWasm0(spine_weights, wasm.__wbindgen_malloc);
-        const len4 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_multiSectionSweep(this.__wbg_ptr, ptr0, len0, ptr1, len1, spine_degree, ptr2, len2, ptr3, len3, ptr4, len4, ruled);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Mutually trim two transversal planar sheets by their oriented sides.
-     *
-     * Returns `[trimmedA, trimmedB]` in input order.
-     * @param {number} sheet_a
-     * @param {number} sheet_b
-     * @param {boolean} keep_a_positive
-     * @param {boolean} keep_b_positive
-     * @returns {Uint32Array}
-     */
-    mutualTrimSheets(sheet_a, sheet_b, keep_a_positive, keep_b_positive) {
-        const ret = wasm.brepkernel_mutualTrimSheets(this.__wbg_ptr, sheet_a, sheet_b, keep_a_positive, keep_b_positive);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Create a new, empty kernel.
-     */
-    constructor() {
-        const ret = wasm.brepkernel_new();
-        this.__wbg_ptr = ret;
-        BrepKernelFinalization.register(this, this.__wbg_ptr, this);
-        return this;
-    }
-    /**
-     * Offset every face of a solid and return exact, disclosed-approximate,
-     * or refused results as typed data.
-     *
-     * Additive twin of [`offsetSolid`](Self::offset_solid), on the same
-     * engine. Analytic faces offset exactly. A NURBS input face would be
-     * offset by a sampled refit, so a result reports `quality:
-     * "approximate"` and lists those input faces under `sampledFaces`; with
-     * `exactOnly: true` the call refuses before touching topology
-     * (`quality_refused` / `exact_only_unattainable`). The offset
-     * intersector does not yet join a NURBS face to any neighbour, so a
-     * permissive NURBS offset currently ends in that engine's own refusal.
-     * @param {number} solid
-     * @param {number} distance
-     * @param {boolean | null} [exact_only]
-     * @returns {SolidOperationDetailedResult}
-     */
-    offsetDetailed(solid, distance, exact_only) {
-        const ret = wasm.brepkernel_offsetDetailed(this.__wbg_ptr, solid, distance, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Offset a face by a distance along its surface normal.
-     *
-     * Returns the new offset face handle.
-     *
-     * # Errors
-     *
-     * Returns an error if the face handle is invalid or the operation fails.
-     * @param {number} face
-     * @param {number} distance
-     * @param {number} samples
-     * @returns {number}
-     */
-    offsetFace(face, distance, samples) {
-        const ret = wasm.brepkernel_offsetFace(this.__wbg_ptr, face, distance, samples);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Offset a face with disclosed result quality.
-     *
-     * The plain [`offsetFace`](Self::offset_face) binding carries a
-     * caller-chosen `samples` discretization knob that contradicts the
-     * exact-kernel contract. This binding takes an explicit opt-in to
-     * approximation instead — `approximation_samples` is a grid resolution
-     * (a positive integer within the public work budget), or
-     * omitted/`null` for the exact-only policy under which a NURBS face
-     * fails with a typed `unsupported` refusal — and reports whether the
-     * sampled NURBS refit ran (`quality: "approximate"`, with the count),
-     * mirroring [`booleanWithQuality`](Self::boolean_with_quality).
-     *
-     * # Errors
-     *
-     * Returns an error if a handle is invalid, the distance is not finite,
-     * the sample count is present but out of budget, or (under the
-     * exact-only policy) the face has no exact offset.
-     * @param {number} face
-     * @param {number} distance
-     * @param {number | null} [approximation_samples]
-     * @returns {FaceOffsetQualityResult}
-     */
-    offsetFaceWithQuality(face, distance, approximation_samples) {
-        const ret = wasm.brepkernel_offsetFaceWithQuality(this.__wbg_ptr, face, distance, !isLikeNone(approximation_samples), isLikeNone(approximation_samples) ? 0 : approximation_samples);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * V2 offset journaled as one construction-derived face, edge and vertex
-     * evolution entry (kind `offset`).
-     *
-     * Returns JSON `{"solid", "op", "evolution"}`. `evolution` lists every
-     * result face, edge and vertex as `modified`, `merged`, `generated` or
-     * `unresolved` (with `candidates` and a typed `reason`, such as
-     * `ambiguous_incidence` for a torus seam), plus a `completeness` report
-     * (`accounted`, `resolved`, and per-kind `omitted`/`phantom`/`unresolved`
-     * lists) checked against the actual result.
-     * @param {number} solid
-     * @param {number} distance
-     * @returns {string}
-     */
-    offsetJournaled(solid, distance) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_offsetJournaled(this.__wbg_ptr, solid, distance);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Offset a 2D polygon by a signed distance.
-     *
-     * `coords` is a flat array `[x,y, x,y, ...]` of 2D points.
-     * Returns a flat array of offset polygon coordinates in the input's
-     * winding, or an empty array when the offset collapses the polygon.
-     * When the offset splits it or encloses a hole, only the outer boundary
-     * of the largest piece is returned.
-     * @param {Float64Array} coords
-     * @param {number} distance
-     * @param {number} tolerance
-     * @returns {Float64Array}
-     */
-    offsetPolygon2d(coords, distance, tolerance) {
-        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_offsetPolygon2d(this.__wbg_ptr, ptr0, len0, distance, tolerance);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v2 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v2;
-    }
-    /**
-     * Offset (shell) a solid by a distance.
-     *
-     * Returns a new solid handle.
-     *
-     * # Errors
-     *
-     * Returns an error if the distance is zero or the solid is invalid.
-     * @param {number} solid
-     * @param {number} distance
-     * @returns {number}
-     */
-    offsetSolid(solid, distance) {
-        const ret = wasm.brepkernel_offsetSolid(this.__wbg_ptr, solid, distance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Offset all faces of a solid outward or inward (V2 pipeline).
-     *
-     * Uses the new `remus-offset` engine with intersection-based joints.
-     *
-     * # Errors
-     *
-     * Returns an error if the distance is not finite or the solid is invalid.
-     * @param {number} solid
-     * @param {number} distance
-     * @returns {number}
-     */
-    offsetSolidV2(solid, distance) {
-        const ret = wasm.brepkernel_offsetSolidV2(this.__wbg_ptr, solid, distance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Offset a wire on a planar face.
-     *
-     * Returns a new wire handle.
-     * @param {number} face
-     * @param {number} distance
-     * @returns {number}
-     */
-    offsetWire(face, distance) {
-        const ret = wasm.brepkernel_offsetWire(this.__wbg_ptr, face, distance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Offset a planar wire directly by a distance with a specific join type.
-     *
-     * Builds a planar face from the wire internally, then offsets it with
-     * the requested corner join. This is the wire-based counterpart to
-     * [`offset_wire_with_join_type`](Self::offset_wire_with_join_type),
-     * which requires a face handle. Consumers that only hold a wire (such
-     * as 2D sketch offsets) can route a join type through this entry point
-     * without first constructing a face.
-     *
-     * `join_type` must be one of `"intersection"`, `"arc"`, or `"chamfer"`.
-     * Returns a new wire handle.
-     *
-     * # Errors
-     *
-     * Returns an error if the wire handle is invalid, the wire is not
-     * planar, the join type string is unrecognized, or the offset
-     * operation fails.
-     * @param {number} wire
-     * @param {number} distance
-     * @param {string} join_type
-     * @returns {number}
-     */
-    offsetWire2DWithJoin(wire, distance, join_type) {
-        const ptr0 = passStringToWasm0(join_type, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_offsetWire2DWithJoin(this.__wbg_ptr, wire, distance, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Offset a wire on a planar face with a specific join type.
-     *
-     * `join_type` must be one of `"intersection"`, `"arc"`, or `"chamfer"`.
-     * Returns a new wire handle.
-     *
-     * # Errors
-     *
-     * Returns an error if the face handle is invalid, the join type string
-     * is unrecognized, or the offset operation fails.
-     * @param {number} face
-     * @param {number} distance
-     * @param {string} join_type
-     * @returns {number}
-     */
-    offsetWireWithJoinType(face, distance, join_type) {
-        const ptr0 = passStringToWasm0(join_type, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_offsetWireWithJoinType(this.__wbg_ptr, face, distance, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Pipe sweep: sweep a profile along a NURBS path (no guide).
-     *
-     * Returns a solid handle.
-     *
-     * # Errors
-     *
-     * Returns an error if the face or path is invalid.
-     * @param {number} face
-     * @param {number} path_degree
-     * @param {Float64Array} path_knots
-     * @param {Float64Array} path_control_points
-     * @param {Float64Array} path_weights
-     * @returns {number}
-     */
-    pipe(face, path_degree, path_knots, path_control_points, path_weights) {
-        const ptr0 = passArrayF64ToWasm0(path_knots, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(path_control_points, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passArrayF64ToWasm0(path_weights, wasm.__wbindgen_malloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_pipe(this.__wbg_ptr, face, path_degree, ptr0, len0, ptr1, len1, ptr2, len2);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Test if a 2D point is inside a closed polygon.
-     *
-     * `polygon_coords` is a flat array `[x,y, x,y, ...]`.
-     * Returns `true` if the point is inside the polygon (winding number test).
-     * @param {Float64Array} polygon_coords
-     * @param {number} px
-     * @param {number} py
-     * @returns {boolean}
-     */
-    pointInPolygon2d(polygon_coords, px, py) {
-        const ptr0 = passArrayF64ToWasm0(polygon_coords, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_pointInPolygon2d(this.__wbg_ptr, ptr0, len0, px, py);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] !== 0;
-    }
-    /**
-     * Compute minimum distance from a point to an edge.
-     *
-     * Returns `[distance, closest_x, closest_y, closest_z]`.
-     *
-     * # Errors
-     *
-     * Returns an error if the edge handle is invalid.
-     * @param {number} px
-     * @param {number} py
-     * @param {number} pz
-     * @param {number} edge
-     * @returns {Float64Array}
-     */
-    pointToEdgeDistance(px, py, pz, edge) {
-        const ret = wasm.brepkernel_pointToEdgeDistance(this.__wbg_ptr, px, py, pz, edge);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Compute minimum distance from a point to a face.
-     *
-     * Returns `[distance, closest_x, closest_y, closest_z]`.
-     *
-     * # Errors
-     *
-     * Returns an error if the face handle is invalid.
-     * @param {number} px
-     * @param {number} py
-     * @param {number} pz
-     * @param {number} face
-     * @returns {Float64Array}
-     */
-    pointToFaceDistance(px, py, pz, face) {
-        const ret = wasm.brepkernel_pointToFaceDistance(this.__wbg_ptr, px, py, pz, face);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Compute minimum distance from a point to a solid.
-     *
-     * Returns `[distance, closest_x, closest_y, closest_z]`.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid.
-     * @param {number} px
-     * @param {number} py
-     * @param {number} pz
-     * @param {number} solid
-     * @returns {Float64Array}
-     */
-    pointToSolidDistance(px, py, pz, solid) {
-        const ret = wasm.brepkernel_pointToSolidDistance(this.__wbg_ptr, px, py, pz, solid);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Boolean of two 2D polygons: `"union"`, `"intersection"`, or
-     * `"difference"` (`A \ B`).
-     *
-     * Encoding, winding, and tolerance semantics are identical to
-     * [`polygonUnion2d`](Self::polygon_union_2d).
-     * @param {Float64Array} coords_a
-     * @param {Float64Array} coords_b
-     * @param {string} operation
-     * @param {number | null} [tolerance]
-     * @returns {any}
-     */
-    polygonBoolean2d(coords_a, coords_b, operation, tolerance) {
-        const ptr0 = passArrayF64ToWasm0(coords_a, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(coords_b, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(operation, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_polygonBoolean2d(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, !isLikeNone(tolerance), isLikeNone(tolerance) ? 0 : tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Union two 2D polygons with the robust arrangement-based engine.
-     *
-     * Both polygons are flat arrays `[x,y, x,y, ...]`; either winding is
-     * accepted (orientation is normalized internally). `tolerance` is an
-     * absolute linear tolerance in the polygons' own units; pass `null`
-     * or `undefined` for the kernel default (1e-7).
-     *
-     * Returns a JSON string
-     * `{"outer": [[x,y,...], ...], "holes": [[x,y,...], ...]}`
-     * (the `PolygonBoolean2dResult` TypeScript type). Outer loops are
-     * counter-clockwise, hole loops clockwise, and each loop is implicitly
-     * closed. A disjoint union yields several `outer` loops; a union that
-     * encloses a void yields a `holes` entry — unlike
-     * [`intersectPolygons2d`](Self::intersect_polygons_2d), which is a
-     * convex-only Sutherland–Hodgman clipper returning a single loop.
-     *
-     * Both result lists are empty when the operation produces no geometry.
-     * @param {Float64Array} coords_a
-     * @param {Float64Array} coords_b
-     * @param {number | null} [tolerance]
-     * @returns {any}
-     */
-    polygonUnion2d(coords_a, coords_b, tolerance) {
-        const ptr0 = passArrayF64ToWasm0(coords_a, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(coords_b, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_polygonUnion2d(this.__wbg_ptr, ptr0, len0, ptr1, len1, !isLikeNone(tolerance), isLikeNone(tolerance) ? 0 : tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Test if two 2D polygons intersect (overlap).
-     *
-     * Both polygons are flat arrays `[x,y, x,y, ...]`.
-     * Returns `true` if any vertex of one polygon is inside the other
-     * or if any edges cross.
-     * @param {Float64Array} coords_a
-     * @param {Float64Array} coords_b
-     * @returns {boolean}
-     */
-    polygonsIntersect2d(coords_a, coords_b) {
-        const ptr0 = passArrayF64ToWasm0(coords_a, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(coords_b, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_polygonsIntersect2d(this.__wbg_ptr, ptr0, len0, ptr1, len1);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] !== 0;
-    }
-    /**
-     * Prepare repeated moves of `faces` of `solid` for an interactive drag.
-     *
-     * Reads, once, everything a face move takes from the source rather than
-     * from the distance. Returns an opaque handle for `moveFacesPrepared`
-     * and `moveFacesPreparedJournaled`; release it with
-     * `releasePreparedMove` when the drag ends. Preparing edits nothing.
-     *
-     * # Errors
-     *
-     * Returns an error for an invalid handle, a selection over the
-     * `moveFaces` work limits, or when 16 prepared moves are already live.
-     * @param {number} solid
-     * @param {Uint32Array} faces
-     * @returns {number}
-     */
-    prepareMoveFaces(solid, faces) {
-        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_prepareMoveFaces(this.__wbg_ptr, solid, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Project one edge along a direction onto a face's trimmed region.
-     * Returns the §8 typed ProjectedCurves object. Refusals throw with the
-     * stable `project-curve:<code>` prefix; omitted options use defaults.
-     * @param {number} edge
-     * @param {number} dir_x
-     * @param {number} dir_y
-     * @param {number} dir_z
-     * @param {number} face
-     * @param {ProjectCurveOptions | null} [options]
-     * @returns {ProjectedCurves}
-     */
-    projectCurveOntoFace(edge, dir_x, dir_y, dir_z, face, options) {
-        const ret = wasm.brepkernel_projectCurveOntoFace(this.__wbg_ptr, edge, dir_x, dir_y, dir_z, face, isLikeNone(options) ? 0 : addToExternrefTable0(options));
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Project edges onto the unbounded plane of a typed SketchFrame object.
-     * Returns the §8 PlaneCurve2d object array without changing topology.
-     * @param {Uint32Array} edges
-     * @param {number} dir_x
-     * @param {number} dir_y
-     * @param {number} dir_z
-     * @param {SketchFrame} frame
-     * @returns {PlaneCurve2d[]}
-     */
-    projectCurvesOntoSketchPlane(edges, dir_x, dir_y, dir_z, frame) {
-        const ptr0 = passArray32ToWasm0(edges, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_projectCurvesOntoSketchPlane(this.__wbg_ptr, ptr0, len0, dir_x, dir_y, dir_z, frame);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v2 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v2;
-    }
-    /**
-     * Project edges along a direction onto a solid's first-hit faces.
-     * Returns the §8 typed SolidProjection object, atomically over sources.
-     * @param {Uint32Array} edges
-     * @param {number} dir_x
-     * @param {number} dir_y
-     * @param {number} dir_z
-     * @param {number} solid
-     * @param {ProjectCurveOptions | null} [options]
-     * @returns {SolidProjection}
-     */
-    projectCurvesOntoSolid(edges, dir_x, dir_y, dir_z, solid, options) {
-        const ptr0 = passArray32ToWasm0(edges, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_projectCurvesOntoSolid(this.__wbg_ptr, ptr0, len0, dir_x, dir_y, dir_z, solid, isLikeNone(options) ? 0 : addToExternrefTable0(options));
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Project a solid's edges onto a view plane with hidden-line removal.
-     *
-     * Viewed along `dir` (orthographic) through `origin`, with in-plane x-axis
-     * `x_axis`. Returns a JSON string `{"visible": [[x,y,…]], "hidden": [[…]]}`
-     * — flat 2D polylines in view coordinates. `hidden_lines = false` drops the
-     * hidden set. Occlusion is an exact point-in-solid test.
-     *
-     * # Errors
-     *
-     * Returns an error for an invalid handle, a non-positive `deflection`, or a
-     * degenerate `dir`/`x_axis`.
-     * @param {number} solid
-     * @param {number} origin_x
-     * @param {number} origin_y
-     * @param {number} origin_z
-     * @param {number} dir_x
-     * @param {number} dir_y
-     * @param {number} dir_z
-     * @param {number} x_axis_x
-     * @param {number} x_axis_y
-     * @param {number} x_axis_z
-     * @param {boolean} hidden_lines
-     * @param {number} deflection
-     * @returns {any}
-     */
-    projectEdges(solid, origin_x, origin_y, origin_z, dir_x, dir_y, dir_z, x_axis_x, x_axis_y, x_axis_z, hidden_lines, deflection) {
-        const ret = wasm.brepkernel_projectEdges(this.__wbg_ptr, solid, origin_x, origin_y, origin_z, dir_x, dir_y, dir_z, x_axis_x, x_axis_y, x_axis_z, hidden_lines, deflection);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Project a 3D point onto a face surface using Newton iteration.
-     *
-     * Returns `[u, v, px, py, pz, distance]`.
-     * @param {number} face
-     * @param {number} px
-     * @param {number} py
-     * @param {number} pz
-     * @returns {Float64Array}
-     */
-    projectPointOnSurface(face, px, py, pz) {
-        const ret = wasm.brepkernel_projectPointOnSurface(this.__wbg_ptr, face, px, py, pz);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Project the silhouettes of a solid's curved faces onto a view plane
-     * with hidden-line removal: the outline a drawing shows at the side of a
-     * cylinder, cone, sphere or torus, which no edge carries.
-     *
-     * The view arguments and `hidden_lines` match `projectEdges`, and the two
-     * results together make the outline drawing. Returns a JSON string
-     * `{"visible": [[x,y,…]], "hidden": [[…]], "unsupported": [{"face": id,
-     * "surface": tag}], "approximate": [id]}`: cylinder, cone, sphere and
-     * torus outlines are exact curves clipped to the face; NURBS outlines
-     * are traced on a grid of the face's parameters with every vertex on
-     * the silhouette, and every NURBS face but a certified flat one is
-     * listed in `approximate`, even where no contour was found.
-     * `unsupported` is empty today: every surface type is handled.
-     *
-     * # Errors
-     *
-     * Returns an error for an invalid handle, a non-finite argument, a
-     * non-positive `deflection`, a degenerate `dir`/`x_axis`, or sampling
-     * over the projection work limit.
-     * @param {number} solid
-     * @param {number} origin_x
-     * @param {number} origin_y
-     * @param {number} origin_z
-     * @param {number} dir_x
-     * @param {number} dir_y
-     * @param {number} dir_z
-     * @param {number} x_axis_x
-     * @param {number} x_axis_y
-     * @param {number} x_axis_z
-     * @param {boolean} hidden_lines
-     * @param {number} deflection
-     * @returns {any}
-     */
-    projectSilhouettes(solid, origin_x, origin_y, origin_z, dir_x, dir_y, dir_z, x_axis_x, x_axis_y, x_axis_z, hidden_lines, deflection) {
-        const ret = wasm.brepkernel_projectSilhouettes(this.__wbg_ptr, solid, origin_x, origin_y, origin_z, dir_x, dir_y, dir_z, x_axis_x, x_axis_y, x_axis_z, hidden_lines, deflection);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Propagates face attributes across one journaled operation.
-     *
-     * Returns JSON `{"carried", "unresolvedOutputs", "mergeConflicts",
-     * "refusedInferred"}`.
-     * @param {number} op
-     * @param {boolean} allow_inferred
-     * @returns {string}
-     */
-    propagateAttributesForOp(op, allow_inferred) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_propagateAttributesForOp(this.__wbg_ptr, op, allow_inferred);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Move a planar face of a solid along its outward normal.
-     *
-     * A positive `distance` adds material, a negative one removes it.
-     * Returns a new solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if the handles are invalid, the face is not planar or
-     * not part of the solid, or the edit does not produce a valid solid.
-     * @param {number} solid
-     * @param {number} face
-     * @param {number} distance
-     * @returns {number}
-     */
-    pushPullFace(solid, face, distance) {
-        const ret = wasm.brepkernel_pushPullFace(this.__wbg_ptr, solid, face, distance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Recognize geometric features in a solid.
-     *
-     * Returns a JSON string describing the recognized features.
-     * @param {number} solid
-     * @param {number} deflection
-     * @returns {string}
-     */
-    recognizeFeatures(solid, deflection) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_recognizeFeatures(this.__wbg_ptr, solid, deflection);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Release a prepared move. Returns whether `prepared` was live.
-     * @param {number} prepared
-     * @returns {boolean}
-     */
-    releasePreparedMove(prepared) {
-        const ret = wasm.brepkernel_releasePreparedMove(this.__wbg_ptr, prepared);
-        return ret !== 0;
-    }
-    /**
-     * Remove selected blend regions atomically with complete construction history.
-     *
-     * Returns JSON `{"solid", "op"}`. Seeds expand to recognized blend regions;
-     * unsupported reconstruction or ambiguous history refuses without mutation.
-     * Batch arguments are `solid` and the face-handle array `seeds`.
-     * @param {number} solid
-     * @param {Uint32Array} seeds
-     * @returns {string}
-     */
-    removeBlendsJournaled(solid, seeds) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passArray32ToWasm0(seeds, wasm.__wbindgen_malloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_removeBlendsJournaled(this.__wbg_ptr, solid, ptr0, len0);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * Remove degenerate (zero-length) edges from a solid.
-     *
-     * Returns the number of edges removed.
-     * @param {number} solid
-     * @param {number} tolerance
-     * @returns {number}
-     */
-    removeDegenerateEdges(solid, tolerance) {
-        const ret = wasm.brepkernel_removeDegenerateEdges(this.__wbg_ptr, solid, tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Remove all holes from a face, returning a new face with only the outer wire.
-     * @param {number} face
-     * @returns {number}
-     */
-    removeHolesFromFace(face) {
-        const ret = wasm.brepkernel_removeHolesFromFace(this.__wbg_ptr, face);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Validate, heal, and re-validate a solid in one pass.
-     *
-     * Returns the number of remaining validation errors after repair.
-     * A return value of 0 means the solid is valid after repair.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid.
-     * @param {number} solid
-     * @returns {number}
-     */
-    repairSolid(solid) {
-        const ret = wasm.brepkernel_repairSolid(this.__wbg_ptr, solid);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Validate, heal, and re-validate a solid with exact repair disclosure.
-     * Success always means both independent validators accepted the result.
-     * @param {number} solid
-     * @returns {any}
-     */
-    repairSolidDetailed(solid) {
-        const ret = wasm.brepkernel_repairSolidDetailed(this.__wbg_ptr, solid);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Replace a support surface with exact face, edge, and vertex history.
-     *
-     * `replacement` is JSON: `{type:"plane", normal:[x,y,z], d}` or
-     * `{type:"cylinder", origin:[x,y,z], axis:[x,y,z], radius}`. Plane
-     * coefficients represent `normal dot point = d`; cylinder replacements
-     * retain the source parameter reference direction. Unknown fields refuse.
-     * Returns JSON `{"solid", "op"}`. Batch calls pass the replacement object
-     * directly as `args.replacement`.
-     * @param {number} solid
-     * @param {number} face
-     * @param {string} replacement
-     * @returns {string}
-     */
-    replaceSurfaceJournaled(solid, face, replacement) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passStringToWasm0(replacement, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_replaceSurfaceJournaled(this.__wbg_ptr, solid, face, ptr0, len0);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * Resize or remove an exact constant-radius analytic blend band.
-     *
-     * `face` is only a seed: the kernel re-derives the complete band, its
-     * supports, and its current radius. `expected_radius` must match that
-     * exact measurement. `new_radius == 0` restores the sharp support
-     * intersection; positive values rebuild the band. Returns a new solid
-     * handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns a stable-code-prefixed refusal if the band is ambiguous,
-     * freeform, stale, unsupported, or cannot be rebuilt exactly. Failure is
-     * transactional and leaves all pre-existing handles valid.
-     * @param {number} solid
-     * @param {number} face
-     * @param {number} expected_radius
-     * @param {number} new_radius
-     * @returns {number}
-     */
-    resizeBlend(solid, face, expected_radius, new_radius) {
-        const ret = wasm.brepkernel_resizeBlend(this.__wbg_ptr, solid, face, expected_radius, new_radius);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Resize one cylindrical blend between planar supports with total history.
-     *
-     * Returns JSON `{"solid", "op"}`. Zero removes the band with explicit
-     * merges and deletions; ambiguous correspondence refuses atomically.
-     * Batch arguments use `expectedRadius` and `newRadius`.
-     * @param {number} solid
-     * @param {number} face
-     * @param {number} expected_radius
-     * @param {number} new_radius
-     * @returns {string}
-     */
-    resizeBlendJournaled(solid, face, expected_radius, new_radius) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_resizeBlendJournaled(this.__wbg_ptr, solid, face, expected_radius, new_radius);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * [`Self::resize_blend_binding`] with versioned face evolution.
-     *
-     * The payload uses the existing [`FaceEvolutionPayloadV1`] schema. New
-     * band faces are `generated` from both recovered support faces; removed
-     * input band faces are `deleted`.
-     *
-     * # Errors
-     *
-     * Returns the same stable-code-prefixed refusals as `resizeBlend`, or a
-     * payload validation error if the construction record is incomplete.
-     * @param {number} solid
-     * @param {number} face
-     * @param {number} expected_radius
-     * @param {number} new_radius
-     * @returns {FaceEvolutionPayloadV1}
-     */
-    resizeBlendWithEvolution(solid, face, expected_radius, new_radius) {
-        const ret = wasm.brepkernel_resizeBlendWithEvolution(this.__wbg_ptr, solid, face, expected_radius, new_radius);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Change the radius of a cylindrical face of a solid.
-     *
-     * Handles both bores and bosses. Returns a new solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if the handles are invalid, the face is not
-     * cylindrical or not part of the solid, `new_radius` is not positive, or
-     * the edit does not produce a valid solid.
-     * @param {number} solid
-     * @param {number} face
-     * @param {number} new_radius
-     * @returns {number}
-     */
-    resizeCylindricalFace(solid, face, new_radius) {
-        const ret = wasm.brepkernel_resizeCylindricalFace(this.__wbg_ptr, solid, face, new_radius);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Resize a cylindrical wall and record its construction history.
-     *
-     * Returns JSON `{"solid", "op"}`. Qualified bore and quarter-wall
-     * replacements retain all boundary identities. Boss edits track cap
-     * subdivisions and their removal; ambiguous boundaries remain unresolved.
-     * Batch calls pass the new radius as `args.radius`.
-     * @param {number} solid
-     * @param {number} face
-     * @param {number} radius
-     * @returns {string}
-     */
-    resizeCylindricalFaceJournaled(solid, face, radius) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_resizeCylindricalFaceJournaled(this.__wbg_ptr, solid, face, radius);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Resolves "the `index`-th `kind` output of journal operation `op`"
-     * against the current model. Returns the resolution JSON (`status`
-     * plus status-specific fields); severed references are data, not
-     * errors.
-     * @param {number} op
-     * @param {string} kind
-     * @param {number} index
-     * @returns {string}
-     */
-    resolveOperationOutput(op, kind, index) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_resolveOperationOutput(this.__wbg_ptr, op, ptr0, len0, index);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * Resolves a serialized reference against the current model.
-     * Returns the resolution JSON; severed references are data, not
-     * errors.
-     * @param {string} reference
-     * @returns {string}
-     */
-    resolveRef(reference) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_resolveRef(this.__wbg_ptr, ptr0, len0);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * Resolves a serialized reference and reads the bound faces'
-     * attributes: JSON array of `{"kind", "handle", "name"}`. Errors on
-     * non-binding resolutions (`ref_*` diagnostics) — an attribute is
-     * never read through a dangling, severed, or ambiguous reference.
-     * @param {string} reference
-     * @returns {string}
-     */
-    resolveRefFaceAttributes(reference) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_resolveRefFaceAttributes(this.__wbg_ptr, ptr0, len0);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * Restore the kernel to a previously saved checkpoint.
-     *
-     * All state created after the checkpoint is discarded. The checkpoint
-     * itself (and any earlier checkpoints) remain valid for future restores.
-     * Checkpoints created after this one are discarded.
-     *
-     * Restoring never grows the model: every checkpoint is an ancestor of the
-     * current state, so the restored topology is a subset of it. Undo is
-     * therefore always available, no matter how large the model has grown or
-     * how many operations the kernel instance has run.
-     *
-     * # Errors
-     *
-     * Returns an error if `checkpoint_id` does not refer to a valid checkpoint.
-     * This is the only failure mode.
-     * @param {number} checkpoint_id
-     */
-    restore(checkpoint_id) {
-        const ret = wasm.brepkernel_restore(this.__wbg_ptr, checkpoint_id);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Reverse the orientation of a face or edge.
-     *
-     * For faces: creates a new face with negated plane normal.
-     * For edges: creates a new edge with swapped start/end vertices.
-     * Returns the handle of the new reversed shape.
-     *
-     * # Errors
-     *
-     * Returns an error if the handle is neither a valid face nor edge.
-     * @param {number} id
-     * @returns {number}
-     */
-    reverseShape(id) {
-        const ret = wasm.brepkernel_reverseShape(this.__wbg_ptr, id);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Revolve a planar face around an axis to create a solid of revolution.
-     *
-     * The axis is defined by an origin point `(ox, oy, oz)` and a direction
-     * `(dx, dy, dz)`. The angle is in degrees and must be in (0, 360].
-     *
-     * Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if any input is non-finite, the face handle is
-     * invalid, or the revolve operation fails.
-     * @param {number} face
-     * @param {number} ox
-     * @param {number} oy
-     * @param {number} oz
-     * @param {number} dx
-     * @param {number} dy
-     * @param {number} dz
-     * @param {number} angle_degrees
-     * @returns {number}
-     */
-    revolve(face, ox, oy, oz, dx, dy, dz, angle_degrees) {
-        const ret = wasm.brepkernel_revolve(this.__wbg_ptr, face, ox, oy, oz, dx, dy, dz, angle_degrees);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Revolve a planar face around an axis, as typed data.
-     *
-     * Additive twin of [`revolve`](Self::revolve_face): the same validation
-     * order (finite `ox`, `oy`, `oz`, `dx`, `dy`, `dz`, `angle_degrees`,
-     * then the `(0, 360]` range check, then the face handle), the same
-     * degrees-to-radians conversion, and the same engine for exact-supported
-     * profiles. Curved profiles needing line chords refuse with
-     * `exact_only_unattainable`; the legacy method is unchanged. Success has
-     * `details.quality: "exact"`.
-     * @param {number} face
-     * @param {number} ox
-     * @param {number} oy
-     * @param {number} oz
-     * @param {number} dx
-     * @param {number} dy
-     * @param {number} dz
-     * @param {number} angle_degrees
-     * @returns {SolidOperationDetailedResult}
-     */
-    revolveDetailed(face, ox, oy, oz, dx, dy, dz, angle_degrees) {
-        const ret = wasm.brepkernel_revolveDetailed(this.__wbg_ptr, face, ox, oy, oz, dx, dy, dz, angle_degrees);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Full-turn analytic radial-profile revolution with complete construction
-     * history. Angles are degrees, as in `revolve`.
-     *
-     * Returns JSON `{"solid", "op", "evolution"}`. Faces and circular rims
-     * are generated from the profile face; reused profile seams and vertices
-     * are modified into themselves. Completeness is checked against every
-     * result entity. Only planar hole-free straight-edge radial profiles have
-     * qualified history; other profiles and partial turns refuse atomically.
-     * @param {number} face
-     * @param {number} origin_x
-     * @param {number} origin_y
-     * @param {number} origin_z
-     * @param {number} axis_x
-     * @param {number} axis_y
-     * @param {number} axis_z
-     * @param {number} angle_degrees
-     * @returns {string}
-     */
-    revolveJournaled(face, origin_x, origin_y, origin_z, axis_x, axis_y, axis_z, angle_degrees) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_revolveJournaled(this.__wbg_ptr, face, origin_x, origin_y, origin_z, axis_x, axis_y, axis_z, angle_degrees);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Run a custom sequence of healing operators on a solid.
-     *
-     * `steps` names built-in operators, executed in order: `fix_shape`,
-     * `unify_same_domain`, `direct_faces`, `same_parameter`,
-     * `merge_vertices`, `drop_small_edges`, `drop_small_faces`,
-     * `remove_internal_wires`, `sew_shells`, `split_common_vertex`,
-     * `convert_to_bspline`, `convert_to_elementary`, `fix_wireframe`
-     * (see [`heal_pipeline_steps`](Self::heal_pipeline_steps)). An unknown
-     * step name fails the whole run before any mutation of later steps.
-     *
-     * Returns a JSON string `{ solid, steps: [{step, actionsTaken, done,
-     * failed, repairs}], verified }` (see the `HealPipelineResult`
-     * TypeScript type). Success is committed only after both validators
-     * accept the result.
-     * @param {number} solid
-     * @param {string[]} steps
-     * @returns {any}
-     */
-    runHealPipeline(solid, steps) {
-        const ptr0 = passArrayJsValueToWasm0(steps, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_runHealPipeline(this.__wbg_ptr, solid, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Run verified healing steps with composed entity history.
-     * Returns the `runHealPipeline` report plus `op`. Topology and journal
-     * changes roll back together on failure. Batch uses `solid` and `steps`.
-     * @param {number} solid
-     * @param {string[]} steps
-     * @returns {string}
-     */
-    runHealPipelineJournaled(solid, steps) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passArrayJsValueToWasm0(steps, wasm.__wbindgen_malloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_runHealPipelineJournaled(this.__wbg_ptr, solid, ptr0, len0);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * Span-true polyline of one edge at the given chordal deflection.
-     *
-     * Returns flattened `[x, y, z, ...]` samples walking exactly the edge's
-     * own parameter span — the same sampler the solid wireframe uses.
-     * Unlike [`tessellateEdge`](Self::tessellate_edge), a circle, ellipse,
-     * or closed-NURBS edge yields its actual arc (vertex-anchored), never a
-     * full-period trace of the parent curve.
-     *
-     * # Errors
-     *
-     * Returns an error if the edge handle is invalid, `deflection` is not
-     * positive, or the sampling budget is exceeded at this deflection.
-     * @param {number} edge
-     * @param {number} deflection
-     * @returns {Float64Array}
-     */
-    sampleEdge(edge, deflection) {
-        const ret = wasm.brepkernel_sampleEdge(this.__wbg_ptr, edge, deflection);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Section a solid with a plane, returning cross-section face handles.
-     *
-     * Returns an array of face handles (`u32[]`).
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid or the plane doesn't
-     * intersect the solid.
-     * @param {number} solid
-     * @param {number} px
-     * @param {number} py
-     * @param {number} pz
-     * @param {number} nx
-     * @param {number} ny
-     * @param {number} nz
-     * @returns {Uint32Array}
-     */
-    section(solid, px, py, pz, nx, ny, nz) {
-        const ret = wasm.brepkernel_section(this.__wbg_ptr, solid, px, py, pz, nx, ny, nz);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Serialize one first-class sheet body into a version 4 arena document.
-     *
-     * # Errors
-     *
-     * Returns an error if the shell handle is invalid, is not tagged as a
-     * sheet, or serialization fails.
-     * @param {number} sheet
-     * @returns {Uint8Array}
-     */
-    serializeSheet(sheet) {
-        const ret = wasm.brepkernel_serializeSheet(this.__wbg_ptr, sheet);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
-        return v1;
-    }
-    /**
-     * Serialize several first-class sheet bodies into a version 4 arena document.
-     *
-     * Shared topology is encoded once with dense local indices. Input order
-     * and duplicate handles are preserved as document roots.
-     *
-     * # Errors
-     *
-     * Returns an error if any shell handle is invalid, is not tagged as a
-     * sheet, or serialization fails.
-     * @param {Uint32Array} sheets
-     * @returns {Uint8Array}
-     */
-    serializeSheets(sheets) {
-        const ptr0 = passArray32ToWasm0(sheets, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_serializeSheets(this.__wbg_ptr, ptr0, len0);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
-        return v2;
-    }
-    /**
-     * Serialize a solid's complete in-memory topology sub-arena to bytes.
-     *
-     * Captures every vertex, edge, wire, face, shell reachable from the
-     * solid with byte-exact f64 values (no geometry re-derivation or
-     * tolerance normalization). Unlike STEP/IGES export, this preserves the
-     * kernel's exact in-memory state — intended for capturing live operands
-     * and replaying them in a native Rust harness to reproduce
-     * sub-ULP-sensitive boolean behavior.
-     *
-     * This writer emits a single-root version 3 document. Returns a
-     * `Uint8Array` consumable by
-     * `remus_io::arena_io::deserialize_solid`.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid or serialization fails.
-     * @param {number} solid
-     * @returns {Uint8Array}
-     */
-    serializeSolid(solid) {
-        const ret = wasm.brepkernel_serializeSolid(this.__wbg_ptr, solid);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
-        return v1;
-    }
-    /**
-     * Serialize several solids into one version 3 arena document.
-     *
-     * Shared topology is encoded once with dense local indices. Input order
-     * and duplicate handles are preserved as document roots. This format
-     * intentionally excludes unrelated kernel session state.
-     *
-     * # Errors
-     *
-     * Returns an error if any solid handle is invalid or serialization fails.
-     * @param {Uint32Array} solids
-     * @returns {Uint8Array}
-     */
-    serializeSolids(solids) {
-        const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_serializeSolids(this.__wbg_ptr, ptr0, len0);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
-        return v2;
-    }
-    /**
-     * Serialize one first-class wire body into a version 5 arena document.
-     *
-     * # Errors
-     *
-     * Returns an error if the handle is invalid, is not tagged as a wire
-     * body, or serialization fails.
-     * @param {number} wire
-     * @returns {Uint8Array}
-     */
-    serializeWire(wire) {
-        const ret = wasm.brepkernel_serializeWire(this.__wbg_ptr, wire);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
-        return v1;
-    }
-    /**
-     * Serialize first-class wire bodies into a version 5 arena document.
-     *
-     * Shared topology is encoded once. Root order and duplicate handles are
-     * preserved.
-     *
-     * # Errors
-     *
-     * Returns an error if any handle is invalid, is not tagged as a wire
-     * body, or serialization fails.
-     * @param {Uint32Array} wires
-     * @returns {Uint8Array}
-     */
-    serializeWires(wires) {
-        const ptr0 = passArray32ToWasm0(wires, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_serializeWires(this.__wbg_ptr, ptr0, len0);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
-        return v2;
-    }
-    /**
-     * Sets (or clears, when `name` is null/empty) a face's semantic
-     * name, preserving its other attributes.
-     * @param {number} face
-     * @param {string | null} [name]
-     */
-    setFaceName(face, name) {
-        var ptr0 = isLikeNone(name) ? 0 : passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        var len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_setFaceName(this.__wbg_ptr, face, ptr0, len0);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Enable or disable exact reusable scalar measurements for this module.
-     * Explicit preferences are preserved when another kernel is constructed.
-     * @param {boolean} enabled
-     */
-    setMeasurementReuseEnabled(enabled) {
-        wasm.brepkernel_setMeasurementReuseEnabled(this.__wbg_ptr, enabled);
-    }
-    /**
-     * Enable or disable this module's exact mesh-stage reuse. Disabling
-     * releases its retained entries. New kernels enable the default cache.
-     * @param {boolean} enabled
-     */
-    setMeshReuseEnabled(enabled) {
-        wasm.brepkernel_setMeshReuseEnabled(this.__wbg_ptr, enabled);
-    }
-    /**
-     * Enable bounded module-local timings; disabled by default. This does
-     * not change tolerances, cache admission or numerical policy.
-     * @param {boolean} enabled
-     */
-    setPerformanceTracing(enabled) {
-        wasm.brepkernel_setPerformanceTracing(this.__wbg_ptr, enabled);
-    }
-    /**
-     * Turn store-local booleans on or off (off by default).
-     *
-     * When on, a cut, fuse or intersect whose second solid reaches only
-     * part of the first (`cut`, `fuse`, `intersectSolids`, their batch ops,
-     * and the other booleans that run the plain boolean;
-     * evolution-tracking booleans keep the general path) runs the boolean
-     * on that part and splices the result back onto the faces it does not
-     * touch. The name predates fuse and intersect.
-     * On a body with many faces, such as a drilled plate, a boolean costs
-     * about a third to two thirds less. The result is the same solid as
-     * with the switch off (same faces, edges, vertices and volume), but its
-     * faces and entities come out in a different order and numbering.
-     *
-     * The setting is per thread, like the kernel's content-keyed memos: it
-     * applies to every kernel in this module instance (one browser worker),
-     * not only to this one. A boolean that does not qualify, or whose
-     * result fails the boolean-result gate or is not one connected shell,
-     * runs the general path.
-     * @param {boolean} enabled
-     */
-    setStoreLocalCuts(enabled) {
-        wasm.brepkernel_setStoreLocalCuts(this.__wbg_ptr, enabled);
-    }
-    /**
-     * Sew loose faces into a connected solid.
-     *
-     * `face_handles` is an array of face handles. Returns a solid handle.
-     *
-     * # Errors
-     *
-     * Returns an error if fewer than 2 faces or sewing fails.
-     * @param {Uint32Array} face_handles
-     * @param {number} tolerance
-     * @returns {number}
-     */
-    sewFaces(face_handles, tolerance) {
-        const ptr0 = passArray32ToWasm0(face_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_sewFaces(this.__wbg_ptr, ptr0, len0, tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Get edges shared between two faces.
-     *
-     * Returns an array of edge handles.
-     * @param {number} face_a
-     * @param {number} face_b
-     * @returns {Uint32Array}
-     */
-    sharedEdges(face_a, face_b) {
-        const ret = wasm.brepkernel_sharedEdges(this.__wbg_ptr, face_a, face_b);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Compute the area of a first-class sheet body.
-     * @param {number} sheet
-     * @param {number} deflection
-     * @returns {number}
-     */
-    sheetArea(sheet, deflection) {
-        const ret = wasm.brepkernel_sheetArea(this.__wbg_ptr, sheet, deflection);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0];
-    }
-    /**
-     * Compute the axis-aligned bounding box of a first-class sheet body.
-     *
-     * Returns `[min_x, min_y, min_z, max_x, max_y, max_z]`.
-     * @param {number} sheet
-     * @returns {Float64Array}
-     */
-    sheetBoundingBox(sheet) {
-        const ret = wasm.brepkernel_sheetBoundingBox(this.__wbg_ptr, sheet);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Compute the area-weighted center of a first-class sheet body.
-     * @param {number} sheet
-     * @returns {Float64Array}
-     */
-    sheetCenterOfArea(sheet) {
-        const ret = wasm.brepkernel_sheetCenterOfArea(this.__wbg_ptr, sheet);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Refuse volume measurement for a sheet with a stable typed diagnostic.
-     * @param {number} sheet
-     * @param {number} deflection
-     * @returns {number}
-     */
-    sheetVolume(sheet, deflection) {
-        const ret = wasm.brepkernel_sheetVolume(this.__wbg_ptr, sheet, deflection);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0];
-    }
-    /**
-     * Hollow a solid with uniform wall thickness.
-     *
-     * `open_faces` is an array of face handles to remove (creating openings).
-     * Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if thickness is non-positive or the solid is invalid.
-     * @param {number} solid
-     * @param {number} thickness
-     * @param {Uint32Array} open_faces
-     * @returns {number}
-     */
-    shell(solid, thickness, open_faces) {
-        const ptr0 = passArray32ToWasm0(open_faces, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_shell(this.__wbg_ptr, solid, thickness, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Hollow a solid and return exact, disclosed-approximate, or refused
-     * results as typed data.
-     *
-     * Additive twin of [`shell`](Self::shell_solid). Like the legacy method
-     * it is exact-only by default: a kept NURBS face is refused with the
-     * legacy refusal (`operation_failed` / `internal`, message naming the
-     * NURBS face) and the topology rolled back. A positive finite
-     * `approximation_spacing` opts into the sampled NURBS inner skin, which
-     * is then disclosed as `quality: "approximate"` with the model-unit
-     * `deflection` and the `sampledFaces` handles of the input solid.
-     * @param {number} solid
-     * @param {number} thickness
-     * @param {Uint32Array} open_faces
-     * @param {number | null} [approximation_spacing]
-     * @returns {SolidOperationDetailedResult}
-     */
-    shellDetailed(solid, thickness, open_faces, approximation_spacing) {
-        const ptr0 = passArray32ToWasm0(open_faces, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_shellDetailed(this.__wbg_ptr, solid, thickness, ptr0, len0, !isLikeNone(approximation_spacing), isLikeNone(approximation_spacing) ? 0 : approximation_spacing);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Hollow a solid with disclosed inner-skin quality.
-     *
-     * The plain [`shell`](Self::shell_solid) binding is exact-only: a solid
-     * whose kept faces include a NURBS face fails with a typed
-     * `unsupported` refusal instead of degrading to a sampled refit. This
-     * binding accepts an explicit opt-in to approximation —
-     * `approximation_spacing` is a model-unit sample spacing (a positive
-     * finite number), or omitted/`null` for the exact-only policy — and
-     * reports whether the sampled NURBS path ran (`quality:
-     * "approximate"`, with the spacing and the sampled source-face
-     * indices).
-     *
-     * # Errors
-     *
-     * Returns an error if a handle is invalid, thickness is non-positive,
-     * the spacing is present but not finite and positive, or (under the
-     * exact-only policy) a kept face has no exact offset.
-     * @param {number} solid
-     * @param {number} thickness
-     * @param {Uint32Array} open_faces
-     * @param {number | null} [approximation_spacing]
-     * @returns {ShellQualityResult}
-     */
-    shellWithQuality(solid, thickness, open_faces, approximation_spacing) {
-        const ptr0 = passArray32ToWasm0(open_faces, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_shellWithQuality(this.__wbg_ptr, solid, thickness, ptr0, len0, !isLikeNone(approximation_spacing), isLikeNone(approximation_spacing) ? 0 : approximation_spacing);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Returns simplified curve carrier geometry; the source edge remains unchanged.
-     * @param {number} edge
-     * @param {string} options_json
-     * @returns {string}
-     */
-    simplifyNurbsCurve(edge, options_json) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ptr0 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_simplifyNurbsCurve(this.__wbg_ptr, edge, ptr0, len0);
-            deferred2_0 = ret[0];
-            deferred2_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Returns simplified surface carrier geometry; trims and topology remain unchanged.
-     * @param {number} face
-     * @param {string} options_json
-     * @returns {string}
-     */
-    simplifyNurbsSurface(face, options_json) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ptr0 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_simplifyNurbsSurface(this.__wbg_ptr, face, ptr0, len0);
-            deferred2_0 = ret[0];
-            deferred2_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Add an arc to a sketch (defined by center, start, end point indices).
-     * Returns the arc index.
-     * @param {number} sketch
-     * @param {number} center_idx
-     * @param {number} start_idx
-     * @param {number} end_idx
-     * @returns {number}
-     */
-    sketchAddArc(sketch, center_idx, start_idx, end_idx) {
-        const ret = wasm.brepkernel_sketchAddArc(this.__wbg_ptr, sketch, center_idx, start_idx, end_idx);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Add a circle to a sketch.
-     *
-     * `center_idx` must be a valid point index. Returns the circle index
-     * (0-based) for use in circle-referencing constraints.
-     * @param {number} sketch
-     * @param {number} center_idx
-     * @param {number} radius
-     * @returns {number}
-     */
-    sketchAddCircle(sketch, center_idx, radius) {
-        const ret = wasm.brepkernel_sketchAddCircle(this.__wbg_ptr, sketch, center_idx, radius);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Add a constraint to a sketch from a JSON string.
-     *
-     * Supports all legacy constraint types plus arc-referencing constraints:
-     * `tangentLineArc`, `tangentArcArc`, `pointOnArc`, `equalRadiusArcArc`,
-     * `arcLength`, `concentricArcArc`.
-     * @param {number} sketch
-     * @param {string} json
-     */
-    sketchAddConstraint(sketch, json) {
-        const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_sketchAddConstraint(this.__wbg_ptr, sketch, ptr0, len0);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Add a point to a sketch. Returns the point index.
-     * @param {number} sketch
-     * @param {number} x
-     * @param {number} y
-     * @param {boolean} fixed
-     * @returns {number}
-     */
-    sketchAddPoint(sketch, x, y, fixed) {
-        const ret = wasm.brepkernel_sketchAddPoint(this.__wbg_ptr, sketch, x, y, fixed);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Compute degrees of freedom for a sketch.
-     *
-     * Returns a JSON string: `{"dof": n, "rank": n, "numParams": n, "numEquations": n}`.
-     * @param {number} sketch
-     * @returns {string}
-     */
-    sketchDof(sketch) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_sketchDof(this.__wbg_ptr, sketch);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Create a new empty sketch. Returns a sketch index.
-     *
-     * **Deprecated:** prefer the typed `gcs*` API (`gcsNew`, `gcsAddPoint`,
-     * `gcsAddConstraint`, …), which holds a persistent constraint system,
-     * supports all 24 constraint types with explicit line entities, and
-     * allows constraint removal. The `sketch*` methods remain for
-     * backward compatibility.
-     *
-     * # Errors
-     *
-     * Returns an error if the sketch handle namespace is exhausted.
-     * @returns {number}
-     */
-    sketchNew() {
-        const ret = wasm.brepkernel_sketchNew(this.__wbg_ptr);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Solve the sketch constraints.
-     *
-     * Returns a JSON string with converged status, iteration count, point
-     * positions, and arc definitions.
-     * @param {number} sketch
-     * @param {number} max_iterations
-     * @param {number} tolerance
-     * @returns {string}
-     */
-    sketchSolve(sketch, max_iterations, tolerance) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ret = wasm.brepkernel_sketchSolve(this.__wbg_ptr, sketch, max_iterations, tolerance);
-            var ptr1 = ret[0];
-            var len1 = ret[1];
-            if (ret[3]) {
-                ptr1 = 0; len1 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Classify every edge of a solid in one pass.
-     *
-     * Returns a JSON string array of `{ edge, relation, dihedralAngle }`
-     * rows (see `EdgeRelationRow`). Same verdicts and angles as
-     * [`edgeConvexity`](Self::edge_convexity), but adjacency is built once
-     * — this is the call the consumer must use for whole-solid scans. The
-     * optional `probe` override applies to every edge; omit it for the
-     * per-edge `0.05 * local_scale` default. Unknown edges report
-     * `relation: "unknown"` with a `null` angle, never a guess.
-     *
-     * # Errors
-     *
-     * Returns an error for a foreign or deleted solid handle, an invalid
-     * probe, or a topology or classification failure.
-     * @param {number} solid
-     * @param {number | null} [probe]
-     * @returns {any}
-     */
-    solidEdgeRelations(solid, probe) {
-        const ret = wasm.brepkernel_solidEdgeRelations(this.__wbg_ptr, solid, !isLikeNone(probe), isLikeNone(probe) ? 0 : probe);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Batch the edges needed by a selected feature proof. Classification
-     * still uses the entire solid and the ordinary per-edge default probe.
-     *
-     * # Errors
-     * Refuses duplicate, foreign/deleted edges, invalid probes and query errors.
-     * @param {number} solid
-     * @param {Uint32Array} edges
-     * @param {number | null} [probe]
-     * @returns {string}
-     */
-    solidEdgeRelationsSubset(solid, edges, probe) {
-        let deferred3_0;
-        let deferred3_1;
-        try {
-            const ptr0 = passArray32ToWasm0(edges, wasm.__wbindgen_malloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_solidEdgeRelationsSubset(this.__wbg_ptr, solid, ptr0, len0, !isLikeNone(probe), isLikeNone(probe) ? 0 : probe);
-            var ptr2 = ret[0];
-            var len2 = ret[1];
-            if (ret[3]) {
-                ptr2 = 0; len2 = 0;
-                throw takeFromExternrefTable0(ret[2]);
-            }
-            deferred3_0 = ptr2;
-            deferred3_1 = len2;
-            return getStringFromWasm0(ptr2, len2);
-        } finally {
-            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-        }
-    }
-    /**
-     * Create a solid from a shell.
-     *
-     * Returns a solid handle (`u32`).
-     * @param {number} shell
-     * @returns {number}
-     */
-    solidFromShell(shell) {
-        const ret = wasm.brepkernel_solidFromShell(this.__wbg_ptr, shell);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Compute minimum distance between two solids.
-     *
-     * Returns `[distance, point_a_x, point_a_y, point_a_z, point_b_x, point_b_y, point_b_z]`.
-     *
-     * # Errors
-     *
-     * Returns an error if either solid handle is invalid.
-     * @param {number} a
-     * @param {number} b
-     * @returns {Float64Array}
-     */
-    solidToSolidDistance(a, b) {
-        const ret = wasm.brepkernel_solidToSolidDistance(this.__wbg_ptr, a, b);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Global maximum distance and witnesses as `[distance, ax, ay, az, bx, by, bz]`.
-     *
-     * Supports straight-edged planar polyhedra and complete native spheres,
-     * including certified affine NURBS planar faces and mixed pairs.
-     * All cavity boundaries are qualified; unsupported
-     * geometry returns a typed refusal. This query changes no session state.
-     * Inputs require valid BReps with closed shells and simple, nested trim loops.
-     *
-     * # Errors
-     * Returns an error for invalid handles/boundaries, unsupported geometry,
-     * unresolved arithmetic or exhausted bounded work.
-     * @param {number} a
-     * @param {number} b
-     * @returns {Float64Array}
-     */
-    solidToSolidMaximumDistance(a, b) {
-        const ret = wasm.brepkernel_solidToSolidMaximumDistance(this.__wbg_ptr, a, b);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Split a solid into two halves along a plane.
-     *
-     * Returns `[positive_solid_handle, negative_solid_handle]`.
-     *
-     * # Errors
-     *
-     * Returns an error if the plane doesn't intersect the solid.
-     * @param {number} solid
-     * @param {number} px
-     * @param {number} py
-     * @param {number} pz
-     * @param {number} nx
-     * @param {number} ny
-     * @param {number} nz
-     * @returns {Uint32Array}
-     */
-    split(solid, px, py, pz, nx, ny, nz) {
-        const ret = wasm.brepkernel_split(this.__wbg_ptr, solid, px, py, pz, nx, ny, nz);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
-     * Split a solid into cells using a first-class sheet body.
-     *
-     * Returns a compound handle whose solids are in deterministic cell order.
-     * The qualified exact subset is currently one cylindrical sheet face.
-     *
-     * # Errors
-     *
-     * Returns a typed unsupported error for other sheet configurations and
-     * rolls back if intersection, cell validation, or volume conservation
-     * fails.
-     * @param {number} solid
-     * @param {number} sheet
-     * @returns {number}
-     */
-    splitBySheet(solid, sheet) {
-        const ret = wasm.brepkernel_splitBySheet(this.__wbg_ptr, solid, sheet);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Whether store-local booleans are on (see `setStoreLocalCuts`).
-     * @returns {boolean}
-     */
-    storeLocalCutsEnabled() {
-        const ret = wasm.brepkernel_storeLocalCutsEnabled(this.__wbg_ptr);
-        return ret !== 0;
-    }
-    /**
-     * Compute the total surface area of a solid.
-     *
-     * Analytic curved faces and exact planar boundaries integrate their
-     * exact geometry, so the result is deflection-independent on those
-     * paths; `deflection` only controls the NURBS-face tessellation and
-     * the sampled planar fallback.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid or tessellation fails.
-     * @param {number} solid
-     * @param {number} deflection
-     * @returns {number}
-     */
-    surfaceArea(solid, deflection) {
-        const ret = wasm.brepkernel_surfaceArea(this.__wbg_ptr, solid, deflection);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0];
-    }
-    /**
-     * Returns reduced U carrier geometry and a certified bound as a JSON envelope.
-     * @param {number} face
-     * @param {number} knot
-     * @param {string} options_json
-     * @returns {string}
-     */
-    surfaceKnotRemoveU(face, knot, options_json) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ptr0 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_surfaceKnotRemoveU(this.__wbg_ptr, face, knot, ptr0, len0);
-            deferred2_0 = ret[0];
-            deferred2_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Returns reduced V carrier geometry and a certified bound as a JSON envelope.
-     * @param {number} face
-     * @param {number} knot
-     * @param {string} options_json
-     * @returns {string}
-     */
-    surfaceKnotRemoveV(face, knot, options_json) {
-        let deferred2_0;
-        let deferred2_1;
-        try {
-            const ptr0 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-            const len0 = WASM_VECTOR_LEN;
-            const ret = wasm.brepkernel_surfaceKnotRemoveV(this.__wbg_ptr, face, knot, ptr0, len0);
-            deferred2_0 = ret[0];
-            deferred2_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-        }
-    }
-    /**
-     * Sweep a planar face along a NURBS curve path to create a solid.
-     *
-     * The path is specified as flat arrays for JS interop:
-     * - `path_degree` — polynomial degree of the path curve
-     * - `path_knots` — knot vector
-     * - `path_control_points` — flat `[x,y,z, ...]` control point coordinates
-     * - `path_weights` — per-control-point weights
-     *
-     * Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if the face handle is invalid, the NURBS arrays have
-     * inconsistent lengths, or the sweep operation fails.
-     * @param {number} face
-     * @param {number} path_degree
-     * @param {Float64Array} path_knots
-     * @param {Float64Array} path_control_points
-     * @param {Float64Array} path_weights
-     * @returns {number}
-     */
-    sweep(face, path_degree, path_knots, path_control_points, path_weights) {
-        const ptr0 = passArrayF64ToWasm0(path_knots, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(path_control_points, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passArrayF64ToWasm0(path_weights, wasm.__wbindgen_malloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_sweep(this.__wbg_ptr, face, path_degree, ptr0, len0, ptr1, len1, ptr2, len2);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Sweep a face along a path defined by a chain of edges.
-     *
-     * Collects points from the edges, fits an interpolating NURBS curve,
-     * then sweeps the profile along that curve.
-     *
-     * Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if fewer than 2 edges or the fit fails.
-     * @param {number} face
-     * @param {Uint32Array} edge_handles
-     * @returns {number}
-     */
-    sweepAlongEdges(face, edge_handles) {
-        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_sweepAlongEdges(this.__wbg_ptr, face, ptr0, len0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Sweep a face along a path with smooth NURBS side surfaces.
-     *
-     * Like `sweep()`, but produces a single NURBS surface per edge strip
-     * instead of multiple flat quads, giving smooth geometry that
-     * tessellates to arbitrary quality.
-     *
-     * Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if the face or path is invalid, or surface fitting fails.
-     * @param {number} face
-     * @param {number} path_degree
-     * @param {Float64Array} path_knots
-     * @param {Float64Array} path_control_points
-     * @param {Float64Array} path_weights
-     * @returns {number}
-     */
-    sweepSmooth(face, path_degree, path_knots, path_control_points, path_weights) {
-        const ptr0 = passArrayF64ToWasm0(path_knots, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(path_control_points, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passArrayF64ToWasm0(path_weights, wasm.__wbindgen_malloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_sweepSmooth(this.__wbg_ptr, face, path_degree, ptr0, len0, ptr1, len1, ptr2, len2);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Sweep a closed planar first-class wire profile along an edge path.
-     *
-     * The input wire remains an independent body. Open and non-planar wire
-     * profiles are refused until sheet-result sweep assembly is qualified.
-     * Returns a solid handle (`u32`).
-     *
-     * # Errors
-     *
-     * Returns an error if either handle is invalid, the profile is not a
-     * qualified wire body, or the sweep operation fails.
-     * @param {number} profile
-     * @param {number} path_edge
-     * @returns {number}
-     */
-    sweepWire(profile, path_edge) {
-        const ret = wasm.brepkernel_sweepWire(this.__wbg_ptr, profile, path_edge);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Sweep a face along a NURBS path with advanced options.
-     *
-     * `contact_mode`: "rmf" (default), "fixed", or "constantNormal:x,y,z"
-     * `scale_values`: flat `[t0,s0,t1,s1,...]` pairs for piecewise-linear scale law.
-     * The law is evaluated at normalized path progress in `[0,1]`, independently
-     * of the NURBS path's native parameter domain.
-     * Parameters must be finite and strictly increasing, their adjacent spans
-     * finite, and scales finite and positive. Empty pairs select unit scale.
-     * Qualified linear tapers use XY straight-edge profiles, including holes,
-     * +Z straight paths and fixed contact. Intermediate law breakpoints must
-     * coincide with section rings. General initial roll/profile placement
-     * remains unqualified.
-     * `corner_mode`: "smooth" (default), "miter", or "round:&lt;radius&gt;"
-     *   (e.g. `"round:2.5"` — rounding a corner needs a radius).
-     * Returns a solid handle.
-     * @param {number} profile
-     * @param {number} path_edge
-     * @param {string} contact_mode
-     * @param {Float64Array} scale_values
-     * @param {number} segments
-     * @param {string} corner_mode
-     * @returns {number}
-     */
-    sweepWithOptions(profile, path_edge, contact_mode, scale_values, segments, corner_mode) {
-        const ptr0 = passStringToWasm0(contact_mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArrayF64ToWasm0(scale_values, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(corner_mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_sweepWithOptions(this.__wbg_ptr, profile, path_edge, ptr0, len0, ptr1, len1, segments, ptr2, len2);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Tessellate an edge curve into polyline segments.
-     *
-     * For line edges, returns just start and end points.
-     * For NURBS edges, samples at `num_points` along the curve.
-     *
-     * Returns flattened `[x, y, z, x, y, z, ...]` array.
-     * @param {number} edge
-     * @param {number} num_points
-     * @returns {Float64Array}
-     */
-    tessellateEdge(edge, num_points) {
-        const ret = wasm.brepkernel_tessellateEdge(this.__wbg_ptr, edge, num_points);
-        if (ret[3]) {
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Tessellate a single face into a triangle mesh.
-     *
-     * # Errors
-     *
-     * Returns an error if the face handle is invalid or tessellation fails.
-     * @param {number} face
-     * @param {number} deflection
-     * @param {number | null} [angular_tolerance]
-     * @returns {JsMesh}
-     */
-    tessellateFace(face, deflection, angular_tolerance) {
-        const ret = wasm.brepkernel_tessellateFace(this.__wbg_ptr, face, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return JsMesh.__wrap(ret[0]);
-    }
-    /**
-     * Tessellate a first-class sheet body into an open triangle mesh.
-     *
-     * Free boundary edges are expected and remain present in the result.
-     * @param {number} sheet
-     * @param {number} deflection
-     * @param {number | null} [angular_tolerance]
-     * @returns {JsMesh}
-     */
-    tessellateSheet(sheet, deflection, angular_tolerance) {
-        const ret = wasm.brepkernel_tessellateSheet(this.__wbg_ptr, sheet, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return JsMesh.__wrap(ret[0]);
-    }
-    /**
-     * Tessellate all faces of a solid into a single merged triangle mesh.
-     *
-     * Includes both the outer shell and any inner shells (voids).
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid or tessellation fails.
-     * @param {number} solid
-     * @param {number} deflection
-     * @param {number | null} [angular_tolerance]
-     * @returns {JsMesh}
-     */
-    tessellateSolid(solid, deflection, angular_tolerance) {
-        const ret = wasm.brepkernel_tessellateSolid(this.__wbg_ptr, solid, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return JsMesh.__wrap(ret[0]);
-    }
-    /**
-     * Tessellate a solid with per-face triangle grouping.
-     *
-     * Returns a JSON string containing `{ positions, normals, indices, faceOffsets }`.
-     * `faceOffsets` is an array where `faceOffsets[i]` is the start index into
-     * `indices` for face `i`, and the last element is `indices.length`.
-     *
-     * Uses the watertight shared-edge-pool tessellation: adjacent faces share
-     * identical boundary vertices, so the exported mesh has no T-junctions
-     * regardless of how the solid was constructed (booleans included).
-     * @param {number} solid
-     * @param {number} deflection
-     * @param {number | null} [angular_tolerance]
-     * @returns {any}
-     */
-    tessellateSolidGrouped(solid, deflection, angular_tolerance) {
-        const ret = wasm.brepkernel_tessellateSolidGrouped(this.__wbg_ptr, solid, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Tessellate a solid with per-face grouping, returned as packed binary
-     * buffers ([`JsGroupedMesh`]) instead of a JSON string.
-     *
-     * Identical geometry to [`tessellate_solid_grouped`](Self::tessellate_solid_grouped),
-     * but the mesh crosses the WASM boundary as `Float32Array`/`Uint32Array`
-     * bulk copies rather than a (potentially multi-megabyte) JSON string that
-     * the caller must `JSON.parse` and re-pack — far cheaper for large meshes.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid or tessellation fails.
-     * @param {number} solid
-     * @param {number} deflection
-     * @param {number | null} [angular_tolerance]
-     * @returns {JsGroupedMesh}
-     */
-    tessellateSolidGroupedBinary(solid, deflection, angular_tolerance) {
-        const ret = wasm.brepkernel_tessellateSolidGroupedBinary(this.__wbg_ptr, solid, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return JsGroupedMesh.__wrap(ret[0]);
-    }
-    /**
-     * Tessellate a solid and include per-vertex UV coordinates.
-     *
-     * Returns a JSON string containing `{ positions, normals, indices, uvs }`.
-     * `uvs` is a flat array of `[u0, v0, u1, v1, ...]` values, two per vertex.
-     * For analytic and NURBS surfaces, these are the parametric (u, v) values.
-     * For planar faces, UVs are computed by projection onto the face plane.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid or tessellation fails.
-     * @param {number} solid
-     * @param {number} deflection
-     * @param {number | null} [angular_tolerance]
-     * @returns {any}
-     */
-    tessellateSolidUV(solid, deflection, angular_tolerance) {
-        const ret = wasm.brepkernel_tessellateSolidUV(this.__wbg_ptr, solid, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Thicken a face into a solid by offsetting it by the given distance.
-     *
-     * Grows the face along its own outward normal (the surface normal,
-     * negated on a reversed face) by `thickness`: positive values grow
-     * outward, negative inward. A planar face extrudes; a cylinder, cone,
-     * sphere or torus face becomes the shell between it and its exact
-     * offset.
-     *
-     * # Errors
-     *
-     * Returns an error if the face handle is invalid, thickness is zero or
-     * not finite, or the face has no exact offset (a curved NURBS face, a
-     * boundary edge other than a ruling or a circle whose offset is a
-     * circle, or an offset that collapses the surface).
-     * @param {number} face
-     * @param {number} thickness
-     * @returns {number}
-     */
-    thicken(face, thickness) {
-        const ret = wasm.brepkernel_thicken(this.__wbg_ptr, face, thickness);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Export a solid as a BREP string (STEP format).
-     *
-     * Returns a STEP-formatted string containing the solid's B-Rep data.
-     * Use `fromBREP` to reconstruct the solid from this string.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid.
-     * @param {number} solid
-     * @returns {any}
-     */
-    toBREP(solid) {
-        const ret = wasm.brepkernel_toBREP(this.__wbg_ptr, solid);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Export a solid as a JSON-encoded BREP representation.
-     *
-     * Returns a JSON string with vertices, edges (with curve parameters and
-     * authoritative trims), and faces (with surface parameters). This is a
-     * remus-specific format that preserves all analytic geometry types.
-     * @param {number} solid
-     * @returns {any}
-     */
-    toBrepJson(solid) {
-        const ret = wasm.brepkernel_toBrepJson(this.__wbg_ptr, solid);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Transform a solid and return the exact, disclosed-approximate, or
-     * refused result as typed data.
-     *
-     * Additive twin of [`transformSolid`](Self::transform_solid_binding):
-     * the same engine, matrix contract (16 row-major values), and
-     * validation order, with the legacy method's void return and thrown
-     * errors unchanged. On success `value` is the (same) solid handle and
-     * `details` carries `quality`, `determinant`, `orientationReversed`,
-     * `similarity`, `carrierChanges`, `edgeChanges`, `fittedFaces`, and
-     * `controlPoints`. With `exactOnly: true` a fitted-sphere need is
-     * rolled back and refused (`quality_refused` /
-     * `exact_only_unattainable`), naming the refused faces.
-     * @param {number} solid
-     * @param {Float64Array} matrix
-     * @param {boolean | null} [exact_only]
-     * @returns {SolidOperationDetailedResult}
-     */
-    transformDetailed(solid, matrix, exact_only) {
-        const ptr0 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_transformDetailed(this.__wbg_ptr, solid, ptr0, len0, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Apply a 4×4 affine transform to a face (in place).
-     *
-     * Transforms all vertices, edge curves, and the face surface geometry.
-     * The `matrix` must contain exactly 16 values in row-major order.
-     *
-     * # Errors
-     *
-     * Returns an error if the face handle is invalid, the matrix doesn't
-     * have 16 elements, or the matrix is singular.
-     * @param {number} face
-     * @param {Float64Array} matrix
-     */
-    transformFace(face, matrix) {
-        const ptr0 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_transformFace(this.__wbg_ptr, face, ptr0, len0);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Apply a 4×4 affine transform to a solid (in place).
-     *
-     * The `matrix` must contain exactly 16 values in row-major order.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid, the matrix doesn't
-     * have 16 elements, or the matrix is singular.
-     * @param {number} solid
-     * @param {Float64Array} matrix
-     */
-    transformSolid(solid, matrix) {
-        const ptr0 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_transformSolid(this.__wbg_ptr, solid, ptr0, len0);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Apply a 4×4 affine transform to a wire (in place).
-     *
-     * The `matrix` must contain exactly 16 values in row-major order.
-     *
-     * # Errors
-     *
-     * Returns an error if the wire handle is invalid, the matrix doesn't
-     * have 16 elements, or the matrix is singular.
-     * @param {number} wire
-     * @param {Float64Array} matrix
-     */
-    transformWire(wire, matrix) {
-        const ptr0 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_transformWire(this.__wbg_ptr, wire, ptr0, len0);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
-    }
-    /**
-     * Trim one planar sheet by one oriented side of another planar sheet.
-     * @param {number} target
-     * @param {number} tool
-     * @param {boolean} keep_positive
-     * @returns {number}
-     */
-    trimSheetBySheet(target, tool, keep_positive) {
-        const ret = wasm.brepkernel_trimSheetBySheet(this.__wbg_ptr, target, tool, keep_positive);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Trim a first-class sheet body by a solid and retain one classified side.
-     *
-     * `keep_inside = true` retains sheet patches inside the solid; `false`
-     * retains the outside remainder. Returns a new sheet-body shell handle.
-     *
-     * # Errors
-     *
-     * Returns a typed unsupported error for empty, coincident, or empty-result
-     * configurations, and rolls back if the retained sheet fails validation.
-     * @param {number} sheet
-     * @param {number} solid
-     * @param {boolean} keep_inside
-     * @returns {number}
-     */
-    trimSheetBySolid(sheet, solid, keep_inside) {
-        const ret = wasm.brepkernel_trimSheetBySolid(this.__wbg_ptr, sheet, solid, keep_inside);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Unify adjacent faces that lie on the same geometric surface.
-     *
-     * Merges co-surface face fragments (produced by boolean operations)
-     * back into single faces, reducing face count and improving topology.
-     * Returns the number of faces removed.
-     * @param {number} solid
-     * @returns {number}
-     */
-    unifyFaces(solid) {
-        const ret = wasm.brepkernel_unifyFaces(this.__wbg_ptr, solid);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * `unifyFaces` that also reports the strict validations it performs.
-     *
-     * Same merge, acceptance rule and tolerances as `unifyFaces`. Returns a
-     * JSON string of `UnifyFacesDetailedResult`: `facesMerged`,
-     * `inputErrors` (strict error count before), `resultErrors` (strict
-     * error count of the solid the caller now holds) and `reverted`. A
-     * caller that would otherwise validate the raw and the unified solid
-     * again can read both verdicts here instead.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid or topology lookups
-     * fail.
-     * @param {number} solid
-     * @returns {any}
-     */
-    unifyFacesChecked(solid) {
-        const ret = wasm.brepkernel_unifyFacesChecked(this.__wbg_ptr, solid);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Untrim a NURBS face by fitting a new surface to the trimmed region.
-     *
-     * Returns a new face handle.
-     * @param {number} face
-     * @param {number} samples_per_curve
-     * @param {number} interior_samples
-     * @returns {number}
-     */
-    untrimFace(face, samples_per_curve, interior_samples) {
-        const ret = wasm.brepkernel_untrimFace(this.__wbg_ptr, face, samples_per_curve, interior_samples);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Validate a first-class sheet body and return every diagnostic.
-     *
-     * The JSON payload is `{ errorCount, warningCount, issues }`. An open
-     * boundary contributes warnings, not errors.
-     * @param {number} sheet
-     * @returns {any}
-     */
-    validateSheetBody(sheet) {
-        const ret = wasm.brepkernel_validateSheetBody(this.__wbg_ptr, sheet);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Validate a solid, returning the number of errors found.
-     *
-     * Returns 0 if the solid is valid.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid.
-     * @param {number} solid
-     * @returns {number}
-     */
-    validateSolid(solid) {
-        const ret = wasm.brepkernel_validateSolid(this.__wbg_ptr, solid);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Validate a solid and return every diagnostic.
-     *
-     * Returns a JSON string containing
-     * `{ errorCount, warningCount, issues: [{ severity, description }] }`
-     * (see the `ValidationReportResult` TypeScript type). Diagnostics come
-     * from the same operations validator used by [`validate_solid`](Self::validate_solid).
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid or validation fails.
-     * @param {number} solid
-     * @returns {any}
-     */
-    validateSolidDetailed(solid) {
-        const ret = wasm.brepkernel_validateSolidDetailed(this.__wbg_ptr, solid);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Validate a solid with configurable tolerance scaling and return every
-     * diagnostic.
-     *
-     * `tolerance_scale` has the same meaning as in
-     * [`validate_solid_with_options`](Self::validate_solid_with_options).
-     * Returns a JSON string containing
-     * `{ errorCount, warningCount, issues: [{ severity, description }] }`.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid or validation fails.
-     * @param {number} solid
-     * @param {number} tolerance_scale
-     * @returns {any}
-     */
-    validateSolidDetailedWithOptions(solid, tolerance_scale) {
-        const ret = wasm.brepkernel_validateSolidDetailedWithOptions(this.__wbg_ptr, solid, tolerance_scale);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return takeFromExternrefTable0(ret[0]);
-    }
-    /**
-     * Validate a solid with relaxed checks suitable for assembled geometry.
-     *
-     * Operations like boolean, fillet, and shell produce geometrically
-     * correct shapes that may not have fully manifold topology (faces
-     * from different operations may not share edges). This validation
-     * skips Euler characteristic, boundary edge, non-manifold edge, and
-     * shell connectivity checks.
-     *
-     * Returns 0 if the solid passes all structural checks.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid.
-     * @param {number} solid
-     * @returns {number}
-     */
-    validateSolidRelaxed(solid) {
-        const ret = wasm.brepkernel_validateSolidRelaxed(this.__wbg_ptr, solid);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Validate a solid with configurable tolerance scaling.
-     *
-     * `tolerance_scale` multiplies geometric tolerances used for the
-     * face-normal and face-area checks. Use `10.0` to reduce false
-     * positives on NURBS faces from fillet/shell operations.
-     *
-     * Returns 0 if the solid is valid.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid.
-     * @param {number} solid
-     * @param {number} tolerance_scale
-     * @returns {number}
-     */
-    validateSolidWithOptions(solid, tolerance_scale) {
-        const ret = wasm.brepkernel_validateSolidWithOptions(this.__wbg_ptr, solid, tolerance_scale);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Compute the volume of a solid.
-     *
-     * Exact analytic and Gauss-quadrature paths run first, so the result
-     * is deflection-independent on those paths; `deflection` only controls
-     * the tessellation fallback. A body with a face the per-face routes
-     * mis-measure (a quadric wall trimmed by a NURBS curve, such as a
-     * countersink cut through a wall) is measured on its closed whole-solid
-     * mesh; if that mesh comes out open, the exact Gauss integral is
-     * returned instead, never the per-face estimate.
-     *
-     * # Errors
-     *
-     * Returns an error if the solid handle is invalid or tessellation fails,
-     * and refuses (`solid_volume: unsupported configuration: …`) when such a
-     * body's mesh is open and one of its faces is outside the exact
-     * integrator as well.
-     * @param {number} solid
-     * @param {number} deflection
-     * @returns {number}
-     */
-    volume(solid, deflection) {
-        const ret = wasm.brepkernel_volume(this.__wbg_ptr, solid, deflection);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0];
-    }
-    /**
-     * Weld shells and faces into a single solid by sewing.
-     *
-     * Accepts an array of face handles from potentially different shells.
-     * Sews all faces together into a single solid.
-     * @param {Uint32Array} face_handles
-     * @param {number} tolerance
-     * @returns {number}
-     */
-    weldShellsAndFaces(face_handles, tolerance) {
-        const ptr0 = passArray32ToWasm0(face_handles, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.brepkernel_weldShellsAndFaces(this.__wbg_ptr, ptr0, len0, tolerance);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0] >>> 0;
-    }
-    /**
-     * Compute the total arc-length of a wire.
-     * @param {number} wire
-     * @returns {number}
-     */
-    wireLength(wire) {
-        const ret = wasm.brepkernel_wireLength(this.__wbg_ptr, wire);
-        if (ret[2]) {
-            throw takeFromExternrefTable0(ret[1]);
-        }
-        return ret[0];
-    }
-}
-if (Symbol.dispose) BrepKernel.prototype[Symbol.dispose] = BrepKernel.prototype.free;
-
-/**
  * Edge polylines for wireframe rendering, exposed to JavaScript.
  *
  * Positions are flattened to `[x, y, z, x, y, z, ...]` format.
@@ -9079,14 +459,14 @@ export class KernelDocumentCopy {
     }
     /**
      * Transfer the new kernel to the caller. A second call throws.
-     * @returns {BrepKernel}
+     * @returns {RemusKernel}
      */
     takeKernel() {
         const ret = wasm.kerneldocumentcopy_takeKernel(this.__wbg_ptr);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
-        return BrepKernel.__wrap(ret[0]);
+        return RemusKernel.__wrap(ret[0]);
     }
     /**
      * Wire roots corresponding to the requested wires, including aliases.
@@ -9146,6 +526,8666 @@ export class OperationCancellationToken {
     }
 }
 if (Symbol.dispose) OperationCancellationToken.prototype[Symbol.dispose] = OperationCancellationToken.prototype.free;
+
+/**
+ * The B-Rep modeling kernel.
+ *
+ * Owns all topological state. JavaScript holds this reference and
+ * invokes methods to create, transform, and query geometry.
+ */
+export class RemusKernel {
+    static __wrap(ptr) {
+        const obj = Object.create(RemusKernel.prototype);
+        obj.__wbg_ptr = ptr;
+        RemusKernelFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        RemusKernelFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_remuskernel_free(ptr, 0);
+    }
+    /**
+     * Add hole wires to an existing face, creating a new face with the same
+     * surface but additional inner wires.
+     *
+     * Every hole wire is validated before the face is built: it must be a
+     * closed loop, lie on the face's surface within tolerance, and — on a
+     * planar face — be contained in the outer wire and disjoint from the
+     * face's other holes. The scope of these checks, and why containment is
+     * planar-only, is documented on
+     * [`holed_face`](crate::holed_face). Hole winding is not
+     * constrained; `extrude` handles either.
+     *
+     * The source face is left untouched — this returns a NEW face handle.
+     *
+     * # Errors
+     *
+     * Returns an error if any handle is invalid, or if a hole wire is open,
+     * off-surface, outside the outer wire, duplicated, or overlapping
+     * another hole.
+     * @param {number} face
+     * @param {Uint32Array} hole_wire_handles
+     * @returns {number}
+     */
+    addHolesToFace(face, hole_wire_handles) {
+        const ptr0 = passArray32ToWasm0(hole_wire_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_addHolesToFace(this.__wbg_ptr, face, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Returns a copy of the reference with a type discriminator
+     * (`"surfaceType"` or `"curveType"`) appended.
+     * @param {string} reference
+     * @param {string} discriminator
+     * @param {string} tag
+     * @returns {string}
+     */
+    addRefDiscriminator(reference, discriminator, tag) {
+        let deferred5_0;
+        let deferred5_1;
+        try {
+            const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(discriminator, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(tag, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_addRefDiscriminator(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+            var ptr4 = ret[0];
+            var len4 = ret[1];
+            if (ret[3]) {
+                ptr4 = 0; len4 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred5_0 = ptr4;
+            deferred5_1 = len4;
+            return getStringFromWasm0(ptr4, len4);
+        } finally {
+            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+        }
+    }
+    /**
+     * Get faces adjacent to a given face within a solid.
+     *
+     * Returns an array of face handles.
+     * @param {number} solid
+     * @param {number} face
+     * @returns {Uint32Array}
+     */
+    adjacentFaces(solid, face) {
+        const ret = wasm.remuskernel_adjacentFaces(this.__wbg_ptr, solid, face);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Approximate a curve through points (least-squares).
+     *
+     * Returns an edge handle.
+     * @param {Float64Array} coords
+     * @param {number} degree
+     * @param {number} num_control_points
+     * @returns {number}
+     */
+    approximateCurve(coords, degree, num_control_points) {
+        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_approximateCurve(this.__wbg_ptr, ptr0, len0, degree, num_control_points);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Approximate a curve through points using LSPIA (progressive iteration).
+     *
+     * Returns an edge handle. A fit that does not reach `tolerance` within
+     * `max_iterations` carries the iterate with the smallest maximum
+     * deviation; this binding does not report whether it converged.
+     * @param {Float64Array} coords
+     * @param {number} degree
+     * @param {number} num_control_points
+     * @param {number} tolerance
+     * @param {number} max_iterations
+     * @returns {number}
+     */
+    approximateCurveLspia(coords, degree, num_control_points, tolerance, max_iterations) {
+        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_approximateCurveLspia(this.__wbg_ptr, ptr0, len0, degree, num_control_points, tolerance, max_iterations);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Approximate a grid of points into a NURBS surface using LSPIA.
+     *
+     * Returns a face handle.
+     * @param {Float64Array} coords
+     * @param {number} rows
+     * @param {number} cols
+     * @param {number} degree_u
+     * @param {number} degree_v
+     * @param {number} num_cps_u
+     * @param {number} num_cps_v
+     * @param {number} tolerance
+     * @param {number} max_iterations
+     * @returns {number}
+     */
+    approximateSurfaceLspia(coords, rows, cols, degree_u, degree_v, num_cps_u, num_cps_v, tolerance, max_iterations) {
+        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_approximateSurfaceLspia(this.__wbg_ptr, ptr0, len0, rows, cols, degree_u, degree_v, num_cps_u, num_cps_v, tolerance, max_iterations);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Add a child component to a parent in an assembly.
+     *
+     * Returns the component ID.
+     * @param {number} assembly
+     * @param {number} parent
+     * @param {string} name
+     * @param {number} solid
+     * @param {Float64Array} matrix
+     * @returns {number}
+     */
+    assemblyAddChild(assembly, parent, name, solid, matrix) {
+        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_assemblyAddChild(this.__wbg_ptr, assembly, parent, ptr0, len0, solid, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Add a root component to an assembly.
+     *
+     * Returns the component ID.
+     * @param {number} assembly
+     * @param {string} name
+     * @param {number} solid
+     * @param {Float64Array} matrix
+     * @returns {number}
+     */
+    assemblyAddRoot(assembly, name, solid, matrix) {
+        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_assemblyAddRoot(this.__wbg_ptr, assembly, ptr0, len0, solid, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Get the bill of materials for an assembly.
+     *
+     * Returns a JSON string: `[{"name": "...", "solidIndex": n, "instanceCount": n}, ...]`.
+     * @param {number} assembly
+     * @returns {string}
+     */
+    assemblyBom(assembly) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_assemblyBom(this.__wbg_ptr, assembly);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Flatten an assembly into `[(solid, matrix), ...]`.
+     *
+     * Returns a JSON string: `[{"solid": u32, "matrix": [16 floats]}, ...]`.
+     * @param {number} assembly
+     * @returns {string}
+     */
+    assemblyFlatten(assembly) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_assemblyFlatten(this.__wbg_ptr, assembly);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Create a new empty assembly. Returns an opaque assembly handle.
+     * @param {string} name
+     * @returns {number}
+     */
+    assemblyNew(name) {
+        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_assemblyNew(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Perform a bounded exact boolean between two Compound operands.
+     *
+     * Disjoint fuse, pairwise exact intersect, and a single cut-tool
+     * distributed over target members are qualified. Fuse requiring member
+     * merges and multi-tool Cut fail closed until recursive lineage composition
+     * is available.
+     *
+     * # Errors
+     *
+     * Returns an error for invalid handles, overlapping input members, an
+     * unknown operation, or an unqualified exact configuration.
+     * @param {string} op
+     * @param {number} a
+     * @param {number} b
+     * @returns {number}
+     */
+    booleanCompoundRegions(op, a, b) {
+        const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_booleanCompoundRegions(this.__wbg_ptr, ptr0, len0, a, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Perform an exact boolean whose disconnected volumetric regions remain
+     * separate solids in a Compound.
+     *
+     * `op` accepts the same spellings as `booleanWithQuality`. The returned
+     * handle can be expanded with `getCompoundSolids`. This path is exact-only
+     * and fails closed if any region or its construction lineage is invalid.
+     * Existing single-solid `fuse`, `cut`, and `intersect` remain compatible.
+     *
+     * # Errors
+     *
+     * Returns an error for invalid handles, an unknown operation, or an
+     * unqualified exact result.
+     * @param {string} op
+     * @param {number} a
+     * @param {number} b
+     * @returns {number}
+     */
+    booleanRegions(op, a, b) {
+        const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_booleanRegions(this.__wbg_ptr, ptr0, len0, a, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Performs a boolean governed by a cooperative cancellation token.
+     *
+     * Cancellation is typed (`operation_cancelled`) and transactional: no
+     * partial topology is retained. Result quality follows
+     * `booleanWithQuality`, including the optional exact-only policy and the
+     * optional SSI work-budget caps. The final four additive arguments cap
+     * marching steps, pending branch seeds, traced segments, and branch
+     * points per direction; omitted or `null` values preserve their kernel
+     * defaults.
+     * @param {string} op
+     * @param {number} a
+     * @param {number} b
+     * @param {OperationCancellationToken} token
+     * @param {boolean | null} [exact_only]
+     * @param {number | null} [newton_iterations]
+     * @param {number | null} [subdivision_depth]
+     * @param {number | null} [march_steps]
+     * @param {number | null} [queue_size]
+     * @param {number | null} [segments]
+     * @param {number | null} [branches_per_direction]
+     * @returns {CancellableBooleanResult}
+     */
+    booleanWithCancellation(op, a, b, token, exact_only, newton_iterations, subdivision_depth, march_steps, queue_size, segments, branches_per_direction) {
+        const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        _assertClass(token, OperationCancellationToken);
+        const ret = wasm.remuskernel_booleanWithCancellation(this.__wbg_ptr, ptr0, len0, a, b, token.__wbg_ptr, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations, !isLikeNone(subdivision_depth), isLikeNone(subdivision_depth) ? 0 : subdivision_depth, !isLikeNone(march_steps), isLikeNone(march_steps) ? 0 : march_steps, !isLikeNone(queue_size), isLikeNone(queue_size) ? 0 : queue_size, !isLikeNone(segments), isLikeNone(segments) ? 0 : segments, !isLikeNone(branches_per_direction), isLikeNone(branches_per_direction) ? 0 : branches_per_direction);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Perform a boolean with disclosed result quality.
+     *
+     * `op` is `"fuse"`/`"union"`, `"cut"`/`"difference"`, or
+     * `"intersect"`/`"intersection"`. The plain `fuse`/`cut`/`intersect`
+     * bindings are exact-only since B21: a pair the exact pipeline cannot
+     * handle returns the typed `exact_only_unattainable` refusal instead of
+     * a mesh. This binding is the explicitly permissive opt-in — it reports
+     * whether the mesh (co-refinement) fallback ran (`quality:
+     * "approximate"` plus the fallback deflection, which discards analytic
+     * surface types), and `exact_only = true` turns that fallback into the
+     * same typed refusal so an exact-or-nothing caller never receives a
+     * faceted body.
+     *
+     * `newton_iterations` optionally caps the coupled Newton refinement
+     * iterations of every NURBS surface-surface intersection inside the
+     * operation (a non-negative integer; `0` disables refinement). Omitted
+     * or `null` keeps the kernel default, reproducing prior behavior.
+     * `subdivision_depth` likewise caps recursive SSI seed subdivision
+     * (`0` disables recursive splitting; omitted or `null` keeps depth 6).
+     * The additive `march_steps`, `queue_size`, `segments`, and
+     * `branches_per_direction` arguments cap the remaining SSI marcher and
+     * branch-exploration work. Omitted or `null` values retain the historical
+     * defaults (200, 100, 50, and 10 respectively).
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the op string is unknown,
+     * any work-budget argument is not a non-negative integer within the
+     * public work budget, or (under `exact_only`) the exact pipeline cannot
+     * produce the result.
+     * @param {string} op
+     * @param {number} a
+     * @param {number} b
+     * @param {boolean | null} [exact_only]
+     * @param {number | null} [newton_iterations]
+     * @param {number | null} [subdivision_depth]
+     * @param {number | null} [march_steps]
+     * @param {number | null} [queue_size]
+     * @param {number | null} [segments]
+     * @param {number | null} [branches_per_direction]
+     * @returns {BooleanQualityResult}
+     */
+    booleanWithQuality(op, a, b, exact_only, newton_iterations, subdivision_depth, march_steps, queue_size, segments, branches_per_direction) {
+        const ptr0 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_booleanWithQuality(this.__wbg_ptr, ptr0, len0, a, b, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(newton_iterations), isLikeNone(newton_iterations) ? 0 : newton_iterations, !isLikeNone(subdivision_depth), isLikeNone(subdivision_depth) ? 0 : subdivision_depth, !isLikeNone(march_steps), isLikeNone(march_steps) ? 0 : march_steps, !isLikeNone(queue_size), isLikeNone(queue_size) ? 0 : queue_size, !isLikeNone(segments), isLikeNone(segments) ? 0 : segments, !isLikeNone(branches_per_direction), isLikeNone(branches_per_direction) ? 0 : branches_per_direction);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Compute the axis-aligned bounding box of a solid.
+     *
+     * Returns `[min_x, min_y, min_z, max_x, max_y, max_z]`.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or has no vertices.
+     * @param {number} solid
+     * @returns {Float64Array}
+     */
+    boundingBox(solid) {
+        const ret = wasm.remuskernel_boundingBox(this.__wbg_ptr, solid);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Captures an entity's geometric signature as a portable reference
+     * string — the inference-tier recovery anchor. `quantum` is the
+     * tolerance-derived quantization (pass the model's linear
+     * tolerance).
+     * @param {string} kind
+     * @param {number} handle
+     * @param {number} quantum
+     * @returns {string}
+     */
+    captureSignatureRef(kind, handle, quantum) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_captureSignatureRef(this.__wbg_ptr, ptr0, len0, handle, quantum);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Compute the center of mass of a solid (uniform density).
+     *
+     * Returns `[x, y, z]`. Integrates the exact face geometry, so the
+     * result is deflection-independent; `deflection` is accepted for API
+     * compatibility and ignored.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid has zero volume or integration fails.
+     * @param {number} solid
+     * @param {number} deflection
+     * @returns {Float64Array}
+     */
+    centerOfMass(solid, deflection) {
+        const ret = wasm.remuskernel_centerOfMass(this.__wbg_ptr, solid, deflection);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Chamfer edges of a solid.
+     *
+     * `edge_handles` is an array of edge handles. Returns a solid handle.
+     *
+     * # Errors
+     *
+     * Returns an error if distance is non-positive or edges are invalid.
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} distance
+     * @returns {number}
+     */
+    chamfer(solid, edge_handles, distance) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_chamfer(this.__wbg_ptr, solid, ptr0, len0, distance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Cut corners of a 2D polygon with flat bevels.
+     *
+     * `coords` is a flat array `[x,y, x,y, ...]`.
+     * `distance` is the chamfer distance from each corner.
+     * Returns a flat array of the chamfered polygon coordinates.
+     * @param {Float64Array} coords
+     * @param {number} distance
+     * @returns {Float64Array}
+     */
+    chamfer2d(coords, distance) {
+        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_chamfer2d(this.__wbg_ptr, ptr0, len0, distance);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v2;
+    }
+    /**
+     * Chamfer edges and return exact, disclosed-approximate, or refused
+     * results as typed data.
+     *
+     * Additive twin of [`chamfer`](Self::chamfer_solid): the planar bevel
+     * first, then the walking builder, with the legacy method unchanged.
+     * `details.engine` is `planarBevel`, `walking`, or `mixed`; quality and
+     * `exactOnly` follow [`filletDetailed`](Self::fillet_detailed).
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} distance
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    chamferDetailed(solid, edge_handles, distance, exact_only) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_chamferDetailed(this.__wbg_ptr, solid, ptr0, len0, distance, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Chamfer edges with distance and angle using the v2 blend engine.
+     *
+     * Returns a new solid handle.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid or edge handles are invalid, or the
+     * blend computation fails.
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} distance
+     * @param {number} angle
+     * @returns {number}
+     */
+    chamferDistanceAngle(solid, edge_handles, distance, angle) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_chamferDistanceAngle(this.__wbg_ptr, solid, ptr0, len0, distance, angle);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Distance-angle chamfer on the v2 blend engine, as typed data.
+     *
+     * Additive twin of [`chamferDistanceAngle`](Self::chamfer_distance_angle),
+     * unchanged; `angle` is in radians, inside `(0, π/2)`. Quality,
+     * `details.engine` and `exactOnly` follow
+     * [`filletDetailed`](Self::fillet_detailed).
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} distance
+     * @param {number} angle
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    chamferDistanceAngleDetailed(solid, edge_handles, distance, angle, exact_only) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_chamferDistanceAngleDetailed(this.__wbg_ptr, solid, ptr0, len0, distance, angle, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Distance-angle chamfer with versioned face-evolution tracking data.
+     *
+     * Runs the same engine routing as
+     * [`chamferDistanceAngle`](Self::chamfer_distance_angle) — the planar
+     * bevel for planar-line selections, the walking builder otherwise — so
+     * the returned solid is the same exact B-Rep the non-evolution entry
+     * point produces. Both engines report construction history; when one
+     * cannot, the payload carries explicit unresolved source/result sets
+     * instead of inferring lineage geometrically.
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the distance is non-positive,
+     * the angle is outside `(0, π/2)`, or the chamfer fails.
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} distance
+     * @param {number} angle
+     * @returns {FaceEvolutionPayloadV1}
+     */
+    chamferDistanceAngleWithEvolution(solid, edge_handles, distance, angle) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_chamferDistanceAngleWithEvolution(this.__wbg_ptr, solid, ptr0, len0, distance, angle);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * V2 chamfer journaled as one evolution entry (kind `chamfer`).
+     * @param {number} solid
+     * @param {Uint32Array} edges
+     * @param {number} d1
+     * @param {number} d2
+     * @returns {string}
+     */
+    chamferJournaled(solid, edges, d1, d2) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray32ToWasm0(edges, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_chamferJournaled(this.__wbg_ptr, solid, ptr0, len0, d1, d2);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Chamfer edges with two distances using the v2 blend engine.
+     *
+     * Returns a new solid handle.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid or edge handles are invalid, or the
+     * blend computation fails.
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} d1
+     * @param {number} d2
+     * @returns {number}
+     */
+    chamferV2(solid, edge_handles, d1, d2) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_chamferV2(this.__wbg_ptr, solid, ptr0, len0, d1, d2);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Two-distance chamfer on the v2 blend engine, as typed data.
+     *
+     * Additive twin of [`chamferV2`](Self::chamfer_v2), unchanged. Quality,
+     * `details.engine` and `exactOnly` follow
+     * [`filletDetailed`](Self::fillet_detailed).
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} d1
+     * @param {number} d2
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    chamferV2Detailed(solid, edge_handles, d1, d2, exact_only) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_chamferV2Detailed(this.__wbg_ptr, solid, ptr0, len0, d1, d2, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Chamfer edges and return versioned face-evolution tracking data.
+     *
+     * This runs the same production engine cascade as [`chamfer`](Self::chamfer_solid):
+     * the established planar bevel first, then the walking builder for
+     * supported curved topology. The returned solid is therefore the same
+     * exact B-Rep the non-evolution entry point produces.
+     *
+     * Generated bevel/corner faces name the input faces the builder used to
+     * construct them. If an engine cannot provide construction history, the
+     * payload reports explicit unresolved source/result sets instead of
+     * inferring lineage geometrically.
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the distance is non-positive,
+     * or the chamfer fails.
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} distance
+     * @returns {FaceEvolutionPayloadV1}
+     */
+    chamferWithEvolution(solid, edge_handles, distance) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_chamferWithEvolution(this.__wbg_ptr, solid, ptr0, len0, distance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Save a snapshot of the current kernel state.
+     *
+     * Returns an opaque checkpoint ID that can be passed to
+     * `restore` or `discardCheckpoint`.
+     *
+     * The snapshot is a clone of all topology, assembly, and sketch state.
+     * Existing entity handles remain valid after restore. Opaque topology,
+     * session, GCS entity, and assembly component handles allocated after it
+     * are retired and never assigned to later entities. Legacy sketch point,
+     * arc, and circle indices retain their dense-array semantics.
+     *
+     * # Errors
+     *
+     * Returns an error if 33 snapshots are already retained (32 history
+     * snapshots plus one temporary probe) or the checkpoint handle namespace
+     * is exhausted. Discard a checkpoint to free capacity; existing
+     * checkpoints remain valid and restore stays available.
+     * @returns {number}
+     */
+    checkpoint() {
+        const ret = wasm.remuskernel_checkpoint(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Returns the number of saved checkpoints.
+     * @returns {number}
+     */
+    checkpointCount() {
+        const ret = wasm.remuskernel_checkpointCount(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Accounted live/retained topology bytes and unique NURBS payload bytes.
+     * Excludes allocator overhead, session sketches, pcurves, journals, caches
+     * and GPU data. Includes retired slots. Values are estimates, not RSS.
+     *
+     * # Errors
+     * Returns an error if the diagnostic cannot be serialized.
+     * @returns {string}
+     */
+    checkpointMemoryStats() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_checkpointMemoryStats(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Create a circular pattern of a solid around an axis.
+     *
+     * Returns a compound handle.
+     * @param {number} solid
+     * @param {number} ax
+     * @param {number} ay
+     * @param {number} az
+     * @param {number} count
+     * @returns {number}
+     */
+    circularPattern(solid, ax, ay, az, count) {
+        const ret = wasm.remuskernel_circularPattern(this.__wbg_ptr, solid, ax, ay, az, count);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Circular pattern journaled as one evolution entry (kind
+     * `circular_pattern`). Returns JSON `{"compound", "op"}`.
+     * @param {number} solid
+     * @param {number} ax
+     * @param {number} ay
+     * @param {number} az
+     * @param {number} count
+     * @returns {string}
+     */
+    circularPatternJournaled(solid, ax, ay, az, count) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_circularPatternJournaled(this.__wbg_ptr, solid, ax, ay, az, count);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Classify a point relative to a solid: inside, outside, or on boundary.
+     *
+     * Returns `"inside"`, `"outside"`, or `"boundary"`.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid.
+     * @param {number} solid
+     * @param {number} x
+     * @param {number} y
+     * @param {number} z
+     * @param {number} tolerance
+     * @returns {string}
+     */
+    classifyPoint(solid, x, y, z, tolerance) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_classifyPoint(this.__wbg_ptr, solid, x, y, z, tolerance);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Classify a point using robust dual-method (winding + ray casting).
+     *
+     * Returns "inside", "outside", or "boundary".
+     * @param {number} solid
+     * @param {number} x
+     * @param {number} y
+     * @param {number} z
+     * @param {number} tolerance
+     * @returns {string}
+     */
+    classifyPointRobust(solid, x, y, z, tolerance) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_classifyPointRobust(this.__wbg_ptr, solid, x, y, z, tolerance);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Classify a point relative to a solid using generalized winding numbers.
+     *
+     * Returns "inside", "outside", or "boundary".
+     * @param {number} solid
+     * @param {number} x
+     * @param {number} y
+     * @param {number} z
+     * @param {number} tolerance
+     * @returns {string}
+     */
+    classifyPointWinding(solid, x, y, z, tolerance) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_classifyPointWinding(this.__wbg_ptr, solid, x, y, z, tolerance);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Find common (shared) edges between two adjacent 2D polygons.
+     *
+     * Both polygons are flat arrays `[x,y, x,y, ...]`.
+     * Returns a flat array of common segment endpoints `[x1,y1, x2,y2, ...]`,
+     * or an empty array if no common segments exist.
+     * @param {Float64Array} coords_a
+     * @param {Float64Array} coords_b
+     * @returns {Float64Array}
+     */
+    commonSegment2d(coords_a, coords_b) {
+        const ptr0 = passArrayF64ToWasm0(coords_a, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(coords_b, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_commonSegment2d(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v3 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v3;
+    }
+    /**
+     * Compose (multiply) two 4x4 transformation matrices.
+     *
+     * Returns the composed matrix as a flat 16-element array (row-major).
+     * This computes `a * b`, meaning `b` is applied first, then `a`.
+     *
+     * # Errors
+     *
+     * Returns an error if either matrix doesn't have 16 elements.
+     * @param {Float64Array} matrix_a
+     * @param {Float64Array} matrix_b
+     * @returns {Float64Array}
+     */
+    composeTransforms(matrix_a, matrix_b) {
+        const ptr0 = passArrayF64ToWasm0(matrix_a, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(matrix_b, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_composeTransforms(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v3 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v3;
+    }
+    /**
+     * Cut a target solid by multiple tool solids in a single pass.
+     *
+     * This is more efficient than sequential `cut()` calls when many tools
+     * are applied to the same target — it avoids re-processing unchanged
+     * faces at each step.
+     *
+     * `tool_ids` is a JS `Uint32Array` or array of solid handles.
+     *
+     * Exact-only, like `cut`: a tool the exact engine cannot cut returns the
+     * typed `exact_only_unattainable` refusal rather than a mesh.
+     *
+     * # Errors
+     *
+     * Returns an error if any handle is invalid or the operation fails.
+     * @param {number} target
+     * @param {Uint32Array} tool_ids
+     * @returns {number}
+     */
+    compoundCut(target, tool_ids) {
+        const ptr0 = passArray32ToWasm0(tool_ids, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_compoundCut(this.__wbg_ptr, target, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Convert all analytic geometry in a solid to NURBS representation.
+     *
+     * Replaces planes, cylinders, cones, spheres, tori with NURBS surfaces and
+     * lines, circles, ellipses with NURBS curves. NURBS surfaces and curves
+     * already in the model are left untouched. Returns the number of entities
+     * converted.
+     *
+     * Converts every analytic surface and curve to a NURBS representation.
+     * Stored pcurves are dropped during conversion — callers that depend on
+     * pcurves should recompute them afterwards.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or conversion fails.
+     * @param {number} solid
+     * @returns {number}
+     */
+    convertToBspline(solid) {
+        const ret = wasm.remuskernel_convertToBspline(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Recognize and replace NURBS faces and edges with their analytic
+     * (elementary) forms wherever possible (Plane/Cylinder/Sphere/
+     * Cone/Torus surfaces; Line/Circle/Ellipse edges).
+     *
+     * Inverse of `convertToBspline`: useful after STEP/IGES import
+     * to recover analytic types from B-spline-only exports.
+     * Returns the total number of faces and edges converted.
+     *
+     * # Errors
+     *
+     * Returns an error if topology lookups fail.
+     * @param {number} solid
+     * @returns {number}
+     */
+    convertToElementary(solid) {
+        const ret = wasm.remuskernel_convertToElementary(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Build a convex hull solid from a point cloud.
+     *
+     * Uses the Quickhull algorithm for 3D point sets.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if fewer than 4 non-coplanar points are provided.
+     * @param {Float64Array} coords
+     * @returns {number}
+     */
+    convexHull(coords) {
+        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_convexHull(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Copy a solid and apply a 4×4 row-major affine transform in one pass.
+     *
+     * Equivalent to `copySolid` + `transformSolid` but performs both in a
+     * single topology traversal, avoiding redundant NURBS clones.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid, the matrix doesn't
+     * have 16 elements, or the matrix is singular.
+     * @param {number} solid
+     * @param {Float64Array} matrix
+     * @returns {number}
+     */
+    copyAndTransformSolid(solid, matrix) {
+        const ptr0 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_copyAndTransformSolid(this.__wbg_ptr, solid, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Copy a solid through an affine transform and return the exact,
+     * disclosed-approximate, or refused result as typed data.
+     *
+     * Additive twin of
+     * [`copyAndTransformSolid`](Self::copy_and_transform_solid): the same
+     * single-pass copy engine and matrix contract, with the legacy
+     * method's return and errors unchanged. On success `value` is the new
+     * solid handle; quality and `exactOnly` follow
+     * [`transformDetailed`](Self::transform_detailed).
+     * @param {number} solid
+     * @param {Float64Array} matrix
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    copyAndTransformSolidDetailed(solid, matrix, exact_only) {
+        const ptr0 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_copyAndTransformSolidDetailed(this.__wbg_ptr, solid, ptr0, len0, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Copy selected solid, sheet and wire roots into a fresh kernel.
+     *
+     * Retains exact document data and selected lineage without JSON transport,
+     * omitting unrelated live entities and retired slots. Root order and
+     * duplicate aliases are preserved. `maxEntities`, when supplied, can only
+     * lower the native default entity/reference budget; it is not a byte cap.
+     *
+     * The source and its checkpoints stay intact. The returned kernel has no
+     * checkpoints, sketches, assemblies or prepared moves. Rebuild selections
+     * in that owner from the returned roots. Numeric handles remain scoped to
+     * their kernel; equal numbers in two kernels do not imply equal identity.
+     * Release the old owner and its wrappers explicitly to reclaim its data.
+     * WASM linear memory need not shrink, and both documents coexist while
+     * copying. This does not validate geometric correctness.
+     *
+     * Direct-only: a JSON batch cannot return ownership of another kernel.
+     * @param {Uint32Array} solids
+     * @param {Uint32Array} sheets
+     * @param {Uint32Array} wires
+     * @param {number | null} [max_entities]
+     * @returns {KernelDocumentCopy}
+     */
+    copyDocument(solids, sheets, wires, max_entities) {
+        const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray32ToWasm0(sheets, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArray32ToWasm0(wires, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_copyDocument(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return KernelDocumentCopy.__wrap(ret[0]);
+    }
+    /**
+     * Deep copy a face, returning a new independent face handle.
+     *
+     * The copy shares no sub-entities with the original, so translating it
+     * (to form a pocket or boss profile) does not mutate the donor solid.
+     *
+     * # Errors
+     *
+     * Returns an error if the face handle is invalid.
+     * @param {number} face
+     * @returns {number}
+     */
+    copyFace(face) {
+        const ret = wasm.remuskernel_copyFace(this.__wbg_ptr, face);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Deep copy a solid, returning a new independent solid handle.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid.
+     * @param {number} solid
+     * @returns {number}
+     */
+    copySolid(solid) {
+        const ret = wasm.remuskernel_copySolid(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Deep copy a wire, returning a new independent wire handle.
+     *
+     * # Errors
+     *
+     * Returns an error if the wire handle is invalid.
+     * @param {number} wire
+     * @returns {number}
+     */
+    copyWire(wire) {
+        const ret = wasm.remuskernel_copyWire(this.__wbg_ptr, wire);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Elevate the degree of an edge's NURBS curve.
+     *
+     * Returns a new edge handle.
+     * @param {number} edge
+     * @param {number} elevate_by
+     * @returns {number}
+     */
+    curveDegreeElevate(edge, elevate_by) {
+        const ret = wasm.remuskernel_curveDegreeElevate(this.__wbg_ptr, edge, elevate_by);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Insert a knot into an edge's NURBS curve.
+     *
+     * Returns a new edge handle with the refined curve.
+     * @param {number} edge
+     * @param {number} knot
+     * @param {number} times
+     * @returns {number}
+     */
+    curveKnotInsert(edge, knot, times) {
+        const ret = wasm.remuskernel_curveKnotInsert(this.__wbg_ptr, edge, knot, times);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Remove a knot from an edge's NURBS curve.
+     *
+     * Returns a new edge handle with the simplified curve.
+     * @param {number} edge
+     * @param {number} knot
+     * @param {number} tolerance
+     * @returns {number}
+     */
+    curveKnotRemove(edge, knot, tolerance) {
+        const ret = wasm.remuskernel_curveKnotRemove(this.__wbg_ptr, edge, knot, tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Split an edge's NURBS curve at a parameter value.
+     *
+     * Returns two edge handles as `[u32; 2]`.
+     * @param {number} edge
+     * @param {number} u
+     * @returns {Uint32Array}
+     */
+    curveSplit(edge, u) {
+        const ret = wasm.remuskernel_curveSplit(this.__wbg_ptr, edge, u);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Cut (subtract) solid `b` from solid `a`.
+     *
+     * Returns a new solid handle (`u32`).
+     *
+     * Exact-only: when the exact engine cannot handle the pair this returns a
+     * typed refusal (category `quality_refused`, `kernelCode`
+     * `exact_only_unattainable`) instead of silently handing back a mesh. To
+     * accept an approximate result, call `booleanWithQuality` without
+     * `exactOnly`; it discloses the quality and deflection it used.
+     *
+     * # Errors
+     *
+     * Returns an error if either solid handle is invalid or the operation
+     * produces an empty or non-manifold result.
+     * @param {number} a
+     * @param {number} b
+     * @returns {number}
+     */
+    cut(a, b) {
+        const ret = wasm.remuskernel_cut(this.__wbg_ptr, a, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Cut solid `b` from solid `a` and return success or failure as typed
+     * data.
+     *
+     * Additive twin of [`cut`](Self::cut); the legacy method keeps its
+     * existing return value and thrown-error behavior.
+     * @param {number} a
+     * @param {number} b
+     * @returns {SolidOperationDetailedResult}
+     */
+    cutDetailed(a, b) {
+        const ret = wasm.remuskernel_cutDetailed(this.__wbg_ptr, a, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Cut gear teeth along the whole length of a solid's cylindrical face,
+     * as typed data: external teeth on a boss, internal teeth in a bore
+     * (see the module docs for the fields).
+     *
+     * The input solid is left in place and a new solid is returned. Never
+     * throws on a refusal: the envelope's `status` is `"error"` with a
+     * `gear:<reason>` code and the session unchanged.
+     * @param {number} solid
+     * @param {number} face
+     * @param {string} spec
+     * @returns {SolidOperationDetailedResult}
+     */
+    cutGearTeethDetailed(solid, face, spec) {
+        const ptr0 = passStringToWasm0(spec, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_cutGearTeethDetailed(this.__wbg_ptr, solid, face, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Cut solid `b` from `a` with journaled construction history.
+     * @param {number} a
+     * @param {number} b
+     * @returns {string}
+     */
+    cutJournaled(a, b) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_cutJournaled(this.__wbg_ptr, a, b);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Cut with full entity history; see `fuseWithEntityEvolution`.
+     * @param {number} a
+     * @param {number} b
+     * @returns {string}
+     */
+    cutWithEntityEvolution(a, b) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_cutWithEntityEvolution(this.__wbg_ptr, a, b);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Cut (subtract) solid `b` from solid `a` and return evolution tracking data.
+     *
+     * Returns a JSON string: `{"solid": <u32>, "evolution": {...}}`.
+     *
+     * # Errors
+     *
+     * Returns an error if either solid handle is invalid or the operation
+     * produces an empty or non-manifold result.
+     * @param {number} a
+     * @param {number} b
+     * @returns {any}
+     */
+    cutWithEvolution(a, b) {
+        const ret = wasm.remuskernel_cutWithEvolution(this.__wbg_ptr, a, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Cut (subtract) solid `b` from solid `a` with post-processing options.
+     *
+     * See [`fuse_with_options`](Self::fuse_with_options) for the
+     * `unifyFaces` semantics.
+     *
+     * # Errors
+     *
+     * Returns an error if either solid handle is invalid or the operation
+     * produces an empty or non-manifold result.
+     * @param {number} a
+     * @param {number} b
+     * @param {boolean | null} [unify_faces]
+     * @returns {number}
+     */
+    cutWithOptions(a, b, unify_faces) {
+        const ret = wasm.remuskernel_cutWithOptions(this.__wbg_ptr, a, b, isLikeNone(unify_faces) ? 0xFFFFFF : unify_faces ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Remove specified faces from a solid (defeaturing).
+     *
+     * `face_handles` is an array of face handles to remove.
+     * Returns a new solid handle.
+     * @param {number} solid
+     * @param {Uint32Array} face_handles
+     * @returns {number}
+     */
+    defeature(solid, face_handles) {
+        const ptr0 = passArray32ToWasm0(face_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_defeature(this.__wbg_ptr, solid, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Remove selected feature faces with construction history.
+     *
+     * Returns JSON `{"solid", "op"}`. Capping retains copied boundary identities
+     * and records consumed boundaries as deleted. Unqualified reconstructed
+     * boundaries remain unresolved. Batch uses `solid` and `faces`.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @returns {string}
+     */
+    defeatureJournaled(solid, faces) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_defeatureJournaled(this.__wbg_ptr, solid, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Retire a solid handle and its unshared topology subtree.
+     *
+     * The handle becomes permanently invalid. This does not compact the
+     * kernel or reclaim arena memory; future entities receive new handles so
+     * a stale handle can never alias a different solid.
+     *
+     * # Errors
+     *
+     * Returns an error if `solid` is not a live solid handle, if a live
+     * compound, comp-solid, or assembly still references it, or if its
+     * topology tree contains an invalid reference.
+     * @param {number} solid
+     */
+    deleteSolid(solid) {
+        const ret = wasm.remuskernel_deleteSolid(this.__wbg_ptr, solid);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Reconstruct one first-class sheet body from a version 4 or 5 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the buffer is malformed, does not contain exactly
+     * one sheet root, or reconstruction fails.
+     * @param {Uint8Array} data
+     * @returns {number}
+     */
+    deserializeSheet(data) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_deserializeSheet(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Reconstruct standalone sheet roots from a version 4 or 5 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the buffer is malformed, contains another root
+     * class, or reconstruction fails.
+     * @param {Uint8Array} data
+     * @returns {Uint32Array}
+     */
+    deserializeSheets(data) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_deserializeSheets(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v2;
+    }
+    /**
+     * Reconstruct one solid from a version 1 through 5 single-root buffer.
+     *
+     * # Errors
+     *
+     * Returns an error if the buffer is malformed or reconstruction fails.
+     * @param {Uint8Array} data
+     * @returns {number}
+     */
+    deserializeSolid(data) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_deserializeSolid(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Reconstruct solid roots from a version 1 through 5 arena document.
+     *
+     * Every restored entity receives a fresh kernel handle. Documents with
+     * Sheet, wire, and compound roots must be loaded through their dedicated
+     * binding or the native Rust document API.
+     *
+     * # Errors
+     *
+     * Returns an error if the buffer is malformed, exceeds import limits,
+     * contains a non-solid root, or reconstruction fails.
+     * @param {Uint8Array} data
+     * @returns {Uint32Array}
+     */
+    deserializeSolids(data) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_deserializeSolids(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v2;
+    }
+    /**
+     * Reconstruct one first-class wire body from a version 5 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the buffer is malformed, does not contain exactly
+     * one wire root, or reconstruction fails.
+     * @param {Uint8Array} data
+     * @returns {number}
+     */
+    deserializeWire(data) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_deserializeWire(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Reconstruct standalone wire roots from a version 5 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the buffer is malformed, contains non-wire roots,
+     * or reconstruction fails.
+     * @param {Uint8Array} data
+     * @returns {Uint32Array}
+     */
+    deserializeWires(data) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_deserializeWires(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v2;
+    }
+    /**
+     * Detect surface-level coincident face pairs between two solids
+     * without performing a boolean operation.
+     *
+     * Useful for warning users about same-domain configurations
+     * (face stacks, coaxial cylinders, concentric spheres) before a
+     * boolean. Returns a JSON array string of objects:
+     * `[{"faceA": <u32>, "faceB": <u32>, "sameOrientation": <bool>, "aabbOverlap": <bool>}, ...]`.
+     *
+     * `sameOrientation` is `true` when the surface normals point the
+     * same way at corresponding parametric points (e.g., two coplanar
+     * faces with the same `+z` normal). `aabbOverlap` filters pairs
+     * that are same-domain on the surface but geometrically disjoint.
+     *
+     * # Errors
+     *
+     * Returns an error if either solid handle is invalid or any face /
+     * edge / vertex lookup fails internally.
+     * @param {number} a
+     * @param {number} b
+     * @returns {string}
+     */
+    detectCoincidentFaces(a, b) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_detectCoincidentFaces(this.__wbg_ptr, a, b);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Detect small features (faces below an area threshold).
+     *
+     * Returns an array of face handles.
+     * @param {number} solid
+     * @param {number} area_threshold
+     * @param {number} deflection
+     * @returns {Uint32Array}
+     */
+    detectSmallFeatures(solid, area_threshold, deflection) {
+        const ret = wasm.remuskernel_detectSmallFeatures(this.__wbg_ptr, solid, area_threshold, deflection);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Discard a checkpoint and all checkpoints after it, freeing their memory.
+     *
+     * # Errors
+     *
+     * Returns an error if `checkpoint_id` does not refer to a valid checkpoint.
+     * @param {number} checkpoint_id
+     */
+    discardCheckpoint(checkpoint_id) {
+        const ret = wasm.remuskernel_discardCheckpoint(this.__wbg_ptr, checkpoint_id);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Apply draft angle to faces of a solid.
+     *
+     * `face_handles` is an array of face handles to draft.
+     * `angle_degrees` is in degrees, matching the batch `draft` op.
+     * Returns a solid handle.
+     *
+     * # Errors
+     *
+     * Returns an error if angle is zero or faces are invalid.
+     * @param {number} solid
+     * @param {Uint32Array} face_handles
+     * @param {number} pull_x
+     * @param {number} pull_y
+     * @param {number} pull_z
+     * @param {number} neutral_x
+     * @param {number} neutral_y
+     * @param {number} neutral_z
+     * @param {number} angle_degrees
+     * @returns {number}
+     */
+    draft(solid, face_handles, pull_x, pull_y, pull_z, neutral_x, neutral_y, neutral_z, angle_degrees) {
+        const ptr0 = passArray32ToWasm0(face_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_draft(this.__wbg_ptr, solid, ptr0, len0, pull_x, pull_y, pull_z, neutral_x, neutral_y, neutral_z, angle_degrees);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Draft selected planar faces with construction history.
+     *
+     * `pull_direction` and `neutral_point` each have three components.
+     * The angle is in degrees for both direct and batch calls. Batch uses
+     * `faces`, `pullDirection`, `neutralPoint`, and `angleDegrees`.
+     * Returns JSON `{"solid", "op"}`. Boundary history requires a unique
+     * complete incidence correspondence; ambiguous boundaries stay unresolved.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {Float64Array} pull_direction
+     * @param {Float64Array} neutral_point
+     * @param {number} angle_degrees
+     * @returns {string}
+     */
+    draftJournaled(solid, faces, pull_direction, neutral_point, angle_degrees) {
+        let deferred5_0;
+        let deferred5_1;
+        try {
+            const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passArrayF64ToWasm0(pull_direction, wasm.__wbindgen_malloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passArrayF64ToWasm0(neutral_point, wasm.__wbindgen_malloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_draftJournaled(this.__wbg_ptr, solid, ptr0, len0, ptr1, len1, ptr2, len2, angle_degrees);
+            var ptr4 = ret[0];
+            var len4 = ret[1];
+            if (ret[3]) {
+                ptr4 = 0; len4 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred5_0 = ptr4;
+            deferred5_1 = len4;
+            return getStringFromWasm0(ptr4, len4);
+        } finally {
+            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+        }
+    }
+    /**
+     * Drain up to 4096 phase and boolean-route events as JSON. Route
+     * observations have zero duration and names beginning `boolean.route.`.
+     *
+     * # Errors
+     * Returns an error if events cannot be serialized.
+     * @returns {string}
+     */
+    drainPerformanceTrace() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_drainPerformanceTrace(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Classify one manifold edge of a solid as convex, concave, tangent,
+     * or unknown.
+     *
+     * Returns a JSON string `{ relation, dihedralAngle }` (see the
+     * `EdgeConvexityResult` TypeScript type). `relation` is the kernel's
+     * own quadrant-probe verdict and retires the consumer adapter's
+     * `radialSense` inference with its `'convex'` fallback. `dihedralAngle`
+     * is the signed angle between the two effective outward normals in
+     * radians — positive for convex, negative for concave, near zero for
+     * tangent — and `null` when the relation is `unknown` or the angle is
+     * unavailable. Unknown never guesses: self-seams, non-manifold edges,
+     * degenerate normals, and probes above 25 % of the local edge/face
+     * scale report `unknown` with a `null` angle.
+     *
+     * `probe` is an optional override in model units. Omit it to use the
+     * per-edge default `0.05 * local_scale`, where `local_scale` is
+     * `max(min(face spans), edge span)`; the default keeps the probe local
+     * from 1e-3 through 1e3. A zero, negative, or non-finite probe is a
+     * typed `InvalidInput` refusal. A foreign or deleted solid or edge
+     * handle, or a live edge that belongs to a different solid, is a typed
+     * refusal naming the handle.
+     *
+     * For a whole solid, prefer [`solidEdgeRelations`](Self::solid_edge_relations_binding):
+     * a per-edge loop over this call rebuilds adjacency per edge (the
+     * quadratic trap on a 2 000-edge import), while the bulk call builds it
+     * once.
+     *
+     * # Errors
+     *
+     * Returns an error for a foreign or deleted handle, an invalid probe,
+     * or a topology or classification failure.
+     * @param {number} solid
+     * @param {number} edge
+     * @param {number | null} [probe]
+     * @returns {any}
+     */
+    edgeConvexity(solid, edge, probe) {
+        const ret = wasm.remuskernel_edgeConvexity(this.__wbg_ptr, solid, edge, !isLikeNone(probe), isLikeNone(probe) ? 0 : probe);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Compute the length of an edge.
+     *
+     * # Errors
+     *
+     * Returns an error if the edge handle is invalid.
+     * @param {number} edge
+     * @returns {number}
+     */
+    edgeLength(edge) {
+        const ret = wasm.remuskernel_edgeLength(this.__wbg_ptr, edge);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
+     * Get the edge-to-face adjacency map for a solid.
+     *
+     * Returns a JSON string: `{"edgeId": [faceId, ...], ...}`.
+     * @param {number} solid
+     * @returns {string}
+     */
+    edgeToFaceMap(solid) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_edgeToFaceMap(this.__wbg_ptr, solid);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Evaluate a point on an edge curve at parameter `t`.
+     *
+     * Returns `[x, y, z]`.
+     * @param {number} edge
+     * @param {number} t
+     * @returns {Float64Array}
+     */
+    evaluateEdgeCurve(edge, t) {
+        const ret = wasm.remuskernel_evaluateEdgeCurve(this.__wbg_ptr, edge, t);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Evaluate a point and tangent on an edge curve at parameter `t`.
+     *
+     * Returns `[px, py, pz, tx, ty, tz]`.
+     * @param {number} edge
+     * @param {number} t
+     * @returns {Float64Array}
+     */
+    evaluateEdgeCurveD1(edge, t) {
+        const ret = wasm.remuskernel_evaluateEdgeCurveD1(this.__wbg_ptr, edge, t);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Evaluate a point on a face surface at (u, v).
+     *
+     * Returns `[x, y, z]`.
+     * @param {number} face
+     * @param {number} u
+     * @param {number} v
+     * @returns {Float64Array}
+     */
+    evaluateSurface(face, u, v) {
+        const ret = wasm.remuskernel_evaluateSurface(this.__wbg_ptr, face, u, v);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Evaluate the outward surface normal at (u, v) on a face.
+     *
+     * Returns `[nx, ny, nz]`, oriented by the face's `reversed` flag —
+     * boolean and blend assembly routinely emit reversed faces, and the raw
+     * surface normal points inward on those.
+     * @param {number} face
+     * @param {number} u
+     * @param {number} v
+     * @returns {Float64Array}
+     */
+    evaluateSurfaceNormal(face, u, v) {
+        const ret = wasm.remuskernel_evaluateSurfaceNormal(this.__wbg_ptr, face, u, v);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Execute a batch of operations, crossing the JS/WASM boundary once.
+     *
+     * Accepts a JSON string containing an array of operation objects:
+     * ```json
+     * [
+     *   {"op": "makeBox", "args": {"width": 2.0, "height": 2.0, "depth": 2.0}},
+     *   {"op": "fuse", "args": {"solidA": 0, "solidB": 1}},
+     *   {"op": "volume", "args": {"solid": 2, "deflection": 0.1}}
+     * ]
+     * ```
+     *
+     * Returns a JSON string with an array of results:
+     * ```json
+     * [
+     *   {"ok": 0},
+     *   {"ok": 2},
+     *   {"error": "invalid solid id"}
+     * ]
+     * ```
+     *
+     * Operations are executed sequentially; an error in one does not
+     * prevent execution of subsequent operations.
+     * @param {string} json
+     * @returns {string}
+     */
+    executeBatch(json) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_executeBatch(this.__wbg_ptr, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Execute a batch and return stable machine-readable error codes.
+     *
+     * The returned JSON string contains the same bare result array and
+     * success envelopes as [`executeBatch`](Self::execute_batch). Error
+     * envelopes are additive structured objects with `code`, the unchanged
+     * human-readable `message`, and an always-present `details` object.
+     * Existing `executeBatch` behavior is unchanged.
+     * @param {string} json
+     * @returns {string}
+     */
+    executeBatchV2(json) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_executeBatchV2(this.__wbg_ptr, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Extrude a planar face along a direction vector to create a solid.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if the face handle is invalid or the extrusion fails.
+     * @param {number} face
+     * @param {number} dir_x
+     * @param {number} dir_y
+     * @param {number} dir_z
+     * @param {number} distance
+     * @returns {number}
+     */
+    extrude(face, dir_x, dir_y, dir_z, distance) {
+        const ret = wasm.remuskernel_extrude(this.__wbg_ptr, face, dir_x, dir_y, dir_z, distance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Extrude a planar face along a direction vector, as typed data.
+     *
+     * Additive twin of [`extrude`](Self::extrude_face): the same validation
+     * order (finite `dir_x`, `dir_y`, `dir_z`, `distance`, then the face
+     * handle) and the same engine for exact-supported profiles. Closed
+     * profiles needing line chords refuse with `exact_only_unattainable`;
+     * the legacy method is unchanged. Success has `details.quality: "exact"`.
+     * @param {number} face
+     * @param {number} dir_x
+     * @param {number} dir_y
+     * @param {number} dir_z
+     * @param {number} distance
+     * @returns {SolidOperationDetailedResult}
+     */
+    extrudeDetailed(face, dir_x, dir_y, dir_z, distance) {
+        const ret = wasm.remuskernel_extrudeDetailed(this.__wbg_ptr, face, dir_x, dir_y, dir_z, distance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Extrusion journaled as one construction-derived face, edge and vertex
+     * evolution entry (kind `extrude`).
+     *
+     * Returns JSON `{"solid", "op", "evolution"}`. `evolution` lists every
+     * result face, edge and vertex as `modified` or `generated` (both caps
+     * `modified` from the profile face, every side wall `generated` from
+     * it, shared boundary entities `modified` into themselves, translated
+     * copies `modified` from their source, longitudinal edges `generated`
+     * from the profile face), plus a `completeness` report (`accounted`,
+     * `resolved`, and per-kind `omitted`/`phantom`/`unresolved` lists)
+     * checked against the actual result. Nothing is deleted; the qualified
+     * profile classes leave nothing unresolved.
+     * @param {number} face
+     * @param {number} dir_x
+     * @param {number} dir_y
+     * @param {number} dir_z
+     * @param {number} distance
+     * @returns {string}
+     */
+    extrudeJournaled(face, dir_x, dir_y, dir_z, distance) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_extrudeJournaled(this.__wbg_ptr, face, dir_x, dir_y, dir_z, distance);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Compute the area of a single face.
+     *
+     * Planar faces with line/circle/ellipse/parabola/hyperbola/recognized-
+     * NURBS boundaries and all analytic curved faces integrate their exact
+     * geometry, deflection-independent; `deflection` only controls the
+     * NURBS-face tessellation and the sampled planar fallback.
+     *
+     * # Errors
+     *
+     * Returns an error if the face handle is invalid or tessellation fails.
+     * @param {number} face
+     * @param {number} deflection
+     * @returns {number}
+     */
+    faceArea(face, deflection) {
+        const ret = wasm.remuskernel_faceArea(this.__wbg_ptr, face, deflection);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
+     * Exact content digests of faces, one 32-character hex string per face
+     * handle, in input order.
+     *
+     * Equal digests mean the faces have the same content: reversal, support
+     * surface, and complete boundary (curves, trims, tolerances, vertex
+     * positions, pcurves, and the relative arena order of the face's edges,
+     * which the face mesher reads). Handles do not enter, so a consumer can
+     * recognise faces an edit left untouched and keep what it derived from
+     * them. Reals are compared by their bits; there is no tolerance. The
+     * digest is a 128-bit hash, not a cryptographic one.
+     *
+     * # Errors
+     *
+     * Returns an error if a face handle is invalid.
+     * @param {Uint32Array} faces
+     * @returns {string[]}
+     */
+    faceContentDigests(faces) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_faceContentDigests(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v2;
+    }
+    /**
+     * Build an exact standalone blend sheet between two disjoint planar faces.
+     * @param {number} first_face
+     * @param {number} second_face
+     * @param {number} radius
+     * @returns {number}
+     */
+    faceFaceBlend(first_face, second_face, radius) {
+        const ret = wasm.remuskernel_faceFaceBlend(this.__wbg_ptr, first_face, second_face, radius);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Build a face-face blend sheet and verify one prescribed contact line.
+     * @param {number} first_face
+     * @param {number} second_face
+     * @param {number} radius
+     * @param {number} hold_face
+     * @param {number} start_x
+     * @param {number} start_y
+     * @param {number} start_z
+     * @param {number} end_x
+     * @param {number} end_y
+     * @param {number} end_z
+     * @returns {number}
+     */
+    faceFaceBlendWithHoldLine(first_face, second_face, radius, hold_face, start_x, start_y, start_z, end_x, end_y, end_z) {
+        const ret = wasm.remuskernel_faceFaceBlendWithHoldLine(this.__wbg_ptr, first_face, second_face, radius, hold_face, start_x, start_y, start_z, end_x, end_y, end_z);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Material side of one analytic face: `"outward"` (boss-like) or
+     * `"inward"` (bore- or pocket-like).
+     *
+     * The verdict compares the face's effective outward normal against its
+     * radial direction at a boundary sample — no probe, no classification
+     * call. Cylinder and cone walls read against their axis-perpendicular
+     * radial, spheres against the centre radial, tori against the
+     * tube-centre radial. Planes and NURBS have no axis or centre and are a
+     * typed unsupported refusal.
+     *
+     * Edge convexity and face material sense are different questions: a
+     * bore's top rim is convex while its wall is inward. Report both;
+     * never collapse them into one value.
+     *
+     * # Errors
+     *
+     * Returns an error for a foreign or deleted handle, for a face that is
+     * not part of the solid, or a typed unsupported refusal for plane and
+     * NURBS faces.
+     * @param {number} solid
+     * @param {number} face
+     * @returns {string}
+     */
+    faceMaterialSense(solid, face) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_faceMaterialSense(this.__wbg_ptr, solid, face);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Compute the perimeter of a face.
+     *
+     * # Errors
+     *
+     * Returns an error if the face handle is invalid.
+     * @param {number} face
+     * @returns {number}
+     */
+    facePerimeter(face) {
+        const ret = wasm.remuskernel_facePerimeter(this.__wbg_ptr, face);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
+     * Get the wires (outer + inner) of a face.
+     *
+     * Returns an array of wire handles.
+     * @param {number} face
+     * @returns {Uint32Array}
+     */
+    faceWires(face) {
+        const ret = wasm.remuskernel_faceWires(this.__wbg_ptr, face);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Fill a 4-sided boundary with a Coons patch surface.
+     *
+     * `boundary_coords` is flat `[x,y,z, ...]` for all 4 curves concatenated.
+     * `curve_lengths` is `[n0, n1, n2, n3]` — number of points per curve.
+     * Returns a face handle.
+     * @param {Float64Array} boundary_coords
+     * @param {Uint32Array} curve_lengths
+     * @returns {number}
+     */
+    fillCoonsPatch(boundary_coords, curve_lengths) {
+        const ptr0 = passArrayF64ToWasm0(boundary_coords, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray32ToWasm0(curve_lengths, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_fillCoonsPatch(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Fillet (round) edges of a solid.
+     *
+     * `edge_handles` is an array of edge handles. Returns a solid handle.
+     *
+     * # Errors
+     *
+     * Returns an error if radius is non-positive or edges are invalid.
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} radius
+     * @returns {number}
+     */
+    fillet(solid, edge_handles, radius) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_fillet(this.__wbg_ptr, solid, ptr0, len0, radius);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Round corners of a 2D polygon by inserting arc-approximation vertices.
+     *
+     * `coords` is a flat array `[x,y, x,y, ...]`.
+     * `radius` is the fillet radius.
+     * Returns a flat array of the filleted polygon coordinates.
+     * @param {Float64Array} coords
+     * @param {number} radius
+     * @returns {Float64Array}
+     */
+    fillet2d(coords, radius) {
+        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_fillet2d(this.__wbg_ptr, ptr0, len0, radius);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v2;
+    }
+    /**
+     * Fillet edges and return exact, disclosed-approximate, or refused
+     * results as typed data.
+     *
+     * Additive twin of [`fillet`](Self::fillet_solid): the same engine
+     * cascade and whole-selection rule, with the legacy method's return
+     * value and thrown errors unchanged. On success `details.engine` names
+     * the blend engine (`walking`, `rollingBall`, or `mixed`). A result
+     * that introduces a NURBS face — a sampled blend wall with no closed
+     * form — reports `quality: "approximate"` and lists those faces under
+     * `approximateFaces`. With `exactOnly: true` such a result is rolled
+     * back and refused (`quality_refused` / `exact_only_unattainable`).
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} radius
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    filletDetailed(solid, edge_handles, radius, exact_only) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_filletDetailed(this.__wbg_ptr, solid, ptr0, len0, radius, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * V2 fillet journaled as one evolution entry (kind `fillet`).
+     *
+     * Returns JSON `{"solid", "op", "isPartial", "failedEdges"}`.
+     * @param {number} solid
+     * @param {Uint32Array} edges
+     * @param {number} radius
+     * @returns {string}
+     */
+    filletJournaled(solid, edges, radius) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray32ToWasm0(edges, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_filletJournaled(this.__wbg_ptr, solid, ptr0, len0, radius);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Fillet edges using the v2 walking-based blend engine.
+     *
+     * Returns a new solid handle. The engine runs transactionally and the
+     * result is validated before commit; failures carry the stable
+     * machine-readable code prefix from `blend_failure_code`. The current
+     * overflow policy stops at a support-face cliff with
+     * `cliff-encountered`; rollover onto the next face is not yet supported.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid or edge handles are invalid, or the
+     * blend computation fails.
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} radius
+     * @returns {number}
+     */
+    filletV2(solid, edge_handles, radius) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_filletV2(this.__wbg_ptr, solid, ptr0, len0, radius);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Fillet edges on the v2 walking engine alone and return exact,
+     * disclosed-approximate, or refused results as typed data.
+     *
+     * Additive twin of [`filletV2`](Self::fillet_v2), unchanged. Quality,
+     * `details.engine` and `exactOnly` follow
+     * [`filletDetailed`](Self::fillet_detailed).
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} radius
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    filletV2Detailed(solid, edge_handles, radius, exact_only) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_filletV2Detailed(this.__wbg_ptr, solid, ptr0, len0, radius, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Apply variable-radius fillets to edges.
+     *
+     * `json` is a JSON string: `[{"edge": u32, "law": "constant"|"linear"|"scurve", "start": f64, "end": f64, "startSetback": f64, "endSetback": f64}]`
+     *
+     * Also accepts brepjs-style fields: `startRadius`/`endRadius` as aliases for `start`/`end`.
+     * When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
+     * Missing or `null` numeric fields retain their defaults. Every other supplied
+     * numeric field must be a number, including aliases shadowed by `start`/`end`.
+     * A supplied `law` must be `"constant"`, `"linear"`, or `"scurve"`.
+     *
+     * Returns a new solid handle.
+     *
+     * The call is transactional and validated: every named edge must carry a
+     * blend, the result must validate against the input, and any failure
+     * leaves the topology untouched — the error message carries the stable
+     * machine-readable prefix from `blend_failure_code` (e.g.
+     * `edges-not-blended: …`).
+     * @param {number} solid
+     * @param {string} json
+     * @returns {number}
+     */
+    filletVariable(solid, json) {
+        const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_filletVariable(this.__wbg_ptr, solid, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Variable-radius fillet, as typed data.
+     *
+     * Additive twin of [`filletVariable`](Self::fillet_variable), unchanged:
+     * `json` is the same spec array. That engine carries no engine tag, so
+     * success details hold `quality` (and `approximateFaces`) but no
+     * `engine`; `exactOnly` follows
+     * [`filletDetailed`](Self::fillet_detailed). Malformed JSON is an
+     * `invalid_argument` refusal, not a thrown error.
+     * @param {number} solid
+     * @param {string} json
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    filletVariableDetailed(solid, json, exact_only) {
+        const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_filletVariableDetailed(this.__wbg_ptr, solid, ptr0, len0, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Apply a constant-radius fillet and return face-evolution tracking data.
+     *
+     * Returns a validated [`FaceEvolutionPayloadV1`] object. Blend faces
+     * appear under `generated` and surviving faces under `modified`.
+     *
+     * A blend band is listed under **both** faces its rounded edge separated.
+     * It was built between them, so both are its origin; `generated` is an
+     * adjacency record, not an identity, and naming two sources for one new
+     * face is the normal case. A band is never listed under `modified` — it is
+     * not any input face cut back, and a selection stored against one of those
+     * faces must not acquire it.
+     *
+     * The payload exposes construction history only. If an engine cannot
+     * report history, every source/result is explicit under the unresolved
+     * sets with `provenance: "unavailable"`; the binding never infers lineage
+     * from proximity, traversal order, or approximate surface matching.
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the radius is non-positive, or
+     * the fillet fails.
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} radius
+     * @returns {FaceEvolutionPayloadV1}
+     */
+    filletWithEvolution(solid, edge_handles, radius) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_filletWithEvolution(this.__wbg_ptr, solid, ptr0, len0, radius);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Fits approximate cubic carrier geometry with explicit position/derivative tolerances.
+     * @param {number} edge
+     * @param {string} options_json
+     * @returns {string}
+     */
+    fitCubicCurve(edge, options_json) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_fitCubicCurve(this.__wbg_ptr, edge, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Fix face orientations to ensure consistent outward normals.
+     *
+     * Returns the number of faces fixed.
+     * @param {number} solid
+     * @returns {number}
+     */
+    fixFaceOrientations(solid) {
+        const ret = wasm.remuskernel_fixFaceOrientations(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Heal a solid with a per-fix configuration instead of the fixed
+     * [`healSolid`](Self::heal_solid) recipe.
+     *
+     * `configJson` is `{ "tolerance"?: number, "fixes"?: { <name>: mode } }`
+     * where every mode is `"off"`, `"auto"` (apply when analysis detects the
+     * issue — the default), or `"on"` (always attempt). Unknown fix names
+     * error rather than silently running with defaults. Fix names:
+     * `reorder`, `connectivity`, `closure`, `smallEdges`, `selfIntersection`,
+     * `degenerateEdges`, `gaps2d`, `gaps3d`, `lacking`, `notched`, `tail`,
+     * `intersectingEdges`, `wireOrientation`, `addNaturalBound`,
+     * `missingSeam`, `smallArea`, `duplicateFaces`, `intersectingWires`,
+     * `orientation`, `sameParameter`, `vertexTolerance`, `pcurve`,
+     * `coincidentVertices`, `wireframe`, `splitCommonVertex`, `smallFaces`.
+     *
+     * Returns a JSON string `{ solid, actionsTaken, done, failed, repairs,
+     * verified }` (see the `HealFixResult` TypeScript type); `solid` is the
+     * healed solid's handle and may differ from the input. Success is
+     * committed only after both validators accept the result.
+     * @param {number} solid
+     * @param {string} config_json
+     * @returns {any}
+     */
+    fixShapeWithConfig(solid, config_json) {
+        const ptr0 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_fixShapeWithConfig(this.__wbg_ptr, solid, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Run configured verified healing with entity history.
+     * Returns the `fixShapeWithConfig` report plus `op`. Untracked replacements
+     * remain unresolved. Batch uses `solid` and the JSON string `configJson`.
+     * @param {number} solid
+     * @param {string} config_json
+     * @returns {string}
+     */
+    fixShapeWithConfigJournaled(solid, config_json) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_fixShapeWithConfigJournaled(this.__wbg_ptr, solid, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Reconstruct a solid from a BREP string.
+     *
+     * Accepts both STEP format (from `toBREP`) and JSON format (from
+     * `toBrepJson`). Auto-detects the format: strings starting with `{`
+     * are parsed as JSON, otherwise as STEP.
+     *
+     * Only single-solid STEP files are supported. Multi-solid files will
+     * return only the first solid.
+     *
+     * # Errors
+     *
+     * Returns an error if the data is invalid or reconstruction fails. In
+     * the JSON format every vertex and edge id must be an integer in the
+     * `u32` range, declared once, and every reference (edge endpoints,
+     * outer and inner wire edges) must name a declared id; an unreadable
+     * inner-wire entry is refused rather than skipped. A refusal restores the
+     * live topology; allocated handles stay retired and are never reused.
+     * @param {string} data
+     * @returns {number}
+     */
+    fromBREP(data) {
+        const ptr0 = passStringToWasm0(data, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_fromBREP(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Fuse (union) two solids into one.
+     *
+     * Returns a new solid handle (`u32`).
+     *
+     * Exact-only: when the exact engine cannot handle the pair this returns a
+     * typed refusal (category `quality_refused`, `kernelCode`
+     * `exact_only_unattainable`) instead of silently handing back a mesh. To
+     * accept an approximate result, call `booleanWithQuality` without
+     * `exactOnly`; it discloses the quality and deflection it used.
+     *
+     * # Errors
+     *
+     * Returns an error if either solid handle is invalid or the operation
+     * produces an empty or non-manifold result.
+     * @param {number} a
+     * @param {number} b
+     * @returns {number}
+     */
+    fuse(a, b) {
+        const ret = wasm.remuskernel_fuse(this.__wbg_ptr, a, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Fuse (union) many solids into one in a single call.
+     *
+     * Faster than a left-fold over `fuse`: overlapping solids are reduced
+     * pairwise in a balanced tree while disjoint groups are merged directly
+     * without a boolean.
+     *
+     * Returns a new solid handle (`u32`). Exact-only, like `fuse`: a
+     * cluster the exact engine cannot fuse returns the typed
+     * `exact_only_unattainable` refusal rather than a mesh.
+     *
+     * # Errors
+     *
+     * Returns an error if any solid handle is invalid, the list is empty,
+     * or a boolean operation produces an empty or non-manifold result.
+     * @param {Uint32Array} solid_handles
+     * @returns {number}
+     */
+    fuseAll(solid_handles) {
+        const ptr0 = passArray32ToWasm0(solid_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_fuseAll(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Fuse two solids and return success or failure as typed data.
+     *
+     * Additive twin of [`fuse`](Self::fuse); the legacy method keeps its
+     * existing return value and thrown-error behavior.
+     * @param {number} a
+     * @param {number} b
+     * @returns {SolidOperationDetailedResult}
+     */
+    fuseDetailed(a, b) {
+        const ret = wasm.remuskernel_fuseDetailed(this.__wbg_ptr, a, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Fuse two solids with journaled construction history.
+     *
+     * Returns JSON `{"solid": handle, "op": journalOp}`; feed `op` to
+     * `resolveOperationOutput` / `propagateAttributesForOp`.
+     * @param {number} a
+     * @param {number} b
+     * @returns {string}
+     */
+    fuseJournaled(a, b) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_fuseJournaled(this.__wbg_ptr, a, b);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Fuse with full construction-derived vertex/edge/face history.
+     *
+     * Returns JSON `{"solid", "evolution": {"faces", "edges",
+     * "vertices"}}`; edge events are `preserved`/`modified` (with
+     * `from`), `generated` (with the generating `faceA`/`faceB` when
+     * they map), or the honest `unresolved`.
+     * @param {number} a
+     * @param {number} b
+     * @returns {string}
+     */
+    fuseWithEntityEvolution(a, b) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_fuseWithEntityEvolution(this.__wbg_ptr, a, b);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Fuse (union) two solids and return evolution tracking data.
+     *
+     * Returns a JSON string: `{"solid": <u32>, "evolution": {...}}`.
+     * Exact-only, like `fuse`: a pair the exact engine cannot handle
+     * returns the typed `exact_only_unattainable` refusal.
+     *
+     * # Errors
+     *
+     * Returns an error if either solid handle is invalid or the operation
+     * produces an empty or non-manifold result.
+     * @param {number} a
+     * @param {number} b
+     * @returns {any}
+     */
+    fuseWithEvolution(a, b) {
+        const ret = wasm.remuskernel_fuseWithEvolution(this.__wbg_ptr, a, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Fuse (union) two solids with post-processing options.
+     *
+     * `unifyFaces` (default `true`) merges adjacent result faces that lie
+     * on the same underlying surface, which keeps face counts low across
+     * chained booleans (e.g. 2871 → ~106 faces on sequential curved-surface
+     * booleans). Pass `false` to keep the raw fragment layout.
+     *
+     * Exact-only, like `fuse`: a pair the exact engine cannot handle
+     * returns the typed `exact_only_unattainable` refusal.
+     *
+     * # Errors
+     *
+     * Returns an error if either solid handle is invalid or the operation
+     * produces an empty or non-manifold result.
+     * @param {number} a
+     * @param {number} b
+     * @param {boolean | null} [unify_faces]
+     * @returns {number}
+     */
+    fuseWithOptions(a, b, unify_faces) {
+        const ret = wasm.remuskernel_fuseWithOptions(this.__wbg_ptr, a, b, isLikeNone(unify_faces) ? 0xFFFFFF : unify_faces ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Add an arc defined by a center point and start/end points on the arc.
+     * The radius is implicit (`dist(center, start)`); an internal constraint
+     * keeps start and end equidistant from the center. Returns an arc handle.
+     * @param {number} sketch
+     * @param {number} center
+     * @param {number} start
+     * @param {number} end
+     * @returns {number}
+     */
+    gcsAddArc(sketch, center, start, end) {
+        const ret = wasm.remuskernel_gcsAddArc(this.__wbg_ptr, sketch, center, start, end);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Add a circle with a center point and radius (the radius is a solver
+     * parameter). Returns a circle handle.
+     * @param {number} sketch
+     * @param {number} center
+     * @param {number} radius
+     * @returns {number}
+     */
+    gcsAddCircle(sketch, center, radius) {
+        const ret = wasm.remuskernel_gcsAddCircle(this.__wbg_ptr, sketch, center, radius);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Add a constraint from a JSON object string and return a constraint
+     * handle usable with [`gcs_remove_constraint`](Self::gcs_remove_constraint).
+     *
+     * All 35 constraint types are supported. Entity fields are `u32`
+     * handles from the `gcsAdd*` calls. Types and fields:
+     * `coincident{a,b}`, `distance{a,b,value}`,
+     * `pointLineDistance{point,line,value}`, `fixX{point,value}`,
+     * `fixY{point,value}`, `horizontal{line}`, `vertical{line}`,
+     * `angle{l1,l2,value}`, `perpendicular{l1,l2}`, `parallel{l1,l2}`,
+     * `pointOnCircle{point,circle}`, `pointOnArc{point,arc}`,
+     * `tangentLineArc{line,arc,point}`, `tangentArcArc{arc1,arc2,point}`,
+     * `equalRadiusArcArc{arc1,arc2}`, `equalRadiusArcCircle{arc,circle}`,
+     * `arcLength{arc,value}`, `concentricArcArc{arc1,arc2}`,
+     * `concentricArcCircle{arc,circle}`, `circleRadius{circle,value}`,
+     * `equalRadiusCircleCircle{circle1,circle2}`, `equalLength{l1,l2}`,
+     * `midpoint{point,line}`, `symmetric{a,b,axis}`,
+     * `tangentLineCircle{line,circle}`, `symmetricAboutPoint{a,b,center}`,
+     * `pointOnEllipse{point,ellipse}`,
+     * `concentricEllipseEllipse{ellipse1,ellipse2}`,
+     * `concentricEllipseCircle{ellipse,circle}`,
+     * `concentricEllipseArc{ellipse,arc}`,
+     * `tangentLineEllipse{line,ellipse,point}`,
+     * `ellipseAxisA{ellipse,value}`, `ellipseAxisB{ellipse,value}`,
+     * `ellipseAngle{ellipse,value}`, `equalEllipseRadii{ellipse1,ellipse2}`.
+     *
+     * `circleRadius` takes a **radius**, not a diameter, and requires a
+     * positive finite value. There is no first-class point-lock constraint:
+     * compose one from `fixX` + `fixY` on the same point.
+     * @param {number} sketch
+     * @param {string} json
+     * @returns {number}
+     */
+    gcsAddConstraint(sketch, json) {
+        const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_gcsAddConstraint(this.__wbg_ptr, sketch, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Add a full ellipse with a center point, two semiaxes, and an
+     * orientation. `a` and `b` must be positive and finite; `angle` is the
+     * counter-clockwise rotation in radians from `+x` to the `a`-axis.
+     * Unlike arcs, a full ellipse has no endpoints and installs no internal
+     * constraint. Returns an ellipse handle.
+     * @param {number} sketch
+     * @param {number} center
+     * @param {number} a
+     * @param {number} b
+     * @param {number} angle
+     * @returns {number}
+     */
+    gcsAddEllipse(sketch, center, a, b, angle) {
+        const ret = wasm.remuskernel_gcsAddEllipse(this.__wbg_ptr, sketch, center, a, b, angle);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Add a complete construction-linked native circle in the parallel sketch
+     * plane. Both the center and radius are driven read-only inputs; returned
+     * handles can be used by ordinary GCS constraints. Partial/oblique curves
+     * and nonunique construction identity refuse atomically.
+     * @param {number} sketch
+     * @param {string} reference
+     * @returns {ExternalCircleHandles}
+     */
+    gcsAddExternalCircle(sketch, reference) {
+        const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_gcsAddExternalCircle(this.__wbg_ptr, sketch, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Add a complete construction-linked native ellipse in the parallel sketch
+     * plane. Both the center and three scalar parameters are driven read-only inputs; returned
+     * handles can be used by ordinary GCS constraints. Partial/oblique curves
+     * and nonunique construction identity refuse atomically.
+     * @param {number} sketch
+     * @param {string} reference
+     * @returns {ExternalEllipseHandles}
+     */
+    gcsAddExternalEllipse(sketch, reference) {
+        const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_gcsAddExternalEllipse(this.__wbg_ptr, sketch, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Add a fixed external line whose returned handles can be constrained to.
+     * @param {number} sketch
+     * @param {string} reference
+     * @param {string} start_ref
+     * @param {string} end_ref
+     * @returns {ExternalLineHandles}
+     */
+    gcsAddExternalLine(sketch, reference, start_ref, end_ref) {
+        const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(start_ref, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(end_ref, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_gcsAddExternalLine(this.__wbg_ptr, sketch, ptr0, len0, ptr1, len1, ptr2, len2);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Add a line through two existing points. Returns a line handle.
+     * @param {number} sketch
+     * @param {number} p1
+     * @param {number} p2
+     * @returns {number}
+     */
+    gcsAddLine(sketch, p1, p2) {
+        const ret = wasm.remuskernel_gcsAddLine(this.__wbg_ptr, sketch, p1, p2);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Add a point at `(x, y)`. `fixed` points are not moved by the solver.
+     * Returns a point handle.
+     * @param {number} sketch
+     * @param {number} x
+     * @param {number} y
+     * @param {boolean} fixed
+     * @returns {number}
+     */
+    gcsAddPoint(sketch, x, y, fixed) {
+        const ret = wasm.remuskernel_gcsAddPoint(this.__wbg_ptr, sketch, x, y, fixed);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Attach an existing GCS sketch to one construction-resolved planar face.
+     * Frame axes must be unit and perpendicular; this slice supports parallel
+     * plane moves. The reference uses the existing versioned JSON codec.
+     * @param {number} sketch
+     * @param {string} reference
+     * @param {SketchFrame} frame
+     * @returns {LinkedSketchResolution}
+     */
+    gcsAttachToFace(sketch, reference, frame) {
+        const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_gcsAttachToFace(this.__wbg_ptr, sketch, ptr0, len0, frame);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Current radius of a circle.
+     * @param {number} sketch
+     * @param {number} circle
+     * @returns {number}
+     */
+    gcsCircleRadius(sketch, circle) {
+        const ret = wasm.remuskernel_gcsCircleRadius(this.__wbg_ptr, sketch, circle);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
+     * Degrees-of-freedom analysis via QR rank detection. Returns a JSON
+     * string `{ dof, rank, numParams, numEquations }` (see the
+     * `GcsDofResult` TypeScript type).
+     * @param {number} sketch
+     * @returns {any}
+     */
+    gcsDof(sketch) {
+        const ret = wasm.remuskernel_gcsDof(this.__wbg_ptr, sketch);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Current ellipse parameters as `[cx, cy, a, b, angle]` (angle in
+     * radians, stored as given — see the `gcsAddEllipse` contract).
+     * @param {number} sketch
+     * @param {number} ellipse
+     * @returns {Float64Array}
+     */
+    gcsEllipseParams(sketch, ellipse) {
+        const ret = wasm.remuskernel_gcsEllipseParams(this.__wbg_ptr, sketch, ellipse);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Create a new typed GCS sketch. Returns a sketch handle.
+     *
+     * This is the successor to the legacy `sketch*` API: the constraint
+     * system persists across calls, entities are typed handles, all 35
+     * constraint types are available, and constraints can be removed.
+     * @returns {number}
+     */
+    gcsNew() {
+        const ret = wasm.remuskernel_gcsNew(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Current position of a point as `[x, y]`.
+     * @param {number} sketch
+     * @param {number} point
+     * @returns {Float64Array}
+     */
+    gcsPointPosition(sketch, point) {
+        const ret = wasm.remuskernel_gcsPointPosition(this.__wbg_ptr, sketch, point);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Remove a constraint by handle. The handle becomes stale; the solver
+     * no longer enforces the constraint.
+     * @param {number} sketch
+     * @param {number} constraint
+     */
+    gcsRemoveConstraint(sketch, constraint) {
+        const ret = wasm.remuskernel_gcsRemoveConstraint(this.__wbg_ptr, sketch, constraint);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Atomically refresh every external input; a failed rebind preserves all
+     * previous coordinates. Solve and detailed solve refresh automatically.
+     * @param {number} sketch
+     * @returns {LinkedSketchResolution}
+     */
+    gcsResolveRefs(sketch) {
+        const ret = wasm.remuskernel_gcsResolveRefs(this.__wbg_ptr, sketch);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Move an ellipse's center to `(x, y)` and set its semiaxes and
+     * orientation without solving (e.g. while dragging). `a` and `b` must
+     * be positive and finite; `angle` is finite radians.
+     * @param {number} sketch
+     * @param {number} ellipse
+     * @param {number} x
+     * @param {number} y
+     * @param {number} a
+     * @param {number} b
+     * @param {number} angle
+     */
+    gcsSetEllipse(sketch, ellipse, x, y, a, b, angle) {
+        const ret = wasm.remuskernel_gcsSetEllipse(this.__wbg_ptr, sketch, ellipse, x, y, a, b, angle);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Move a point to `(x, y)` without solving (e.g. while dragging).
+     * @param {number} sketch
+     * @param {number} point
+     * @param {number} x
+     * @param {number} y
+     */
+    gcsSetPoint(sketch, point, x, y) {
+        const ret = wasm.remuskernel_gcsSetPoint(this.__wbg_ptr, sketch, point, x, y);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Solve the constraint system in place with the DogLeg trust-region
+     * solver. Returns a JSON string
+     * `{ converged, iterations, maxResidual }` (see the `GcsSolveResult`
+     * TypeScript type). Read solved geometry back with
+     * [`gcs_point_position`](Self::gcs_point_position),
+     * [`gcs_circle_radius`](Self::gcs_circle_radius), and
+     * [`gcs_ellipse_params`](Self::gcs_ellipse_params).
+     * @param {number} sketch
+     * @param {number} max_iterations
+     * @param {number} tolerance
+     * @returns {any}
+     */
+    gcsSolve(sketch, max_iterations, tolerance) {
+        const ret = wasm.remuskernel_gcsSolve(this.__wbg_ptr, sketch, max_iterations, tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Solve and report what the attempt actually established, transactionally.
+     *
+     * Additive to [`gcs_solve`](Self::gcs_solve), whose behaviour is
+     * unchanged. Two differences matter:
+     *
+     * - **Transactional.** A solve that fails to reach `tolerance` is rolled
+     *   back: the pre-solver free points and radii are restored and `rolledBack`
+     *   is set. Linked external inputs refresh first; a successful refresh
+     *   remains current even when the solve does not converge. The rollback
+     *   baseline and `publishedMaxResidual` use those refreshed fixed inputs.
+     *   A thrown refresh or solver error restores the entire pre-call sketch.
+     *   `gcsSolve` still publishes whatever iterate it stopped on.
+     * - **Measured.** Returns convergence, iteration count, residuals, DOF,
+     *   rank, parameter and equation counts, a per-constraint residual keyed
+     *   by the `gcsAddConstraint` handle, and an overall classification.
+     *
+     * The classification is one of `solved`, `underConstrained`, `redundant`,
+     * or `unsatisfied`. `unsatisfied` reports only that the solver did not
+     * converge — it does **not** single out a conflicting constraint, and a
+     * large per-constraint residual is evidence, not proof, of where the
+     * conflict lies. Kernel-internal arc constraints are excluded from
+     * `constraintResiduals` and summarised by `internalMaxResidual`.
+     *
+     * Returns a JSON string (see the `GcsSolveDiagnostics` TypeScript type).
+     * @param {number} sketch
+     * @param {number} max_iterations
+     * @param {number} tolerance
+     * @returns {any}
+     */
+    gcsSolveDetailed(sketch, max_iterations, tolerance) {
+        const ret = wasm.remuskernel_gcsSolveDetailed(this.__wbg_ptr, sketch, max_iterations, tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Get the analytic surface parameters of a face.
+     *
+     * Returns a JSON string with surface-type-specific parameters.
+     * @param {number} face
+     * @returns {string}
+     */
+    getAnalyticSurfaceParams(face) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_getAnalyticSurfaceParams(this.__wbg_ptr, face);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Return the exact tangency-connected constant-radius blend region.
+     *
+     * The JSON result is `{ "faces": number[], "radius": number }`, with
+     * faces sorted by deterministic arena handle. Cylinder, torus and spherical
+     * corner faces of the same rolling-ball radius are grouped together.
+     *
+     * # Errors
+     *
+     * Returns a typed refusal when `face` is not a proven analytic blend
+     * region of `solid`.
+     * @param {number} solid
+     * @param {number} face
+     * @returns {string}
+     */
+    getBlendRegion(solid, face) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_getBlendRegion(this.__wbg_ptr, solid, face);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Get the solid handles within a compound.
+     *
+     * Returns an array of solid handles (`u32[]`).
+     *
+     * # Errors
+     *
+     * Returns an error if the compound handle is invalid.
+     * @param {number} compound
+     * @returns {Uint32Array}
+     */
+    getCompoundSolids(compound) {
+        const ret = wasm.remuskernel_getCompoundSolids(this.__wbg_ptr, compound);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Get the parameter domain of an edge curve.
+     *
+     * Returns `[t_start, t_end]`.
+     * For line edges: `[0.0, length]`.
+     * For NURBS edges: knot domain.
+     * @param {number} edge
+     * @returns {Float64Array}
+     */
+    getEdgeCurveParameters(edge) {
+        const ret = wasm.remuskernel_getEdgeCurveParameters(this.__wbg_ptr, edge);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Get the curve type of an edge.
+     *
+     * Returns `"LINE"`, `"BSPLINE_CURVE"`, `"CIRCLE"`, or `"ELLIPSE"`.
+     *
+     * For NURBS curves that exactly represent analytic curves, this
+     * returns the underlying analytic type (e.g. `"CIRCLE"` for a
+     * rational NURBS circle).
+     * @param {number} edge
+     * @returns {string}
+     */
+    getEdgeCurveType(edge) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_getEdgeCurveType(this.__wbg_ptr, edge);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Build an edge's NURBS curve data for JS consumption.
+     *
+     * Returns `null` for line edges, or a JSON string with
+     * `{degree, knots, controlPoints, weights}` for NURBS edges.
+     * @param {number} edge
+     * @returns {any}
+     */
+    getEdgeNurbsData(edge) {
+        const ret = wasm.remuskernel_getEdgeNurbsData(this.__wbg_ptr, edge);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * The parameter span the edge ACTUALLY covers on its stored curve.
+     *
+     * Returns `[t_start, t_end]` — a stored trim verbatim, a closed edge as
+     * one full period anchored at its start vertex, and an open edge via the
+     * endpoint-trimmed convention. This differs from
+     * [`getEdgeCurveParameters`](Self::get_edge_curve_parameters), which
+     * reports the raw curve domain (`[0, TAU]` for every circle): a circle
+     * edge's endpoints subtend TWO arcs, and only this span says which one
+     * the edge is — reconstructing it from endpoints alone flips
+     * intentional major arcs. Evaluate points on the span with
+     * [`evaluateEdgeCurve`](Self::evaluate_edge_curve); for NURBS sub-spans
+     * prefer [`sampleEdge`](Self::sample_edge_polyline), which also handles
+     * closed-curve wrapping.
+     *
+     * # Errors
+     *
+     * Returns an error if the edge handle is invalid.
+     * @param {number} edge
+     * @returns {Float64Array}
+     */
+    getEdgeParamSpan(edge) {
+        const ret = wasm.remuskernel_getEdgeParamSpan(this.__wbg_ptr, edge);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Get the vertex *handles* (not positions) of an edge.
+     *
+     * Returns `[start_vertex_handle, end_vertex_handle]`.
+     *
+     * # Errors
+     *
+     * Returns an error if the edge handle is invalid.
+     * @param {number} edge
+     * @returns {Uint32Array}
+     */
+    getEdgeVertexHandles(edge) {
+        const ret = wasm.remuskernel_getEdgeVertexHandles(this.__wbg_ptr, edge);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Get the vertex positions of an edge.
+     *
+     * Returns `[start_x, start_y, start_z, end_x, end_y, end_z]`.
+     *
+     * # Errors
+     *
+     * Returns an error if the edge handle is invalid.
+     * @param {number} edge
+     * @returns {Float64Array}
+     */
+    getEdgeVertices(edge) {
+        const ret = wasm.remuskernel_getEdgeVertices(this.__wbg_ptr, edge);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Get entity counts of a solid: `[faces, edges, vertices]`.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid.
+     * @param {number} solid
+     * @returns {Uint32Array}
+     */
+    getEntityCounts(solid) {
+        const ret = wasm.remuskernel_getEntityCounts(this.__wbg_ptr, solid);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Principal curvatures at `(u, v)` on a face's surface.
+     *
+     * Returns a JSON string `{ k1, k2, gaussian, mean, d1, d2 }` (see the
+     * `FaceCurvatureResult` TypeScript type). Curvatures are sorted
+     * `k1 >= k2` and signed positive for convex-outward relative to the
+     * face's effective outward normal; flipping the face orientation flips
+     * `k1`, `k2`, and `mean`, while `gaussian` is orientation-independent.
+     * `d1`/`d2` are the unit principal directions matching `(k1, k2)`, or
+     * `null` at umbilic points (sphere, plane, near-umbilic NURBS regions)
+     * where every tangent direction is principal.
+     *
+     * `(u, v)` are parameters of the underlying surface, not restricted to
+     * the face's trimmed region. For a plane face the report is identically
+     * zero and the directions are `null`.
+     *
+     * # Errors
+     *
+     * Returns an error if the face handle is invalid or curvature is
+     * undefined at `(u, v)`: a cone at or below its apex, a torus parallel
+     * that degenerates (self-intersecting configurations only), a
+     * non-finite parameter, or a NURBS point where the parametrization
+     * collapses (e.g. a sphere pole).
+     * @param {number} face
+     * @param {number} u
+     * @param {number} v
+     * @returns {any}
+     */
+    getFaceCurvature(face, u, v) {
+        const ret = wasm.remuskernel_getFaceCurvature(this.__wbg_ptr, face, u, v);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Signed local surface-carrier draft in radians, as a JSON string
+     * `{angleRadians,outwardNormal}`. `(u,v)` does not test trimmed membership.
+     * Negative draft is not a global undercut or accessibility verdict.
+     *
+     * # Errors
+     * Refuses invalid handles, pull directions, parameters and undefined normals.
+     * @param {number} face
+     * @param {number} u
+     * @param {number} v
+     * @param {number} pull_x
+     * @param {number} pull_y
+     * @param {number} pull_z
+     * @returns {string}
+     */
+    getFaceDraftAngle(face, u, v, pull_x, pull_y, pull_z) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_getFaceDraftAngle(this.__wbg_ptr, face, u, v, pull_x, pull_y, pull_z);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Get the edge handles of a face.
+     *
+     * Returns an array of edge handles (`u32[]`).
+     * @param {number} face
+     * @returns {Uint32Array}
+     */
+    getFaceEdges(face) {
+        const ret = wasm.remuskernel_getFaceEdges(this.__wbg_ptr, face);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Minimum radius of curvature over a face (`1 / max(|k1|, |k2|)` across
+     * the face's trimmed domain), orientation-independent.
+     *
+     * Exact for the five analytic surface types; a coarse-grid-plus-
+     * refinement approximation for NURBS. A plane face has no curvature and
+     * returns `Infinity`; a cone face reaching its apex returns `0`.
+     *
+     * # Errors
+     *
+     * Returns an error if the face handle is invalid or the face boundary
+     * cannot be projected onto its surface.
+     * @param {number} face
+     * @returns {number}
+     */
+    getFaceMinRadius(face) {
+        const ret = wasm.remuskernel_getFaceMinRadius(this.__wbg_ptr, face);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
+     * A face's semantic name, or null.
+     * @param {number} face
+     * @returns {string | undefined}
+     */
+    getFaceName(face) {
+        const ret = wasm.remuskernel_getFaceName(this.__wbg_ptr, face);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        let v1;
+        if (ret[0] !== 0) {
+            v1 = getStringFromWasm0(ret[0], ret[1]).slice();
+            wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        }
+        return v1;
+    }
+    /**
+     * Get the outward face normal of a planar face.
+     *
+     * Returns `[nx, ny, nz]`, oriented by the face's `reversed` flag —
+     * boolean and blend assembly routinely emit reversed faces, and the raw
+     * plane normal points inward on those.
+     *
+     * # Errors
+     *
+     * Returns an error if the face is invalid or NURBS.
+     * @param {number} face
+     * @returns {Float64Array}
+     */
+    getFaceNormal(face) {
+        const ret = wasm.remuskernel_getFaceNormal(this.__wbg_ptr, face);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Get the outer wire handle of a face.
+     *
+     * Returns a wire handle (`u32`).
+     * @param {number} face
+     * @returns {number}
+     */
+    getFaceOuterWire(face) {
+        const ret = wasm.remuskernel_getFaceOuterWire(this.__wbg_ptr, face);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Get the vertex handles of a face.
+     *
+     * Returns an array of vertex handles (`u32[]`).
+     * @param {number} face
+     * @returns {Uint32Array}
+     */
+    getFaceVertices(face) {
+        const ret = wasm.remuskernel_getFaceVertices(this.__wbg_ptr, face);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Get all wires of a face (outer wire first, then inner/hole wires).
+     *
+     * # Errors
+     * Returns an error if the face handle is invalid.
+     * @param {number} face
+     * @returns {Uint32Array}
+     */
+    getFaceWires(face) {
+        const ret = wasm.remuskernel_getFaceWires(this.__wbg_ptr, face);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Read-only canonical NURBS data for the curve underlying an edge.
+     *
+     * Analytic curves (line, circle, ellipse) are converted to their exact
+     * NURBS form. Returns a JSON string with `degree`, `controlPoints`,
+     * `weights`, the flat `knots` vector, compressed `distinctKnots` /
+     * `multiplicities`, `rational`, `closed` / `periodic`, and `domain`.
+     * @param {number} edge
+     * @returns {string}
+     */
+    getNurbsCurveData(edge) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_getNurbsCurveData(this.__wbg_ptr, edge);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Read-only canonical NURBS data for the surface underlying a face.
+     *
+     * Analytic surfaces are converted to NURBS (planes/cylinders exact;
+     * cones/spheres/tori via the exact rational forms). Returns a JSON
+     * string with `degreeU`/`degreeV`, the row-major `controlPoints` grid,
+     * the matching `weights` grid, flat `knotsU`/`knotsV`, compressed
+     * distinct-knots/multiplicities per direction, `rational`,
+     * `periodicU`/`periodicV`, and `domainU`/`domainV`.
+     * @param {number} face
+     * @returns {string}
+     */
+    getNurbsSurfaceData(face) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_getNurbsSurfaceData(this.__wbg_ptr, face);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Type-gated read-only B-Spline/NURBS surface data for a face.
+     *
+     * Unlike `getNurbsSurfaceData`, this never converts analytic surfaces:
+     * faces backed by a plane, cylinder, cone, sphere, or torus return the
+     * JSON literal `null`. Only intrinsically free-form (B-Spline/NURBS) faces
+     * yield a record with `degreeU`/`degreeV`, `nbPolesU`/`nbPolesV`, the
+     * row-major `poles` grid (u-major, v-minor) with the matching `weights`
+     * grid, distinct `knotsU`/`knotsV` paired with `multiplicitiesU`/
+     * `multiplicitiesV`, `isPeriodicU`/`isPeriodicV`, and `isRational`.
+     * @param {number} face
+     * @returns {string}
+     */
+    getNurbsSurfaceDataParity(face) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_getNurbsSurfaceDataParity(this.__wbg_ptr, face);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Find opposing parallel planar face pairs with projected overlap.
+     *
+     * Returns JSON records containing both face handles, pair distance,
+     * overlap and face areas, the outward normal of `faceA`, and conservative
+     * blend-border flags.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle or its topology is invalid, or
+     * the shared native face, topology, sampling, or work budget is exceeded.
+     * @param {number} solid
+     * @returns {string}
+     */
+    getOpposingPlanarFacePairs(solid) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_getOpposingPlanarFacePairs(this.__wbg_ptr, solid);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * JSON array of `{face,angleRadians,outwardNormal}` for every outer/cavity
+     * planar face in explorer order. A curved face refuses the whole report.
+     * This read-only query does not change topology, handles or checkpoints.
+     *
+     * # Errors
+     * Refuses invalid handles/pull directions, undefined normals and curved faces.
+     * @param {number} solid
+     * @param {number} pull_x
+     * @param {number} pull_y
+     * @param {number} pull_z
+     * @returns {string}
+     */
+    getPlanarSolidDraft(solid, pull_x, pull_y, pull_z) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_getPlanarSolidDraft(this.__wbg_ptr, solid, pull_x, pull_y, pull_z);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Get the orientation of a shape.
+     *
+     * Returns `"forward"` for all faces (remus faces don't have an
+     * independent orientation flag; the normal direction is canonical).
+     * @param {number} _id
+     * @returns {string}
+     */
+    getShapeOrientation(_id) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.remuskernel_getShapeOrientation(this.__wbg_ptr, _id);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Get the face handles of a shell.
+     *
+     * Returns an array of face handles (`u32[]`).
+     *
+     * # Errors
+     *
+     * Returns an error if the shell handle is invalid.
+     * @param {number} shell
+     * @returns {Uint32Array}
+     */
+    getShellFaces(shell) {
+        const ret = wasm.remuskernel_getShellFaces(this.__wbg_ptr, shell);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Get all edge handles of a solid.
+     *
+     * Returns an array of unique edge handles (`u32[]`).
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid.
+     * @param {number} solid
+     * @returns {Uint32Array}
+     */
+    getSolidEdges(solid) {
+        const ret = wasm.remuskernel_getSolidEdges(this.__wbg_ptr, solid);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Get all face handles of a solid.
+     *
+     * Returns an array of face handles (`u32[]`).
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid.
+     * @param {number} solid
+     * @returns {Uint32Array}
+     */
+    getSolidFaces(solid) {
+        const ret = wasm.remuskernel_getSolidFaces(this.__wbg_ptr, solid);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Get all shell handles of a solid.
+     *
+     * Returns the outer shell first, followed by any inner void shells
+     * (cavities produced by `shell`/hollow operations or boolean cuts).
+     * A simple solid such as a box reports exactly one shell.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid.
+     * @param {number} solid
+     * @returns {Uint32Array}
+     */
+    getSolidShells(solid) {
+        const ret = wasm.remuskernel_getSolidShells(this.__wbg_ptr, solid);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Get all vertex handles of a solid.
+     *
+     * Returns an array of unique vertex handles (`u32[]`).
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid.
+     * @param {number} solid
+     * @returns {Uint32Array}
+     */
+    getSolidVertices(solid) {
+        const ret = wasm.remuskernel_getSolidVertices(this.__wbg_ptr, solid);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Get the UV parameter domain of a face's surface.
+     *
+     * Returns `[u_min, u_max, v_min, v_max]`.
+     * @param {number} face
+     * @returns {Float64Array}
+     */
+    getSurfaceDomain(face) {
+        const ret = wasm.remuskernel_getSurfaceDomain(this.__wbg_ptr, face);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Get the surface type of a face.
+     *
+     * Returns one of: `"plane"`, `"cylinder"`, `"cone"`, `"sphere"`,
+     * `"torus"`, `"bspline"`.
+     *
+     * For NURBS surfaces that exactly represent analytic shapes, this
+     * returns the underlying analytic type (e.g. `"sphere"` for a NURBS
+     * sphere patch).
+     * @param {number} face
+     * @returns {string}
+     */
+    getSurfaceType(face) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_getSurfaceType(this.__wbg_ptr, face);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Get the position of a vertex.
+     *
+     * Returns `[x, y, z]`.
+     *
+     * # Errors
+     *
+     * Returns an error if the vertex handle is invalid.
+     * @param {number} vertex
+     * @returns {Float64Array}
+     */
+    getVertexPosition(vertex) {
+        const ret = wasm.remuskernel_getVertexPosition(this.__wbg_ptr, vertex);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Get the edge handles of a wire in wire traversal order.
+     *
+     * Returns one entry per use in stored order (`u32[]`). When edge handles
+     * are distinct, consecutive entries connect head-to-tail in their
+     * `isEdgeForwardInWire` directions, and the last closes back on the
+     * first on a closed wire. A seam edge used twice appears twice
+     * (cylinder lateral). Its per-use directions cannot be recovered from
+     * `isEdgeForwardInWire`, which reports only the first use.
+     *
+     * # Errors
+     *
+     * Returns an error if the wire handle is invalid.
+     * @param {number} wire
+     * @returns {Uint32Array}
+     */
+    getWireEdges(wire) {
+        const ret = wasm.remuskernel_getWireEdges(this.__wbg_ptr, wire);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Create a 2D grid pattern of a solid.
+     *
+     * Produces `count_x × count_y` copies arranged in a rectangular grid.
+     * @param {number} solid
+     * @param {number} dir_x_x
+     * @param {number} dir_x_y
+     * @param {number} dir_x_z
+     * @param {number} dir_y_x
+     * @param {number} dir_y_y
+     * @param {number} dir_y_z
+     * @param {number} spacing_x
+     * @param {number} spacing_y
+     * @param {number} count_x
+     * @param {number} count_y
+     * @returns {number}
+     */
+    gridPattern(solid, dir_x_x, dir_x_y, dir_x_z, dir_y_x, dir_y_y, dir_y_z, spacing_x, spacing_y, count_x, count_y) {
+        const ret = wasm.remuskernel_gridPattern(this.__wbg_ptr, solid, dir_x_x, dir_x_y, dir_x_z, dir_y_x, dir_y_y, dir_y_z, spacing_x, spacing_y, count_x, count_y);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Grid pattern journaled as one construction-derived F/E/V evolution
+     * entry (kind `grid_pattern`). Returns JSON `{"compound", "op"}`.
+     * Directions are independently normalized and must be nonparallel.
+     * Members are row-major (X changes first), including the original first.
+     * Counts must be positive integers, each and their product at most 10000.
+     * @param {number} solid
+     * @param {number} dxx
+     * @param {number} dxy
+     * @param {number} dxz
+     * @param {number} dyx
+     * @param {number} dyy
+     * @param {number} dyz
+     * @param {number} spacing_x
+     * @param {number} spacing_y
+     * @param {number} count_x
+     * @param {number} count_y
+     * @returns {string}
+     */
+    gridPatternJournaled(solid, dxx, dxy, dxz, dyx, dyy, dyz, spacing_x, spacing_y, count_x, count_y) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_gridPatternJournaled(this.__wbg_ptr, solid, dxx, dxy, dxz, dyx, dyy, dyz, spacing_x, spacing_y, count_x, count_y);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Guided (two-rail) sweep: sweep `face` along a spine, orienting the
+     * profile so its up-vector tracks an auxiliary spine.
+     *
+     * The spine and auxiliary spine are each passed as raw NURBS data
+     * (`degree`, `knots`, flat `control_points`, `weights`). Their original
+     * native domains must match exactly; both curves are sampled at the same
+     * normalized progress across that domain. Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error for a non-finite or malformed curve, a non-planar
+     * profile, or a degenerate path.
+     * @param {number} face
+     * @param {number} spine_degree
+     * @param {Float64Array} spine_knots
+     * @param {Float64Array} spine_control_points
+     * @param {Float64Array} spine_weights
+     * @param {number} aux_degree
+     * @param {Float64Array} aux_knots
+     * @param {Float64Array} aux_control_points
+     * @param {Float64Array} aux_weights
+     * @returns {number}
+     */
+    guidedSweep(face, spine_degree, spine_knots, spine_control_points, spine_weights, aux_degree, aux_knots, aux_control_points, aux_weights) {
+        const ptr0 = passArrayF64ToWasm0(spine_knots, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(spine_control_points, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArrayF64ToWasm0(spine_weights, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passArrayF64ToWasm0(aux_knots, wasm.__wbindgen_malloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ptr4 = passArrayF64ToWasm0(aux_control_points, wasm.__wbindgen_malloc);
+        const len4 = WASM_VECTOR_LEN;
+        const ptr5 = passArrayF64ToWasm0(aux_weights, wasm.__wbindgen_malloc);
+        const len5 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_guidedSweep(this.__wbg_ptr, face, spine_degree, ptr0, len0, ptr1, len1, ptr2, len2, aux_degree, ptr3, len3, ptr4, len4, ptr5, len5);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Names of the built-in healing pipeline operators accepted by
+     * [`run_heal_pipeline`](Self::run_heal_pipeline).
+     * @returns {string[]}
+     */
+    healPipelineSteps() {
+        const ret = wasm.remuskernel_healPipelineSteps(this.__wbg_ptr);
+        var v1 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Heal a solid topology.
+     *
+     * Returns the number of issues fixed.
+     * @param {number} solid
+     * @returns {number}
+     */
+    healSolid(solid) {
+        const ret = wasm.remuskernel_healSolid(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Heal a solid and return exact repair categories plus a verified-valid
+     * postcondition. Invalid or unverifiable results are rolled back and
+     * returned as typed errors.
+     * @param {number} solid
+     * @returns {any}
+     */
+    healSolidDetailed(solid) {
+        const ret = wasm.remuskernel_healSolidDetailed(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Create a helical sweep of a profile face.
+     *
+     * Sweeps the profile along a helix defined by axis, radius, pitch,
+     * and number of turns. Used for generating thread geometry.
+     *
+     * # Errors
+     *
+     * Returns an error if parameters are invalid or the sweep fails.
+     * @param {number} profile
+     * @param {number} axis_origin_x
+     * @param {number} axis_origin_y
+     * @param {number} axis_origin_z
+     * @param {number} axis_dir_x
+     * @param {number} axis_dir_y
+     * @param {number} axis_dir_z
+     * @param {number} radius
+     * @param {number} pitch
+     * @param {number} turns
+     * @returns {number}
+     */
+    helicalSweep(profile, axis_origin_x, axis_origin_y, axis_origin_z, axis_dir_x, axis_dir_y, axis_dir_z, radius, pitch, turns) {
+        const ret = wasm.remuskernel_helicalSweep(this.__wbg_ptr, profile, axis_origin_x, axis_origin_y, axis_origin_z, axis_dir_x, axis_dir_y, axis_dir_z, radius, pitch, turns);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Imprints one solid's intersection edges onto another without removing
+     * material. Returns JSON `{"solid", "op"}` for the new target and its
+     * construction-derived journal entry.
+     * @param {number} target
+     * @param {number} tool
+     * @returns {string}
+     */
+    imprint(target, tool) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_imprint(this.__wbg_ptr, target, tool);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Partition one planar convex solid face with a strictly interior convex
+     * 3--16 point ring. `points` is flat world `[x,y,z,...]` data.
+     * Returns JSON `{solid,innerFace,surroundFace,op}`. Both patches retain
+     * the original plane and material, with exact construction lineage.
+     * @param {number} solid
+     * @param {number} face
+     * @param {Float64Array} points
+     * @returns {string}
+     */
+    imprintPlanarPolygon(solid, face, points) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArrayF64ToWasm0(points, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_imprintPlanarPolygon(this.__wbg_ptr, solid, face, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Compute the uniform-density inertia tensor about the center of mass.
+     *
+     * Returns the symmetric 3x3 matrix in row-major order, expressed in the
+     * kernel's global axes. Density is `1`; with the canonical millimetre
+     * length unit, each component has units of `mm^5`.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid, integration fails, or
+     * the solid has effectively zero volume.
+     * @param {number} solid
+     * @returns {Float64Array}
+     */
+    inertiaTensor(solid) {
+        const ret = wasm.remuskernel_inertiaTensor(this.__wbg_ptr, solid);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Interpolate a NURBS curve through points and create an edge.
+     *
+     * Uses chord-length parameterization with the given degree.
+     * Returns an edge handle (`u32`).
+     * @param {Float64Array} coords
+     * @param {number} degree
+     * @returns {number}
+     */
+    interpolatePoints(coords, degree) {
+        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_interpolatePoints(this.__wbg_ptr, ptr0, len0, degree);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Interpolate a grid of points into a NURBS surface.
+     *
+     * `coords` is a flat array `[x,y,z, ...]` of `rows * cols` points.
+     * Returns a face handle.
+     * @param {Float64Array} coords
+     * @param {number} rows
+     * @param {number} cols
+     * @param {number} degree_u
+     * @param {number} degree_v
+     * @returns {number}
+     */
+    interpolateSurface(coords, rows, cols, degree_u, degree_v) {
+        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_interpolateSurface(this.__wbg_ptr, ptr0, len0, rows, cols, degree_u, degree_v);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Intersect two solids, keeping only their common volume.
+     *
+     * Returns a new solid handle (`u32`).
+     *
+     * Exact-only: when the exact engine cannot handle the pair this returns a
+     * typed refusal (category `quality_refused`, `kernelCode`
+     * `exact_only_unattainable`) instead of silently handing back a mesh. To
+     * accept an approximate result, call `booleanWithQuality` without
+     * `exactOnly`; it discloses the quality and deflection it used.
+     *
+     * # Errors
+     *
+     * Returns an error if either solid handle is invalid or the operation
+     * produces an empty result.
+     * @param {number} a
+     * @param {number} b
+     * @returns {number}
+     */
+    intersect(a, b) {
+        const ret = wasm.remuskernel_intersect(this.__wbg_ptr, a, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Intersect two solids and return success or failure as typed data.
+     *
+     * Additive twin of [`intersect_solids`](Self::intersect_solids); the
+     * legacy method keeps its existing return value and thrown-error
+     * behavior.
+     * @param {number} a
+     * @param {number} b
+     * @returns {SolidOperationDetailedResult}
+     */
+    intersectDetailed(a, b) {
+        const ret = wasm.remuskernel_intersectDetailed(this.__wbg_ptr, a, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Intersect two solids with journaled construction history.
+     * @param {number} a
+     * @param {number} b
+     * @returns {string}
+     */
+    intersectJournaled(a, b) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_intersectJournaled(this.__wbg_ptr, a, b);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Compute the boolean intersection of two 2D polygons.
+     *
+     * Both polygons are flat arrays `[x,y, x,y, ...]`.
+     * Returns a flat array of the intersection polygon coordinates,
+     * or an empty array if they don't intersect.
+     *
+     * Uses the Sutherland-Hodgman algorithm (convex clipper); either
+     * polygon may wind either way.
+     * @param {Float64Array} coords_a
+     * @param {Float64Array} coords_b
+     * @returns {Float64Array}
+     */
+    intersectPolygons2d(coords_a, coords_b) {
+        const ptr0 = passArrayF64ToWasm0(coords_a, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(coords_b, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_intersectPolygons2d(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v3 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v3;
+    }
+    /**
+     * Intersect with full entity history; see `fuseWithEntityEvolution`.
+     * @param {number} a
+     * @param {number} b
+     * @returns {string}
+     */
+    intersectWithEntityEvolution(a, b) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_intersectWithEntityEvolution(this.__wbg_ptr, a, b);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Intersect two solids and return evolution tracking data.
+     *
+     * Returns a JSON string: `{"solid": <u32>, "evolution": {...}}`.
+     *
+     * # Errors
+     *
+     * Returns an error if either solid handle is invalid or the operation
+     * produces an empty result.
+     * @param {number} a
+     * @param {number} b
+     * @returns {any}
+     */
+    intersectWithEvolution(a, b) {
+        const ret = wasm.remuskernel_intersectWithEvolution(this.__wbg_ptr, a, b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Intersect two solids with post-processing options.
+     *
+     * See [`fuse_with_options`](Self::fuse_with_options) for the
+     * `unifyFaces` semantics.
+     *
+     * # Errors
+     *
+     * Returns an error if either solid handle is invalid or the operation
+     * produces an empty or non-manifold result.
+     * @param {number} a
+     * @param {number} b
+     * @param {boolean | null} [unify_faces]
+     * @returns {number}
+     */
+    intersectWithOptions(a, b, unify_faces) {
+        const ret = wasm.remuskernel_intersectWithOptions(this.__wbg_ptr, a, b, isLikeNone(unify_faces) ? 0xFFFFFF : unify_faces ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Check if an edge is forward-oriented in a given wire.
+     *
+     * Returns `true` if the edge is forward in the wire, `false` if reversed.
+     * Reports the FIRST use of `edge` in the wire: an edge used twice in one
+     * wire (a seam edge on a cylinder lateral, forward then reversed) reads
+     * as its first use for both occurrences, so the second use is ambiguous
+     * through this query. Planar faces have no seams.
+     * @param {number} edge
+     * @param {number} wire
+     * @returns {boolean}
+     */
+    isEdgeForwardInWire(edge, wire) {
+        const ret = wasm.remuskernel_isEdgeForwardInWire(this.__wbg_ptr, edge, wire);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
+    }
+    /**
+     * Check whether a wire is closed (last edge connects back to first).
+     * @param {number} wire
+     * @returns {boolean}
+     */
+    isWireClosed(wire) {
+        const ret = wasm.remuskernel_isWireClosed(this.__wbg_ptr, wire);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
+    }
+    /**
+     * Journals an explicit barrier over every entity of `solid` for an
+     * operation without evolution records. Returns the journal op id.
+     * @param {string} kind
+     * @param {number} solid
+     * @returns {number}
+     */
+    journalBarrier(kind, solid) {
+        const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_journalBarrier(this.__wbg_ptr, ptr0, len0, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * A read-only summary of the evolution journal: JSON array of
+     * `{"op", "kind", "type", "detail"}` where `type` is `evolution`
+     * (detail: origin, event count), `barrier` (detail: affected
+     * count), or `globalBarrier`.
+     * @returns {string}
+     */
+    journalSummary() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.remuskernel_journalSummary(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Lift a 2D curve onto a 3D plane, producing an edge.
+     *
+     * `curve_type`: 0 = Line, 1 = Circle, 2 = Ellipse, 3 = NURBS.
+     * `curve_params` layout varies by type (see docs).
+     * The plane is defined by an origin, x-axis, and normal.
+     * `t_start`/`t_end` specify the parameter range on the 2D curve.
+     *
+     * Returns an edge handle (`u32`).
+     * @param {number} curve_type
+     * @param {Float64Array} curve_params
+     * @param {number} origin_x
+     * @param {number} origin_y
+     * @param {number} origin_z
+     * @param {number} x_axis_x
+     * @param {number} x_axis_y
+     * @param {number} x_axis_z
+     * @param {number} normal_x
+     * @param {number} normal_y
+     * @param {number} normal_z
+     * @param {number} t_start
+     * @param {number} t_end
+     * @returns {number}
+     */
+    liftCurve2dToPlane(curve_type, curve_params, origin_x, origin_y, origin_z, x_axis_x, x_axis_y, x_axis_z, normal_x, normal_y, normal_z, t_start, t_end) {
+        const ptr0 = passArrayF64ToWasm0(curve_params, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_liftCurve2dToPlane(this.__wbg_ptr, curve_type, ptr0, len0, origin_x, origin_y, origin_z, x_axis_x, x_axis_y, x_axis_z, normal_x, normal_y, normal_z, t_start, t_end);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a linear pattern of a solid.
+     *
+     * Returns a compound handle containing all copies.
+     *
+     * # Errors
+     *
+     * Returns an error if inputs are invalid.
+     * @param {number} solid
+     * @param {number} dx
+     * @param {number} dy
+     * @param {number} dz
+     * @param {number} spacing
+     * @param {number} count
+     * @returns {number}
+     */
+    linearPattern(solid, dx, dy, dz, spacing, count) {
+        const ret = wasm.remuskernel_linearPattern(this.__wbg_ptr, solid, dx, dy, dz, spacing, count);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Linear pattern journaled as one evolution entry (kind
+     * `linear_pattern`). Returns JSON `{"compound", "op"}`.
+     * @param {number} solid
+     * @param {number} dx
+     * @param {number} dy
+     * @param {number} dz
+     * @param {number} spacing
+     * @param {number} count
+     * @returns {string}
+     */
+    linearPatternJournaled(solid, dx, dy, dz, spacing, count) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_linearPatternJournaled(this.__wbg_ptr, solid, dx, dy, dz, spacing, count);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Loft two or more profile faces into a solid.
+     *
+     * Takes an array of face handles. Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if fewer than 2 faces or profiles have
+     * different vertex counts.
+     * @param {Uint32Array} faces
+     * @returns {number}
+     */
+    loft(faces) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_loft(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Loft profiles with smooth NURBS interpolation.
+     *
+     * Like `loft()`, but produces smooth NURBS side surfaces for 3+
+     * profiles instead of piecewise-planar quads. The surfaces
+     * interpolate through all intermediate profiles with C1+ continuity.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if fewer than 2 profiles are given, profiles have
+     * different vertex counts, or surface fitting fails.
+     * @param {Uint32Array} faces
+     * @returns {number}
+     */
+    loftSmooth(faces) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_loftSmooth(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Loft profiles with options for start/end points and ruled mode.
+     *
+     * `options` is a JSON string with optional fields:
+     * - `startPoint: [x, y, z]` — apex point before first profile
+     * - `endPoint: [x, y, z]` — apex point after last profile
+     * - `ruled: bool` — true for ruled (linear) surfaces (default), false for smooth
+     * @param {Uint32Array} faces
+     * @param {string} options
+     * @returns {number}
+     */
+    loftWithOptions(faces, options) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(options, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_loftWithOptions(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a box solid with one corner at the origin and the opposite
+     * corner at `(dx, dy, dz)`.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if any dimension is non-positive or non-finite.
+     * @param {number} dx
+     * @param {number} dy
+     * @param {number} dz
+     * @returns {number}
+     */
+    makeBox(dx, dy, dz) {
+        const ret = wasm.remuskernel_makeBox(this.__wbg_ptr, dx, dy, dz);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a circular polygon approximation on the XY plane.
+     *
+     * The circle is centered at the origin with the given `radius`,
+     * approximated by `segments` straight edges.
+     * Returns a face handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if fewer than 3 segments are specified.
+     * @param {number} radius
+     * @param {number} segments
+     * @returns {number}
+     */
+    makeCircle(radius, segments) {
+        const ret = wasm.remuskernel_makeCircle(this.__wbg_ptr, radius, segments);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a circular arc edge between two points.
+     *
+     * The arc lies on a circle with the given center, normal axis, and
+     * radius derived from `|start − center|`. The arc goes from start
+     * to end counter-clockwise when viewed along the normal.
+     *
+     * Returns an edge handle (`u32`).
+     * @param {number} start_x
+     * @param {number} start_y
+     * @param {number} start_z
+     * @param {number} end_x
+     * @param {number} end_y
+     * @param {number} end_z
+     * @param {number} center_x
+     * @param {number} center_y
+     * @param {number} center_z
+     * @param {number} axis_x
+     * @param {number} axis_y
+     * @param {number} axis_z
+     * @returns {number}
+     */
+    makeCircleArc3d(start_x, start_y, start_z, end_x, end_y, end_z, center_x, center_y, center_z, axis_x, axis_y, axis_z) {
+        const ret = wasm.remuskernel_makeCircleArc3d(this.__wbg_ptr, start_x, start_y, start_z, end_x, end_y, end_z, center_x, center_y, center_z, axis_x, axis_y, axis_z);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a closed circular edge with true `Circle` curve geometry.
+     *
+     * Unlike `makeCircle` (which returns a polygon face approximation),
+     * this creates a single closed edge with an [`EdgeCurve::Circle`]
+     * backing curve and parameter domain `[0, 2π]`. The start and end
+     * vertex are shared at the seam point `circle.evaluate(0.0)`.
+     *
+     * Returns an edge handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if any coordinate is NaN/infinite, `radius` is
+     * non-positive, or the normal vector is zero.
+     * @param {number} cx
+     * @param {number} cy
+     * @param {number} cz
+     * @param {number} nx
+     * @param {number} ny
+     * @param {number} nz
+     * @param {number} radius
+     * @returns {number}
+     */
+    makeCircleEdge(cx, cy, cz, nx, ny, nz, radius) {
+        const ret = wasm.remuskernel_makeCircleEdge(this.__wbg_ptr, cx, cy, cz, nx, ny, nz, radius);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a closed circular edge with a caller-supplied reference x-direction.
+     *
+     * Like [`makeCircleEdge`](Self::make_circle_edge), but `ref_dir = (rx, ry, rz)`
+     * is projected onto the plane perpendicular to the normal to fix the
+     * circle's `u_axis` — which controls the seam vertex position at
+     * `circle.evaluate(0.0)`. Use when downstream code (PCurve computation,
+     * extrusion frame) depends on a specific seam placement.
+     *
+     * `ref_dir` must be non-zero (rejected at this boundary) and ideally
+     * not parallel to the normal — `Frame3::from_normal_and_ref` falls
+     * back to an arbitrary perpendicular when the projection of `ref_dir`
+     * onto the plane is degenerate, defeating the purpose of this call.
+     *
+     * Returns an edge handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if any coordinate is NaN/infinite, `radius` is
+     * non-positive, or the normal vector or `ref_dir` is zero.
+     * @param {number} cx
+     * @param {number} cy
+     * @param {number} cz
+     * @param {number} nx
+     * @param {number} ny
+     * @param {number} nz
+     * @param {number} radius
+     * @param {number} rx
+     * @param {number} ry
+     * @param {number} rz
+     * @returns {number}
+     */
+    makeCircleEdgeWithRef(cx, cy, cz, nx, ny, nz, radius, rx, ry, rz) {
+        const ret = wasm.remuskernel_makeCircleEdgeWithRef(this.__wbg_ptr, cx, cy, cz, nx, ny, nz, radius, rx, ry, rz);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a circular face on the XY plane (using NURBS arcs).
+     *
+     * Returns a face handle.
+     * @param {number} radius
+     * @param {number} segments
+     * @returns {number}
+     */
+    makeCircleFace(radius, segments) {
+        const ret = wasm.remuskernel_makeCircleFace(this.__wbg_ptr, radius, segments);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a compound from multiple solid handles.
+     *
+     * Returns a compound handle (stored as `u32`).
+     * @param {Uint32Array} solid_handles
+     * @returns {number}
+     */
+    makeCompound(solid_handles) {
+        const ptr0 = passArray32ToWasm0(solid_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_makeCompound(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a cone or frustum solid centered at the origin, axis along +Z.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if height is non-positive or both radii are zero.
+     * @param {number} bottom_radius
+     * @param {number} top_radius
+     * @param {number} height
+     * @returns {number}
+     */
+    makeCone(bottom_radius, top_radius, height) {
+        const ret = wasm.remuskernel_makeCone(this.__wbg_ptr, bottom_radius, top_radius, height);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a cylinder solid centered at the origin, axis along +Z.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if radius or height is non-positive.
+     * @param {number} radius
+     * @param {number} height
+     * @returns {number}
+     */
+    makeCylinder(radius, height) {
+        const ret = wasm.remuskernel_makeCylinder(this.__wbg_ptr, radius, height);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a trimmed elliptical arc edge.
+     *
+     * The ellipse is defined by `center`, `axis` (plane normal), the
+     * `ref` major-axis direction, and `semi_major`/`semi_minor`. The
+     * `start`/`end` points trim it to the CCW arc between them (they must
+     * lie on the ellipse). Produces an `EdgeCurve::Ellipse` edge — not a
+     * NURBS approximation — so it reports CIRCLE/ELLIPSE-class geometry.
+     *
+     * Returns an edge handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if any coordinate is NaN/infinite, a semi-axis is
+     * non-positive, `semi_minor` exceeds `semi_major`, or `axis`/`ref` is
+     * a zero vector, or an endpoint does not lie on the ellipse.
+     * @param {number} start_x
+     * @param {number} start_y
+     * @param {number} start_z
+     * @param {number} end_x
+     * @param {number} end_y
+     * @param {number} end_z
+     * @param {number} center_x
+     * @param {number} center_y
+     * @param {number} center_z
+     * @param {number} axis_x
+     * @param {number} axis_y
+     * @param {number} axis_z
+     * @param {number} ref_x
+     * @param {number} ref_y
+     * @param {number} ref_z
+     * @param {number} semi_major
+     * @param {number} semi_minor
+     * @returns {number}
+     */
+    makeEllipseArc3d(start_x, start_y, start_z, end_x, end_y, end_z, center_x, center_y, center_z, axis_x, axis_y, axis_z, ref_x, ref_y, ref_z, semi_major, semi_minor) {
+        const ret = wasm.remuskernel_makeEllipseArc3d(this.__wbg_ptr, start_x, start_y, start_z, end_x, end_y, end_z, center_x, center_y, center_z, axis_x, axis_y, axis_z, ref_x, ref_y, ref_z, semi_major, semi_minor);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a closed elliptical edge with true `Ellipse` curve geometry.
+     *
+     * Creates a single closed edge with an [`EdgeCurve::Ellipse`] backing
+     * curve and parameter domain `[0, 2π]`. The start and end vertex are
+     * shared at the seam point `ellipse.evaluate(0.0)`.
+     *
+     * Returns an edge handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if any coordinate is NaN/infinite, either
+     * semi-axis is non-positive, `semi_minor` exceeds `semi_major`, or
+     * the normal vector is zero.
+     * @param {number} cx
+     * @param {number} cy
+     * @param {number} cz
+     * @param {number} nx
+     * @param {number} ny
+     * @param {number} nz
+     * @param {number} semi_major
+     * @param {number} semi_minor
+     * @returns {number}
+     */
+    makeEllipseEdge(cx, cy, cz, nx, ny, nz, semi_major, semi_minor) {
+        const ret = wasm.remuskernel_makeEllipseEdge(this.__wbg_ptr, cx, cy, cz, nx, ny, nz, semi_major, semi_minor);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a closed elliptical edge with a caller-supplied reference major-axis.
+     *
+     * Like [`makeEllipseEdge`](Self::make_ellipse_edge), but `ref_dir = (rx, ry, rz)`
+     * is projected onto the plane perpendicular to the normal to fix the
+     * ellipse's major-axis direction (`u_axis`, carrying `semi_major`).
+     * Use this when the caller has an intended major-axis orientation —
+     * otherwise the default-frame variant chooses an arbitrary
+     * perpendicular, which can cause adapters to fall back to NURBS
+     * approximations to preserve their requested orientation.
+     *
+     * `ref_dir` must be non-zero (rejected at this boundary) and ideally
+     * not parallel to the normal — `Frame3::from_normal_and_ref` falls
+     * back to an arbitrary perpendicular when the projection of `ref_dir`
+     * onto the plane is degenerate, defeating the purpose of this call.
+     *
+     * Returns an edge handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if any coordinate is NaN/infinite, either
+     * semi-axis is non-positive, `semi_minor` exceeds `semi_major`, or
+     * the normal vector or `ref_dir` is zero.
+     * @param {number} cx
+     * @param {number} cy
+     * @param {number} cz
+     * @param {number} nx
+     * @param {number} ny
+     * @param {number} nz
+     * @param {number} semi_major
+     * @param {number} semi_minor
+     * @param {number} rx
+     * @param {number} ry
+     * @param {number} rz
+     * @returns {number}
+     */
+    makeEllipseEdgeWithRef(cx, cy, cz, nx, ny, nz, semi_major, semi_minor, rx, ry, rz) {
+        const ret = wasm.remuskernel_makeEllipseEdgeWithRef(this.__wbg_ptr, cx, cy, cz, nx, ny, nz, semi_major, semi_minor, rx, ry, rz);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create an ellipsoid solid centered at the origin.
+     *
+     * Built by creating a unit sphere and scaling it by `(rx, ry, rz)`.
+     *
+     * # Errors
+     *
+     * Returns an error if any radius is non-positive.
+     * @param {number} rx
+     * @param {number} ry
+     * @param {number} rz
+     * @returns {number}
+     */
+    makeEllipsoid(rx, ry, rz) {
+        const ret = wasm.remuskernel_makeEllipsoid(this.__wbg_ptr, rx, ry, rz);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a face from a wire.
+     *
+     * Samples the wire's edges and attaches a planar surface only if the
+     * geometry lies within tolerance of a single plane; otherwise a
+     * non-planar surface is attached, so `getSurfaceType` never reports
+     * `"plane"` for a non-coplanar wire.
+     *
+     * Returns a face handle (`u32`).
+     * @param {number} wire
+     * @returns {number}
+     */
+    makeFaceFromWire(wire) {
+        const ret = wasm.remuskernel_makeFaceFromWire(this.__wbg_ptr, wire);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a planar face from an outer wire and zero or more hole wires
+     * in one call.
+     *
+     * Equivalent to `makePlanarFaceFromWire` followed by `addHolesToFace`,
+     * but it builds a single face instead of two and runs the same hole
+     * validation once. The outer wire must be planar; each hole wire must
+     * be a closed loop lying on that plane, inside the outer wire, and
+     * disjoint from the other holes (see
+     * [`holed_face`](crate::holed_face)). Hole winding is not
+     * constrained.
+     *
+     * Returns a face handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the outer wire is not
+     * planar, or a hole wire fails validation.
+     * @param {number} outer_wire
+     * @param {Uint32Array} inner_wire_handles
+     * @returns {number}
+     */
+    makeFaceFromWires(outer_wire, inner_wire_handles) {
+        const ptr0 = passArray32ToWasm0(inner_wire_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_makeFaceFromWires(this.__wbg_ptr, outer_wire, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Build an involute spur gear, internal gear or rack from a JSON
+     * specification, as typed data (see the module docs for the fields).
+     *
+     * Never throws on a refusal: the envelope's `status` is `"error"` with
+     * a `gear:<reason>` code and the session unchanged.
+     * @param {string} spec
+     * @returns {SolidOperationDetailedResult}
+     */
+    makeGearDetailed(spec) {
+        const ptr0 = passStringToWasm0(spec, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_makeGearDetailed(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Create a straight-line edge between two points.
+     *
+     * Returns an edge handle (`u32`).
+     * @param {number} x1
+     * @param {number} y1
+     * @param {number} z1
+     * @param {number} x2
+     * @param {number} y2
+     * @param {number} z2
+     * @returns {number}
+     */
+    makeLineEdge(x1, y1, z1, x2, y2, z2) {
+        const ret = wasm.remuskernel_makeLineEdge(this.__wbg_ptr, x1, y1, z1, x2, y2, z2);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a NURBS curve edge.
+     *
+     * Returns an edge handle (`u32`).
+     * @param {number} start_x
+     * @param {number} start_y
+     * @param {number} start_z
+     * @param {number} end_x
+     * @param {number} end_y
+     * @param {number} end_z
+     * @param {number} degree
+     * @param {Float64Array} knots
+     * @param {Float64Array} control_points
+     * @param {Float64Array} weights
+     * @returns {number}
+     */
+    makeNurbsEdge(start_x, start_y, start_z, end_x, end_y, end_z, degree, knots, control_points, weights) {
+        const ptr0 = passArrayF64ToWasm0(knots, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(control_points, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArrayF64ToWasm0(weights, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_makeNurbsEdge(this.__wbg_ptr, start_x, start_y, start_z, end_x, end_y, end_z, degree, ptr0, len0, ptr1, len1, ptr2, len2);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Serializes "the `index`-th `kind` output of journal operation
+     * `op`" as a portable reference string (versioned JSON, opaque).
+     * @param {number} op
+     * @param {string} kind
+     * @param {number} index
+     * @returns {string}
+     */
+    makeOperationOutputRef(op, kind, index) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_makeOperationOutputRef(this.__wbg_ptr, op, ptr0, len0, index);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Create a strictly planar face from a wire.
+     *
+     * Fails with a "wire is not planar" error if the wire's geometry does
+     * not lie within tolerance of a single plane. Use this for planar-only
+     * construction intent (probing whether a wire is planar).
+     *
+     * Returns a face handle (`u32`).
+     * @param {number} wire
+     * @returns {number}
+     */
+    makePlanarFaceFromWire(wire) {
+        const ret = wasm.remuskernel_makePlanarFaceFromWire(this.__wbg_ptr, wire);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a polygonal face from flat coordinate triples `[x,y,z, ...]`.
+     *
+     * Requires at least 3 points (9 `f64` values).
+     * Returns a face handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if `coords` length is not a multiple of 3,
+     * fewer than 3 points are provided, or the face normal is degenerate.
+     * @param {Float64Array} coords
+     * @returns {number}
+     */
+    makePolygon(coords) {
+        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_makePolygon(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a closed polygon wire from flat coordinates.
+     *
+     * Returns a wire handle.
+     * @param {Float64Array} coords
+     * @returns {number}
+     */
+    makePolygonWire(coords) {
+        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_makePolygonWire(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a rectangular face on the XY plane centered at the origin.
+     *
+     * Returns a face handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if `width` or `height` is non-positive, NaN,
+     * or infinite, or if the face geometry cannot be constructed.
+     * @param {number} width
+     * @param {number} height
+     * @returns {number}
+     */
+    makeRectangle(width, height) {
+        const ret = wasm.remuskernel_makeRectangle(this.__wbg_ptr, width, height);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a regular polygon wire on the XY plane.
+     *
+     * Returns a wire handle.
+     * @param {number} radius
+     * @param {number} n_sides
+     * @returns {number}
+     */
+    makeRegularPolygonWire(radius, n_sides) {
+        const ret = wasm.remuskernel_makeRegularPolygonWire(this.__wbg_ptr, radius, n_sides);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create and validate a first-class sheet body from face handles.
+     *
+     * Free boundary edges are retained and reported by `validateSheetBody`.
+     * The call rolls back if the faces do not form a valid connected sheet.
+     *
+     * Returns a shell-backed sheet-body handle (`u32`).
+     * @param {Uint32Array} face_handles
+     * @returns {number}
+     */
+    makeSheetBody(face_handles) {
+        const ptr0 = passArray32ToWasm0(face_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_makeSheetBody(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a solid from a set of faces by sewing them together.
+     *
+     * Alias for `sewFaces` with a default tolerance. This is the equivalent
+     * of sewing faces into a closed shell and building a solid.
+     * @param {Uint32Array} face_handles
+     * @returns {number}
+     */
+    makeSolid(face_handles) {
+        const ptr0 = passArray32ToWasm0(face_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_makeSolid(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a sphere solid centered at the origin.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if radius is non-positive or segments < 4.
+     * @param {number} radius
+     * @param {number} segments
+     * @returns {number}
+     */
+    makeSphere(radius, segments) {
+        const ret = wasm.remuskernel_makeSphere(this.__wbg_ptr, radius, segments);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a circular arc edge defined by start point, tangent direction
+     * at start, and end point.
+     *
+     * If the tangent is parallel to the start→end chord (collinear), falls
+     * back to a straight line edge.
+     *
+     * Returns an edge handle (`u32`).
+     * @param {number} start_x
+     * @param {number} start_y
+     * @param {number} start_z
+     * @param {number} tangent_x
+     * @param {number} tangent_y
+     * @param {number} tangent_z
+     * @param {number} end_x
+     * @param {number} end_y
+     * @param {number} end_z
+     * @returns {number}
+     */
+    makeTangentArc3d(start_x, start_y, start_z, tangent_x, tangent_y, tangent_z, end_x, end_y, end_z) {
+        const ret = wasm.remuskernel_makeTangentArc3d(this.__wbg_ptr, start_x, start_y, start_z, tangent_x, tangent_y, tangent_z, end_x, end_y, end_z);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a torus solid centered at the origin in the XY plane.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if radii are non-positive or minor >= major.
+     * @param {number} major_radius
+     * @param {number} minor_radius
+     * @param {number} segments
+     * @returns {number}
+     */
+    makeTorus(major_radius, minor_radius, segments) {
+        const ret = wasm.remuskernel_makeTorus(this.__wbg_ptr, major_radius, minor_radius, segments);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a vertex at the given position.
+     *
+     * Returns a vertex handle (`u32`).
+     * @param {number} x
+     * @param {number} y
+     * @param {number} z
+     * @returns {number}
+     */
+    makeVertex(x, y, z) {
+        const ret = wasm.remuskernel_makeVertex(this.__wbg_ptr, x, y, z);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Create a closed wire from an ordered array of edge handles.
+     *
+     * Returns a wire handle (`u32`).
+     * @param {Uint32Array} edge_handles
+     * @param {boolean} closed
+     * @returns {number}
+     */
+    makeWire(edge_handles, closed) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_makeWire(this.__wbg_ptr, ptr0, len0, closed);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Compute the full mass properties of a solid (unit density).
+     *
+     * Returns a JSON string containing
+     * `{ volume, centerOfMass, inertia, principalMoments, principalAxes }`
+     * (see the `MassPropertiesResult` TypeScript type). The inertia tensor
+     * `[Ixx, Iyy, Izz, Ixy, Ixz, Iyz]` is taken about the center of mass in
+     * the global axis directions; `principalAxes` is row-major, one unit
+     * vector per ascending principal moment. For just the 3x3 matrix, see
+     * [`inertia_tensor`](Self::inertia_tensor).
+     *
+     * Integration runs on the exact face geometry (analytic and NURBS
+     * surfaces, no tessellation), so there is no deflection parameter.
+     *
+     * # Numerical controls (optional)
+     *
+     * Omitting all three reproduces the historical call exactly
+     * (`gaussOrder = 8`, `adaptiveEps = 1e-6`, `maxDepth = 8`).
+     *
+     * * `adaptiveEps` — positive finite relative tolerance of the
+     *   coarse-versus-refined quadrature estimator, applied to every area,
+     *   volume and moment component per initial patch.
+     * * `maxDepth` — integer `0..=32`: refinement levels beyond the initial
+     *   patches. Larger values are rejected, not clamped.
+     * * `gaussOrder` — integer `1..=20`: the Gauss rule per quadrature cell.
+     *
+     * Untrimmed analytic patches always refine. Trimmed curved faces, NURBS
+     * faces and torus tube bands keep the historical fixed rule while
+     * `adaptiveEps` and `maxDepth` are both at their defaults and refine with
+     * any other pair; passing the default values explicitly is the same as
+     * omitting them. Refinement converges the quadrature over the face's
+     * resolved domain; it does not reduce the chord error of a sampled trim
+     * outline. Exact and sampled planar faces integrate in closed form.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid, a control is out of
+     * range, the requested tolerance cannot be met within `maxDepth` or the
+     * per-face work budget (never an unconverged result), integration
+     * fails, or the solid has zero volume.
+     * @param {number} solid
+     * @param {number | null} [adaptive_eps]
+     * @param {number | null} [max_depth]
+     * @param {number | null} [gauss_order]
+     * @returns {any}
+     */
+    massProperties(solid, adaptive_eps, max_depth, gauss_order) {
+        const ret = wasm.remuskernel_massProperties(this.__wbg_ptr, solid, !isLikeNone(adaptive_eps), isLikeNone(adaptive_eps) ? 0 : adaptive_eps, !isLikeNone(max_depth), isLikeNone(max_depth) ? 0 : max_depth, !isLikeNone(gauss_order), isLikeNone(gauss_order) ? 0 : gauss_order);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Measure curvature of an edge curve at parameter `t`.
+     *
+     * Returns `[curvature, tangent_x, tangent_y, tangent_z, normal_x, normal_y, normal_z]`.
+     * Curvature is 1/radius. For lines, curvature is 0.
+     * @param {number} edge
+     * @param {number} t
+     * @returns {Float64Array}
+     */
+    measureCurvatureAtEdge(edge, t) {
+        const ret = wasm.remuskernel_measureCurvatureAtEdge(this.__wbg_ptr, edge, t);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Measure principal curvatures at (u, v) on a face surface.
+     *
+     * Returns `[k1, k2, d1x, d1y, d1z, d2x, d2y, d2z]` where k1/k2 are
+     * principal curvatures and d1/d2 are the corresponding direction vectors.
+     * @param {number} face
+     * @param {number} u
+     * @param {number} v
+     * @returns {Float64Array}
+     */
+    measureCurvatureAtSurface(face, u, v) {
+        const ret = wasm.remuskernel_measureCurvatureAtSurface(this.__wbg_ptr, face, u, v);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Exact measurement reuse counters and independent area storage bounds,
+     * as camelCase JSON. Existing volume memo bounds are included separately.
+     *
+     * # Errors
+     * Returns an error when the diagnostic cannot be serialized.
+     * @returns {string}
+     */
+    measurementReuseStats() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_measurementReuseStats(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Merge coincident vertices in a solid.
+     *
+     * Returns the number of vertices merged.
+     * @param {number} solid
+     * @param {number} tolerance
+     * @returns {number}
+     */
+    mergeCoincidentVertices(solid, tolerance) {
+        const ret = wasm.remuskernel_mergeCoincidentVertices(this.__wbg_ptr, solid, tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Perform a mesh boolean on raw triangle data.
+     *
+     * Returns a `JsMesh` with the result.
+     * @param {Float64Array} positions_a
+     * @param {Uint32Array} indices_a
+     * @param {Float64Array} positions_b
+     * @param {Uint32Array} indices_b
+     * @param {string} op
+     * @param {number} tolerance
+     * @returns {JsMesh}
+     */
+    meshBoolean(positions_a, indices_a, positions_b, indices_b, op, tolerance) {
+        const ptr0 = passArrayF64ToWasm0(positions_a, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray32ToWasm0(indices_a, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArrayF64ToWasm0(positions_b, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passArray32ToWasm0(indices_b, wasm.__wbindgen_malloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ptr4 = passStringToWasm0(op, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len4 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_meshBoolean(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return JsMesh.__wrap(ret[0]);
+    }
+    /**
+     * Sample edges of a solid into polylines for wireframe rendering.
+     *
+     * Returns a `JsEdgeLines` containing flattened positions and per-edge
+     * offset indices. The `deflection` parameter controls sampling density.
+     *
+     * Smooth edges (between faces on the same underlying surface) are
+     * automatically filtered out to reduce wireframe clutter. These edges
+     * arise from boolean face-splitting and don't represent visible creases.
+     * @param {number} solid
+     * @param {number} deflection
+     * @param {number | null} [angular_tolerance]
+     * @returns {JsEdgeLines}
+     */
+    meshEdges(solid, deflection, angular_tolerance) {
+        const ret = wasm.remuskernel_meshEdges(this.__wbg_ptr, solid, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return JsEdgeLines.__wrap(ret[0]);
+    }
+    /**
+     * Sample ALL edges of a solid (no smooth-edge filtering).
+     *
+     * Same as `meshEdges` but includes edges between co-surface faces.
+     * Useful for debugging topology.
+     * @param {number} solid
+     * @param {number} deflection
+     * @param {number | null} [angular_tolerance]
+     * @returns {JsEdgeLines}
+     */
+    meshEdgesAll(solid, deflection, angular_tolerance) {
+        const ret = wasm.remuskernel_meshEdgesAll(this.__wbg_ptr, solid, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return JsEdgeLines.__wrap(ret[0]);
+    }
+    /**
+     * Tessellate a solid and report position-welded mesh quality metrics.
+     *
+     * Returns a JSON string containing
+     * `{ triangleCount, boundaryEdges, nonManifoldEdges, eulerCharacteristic, isWatertight }`
+     * (see the `MeshQualityResult` TypeScript type). Vertices are welded on a
+     * 1 µm grid before counting, so position-duplicate vertices cannot mask
+     * a leak. Pass the same optional angular tolerance used for rendering or
+     * export so the quality report describes that exact tessellation.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or tessellation fails.
+     * @param {number} solid
+     * @param {number} deflection
+     * @param {number | null} [angular_tolerance]
+     * @returns {any}
+     */
+    meshQuality(solid, deflection, angular_tolerance) {
+        const ret = wasm.remuskernel_meshQuality(this.__wbg_ptr, solid, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Bounded, module-local mesh reuse counters and storage estimate as
+     * JSON, or `null` when disabled. Contains no geometry or arena handles.
+     * The estimate is separate from checkpoint bytes and is not RSS.
+     *
+     * # Errors
+     * Returns an error if the diagnostic cannot be serialized.
+     * @returns {string}
+     */
+    meshReuseStats() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_meshReuseStats(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Convex Minkowski sum of two solids (`A ⊕ B`).
+     *
+     * Returns the convex hull of all pairwise vertex sums — exact for convex
+     * polytopes (boxes, or a tessellated-sphere rolling tool), a convex
+     * over-approximation otherwise. Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if either handle is invalid, either solid is empty, or
+     * the summed points are degenerate so no hull can be built.
+     * @param {number} solid_a
+     * @param {number} solid_b
+     * @returns {number}
+     */
+    minkowskiSum(solid_a, solid_b) {
+        const ret = wasm.remuskernel_minkowskiSum(this.__wbg_ptr, solid_a, solid_b);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Mirror a solid across a plane.
+     *
+     * Returns a new solid handle.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or the normal is zero.
+     * @param {number} solid
+     * @param {number} px
+     * @param {number} py
+     * @param {number} pz
+     * @param {number} nx
+     * @param {number} ny
+     * @param {number} nz
+     * @returns {number}
+     */
+    mirror(solid, px, py, pz, nx, ny, nz) {
+        const ret = wasm.remuskernel_mirror(this.__wbg_ptr, solid, px, py, pz, nx, ny, nz);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Move a supported face selection through exact neighbor re-limitation.
+     *
+     * The qualified domain includes coherent planar groups, holed planar
+     * supports with incident analytic fillet bands, and inward coaxial bore
+     * walls. Returns a new solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if any handle is invalid, the faces cannot move as a
+     * coherent group, or the edit does not produce a valid solid.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {number} distance
+     * @returns {number}
+     */
+    moveFaces(solid, faces, distance) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_moveFaces(this.__wbg_ptr, solid, ptr0, len0, distance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Move selected faces and return an exact result or a typed refusal.
+     *
+     * Additive twin of [`moveFaces`](Self::move_faces_binding), with the same
+     * supported geometry and work limits. Distances are relative to `solid`
+     * and `faces`; a drag should keep those source handles fixed. Replace
+     * the displayed preview only on `status: "ok"`. A refusal returns no
+     * solid and preserves both the source and earlier successful previews,
+     * so the caller can retain its last valid frame and try another distance.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {number} distance
+     * @returns {SolidOperationDetailedResult}
+     */
+    moveFacesDetailed(solid, faces, distance) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_moveFacesDetailed(this.__wbg_ptr, solid, ptr0, len0, distance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Move faces with construction history.
+     *
+     * Planar re-limitation and coaxial bore moves include edge and vertex
+     * history. Blend moves retain copy-derived history or a complete, unique
+     * boundary correspondence anchored on construction face identities.
+     * Ambiguous reconstructed boundaries retain faces-only history.
+     * Returns JSON `{"solid", "op"}`.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {number} distance
+     * @returns {string}
+     */
+    moveFacesJournaled(solid, faces, distance) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_moveFacesJournaled(this.__wbg_ptr, solid, ptr0, len0, distance);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * `moveFaces` of a prepared selection: moves it `distance` from the
+     * prepared source and returns the new solid handle.
+     *
+     * The result and every refusal are those of `moveFaces` for the same
+     * source, faces and distance; distances are source-relative, as in
+     * `moveFaces`.
+     *
+     * # Errors
+     *
+     * Returns an error for an unknown or released handle, a non-finite
+     * distance, a source that changed since preparation (prepare again), or
+     * any `moveFaces` refusal. A refusal leaves the topology unchanged.
+     * @param {number} prepared
+     * @param {number} distance
+     * @returns {number}
+     */
+    moveFacesPrepared(prepared, distance) {
+        const ret = wasm.remuskernel_moveFacesPrepared(this.__wbg_ptr, prepared, distance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * `moveFacesJournaled` of a prepared selection.
+     *
+     * Returns the same JSON `{"solid", "op"}` and records the same
+     * `move_faces` evolution entry as `moveFacesJournaled` for the same
+     * source, faces and distance.
+     *
+     * # Errors
+     *
+     * As `moveFacesPrepared`; a refusal restores topology and history.
+     * @param {number} prepared
+     * @param {number} distance
+     * @returns {string}
+     */
+    moveFacesPreparedJournaled(prepared, distance) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_moveFacesPreparedJournaled(this.__wbg_ptr, prepared, distance);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Sweep through multiple section profiles along a spine, lofting the
+     * rotation-minimizing-frame-placed profiles.
+     *
+     * `face_handles` and `params` are parallel arrays: each planar profile and
+     * its parameter in `[0, 1]` along the spine (given as raw NURBS data).
+     * `ruled` selects ruled (planar bands) vs smooth (NURBS) lofted sides.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error for fewer than two sections, mismatched array lengths, a
+     * non-finite or out-of-range value, a non-planar profile, or loft failure.
+     * @param {Uint32Array} face_handles
+     * @param {Float64Array} params
+     * @param {number} spine_degree
+     * @param {Float64Array} spine_knots
+     * @param {Float64Array} spine_control_points
+     * @param {Float64Array} spine_weights
+     * @param {boolean} ruled
+     * @returns {number}
+     */
+    multiSectionSweep(face_handles, params, spine_degree, spine_knots, spine_control_points, spine_weights, ruled) {
+        const ptr0 = passArray32ToWasm0(face_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(params, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArrayF64ToWasm0(spine_knots, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passArrayF64ToWasm0(spine_control_points, wasm.__wbindgen_malloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ptr4 = passArrayF64ToWasm0(spine_weights, wasm.__wbindgen_malloc);
+        const len4 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_multiSectionSweep(this.__wbg_ptr, ptr0, len0, ptr1, len1, spine_degree, ptr2, len2, ptr3, len3, ptr4, len4, ruled);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Mutually trim two transversal planar sheets by their oriented sides.
+     *
+     * Returns `[trimmedA, trimmedB]` in input order.
+     * @param {number} sheet_a
+     * @param {number} sheet_b
+     * @param {boolean} keep_a_positive
+     * @param {boolean} keep_b_positive
+     * @returns {Uint32Array}
+     */
+    mutualTrimSheets(sheet_a, sheet_b, keep_a_positive, keep_b_positive) {
+        const ret = wasm.remuskernel_mutualTrimSheets(this.__wbg_ptr, sheet_a, sheet_b, keep_a_positive, keep_b_positive);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Create a new, empty kernel.
+     */
+    constructor() {
+        const ret = wasm.remuskernel_new();
+        this.__wbg_ptr = ret;
+        RemusKernelFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * Offset every face of a solid and return exact, disclosed-approximate,
+     * or refused results as typed data.
+     *
+     * Additive twin of [`offsetSolid`](Self::offset_solid), on the same
+     * engine. Analytic faces offset exactly. A NURBS input face would be
+     * offset by a sampled refit, so a result reports `quality:
+     * "approximate"` and lists those input faces under `sampledFaces`; with
+     * `exactOnly: true` the call refuses before touching topology
+     * (`quality_refused` / `exact_only_unattainable`). The offset
+     * intersector does not yet join a NURBS face to any neighbour, so a
+     * permissive NURBS offset currently ends in that engine's own refusal.
+     * @param {number} solid
+     * @param {number} distance
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    offsetDetailed(solid, distance, exact_only) {
+        const ret = wasm.remuskernel_offsetDetailed(this.__wbg_ptr, solid, distance, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Offset a face by a distance along its surface normal.
+     *
+     * Returns the new offset face handle.
+     *
+     * # Errors
+     *
+     * Returns an error if the face handle is invalid or the operation fails.
+     * @param {number} face
+     * @param {number} distance
+     * @param {number} samples
+     * @returns {number}
+     */
+    offsetFace(face, distance, samples) {
+        const ret = wasm.remuskernel_offsetFace(this.__wbg_ptr, face, distance, samples);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Offset a face with disclosed result quality.
+     *
+     * The plain [`offsetFace`](Self::offset_face) binding carries a
+     * caller-chosen `samples` discretization knob that contradicts the
+     * exact-kernel contract. This binding takes an explicit opt-in to
+     * approximation instead — `approximation_samples` is a grid resolution
+     * (a positive integer within the public work budget), or
+     * omitted/`null` for the exact-only policy under which a NURBS face
+     * fails with a typed `unsupported` refusal — and reports whether the
+     * sampled NURBS refit ran (`quality: "approximate"`, with the count),
+     * mirroring [`booleanWithQuality`](Self::boolean_with_quality).
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, the distance is not finite,
+     * the sample count is present but out of budget, or (under the
+     * exact-only policy) the face has no exact offset.
+     * @param {number} face
+     * @param {number} distance
+     * @param {number | null} [approximation_samples]
+     * @returns {FaceOffsetQualityResult}
+     */
+    offsetFaceWithQuality(face, distance, approximation_samples) {
+        const ret = wasm.remuskernel_offsetFaceWithQuality(this.__wbg_ptr, face, distance, !isLikeNone(approximation_samples), isLikeNone(approximation_samples) ? 0 : approximation_samples);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * V2 offset journaled as one construction-derived face, edge and vertex
+     * evolution entry (kind `offset`).
+     *
+     * Returns JSON `{"solid", "op", "evolution"}`. `evolution` lists every
+     * result face, edge and vertex as `modified`, `merged`, `generated` or
+     * `unresolved` (with `candidates` and a typed `reason`, such as
+     * `ambiguous_incidence` for a torus seam), plus a `completeness` report
+     * (`accounted`, `resolved`, and per-kind `omitted`/`phantom`/`unresolved`
+     * lists) checked against the actual result.
+     * @param {number} solid
+     * @param {number} distance
+     * @returns {string}
+     */
+    offsetJournaled(solid, distance) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_offsetJournaled(this.__wbg_ptr, solid, distance);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Offset a 2D polygon by a signed distance.
+     *
+     * `coords` is a flat array `[x,y, x,y, ...]` of 2D points.
+     * Returns a flat array of offset polygon coordinates in the input's
+     * winding, or an empty array when the offset collapses the polygon.
+     * When the offset splits it or encloses a hole, only the outer boundary
+     * of the largest piece is returned.
+     * @param {Float64Array} coords
+     * @param {number} distance
+     * @param {number} tolerance
+     * @returns {Float64Array}
+     */
+    offsetPolygon2d(coords, distance, tolerance) {
+        const ptr0 = passArrayF64ToWasm0(coords, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_offsetPolygon2d(this.__wbg_ptr, ptr0, len0, distance, tolerance);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v2;
+    }
+    /**
+     * Offset (shell) a solid by a distance.
+     *
+     * Returns a new solid handle.
+     *
+     * # Errors
+     *
+     * Returns an error if the distance is zero or the solid is invalid.
+     * @param {number} solid
+     * @param {number} distance
+     * @returns {number}
+     */
+    offsetSolid(solid, distance) {
+        const ret = wasm.remuskernel_offsetSolid(this.__wbg_ptr, solid, distance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Offset all faces of a solid outward or inward (V2 pipeline).
+     *
+     * Uses the new `remus-offset` engine with intersection-based joints.
+     *
+     * # Errors
+     *
+     * Returns an error if the distance is not finite or the solid is invalid.
+     * @param {number} solid
+     * @param {number} distance
+     * @returns {number}
+     */
+    offsetSolidV2(solid, distance) {
+        const ret = wasm.remuskernel_offsetSolidV2(this.__wbg_ptr, solid, distance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Offset a wire on a planar face.
+     *
+     * Returns a new wire handle.
+     * @param {number} face
+     * @param {number} distance
+     * @returns {number}
+     */
+    offsetWire(face, distance) {
+        const ret = wasm.remuskernel_offsetWire(this.__wbg_ptr, face, distance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Offset a planar wire directly by a distance with a specific join type.
+     *
+     * Builds a planar face from the wire internally, then offsets it with
+     * the requested corner join. This is the wire-based counterpart to
+     * [`offset_wire_with_join_type`](Self::offset_wire_with_join_type),
+     * which requires a face handle. Consumers that only hold a wire (such
+     * as 2D sketch offsets) can route a join type through this entry point
+     * without first constructing a face.
+     *
+     * `join_type` must be one of `"intersection"`, `"arc"`, or `"chamfer"`.
+     * Returns a new wire handle.
+     *
+     * # Errors
+     *
+     * Returns an error if the wire handle is invalid, the wire is not
+     * planar, the join type string is unrecognized, or the offset
+     * operation fails.
+     * @param {number} wire
+     * @param {number} distance
+     * @param {string} join_type
+     * @returns {number}
+     */
+    offsetWire2DWithJoin(wire, distance, join_type) {
+        const ptr0 = passStringToWasm0(join_type, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_offsetWire2DWithJoin(this.__wbg_ptr, wire, distance, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Offset a wire on a planar face with a specific join type.
+     *
+     * `join_type` must be one of `"intersection"`, `"arc"`, or `"chamfer"`.
+     * Returns a new wire handle.
+     *
+     * # Errors
+     *
+     * Returns an error if the face handle is invalid, the join type string
+     * is unrecognized, or the offset operation fails.
+     * @param {number} face
+     * @param {number} distance
+     * @param {string} join_type
+     * @returns {number}
+     */
+    offsetWireWithJoinType(face, distance, join_type) {
+        const ptr0 = passStringToWasm0(join_type, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_offsetWireWithJoinType(this.__wbg_ptr, face, distance, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Pipe sweep: sweep a profile along a NURBS path (no guide).
+     *
+     * Returns a solid handle.
+     *
+     * # Errors
+     *
+     * Returns an error if the face or path is invalid.
+     * @param {number} face
+     * @param {number} path_degree
+     * @param {Float64Array} path_knots
+     * @param {Float64Array} path_control_points
+     * @param {Float64Array} path_weights
+     * @returns {number}
+     */
+    pipe(face, path_degree, path_knots, path_control_points, path_weights) {
+        const ptr0 = passArrayF64ToWasm0(path_knots, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(path_control_points, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArrayF64ToWasm0(path_weights, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_pipe(this.__wbg_ptr, face, path_degree, ptr0, len0, ptr1, len1, ptr2, len2);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Test if a 2D point is inside a closed polygon.
+     *
+     * `polygon_coords` is a flat array `[x,y, x,y, ...]`.
+     * Returns `true` if the point is inside the polygon (winding number test).
+     * @param {Float64Array} polygon_coords
+     * @param {number} px
+     * @param {number} py
+     * @returns {boolean}
+     */
+    pointInPolygon2d(polygon_coords, px, py) {
+        const ptr0 = passArrayF64ToWasm0(polygon_coords, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_pointInPolygon2d(this.__wbg_ptr, ptr0, len0, px, py);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
+    }
+    /**
+     * Compute minimum distance from a point to an edge.
+     *
+     * Returns `[distance, closest_x, closest_y, closest_z]`.
+     *
+     * # Errors
+     *
+     * Returns an error if the edge handle is invalid.
+     * @param {number} px
+     * @param {number} py
+     * @param {number} pz
+     * @param {number} edge
+     * @returns {Float64Array}
+     */
+    pointToEdgeDistance(px, py, pz, edge) {
+        const ret = wasm.remuskernel_pointToEdgeDistance(this.__wbg_ptr, px, py, pz, edge);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Compute minimum distance from a point to a face.
+     *
+     * Returns `[distance, closest_x, closest_y, closest_z]`.
+     *
+     * # Errors
+     *
+     * Returns an error if the face handle is invalid.
+     * @param {number} px
+     * @param {number} py
+     * @param {number} pz
+     * @param {number} face
+     * @returns {Float64Array}
+     */
+    pointToFaceDistance(px, py, pz, face) {
+        const ret = wasm.remuskernel_pointToFaceDistance(this.__wbg_ptr, px, py, pz, face);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Compute minimum distance from a point to a solid.
+     *
+     * Returns `[distance, closest_x, closest_y, closest_z]`.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid.
+     * @param {number} px
+     * @param {number} py
+     * @param {number} pz
+     * @param {number} solid
+     * @returns {Float64Array}
+     */
+    pointToSolidDistance(px, py, pz, solid) {
+        const ret = wasm.remuskernel_pointToSolidDistance(this.__wbg_ptr, px, py, pz, solid);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Boolean of two 2D polygons: `"union"`, `"intersection"`, or
+     * `"difference"` (`A \ B`).
+     *
+     * Encoding, winding, and tolerance semantics are identical to
+     * [`polygonUnion2d`](Self::polygon_union_2d).
+     * @param {Float64Array} coords_a
+     * @param {Float64Array} coords_b
+     * @param {string} operation
+     * @param {number | null} [tolerance]
+     * @returns {any}
+     */
+    polygonBoolean2d(coords_a, coords_b, operation, tolerance) {
+        const ptr0 = passArrayF64ToWasm0(coords_a, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(coords_b, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(operation, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_polygonBoolean2d(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, !isLikeNone(tolerance), isLikeNone(tolerance) ? 0 : tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Union two 2D polygons with the robust arrangement-based engine.
+     *
+     * Both polygons are flat arrays `[x,y, x,y, ...]`; either winding is
+     * accepted (orientation is normalized internally). `tolerance` is an
+     * absolute linear tolerance in the polygons' own units; pass `null`
+     * or `undefined` for the kernel default (1e-7).
+     *
+     * Returns a JSON string
+     * `{"outer": [[x,y,...], ...], "holes": [[x,y,...], ...]}`
+     * (the `PolygonBoolean2dResult` TypeScript type). Outer loops are
+     * counter-clockwise, hole loops clockwise, and each loop is implicitly
+     * closed. A disjoint union yields several `outer` loops; a union that
+     * encloses a void yields a `holes` entry — unlike
+     * [`intersectPolygons2d`](Self::intersect_polygons_2d), which is a
+     * convex-only Sutherland–Hodgman clipper returning a single loop.
+     *
+     * Both result lists are empty when the operation produces no geometry.
+     * @param {Float64Array} coords_a
+     * @param {Float64Array} coords_b
+     * @param {number | null} [tolerance]
+     * @returns {any}
+     */
+    polygonUnion2d(coords_a, coords_b, tolerance) {
+        const ptr0 = passArrayF64ToWasm0(coords_a, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(coords_b, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_polygonUnion2d(this.__wbg_ptr, ptr0, len0, ptr1, len1, !isLikeNone(tolerance), isLikeNone(tolerance) ? 0 : tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Test if two 2D polygons intersect (overlap).
+     *
+     * Both polygons are flat arrays `[x,y, x,y, ...]`.
+     * Returns `true` if any vertex of one polygon is inside the other
+     * or if any edges cross.
+     * @param {Float64Array} coords_a
+     * @param {Float64Array} coords_b
+     * @returns {boolean}
+     */
+    polygonsIntersect2d(coords_a, coords_b) {
+        const ptr0 = passArrayF64ToWasm0(coords_a, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(coords_b, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_polygonsIntersect2d(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
+    }
+    /**
+     * Prepare repeated moves of `faces` of `solid` for an interactive drag.
+     *
+     * Reads, once, everything a face move takes from the source rather than
+     * from the distance. Returns an opaque handle for `moveFacesPrepared`
+     * and `moveFacesPreparedJournaled`; release it with
+     * `releasePreparedMove` when the drag ends. Preparing edits nothing.
+     *
+     * # Errors
+     *
+     * Returns an error for an invalid handle, a selection over the
+     * `moveFaces` work limits, or when 16 prepared moves are already live.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @returns {number}
+     */
+    prepareMoveFaces(solid, faces) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_prepareMoveFaces(this.__wbg_ptr, solid, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Project one edge along a direction onto a face's trimmed region.
+     * Returns the §8 typed ProjectedCurves object. Refusals throw with the
+     * stable `project-curve:<code>` prefix; omitted options use defaults.
+     * @param {number} edge
+     * @param {number} dir_x
+     * @param {number} dir_y
+     * @param {number} dir_z
+     * @param {number} face
+     * @param {ProjectCurveOptions | null} [options]
+     * @returns {ProjectedCurves}
+     */
+    projectCurveOntoFace(edge, dir_x, dir_y, dir_z, face, options) {
+        const ret = wasm.remuskernel_projectCurveOntoFace(this.__wbg_ptr, edge, dir_x, dir_y, dir_z, face, isLikeNone(options) ? 0 : addToExternrefTable0(options));
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Project edges onto the unbounded plane of a typed SketchFrame object.
+     * Returns the §8 PlaneCurve2d object array without changing topology.
+     * @param {Uint32Array} edges
+     * @param {number} dir_x
+     * @param {number} dir_y
+     * @param {number} dir_z
+     * @param {SketchFrame} frame
+     * @returns {PlaneCurve2d[]}
+     */
+    projectCurvesOntoSketchPlane(edges, dir_x, dir_y, dir_z, frame) {
+        const ptr0 = passArray32ToWasm0(edges, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_projectCurvesOntoSketchPlane(this.__wbg_ptr, ptr0, len0, dir_x, dir_y, dir_z, frame);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v2;
+    }
+    /**
+     * Project edges along a direction onto a solid's first-hit faces.
+     * Returns the §8 typed SolidProjection object, atomically over sources.
+     * @param {Uint32Array} edges
+     * @param {number} dir_x
+     * @param {number} dir_y
+     * @param {number} dir_z
+     * @param {number} solid
+     * @param {ProjectCurveOptions | null} [options]
+     * @returns {SolidProjection}
+     */
+    projectCurvesOntoSolid(edges, dir_x, dir_y, dir_z, solid, options) {
+        const ptr0 = passArray32ToWasm0(edges, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_projectCurvesOntoSolid(this.__wbg_ptr, ptr0, len0, dir_x, dir_y, dir_z, solid, isLikeNone(options) ? 0 : addToExternrefTable0(options));
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Project a solid's edges onto a view plane with hidden-line removal.
+     *
+     * Viewed along `dir` (orthographic) through `origin`, with in-plane x-axis
+     * `x_axis`. Returns a JSON string `{"visible": [[x,y,…]], "hidden": [[…]]}`
+     * — flat 2D polylines in view coordinates. `hidden_lines = false` drops the
+     * hidden set. Occlusion is an exact point-in-solid test.
+     *
+     * # Errors
+     *
+     * Returns an error for an invalid handle, a non-positive `deflection`, or a
+     * degenerate `dir`/`x_axis`.
+     * @param {number} solid
+     * @param {number} origin_x
+     * @param {number} origin_y
+     * @param {number} origin_z
+     * @param {number} dir_x
+     * @param {number} dir_y
+     * @param {number} dir_z
+     * @param {number} x_axis_x
+     * @param {number} x_axis_y
+     * @param {number} x_axis_z
+     * @param {boolean} hidden_lines
+     * @param {number} deflection
+     * @returns {any}
+     */
+    projectEdges(solid, origin_x, origin_y, origin_z, dir_x, dir_y, dir_z, x_axis_x, x_axis_y, x_axis_z, hidden_lines, deflection) {
+        const ret = wasm.remuskernel_projectEdges(this.__wbg_ptr, solid, origin_x, origin_y, origin_z, dir_x, dir_y, dir_z, x_axis_x, x_axis_y, x_axis_z, hidden_lines, deflection);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Project a 3D point onto a face surface using Newton iteration.
+     *
+     * Returns `[u, v, px, py, pz, distance]`.
+     * @param {number} face
+     * @param {number} px
+     * @param {number} py
+     * @param {number} pz
+     * @returns {Float64Array}
+     */
+    projectPointOnSurface(face, px, py, pz) {
+        const ret = wasm.remuskernel_projectPointOnSurface(this.__wbg_ptr, face, px, py, pz);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Project the silhouettes of a solid's curved faces onto a view plane
+     * with hidden-line removal: the outline a drawing shows at the side of a
+     * cylinder, cone, sphere or torus, which no edge carries.
+     *
+     * The view arguments and `hidden_lines` match `projectEdges`, and the two
+     * results together make the outline drawing. Returns a JSON string
+     * `{"visible": [[x,y,…]], "hidden": [[…]], "unsupported": [{"face": id,
+     * "surface": tag}], "approximate": [id]}`: cylinder, cone, sphere and
+     * torus outlines are exact curves clipped to the face; NURBS outlines
+     * are traced on a grid of the face's parameters with every vertex on
+     * the silhouette, and every NURBS face but a certified flat one is
+     * listed in `approximate`, even where no contour was found.
+     * `unsupported` is empty today: every surface type is handled.
+     *
+     * # Errors
+     *
+     * Returns an error for an invalid handle, a non-finite argument, a
+     * non-positive `deflection`, a degenerate `dir`/`x_axis`, or sampling
+     * over the projection work limit.
+     * @param {number} solid
+     * @param {number} origin_x
+     * @param {number} origin_y
+     * @param {number} origin_z
+     * @param {number} dir_x
+     * @param {number} dir_y
+     * @param {number} dir_z
+     * @param {number} x_axis_x
+     * @param {number} x_axis_y
+     * @param {number} x_axis_z
+     * @param {boolean} hidden_lines
+     * @param {number} deflection
+     * @returns {any}
+     */
+    projectSilhouettes(solid, origin_x, origin_y, origin_z, dir_x, dir_y, dir_z, x_axis_x, x_axis_y, x_axis_z, hidden_lines, deflection) {
+        const ret = wasm.remuskernel_projectSilhouettes(this.__wbg_ptr, solid, origin_x, origin_y, origin_z, dir_x, dir_y, dir_z, x_axis_x, x_axis_y, x_axis_z, hidden_lines, deflection);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Propagates face attributes across one journaled operation.
+     *
+     * Returns JSON `{"carried", "unresolvedOutputs", "mergeConflicts",
+     * "refusedInferred"}`.
+     * @param {number} op
+     * @param {boolean} allow_inferred
+     * @returns {string}
+     */
+    propagateAttributesForOp(op, allow_inferred) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_propagateAttributesForOp(this.__wbg_ptr, op, allow_inferred);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Move a planar face of a solid along its outward normal.
+     *
+     * A positive `distance` adds material, a negative one removes it.
+     * Returns a new solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if the handles are invalid, the face is not planar or
+     * not part of the solid, or the edit does not produce a valid solid.
+     * @param {number} solid
+     * @param {number} face
+     * @param {number} distance
+     * @returns {number}
+     */
+    pushPullFace(solid, face, distance) {
+        const ret = wasm.remuskernel_pushPullFace(this.__wbg_ptr, solid, face, distance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Recognize geometric features in a solid.
+     *
+     * Returns a JSON string describing the recognized features.
+     * @param {number} solid
+     * @param {number} deflection
+     * @returns {string}
+     */
+    recognizeFeatures(solid, deflection) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_recognizeFeatures(this.__wbg_ptr, solid, deflection);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Release a prepared move. Returns whether `prepared` was live.
+     * @param {number} prepared
+     * @returns {boolean}
+     */
+    releasePreparedMove(prepared) {
+        const ret = wasm.remuskernel_releasePreparedMove(this.__wbg_ptr, prepared);
+        return ret !== 0;
+    }
+    /**
+     * Remove selected blend regions atomically with complete construction history.
+     *
+     * Returns JSON `{"solid", "op"}`. Seeds expand to recognized blend regions;
+     * unsupported reconstruction or ambiguous history refuses without mutation.
+     * Batch arguments are `solid` and the face-handle array `seeds`.
+     * @param {number} solid
+     * @param {Uint32Array} seeds
+     * @returns {string}
+     */
+    removeBlendsJournaled(solid, seeds) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray32ToWasm0(seeds, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_removeBlendsJournaled(this.__wbg_ptr, solid, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Remove degenerate (zero-length) edges from a solid.
+     *
+     * Returns the number of edges removed.
+     * @param {number} solid
+     * @param {number} tolerance
+     * @returns {number}
+     */
+    removeDegenerateEdges(solid, tolerance) {
+        const ret = wasm.remuskernel_removeDegenerateEdges(this.__wbg_ptr, solid, tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Remove all holes from a face, returning a new face with only the outer wire.
+     * @param {number} face
+     * @returns {number}
+     */
+    removeHolesFromFace(face) {
+        const ret = wasm.remuskernel_removeHolesFromFace(this.__wbg_ptr, face);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Validate, heal, and re-validate a solid in one pass.
+     *
+     * Returns the number of remaining validation errors after repair.
+     * A return value of 0 means the solid is valid after repair.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid.
+     * @param {number} solid
+     * @returns {number}
+     */
+    repairSolid(solid) {
+        const ret = wasm.remuskernel_repairSolid(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Validate, heal, and re-validate a solid with exact repair disclosure.
+     * Success always means both independent validators accepted the result.
+     * @param {number} solid
+     * @returns {any}
+     */
+    repairSolidDetailed(solid) {
+        const ret = wasm.remuskernel_repairSolidDetailed(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Replace a support surface with exact face, edge, and vertex history.
+     *
+     * `replacement` is JSON: `{type:"plane", normal:[x,y,z], d}` or
+     * `{type:"cylinder", origin:[x,y,z], axis:[x,y,z], radius}`. Plane
+     * coefficients represent `normal dot point = d`; cylinder replacements
+     * retain the source parameter reference direction. Unknown fields refuse.
+     * Returns JSON `{"solid", "op"}`. Batch calls pass the replacement object
+     * directly as `args.replacement`.
+     * @param {number} solid
+     * @param {number} face
+     * @param {string} replacement
+     * @returns {string}
+     */
+    replaceSurfaceJournaled(solid, face, replacement) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(replacement, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_replaceSurfaceJournaled(this.__wbg_ptr, solid, face, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Resize or remove an exact constant-radius analytic blend band.
+     *
+     * `face` is only a seed: the kernel re-derives the complete band, its
+     * supports, and its current radius. `expected_radius` must match that
+     * exact measurement. `new_radius == 0` restores the sharp support
+     * intersection; positive values rebuild the band. Returns a new solid
+     * handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns a stable-code-prefixed refusal if the band is ambiguous,
+     * freeform, stale, unsupported, or cannot be rebuilt exactly. Failure is
+     * transactional and leaves all pre-existing handles valid.
+     * @param {number} solid
+     * @param {number} face
+     * @param {number} expected_radius
+     * @param {number} new_radius
+     * @returns {number}
+     */
+    resizeBlend(solid, face, expected_radius, new_radius) {
+        const ret = wasm.remuskernel_resizeBlend(this.__wbg_ptr, solid, face, expected_radius, new_radius);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Resize one cylindrical blend between planar supports with total history.
+     *
+     * Returns JSON `{"solid", "op"}`. Zero removes the band with explicit
+     * merges and deletions; ambiguous correspondence refuses atomically.
+     * Batch arguments use `expectedRadius` and `newRadius`.
+     * @param {number} solid
+     * @param {number} face
+     * @param {number} expected_radius
+     * @param {number} new_radius
+     * @returns {string}
+     */
+    resizeBlendJournaled(solid, face, expected_radius, new_radius) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_resizeBlendJournaled(this.__wbg_ptr, solid, face, expected_radius, new_radius);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * [`Self::resize_blend_binding`] with versioned face evolution.
+     *
+     * The payload uses the existing [`FaceEvolutionPayloadV1`] schema. New
+     * band faces are `generated` from both recovered support faces; removed
+     * input band faces are `deleted`.
+     *
+     * # Errors
+     *
+     * Returns the same stable-code-prefixed refusals as `resizeBlend`, or a
+     * payload validation error if the construction record is incomplete.
+     * @param {number} solid
+     * @param {number} face
+     * @param {number} expected_radius
+     * @param {number} new_radius
+     * @returns {FaceEvolutionPayloadV1}
+     */
+    resizeBlendWithEvolution(solid, face, expected_radius, new_radius) {
+        const ret = wasm.remuskernel_resizeBlendWithEvolution(this.__wbg_ptr, solid, face, expected_radius, new_radius);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Change the radius of a cylindrical face of a solid.
+     *
+     * Handles both bores and bosses. Returns a new solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if the handles are invalid, the face is not
+     * cylindrical or not part of the solid, `new_radius` is not positive, or
+     * the edit does not produce a valid solid.
+     * @param {number} solid
+     * @param {number} face
+     * @param {number} new_radius
+     * @returns {number}
+     */
+    resizeCylindricalFace(solid, face, new_radius) {
+        const ret = wasm.remuskernel_resizeCylindricalFace(this.__wbg_ptr, solid, face, new_radius);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Resize a cylindrical wall and record its construction history.
+     *
+     * Returns JSON `{"solid", "op"}`. Qualified bore and quarter-wall
+     * replacements retain all boundary identities. Boss edits track cap
+     * subdivisions and their removal; ambiguous boundaries remain unresolved.
+     * Batch calls pass the new radius as `args.radius`.
+     * @param {number} solid
+     * @param {number} face
+     * @param {number} radius
+     * @returns {string}
+     */
+    resizeCylindricalFaceJournaled(solid, face, radius) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_resizeCylindricalFaceJournaled(this.__wbg_ptr, solid, face, radius);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Resolves "the `index`-th `kind` output of journal operation `op`"
+     * against the current model. Returns the resolution JSON (`status`
+     * plus status-specific fields); severed references are data, not
+     * errors.
+     * @param {number} op
+     * @param {string} kind
+     * @param {number} index
+     * @returns {string}
+     */
+    resolveOperationOutput(op, kind, index) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_resolveOperationOutput(this.__wbg_ptr, op, ptr0, len0, index);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Resolves a serialized reference against the current model.
+     * Returns the resolution JSON; severed references are data, not
+     * errors.
+     * @param {string} reference
+     * @returns {string}
+     */
+    resolveRef(reference) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_resolveRef(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Resolves a serialized reference and reads the bound faces'
+     * attributes: JSON array of `{"kind", "handle", "name"}`. Errors on
+     * non-binding resolutions (`ref_*` diagnostics) — an attribute is
+     * never read through a dangling, severed, or ambiguous reference.
+     * @param {string} reference
+     * @returns {string}
+     */
+    resolveRefFaceAttributes(reference) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(reference, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_resolveRefFaceAttributes(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Restore the kernel to a previously saved checkpoint.
+     *
+     * All state created after the checkpoint is discarded. The checkpoint
+     * itself (and any earlier checkpoints) remain valid for future restores.
+     * Checkpoints created after this one are discarded.
+     *
+     * Restoring never grows the model: every checkpoint is an ancestor of the
+     * current state, so the restored topology is a subset of it. Undo is
+     * therefore always available, no matter how large the model has grown or
+     * how many operations the kernel instance has run.
+     *
+     * # Errors
+     *
+     * Returns an error if `checkpoint_id` does not refer to a valid checkpoint.
+     * This is the only failure mode.
+     * @param {number} checkpoint_id
+     */
+    restore(checkpoint_id) {
+        const ret = wasm.remuskernel_restore(this.__wbg_ptr, checkpoint_id);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Reverse the orientation of a face or edge.
+     *
+     * For faces: creates a new face with negated plane normal.
+     * For edges: creates a new edge with swapped start/end vertices.
+     * Returns the handle of the new reversed shape.
+     *
+     * # Errors
+     *
+     * Returns an error if the handle is neither a valid face nor edge.
+     * @param {number} id
+     * @returns {number}
+     */
+    reverseShape(id) {
+        const ret = wasm.remuskernel_reverseShape(this.__wbg_ptr, id);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Revolve a planar face around an axis to create a solid of revolution.
+     *
+     * The axis is defined by an origin point `(ox, oy, oz)` and a direction
+     * `(dx, dy, dz)`. The angle is in degrees and must be in (0, 360].
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if any input is non-finite, the face handle is
+     * invalid, or the revolve operation fails.
+     * @param {number} face
+     * @param {number} ox
+     * @param {number} oy
+     * @param {number} oz
+     * @param {number} dx
+     * @param {number} dy
+     * @param {number} dz
+     * @param {number} angle_degrees
+     * @returns {number}
+     */
+    revolve(face, ox, oy, oz, dx, dy, dz, angle_degrees) {
+        const ret = wasm.remuskernel_revolve(this.__wbg_ptr, face, ox, oy, oz, dx, dy, dz, angle_degrees);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Revolve a planar face around an axis, as typed data.
+     *
+     * Additive twin of [`revolve`](Self::revolve_face): the same validation
+     * order (finite `ox`, `oy`, `oz`, `dx`, `dy`, `dz`, `angle_degrees`,
+     * then the `(0, 360]` range check, then the face handle), the same
+     * degrees-to-radians conversion, and the same engine for exact-supported
+     * profiles. Curved profiles needing line chords refuse with
+     * `exact_only_unattainable`; the legacy method is unchanged. Success has
+     * `details.quality: "exact"`.
+     * @param {number} face
+     * @param {number} ox
+     * @param {number} oy
+     * @param {number} oz
+     * @param {number} dx
+     * @param {number} dy
+     * @param {number} dz
+     * @param {number} angle_degrees
+     * @returns {SolidOperationDetailedResult}
+     */
+    revolveDetailed(face, ox, oy, oz, dx, dy, dz, angle_degrees) {
+        const ret = wasm.remuskernel_revolveDetailed(this.__wbg_ptr, face, ox, oy, oz, dx, dy, dz, angle_degrees);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Full-turn analytic radial-profile revolution with complete construction
+     * history. Angles are degrees, as in `revolve`.
+     *
+     * Returns JSON `{"solid", "op", "evolution"}`. Faces and circular rims
+     * are generated from the profile face; reused profile seams and vertices
+     * are modified into themselves. Completeness is checked against every
+     * result entity. Only planar hole-free straight-edge radial profiles have
+     * qualified history; other profiles and partial turns refuse atomically.
+     * @param {number} face
+     * @param {number} origin_x
+     * @param {number} origin_y
+     * @param {number} origin_z
+     * @param {number} axis_x
+     * @param {number} axis_y
+     * @param {number} axis_z
+     * @param {number} angle_degrees
+     * @returns {string}
+     */
+    revolveJournaled(face, origin_x, origin_y, origin_z, axis_x, axis_y, axis_z, angle_degrees) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_revolveJournaled(this.__wbg_ptr, face, origin_x, origin_y, origin_z, axis_x, axis_y, axis_z, angle_degrees);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Run a custom sequence of healing operators on a solid.
+     *
+     * `steps` names built-in operators, executed in order: `fix_shape`,
+     * `unify_same_domain`, `direct_faces`, `same_parameter`,
+     * `merge_vertices`, `drop_small_edges`, `drop_small_faces`,
+     * `remove_internal_wires`, `sew_shells`, `split_common_vertex`,
+     * `convert_to_bspline`, `convert_to_elementary`, `fix_wireframe`
+     * (see [`heal_pipeline_steps`](Self::heal_pipeline_steps)). An unknown
+     * step name fails the whole run before any mutation of later steps.
+     *
+     * Returns a JSON string `{ solid, steps: [{step, actionsTaken, done,
+     * failed, repairs}], verified }` (see the `HealPipelineResult`
+     * TypeScript type). Success is committed only after both validators
+     * accept the result.
+     * @param {number} solid
+     * @param {string[]} steps
+     * @returns {any}
+     */
+    runHealPipeline(solid, steps) {
+        const ptr0 = passArrayJsValueToWasm0(steps, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_runHealPipeline(this.__wbg_ptr, solid, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Run verified healing steps with composed entity history.
+     * Returns the `runHealPipeline` report plus `op`. Topology and journal
+     * changes roll back together on failure. Batch uses `solid` and `steps`.
+     * @param {number} solid
+     * @param {string[]} steps
+     * @returns {string}
+     */
+    runHealPipelineJournaled(solid, steps) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArrayJsValueToWasm0(steps, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_runHealPipelineJournaled(this.__wbg_ptr, solid, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Span-true polyline of one edge at the given chordal deflection.
+     *
+     * Returns flattened `[x, y, z, ...]` samples walking exactly the edge's
+     * own parameter span — the same sampler the solid wireframe uses.
+     * Unlike [`tessellateEdge`](Self::tessellate_edge), a circle, ellipse,
+     * or closed-NURBS edge yields its actual arc (vertex-anchored), never a
+     * full-period trace of the parent curve.
+     *
+     * # Errors
+     *
+     * Returns an error if the edge handle is invalid, `deflection` is not
+     * positive, or the sampling budget is exceeded at this deflection.
+     * @param {number} edge
+     * @param {number} deflection
+     * @returns {Float64Array}
+     */
+    sampleEdge(edge, deflection) {
+        const ret = wasm.remuskernel_sampleEdge(this.__wbg_ptr, edge, deflection);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Section a solid with a plane, returning cross-section face handles.
+     *
+     * Returns an array of face handles (`u32[]`).
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or the plane doesn't
+     * intersect the solid.
+     * @param {number} solid
+     * @param {number} px
+     * @param {number} py
+     * @param {number} pz
+     * @param {number} nx
+     * @param {number} ny
+     * @param {number} nz
+     * @returns {Uint32Array}
+     */
+    section(solid, px, py, pz, nx, ny, nz) {
+        const ret = wasm.remuskernel_section(this.__wbg_ptr, solid, px, py, pz, nx, ny, nz);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Serialize one first-class sheet body into a version 4 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the shell handle is invalid, is not tagged as a
+     * sheet, or serialization fails.
+     * @param {number} sheet
+     * @returns {Uint8Array}
+     */
+    serializeSheet(sheet) {
+        const ret = wasm.remuskernel_serializeSheet(this.__wbg_ptr, sheet);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Serialize several first-class sheet bodies into a version 4 arena document.
+     *
+     * Shared topology is encoded once with dense local indices. Input order
+     * and duplicate handles are preserved as document roots.
+     *
+     * # Errors
+     *
+     * Returns an error if any shell handle is invalid, is not tagged as a
+     * sheet, or serialization fails.
+     * @param {Uint32Array} sheets
+     * @returns {Uint8Array}
+     */
+    serializeSheets(sheets) {
+        const ptr0 = passArray32ToWasm0(sheets, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_serializeSheets(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
+    }
+    /**
+     * Serialize a solid's complete in-memory topology sub-arena to bytes.
+     *
+     * Captures every vertex, edge, wire, face, shell reachable from the
+     * solid with byte-exact f64 values (no geometry re-derivation or
+     * tolerance normalization). Unlike STEP/IGES export, this preserves the
+     * kernel's exact in-memory state — intended for capturing live operands
+     * and replaying them in a native Rust harness to reproduce
+     * sub-ULP-sensitive boolean behavior.
+     *
+     * This writer emits a single-root version 3 document. Returns a
+     * `Uint8Array` consumable by
+     * `remus_io::arena_io::deserialize_solid`.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or serialization fails.
+     * @param {number} solid
+     * @returns {Uint8Array}
+     */
+    serializeSolid(solid) {
+        const ret = wasm.remuskernel_serializeSolid(this.__wbg_ptr, solid);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Serialize several solids into one version 3 arena document.
+     *
+     * Shared topology is encoded once with dense local indices. Input order
+     * and duplicate handles are preserved as document roots. This format
+     * intentionally excludes unrelated kernel session state.
+     *
+     * # Errors
+     *
+     * Returns an error if any solid handle is invalid or serialization fails.
+     * @param {Uint32Array} solids
+     * @returns {Uint8Array}
+     */
+    serializeSolids(solids) {
+        const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_serializeSolids(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
+    }
+    /**
+     * Serialize one first-class wire body into a version 5 arena document.
+     *
+     * # Errors
+     *
+     * Returns an error if the handle is invalid, is not tagged as a wire
+     * body, or serialization fails.
+     * @param {number} wire
+     * @returns {Uint8Array}
+     */
+    serializeWire(wire) {
+        const ret = wasm.remuskernel_serializeWire(this.__wbg_ptr, wire);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Serialize first-class wire bodies into a version 5 arena document.
+     *
+     * Shared topology is encoded once. Root order and duplicate handles are
+     * preserved.
+     *
+     * # Errors
+     *
+     * Returns an error if any handle is invalid, is not tagged as a wire
+     * body, or serialization fails.
+     * @param {Uint32Array} wires
+     * @returns {Uint8Array}
+     */
+    serializeWires(wires) {
+        const ptr0 = passArray32ToWasm0(wires, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_serializeWires(this.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
+    }
+    /**
+     * Sets (or clears, when `name` is null/empty) a face's semantic
+     * name, preserving its other attributes.
+     * @param {number} face
+     * @param {string | null} [name]
+     */
+    setFaceName(face, name) {
+        var ptr0 = isLikeNone(name) ? 0 : passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_setFaceName(this.__wbg_ptr, face, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Enable or disable exact reusable scalar measurements for this module.
+     * Explicit preferences are preserved when another kernel is constructed.
+     * @param {boolean} enabled
+     */
+    setMeasurementReuseEnabled(enabled) {
+        wasm.remuskernel_setMeasurementReuseEnabled(this.__wbg_ptr, enabled);
+    }
+    /**
+     * Enable or disable this module's exact mesh-stage reuse. Disabling
+     * releases its retained entries. New kernels enable the default cache.
+     * @param {boolean} enabled
+     */
+    setMeshReuseEnabled(enabled) {
+        wasm.remuskernel_setMeshReuseEnabled(this.__wbg_ptr, enabled);
+    }
+    /**
+     * Enable bounded module-local timings; disabled by default. This does
+     * not change tolerances, cache admission or numerical policy.
+     * @param {boolean} enabled
+     */
+    setPerformanceTracing(enabled) {
+        wasm.remuskernel_setPerformanceTracing(this.__wbg_ptr, enabled);
+    }
+    /**
+     * Turn store-local booleans on or off (off by default).
+     *
+     * When on, a cut, fuse or intersect whose second solid reaches only
+     * part of the first (`cut`, `fuse`, `intersectSolids`, their batch ops,
+     * and the other booleans that run the plain boolean;
+     * evolution-tracking booleans keep the general path) runs the boolean
+     * on that part and splices the result back onto the faces it does not
+     * touch. The name predates fuse and intersect.
+     * On a body with many faces, such as a drilled plate, a boolean costs
+     * about a third to two thirds less. The result is the same solid as
+     * with the switch off (same faces, edges, vertices and volume), but its
+     * faces and entities come out in a different order and numbering.
+     *
+     * The setting is per thread, like the kernel's content-keyed memos: it
+     * applies to every kernel in this module instance (one browser worker),
+     * not only to this one. A boolean that does not qualify, or whose
+     * result fails the boolean-result gate or is not one connected shell,
+     * runs the general path.
+     * @param {boolean} enabled
+     */
+    setStoreLocalCuts(enabled) {
+        wasm.remuskernel_setStoreLocalCuts(this.__wbg_ptr, enabled);
+    }
+    /**
+     * Sew loose faces into a connected solid.
+     *
+     * `face_handles` is an array of face handles. Returns a solid handle.
+     *
+     * # Errors
+     *
+     * Returns an error if fewer than 2 faces or sewing fails.
+     * @param {Uint32Array} face_handles
+     * @param {number} tolerance
+     * @returns {number}
+     */
+    sewFaces(face_handles, tolerance) {
+        const ptr0 = passArray32ToWasm0(face_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_sewFaces(this.__wbg_ptr, ptr0, len0, tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Get edges shared between two faces.
+     *
+     * Returns an array of edge handles.
+     * @param {number} face_a
+     * @param {number} face_b
+     * @returns {Uint32Array}
+     */
+    sharedEdges(face_a, face_b) {
+        const ret = wasm.remuskernel_sharedEdges(this.__wbg_ptr, face_a, face_b);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Compute the area of a first-class sheet body.
+     * @param {number} sheet
+     * @param {number} deflection
+     * @returns {number}
+     */
+    sheetArea(sheet, deflection) {
+        const ret = wasm.remuskernel_sheetArea(this.__wbg_ptr, sheet, deflection);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
+     * Compute the axis-aligned bounding box of a first-class sheet body.
+     *
+     * Returns `[min_x, min_y, min_z, max_x, max_y, max_z]`.
+     * @param {number} sheet
+     * @returns {Float64Array}
+     */
+    sheetBoundingBox(sheet) {
+        const ret = wasm.remuskernel_sheetBoundingBox(this.__wbg_ptr, sheet);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Compute the area-weighted center of a first-class sheet body.
+     * @param {number} sheet
+     * @returns {Float64Array}
+     */
+    sheetCenterOfArea(sheet) {
+        const ret = wasm.remuskernel_sheetCenterOfArea(this.__wbg_ptr, sheet);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Refuse volume measurement for a sheet with a stable typed diagnostic.
+     * @param {number} sheet
+     * @param {number} deflection
+     * @returns {number}
+     */
+    sheetVolume(sheet, deflection) {
+        const ret = wasm.remuskernel_sheetVolume(this.__wbg_ptr, sheet, deflection);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
+     * Hollow a solid with uniform wall thickness.
+     *
+     * `open_faces` is an array of face handles to remove (creating openings).
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if thickness is non-positive or the solid is invalid.
+     * @param {number} solid
+     * @param {number} thickness
+     * @param {Uint32Array} open_faces
+     * @returns {number}
+     */
+    shell(solid, thickness, open_faces) {
+        const ptr0 = passArray32ToWasm0(open_faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_shell(this.__wbg_ptr, solid, thickness, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Hollow a solid and return exact, disclosed-approximate, or refused
+     * results as typed data.
+     *
+     * Additive twin of [`shell`](Self::shell_solid). Like the legacy method
+     * it is exact-only by default: a kept NURBS face is refused with the
+     * legacy refusal (`operation_failed` / `internal`, message naming the
+     * NURBS face) and the topology rolled back. A positive finite
+     * `approximation_spacing` opts into the sampled NURBS inner skin, which
+     * is then disclosed as `quality: "approximate"` with the model-unit
+     * `deflection` and the `sampledFaces` handles of the input solid.
+     * @param {number} solid
+     * @param {number} thickness
+     * @param {Uint32Array} open_faces
+     * @param {number | null} [approximation_spacing]
+     * @returns {SolidOperationDetailedResult}
+     */
+    shellDetailed(solid, thickness, open_faces, approximation_spacing) {
+        const ptr0 = passArray32ToWasm0(open_faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_shellDetailed(this.__wbg_ptr, solid, thickness, ptr0, len0, !isLikeNone(approximation_spacing), isLikeNone(approximation_spacing) ? 0 : approximation_spacing);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Hollow a solid with disclosed inner-skin quality.
+     *
+     * The plain [`shell`](Self::shell_solid) binding is exact-only: a solid
+     * whose kept faces include a NURBS face fails with a typed
+     * `unsupported` refusal instead of degrading to a sampled refit. This
+     * binding accepts an explicit opt-in to approximation —
+     * `approximation_spacing` is a model-unit sample spacing (a positive
+     * finite number), or omitted/`null` for the exact-only policy — and
+     * reports whether the sampled NURBS path ran (`quality:
+     * "approximate"`, with the spacing and the sampled source-face
+     * indices).
+     *
+     * # Errors
+     *
+     * Returns an error if a handle is invalid, thickness is non-positive,
+     * the spacing is present but not finite and positive, or (under the
+     * exact-only policy) a kept face has no exact offset.
+     * @param {number} solid
+     * @param {number} thickness
+     * @param {Uint32Array} open_faces
+     * @param {number | null} [approximation_spacing]
+     * @returns {ShellQualityResult}
+     */
+    shellWithQuality(solid, thickness, open_faces, approximation_spacing) {
+        const ptr0 = passArray32ToWasm0(open_faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_shellWithQuality(this.__wbg_ptr, solid, thickness, ptr0, len0, !isLikeNone(approximation_spacing), isLikeNone(approximation_spacing) ? 0 : approximation_spacing);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Returns simplified curve carrier geometry; the source edge remains unchanged.
+     * @param {number} edge
+     * @param {string} options_json
+     * @returns {string}
+     */
+    simplifyNurbsCurve(edge, options_json) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_simplifyNurbsCurve(this.__wbg_ptr, edge, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Returns simplified surface carrier geometry; trims and topology remain unchanged.
+     * @param {number} face
+     * @param {string} options_json
+     * @returns {string}
+     */
+    simplifyNurbsSurface(face, options_json) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_simplifyNurbsSurface(this.__wbg_ptr, face, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Add an arc to a sketch (defined by center, start, end point indices).
+     * Returns the arc index.
+     * @param {number} sketch
+     * @param {number} center_idx
+     * @param {number} start_idx
+     * @param {number} end_idx
+     * @returns {number}
+     */
+    sketchAddArc(sketch, center_idx, start_idx, end_idx) {
+        const ret = wasm.remuskernel_sketchAddArc(this.__wbg_ptr, sketch, center_idx, start_idx, end_idx);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Add a circle to a sketch.
+     *
+     * `center_idx` must be a valid point index. Returns the circle index
+     * (0-based) for use in circle-referencing constraints.
+     * @param {number} sketch
+     * @param {number} center_idx
+     * @param {number} radius
+     * @returns {number}
+     */
+    sketchAddCircle(sketch, center_idx, radius) {
+        const ret = wasm.remuskernel_sketchAddCircle(this.__wbg_ptr, sketch, center_idx, radius);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Add a constraint to a sketch from a JSON string.
+     *
+     * Supports all legacy constraint types plus arc-referencing constraints:
+     * `tangentLineArc`, `tangentArcArc`, `pointOnArc`, `equalRadiusArcArc`,
+     * `arcLength`, `concentricArcArc`.
+     * @param {number} sketch
+     * @param {string} json
+     */
+    sketchAddConstraint(sketch, json) {
+        const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_sketchAddConstraint(this.__wbg_ptr, sketch, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Add a point to a sketch. Returns the point index.
+     * @param {number} sketch
+     * @param {number} x
+     * @param {number} y
+     * @param {boolean} fixed
+     * @returns {number}
+     */
+    sketchAddPoint(sketch, x, y, fixed) {
+        const ret = wasm.remuskernel_sketchAddPoint(this.__wbg_ptr, sketch, x, y, fixed);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Compute degrees of freedom for a sketch.
+     *
+     * Returns a JSON string: `{"dof": n, "rank": n, "numParams": n, "numEquations": n}`.
+     * @param {number} sketch
+     * @returns {string}
+     */
+    sketchDof(sketch) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_sketchDof(this.__wbg_ptr, sketch);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Create a new empty sketch. Returns a sketch index.
+     *
+     * **Deprecated:** prefer the typed `gcs*` API (`gcsNew`, `gcsAddPoint`,
+     * `gcsAddConstraint`, …), which holds a persistent constraint system,
+     * supports all 24 constraint types with explicit line entities, and
+     * allows constraint removal. The `sketch*` methods remain for
+     * backward compatibility.
+     *
+     * # Errors
+     *
+     * Returns an error if the sketch handle namespace is exhausted.
+     * @returns {number}
+     */
+    sketchNew() {
+        const ret = wasm.remuskernel_sketchNew(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Solve the sketch constraints.
+     *
+     * Returns a JSON string with converged status, iteration count, point
+     * positions, and arc definitions.
+     * @param {number} sketch
+     * @param {number} max_iterations
+     * @param {number} tolerance
+     * @returns {string}
+     */
+    sketchSolve(sketch, max_iterations, tolerance) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_sketchSolve(this.__wbg_ptr, sketch, max_iterations, tolerance);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Classify every edge of a solid in one pass.
+     *
+     * Returns a JSON string array of `{ edge, relation, dihedralAngle }`
+     * rows (see `EdgeRelationRow`). Same verdicts and angles as
+     * [`edgeConvexity`](Self::edge_convexity), but adjacency is built once
+     * — this is the call the consumer must use for whole-solid scans. The
+     * optional `probe` override applies to every edge; omit it for the
+     * per-edge `0.05 * local_scale` default. Unknown edges report
+     * `relation: "unknown"` with a `null` angle, never a guess.
+     *
+     * # Errors
+     *
+     * Returns an error for a foreign or deleted solid handle, an invalid
+     * probe, or a topology or classification failure.
+     * @param {number} solid
+     * @param {number | null} [probe]
+     * @returns {any}
+     */
+    solidEdgeRelations(solid, probe) {
+        const ret = wasm.remuskernel_solidEdgeRelations(this.__wbg_ptr, solid, !isLikeNone(probe), isLikeNone(probe) ? 0 : probe);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Batch the edges needed by a selected feature proof. Classification
+     * still uses the entire solid and the ordinary per-edge default probe.
+     *
+     * # Errors
+     * Refuses duplicate, foreign/deleted edges, invalid probes and query errors.
+     * @param {number} solid
+     * @param {Uint32Array} edges
+     * @param {number | null} [probe]
+     * @returns {string}
+     */
+    solidEdgeRelationsSubset(solid, edges, probe) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray32ToWasm0(edges, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_solidEdgeRelationsSubset(this.__wbg_ptr, solid, ptr0, len0, !isLikeNone(probe), isLikeNone(probe) ? 0 : probe);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Create a solid from a shell.
+     *
+     * Returns a solid handle (`u32`).
+     * @param {number} shell
+     * @returns {number}
+     */
+    solidFromShell(shell) {
+        const ret = wasm.remuskernel_solidFromShell(this.__wbg_ptr, shell);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Compute minimum distance between two solids.
+     *
+     * Returns `[distance, point_a_x, point_a_y, point_a_z, point_b_x, point_b_y, point_b_z]`.
+     *
+     * # Errors
+     *
+     * Returns an error if either solid handle is invalid.
+     * @param {number} a
+     * @param {number} b
+     * @returns {Float64Array}
+     */
+    solidToSolidDistance(a, b) {
+        const ret = wasm.remuskernel_solidToSolidDistance(this.__wbg_ptr, a, b);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Global maximum distance and witnesses as `[distance, ax, ay, az, bx, by, bz]`.
+     *
+     * Supports straight-edged planar polyhedra and complete native spheres,
+     * including certified affine NURBS planar faces and mixed pairs.
+     * All cavity boundaries are qualified; unsupported
+     * geometry returns a typed refusal. This query changes no session state.
+     * Inputs require valid BReps with closed shells and simple, nested trim loops.
+     *
+     * # Errors
+     * Returns an error for invalid handles/boundaries, unsupported geometry,
+     * unresolved arithmetic or exhausted bounded work.
+     * @param {number} a
+     * @param {number} b
+     * @returns {Float64Array}
+     */
+    solidToSolidMaximumDistance(a, b) {
+        const ret = wasm.remuskernel_solidToSolidMaximumDistance(this.__wbg_ptr, a, b);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Split a solid into two halves along a plane.
+     *
+     * Returns `[positive_solid_handle, negative_solid_handle]`.
+     *
+     * # Errors
+     *
+     * Returns an error if the plane doesn't intersect the solid.
+     * @param {number} solid
+     * @param {number} px
+     * @param {number} py
+     * @param {number} pz
+     * @param {number} nx
+     * @param {number} ny
+     * @param {number} nz
+     * @returns {Uint32Array}
+     */
+    split(solid, px, py, pz, nx, ny, nz) {
+        const ret = wasm.remuskernel_split(this.__wbg_ptr, solid, px, py, pz, nx, ny, nz);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * Split a solid into cells using a first-class sheet body.
+     *
+     * Returns a compound handle whose solids are in deterministic cell order.
+     * The qualified exact subset is currently one cylindrical sheet face.
+     *
+     * # Errors
+     *
+     * Returns a typed unsupported error for other sheet configurations and
+     * rolls back if intersection, cell validation, or volume conservation
+     * fails.
+     * @param {number} solid
+     * @param {number} sheet
+     * @returns {number}
+     */
+    splitBySheet(solid, sheet) {
+        const ret = wasm.remuskernel_splitBySheet(this.__wbg_ptr, solid, sheet);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Whether store-local booleans are on (see `setStoreLocalCuts`).
+     * @returns {boolean}
+     */
+    storeLocalCutsEnabled() {
+        const ret = wasm.remuskernel_storeLocalCutsEnabled(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * Compute the total surface area of a solid.
+     *
+     * Analytic curved faces and exact planar boundaries integrate their
+     * exact geometry, so the result is deflection-independent on those
+     * paths; `deflection` only controls the NURBS-face tessellation and
+     * the sampled planar fallback.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or tessellation fails.
+     * @param {number} solid
+     * @param {number} deflection
+     * @returns {number}
+     */
+    surfaceArea(solid, deflection) {
+        const ret = wasm.remuskernel_surfaceArea(this.__wbg_ptr, solid, deflection);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
+     * Returns reduced U carrier geometry and a certified bound as a JSON envelope.
+     * @param {number} face
+     * @param {number} knot
+     * @param {string} options_json
+     * @returns {string}
+     */
+    surfaceKnotRemoveU(face, knot, options_json) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_surfaceKnotRemoveU(this.__wbg_ptr, face, knot, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Returns reduced V carrier geometry and a certified bound as a JSON envelope.
+     * @param {number} face
+     * @param {number} knot
+     * @param {string} options_json
+     * @returns {string}
+     */
+    surfaceKnotRemoveV(face, knot, options_json) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(options_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_surfaceKnotRemoveV(this.__wbg_ptr, face, knot, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Sweep a planar face along a NURBS curve path to create a solid.
+     *
+     * The path is specified as flat arrays for JS interop:
+     * - `path_degree` — polynomial degree of the path curve
+     * - `path_knots` — knot vector
+     * - `path_control_points` — flat `[x,y,z, ...]` control point coordinates
+     * - `path_weights` — per-control-point weights
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if the face handle is invalid, the NURBS arrays have
+     * inconsistent lengths, or the sweep operation fails.
+     * @param {number} face
+     * @param {number} path_degree
+     * @param {Float64Array} path_knots
+     * @param {Float64Array} path_control_points
+     * @param {Float64Array} path_weights
+     * @returns {number}
+     */
+    sweep(face, path_degree, path_knots, path_control_points, path_weights) {
+        const ptr0 = passArrayF64ToWasm0(path_knots, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(path_control_points, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArrayF64ToWasm0(path_weights, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_sweep(this.__wbg_ptr, face, path_degree, ptr0, len0, ptr1, len1, ptr2, len2);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Sweep a face along a path defined by a chain of edges.
+     *
+     * Collects points from the edges, fits an interpolating NURBS curve,
+     * then sweeps the profile along that curve.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if fewer than 2 edges or the fit fails.
+     * @param {number} face
+     * @param {Uint32Array} edge_handles
+     * @returns {number}
+     */
+    sweepAlongEdges(face, edge_handles) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_sweepAlongEdges(this.__wbg_ptr, face, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Sweep a face along a path with smooth NURBS side surfaces.
+     *
+     * Like `sweep()`, but produces a single NURBS surface per edge strip
+     * instead of multiple flat quads, giving smooth geometry that
+     * tessellates to arbitrary quality.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if the face or path is invalid, or surface fitting fails.
+     * @param {number} face
+     * @param {number} path_degree
+     * @param {Float64Array} path_knots
+     * @param {Float64Array} path_control_points
+     * @param {Float64Array} path_weights
+     * @returns {number}
+     */
+    sweepSmooth(face, path_degree, path_knots, path_control_points, path_weights) {
+        const ptr0 = passArrayF64ToWasm0(path_knots, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(path_control_points, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArrayF64ToWasm0(path_weights, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_sweepSmooth(this.__wbg_ptr, face, path_degree, ptr0, len0, ptr1, len1, ptr2, len2);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Sweep a closed planar first-class wire profile along an edge path.
+     *
+     * The input wire remains an independent body. Open and non-planar wire
+     * profiles are refused until sheet-result sweep assembly is qualified.
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error if either handle is invalid, the profile is not a
+     * qualified wire body, or the sweep operation fails.
+     * @param {number} profile
+     * @param {number} path_edge
+     * @returns {number}
+     */
+    sweepWire(profile, path_edge) {
+        const ret = wasm.remuskernel_sweepWire(this.__wbg_ptr, profile, path_edge);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Sweep a face along a NURBS path with advanced options.
+     *
+     * `contact_mode`: "rmf" (default), "fixed", or "constantNormal:x,y,z"
+     * `scale_values`: flat `[t0,s0,t1,s1,...]` pairs for piecewise-linear scale law.
+     * The law is evaluated at normalized path progress in `[0,1]`, independently
+     * of the NURBS path's native parameter domain.
+     * Parameters must be finite and strictly increasing, their adjacent spans
+     * finite, and scales finite and positive. Empty pairs select unit scale.
+     * Qualified linear tapers use XY straight-edge profiles, including holes,
+     * +Z straight paths and fixed contact. Intermediate law breakpoints must
+     * coincide with section rings. General initial roll/profile placement
+     * remains unqualified.
+     * `corner_mode`: "smooth" (default), "miter", or "round:&lt;radius&gt;"
+     *   (e.g. `"round:2.5"` — rounding a corner needs a radius).
+     * Returns a solid handle.
+     * @param {number} profile
+     * @param {number} path_edge
+     * @param {string} contact_mode
+     * @param {Float64Array} scale_values
+     * @param {number} segments
+     * @param {string} corner_mode
+     * @returns {number}
+     */
+    sweepWithOptions(profile, path_edge, contact_mode, scale_values, segments, corner_mode) {
+        const ptr0 = passStringToWasm0(contact_mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(scale_values, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(corner_mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_sweepWithOptions(this.__wbg_ptr, profile, path_edge, ptr0, len0, ptr1, len1, segments, ptr2, len2);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Tessellate an edge curve into polyline segments.
+     *
+     * For line edges, returns just start and end points.
+     * For NURBS edges, samples at `num_points` along the curve.
+     *
+     * Returns flattened `[x, y, z, x, y, z, ...]` array.
+     * @param {number} edge
+     * @param {number} num_points
+     * @returns {Float64Array}
+     */
+    tessellateEdge(edge, num_points) {
+        const ret = wasm.remuskernel_tessellateEdge(this.__wbg_ptr, edge, num_points);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Tessellate a single face into a triangle mesh.
+     *
+     * # Errors
+     *
+     * Returns an error if the face handle is invalid or tessellation fails.
+     * @param {number} face
+     * @param {number} deflection
+     * @param {number | null} [angular_tolerance]
+     * @returns {JsMesh}
+     */
+    tessellateFace(face, deflection, angular_tolerance) {
+        const ret = wasm.remuskernel_tessellateFace(this.__wbg_ptr, face, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return JsMesh.__wrap(ret[0]);
+    }
+    /**
+     * Tessellate a first-class sheet body into an open triangle mesh.
+     *
+     * Free boundary edges are expected and remain present in the result.
+     * @param {number} sheet
+     * @param {number} deflection
+     * @param {number | null} [angular_tolerance]
+     * @returns {JsMesh}
+     */
+    tessellateSheet(sheet, deflection, angular_tolerance) {
+        const ret = wasm.remuskernel_tessellateSheet(this.__wbg_ptr, sheet, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return JsMesh.__wrap(ret[0]);
+    }
+    /**
+     * Tessellate all faces of a solid into a single merged triangle mesh.
+     *
+     * Includes both the outer shell and any inner shells (voids).
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or tessellation fails.
+     * @param {number} solid
+     * @param {number} deflection
+     * @param {number | null} [angular_tolerance]
+     * @returns {JsMesh}
+     */
+    tessellateSolid(solid, deflection, angular_tolerance) {
+        const ret = wasm.remuskernel_tessellateSolid(this.__wbg_ptr, solid, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return JsMesh.__wrap(ret[0]);
+    }
+    /**
+     * Tessellate a solid with per-face triangle grouping.
+     *
+     * Returns a JSON string containing `{ positions, normals, indices, faceOffsets }`.
+     * `faceOffsets` is an array where `faceOffsets[i]` is the start index into
+     * `indices` for face `i`, and the last element is `indices.length`.
+     *
+     * Uses the watertight shared-edge-pool tessellation: adjacent faces share
+     * identical boundary vertices, so the exported mesh has no T-junctions
+     * regardless of how the solid was constructed (booleans included).
+     * @param {number} solid
+     * @param {number} deflection
+     * @param {number | null} [angular_tolerance]
+     * @returns {any}
+     */
+    tessellateSolidGrouped(solid, deflection, angular_tolerance) {
+        const ret = wasm.remuskernel_tessellateSolidGrouped(this.__wbg_ptr, solid, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Tessellate a solid with per-face grouping, returned as packed binary
+     * buffers ([`JsGroupedMesh`]) instead of a JSON string.
+     *
+     * Identical geometry to [`tessellate_solid_grouped`](Self::tessellate_solid_grouped),
+     * but the mesh crosses the WASM boundary as `Float32Array`/`Uint32Array`
+     * bulk copies rather than a (potentially multi-megabyte) JSON string that
+     * the caller must `JSON.parse` and re-pack — far cheaper for large meshes.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or tessellation fails.
+     * @param {number} solid
+     * @param {number} deflection
+     * @param {number | null} [angular_tolerance]
+     * @returns {JsGroupedMesh}
+     */
+    tessellateSolidGroupedBinary(solid, deflection, angular_tolerance) {
+        const ret = wasm.remuskernel_tessellateSolidGroupedBinary(this.__wbg_ptr, solid, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return JsGroupedMesh.__wrap(ret[0]);
+    }
+    /**
+     * Tessellate a solid and include per-vertex UV coordinates.
+     *
+     * Returns a JSON string containing `{ positions, normals, indices, uvs }`.
+     * `uvs` is a flat array of `[u0, v0, u1, v1, ...]` values, two per vertex.
+     * For analytic and NURBS surfaces, these are the parametric (u, v) values.
+     * For planar faces, UVs are computed by projection onto the face plane.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or tessellation fails.
+     * @param {number} solid
+     * @param {number} deflection
+     * @param {number | null} [angular_tolerance]
+     * @returns {any}
+     */
+    tessellateSolidUV(solid, deflection, angular_tolerance) {
+        const ret = wasm.remuskernel_tessellateSolidUV(this.__wbg_ptr, solid, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Thicken a face into a solid by offsetting it by the given distance.
+     *
+     * Grows the face along its own outward normal (the surface normal,
+     * negated on a reversed face) by `thickness`: positive values grow
+     * outward, negative inward. A planar face extrudes; a cylinder, cone,
+     * sphere or torus face becomes the shell between it and its exact
+     * offset.
+     *
+     * # Errors
+     *
+     * Returns an error if the face handle is invalid, thickness is zero or
+     * not finite, or the face has no exact offset (a curved NURBS face, a
+     * boundary edge other than a ruling or a circle whose offset is a
+     * circle, or an offset that collapses the surface).
+     * @param {number} face
+     * @param {number} thickness
+     * @returns {number}
+     */
+    thicken(face, thickness) {
+        const ret = wasm.remuskernel_thicken(this.__wbg_ptr, face, thickness);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Export a solid as a BREP string (STEP format).
+     *
+     * Returns a STEP-formatted string containing the solid's B-Rep data.
+     * Use `fromBREP` to reconstruct the solid from this string.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid.
+     * @param {number} solid
+     * @returns {any}
+     */
+    toBREP(solid) {
+        const ret = wasm.remuskernel_toBREP(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Export a solid as a JSON-encoded BREP representation.
+     *
+     * Returns a JSON string with vertices, edges (with curve parameters and
+     * authoritative trims), and faces (with surface parameters). This is a
+     * remus-specific format that preserves all analytic geometry types.
+     * @param {number} solid
+     * @returns {any}
+     */
+    toBrepJson(solid) {
+        const ret = wasm.remuskernel_toBrepJson(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Transform a solid and return the exact, disclosed-approximate, or
+     * refused result as typed data.
+     *
+     * Additive twin of [`transformSolid`](Self::transform_solid_binding):
+     * the same engine, matrix contract (16 row-major values), and
+     * validation order, with the legacy method's void return and thrown
+     * errors unchanged. On success `value` is the (same) solid handle and
+     * `details` carries `quality`, `determinant`, `orientationReversed`,
+     * `similarity`, `carrierChanges`, `edgeChanges`, `fittedFaces`, and
+     * `controlPoints`. With `exactOnly: true` a fitted-sphere need is
+     * rolled back and refused (`quality_refused` /
+     * `exact_only_unattainable`), naming the refused faces.
+     * @param {number} solid
+     * @param {Float64Array} matrix
+     * @param {boolean | null} [exact_only]
+     * @returns {SolidOperationDetailedResult}
+     */
+    transformDetailed(solid, matrix, exact_only) {
+        const ptr0 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_transformDetailed(this.__wbg_ptr, solid, ptr0, len0, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Apply a 4×4 affine transform to a face (in place).
+     *
+     * Transforms all vertices, edge curves, and the face surface geometry.
+     * The `matrix` must contain exactly 16 values in row-major order.
+     *
+     * # Errors
+     *
+     * Returns an error if the face handle is invalid, the matrix doesn't
+     * have 16 elements, or the matrix is singular.
+     * @param {number} face
+     * @param {Float64Array} matrix
+     */
+    transformFace(face, matrix) {
+        const ptr0 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_transformFace(this.__wbg_ptr, face, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Apply a 4×4 affine transform to a solid (in place).
+     *
+     * The `matrix` must contain exactly 16 values in row-major order.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid, the matrix doesn't
+     * have 16 elements, or the matrix is singular.
+     * @param {number} solid
+     * @param {Float64Array} matrix
+     */
+    transformSolid(solid, matrix) {
+        const ptr0 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_transformSolid(this.__wbg_ptr, solid, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Apply a 4×4 affine transform to a wire (in place).
+     *
+     * The `matrix` must contain exactly 16 values in row-major order.
+     *
+     * # Errors
+     *
+     * Returns an error if the wire handle is invalid, the matrix doesn't
+     * have 16 elements, or the matrix is singular.
+     * @param {number} wire
+     * @param {Float64Array} matrix
+     */
+    transformWire(wire, matrix) {
+        const ptr0 = passArrayF64ToWasm0(matrix, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_transformWire(this.__wbg_ptr, wire, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Trim one planar sheet by one oriented side of another planar sheet.
+     * @param {number} target
+     * @param {number} tool
+     * @param {boolean} keep_positive
+     * @returns {number}
+     */
+    trimSheetBySheet(target, tool, keep_positive) {
+        const ret = wasm.remuskernel_trimSheetBySheet(this.__wbg_ptr, target, tool, keep_positive);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Trim a first-class sheet body by a solid and retain one classified side.
+     *
+     * `keep_inside = true` retains sheet patches inside the solid; `false`
+     * retains the outside remainder. Returns a new sheet-body shell handle.
+     *
+     * # Errors
+     *
+     * Returns a typed unsupported error for empty, coincident, or empty-result
+     * configurations, and rolls back if the retained sheet fails validation.
+     * @param {number} sheet
+     * @param {number} solid
+     * @param {boolean} keep_inside
+     * @returns {number}
+     */
+    trimSheetBySolid(sheet, solid, keep_inside) {
+        const ret = wasm.remuskernel_trimSheetBySolid(this.__wbg_ptr, sheet, solid, keep_inside);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Unify adjacent faces that lie on the same geometric surface.
+     *
+     * Merges co-surface face fragments (produced by boolean operations)
+     * back into single faces, reducing face count and improving topology.
+     * Returns the number of faces removed.
+     * @param {number} solid
+     * @returns {number}
+     */
+    unifyFaces(solid) {
+        const ret = wasm.remuskernel_unifyFaces(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * `unifyFaces` that also reports the strict validations it performs.
+     *
+     * Same merge, acceptance rule and tolerances as `unifyFaces`. Returns a
+     * JSON string of `UnifyFacesDetailedResult`: `facesMerged`,
+     * `inputErrors` (strict error count before), `resultErrors` (strict
+     * error count of the solid the caller now holds) and `reverted`. A
+     * caller that would otherwise validate the raw and the unified solid
+     * again can read both verdicts here instead.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or topology lookups
+     * fail.
+     * @param {number} solid
+     * @returns {any}
+     */
+    unifyFacesChecked(solid) {
+        const ret = wasm.remuskernel_unifyFacesChecked(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Untrim a NURBS face by fitting a new surface to the trimmed region.
+     *
+     * Returns a new face handle.
+     * @param {number} face
+     * @param {number} samples_per_curve
+     * @param {number} interior_samples
+     * @returns {number}
+     */
+    untrimFace(face, samples_per_curve, interior_samples) {
+        const ret = wasm.remuskernel_untrimFace(this.__wbg_ptr, face, samples_per_curve, interior_samples);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Validate a first-class sheet body and return every diagnostic.
+     *
+     * The JSON payload is `{ errorCount, warningCount, issues }`. An open
+     * boundary contributes warnings, not errors.
+     * @param {number} sheet
+     * @returns {any}
+     */
+    validateSheetBody(sheet) {
+        const ret = wasm.remuskernel_validateSheetBody(this.__wbg_ptr, sheet);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Validate a solid, returning the number of errors found.
+     *
+     * Returns 0 if the solid is valid.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid.
+     * @param {number} solid
+     * @returns {number}
+     */
+    validateSolid(solid) {
+        const ret = wasm.remuskernel_validateSolid(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Validate a solid and return every diagnostic.
+     *
+     * Returns a JSON string containing
+     * `{ errorCount, warningCount, issues: [{ severity, description }] }`
+     * (see the `ValidationReportResult` TypeScript type). Diagnostics come
+     * from the same operations validator used by [`validate_solid`](Self::validate_solid).
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or validation fails.
+     * @param {number} solid
+     * @returns {any}
+     */
+    validateSolidDetailed(solid) {
+        const ret = wasm.remuskernel_validateSolidDetailed(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Validate a solid with configurable tolerance scaling and return every
+     * diagnostic.
+     *
+     * `tolerance_scale` has the same meaning as in
+     * [`validate_solid_with_options`](Self::validate_solid_with_options).
+     * Returns a JSON string containing
+     * `{ errorCount, warningCount, issues: [{ severity, description }] }`.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or validation fails.
+     * @param {number} solid
+     * @param {number} tolerance_scale
+     * @returns {any}
+     */
+    validateSolidDetailedWithOptions(solid, tolerance_scale) {
+        const ret = wasm.remuskernel_validateSolidDetailedWithOptions(this.__wbg_ptr, solid, tolerance_scale);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Validate a solid with relaxed checks suitable for assembled geometry.
+     *
+     * Operations like boolean, fillet, and shell produce geometrically
+     * correct shapes that may not have fully manifold topology (faces
+     * from different operations may not share edges). This validation
+     * skips Euler characteristic, boundary edge, non-manifold edge, and
+     * shell connectivity checks.
+     *
+     * Returns 0 if the solid passes all structural checks.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid.
+     * @param {number} solid
+     * @returns {number}
+     */
+    validateSolidRelaxed(solid) {
+        const ret = wasm.remuskernel_validateSolidRelaxed(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Validate a solid with configurable tolerance scaling.
+     *
+     * `tolerance_scale` multiplies geometric tolerances used for the
+     * face-normal and face-area checks. Use `10.0` to reduce false
+     * positives on NURBS faces from fillet/shell operations.
+     *
+     * Returns 0 if the solid is valid.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid.
+     * @param {number} solid
+     * @param {number} tolerance_scale
+     * @returns {number}
+     */
+    validateSolidWithOptions(solid, tolerance_scale) {
+        const ret = wasm.remuskernel_validateSolidWithOptions(this.__wbg_ptr, solid, tolerance_scale);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Compute the volume of a solid.
+     *
+     * Exact analytic and Gauss-quadrature paths run first, so the result
+     * is deflection-independent on those paths; `deflection` only controls
+     * the tessellation fallback. A body with a face the per-face routes
+     * mis-measure (a quadric wall trimmed by a NURBS curve, such as a
+     * countersink cut through a wall) is measured on its closed whole-solid
+     * mesh; if that mesh comes out open, the exact Gauss integral is
+     * returned instead, never the per-face estimate.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or tessellation fails,
+     * and refuses (`solid_volume: unsupported configuration: …`) when such a
+     * body's mesh is open and one of its faces is outside the exact
+     * integrator as well.
+     * @param {number} solid
+     * @param {number} deflection
+     * @returns {number}
+     */
+    volume(solid, deflection) {
+        const ret = wasm.remuskernel_volume(this.__wbg_ptr, solid, deflection);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
+     * Weld shells and faces into a single solid by sewing.
+     *
+     * Accepts an array of face handles from potentially different shells.
+     * Sews all faces together into a single solid.
+     * @param {Uint32Array} face_handles
+     * @param {number} tolerance
+     * @returns {number}
+     */
+    weldShellsAndFaces(face_handles, tolerance) {
+        const ptr0 = passArray32ToWasm0(face_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_weldShellsAndFaces(this.__wbg_ptr, ptr0, len0, tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Compute the total arc-length of a wire.
+     * @param {number} wire
+     * @returns {number}
+     */
+    wireLength(wire) {
+        const ret = wasm.remuskernel_wireLength(this.__wbg_ptr, wire);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+}
+if (Symbol.dispose) RemusKernel.prototype[Symbol.dispose] = RemusKernel.prototype.free;
 
 /**
  * Clears the stored panic message so later reads reflect only new panics.
@@ -9452,9 +9492,6 @@ export function __wbindgen_init_externref_table() {
     table.set(offset + 2, true);
     table.set(offset + 3, false);
 }
-const BrepKernelFinalization = (typeof FinalizationRegistry === 'undefined')
-    ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_brepkernel_free(ptr, 1));
 const JsEdgeLinesFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_jsedgelines_free(ptr, 1));
@@ -9476,6 +9513,9 @@ const KernelDocumentCopyFinalization = (typeof FinalizationRegistry === 'undefin
 const OperationCancellationTokenFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_operationcancellationtoken_free(ptr, 1));
+const RemusKernelFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_remuskernel_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();

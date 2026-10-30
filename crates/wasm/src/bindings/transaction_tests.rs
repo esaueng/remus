@@ -678,6 +678,66 @@ fn direct_topology_transaction_refusals_roll_back_exactly() {
 }
 
 #[test]
+fn session_setting_refusals_restore_the_store_local_switch() {
+    use remus_operations::boolean::{set_thread_store_local_cuts, thread_store_local_cuts_enabled};
+    use serde_json::json;
+
+    let entry = thread_store_local_cuts_enabled();
+    let mut k = RemusKernel::new();
+    let f = fixture(&mut k);
+    for start in [false, true] {
+        set_thread_store_local_cuts(start);
+        // An injected fault after the setter has flipped the switch: no
+        // batch arm can fail there today, so this pins the scope itself.
+        let before = observe(&k);
+        let result = k.run_session_setting(|k| {
+            k.set_store_local_cuts(!start);
+            assert_eq!(thread_store_local_cuts_enabled(), !start);
+            Err(crate::error::WasmError::InvalidInput {
+                reason: "injected".into(),
+            }
+            .into())
+        });
+        assert!(result.is_err());
+        assert_eq!(thread_store_local_cuts_enabled(), start, "injected fault");
+        assert_eq!(observe(&k), before);
+
+        for v2 in [false, true] {
+            let run = |k: &mut RemusKernel, ops: serde_json::Value| -> serde_json::Value {
+                let response = if v2 {
+                    k.execute_batch_v2(&ops.to_string())
+                } else {
+                    k.execute_batch(&ops.to_string())
+                };
+                serde_json::from_str(&response).unwrap()
+            };
+            // A malformed setter refuses and leaves the switch alone.
+            let rows = run(
+                &mut k,
+                json!([{"op":"setStoreLocalCuts","args":{"enabled":"yes"}}]),
+            );
+            assert!(!committed(&rows[0]), "{rows}");
+            assert_eq!(thread_store_local_cuts_enabled(), start);
+            // Items commit independently: a later refusal does not undo a
+            // committed setter, as it does not undo any committed item.
+            let rows = run(
+                &mut k,
+                json!([
+                    {"op":"setStoreLocalCuts","args":{"enabled":!start}},
+                    {"op":"copySolid","args":{"solid":99_999}},
+                    {"op":"copySolid","args":{"solid":f.block}},
+                ]),
+            );
+            assert!(committed(&rows[0]) && committed(&rows[2]), "{rows}");
+            assert!(!committed(&rows[1]), "{rows}");
+            assert_eq!(thread_store_local_cuts_enabled(), !start);
+            set_thread_store_local_cuts(start);
+        }
+    }
+    set_thread_store_local_cuts(entry);
+}
+
+#[test]
 fn failed_operation_retirements_are_revived_not_sticky() {
     // The documented boundary semantic change: the full-copy boundary
     // restored with checkpoint-barrier semantics, so a failed operation's
