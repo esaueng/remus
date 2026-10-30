@@ -429,7 +429,7 @@ facade plus `journal_ops`, `prepared_move`, `imprint`, `pattern`, `assembly`,
 
 - **Open PRs at baseline.** These are the conflict risks if a stage lands
   while they are open:
-  - #1358, the `BrepKernel` → `RemusKernel` rename: 100+ files, mostly
+  - #1358, the kernel class rename to `RemusKernel`: 100+ files, mostly
     `crates/wasm`, plus 2 operations integration tests.
   - #1360: moves tests inside `performance.rs`, a stage-1 file.
   - #1359: package refresh.
