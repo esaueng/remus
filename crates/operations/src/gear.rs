@@ -53,12 +53,17 @@ use crate::OperationsError;
 mod bevel;
 mod cylinder;
 mod profile;
+mod worm;
 
 pub use bevel::{
     BevelGearGeometry, BevelGearOutcome, BevelGearParams, MAX_FACE_ANGLE_DEG, bevel_gear_geometry,
     make_bevel_gear,
 };
 pub use cylinder::{CylinderGearOptions, GearFit, cut_gear_teeth};
+pub use worm::{
+    MAX_LEAD_ANGLE_DEG, MAX_WORM_STARTS, WormGeometry, WormOutcome, WormParams, WormWheel,
+    make_worm, worm_geometry, worm_wheel,
+};
 
 use profile::{CircularTooth, RackTooth, Segment};
 
@@ -758,6 +763,9 @@ struct Twist {
     tolerance: f64,
     /// The rate reverses at the middle of the face width.
     herringbone: bool,
+    /// Uniform Hermite spans allowed along the axis before the tolerance
+    /// refuses.
+    max_spans: usize,
 }
 
 /// The twist of a helical gear (`None` for a spur gear or a rack): the
@@ -776,6 +784,7 @@ fn twist(params: &GearParams, geometry: &GearGeometry) -> Option<Twist> {
         rate: sign * params.helix_angle.tan() / pitch_radius,
         tolerance: 0.5 * flank_tolerance(params),
         herringbone: params.herringbone,
+        max_spans: MAX_TWIST_SPANS,
     })
 }
 
@@ -833,6 +842,12 @@ fn circular(params: &GearParams) -> Circular {
 /// parameter is out of range.
 pub fn gear_geometry(params: &GearParams) -> Result<GearGeometry, GearError> {
     validate(params)?;
+    Ok(helical_geometry(params))
+}
+
+/// [`gear_geometry`] without validation, for a spur or helical gear (or a
+/// worm's helical equivalent, whose helix angle exceeds the gear limit).
+fn helical_geometry(params: &GearParams) -> GearGeometry {
     let mut geometry = spur_geometry(&transverse(params));
     if params.helix_angle > 0.0 {
         // Report the normal module and convert the transverse shift
@@ -852,7 +867,7 @@ pub fn gear_geometry(params: &GearParams) -> Result<GearGeometry, GearError> {
             }
         }
     }
-    Ok(geometry)
+    geometry
 }
 
 /// [`gear_geometry`] of a spur gear (or a helical gear's transverse
@@ -1211,8 +1226,8 @@ fn gear_body(
                 GearError::refused(
                     GearRefusal::ToleranceTooTight,
                     format!(
-                        "the helix needs more than {MAX_TWIST_SPANS} spans for a tolerance of {}",
-                        twist.tolerance
+                        "the helix needs more than {} spans for a tolerance of {}",
+                        twist.max_spans, twist.tolerance
                     ),
                 )
             }
@@ -1235,7 +1250,7 @@ fn gear_body(
                 face_width,
                 twist.rate,
                 twist.tolerance,
-                MAX_TWIST_SPANS,
+                twist.max_spans,
             )
             .map_err(tolerance_refusal(twist))?;
             (
@@ -1259,7 +1274,7 @@ fn gear_body(
                 face_width,
                 twist.rate,
                 twist.tolerance,
-                MAX_TWIST_SPANS,
+                twist.max_spans,
             )
             .map_err(tolerance_refusal(twist))?;
             (

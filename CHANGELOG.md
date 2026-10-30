@@ -47,6 +47,14 @@ historical predecessor-line records, retained for provenance. The
   the cone angles and distances; refusals carry them when the parameters
   admit them. The new tapered extrusion (`extrude::taper`) sweeps a planar
   profile toward an apex.
+* **operations,wasm:** worm gears. `make_worm` / `makeWormDetailed` build a
+  cylindrical involute (ZI) worm from its axial module, starts and diameter
+  factor (lead angle up to 45°): its thread flanks are certified fits of the
+  involute helicoid (`flankDeviationBound`). `worm_wheel` /
+  `makeWormWheelDetailed` give the helical wheel that meshes with it at 90°
+  (the worm's hand, helix angle equal to the lead angle) and its
+  `centerDistance`. The pair is a crossed helical drive with point contact,
+  not a hobbed throated wheel.
 * **math:** `nurbs::screw` fits helices and screw-motion swept surfaces as
   NURBS with a proven bound; fits sharing one plan share their knots, so
   neighbouring faces and edges match exactly.

@@ -508,6 +508,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Herringbone gear oracles: Cavalieri volumes, each half's flank points on its own involute helicoid, far cap in line with the start cap, unique half-qualified roles, refusals (tests) | `gear/tests/herringbone.rs` |
 | Straight bevel gears: pitch cone from the tooth ratio and shaft angle, certified fit of the spherical involute centrally projected onto the flat heel, tapered toward the apex | `gear/bevel.rs` |
 | Bevel gear oracles: closed-form cone angles and mate pitch angles, cap areas against the exact spherical-involute heel outline, apex-sweep volumes, flank points on the exact spherical-involute cones, pitch-cone classification, roles, refusals (tests) | `gear/bevel/tests.rs` |
+| Cylindrical involute (ZI) worms: the involute helical gear with the starts as teeth and helix angle 90° − lead angle (a many-turn twisted extrusion), axial-module conventions, and the crossed-helical wheel that meshes with it | `gear/worm.rs` |
+| Worm oracles: closed-form dimensions, Cavalieri volumes, flank points on the exact involute helicoid, axial thread thickness and pitch read off the body by classification, hand, the matching wheel's dimensions and clearance, roles, refusals (tests) | `gear/tests/worm.rs` |
 | Gear teeth along the whole length of an existing boss or bore: keep-diameter or given-module fit, exact tooth-band material proof, tube cut then gear-ring fuse on one coaxial seam, roles carried through the fuse | `gear/cylinder.rs` |
 | Teeth-on-cylinder oracles: standalone-gear and closed-form volumes on a boss, a stepped bored shaft and a bored ring, turn-down fit and phase probes, cross-hole and partial-span refusals (tests) | `gear/cylinder/tests.rs` |
 | Helical sweep | `helix.rs` |
@@ -659,7 +661,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Source-relative live face moves preserve accepted geometry on refusal (tests) | `bindings/face_move_preview_tests.rs` |
 | Differential oracle: the modifier twins' full-copy rollback envelope kept verbatim, against the rollback scope (tests) | `bindings/modifier_detailed/envelope_oracle_tests.rs` |
 | Typed construction results (`extrudeDetailed`, `revolveDetailed`) | `bindings/construction_detailed.rs` |
-| Gear construction from a JSON spec: new bodies (`makeGearDetailed`), straight bevel gears (`makeBevelGearDetailed`) and teeth on an existing cylinder (`cutGearTeethDetailed`), direct and batch | `bindings/gear.rs` |
+| Gear construction from a JSON spec: new bodies (`makeGearDetailed`), straight bevel gears (`makeBevelGearDetailed`), worms and their wheels (`makeWormDetailed`, `makeWormWheelDetailed`) and teeth on an existing cylinder (`cutGearTeethDetailed`), direct and batch | `bindings/gear.rs` |
 | Live planar polygon imprint, direct and both batch adapters | `bindings/construction_imprint.rs` |
 | Transform, copy, mirror, pattern | `bindings/transforms.rs` |
 | Typed affine transform results and refusals | `bindings/transform_detailed.rs` |
