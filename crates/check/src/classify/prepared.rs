@@ -48,6 +48,11 @@ struct PreparedFace {
     /// plane the boundary test's polygon containment uses. `None`
     /// when no prune is proven exact for this face.
     trim_window: Option<TrimWindow>,
+    /// For a face whose trim is decided in `(u, v)` (cylinder, cone, torus),
+    /// the box the ray BVH bounds it by. Every point of the face lies in it,
+    /// so a point farther than the tolerance outside it cannot be on this
+    /// face's boundary.
+    uv_window: Option<Aabb3>,
     /// Whether the ray prefilter takes the face: a NURBS support with a span
     /// count it takes, and a cached trim.
     prefilter: bool,
@@ -70,8 +75,9 @@ struct PreparedFace {
 /// closed polygon. A point strictly outside the rectangle therefore never
 /// reaches `OnBoundary` through this face, whatever its surface distance, and
 /// skipping the face cannot change the boundary verdict. Sphere faces may be
-/// decided by the qualified great-circle trim instead of the polygon, so they
-/// carry no window; neither does a face with fewer than three outer vertices
+/// decided by the qualified great-circle trim, and cylinder, cone and torus
+/// faces by their UV trim ([`super::face_trim_contains`]), instead of the
+/// polygon, so they carry no window; neither does a face with fewer than three outer vertices
 /// (a full-surface face contains every point) or with a non-finite vertex.
 #[derive(Debug, Clone, Copy)]
 struct TrimWindow {
@@ -84,12 +90,14 @@ struct TrimWindow {
 impl TrimWindow {
     fn of(surface: &FaceSurface, trim: &super::boundary::FaceTrimData) -> Option<Self> {
         match surface {
-            FaceSurface::Sphere(_) => return None,
-            FaceSurface::Plane { .. }
+            // Sphere faces may take the qualified great-circle trim, and
+            // cylinder, cone and torus faces their UV trim, so the polygon's
+            // rectangle bounds neither.
+            FaceSurface::Sphere(_)
             | FaceSurface::Cylinder(_)
             | FaceSurface::Cone(_)
-            | FaceSurface::Torus(_)
-            | FaceSurface::Nurbs(_) => {}
+            | FaceSurface::Torus(_) => return None,
+            FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => {}
         }
         let outer = &trim.outer;
         if outer.len() < 3 {
@@ -127,6 +135,17 @@ impl TrimWindow {
         let (a, b) = (point.0[self.axes.0], point.0[self.axes.1]);
         a < self.min[0] || a > self.max[0] || b < self.min[1] || b > self.max[1]
     }
+}
+
+/// Whether `point` lies strictly farther than `tolerance` outside `window`
+/// on some axis. Twice the tolerance absorbs the box test's rounding; a
+/// non-finite coordinate never compares outside, so it keeps the full test.
+fn box_excludes(window: Aabb3, point: Point3, tolerance: f64) -> bool {
+    let margin = 2.0 * tolerance;
+    (0..3).any(|axis| {
+        let c = point.0[axis];
+        c < window.min.0[axis] - margin || c > window.max.0[axis] + margin
+    })
 }
 
 /// Control-point bounds of a NURBS surface, when they bound the surface.
@@ -254,9 +273,14 @@ impl<'a> PreparedSolid<'a> {
         let mut prepared_faces = Vec::with_capacity(faces.len());
         for (i, &fid) in faces.iter().enumerate() {
             crate::perf::bump_classify_face_aabb_eval();
-            if let Ok(bounds) = crate::util::face_ray_bound(topo, fid) {
+            let bounds = crate::util::face_ray_bound(topo, fid).ok();
+            if let Some(bounds) = bounds {
                 face_aabbs.push((i, bounds));
             }
+            let uv_window = bounds.filter(|_| {
+                topo.face(fid)
+                    .is_ok_and(|face| super::trim_is_uv_decided(face.surface()))
+            });
             let trim = super::boundary::FaceTrimData::build(topo, fid).ok();
             let (support_hull, prefilter) =
                 match topo.face(fid).map(remus_topology::face::Face::surface) {
@@ -284,6 +308,7 @@ impl<'a> PreparedSolid<'a> {
                 cache: super::boundary::FaceCache::default(),
                 support_hull,
                 trim_window,
+                uv_window,
                 prefilter,
                 span_boxes: std::sync::OnceLock::new(),
             });
@@ -402,6 +427,12 @@ impl<'a> PreparedSolid<'a> {
             {
                 continue;
             }
+            if prepared
+                .uv_window
+                .is_some_and(|window| box_excludes(window, point, tolerance))
+            {
+                continue;
+            }
             if super::face_surface_distance_cached(
                 self.topo,
                 prepared.fid,
@@ -429,7 +460,13 @@ impl<'a> PreparedSolid<'a> {
                     owned_trim = super::boundary::FaceTrimData::build(self.topo, prepared.fid)?;
                     &owned_trim
                 };
-                if super::trim_contains_point(trim, point) {
+                if super::face_trim_contains(
+                    self.topo,
+                    prepared.fid,
+                    trim,
+                    Some(&prepared.cache),
+                    point,
+                )? {
                     return Ok(true);
                 }
             }
@@ -483,7 +520,13 @@ impl<'a> PreparedSolid<'a> {
                     owned_trim = super::boundary::FaceTrimData::build(self.topo, prepared.fid)?;
                     &owned_trim
                 };
-                if super::trim_contains_point(trim, point) {
+                if super::face_trim_contains(
+                    self.topo,
+                    prepared.fid,
+                    trim,
+                    Some(&prepared.cache),
+                    point,
+                )? {
                     return Ok(true);
                 }
             }
