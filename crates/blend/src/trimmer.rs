@@ -538,15 +538,22 @@ fn split_edge_at(
         effective_tolerance,
     )?;
 
+    // The sub-edges run the SOURCE edge's way, `edge.start() → V → edge.end()`
+    // over `[t0, ts]` and `[ts, t1]`, whichever way this face traverses it. A
+    // reversed use then reads them reversed. Building them in traversal order
+    // instead stored a decreasing interval on each, and the faces bounded by
+    // such an arc did not mesh as the arc: a fillet's end cap trimmed against
+    // a reversed rim arc meshed hundreds of times its own area, and the body
+    // measured thousands of cubic units short.
     let mut e1 = Edge::with_tolerance(
-        start_vid,
+        edge.start(),
         split_vertex,
         curve.clone(),
         Some(effective_tolerance),
     );
-    let mut e2 = Edge::with_tolerance(split_vertex, end_vid, curve, Some(effective_tolerance));
-    e1.set_trim(Some((oriented_t0, split_parameter)));
-    e2.set_trim(Some((split_parameter, oriented_t1)));
+    let mut e2 = Edge::with_tolerance(split_vertex, edge.end(), curve, Some(effective_tolerance));
+    e1.set_trim(Some((source_t0, split_parameter)));
+    e2.set_trim(Some((split_parameter, source_t1)));
     e1.strict_domain()
         .map_err(|error| invalid_split(error.to_string()))?;
     e2.strict_domain()
@@ -555,22 +562,20 @@ fn split_edge_at(
     let e1_id = topo.add_edge(e1);
     let e2_id = topo.add_edge(e2);
 
-    propagate_split(
-        topo,
-        edit,
-        trimmed,
-        oe.edge(),
-        oe.is_forward(),
-        e1_id,
-        e2_id,
-    )?;
+    propagate_split(topo, edit, trimmed, oe.edge(), true, e1_id, e2_id)?;
 
-    // Both sub-edges are traversed forward in the oriented direction
-    // because we constructed them S→V and V→E matching the traversal.
-    Ok((
-        OrientedEdge::new(e1_id, true),
-        OrientedEdge::new(e2_id, true),
-    ))
+    // In traversal order: `S → V` then `V → E`.
+    Ok(if oe.is_forward() {
+        (
+            OrientedEdge::new(e1_id, true),
+            OrientedEdge::new(e2_id, true),
+        )
+    } else {
+        (
+            OrientedEdge::new(e2_id, false),
+            OrientedEdge::new(e1_id, false),
+        )
+    })
 }
 
 fn invalid_split(reason: String) -> BlendError {
@@ -1119,26 +1124,24 @@ pub fn trim_face_general(
         (hit_a.contact_parameter, hit_b.contact_parameter),
     )?;
 
-    // Build "left" side wire: edges from idx_a..idx_b + contact edge.
-    // New split edges (ea_post, eb_pre, etc.) are created in traversal order,
-    // so they use forward=true. Only existing boundary edges keep their
-    // original orientation.
+    // Build "left" side wire: edges from idx_a..idx_b + contact edge. The
+    // split sub-edges come back oriented in traversal order.
     let mut left_edges: Vec<OrientedEdge> = Vec::new();
-    left_edges.push(OrientedEdge::new(ea_post, true));
+    left_edges.push(sub_a2);
     for i in (idx_a + 1)..idx_b {
         left_edges.push(oriented_edges[i]);
     }
-    left_edges.push(OrientedEdge::new(eb_pre, true));
+    left_edges.push(sub_b1);
     left_edges.push(OrientedEdge::new(contact_eid, false));
 
     let mut right_edges: Vec<OrientedEdge> = Vec::new();
-    right_edges.push(OrientedEdge::new(eb_post, true));
+    right_edges.push(sub_b2);
     let n = oriented_edges.len();
     for i in 1..(n - (idx_b - idx_a)) {
         let idx = (idx_b + i) % n;
         right_edges.push(oriented_edges[idx]);
     }
-    right_edges.push(OrientedEdge::new(ea_pre, true));
+    right_edges.push(sub_a1);
     right_edges.push(OrientedEdge::new(contact_eid, true));
 
     // Prefer the chain that excludes the blended (spine) edges — see
@@ -1868,13 +1871,16 @@ mod tests {
             split,
         )
         .unwrap();
+        // Traversed reversed, so `before` is the source's far half read
+        // backwards; both halves keep the source's increasing interval.
+        assert!(!before.is_forward() && !after.is_forward());
         assert_eq!(
             topo.edge(before.edge()).unwrap().strict_domain().unwrap(),
-            (std::f64::consts::PI, std::f64::consts::FRAC_PI_2)
+            (std::f64::consts::FRAC_PI_2, std::f64::consts::PI)
         );
         assert_eq!(
             topo.edge(after.edge()).unwrap().strict_domain().unwrap(),
-            (std::f64::consts::FRAC_PI_2, 0.0)
+            (0.0, std::f64::consts::FRAC_PI_2)
         );
     }
 

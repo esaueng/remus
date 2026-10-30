@@ -1147,9 +1147,21 @@ fn stitch_planar_blend(
     // for a convex edge, toward it for a concave edge. Read the side faces
     // from the trimmed replacements (the current arena state), not the
     // stripe's pre-trim face ids.
+    //
+    // The side face's normal is read AT the section's contact: a plane's is
+    // the same everywhere, but `normal(0, 0)` on a cylinder is the normal at
+    // its parameter origin, which can face any way relative to the contact.
+    // On a cylinder standing against a wall it pointed along the wall, read
+    // the concave edge as convex, and turned the band inside out.
     let secm = &stripe.sections[stripe.sections.len() / 2];
     let f1_trimmed = topo.face(f1_now)?;
-    let n1_stored = f1_trimmed.surface().normal(0.0, 0.0);
+    let n1_stored = match f1_trimmed.surface() {
+        FaceSurface::Plane { normal, .. } => *normal,
+        surface => match surface.project_point(secm.p1) {
+            Some((u, v)) => surface.normal(u, v),
+            None => return Ok(None),
+        },
+    };
     let n1_out = if f1_trimmed.is_reversed() {
         -n1_stored
     } else {
