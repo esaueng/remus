@@ -130,6 +130,14 @@ their normal, so `qualify_ops_tests.rs` (`wall_by_normal`, updated in that PR)
 and `project_curve.rs` (`box_top_face`, a primitive face) still pick the same
 faces. D1b (curved faces) stays open.
 
+D6 is decided (owner, 2026-10-30): the batch heal family's result shapes are
+not a contract. Stage 11 may align them with the direct methods without a
+deprecation period; the change still gets a release note.
+
+D10 is decided (owner, 2026-10-30): the 1e-6 `sewFaces` default is not
+intended. The batch default becomes 1e-7 (`TOL`), like every other batch
+tolerance, in its own stage-11 PR.
+
 ## 2. Proposal: a `macro_rules!` op table
 
 ### 2.1 Choosing the mechanism
@@ -543,7 +551,7 @@ once.
 * **`macro_rules!` diagnostics.** A malformed row produces a poor error.
   Mitigation: the grammar stays small, and the macro module carries one
   compiled example row per construct as a test.
-* **Owner decisions needed:** D6
-  (whether the batch heal family's result shapes are contractual) and D10
-  (the `sewFaces` default). D1 is decided: `getFaceNormal` returns the
-  outward normal (esaueng/remus#1371).
+* **Owner decisions:** all taken (2026-10-30). D1: `getFaceNormal`
+  returns the outward normal (esaueng/remus#1371). D6: the batch heal
+  family's result shapes are not a contract. D10: the batch `sewFaces`
+  default becomes 1e-7.
