@@ -35,11 +35,11 @@ const fixtures = [
     inside: [4, 0.5, 4], outside: [0, 0.5, 0], alsoOutside: [0, 1.5, 0] },
 ];
 
-export function runB79PlanarHolePartitionsPackaged({ BrepKernel }) {
+export function runB79PlanarHolePartitionsPackaged({ RemusKernel }) {
   for (const surface of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const [scale, offset] of [[1, [0, 0, 0]], [1, [10, -10, 10]], [1000, [0, 0, 0]]]) {
       for (const fixture of fixtures) {
-        const kernel = new BrepKernel();
+        const kernel = new RemusKernel();
         const label = `${surface} B79 ${fixture.name} scale=${scale} offset=${offset}`;
         try {
           const point = local => local.map((coordinate, i) => coordinate * scale + offset[i]);

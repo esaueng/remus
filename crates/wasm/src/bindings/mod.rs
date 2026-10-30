@@ -1,6 +1,6 @@
 //! Domain-aligned binding modules.
 //!
-//! Each module adds `#[wasm_bindgen] impl BrepKernel { ... }` methods
+//! Each module adds `#[wasm_bindgen] impl RemusKernel { ... }` methods
 //! for a specific domain. wasm-bindgen supports multiple impl blocks
 //! across files.
 
@@ -14,6 +14,7 @@ pub mod construction_imprint;
 pub mod draft_analysis;
 pub mod evolution;
 pub mod gcs_sketch;
+pub mod gear;
 pub mod heal;
 #[cfg(feature = "io")]
 pub mod io;

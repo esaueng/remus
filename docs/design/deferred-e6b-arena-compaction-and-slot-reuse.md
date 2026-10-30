@@ -73,7 +73,7 @@ allocation coincidence.
 
 ### WASM selected-document copy contract (2026-10-20)
 
-Tier: core. `BrepKernel.copyDocument` resolves live solid, sheet and wire
+Tier: core. `RemusKernel.copyDocument` resolves live solid, sheet and wire
 handles in its source session and returns a `KernelDocumentCopy` containing a
 fresh kernel and ordered root remaps. It uses the native document-copy API
 without JSON transport. The transfer object's `takeKernel()` hands out that
@@ -184,7 +184,7 @@ Questions to settle before exposing entity_remap:
 - Are comp-solids and assemblies roots in the first release?
 - Are pcurves copied only when both owning edge and face are reachable?
 
-The WASM boundary should not mutate an existing BrepKernel in place. An
+The WASM boundary should not mutate an existing RemusKernel in place. An
 additive API could return a serialized transfer object for constructing a new
 kernel, or a higher-level wrapper could swap kernels and return new root
 handles. JavaScript cannot safely retain the old numeric handles after an

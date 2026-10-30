@@ -27,13 +27,13 @@ const multiply = (a, b) => Array.from({ length: 16 }, (_, index) => {
 const transformPoint = (matrix, point) => [0, 1, 2].map(row => matrix[row * 4] * point[0]
   + (matrix[row * 4 + 1] * point[1] + (matrix[row * 4 + 2] * point[2] + matrix[row * 4 + 3])));
 
-export function runOpseqF3Packaged({ BrepKernel }) {
+export function runOpseqF3Packaged({ RemusKernel }) {
   const failures = [];
   let passed = 0;
   for (const surface of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const scale of [1, 1000]) {
       for (const placed of [false, true]) {
-        const kernel = new BrepKernel();
+        const kernel = new RemusKernel();
         const label = `${surface} F3 scale=${scale} placed=${placed}`;
         const run = (op, args, direct) => invoke(kernel, surface, op, args, direct, label);
         try {

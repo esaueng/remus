@@ -13,10 +13,10 @@ use crate::error::{
     validate_work_product,
 };
 use crate::handles::{compound_id_to_u32, face_id_to_u32, solid_id_to_u32, wire_id_to_u32};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Apply a 4×4 affine transform to a solid (in place).
     ///
     /// The `matrix` must contain exactly 16 values in row-major order.
@@ -414,7 +414,7 @@ impl BrepKernel {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
     fn identity_matrix() -> Vec<f64> {
         vec![
@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn copy_solid_returns_new_handle() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let copy = k.copy_solid(s).unwrap();
         assert_ne!(s, copy);
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn copy_solid_both_handles_resolve() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let copy = k.copy_solid(s).unwrap();
         // Both handles must be independently resolvable.
@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn copy_solid_invalid_handle_errors() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(r#"[{"op": "copySolid", "args": {"solid": 9999}}]"#);
         let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
         assert!(parsed[0]["error"].is_string());
@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn copy_face_returns_new_handle() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let face = k.get_solid_faces(s).unwrap()[0];
         let batch = format!(r#"[{{"op": "copyFace", "args": {{"face": {face}}}}}]"#);
@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn copy_face_invalid_handle_errors() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(r#"[{"op": "copyFace", "args": {"face": 9999}}]"#);
         let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
         assert!(parsed[0]["error"].is_string());
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn identity_transform_preserves_bounding_box() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.make_box_solid(3.0, 4.0, 5.0).unwrap();
         let before = k.bounding_box(s).unwrap();
         k.transform_solid_binding(s, identity_matrix()).unwrap();
@@ -494,7 +494,7 @@ mod tests {
 
     #[test]
     fn transform_solid_translation_shifts_bbox() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
         // Translate +10 along X.
         let mat = vec![
@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn transform_solid_invalid_handle_errors() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let mat_json: Vec<String> = identity_matrix().iter().map(ToString::to_string).collect();
         let r = k.execute_batch(&format!(
             r#"[{{"op": "transform", "args": {{"solid": 9999, "matrix": [{}]}}}}]"#,
@@ -528,7 +528,7 @@ mod tests {
 
     #[test]
     fn transform_solid_wrong_matrix_length_errors() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 1, "height": 1, "depth": 1}},
@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn mirror_solid_returns_new_handle() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let mirrored = k.mirror_solid(s, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0).unwrap();
         assert_ne!(s, mirrored);
@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     fn mirror_solid_invalid_handle_errors() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[{"op": "mirror", "args": {"solid": 9999, "px": 0, "py": 0, "pz": 0, "nx": 0, "ny": 0, "nz": 1}}]"#,
         );
@@ -582,7 +582,7 @@ mod tests {
 
     #[test]
     fn linear_pattern_count_matches_compound_children() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let compound = k.linear_pattern(s, 1.0, 0.0, 0.0, 2.0, 4).unwrap();
         let solids = k.get_compound_solids(compound).unwrap();
@@ -596,7 +596,7 @@ mod tests {
 
     #[test]
     fn linear_pattern_count_one_returns_original() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let s = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let compound = k.linear_pattern(s, 0.0, 1.0, 0.0, 5.0, 1).unwrap();
         let solids = k.get_compound_solids(compound).unwrap();
@@ -607,7 +607,7 @@ mod tests {
 
     #[test]
     fn linear_pattern_invalid_solid_errors() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[{"op": "linearPattern", "args": {"solid": 9999, "dx": 1, "dy": 0, "dz": 0, "spacing": 2, "count": 3}}]"#,
         );
@@ -617,7 +617,7 @@ mod tests {
 
     #[test]
     fn linear_pattern_zero_spacing_errors() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 1, "height": 1, "depth": 1}},
@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn linear_pattern_overlap_is_a_structured_typed_refusal() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let response = k.execute_batch_v2(
             r#"[
                 {"op": "makeBox", "args": {"width": 20, "height": 20, "depth": 20}},

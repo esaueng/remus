@@ -12,7 +12,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::error::WasmError;
 use crate::handles::{shell_id_to_u32, solid_id_to_u32, wire_id_to_u32};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 /// A selected document copied into a fresh kernel, with ordered root remaps.
 ///
@@ -21,7 +21,7 @@ use crate::kernel::BrepKernel;
 /// copied document; freeing it afterwards leaves the taken kernel intact.
 #[wasm_bindgen]
 pub struct KernelDocumentCopy {
-    kernel: Option<BrepKernel>,
+    kernel: Option<RemusKernel>,
     solids: Vec<u32>,
     sheets: Vec<u32>,
     wires: Vec<u32>,
@@ -52,7 +52,7 @@ impl KernelDocumentCopy {
 
     /// Transfer the new kernel to the caller. A second call throws.
     #[wasm_bindgen(js_name = "takeKernel")]
-    pub fn take_kernel(&mut self) -> Result<BrepKernel, JsError> {
+    pub fn take_kernel(&mut self) -> Result<RemusKernel, JsError> {
         self.take_kernel_impl().map_err(Into::into)
     }
 }
@@ -74,13 +74,13 @@ enum DocumentCopyError {
 }
 
 impl KernelDocumentCopy {
-    fn take_kernel_impl(&mut self) -> Result<BrepKernel, DocumentCopyError> {
+    fn take_kernel_impl(&mut self) -> Result<RemusKernel, DocumentCopyError> {
         self.kernel.take().ok_or(DocumentCopyError::KernelTaken)
     }
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Copy selected solid, sheet and wire roots into a fresh kernel.
     ///
     /// Retains exact document data and selected lineage without JSON transport,
@@ -291,7 +291,7 @@ impl BrepKernel {
     }
 }
 
-impl BrepKernel {
+impl RemusKernel {
     fn copy_document_impl(
         &self,
         solids: &[u32],
@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn document_copy_reclaims_tombstones_without_changing_source_or_checkpoints() {
-        let mut source = BrepKernel::new();
+        let mut source = RemusKernel::new();
         let solid = source.make_box_solid(2.0, 3.0, 4.0).unwrap();
         let checkpoint = source.checkpoint_impl().unwrap();
         let mut stale = 0;
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn document_copy_preserves_mixed_roots_and_excludes_session_state() {
-        let mut source = BrepKernel::new();
+        let mut source = RemusKernel::new();
         let solid = source.make_box_solid(2.0, 3.0, 4.0).unwrap();
         let face = source
             .topo()
@@ -501,7 +501,7 @@ mod tests {
 
     #[test]
     fn document_copy_refusals_leave_source_exact_and_empty_copy_is_owned_once() {
-        let mut source = BrepKernel::new();
+        let mut source = RemusKernel::new();
         let solid = source.make_box_solid(1.0, 2.0, 3.0).unwrap();
         let bytes = source.serialize_solid(solid).unwrap();
         let stats = source.checkpoint_memory_stats().unwrap();
@@ -562,7 +562,7 @@ mod tests {
 
     #[test]
     fn document_copy_preserves_disabled_module_reuse_configuration() {
-        let source = BrepKernel::new();
+        let source = RemusKernel::new();
         source.set_mesh_reuse_enabled(false);
         source.set_measurement_reuse_enabled(false);
         let mesh = source.mesh_reuse_stats().unwrap();
@@ -577,12 +577,12 @@ mod tests {
 
     #[test]
     fn multi_solid_arena_roundtrip_preserves_order_and_fresh_handles() {
-        let mut source = BrepKernel::new();
+        let mut source = RemusKernel::new();
         let first = source.make_box_solid(1.0, 2.0, 3.0).unwrap();
         let second = source.make_box_solid(2.0, 3.0, 4.0).unwrap();
         let bytes = source.serialize_solids(&[second, first, second]).unwrap();
 
-        let mut destination = BrepKernel::new();
+        let mut destination = RemusKernel::new();
         let sentinel = destination.make_box_solid(0.5, 0.5, 0.5).unwrap();
         let restored = destination.deserialize_solids(&bytes).unwrap();
 
@@ -596,14 +596,14 @@ mod tests {
 
     #[test]
     fn sheet_arena_bindings_preserve_root_order_class_and_fresh_handles() {
-        let mut source = BrepKernel::new();
+        let mut source = RemusKernel::new();
         let face = remus_topology::builder::make_rectangle_face(source.topo_mut(), 1.5, 0.5, 1e-7)
             .unwrap();
         let sheet_id = remus_operations::sew::make_sheet_body(source.topo_mut(), &[face]).unwrap();
         let sheet = shell_id_to_u32(sheet_id);
         let bytes = source.serialize_sheets(&[sheet, sheet]).unwrap();
 
-        let mut destination = BrepKernel::new();
+        let mut destination = RemusKernel::new();
         let sentinel = destination
             .topo_mut()
             .add_shell(remus_topology::shell::Shell::empty());
@@ -622,7 +622,7 @@ mod tests {
         );
 
         let single = source.serialize_sheet(sheet).unwrap();
-        let mut single_destination = BrepKernel::new();
+        let mut single_destination = RemusKernel::new();
         let restored_single = single_destination.deserialize_sheet(&single).unwrap();
         assert_eq!(
             single_destination
@@ -636,7 +636,7 @@ mod tests {
 
     #[test]
     fn wire_arena_bindings_preserve_root_order_class_and_fresh_handles() {
-        let mut source = BrepKernel::new();
+        let mut source = RemusKernel::new();
         let wire_id = remus_topology::builder::make_polygon_wire(
             source.topo_mut(),
             &[
@@ -651,7 +651,7 @@ mod tests {
         let wire = wire_id_to_u32(wire_id);
         let bytes = source.serialize_wires(&[wire, wire]).unwrap();
 
-        let mut destination = BrepKernel::new();
+        let mut destination = RemusKernel::new();
         let sentinel = remus_topology::builder::make_regular_polygon_wire(
             destination.topo_mut(),
             0.25,
@@ -675,7 +675,7 @@ mod tests {
         assert!((destination.wire_length(restored[0]).unwrap() - 6.0).abs() < 1e-9);
 
         let single = source.serialize_wire(wire).unwrap();
-        let mut single_destination = BrepKernel::new();
+        let mut single_destination = RemusKernel::new();
         let restored_single = single_destination.deserialize_wire(&single).unwrap();
         assert_eq!(
             single_destination

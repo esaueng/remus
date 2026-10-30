@@ -98,7 +98,7 @@ retirement, registry write and restore/rollback bumps the generation, so
 `delete_solid` all retire a reading. Tests drive each of those paths and fail
 when the memo ignores the generation.
 
-**WASM**: `BrepKernel::new` enables both memos for the thread. The face cache
+**WASM**: `RemusKernel::new` enables both memos for the thread. The face cache
 is module-wide on purpose — the probe kernel's validation of a deserialized
 copy, and a consumer's re-validation of a result `moveFaces` has just
 validated, are hits.
@@ -232,11 +232,11 @@ const t = (label, f) => {
   console.log(label.padEnd(44), (performance.now() - s).toFixed(1), 'ms');
   return r;
 };
-const k = new pkg.BrepKernel();
+const k = new pkg.RemusKernel();
 const [solid] = k.deserializeSolids(fs.readFileSync(process.argv[3]));
 t('validateSolid (first)', () => k.validateSolid(solid));
 t('validateSolid (repeat)', () => k.validateSolid(solid));
-const probe = new pkg.BrepKernel();
+const probe = new pkg.RemusKernel();
 const [copy] = probe.deserializeSolids(k.serializeSolids(Uint32Array.of(solid)));
 t('validateSolid (copy in a probe kernel)', () => probe.validateSolid(copy));
 const faces = Array.from(k.getSolidFaces(solid));

@@ -33,9 +33,9 @@ const surfaces = [
   'executeBatch:filletVariableDetailed', 'executeBatchV2:filletVariableDetailed',
 ];
 
-export function runVariableFilletInputPackaged({ BrepKernel }) {
+export function runVariableFilletInputPackaged({ RemusKernel }) {
   for (const surface of surfaces) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const solid = kernel.makeBox(10, 10, 10);
       const edge = kernel.getSolidEdges(solid)[0];
@@ -90,7 +90,7 @@ export function runVariableFilletInputPackaged({ BrepKernel }) {
     let expected;
     for (const surface of surfaces) {
       for (const spec of specs) {
-        const kernel = new BrepKernel();
+        const kernel = new RemusKernel();
         try {
           const solid = kernel.makeBox(10, 10, 10);
           const edge = kernel.getSolidEdges(solid)[0];

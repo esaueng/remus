@@ -8,6 +8,22 @@ historical predecessor-line records, retained for provenance. The
 
 ### Added
 
+* **operations,wasm:** `make_gear` / `makeGearDetailed` build involute external
+  spur gears, internal (ring) gears and straight racks as one extruded outline.
+  Involute flanks are certified cubic B-splines: results report
+  `quality: "approximate"` with a proven `flankDeviationBound` (racks are
+  exact). Dimensions, guideline warnings and typed `gear:<reason>` refusals
+  are returned as data.
+* **operations,wasm:** `cut_gear_teeth` / `cutGearTeethDetailed` cut gear
+  teeth along the whole length of a solid's boss (external) or bore
+  (internal), keeping its diameter or using a given module; the input solid is
+  kept. A feature crossing the tooth band, or a span over part of the face,
+  refuses with a typed `gear:<reason>` code. Gear results now name every gear
+  face (`faceRoles`, e.g. `tooth[3].flank.plus`) and report the `module`.
+* **math:** `nurbs::hermite_fit::fit_cubic_hermite` fits a parametric curve
+  with uniform cubic Hermite spans and a proven remainder bound from a
+  caller-supplied fourth-derivative bound.
+
 * **wasm:** `getFaceDraftAngle` exposes signed carrier-local draft angles and
   outward normals; `getPlanarSolidDraft` reports constant angles for every
   planar outer/cavity face. Direct and legacy/V2 batch routes preserve the
@@ -19,6 +35,12 @@ historical predecessor-line records, retained for provenance. The
 * Adopt the `YYYY.RELEASE.PATCH` Remus scheme, beginning at `2026.1.0`.
 
 ### ⚠ BREAKING CHANGES
+
+* **wasm:** the kernel class is renamed from `BrepKernel`, the predecessor
+  line's name, to `RemusKernel`. JavaScript consumers keep a deprecated
+  `BrepKernel` alias of the same class in `remus-wasm` (ESM, CommonJS and
+  TypeScript) for a transition period; switch to `RemusKernel`, since a later
+  release removes the alias. Native Rust callers of `remus-wasm` get no alias.
 
 * **math (Rust callers):** `approximate_lspia` and
   `approximate_surface_lspia` now return `LspiaFit` and `LspiaSurfaceFit`.
@@ -35,10 +57,10 @@ historical predecessor-line records, retained for provenance. The
   estimates rather than global certificates.
   Nested bodies measure boundary separation, as point-to-solid queries do.
 
-* **wasm (native Rust callers):** `BrepKernel::checkpoint`, `gcs_new`,
+* **wasm (native Rust callers):** `RemusKernel::checkpoint`, `gcs_new`,
   `sketch_new`, and `assembly_new` now return `Result<u32, JsError>` so handle
   exhaustion fails before allocating. JavaScript keeps the number-or-throw
-  contract. `BrepKernel::new` retains its existing signature. Checkpoint IDs
+  contract. `RemusKernel::new` retains its existing signature. Checkpoint IDs
   are opaque: retain the returned ID; `checkpointCount` counts live checkpoints
   and is not an allocation cursor.
 
@@ -123,6 +145,23 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **algo:** exact booleans against coaxial tubes, the steps of cutting gear
+  teeth into an existing cylinder. A turned groove whose tube caps lie inside
+  the cylinder and whose outer wall stands outside it no longer refuses
+  (the cap annulus outside the cylinder sampled its interior inside its own
+  hole). A tube wall coincident with an existing cylinder no longer depends
+  on the two seams lining up: a mismatched seam refused, or, for a cut whose
+  caps lie inside the cylinder, returned the uncut body. A planar face whose
+  inner wire is not a circle (an internal gear's tooth outline) now splits
+  along nested coaxial section circles.
+* **math:** point-to-surface projection no longer stalls where a partial
+  derivative vanishes, as along a fitted involute flank leaving its base
+  circle. `solid_volume` of a gear on its shaft read its clamp mesh, 1.6e-4
+  low, at coarse deflections; it now takes the exact face integrals at every
+  deflection.
+* **operations:** `face_area` of a planar face bounded by polynomial NURBS
+  edges (cubic flank traces, for example) integrates them exactly instead of
+  sampling the whole boundary; a bored gear cap read 2.6e-5 high.
 * **operations:** a fillet whose tangent chain runs over the end arc of an
   earlier convex fillet band of the same radius now rounds that stretch as an
   exact sphere triangle, bounded by three great circles, instead of a lofted

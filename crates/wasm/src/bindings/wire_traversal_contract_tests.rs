@@ -35,14 +35,14 @@ use std::collections::HashSet;
 
 #[cfg(feature = "io")]
 use crate::handles::solid_id_to_u32;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
-fn run(k: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn run(k: &mut RemusKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let json = serde_json::Value::Array(ops.to_vec()).to_string();
     serde_json::from_str(&k.execute_batch(&json)).unwrap()
 }
 
-fn run_all_ok(k: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn run_all_ok(k: &mut RemusKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let results = run(k, ops);
     for (i, r) in results.iter().enumerate() {
         assert!(
@@ -65,11 +65,11 @@ fn as_u32(v: &serde_json::Value) -> u32 {
     u32::try_from(v.as_u64().unwrap()).unwrap()
 }
 
-fn batch_solid(k: &mut BrepKernel, make: &str, args: serde_json::Value) -> u32 {
+fn batch_solid(k: &mut RemusKernel, make: &str, args: serde_json::Value) -> u32 {
     as_u32(&run_all_ok(k, &[op(make, args)])[0])
 }
 
-fn rigid_transform(k: &mut BrepKernel, solid: u32, scale: f64) {
+fn rigid_transform(k: &mut RemusKernel, solid: u32, scale: f64) {
     let c = 0.37_f64.cos();
     let s = 0.37_f64.sin();
     let _ = run_all_ok(
@@ -87,7 +87,7 @@ fn rigid_transform(k: &mut BrepKernel, solid: u32, scale: f64) {
 }
 
 /// Oriented `(start, end)` vertex handles for `edge` read in `forward`.
-fn oriented_endpoints(k: &BrepKernel, edge: u32, forward: bool) -> (u32, u32) {
+fn oriented_endpoints(k: &RemusKernel, edge: u32, forward: bool) -> (u32, u32) {
     let handles = k.get_edge_vertex_handles(edge).unwrap();
     assert_eq!(handles.len(), 2, "edge {edge} must report two vertices");
     if forward {
@@ -99,7 +99,7 @@ fn oriented_endpoints(k: &BrepKernel, edge: u32, forward: bool) -> (u32, u32) {
 
 /// Strict contract: no repeated handles, head-to-tail via
 /// `isEdgeForwardInWire`, closed back on the first vertex.
-fn assert_wire_head_to_tail_via_first_use(k: &BrepKernel, wire: u32) {
+fn assert_wire_head_to_tail_via_first_use(k: &RemusKernel, wire: u32) {
     let edges = k.get_wire_edges(wire).unwrap();
     assert!(!edges.is_empty(), "wire {wire} must hold at least one edge");
     let unique: HashSet<u32> = edges.iter().copied().collect();
@@ -138,7 +138,7 @@ fn assert_wire_head_to_tail_via_first_use(k: &BrepKernel, wire: u32) {
 
 /// True traversal via per-use orientations from the topology. Holds even for
 /// seam wires where the first-use readout is ambiguous.
-fn assert_wire_true_traversal_via_topo(k: &BrepKernel, wire: u32) {
+fn assert_wire_true_traversal_via_topo(k: &RemusKernel, wire: u32) {
     let wire_id = k.resolve_wire(wire).unwrap();
     let wire_data = k.topo().wire(wire_id).unwrap();
     let uses = wire_data.edges();
@@ -173,7 +173,7 @@ fn assert_wire_true_traversal_via_topo(k: &BrepKernel, wire: u32) {
 /// Either the strict first-use contract (no repeats) or the documented seam
 /// exception (a repeated handle, true traversal still closes, binding reports
 /// the first use).
-fn assert_wire_contract_or_seam_exception(k: &BrepKernel, wire: u32) -> bool {
+fn assert_wire_contract_or_seam_exception(k: &RemusKernel, wire: u32) -> bool {
     let edges = k.get_wire_edges(wire).unwrap();
     let unique: HashSet<u32> = edges.iter().copied().collect();
     if unique.len() == edges.len() {
@@ -207,7 +207,7 @@ fn assert_wire_contract_or_seam_exception(k: &BrepKernel, wire: u32) -> bool {
     }
 }
 
-fn assert_all_wires_contract(k: &BrepKernel, solid: u32) -> usize {
+fn assert_all_wires_contract(k: &RemusKernel, solid: u32) -> usize {
     let faces = k.get_solid_faces(solid).unwrap();
     assert!(!faces.is_empty());
     let mut wire_count = 0;
@@ -227,7 +227,7 @@ fn assert_all_wires_contract(k: &BrepKernel, solid: u32) -> usize {
     wire_count
 }
 
-fn holed_planar_faces(k: &BrepKernel, solid: u32) -> Vec<u32> {
+fn holed_planar_faces(k: &RemusKernel, solid: u32) -> Vec<u32> {
     let faces = k.get_solid_faces(solid).unwrap();
     faces
         .into_iter()
@@ -235,7 +235,7 @@ fn holed_planar_faces(k: &BrepKernel, solid: u32) -> Vec<u32> {
         .collect()
 }
 
-fn make_through_holed_box(k: &mut BrepKernel) -> u32 {
+fn make_through_holed_box(k: &mut RemusKernel) -> u32 {
     let plate = batch_solid(
         k,
         "makeBox",
@@ -269,7 +269,7 @@ fn make_through_holed_box(k: &mut BrepKernel) -> u32 {
     )
 }
 
-fn make_pocket_plate(k: &mut BrepKernel) -> u32 {
+fn make_pocket_plate(k: &mut RemusKernel) -> u32 {
     let base = batch_solid(
         k,
         "makeBox",
@@ -305,7 +305,7 @@ fn make_pocket_plate(k: &mut BrepKernel) -> u32 {
 
 #[test]
 fn box_wires_are_ordered_closed_loops() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let solid = batch_solid(
         &mut k,
         "makeBox",
@@ -325,7 +325,7 @@ fn box_wires_are_ordered_closed_loops() {
 
 #[test]
 fn through_hole_faces_carry_outer_plus_inner_wires() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let bored = make_through_holed_box(&mut k);
     let holed = holed_planar_faces(&k, bored);
     assert!(
@@ -347,7 +347,7 @@ fn through_hole_faces_carry_outer_plus_inner_wires() {
 
 #[test]
 fn pocket_opening_plane_is_holed_and_ordered() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let pocket = make_pocket_plate(&mut k);
     let holed = holed_planar_faces(&k, pocket);
     assert!(
@@ -364,7 +364,7 @@ fn pocket_opening_plane_is_holed_and_ordered() {
 
 #[test]
 fn cylinder_caps_are_single_closed_edges_and_seam_repeats() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let solid = batch_solid(
         &mut k,
         "makeCylinder",
@@ -441,7 +441,7 @@ fn cylinder_caps_are_single_closed_edges_and_seam_repeats() {
 
 #[test]
 fn rigid_placement_preserves_wire_order() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let solid = batch_solid(
         &mut k,
         "makeBox",
@@ -453,7 +453,7 @@ fn rigid_placement_preserves_wire_order() {
 
 #[test]
 fn boolean_result_wires_traverse() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let stock = batch_solid(
         &mut k,
         "makeBox",
@@ -508,7 +508,7 @@ fn boolean_result_wires_traverse() {
 #[cfg(feature = "io")]
 #[test]
 fn imported_step_solid_wires_traverse() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let step = include_str!("../../../io/tests/data/openzcad_a_export_bored_plate.step");
     let solids = remus_io::step::reader::read_step(step, k.topo_mut()).unwrap();
     assert!(!solids.is_empty(), "STEP fixture must import solids");

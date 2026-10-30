@@ -141,6 +141,50 @@ if [[ -n $content_hits ]]; then
   fi
 fi
 
+# The predecessor line's kernel class name, which the scan above cannot see:
+# it does not contain the old product name. The kernel class is `RemusKernel`.
+# Exempt, besides the release history and attribution files above:
+#
+#   crates/wasm/pkg, crates/wasm-io/pkg
+#       Generated packages. Until a refresh they still carry the pre-rename
+#       class, and afterwards the kernel exports the old name as the
+#       deprecated alias that `cargo xtask wasm-build` appends.
+#
+#   xtask/src/wasm.rs, scripts/test-wasm-tarball-consumer.mjs
+#       The alias's generator and the installed-package test that keeps it
+#       working. Both must name it.
+#
+#   scripts/kernel-class.cjs
+#       Benchmark and parity drivers load baseline and committed packages
+#       built before the rename, which export only the old name.
+#
+#   docs/performance/evidence/, docs/kernel-maturity/campaign-history.md
+#       Captured run scripts and dated campaign records, written against the
+#       old class name. Editing them would misstate what was run.
+readonly STALE_CLASS='BrepKernel'
+readonly ALLOWED_CLASS_HISTORY=(
+  "crates/wasm/pkg/**"
+  "crates/wasm-io/pkg/**"
+  "xtask/src/wasm.rs"
+  "scripts/test-wasm-tarball-consumer.mjs"
+  "scripts/kernel-class.cjs"
+  "docs/performance/evidence/**"
+  "docs/kernel-maturity/campaign-history.md"
+)
+class_exclude_pathspecs=("${exclude_pathspecs[@]}")
+for path in "${ALLOWED_CLASS_HISTORY[@]}"; do
+  class_exclude_pathspecs+=(":(exclude,glob)${path}")
+done
+
+stale_class=$(scan "class-name scan" \
+  git grep -n -I -E "$STALE_CLASS" -- "${class_exclude_pathspecs[@]}")
+
+if [[ -n $stale_class ]]; then
+  echo "Remus rename violation: stale kernel class name found; use RemusKernel"
+  echo "$stale_class"
+  status=1
+fi
+
 tracked=$(git ls-files)
 stale_paths=$(scan "tracked-path scan" grep -Ei -e "$STALE" <<<"$tracked")
 

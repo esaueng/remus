@@ -10,9 +10,11 @@ pub(crate) mod analytic;
 pub(crate) mod edge;
 pub mod face_bounds;
 pub mod maximum;
+pub(crate) mod plane_trim;
 pub mod prepared;
 
 pub use edge::point_to_edge;
+pub(crate) use plane_trim::plane_point_in_face;
 pub use prepared::{DistanceOptions, DistanceScratch, PreparedDistanceSolid};
 
 use remus_math::compact_sort::CompactSort;
@@ -438,224 +440,6 @@ fn point_to_face_validated(
     Ok(best)
 }
 
-/// Exact planar trim membership for polygonal and circular boundaries.
-/// The parity test visits the outer loop and every hole independently.
-fn plane_point_in_face(
-    topo: &Topology,
-    face_id: FaceId,
-    point: Point3,
-    normal: Vec3,
-) -> Result<bool, CheckError> {
-    let face = topo.face(face_id)?;
-    if !plane_point_in_wire(topo, face.outer_wire(), point, normal)? {
-        return Ok(false);
-    }
-    for &hole in face.inner_wires() {
-        if plane_point_in_wire(topo, hole, point, normal)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-/// Recognize one complete circular traversal without summing approximate
-/// interval lengths. Every carrier, parameter junction and topological
-/// junction must agree, and the existing closed-edge domain rule checks the
-/// final full turn and geometric closure using the original tolerance.
-#[allow(clippy::float_cmp)]
-fn complete_circle_wire(
-    topo: &Topology,
-    wire_id: remus_topology::wire::WireId,
-) -> Result<Option<&remus_math::curves::Circle3D>, CheckError> {
-    use remus_topology::edge::EdgeCurve;
-    let wire = topo.wire(wire_id)?;
-    let Some(first) = wire.edges().first() else {
-        return Ok(None);
-    };
-    if !wire.is_closed() {
-        return Ok(None);
-    }
-    let first_edge = topo.edge(first.edge())?;
-    let EdgeCurve::Circle(carrier) = first_edge.curve() else {
-        return Ok(None);
-    };
-    let (a, b) = first_edge
-        .strict_domain()
-        .map_err(crate::error::edge_domain_validation)?;
-    let (start, end) = if first.is_forward() { (a, b) } else { (b, a) };
-    let increasing = end > start;
-    let first_vertex = first.oriented_start(first_edge);
-    let mut parameter = start;
-    let mut vertex = first_vertex;
-    for oriented in wire.edges() {
-        let edge = topo.edge(oriented.edge())?;
-        let EdgeCurve::Circle(circle) = edge.curve() else {
-            return Ok(None);
-        };
-        if circle.center() != carrier.center()
-            || circle.radius() != carrier.radius()
-            || circle.u_axis() != carrier.u_axis()
-            || circle.v_axis() != carrier.v_axis()
-        {
-            return Ok(None);
-        }
-        let (a, b) = edge
-            .strict_domain()
-            .map_err(crate::error::edge_domain_validation)?;
-        let (a, b) = if oriented.is_forward() {
-            (a, b)
-        } else {
-            (b, a)
-        };
-        if a != parameter || (b > a) != increasing || oriented.oriented_start(edge) != vertex {
-            return Ok(None);
-        }
-        parameter = b;
-        vertex = oriented.oriented_end(edge);
-    }
-    if vertex != first_vertex {
-        return Ok(None);
-    }
-    let mut full_turn = first_edge.clone();
-    full_turn.set_end(full_turn.start());
-    full_turn.set_trim(Some((start, parameter)));
-    Ok(full_turn.strict_domain().is_ok().then_some(carrier))
-}
-
-#[allow(clippy::too_many_lines, clippy::float_cmp)] // Exact half-open interval endpoints.
-fn plane_point_in_wire(
-    topo: &Topology,
-    wire_id: remus_topology::wire::WireId,
-    point: Point3,
-    normal: Vec3,
-) -> Result<bool, CheckError> {
-    use remus_topology::edge::EdgeCurve;
-    let wire = topo.wire(wire_id)?;
-    let frame = remus_math::frame::Frame3::from_normal(point, normal)?;
-    if let Some(circle) = complete_circle_wire(topo, wire_id)? {
-        let center = circle.center() - point;
-        let cos_y = circle.radius() * circle.u_axis().dot(frame.y);
-        let sin_y = circle.radius() * circle.v_axis().dot(frame.y);
-        let amplitude = cos_y.hypot(sin_y);
-        let center_y = center.dot(frame.y);
-        if !amplitude.is_finite() || amplitude <= 0.0 || !center_y.is_finite() {
-            return Err(CheckError::DistanceFailed(
-                "complete circular trim has no finite ray events".into(),
-            ));
-        }
-        let ordinate = -center_y / amplitude;
-        if ordinate.abs() >= 1.0 {
-            return Ok(false);
-        }
-        let phase = sin_y.atan2(cos_y);
-        let angle = ordinate.acos();
-        // A complete traversal has each algebraic ray event exactly once.
-        // Its arbitrary seam cannot remove or duplicate an event.
-        let mut crossings = 0;
-        for parameter in [phase - angle, phase + angle] {
-            let abscissa = (circle.evaluate(parameter) - point).dot(frame.x);
-            if !abscissa.is_finite() {
-                return Err(CheckError::DistanceFailed(
-                    "complete circular trim has no finite ray events".into(),
-                ));
-            }
-            if abscissa > 0.0 {
-                crossings += 1;
-            }
-        }
-        return Ok(crossings % 2 != 0);
-    }
-    let mut crossings = 0;
-    for oriented in wire.edges() {
-        let edge = topo.edge(oriented.edge())?;
-        let start = topo.vertex(edge.start())?.point();
-        let end = topo.vertex(edge.end())?.point();
-        let (a, b) = edge
-            .strict_domain()
-            .map_err(crate::error::edge_domain_validation)?;
-        match edge.curve() {
-            curve if edge::is_linear_curve(curve) => {
-                let p = curve.evaluate_with_endpoints(a, start, end) - point;
-                let q = curve.evaluate_with_endpoints(b, start, end) - point;
-                let (py, qy) = (p.dot(frame.y), q.dot(frame.y));
-                if (py > 0.0) != (qy > 0.0) {
-                    let t = -py / (qy - py);
-                    if (q.dot(frame.x) - p.dot(frame.x)).mul_add(t, p.dot(frame.x)) > 0.0 {
-                        crossings += 1;
-                    }
-                }
-            }
-            EdgeCurve::Circle(circle) => {
-                let center = circle.center() - point;
-                let cos_y = circle.radius() * circle.u_axis().dot(frame.y);
-                let sin_y = circle.radius() * circle.v_axis().dot(frame.y);
-                let amplitude = cos_y.hypot(sin_y);
-                let ordinate = -center.dot(frame.y) / amplitude;
-                // A tangent contributes no parity change.
-                if ordinate.abs() >= 1.0 {
-                    continue;
-                }
-                let phase = sin_y.atan2(cos_y);
-                let angle = ordinate.acos();
-                let (lo, hi) = (a.min(b), a.max(b));
-                let period = std::f64::consts::TAU;
-                // Refuse arithmetic-ambiguous partial-arc admission. This is
-                // an error enclosure, not a geometric endpoint snap: no
-                // uncertain ray event is promoted into a crossing.
-                let ordinate_scale = center.x().abs() * frame.y.x().abs()
-                    + center.y().abs() * frame.y.y().abs()
-                    + center.z().abs() * frame.y.z().abs()
-                    + cos_y.abs()
-                    + sin_y.abs();
-                let angle_roundoff = 64.0
-                    * f64::EPSILON
-                    * (lo.abs().max(hi.abs()).max(period)
-                        + (ordinate_scale / amplitude) / (1.0 - ordinate * ordinate).sqrt());
-                if !angle_roundoff.is_finite() || angle_roundoff >= period / 4.0 {
-                    return Err(CheckError::DistanceFailed(
-                        "circular trim ray-event admission is unresolved".into(),
-                    ));
-                }
-                for raw in [phase - angle, phase + angle] {
-                    let t = raw + period * ((lo - raw) / period).ceil();
-                    if !t.is_finite()
-                        || [t - period, t, t + period].into_iter().any(|candidate| {
-                            (candidate - lo).abs() <= angle_roundoff
-                                || (candidate - hi).abs() <= angle_roundoff
-                        })
-                    {
-                        return Err(CheckError::DistanceFailed(
-                            "circular trim ray-event endpoint is unresolved".into(),
-                        ));
-                    }
-                    if t > hi {
-                        continue;
-                    }
-                    let derivative = (-cos_y).mul_add(t.sin(), sin_y * t.cos());
-                    let interior = t > lo && t < hi;
-                    let lower_crossing = t == lo && derivative > 0.0;
-                    let upper_crossing = t == hi && derivative < 0.0;
-                    if (interior || lower_crossing || upper_crossing)
-                        && (circle.evaluate(t) - point).dot(frame.x) > 0.0
-                    {
-                        crossings += 1;
-                    }
-                }
-            }
-            EdgeCurve::Line
-            | EdgeCurve::Ellipse(_)
-            | EdgeCurve::Hyperbola(_)
-            | EdgeCurve::Parabola(_)
-            | EdgeCurve::NurbsCurve(_) => {
-                return Err(CheckError::DistanceFailed(
-                    "certified planar trim membership requires line or circle boundaries".into(),
-                ));
-            }
-        }
-    }
-    Ok(crossings % 2 != 0)
-}
-
 /// Compute the minimum distance between solid boundaries.
 ///
 /// Complete native spheres use global analytic face extrema. Straight-edged
@@ -1041,6 +825,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+    use plane_trim::complete_circle_wire;
     use remus_math::surfaces::{CylindricalSurface, SphericalSurface, ToroidalSurface};
 
     fn circle_seam_face(

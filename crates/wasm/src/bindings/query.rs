@@ -20,13 +20,13 @@ use crate::handles::{
 use remus_geometry::convert::{DetectedCurveKind, detect_curve_kind, detect_surface_kind};
 
 use crate::helpers::{frenet_from_derivatives, sample_full_period_curve, sample_open_span};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::types::{
     EdgeConvexityRelation, EdgeConvexityResult, EdgeRelationRow, FaceMaterialSense,
 };
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     // ── Topology queries ──────────────────────────────────────────
 
     /// Get all face handles of a solid.
@@ -1735,7 +1735,7 @@ impl BrepKernel {
 /// Bindings for surface curvature analysis (backed by `remus-check`'s
 /// `analyze::curvature` module).
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Principal curvatures at `(u, v)` on a face's surface.
     ///
     /// Returns a JSON string `{ k1, k2, gaussian, mean, d1, d2 }` (see the
@@ -1813,7 +1813,7 @@ fn map_edge_concavity(concavity: remus_operations::query::EdgeConcavity) -> Edge
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Classify one manifold edge of a solid as convex, concave, tangent,
     /// or unknown.
     ///
@@ -1949,7 +1949,7 @@ impl BrepKernel {
 // Non-exported helpers. `JsError` cannot be constructed on non-wasm targets,
 // so the real work lives here behind a `WasmError` and stays reachable from
 // native tests and from `executeBatch` dispatch.
-impl BrepKernel {
+impl RemusKernel {
     /// Implementation behind `faceContentDigests`.
     ///
     /// # Errors

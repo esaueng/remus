@@ -80,8 +80,8 @@ function fixture(kernel, shape, scale, placed) {
   return { solid, volume, dirX: [c, s, 0], dirY: [-s, c, 0] };
 }
 
-export function runGridPatternPackaged({ BrepKernel }) {
-  assert.equal(typeof BrepKernel.prototype.gridPatternJournaled, 'function', 'journaled grid export');
+export function runGridPatternPackaged({ RemusKernel }) {
+  assert.equal(typeof RemusKernel.prototype.gridPatternJournaled, 'function', 'journaled grid export');
   const cells = [
     { shape: 'box', scale: 1, countX: 1, countY: 1 },
     { shape: 'box', scale: 0.001, countX: 1, countY: 3 },
@@ -94,7 +94,7 @@ export function runGridPatternPackaged({ BrepKernel }) {
     { shape: 'hollow', scale: 1, countX: 2, countY: 2 },
   ];
   for (const route of routes) for (const cell of cells) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const { solid, volume, dirX, dirY } = fixture(kernel, cell.shape, cell.scale, cell.placed);
       const refs = anchors(kernel, solid);
@@ -148,7 +148,7 @@ export function runGridPatternPackaged({ BrepKernel }) {
       assertOriginals(kernel, route, refs);
       if (cell.shape === 'box' && cell.countX === 2 && cell.countY === 3) {
         const bytes = kernel.serializeSolids(Uint32Array.from(members));
-        const imported = new BrepKernel();
+        const imported = new RemusKernel();
         try {
           imported.makeBox(1, 1, 1); // Force fresh imported entity handles.
           const roots = Array.from(imported.deserializeSolids(bytes));
@@ -189,7 +189,7 @@ export function runGridPatternPackaged({ BrepKernel }) {
   }
 
   for (const route of routes) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const solid = kernel.makeBox(10, 10, 10);
       const retired = kernel.makeBox(1, 1, 1);

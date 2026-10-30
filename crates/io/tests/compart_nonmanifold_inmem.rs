@@ -1,7 +1,7 @@
 //! Faithful repro: the 2×1 compartmented-bin EXPORT goes non-manifold (#1753).
 //!
 //! Captured the live remus boolean operands (JS monkey-patch over
-//! `BrepKernel.fuseWithEvolution` + `serializeSolid`, #915) at the FIRST
+//! `RemusKernel.fuseWithEvolution` + `serializeSolid`, #915) at the FIRST
 //! over-shared result while running the tool's `compartmentBuilder.scenario.
 //! manifold` 2×1 case. The over-share is NOT the compartment-cavity cut (that
 //! step is clean, free=0/over=0 — see `gridfinity_cavitycut_inmem.rs`) but the

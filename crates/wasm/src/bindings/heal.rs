@@ -9,7 +9,7 @@ use remus_topology::face::Face;
 use crate::error::validate_finite;
 use crate::handles::{face_id_to_u32, solid_id_to_u32};
 use crate::helpers::{TOL, serialize_feature};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 fn healing_repairs(
     report: &remus_operations::heal::HealingReport,
@@ -38,7 +38,7 @@ fn fixer_repairs(result: &remus_heal::fix::FixResult) -> Vec<crate::types::HealR
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     // -- Sewing ----------------------------------------------------------------
 
     /// Sew loose faces into a connected solid.
@@ -327,11 +327,11 @@ impl BrepKernel {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
     #[test]
     fn unify_faces_checked_reports_merge_and_validations() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         // L-shaped fuse of two corner-sharing boxes leaves coplanar z-face
         // fragments that unify (see operations::heal tests).
         let r = k.execute_batch(
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn convert_to_bspline_returns_count_and_solid() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeCylinder", "args": {"radius": 1, "height": 2}},
@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn convert_to_bspline_invalid_handle_errors() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(r#"[{"op": "convertToBspline", "args": {"solid": 999}}]"#);
         let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
         assert!(
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn convert_to_bspline_idempotent_second_call_is_zero() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 1, "height": 1, "depth": 1}},
@@ -414,7 +414,7 @@ mod tests {
         // missing from `dispatch_op` before this PR, so prior to the
         // fix this test would have hit the catch-all "unknown
         // operation" arm.
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeCylinder", "args": {"radius": 1, "height": 2}},
@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     fn convert_to_elementary_via_batch_invalid_handle_errors() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(r#"[{"op": "convertToElementary", "args": {"solid": 999}}]"#);
         let parsed: serde_json::Value = serde_json::from_str(&r).unwrap();
         assert!(
@@ -543,7 +543,7 @@ fn parse_heal_config(
 
 /// Natively-testable implementations (`JsError` cannot be constructed on
 /// non-wasm targets).
-impl BrepKernel {
+impl RemusKernel {
     pub(crate) fn heal_solid_detailed_impl(
         &mut self,
         solid: u32,
@@ -761,7 +761,7 @@ impl BrepKernel {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Heal a solid with a per-fix configuration instead of the fixed
     /// [`healSolid`](Self::heal_solid) recipe.
     ///
@@ -838,15 +838,15 @@ impl BrepKernel {
 mod heal_config_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
-    fn make_box(k: &mut BrepKernel) -> u32 {
+    fn make_box(k: &mut RemusKernel) -> u32 {
         k.make_box_solid(2.0, 2.0, 2.0).unwrap()
     }
 
     #[test]
     fn fix_with_default_config_keeps_valid_box_intact() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = make_box(&mut k);
         let r = k
             .fix_shape_with_config_impl(solid, r#"{"tolerance": 1e-6}"#)
@@ -859,7 +859,7 @@ mod heal_config_tests {
 
     #[test]
     fn detailed_healing_reports_verified_success_and_typed_refusal() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = make_box(&mut k);
         let success = k.repair_solid_detailed_impl(solid).unwrap();
         assert!(success.verified);
@@ -883,7 +883,7 @@ mod heal_config_tests {
 
     #[test]
     fn fix_with_default_config_preserves_single_face_full_torus() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = k.make_torus_solid(3.0, 1.0, 32).unwrap();
         let original_volume = k.volume(solid, 0.001).unwrap();
 
@@ -901,7 +901,7 @@ mod heal_config_tests {
 
     #[test]
     fn fix_config_all_off_takes_no_actions() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = make_box(&mut k);
         let all_off: Vec<String> = [
             "reorder",
@@ -942,7 +942,7 @@ mod heal_config_tests {
 
     #[test]
     fn unknown_fix_name_and_bad_mode_error() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = make_box(&mut k);
         assert!(
             k.fix_shape_with_config_impl(solid, r#"{"fixes": {"warpDrive": "on"}}"#)
@@ -960,7 +960,7 @@ mod heal_config_tests {
 
     #[test]
     fn pipeline_runs_steps_in_order_and_reports_each() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = make_box(&mut k);
         let r = k
             .run_heal_pipeline_impl(
@@ -977,7 +977,7 @@ mod heal_config_tests {
 
     #[test]
     fn pipeline_rejects_unknown_step_and_empty_list() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = make_box(&mut k);
         assert!(
             k.run_heal_pipeline_impl(solid, vec!["definitely_not_an_op".into()])
@@ -992,7 +992,7 @@ mod heal_config_tests {
 
     #[test]
     fn pipeline_step_names_are_exposed() {
-        let k = BrepKernel::new();
+        let k = RemusKernel::new();
         let names = k.heal_pipeline_steps();
         assert!(names.iter().any(|n| n == "fix_shape"));
         assert!(names.iter().any(|n| n == "unify_same_domain"));

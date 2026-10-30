@@ -1,8 +1,8 @@
 /** Public WASM witnesses for certified containment, history and sheet retirement. */
 import assert from 'node:assert/strict';
 
-function journaledBox(BrepKernel, width, surface) {
-  const kernel = new BrepKernel();
+function journaledBox(RemusKernel, width, surface) {
+  const kernel = new RemusKernel();
   const outer = kernel.makeBox(width, 3, 4);
   const inner = kernel.makeBox(1, 1, 1);
   let result;
@@ -19,7 +19,7 @@ function journaledBox(BrepKernel, width, surface) {
   return { kernel, result, reference };
 }
 
-export function runKernelCorrectnessPackaged({ BrepKernel }) {
+export function runKernelCorrectnessPackaged({ RemusKernel }) {
   // All corners and the box centre lie in the torus, but (0.75,0,0) is
   // material in the box and air in the torus. Sampling cannot prove inclusion.
   // The independent volume oracle integrates the circular segment of its hole:
@@ -38,7 +38,7 @@ export function runKernelCorrectnessPackaged({ BrepKernel }) {
       const journaled = operation.endsWith('Journaled');
       const kind = operation.replace(/Journaled$/, '');
       for (const surface of ['direct', 'executeBatch', 'executeBatchV2']) {
-        const kernel = new BrepKernel();
+        const kernel = new RemusKernel();
         const torus = kernel.makeTorus(4, 3, 16);
         const box = kernel.makeBox(3.5, 3, 0.2);
         kernel.transformSolid(torus, translation(placement, placement, placement));
@@ -94,7 +94,7 @@ export function runKernelCorrectnessPackaged({ BrepKernel }) {
   for (const surface of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const operation of ['fuse', 'intersect', 'fuseJournaled', 'intersectJournaled']) {
       const journaled = operation.endsWith('Journaled');
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       const cylinder = kernel.makeCylinder(2, 2);
       const box = kernel.makeBox(2, 4, 2);
       kernel.transformSolid(box, translation(0, -2, 0));
@@ -155,7 +155,7 @@ export function runKernelCorrectnessPackaged({ BrepKernel }) {
       for (const kind of ['fuse', 'cut', 'intersect']) {
         for (const surface of ['direct', 'executeBatch', 'executeBatchV2']) {
           for (const route of ['plain', 'journaled', 'quality']) {
-            const kernel = new BrepKernel();
+            const kernel = new RemusKernel();
             const cylinder = kernel.makeCylinder(2, 2);
             const box = kernel.makeBox(2, 4, 2);
             kernel.transformSolid(box, translation(0, -2, 0));
@@ -281,7 +281,7 @@ export function runKernelCorrectnessPackaged({ BrepKernel }) {
       for (const operation of ['fuse', 'intersect', 'fuseJournaled', 'intersectJournaled']) {
         // Retain a real earlier journal entry, so refusal must also preserve
         // history when the journaled variant encounters these later mutations.
-        const seeded = journaledBox(BrepKernel, 2, surface);
+        const seeded = journaledBox(RemusKernel, 2, surface);
         const { kernel } = seeded;
         const first = fixture.make(kernel);
         const second = fixture.make(kernel);
@@ -324,7 +324,7 @@ export function runKernelCorrectnessPackaged({ BrepKernel }) {
   for (const placement of [0, 10, 100]) {
     for (const surface of ['direct', 'executeBatch', 'executeBatchV2']) {
       for (const operation of ['fuse', 'intersect']) {
-        const kernel = new BrepKernel();
+        const kernel = new RemusKernel();
         const cone = kernel.makeCone(1, 0, 2);
         kernel.transformSolid(cone, translation(placement, placement, placement));
         const copy = kernel.copySolid(cone);
@@ -348,8 +348,8 @@ export function runKernelCorrectnessPackaged({ BrepKernel }) {
   }
 
   for (const surface of ['direct', 'executeBatch', 'executeBatchV2']) {
-    const source = journaledBox(BrepKernel, 7, surface);
-    const destination = journaledBox(BrepKernel, 2, surface);
+    const source = journaledBox(RemusKernel, 7, surface);
+    const destination = journaledBox(RemusKernel, 2, surface);
     assert.equal(source.result.op, destination.result.op, 'fixture has colliding source operation IDs');
     const { kernel, result, reference } = destination;
     const before = JSON.parse(kernel.resolveRef(reference));
@@ -366,7 +366,7 @@ export function runKernelCorrectnessPackaged({ BrepKernel }) {
     assert.ok(Math.abs(kernel.volume(result.solid, 0.01) - 24) < 1e-8);
     assert.ok(Math.abs(kernel.volume(imported[0], 0.01) - 84) < 1e-8);
     // A fresh destination still replays the source operation IDs unchanged.
-    const fresh = new BrepKernel();
+    const fresh = new RemusKernel();
     fresh.deserializeSolids(bytes);
     assert.equal(JSON.parse(fresh.resolveRef(source.reference)).status, 'bound');
     source.kernel.free();
@@ -375,7 +375,7 @@ export function runKernelCorrectnessPackaged({ BrepKernel }) {
   }
 
   for (const surface of ['direct', 'executeBatch', 'executeBatchV2']) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     const solid = kernel.makeBox(2, 3, 4);
     const face = kernel.getSolidFaces(solid)[0];
     let sheet;

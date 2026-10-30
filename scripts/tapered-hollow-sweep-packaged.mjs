@@ -57,13 +57,13 @@ function closedMesh(kernel, solid, scale) {
   }
 }
 
-export function runTaperedHollowSweepPackaged({ BrepKernel }) {
+export function runTaperedHollowSweepPackaged({ RemusKernel }) {
   let cells = 0;
   for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const [scale, placed] of [0.001, 1, 1000].flatMap(scale => [false, true].map(placed => [scale, placed]))) {
       for (const scaleValues of [[0, 1, 1, 2], [0, 2, 1, 0.5], [0, 1, 0.5, 2, 1, 1],
         [0, 1 + 5e-8, 1, 1 + 5e-8]]) {
-        const kernel = new BrepKernel();
+        const kernel = new RemusKernel();
         try {
           const outer = kernel.makePolygonWire(Float64Array.from(
             [-2, -2, 0, 2, -2, 0, 2, 2, 0, -2, 2, 0].map(value => value * scale),
@@ -127,9 +127,9 @@ export function runTaperedHollowSweepPackaged({ BrepKernel }) {
     }
   }
   console.log(`ok - tapered hollow sweeps: ${cells} direct/batch positive cells and malformed-law rollback`);
-  runNativeDomainSweeps(BrepKernel);
-  runNativeDomainGuidesAndRefusals(BrepKernel);
-  runNativeDomainCorners(BrepKernel);
+  runNativeDomainSweeps(RemusKernel);
+  runNativeDomainGuidesAndRefusals(RemusKernel);
+  runNativeDomainCorners(RemusKernel);
 
 }
 
@@ -185,13 +185,13 @@ function physicalFrustum(kernel, solid, origin, scale, hollow, law) {
   closedMesh(kernel, solid, scale);
 }
 
-function runNativeDomainSweeps(BrepKernel) {
+function runNativeDomainSweeps(RemusKernel) {
   let cells = 0, lawCells = 0;
   for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const domain of nativeDomains) for (const scale of [0.001, 1, 1000]) {
       for (const placed of [false, true]) for (const hollow of [false, true]) {
         for (const contactMode of ['fixed', 'rmf', 'constantNormal:0,1,0']) {
-          const kernel = new BrepKernel();
+          const kernel = new RemusKernel();
           try {
             const fixture = nativeFixture(kernel, domain, scale, placed, hollow);
             const original = kernel.getNurbsCurveData(fixture.pathEdge);
@@ -211,7 +211,7 @@ function runNativeDomainSweeps(BrepKernel) {
       // so the law clamps to unit scale even when the PATH domain is [10,20].
       { values: [10, 1, 20, 2], section: () => 1, integral: 1 },
     ]) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       try {
         const fixture = nativeFixture(kernel, domain, 1, true, true);
         const solid = invoke(kernel, route, { ...fixture, contactMode: 'fixed',
@@ -237,11 +237,11 @@ function guided(kernel, route, fixture, domain, auxEdge, auxDomain, auxCps) {
   return row.ok;
 }
 
-function runNativeDomainGuidesAndRefusals(BrepKernel) {
+function runNativeDomainGuidesAndRefusals(RemusKernel) {
   let guides = 0, refusals = 0;
   for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const domain of nativeDomains) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       try {
         const fixture = nativeFixture(kernel, domain);
         const auxCps = [3, 0, 0, 3, 3, 6];
@@ -255,7 +255,7 @@ function runNativeDomainGuidesAndRefusals(BrepKernel) {
         guides++;
       } finally { kernel.free(); }
     }
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const fixture = nativeFixture(kernel, [10, 20, 4]);
       const solid = invoke(kernel, route, { ...fixture, scaleValues: growingLaw.values, segments: 4 });
@@ -310,14 +310,14 @@ function runNativeDomainGuidesAndRefusals(BrepKernel) {
   console.log(`ok - native-domain guides: ${guides} endpoint cells; ${refusals} typed checkpoint-ownership rollback controls`);
 }
 
-function runNativeDomainCorners(BrepKernel) {
+function runNativeDomainCorners(RemusKernel) {
   let positives = 0, refusals = 0;
   const domains = [[0, 1], [10, 20], [-2, 3], [1e6, 1e6 + 16],
     [1e16, 1e16 + 16], [0, 1e-12], [0, 1e-16]];
   for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const [start, end] of domains) {
       for (const cornerMode of end === 1e-16 ? ['miter'] : ['miter', 'round:1']) {
-        const kernel = new BrepKernel();
+        const kernel = new RemusKernel();
         try {
           const profile = kernel.makeFaceFromWire(kernel.makePolygonWire(Float64Array.from(
             [-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0],

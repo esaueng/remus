@@ -112,10 +112,12 @@ fn face_area_uncached(
 /// polygon path. A line-only boundary stays on the cheaper exact Newell path.
 ///
 /// Native circle, ellipse, parabola, and hyperbola edges are exact. A NURBS
-/// edge is exact only when curve recognition identifies it as one of those
-/// forms at a scale-relative tolerance (see
-/// `face_integrator::nurbs_boundary_is_recognized`); any other NURBS keeps
-/// the whole face on the sampled fallback.
+/// edge is exact when it is a unit-weight polynomial curve of degree at most
+/// six (the integrator's exact per-span rule, see
+/// `face_integrator::has_exact_polynomial_green_rule`) or when curve
+/// recognition identifies it as one of those forms at a scale-relative
+/// tolerance (see `face_integrator::nurbs_boundary_is_recognized`); any other
+/// NURBS keeps the whole face on the sampled fallback.
 fn planar_boundary_needs_curve_integral(
     topo: &Topology,
     face_id: FaceId,
@@ -135,7 +137,9 @@ fn planar_boundary_needs_curve_integral(
                 | EdgeCurve::Parabola(_)
                 | EdgeCurve::Hyperbola(_) => has_supported_curve = true,
                 EdgeCurve::NurbsCurve(nc) => {
-                    if !nurbs_boundary_is_recognized(topo, edge, nc)? {
+                    if !has_exact_polynomial_green_rule(nc)
+                        && !nurbs_boundary_is_recognized(topo, edge, nc)?
+                    {
                         return Ok(false);
                     }
                     has_supported_curve = true;
@@ -144,6 +148,18 @@ fn planar_boundary_needs_curve_integral(
         }
     }
     Ok(has_supported_curve)
+}
+
+/// Whether the planar moment integrator has an exact span rule for `nc`:
+/// unit weights (an algebraic precondition, not a closeness test) and degree
+/// at most six. Mirrors `face_integrator::has_exact_polynomial_green_rule`,
+/// duplicated for the same reason as [`nurbs_boundary_is_recognized`].
+fn has_exact_polynomial_green_rule(nc: &remus_math::nurbs::curve::NurbsCurve) -> bool {
+    nc.degree() <= 6
+        && nc
+            .weights()
+            .iter()
+            .all(|weight| weight.to_bits() == 1.0_f64.to_bits())
 }
 
 /// Whether a NURBS boundary edge is recognized as an analytic form at a

@@ -60,6 +60,8 @@ pub struct PackageSpec {
     stem: &'static str,
     /// The exported class whose method count is sanity-checked.
     class: &'static str,
+    /// Deprecated JS names exported as aliases of `class`.
+    class_aliases: &'static [&'static str],
     min_methods: usize,
     size: SizeBudget,
     /// Extra cargo arguments passed after `--`.
@@ -86,8 +88,10 @@ pub const KERNEL: PackageSpec = PackageSpec {
     crate_dir: "crates/wasm",
     name: "remus-wasm",
     stem: "remus_wasm",
-    class: "BrepKernel",
-    // Based on ~185 methods in the current BrepKernel. Update when the API
+    class: "RemusKernel",
+    // The predecessor line's class name, kept for one transition period.
+    class_aliases: &["BrepKernel"],
+    // Based on ~185 methods in the current RemusKernel. Update when the API
     // surface changes significantly.
     min_methods: 170,
     size: SizeBudget {
@@ -110,6 +114,7 @@ pub const TRANSLATORS: PackageSpec = PackageSpec {
     name: "remus-wasm-io",
     stem: "remus_wasm_io",
     class: "RemusIo",
+    class_aliases: &[],
     min_methods: 18,
     size: SizeBudget {
         min: MIN_WASM_SIZE,
@@ -263,7 +268,53 @@ pub fn merge_packages(spec: &PackageSpec) -> Result<()> {
     let root = project_root()?;
     let pkg = spec.pkg_dir()?;
     merge_at(&pkg, &spec.pkg_node_dir()?, spec)?;
+    append_class_aliases(&pkg, spec)?;
     copy_package_metadata(&root, &pkg)
+}
+
+/// The text that exports `alias` as a deprecated name of `spec.class`, per
+/// entry point: ESM, CommonJS and TypeScript declarations.
+fn class_alias_exports(spec: &PackageSpec, alias: &str) -> [(String, String); 3] {
+    let PackageSpec { class, stem, .. } = *spec;
+    let doc = format!("/** @deprecated Renamed to `{class}`; this alias will be removed. */");
+    [
+        (
+            format!("{stem}.js"),
+            format!("{doc}\nexport {{ {class} as {alias} }} from \"./{stem}_bg.js\";\n"),
+        ),
+        (
+            spec.node_entry(),
+            format!("{doc}\nexports.{alias} = exports.{class};\n"),
+        ),
+        (
+            format!("{stem}.d.ts"),
+            format!(
+                "{doc}\nexport declare const {alias}: typeof {class};\n\
+                 {doc}\nexport type {alias} = {class};\n"
+            ),
+        ),
+    ]
+}
+
+/// Append the deprecated class aliases to the merged entry points. An entry
+/// point that already carries an alias is left unchanged.
+fn append_class_aliases(pkg: &Path, spec: &PackageSpec) -> Result<()> {
+    for alias in spec.class_aliases {
+        for (file, export) in class_alias_exports(spec, alias) {
+            let path = pkg.join(&file);
+            let mut text =
+                fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+            if text.contains(&export) {
+                continue;
+            }
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&export);
+            fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 fn copy_package_metadata(root: &Path, pkg: &Path) -> Result<()> {
@@ -444,6 +495,15 @@ fn validate_at(pkg: &Path, spec: &PackageSpec) -> Result<()> {
         let class_export = format!("export class {}", spec.class);
         if !dts.contains(&class_export) {
             errors.push(format!("d.ts missing '{class_export}'"));
+        }
+        for alias in spec.class_aliases {
+            for (file, export) in class_alias_exports(spec, alias) {
+                let exported =
+                    fs::read_to_string(pkg.join(&file)).is_ok_and(|text| text.contains(&export));
+                if !exported {
+                    errors.push(format!("{file} missing the deprecated '{alias}' alias"));
+                }
+            }
         }
         let method_count = count_dts_methods(&dts);
         if method_count < spec.min_methods {
@@ -1248,7 +1308,7 @@ mod tests {
 
     #[test]
     fn count_methods_in_synthetic_dts() {
-        let mut dts = String::from("export class BrepKernel {\n");
+        let mut dts = String::from("export class RemusKernel {\n");
         for i in 0..200 {
             dts.push_str(&format!("  method{i}(): void;\n"));
         }
@@ -1260,7 +1320,7 @@ mod tests {
     #[test]
     fn count_methods_ignores_non_method_lines() {
         let dts = "\
-export class BrepKernel {
+export class RemusKernel {
   free(): void;
   /**
    * Some documentation
@@ -1400,6 +1460,69 @@ export class BrepKernel {
         assert_eq!(result["name"], "remus-wasm");
         assert_eq!(result["main"], "remus_wasm_node.cjs");
         assert_eq!(result["exports"]["."]["node"], "./remus_wasm_node.cjs");
+    }
+
+    #[test]
+    fn kernel_entry_points_export_the_deprecated_class_alias_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let entries = [
+            (
+                "remus_wasm.js",
+                "export { RemusKernel } from \"./remus_wasm_bg.js\";",
+            ),
+            (
+                "remus_wasm_node.cjs",
+                "exports.RemusKernel = RemusKernel;\n",
+            ),
+            ("remus_wasm.d.ts", "export class RemusKernel {\n}\n"),
+        ];
+        for (file, text) in entries {
+            fs::write(dir.path().join(file), text).unwrap();
+        }
+
+        append_class_aliases(dir.path(), &KERNEL).unwrap();
+        let first = entries.map(|(file, _)| fs::read_to_string(dir.path().join(file)).unwrap());
+        append_class_aliases(dir.path(), &KERNEL).unwrap();
+        let second = entries.map(|(file, _)| fs::read_to_string(dir.path().join(file)).unwrap());
+        assert_eq!(first, second, "a second merge must not duplicate the alias");
+
+        assert!(first[0].ends_with(
+            "export { RemusKernel } from \"./remus_wasm_bg.js\";\n\
+             /** @deprecated Renamed to `RemusKernel`; this alias will be removed. */\n\
+             export { RemusKernel as BrepKernel } from \"./remus_wasm_bg.js\";\n"
+        ));
+        assert!(first[1].ends_with("exports.BrepKernel = exports.RemusKernel;\n"));
+        assert!(first[2].contains("export declare const BrepKernel: typeof RemusKernel;\n"));
+        assert!(first[2].contains("export type BrepKernel = RemusKernel;\n"));
+    }
+
+    #[test]
+    fn translator_entry_points_get_no_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        append_class_aliases(dir.path(), &TRANSLATORS).unwrap();
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn validation_refuses_a_missing_class_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("remus_wasm.js"), "").unwrap();
+        fs::write(dir.path().join("remus_wasm_node.cjs"), "").unwrap();
+        fs::write(
+            dir.path().join("remus_wasm.d.ts"),
+            "export class RemusKernel {\n}\n",
+        )
+        .unwrap();
+        append_class_aliases(dir.path(), &KERNEL).unwrap();
+        fs::write(dir.path().join("remus_wasm_node.cjs"), "").unwrap();
+
+        let err = validate_at(dir.path(), &KERNEL).unwrap_err().to_string();
+        assert!(
+            err.contains("remus_wasm_node.cjs missing the deprecated 'BrepKernel' alias"),
+            "got: {err}"
+        );
+        assert!(!err.contains("remus_wasm.js missing"), "got: {err}");
+        assert!(!err.contains("remus_wasm.d.ts missing"), "got: {err}");
     }
 
     #[test]

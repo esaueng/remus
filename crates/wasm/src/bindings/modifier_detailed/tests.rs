@@ -19,12 +19,12 @@ use remus_topology::wire::{OrientedEdge, Wire};
 use serde_json::{Value, json};
 
 use crate::handles::{edge_id_to_u32, face_id_to_u32, solid_id_to_u32};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::types::SolidOperationDetailedResult;
 
 type Counts = (usize, usize, usize, usize, usize);
 
-fn counts(kernel: &BrepKernel) -> Counts {
+fn counts(kernel: &RemusKernel) -> Counts {
     let topo = kernel.topo();
     (
         topo.num_vertices(),
@@ -38,7 +38,7 @@ fn counts(kernel: &BrepKernel) -> Counts {
 /// Live entity counts, without the handle high-water mark: a rollback after
 /// an attempt that allocated keeps those slots retired so no stale handle
 /// can alias a later entity.
-fn live_counts(kernel: &BrepKernel) -> (usize, usize, usize, usize) {
+fn live_counts(kernel: &RemusKernel) -> (usize, usize, usize, usize) {
     let (vertices, edges, faces, solids, _) = counts(kernel);
     (vertices, edges, faces, solids)
 }
@@ -47,11 +47,11 @@ fn envelope(result: SolidOperationDetailedResult) -> Value {
     serde_json::to_value(result).unwrap()
 }
 
-fn batch_v2(kernel: &mut BrepKernel, ops: &Value) -> Value {
+fn batch_v2(kernel: &mut RemusKernel, ops: &Value) -> Value {
     serde_json::from_str(&kernel.execute_batch_v2(&ops.to_string())).unwrap()
 }
 
-fn batch_legacy(kernel: &mut BrepKernel, ops: &Value) -> Value {
+fn batch_legacy(kernel: &mut RemusKernel, ops: &Value) -> Value {
     serde_json::from_str(&kernel.execute_batch(&ops.to_string())).unwrap()
 }
 
@@ -64,7 +64,7 @@ fn v2_code(error: &Value) -> &str {
         .unwrap()
 }
 
-fn volume(kernel: &BrepKernel, solid: u32) -> f64 {
+fn volume(kernel: &RemusKernel, solid: u32) -> f64 {
     kernel.volume(solid, 0.1).unwrap()
 }
 
@@ -121,7 +121,7 @@ impl Twin {
         }
     }
 
-    fn direct(self, kernel: &mut BrepKernel, solid: u32, edge: u32, face: u32) -> Value {
+    fn direct(self, kernel: &mut RemusKernel, solid: u32, edge: u32, face: u32) -> Value {
         envelope(match self {
             Self::Fillet => kernel.fillet_detailed_impl(solid, &[edge], 1.0, false),
             Self::Chamfer => kernel.chamfer_detailed_impl(solid, &[edge], 1.0, false),
@@ -142,8 +142,8 @@ impl Twin {
 }
 
 /// A fresh kernel holding one 10³ box and its first edge and face.
-fn box_kernel() -> (BrepKernel, u32, u32, u32) {
-    let mut kernel = BrepKernel::new();
+fn box_kernel() -> (RemusKernel, u32, u32, u32) {
+    let mut kernel = RemusKernel::new();
     let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
     let solid_id = kernel.resolve_solid(solid).unwrap();
     let edge =
@@ -186,13 +186,13 @@ fn exact_twins_match_both_batch_contracts_and_the_legacy_geometry() {
             {"op": "makeBox", "args": {"width": 10, "height": 10, "depth": 10}},
             {"op": twin.detailed_op(), "args": twin.args(solid, edge, face)},
         ]);
-        let mut v2_kernel = BrepKernel::new();
+        let mut v2_kernel = RemusKernel::new();
         let v2 = batch_v2(&mut v2_kernel, &ops);
         assert_eq!(
             v2[1]["ok"], direct,
             "{twin:?}: direct/executeBatchV2 parity"
         );
-        let legacy = batch_legacy(&mut BrepKernel::new(), &ops);
+        let legacy = batch_legacy(&mut RemusKernel::new(), &ops);
         assert_eq!(
             legacy[1]["ok"], direct,
             "{twin:?}: direct/executeBatch parity"
@@ -374,7 +374,7 @@ fn poisoned_kernel_refuses_every_twin_as_data() {
 /// Two crossed cylinders (radii 3 and 2, so the saddle is a simple loop, not
 /// the equal-radius figure eight). Rounding the saddle intersection needs a
 /// walking-engine NURBS wall with no closed form.
-fn crossed_cylinders(kernel: &mut BrepKernel) -> (u32, u32) {
+fn crossed_cylinders(kernel: &mut RemusKernel) -> (u32, u32) {
     let response = batch_v2(
         kernel,
         &json!([
@@ -402,7 +402,7 @@ fn crossed_cylinders(kernel: &mut BrepKernel) -> (u32, u32) {
 
 #[test]
 fn saddle_fillet_discloses_its_nurbs_wall_and_exact_only_refuses_it() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let (solid, saddle) = crossed_cylinders(&mut kernel);
     let solid_id = kernel.resolve_solid(solid).unwrap();
     let input_faces: HashSet<FaceId> =
@@ -463,7 +463,7 @@ fn saddle_fillet_discloses_its_nurbs_wall_and_exact_only_refuses_it() {
     assert_eq!(approximate, new_nurbs, "every new NURBS face is disclosed");
 
     // The batch twin, replayed on an identical kernel, is the same envelope.
-    let mut batch_kernel = BrepKernel::new();
+    let mut batch_kernel = RemusKernel::new();
     let (batch_solid, batch_saddle) = crossed_cylinders(&mut batch_kernel);
     assert_eq!((batch_solid, batch_saddle), (solid, saddle));
     let batch = batch_v2(
@@ -479,7 +479,7 @@ fn saddle_fillet_discloses_its_nurbs_wall_and_exact_only_refuses_it() {
 
 /// A `loft_smooth` solid with four curved NURBS side walls and planar caps
 /// (the fixture `shell_op`'s own NURBS-policy test uses).
-fn nurbs_loft(kernel: &mut BrepKernel) -> u32 {
+fn nurbs_loft(kernel: &mut RemusKernel) -> u32 {
     fn square_at(topo: &mut Topology, size: f64, z: f64) -> FaceId {
         let half = size / 2.0;
         let vertices: Vec<_> = [(-half, -half), (half, -half), (half, half), (-half, half)]
@@ -524,7 +524,7 @@ fn nurbs_loft(kernel: &mut BrepKernel) -> u32 {
     solid_id_to_u32(remus_operations::loft::loft_smooth(topo, &profiles).unwrap())
 }
 
-fn nurbs_face_handles(kernel: &BrepKernel, solid: u32) -> Vec<u32> {
+fn nurbs_face_handles(kernel: &RemusKernel, solid: u32) -> Vec<u32> {
     let solid_id = kernel.resolve_solid(solid).unwrap();
     remus_topology::explorer::solid_faces(kernel.topo(), solid_id)
         .unwrap()
@@ -541,7 +541,7 @@ fn nurbs_face_handles(kernel: &BrepKernel, solid: u32) -> Vec<u32> {
 
 #[test]
 fn shell_twin_keeps_the_legacy_exact_only_refusal_and_discloses_opt_in() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let solid = nurbs_loft(&mut kernel);
     let nurbs = nurbs_face_handles(&kernel, solid);
     assert_eq!(nurbs.len(), 4);
@@ -581,7 +581,7 @@ fn shell_twin_keeps_the_legacy_exact_only_refusal_and_discloses_opt_in() {
         "sampledFaces are the input NURBS face handles"
     );
 
-    let mut batch_kernel = BrepKernel::new();
+    let mut batch_kernel = RemusKernel::new();
     assert_eq!(nurbs_loft(&mut batch_kernel), solid);
     let batch = batch_v2(
         &mut batch_kernel,
@@ -596,7 +596,7 @@ fn shell_twin_keeps_the_legacy_exact_only_refusal_and_discloses_opt_in() {
 
 #[test]
 fn offset_exact_only_refuses_sampled_nurbs_before_touching_topology() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let solid = nurbs_loft(&mut kernel);
     let nurbs = nurbs_face_handles(&kernel, solid);
     let before = counts(&kernel);
@@ -681,7 +681,7 @@ impl Variant {
         }
     }
 
-    fn direct(self, kernel: &mut BrepKernel, solid: u32, edge: u32, exact_only: bool) -> Value {
+    fn direct(self, kernel: &mut RemusKernel, solid: u32, edge: u32, exact_only: bool) -> Value {
         envelope(match self {
             Self::FilletV2 => kernel.fillet_v2_detailed_impl(solid, &[edge], 1.0, exact_only),
             Self::ChamferV2 => {
@@ -743,12 +743,12 @@ fn exact_blend_variants_match_both_batch_contracts_and_the_legacy_geometry() {
                 {"op": "makeBox", "args": {"width": 10, "height": 10, "depth": 10}},
                 {"op": variant.detailed_op(), "args": args},
             ]);
-            let v2 = batch_v2(&mut BrepKernel::new(), &ops);
+            let v2 = batch_v2(&mut RemusKernel::new(), &ops);
             assert_eq!(
                 v2[1]["ok"], direct,
                 "{variant:?}: direct/executeBatchV2 parity"
             );
-            let legacy = batch_legacy(&mut BrepKernel::new(), &ops);
+            let legacy = batch_legacy(&mut RemusKernel::new(), &ops);
             assert_eq!(
                 legacy[1]["ok"], direct,
                 "{variant:?}: direct/executeBatch parity"
@@ -821,7 +821,7 @@ fn blend_variant_refusals_match_legacy_batch_v2_and_mutate_nothing() {
 
 #[test]
 fn walking_variant_exact_only_refuses_the_saddle_wall_with_rollback() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let (solid, saddle) = crossed_cylinders(&mut kernel);
     let solid_id = kernel.resolve_solid(solid).unwrap();
     let before = live_counts(&kernel);

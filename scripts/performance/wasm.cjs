@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { performance } = require('node:perf_hooks');
 const path = require('node:path');
+const { kernelClass } = require('../kernel-class.cjs');
 const [pkg, scenario, sizeArg, samplesArg, warmupArg] = process.argv.slice(2);
 const size = Number(sizeArg),
   samples = Number(samplesArg),
@@ -13,7 +14,7 @@ assert(
 assert(Number.isInteger(size) && size >= 2 && size <= 8192);
 assert(Number.isInteger(samples) && samples >= 1 && samples <= 1000);
 assert(Number.isInteger(warmup) && warmup >= 1 && warmup <= 100);
-const { BrepKernel } = require(path.join(path.resolve(pkg), 'remus_wasm_node.cjs'));
+const RemusKernel = kernelClass(require(path.join(path.resolve(pkg), 'remus_wasm_node.cjs')));
 const calls = 150;
 const matrix = [1, 0, 0, 0.001, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 function checked(output, count) {
@@ -104,7 +105,7 @@ function booleanSample(kernel, refused) {
 if (scenario === 'wasm_bool_fuse' || scenario === 'wasm_bool_refused') {
   const refused = scenario === 'wasm_bool_refused';
   for (let sample = 0; sample < samples + warmup; sample++) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     let freed = false;
     try {
       const metrics = booleanSample(kernel, refused);
@@ -147,7 +148,7 @@ if (scenario === 'wasm_bool_fuse' || scenario === 'wasm_bool_refused') {
   process.exit(0);
 }
 for (let sample = 0; sample < samples + warmup; sample++) {
-  const kernel = new BrepKernel();
+  const kernel = new RemusKernel();
   try {
     const seeds = Array.from({ length: size }, () => ({
       op: 'makeBox',

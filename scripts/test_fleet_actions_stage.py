@@ -6,7 +6,7 @@ import subprocess
 import unittest
 
 from fleet_workflows import (
-    ROOT, validate_reference, workflow_calls, workflow_manifest, workflow_path,
+    ROOT, validate_reference, workflow_text, workflow_calls, workflow_manifest, workflow_path,
 )
 
 
@@ -91,7 +91,7 @@ class FleetActionsStageTests(unittest.TestCase):
                     )),
                 ):
                     if family == "ci" and filename == "fleet-ci-v9.yml":
-                        self.assertEqual((ROOT / ".github/workflows" / previous).read_bytes(),
+                        self.assertEqual(workflow_text(previous).encode(),
                                          original(previous))
                         matching = [(path, sha) for _caller, path, sha in workflow_calls()
                                     if path == ".github/workflows/" + filename]

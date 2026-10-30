@@ -2,7 +2,7 @@
 //!
 //! On `wasm32-unknown-unknown` the panic strategy is `abort`: a panic inside
 //! any kernel method traps mid-call and leaves the wasm-bindgen borrow flag
-//! on `BrepKernel` set, so every later call throws "recursive use of an
+//! on `RemusKernel` set, so every later call throws "recursive use of an
 //! object" and the only recovery is a new kernel (see
 //! `crates/wasm/src/panics.rs`). A panic is therefore not a recoverable
 //! error here — it destroys the session. These operations are reachable from

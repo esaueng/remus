@@ -1,13 +1,13 @@
-//! Checkpoint / restore bindings for [`BrepKernel`].
+//! Checkpoint / restore bindings for [`RemusKernel`].
 
 use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
 
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::state::Checkpoint;
 
-impl BrepKernel {
+impl RemusKernel {
     pub(crate) fn checkpoint_impl(&mut self) -> Result<u32, crate::error::WasmError> {
         // Check before cloning any topology/session payload. Refusal leaves
         // current state, saved snapshots, and the next opaque ID unchanged.
@@ -50,7 +50,7 @@ impl BrepKernel {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Save a snapshot of the current kernel state.
     ///
     /// Returns an opaque checkpoint ID that can be passed to
@@ -120,28 +120,28 @@ impl BrepKernel {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
     const DEFLECTION: f64 = 0.01;
     const TOL: f64 = 1e-6;
 
     // ── helpers ───────────────────────────────────────────────────
 
-    fn make_box(k: &mut BrepKernel, dx: f64, dy: f64, dz: f64) -> u32 {
+    fn make_box(k: &mut RemusKernel, dx: f64, dy: f64, dz: f64) -> u32 {
         k.make_box_solid(dx, dy, dz).unwrap()
     }
 
-    fn volume(k: &BrepKernel, solid: u32) -> f64 {
+    fn volume(k: &RemusKernel, solid: u32) -> f64 {
         k.volume(solid, DEFLECTION).unwrap()
     }
 
-    fn classify(k: &BrepKernel, solid: u32, x: f64, y: f64, z: f64) -> String {
+    fn classify(k: &RemusKernel, solid: u32, x: f64, y: f64, z: f64) -> String {
         k.classify_point(solid, x, y, z, TOL).unwrap()
     }
 
     #[test]
     fn full_history_keeps_one_temporary_probe_and_refuses_a_second() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let mut solids = Vec::new();
         let mut history = Vec::new();
         for _ in 0..32 {
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn checkpoint_retention_refuses_before_cloning_and_restore_stays_available() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let keep = make_box(&mut k, 1.0, 1.0, 1.0);
         let first = k.checkpoint_impl().unwrap();
         for _ in 1..crate::state::MAX_CHECKPOINTS {
@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn checkpoint_discard_churn_keeps_ids_stale_and_storage_bounded() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         for expected in 0..5000 {
             let cp = k.checkpoint_impl().unwrap();
             assert_eq!(cp, expected);
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn restore_and_discard_never_reuse_checkpoint_handles() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let original = make_box(&mut k, 2.0, 3.0, 4.0);
         let oldest = k.checkpoint().unwrap();
         let stale = k.checkpoint().unwrap();
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn restore_retires_top_level_legacy_sketches_and_preserves_dense_retained_content() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let retained = k.sketch_new().unwrap();
         k.sketch_add_point(retained, 3.0, 4.0, true).unwrap();
         let checkpoint = k.checkpoint().unwrap();
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn restore_retires_assembly_and_component_handles_and_keeps_retained_tree() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = make_box(&mut k, 2.0, 3.0, 4.0);
         let assembly = k.assembly_new("retained").unwrap();
         let identity = vec![
@@ -345,7 +345,7 @@ mod tests {
     /// Create a box, checkpoint, create a second box, restore → second box gone.
     #[test]
     fn roundtrip_restore_removes_post_checkpoint_solid() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let box1 = make_box(&mut k, 2.0, 2.0, 2.0);
 
         let cp = k.checkpoint().unwrap();
@@ -368,7 +368,7 @@ mod tests {
     /// the same arena.
     #[test]
     fn restore_never_reuses_post_checkpoint_solid_handle() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let original = make_box(&mut k, 2.0, 2.0, 2.0);
         let cp = k.checkpoint().unwrap();
         let stale = make_box(&mut k, 1.0, 1.0, 1.0);
@@ -385,7 +385,7 @@ mod tests {
     /// Volume of the original solid is preserved across a restore.
     #[test]
     fn roundtrip_preserves_original_solid_volume() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let box1 = make_box(&mut k, 3.0, 4.0, 5.0);
         let cp = k.checkpoint().unwrap();
 
@@ -412,7 +412,7 @@ mod tests {
         // The removed guard refused any restore above 500_000 slots.
         const REMOVED_GUARD_LIMIT: usize = 500_000;
 
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let keep = make_box(&mut k, 2.0, 2.0, 2.0);
         let cp = k.checkpoint().unwrap();
 
@@ -450,7 +450,7 @@ mod tests {
     /// the two later ones and the geometry created between them.
     #[test]
     fn multiple_checkpoints_restore_to_earliest() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
 
         let box0 = make_box(&mut k, 1.0, 1.0, 1.0);
         let cp0 = k.checkpoint().unwrap(); // id 0
@@ -480,7 +480,7 @@ mod tests {
     /// point is gone, but geometry from before it survives.
     #[test]
     fn multiple_checkpoints_restore_to_middle() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
 
         let box0 = make_box(&mut k, 1.0, 1.0, 1.0);
         let cp0 = k.checkpoint().unwrap(); // id 0
@@ -507,7 +507,7 @@ mod tests {
     /// Discarding a checkpoint removes it and all later ones.
     #[test]
     fn discard_removes_checkpoint_and_later_ones() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         make_box(&mut k, 1.0, 1.0, 1.0);
 
         let cp0 = k.checkpoint().unwrap(); // id 0
@@ -525,7 +525,7 @@ mod tests {
     /// Discarding the last checkpoint reduces count by one.
     #[test]
     fn discard_last_checkpoint_reduces_count() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         make_box(&mut k, 1.0, 1.0, 1.0);
         let _cp0 = k.checkpoint().unwrap();
         make_box(&mut k, 2.0, 2.0, 2.0);
@@ -540,7 +540,7 @@ mod tests {
     /// frees the snapshot; it does not roll back state).
     #[test]
     fn discard_does_not_alter_current_topology() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let box0 = make_box(&mut k, 4.0, 4.0, 4.0);
         let cp = k.checkpoint().unwrap();
         k.discard_checkpoint(cp).unwrap();
@@ -554,7 +554,7 @@ mod tests {
     /// Count starts at zero and increments with each checkpoint call.
     #[test]
     fn checkpoint_count_tracks_saves() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         assert_eq!(k.checkpoint_count(), 0);
 
         k.checkpoint().unwrap();
@@ -573,7 +573,7 @@ mod tests {
     /// We verify by checking that the checkpoint was never created (count = 0).
     #[test]
     fn restore_invalid_id_is_invalid() {
-        let k = BrepKernel::new();
+        let k = RemusKernel::new();
         assert_eq!(k.checkpoint_count(), 0);
         assert!(99 >= k.checkpoint_count());
     }
@@ -581,7 +581,7 @@ mod tests {
     /// Discarding with a checkpoint id that was never created is invalid.
     #[test]
     fn discard_invalid_id_is_invalid() {
-        let k = BrepKernel::new();
+        let k = RemusKernel::new();
         assert_eq!(k.checkpoint_count(), 0);
         assert!(99 >= k.checkpoint_count());
     }
@@ -590,7 +590,7 @@ mod tests {
     /// invalid (count is reduced).
     #[test]
     fn restore_discards_later_checkpoints() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         make_box(&mut k, 1.0, 1.0, 1.0);
         let cp0 = k.checkpoint().unwrap();
         make_box(&mut k, 2.0, 2.0, 2.0);
@@ -610,7 +610,7 @@ mod tests {
     /// mutation plus checkpoint restore invalidate it without stale reuse.
     #[test]
     fn classify_cache_hits_repeated_calls_and_invalidates_on_restore() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = make_box(&mut k, 2.0, 2.0, 2.0);
 
         // First call rebuilds, second hits; both agree (box [0,2]^3).
@@ -650,7 +650,7 @@ mod tests {
         use remus_check::properties::face_cache::thread_face_cache_stats;
         use remus_operations::measure::thread_volume_memo_stats;
 
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         assert!(thread_face_cache_stats().capacity > 0);
         assert!(thread_volume_memo_stats().capacity > 0);
         let cylinder = k.make_cylinder_solid(1.0, 2.0).unwrap();
@@ -674,7 +674,7 @@ mod tests {
 
         // A short-lived second kernel validating a deserialized copy.
         let bytes = k.serialize_solids(&[cylinder]).unwrap();
-        let mut probe = BrepKernel::new();
+        let mut probe = RemusKernel::new();
         let copy = probe.deserialize_solids(&bytes).unwrap()[0];
         assert_eq!(probe.validate_solid(copy).unwrap(), verdict);
         assert_eq!(
@@ -723,7 +723,7 @@ mod tests {
             set_thread_volume_memo_capacity, thread_volume_memo_stats,
         };
 
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let block = make_box(&mut k, 10.0, 6.0, 4.0);
         let top = k
             .get_solid_faces(block)
@@ -756,7 +756,7 @@ mod tests {
     /// restore that rewinds the journal tick (ABA).
     #[test]
     fn classify_direct_and_batch_agree_across_restore() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = make_box(&mut k, 2.0, 2.0, 2.0);
         let cp = k.checkpoint().unwrap();
         let _other = make_box(&mut k, 1.0, 1.0, 1.0);

@@ -7,7 +7,9 @@ import re
 import subprocess
 import unittest
 
-from fleet_workflows import FAMILIES, validate_reference, workflow_calls, workflow_manifest
+from fleet_workflows import (
+    FAMILIES, validate_reference, workflow_calls, workflow_manifest, workflow_text,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 STAGE = json.loads((ROOT / '.github/fleet-profile-stage.json').read_text())
@@ -40,7 +42,7 @@ class JaneHelperWorkflowTests(unittest.TestCase):
     def test_stage_changes_only_the_guard_pin_and_jane_selector(self):
         for family, entry in STAGE['workflows'].items():
             with self.subTest(family=family):
-                self.assertEqual((WORKFLOWS / entry['staged']).read_text(),
+                self.assertEqual(workflow_text(entry['staged']),
                                  expected_stage(original(entry['previous'])))
 
     def test_staging_keeps_active_helpers_or_activates_the_exact_staged_bytes(self):
@@ -50,7 +52,7 @@ class JaneHelperWorkflowTests(unittest.TestCase):
                 if family == 'benchmark' and manifest[family] == 'fleet-benchmark-v4.yml':
                     # Preserve the complete original helper-stage proof. V4's
                     # separately reviewed speed changes must match its landed pin.
-                    self.assertEqual((WORKFLOWS / entry['staged']).read_text(),
+                    self.assertEqual(workflow_text(entry['staged']),
                                      expected_stage(original(entry['previous'])))
                     self.assertFalse((WORKFLOWS / entry['previous']).exists(),
                                      'Activation retires the previous helper file')
@@ -85,7 +87,7 @@ class JaneHelperWorkflowTests(unittest.TestCase):
         for family, entry in STAGE['workflows'].items():
             with self.subTest(family=family):
                 source = original(entry['previous'])
-                actual = (WORKFLOWS / entry['staged']).read_text()
+                actual = workflow_text(entry['staged'])
                 self.assertEqual(source.count(old), counts[family])
                 self.assertEqual(source.count('"labels":"ci-server-jane"'), 1)
                 self.assertEqual(actual.count(new), counts[family])

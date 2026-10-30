@@ -10,7 +10,7 @@ use remus_operations::tessellate::{tessellate_solid_with_tolerance, welded_mesh_
 use remus_topology::Topology;
 use remus_topology::explorer::solid_faces;
 
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 const SCALES: [f64; 3] = [1e-3, 1.0, 1e3];
 
@@ -38,7 +38,7 @@ impl Primitive {
 
     fn make_direct(
         self,
-        kernel: &mut BrepKernel,
+        kernel: &mut RemusKernel,
         scale: f64,
     ) -> Result<u32, wasm_bindgen::JsError> {
         match self {
@@ -191,7 +191,7 @@ fn primitive_matrix_has_direct_batch_parity_across_scales() {
             let expected_volume = case.expected_volume(scale);
             let expected_bounds = case.expected_bounds(scale);
 
-            let mut direct = BrepKernel::new();
+            let mut direct = RemusKernel::new();
             let handle = case.make_direct(&mut direct, scale).unwrap();
             let direct_volume = direct.volume(handle, 0.01 * scale).unwrap();
             assert_relative(
@@ -235,8 +235,8 @@ fn primitive_matrix_has_direct_batch_parity_across_scales() {
             );
 
             let program = batch_program(case, scale);
-            let first_response = BrepKernel::new().execute_batch_v2(&program);
-            let second_response = BrepKernel::new().execute_batch_v2(&program);
+            let first_response = RemusKernel::new().execute_batch_v2(&program);
+            let second_response = RemusKernel::new().execute_batch_v2(&program);
             assert_eq!(
                 first_response, second_response,
                 "{label}: batch replay must be deterministic"
@@ -315,7 +315,7 @@ fn batch_invalid_input_matrix_has_stable_codes_and_rolls_back() {
         {"op":"volume","args":{"solid":0,"deflection":0.01}}
     ]);
 
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let response = parse(&kernel.execute_batch_v2(&operations.to_string()));
     assert_eq!(response[0]["ok"], 0);
     for (index, item) in response
@@ -337,7 +337,7 @@ fn batch_invalid_input_matrix_has_stable_codes_and_rolls_back() {
         1e-12,
     );
 
-    let mut baseline = BrepKernel::new();
+    let mut baseline = RemusKernel::new();
     baseline.make_box_solid(1.0, 2.0, 3.0).unwrap();
     assert_eq!(
         arena_counts(kernel.topo()),
@@ -384,7 +384,7 @@ fn batch_boundary_values_are_tested_from_both_sides() {
 
     for (label, operation, accepted) in cases {
         let program = serde_json::Value::Array(vec![operation]).to_string();
-        let result = parse(&BrepKernel::new().execute_batch_v2(&program));
+        let result = parse(&RemusKernel::new().execute_batch_v2(&program));
         assert_eq!(result[0].get("ok").is_some(), accepted, "{label}: {result}");
         if !accepted {
             assert_eq!(result[0]["error"]["code"], "invalid_argument", "{label}");

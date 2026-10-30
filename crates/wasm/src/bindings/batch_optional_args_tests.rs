@@ -9,17 +9,17 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use crate::handles::face_id_to_u32;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
-fn run_v2(kernel: &mut BrepKernel, op: &str, args: &serde_json::Value) -> serde_json::Value {
+fn run_v2(kernel: &mut RemusKernel, op: &str, args: &serde_json::Value) -> serde_json::Value {
     let out = kernel.execute_batch_v2(&serde_json::json!([{"op": op, "args": args}]).to_string());
     let mut results: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
     results.remove(0)
 }
 
 /// A box solid, one of its faces, and a straight NURBS spine edge.
-fn fixture() -> (BrepKernel, u32, u32, u32) {
-    let mut kernel = BrepKernel::new();
+fn fixture() -> (RemusKernel, u32, u32, u32) {
+    let mut kernel = RemusKernel::new();
     let solid = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
     let solid_id = kernel.resolve_solid(solid).unwrap();
     let faces = remus_topology::explorer::solid_faces(kernel.topo(), solid_id).unwrap();
@@ -304,7 +304,7 @@ fn naming_and_journaled_options_refuse_before_mutating_state() {
 #[test]
 fn naming_and_journaled_options_keep_absent_and_null_defaults() {
     for v2 in [false, true] {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let face = kernel.make_rectangle(4.0, 2.0).unwrap();
         let mut run = |op: &str, args: serde_json::Value| {
             let request = serde_json::json!([{"op": op, "args": args}]).to_string();
@@ -409,7 +409,7 @@ fn mirror_refuses_a_string_normal_and_keeps_defaults_for_absent_ones() {
     assert_eq!(kernel.topo().num_solids(), solids_before);
 
     // Default plane: through the origin with normal (1, 0, 0), so x flips.
-    let bbox = |kernel: &mut BrepKernel, handle: u64| -> Vec<f64> {
+    let bbox = |kernel: &mut RemusKernel, handle: u64| -> Vec<f64> {
         let result = run_v2(kernel, "boundingBox", &serde_json::json!({"solid": handle}));
         serde_json::from_value(result["ok"].clone()).expect("bounding box")
     };

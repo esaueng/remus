@@ -156,7 +156,7 @@ map to real STEP entities). Floats via `fmt_f64` = `{:.15E}` with a `<1e-15 -> "
 
 `rg -n 'js_name' crates/wasm/src/bindings/io.rs`
 
-Import/export methods on `BrepKernel`: `exportStep`/`importStep`, `exportIges`/`importIges`,
+Import/export methods on `RemusKernel`: `exportStep`/`importStep`, `exportIges`/`importIges`,
 `exportStl`/`exportStlAscii`/`importStl`, `export3mf`/`import3mf`, `exportObj`/`importObj`,
 `exportGlb`/`importGlb`, `exportPly`, `importIndexedMesh`,
 `serializeSolid`/`deserializeSolid`. The whole file is `#![cfg(feature = "io")]`; `io` is a

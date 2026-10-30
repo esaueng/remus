@@ -106,7 +106,7 @@ outside those timing intervals. Every result must remain valid, retain 160
 faces, have zero boundary and non-manifold mesh edges, and have finite positive
 volume.
 
-This example does not construct `BrepKernel` or enable its opt-in thread caches.
+This example does not construct `RemusKernel` or enable its opt-in thread caches.
 Repeated native validation therefore remains an uncached integration workload,
 while reusable scratch within an integration can still apply. It provides
 phase diagnosis and regression checks, not a matched browser benchmark. Two
