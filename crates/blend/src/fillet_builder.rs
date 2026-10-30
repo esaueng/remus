@@ -50,6 +50,9 @@ pub struct FilletBuilder<'a> {
     edge_sets: Vec<(Vec<EdgeId>, RadiusLaw)>,
     /// Opposite common-tangent branch for a proven external reconstruction.
     external_support_side: bool,
+    /// Whether a chain refused as a seam crossing may be built as one band
+    /// along a shared face (`rail_chain`).
+    rail_chains: bool,
 }
 
 impl<'a> FilletBuilder<'a> {
@@ -61,6 +64,7 @@ impl<'a> FilletBuilder<'a> {
             solid,
             edge_sets: Vec::new(),
             external_support_side: false,
+            rail_chains: true,
         }
     }
 
@@ -71,6 +75,17 @@ impl<'a> FilletBuilder<'a> {
     /// default.
     pub fn use_external_support_side(&mut self) -> &mut Self {
         self.external_support_side = true;
+        self
+    }
+
+    /// Refuse a chain that crosses a tangent seam as this builder did before
+    /// rail chains, instead of building it as one band along a shared face.
+    ///
+    /// A caller that validates the result can run this first, so every
+    /// selection that built or refused before keeps that outcome, and try the
+    /// rail chain only for the seam-crossing refusal.
+    pub fn without_rail_chains(&mut self) -> &mut Self {
+        self.rail_chains = false;
         self
     }
 
@@ -111,6 +126,7 @@ impl<'a> FilletBuilder<'a> {
     #[allow(clippy::too_many_lines)]
     pub fn build(self) -> Result<BlendResult, BlendError> {
         let external_support_side = self.external_support_side;
+        let rail_chains = self.rail_chains;
         // Keep each edge set beside its RadiusLaw via a shared index.
         let mut seeds_by_law: Vec<Vec<EdgeId>> = Vec::with_capacity(self.edge_sets.len());
         let mut laws: Vec<RadiusLaw> = Vec::with_capacity(self.edge_sets.len());
@@ -259,6 +275,16 @@ impl<'a> FilletBuilder<'a> {
                     continue;
                 }
             };
+            // A lone constant-radius chain whose second face changes along the
+            // way may still be one band; keep its spine for that.
+            let rail_candidate = match laws[*law_idx] {
+                RadiusLaw::Constant(radius)
+                    if rail_chains && chain_work.len() == 1 && !external_support_side =>
+                {
+                    Some((spine.clone(), radius))
+                }
+                _ => None,
+            };
             match compute_stripe_for_spine(
                 topo,
                 &adjacency,
@@ -278,15 +304,38 @@ impl<'a> FilletBuilder<'a> {
                 // result, which reads exactly like an internal failure and
                 // leaves the caller no way to say "try a smaller radius".
                 // Same treatment the rim assembler's own bound already gets.
-                // A chain that crosses a tangent seam is likewise a verdict on
-                // this engine, and the dispatcher needs it by name to hand the
-                // chain to the rolling-ball engine.
                 Err(
                     e @ (BlendError::InvalidInput { .. }
                     | BlendError::RadiusTooLarge { .. }
-                    | BlendError::CliffEncountered { .. }
-                    | BlendError::UnsupportedSeamCrossing { .. }),
+                    | BlendError::CliffEncountered { .. }),
                 ) => {
+                    return Err(e);
+                }
+                // A chain that crosses a tangent seam is one band when every
+                // edge shares one face (`rail_chain`). Otherwise it is likewise
+                // a verdict on this engine, and the dispatcher needs it by name
+                // to hand the chain to the rolling-ball engine; so does a rail
+                // chain this builder recognized but could not build.
+                Err(e @ BlendError::UnsupportedSeamCrossing { .. }) => {
+                    if let Some((spine, radius)) = rail_candidate {
+                        match crate::rail_chain::fillet(
+                            topo,
+                            self.solid,
+                            &adjacency,
+                            &spine,
+                            radius,
+                            &mut scope,
+                            &original_faces,
+                            &inner_shells,
+                            &requested,
+                        ) {
+                            Ok(Some(result)) => return Ok(result),
+                            Ok(None) => {}
+                            Err(error) => {
+                                log::warn!("rail-chain fillet failed: {error}");
+                            }
+                        }
+                    }
                     return Err(e);
                 }
                 Err(e) => {
@@ -646,7 +695,7 @@ fn wire_traversal_of(topo: &Topology, face: FaceId, edge: EdgeId) -> Option<bool
 /// the CCW span from the edge's start vertex traces the quarter arc nearest
 /// the removed corner vertex `v_pt` (Circle edges sample the CCW span from
 /// start to end around the circle normal).
-fn make_end_arc(
+pub(crate) fn make_end_arc(
     topo: &mut Topology,
     c_a: VertexId,
     c_b: VertexId,
@@ -709,7 +758,7 @@ fn make_end_arc(
 /// without mutation when neither pattern matches.
 #[allow(clippy::too_many_lines)]
 #[allow(clippy::too_many_arguments)]
-fn stitch_end(
+pub(crate) fn stitch_end(
     topo: &mut Topology,
     spine_edges: &[EdgeId],
     v_id: VertexId,
@@ -923,7 +972,7 @@ fn stitch_end(
 /// boundaries, each through its current replacement. Anything else — a stale
 /// 2D profile wire the extruded solid was built from, or an input face a
 /// replacement has superseded — must not compete for an end arc.
-fn live_boundary_wires(
+pub(crate) fn live_boundary_wires(
     topo: &Topology,
     solid: SolidId,
     replacements: &DetHashMap<FaceId, FaceId>,
@@ -2724,26 +2773,25 @@ fn compute_stripe_for_spine(
     );
 
     // The rolling-ball constraints place the centre on each surface's
-    // +normal side, so present inward normals for every surface type. A face's
-    // intrinsic normal is inward exactly when that face is reversed; otherwise
-    // wrap it. The old path only negated planes and silently sent curved faces
-    // to the external common-tangent branch.
+    // +normal side, so present every surface with its normal on the ball's
+    // side: inward (into the material) for a convex edge, outward for a
+    // concave one. The external common-tangent branch (a resized
+    // cylinder-cone rim, whose torus runs outside the cylinder) is concave by
+    // construction and always takes the outward side, whatever the frames
+    // read at its spine. The old path only negated planes and otherwise took
+    // the inward side, which put a concave edge's ball inside the material.
+    let concave = analytic::edge_material_frames(topo, &spine, face1, face2)?
+        .and_then(|frames| frames.concave())
+        == Some(true);
+    let outward = concave || external_support_side;
     let mut adapter1 = None;
     let mut adapter2 = None;
     let base1 = surface_ref_or_adapter(&surf1, &mut adapter1);
     let base2 = surface_ref_or_adapter(&surf2, &mut adapter2);
     let flipped1 = FlippedNormalSurface::new(base1);
     let flipped2 = FlippedNormalSurface::new(base2);
-    let ps1: &dyn remus_math::traits::ParametricSurface =
-        match (external_support_side, face1_reversed) {
-            (false, false) | (true, true) => &flipped1,
-            (false, true) | (true, false) => base1,
-        };
-    let ps2: &dyn remus_math::traits::ParametricSurface =
-        match (external_support_side, face2_reversed) {
-            (false, false) | (true, true) => &flipped2,
-            (false, true) | (true, false) => base2,
-        };
+    let ps1 = ball_side(base1, &flipped1, face1_reversed, outward);
+    let ps2 = ball_side(base2, &flipped2, face2_reversed, outward);
 
     let mut config = WalkerConfig::default();
     if !surf1.is_planar() || !surf2.is_planar() {
@@ -2806,6 +2854,24 @@ fn compute_stripe_for_spine(
         stripe,
         new_edges: Vec::new(),
     })
+}
+
+/// The support as the walker must see it: with its normal on the side the
+/// ball rolls, `outward` (away from the material) or inward.
+///
+/// A face's outward normal is its surface's normal unless the face is
+/// reversed.
+pub(crate) fn ball_side<'a>(
+    base: &'a dyn remus_math::traits::ParametricSurface,
+    flipped: &'a FlippedNormalSurface<'a>,
+    face_reversed: bool,
+    outward: bool,
+) -> &'a dyn remus_math::traits::ParametricSurface {
+    if face_reversed == outward {
+        flipped
+    } else {
+        base
+    }
 }
 
 /// A single cross-section of a rolling-ball blend: the two surface contact
@@ -3128,7 +3194,7 @@ fn orient_plane_surface(
 }
 
 /// Build a degree-1 NURBS curve from section contact points.
-fn sections_to_contact_curve(
+pub(crate) fn sections_to_contact_curve(
     sections: &[crate::section::CircSection],
     pick: impl Fn(&crate::section::CircSection) -> remus_math::vec::Point3,
 ) -> Result<remus_math::nurbs::curve::NurbsCurve, BlendError> {
