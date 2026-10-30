@@ -242,6 +242,7 @@ export const remuskernel_linearPatternJournaled: (a: number, b: number, c: numbe
 export const remuskernel_loft: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_loftSmooth: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_loftWithOptions: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+export const remuskernel_makeBevelGearDetailed: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_makeBox: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const remuskernel_makeCircle: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_makeCircleArc3d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => [number, number, number];
