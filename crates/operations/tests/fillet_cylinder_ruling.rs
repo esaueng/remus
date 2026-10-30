@@ -17,7 +17,7 @@ use remus_math::mat::Mat4;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::blend_ops::{blend_failure_code, fillet_cascade};
 use remus_operations::boolean::{BooleanOp, boolean};
-use remus_operations::measure::{face_area, solid_volume};
+use remus_operations::measure::{face_area, mass_properties, solid_volume};
 use remus_operations::primitives::{make_box, make_cylinder};
 use remus_operations::transform::transform_solid;
 use remus_operations::validate::validate_solid;
@@ -276,4 +276,132 @@ fn boss_past_the_wall_at_both_ends_refuses_cleanly() {
     };
     assert_eq!(blend_failure_code(&error), "trimming-failure", "{error}");
     assert_eq!(solid_faces(&topo, body).unwrap(), faces_before);
+}
+
+/// The block of the "Spry Wombat" repro: a 30 × 18 × 24 block whose top-back
+/// edge carries an r6 round, and whose front-right column carries an r2.8
+/// round that tangent-propagates around the r6 arc and along the top-front
+/// edge.
+fn rounded_block(topo: &mut Topology) -> SolidId {
+    let block = make_box(topo, 30.0, 18.0, 24.0).unwrap();
+    let top = edge_between(
+        topo,
+        block,
+        Point3::new(30.0, 0.0, 24.0),
+        Point3::new(30.0, 18.0, 24.0),
+    );
+    let b1 = fillet_cascade(topo, block, &[top], 6.0).unwrap().solid;
+    let column = edge_between(
+        topo,
+        b1,
+        Point3::new(30.0, 0.0, 0.0),
+        Point3::new(30.0, 0.0, 18.0),
+    );
+    fillet_cascade(topo, b1, &[column], 2.8).unwrap().solid
+}
+
+/// An edge with an endpoint within `tol` of `a` and the other within `tol`
+/// of `b`.
+fn edge_near(topo: &Topology, solid: SolidId, a: Point3, b: Point3, tol: f64) -> EdgeId {
+    solid_edges(topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&edge_id| {
+            let edge = topo.edge(edge_id).unwrap();
+            let start = topo.vertex(edge.start()).unwrap().point();
+            let end = topo.vertex(edge.end()).unwrap().point();
+            ((start - a).length() < tol && (end - b).length() < tol)
+                || ((start - b).length() < tol && (end - a).length() < tol)
+        })
+        .unwrap_or_else(|| panic!("edge {a:?} -- {b:?}"))
+}
+
+/// Length of the curve where a cylinder of radius `big` about the z axis
+/// crosses a quarter of a round of radius `small` whose axis runs along x at
+/// `y = small`: `(√(big² − y²), y, z)` with `y = small·(1 − cos φ)`,
+/// `z = small·sin φ` (plus a constant), `φ ∈ [0, π/2]`. Composite Simpson;
+/// the integrand is smooth, so 2000 panels are far below any tolerance used
+/// here.
+fn round_crossing_length(big: f64, small: f64) -> f64 {
+    let speed = |phi: f64| {
+        let (s, c) = phi.sin_cos();
+        let y = small * (1.0 - c);
+        let dy = small * s;
+        let dx = -y * dy / y.mul_add(-y, big * big).sqrt();
+        let dz = small * c;
+        dz.mul_add(dz, dx.mul_add(dx, dy * dy)).sqrt()
+    };
+    let n = 2000;
+    let h = PI / 2.0 / f64::from(n);
+    let mut sum = speed(0.0) + speed(PI / 2.0);
+    for i in 1..n {
+        sum += speed(f64::from(i) * h) * if i % 2 == 1 { 4.0 } else { 2.0 };
+    }
+    sum * h / 3.0
+}
+
+/// A boss fused to the corner of the rounded block meets it in a concave seam
+/// that runs up the wall, over the r2.8 round and across the top: one tangent
+/// chain whose second face changes twice while its first, the boss, stays. It
+/// fillets as one band that ends against the block's back face, where the
+/// boss carries on upward.
+///
+/// The gain is bounded by closed forms. It is at least what the band fills
+/// along the wall alone, where its section is exactly the boss-against-a-wall
+/// one, and below what a ball of the same radius fills in a plane–plane corner
+/// of the chain's length. Rotating the boss about its axis moves its seam
+/// edge, which the band crosses next to the wall when it stands there, and
+/// must not change the gain.
+///
+/// The band is walked, so the volume is read by Gauss quadrature on the exact
+/// faces (`mass_properties`). `solid_volume` would measure the analytic input
+/// exactly but the result, which carries a NURBS face, from a mesh, and the
+/// difference of the two reads the gain several percent low.
+#[test]
+fn concave_seam_across_an_earlier_round() {
+    let r = 1.0;
+    // Up the wall to z = 21.2, over the r2.8 round where it crosses the boss,
+    // then the arc of the boss across the top, from the round's edge
+    // (y = 2.8) to the back face x = 0.
+    let chain_length = 21.2 + round_crossing_length(6.0, 2.8) + 6.0 * (2.8_f64 / 6.0).acos();
+    let bound = (1.0 - PI / 4.0) * r * r * chain_length;
+    let along_the_wall = concave_section_area(6.0, r) * 21.2;
+    let mut gains = Vec::new();
+    for seam_degrees in [0.0, -30.0, 180.0] {
+        let label = format!("seam at {seam_degrees} degrees");
+        let mut topo = Topology::new();
+        let boss = make_cylinder(&mut topo, 6.0, 28.0).unwrap();
+        transform_solid(&mut topo, boss, &rotation_about_z(seam_degrees)).unwrap();
+        let block = rounded_block(&mut topo);
+        let body = boolean(&mut topo, BooleanOp::Fuse, boss, block)
+            .unwrap_or_else(|e| panic!("{label}: fuse: {e:?}"));
+        let line = edge_near(
+            &topo,
+            body,
+            Point3::new(6.0, 0.0, 0.0),
+            Point3::new(6.0, 0.0, 21.2),
+            1e-3,
+        );
+        let before = mass_properties(&topo, body).unwrap().mass;
+
+        let result = fillet_cascade(&mut topo, body, &[line], r)
+            .unwrap_or_else(|e| panic!("{label}: {}: {e}", blend_failure_code(&e)));
+        assert!(result.failed.is_empty(), "{label}: partial blend");
+        assert_valid_closed(&topo, result.solid, &label);
+
+        let gained = mass_properties(&topo, result.solid).unwrap().mass - before;
+        assert!(
+            gained > along_the_wall && gained < bound,
+            "{label}: gained {gained}, wall alone {along_the_wall}, plane-plane bound {bound}"
+        );
+        gains.push((gained, before));
+    }
+    // The bodies are the same; what differs is how the boss's boundary runs
+    // round its seam, which the quadrature reads to about 1e-7 of the body.
+    for &(gained, before) in &gains[1..] {
+        assert!(
+            (gained - gains[0].0).abs() < 1e-6 * before,
+            "seam-dependent gain: {gains:?}"
+        );
+    }
 }

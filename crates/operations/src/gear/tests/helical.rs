@@ -188,3 +188,22 @@ fn helical_parameters_out_of_range_are_refused() {
     let negative = helical(20, -5.0, 5.0, Hand::Right);
     assert_eq!(refusal(&negative).0, GearRefusal::InvalidParameter);
 }
+
+#[test]
+fn lands_that_wrap_a_full_turn_are_swept_not_overlapping_cylinders() {
+    // A 45° helix on a small gear turns 7 rad over the face width: each tip
+    // and root land sweeps more than a full turn of its cylinder, which a
+    // cylinder face cannot hold without covering itself twice.
+    let params = GearParams {
+        helix_angle: 45.0_f64.to_radians(),
+        ..GearParams::standard(GearKind::External, 1.0, 6, 30.0)
+    };
+    let (topo, outcome) = build_gear(&params, &GearPlacement::default());
+    let turn = twist(&params, &outcome.geometry).unwrap().rate * params.face_width;
+    assert!(turn > TAU);
+    assert_valid_and_watertight(&topo, outcome.solid);
+    assert_cavalieri(&topo, &outcome, &params);
+    let (planes, cylinders, nurbs, other) = census(&topo, outcome.solid);
+    assert_eq!((planes, cylinders, other), (2, 0, 0));
+    assert!(nurbs >= 4 * 6);
+}

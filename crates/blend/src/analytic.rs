@@ -43,6 +43,7 @@ use remus_math::surfaces::CylindricalSurface;
 use remus_math::traits::ParametricSurface;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
 use remus_topology::face::{FaceId, FaceSurface};
 
 use crate::BlendError;
@@ -412,23 +413,23 @@ fn material_contact_direction(
 /// spine's first edge (a G1 chain shares one face pair, so one station speaks
 /// for the chain).
 #[derive(Debug, Clone, Copy)]
-struct EdgeMaterialFrames {
+pub struct EdgeMaterialFrames {
     /// Unit outward normal of the first face at the station.
-    outward1: Vec3,
+    pub outward1: Vec3,
     /// Unit direction from the edge INTO the first face's material, in the
     /// face's tangent plane.
-    into1: Vec3,
+    pub into1: Vec3,
     /// Unit outward normal of the second face at the station.
-    outward2: Vec3,
+    pub outward2: Vec3,
     /// Unit direction from the edge into the second face's material.
-    into2: Vec3,
+    pub into2: Vec3,
 }
 
 impl EdgeMaterialFrames {
     /// `Some(true)` when the edge is concave (each face heads to the outward
     /// side of the other's tangent plane), `Some(false)` when convex, `None`
     /// when the faces meet tangentially or the two readings disagree.
-    fn concave(&self) -> Option<bool> {
+    pub fn concave(&self) -> Option<bool> {
         let tangency = remus_math::tolerance::Tolerance::new().angular;
         let side1 = self.into1.dot(self.outward2);
         let side2 = self.into2.dot(self.outward1);
@@ -451,7 +452,7 @@ impl EdgeMaterialFrames {
 /// tangent is the edge's own, not the spine's, because the traversal flag is
 /// relative to the edge. `None` when the edge is degenerate, a face uses it twice (a seam) or
 /// not at all, or a surface normal is undefined at the station.
-fn edge_material_frames(
+pub fn edge_material_frames(
     topo: &Topology,
     spine: &Spine,
     face1: FaceId,
@@ -460,6 +461,18 @@ fn edge_material_frames(
     let Some(&edge_id) = spine.edges().first() else {
         return Ok(None);
     };
+    edge_material_frames_at(topo, edge_id, face1, face2)
+}
+
+/// [`edge_material_frames`] read at the midpoint of one edge rather than of
+/// a spine's first: a chain whose second face changes along the way has one
+/// pair of frames per face pair.
+pub fn edge_material_frames_at(
+    topo: &Topology,
+    edge_id: EdgeId,
+    face1: FaceId,
+    face2: FaceId,
+) -> Result<Option<EdgeMaterialFrames>, BlendError> {
     let edge = topo.edge(edge_id)?;
     let start = topo.vertex(edge.start())?.point();
     let end = topo.vertex(edge.end())?.point();

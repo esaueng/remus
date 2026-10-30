@@ -10,8 +10,10 @@
 //!   [`ScrewMotion`] at the full height `h`); the cap plane is unchanged.
 //! - Vertical edges become fitted helices `H̃_p` with the edge tolerance
 //!   raised to the certified bound.
-//! - Side faces from circles concentric with the axis keep their exact
-//!   cylinder: the motion maps that cylinder onto itself.
+//! - Side faces from arcs concentric with the axis keep their exact
+//!   cylinder (the motion maps that cylinder onto itself) while the strip
+//!   they sweep covers less than one turn of it; a longer strip would
+//!   overlap itself, so it is swept like any other face.
 //! - Every other side face becomes the certified swept NURBS of its profile
 //!   edge. All fits share one [`ScrewPlan`], so a face's boundary helices are
 //!   the vertical edges' curves bit for bit, and its top row is the top
@@ -28,7 +30,7 @@
 //! wire, so its surface must keep the straight surface's natural normal
 //! sense; the profile curve is reversed when the swept surface would not.
 
-use std::f64::consts::FRAC_PI_2;
+use std::f64::consts::{FRAC_PI_2, TAU};
 
 use remus_math::nurbs::NurbsCurve;
 use remus_math::nurbs::screw::{ScrewMotion, ScrewPlan};
@@ -280,7 +282,6 @@ fn plan_wire(
         let bottom = wire.positions[i];
         max_radius = max_radius.max(motion.radius(bottom));
         let side = match bottom_edge.curve() {
-            EdgeCurve::Circle(circle) if concentric(motion, circle) => Side::Keep,
             EdgeCurve::Circle(circle) => {
                 let (t0, t1) =
                     bottom_edge
@@ -288,7 +289,15 @@ fn plan_wire(
                         .map_err(|error| OperationsError::InvalidInput {
                             reason: format!("twisted extrusion arc has no domain: {error}"),
                         })?;
-                Side::Sweep(snap(arc_nurbs(circle, t0, t1)?, start, end)?)
+                // A concentric arc sweeps a strip of its own cylinder, which
+                // a cylinder face can hold only while the strip covers less
+                // than one turn; past that it would cover itself twice.
+                let strip = (t1 - t0) + motion.total_turn().abs();
+                if concentric(motion, circle) && strip < TAU * (1.0 - CONCENTRIC_TOLERANCE) {
+                    Side::Keep
+                } else {
+                    Side::Sweep(snap(arc_nurbs(circle, t0, t1)?, start, end)?)
+                }
             }
             EdgeCurve::Line => Side::Sweep(NurbsCurve::new(
                 1,

@@ -24,8 +24,10 @@ historical predecessor-line records, retained for provenance. The
   (`helixAngle` in degrees, `hand: "right" | "left"`) make external and
   internal helical gears, standalone or cut into a boss or bore (ISO 21771:
   normal module, pressure angle and coefficients). The transverse profile
-  turns along the axis; lands concentric with the axis stay exact cylinders,
-  and flanks and fillets are certified swept surfaces whose
+  turns along the axis; lands concentric with the axis stay exact cylinders
+  while they sweep less than a full turn (longer ones are swept, since a
+  cylinder face cannot cover itself twice), and flanks and fillets are
+  certified swept surfaces whose
   `flankDeviationBound` covers the exact involute helicoid. Results report
   `transverseModule`, `helixAngle`, `lead` and `spansAlongAxis`. Helical
   racks refuse for now.
@@ -45,6 +47,14 @@ historical predecessor-line records, retained for provenance. The
   the cone angles and distances; refusals carry them when the parameters
   admit them. The new tapered extrusion (`extrude::taper`) sweeps a planar
   profile toward an apex.
+* **operations,wasm:** worm gears. `make_worm` / `makeWormDetailed` build a
+  cylindrical involute (ZI) worm from its axial module, starts and diameter
+  factor (lead angle up to 45°): its thread flanks are certified fits of the
+  involute helicoid (`flankDeviationBound`). `worm_wheel` /
+  `makeWormWheelDetailed` give the helical wheel that meshes with it at 90°
+  (the worm's hand, helix angle equal to the lead angle) and its
+  `centerDistance`. The pair is a crossed helical drive with point contact,
+  not a hobbed throated wheel.
 * **math:** `nurbs::screw` fits helices and screw-motion swept surfaces as
   NURBS with a proven bound; fits sharing one plan share their knots, so
   neighbouring faces and edges match exactly.

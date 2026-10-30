@@ -1,14 +1,16 @@
-//! Involute spur, helical, herringbone, internal, rack and straight bevel
-//! gear construction (`remus_operations::gear`).
+//! Involute spur, helical, herringbone, internal, rack, straight bevel and
+//! worm gear construction (`remus_operations::gear`).
 //!
 //! `makeGearDetailed(spec)` builds a new gear body,
-//! `makeBevelGearDetailed(spec)` a straight bevel gear, and
+//! `makeBevelGearDetailed(spec)` a straight bevel gear,
+//! `makeWormDetailed(spec)` a worm and `makeWormWheelDetailed(spec)` its
+//! wheel, and
 //! `cutGearTeethDetailed(solid, face, spec)` cuts teeth along the whole
 //! length of a solid's cylindrical face (external teeth on a boss, internal
 //! teeth in a bore). Both return the typed [`SolidOperationDetailedResult`]
 //! envelope; the `executeBatch` / `executeBatchV2` ops of the same names take
-//! the spec as their `args` (`makeGearDetailed`, `makeBevelGearDetailed`) or
-//! as `args.spec` beside
+//! the spec as their `args` (`makeGearDetailed`, `makeBevelGearDetailed`,
+//! `makeWormDetailed`, `makeWormWheelDetailed`) or as `args.spec` beside
 //! `args.solid` and `args.face` (`cutGearTeethDetailed`), so direct and batch
 //! results are identical by construction.
 //!
@@ -68,6 +70,35 @@
 //! (`details.flankDeviationBound`), and `details.geometry` carries the cone
 //! angles in degrees.
 //!
+//! `makeWormDetailed` spec (a cylindrical involute (ZI) worm; axial-section
+//! values, coefficients in axial modules):
+//!
+//! ```json
+//! {
+//!   "module": 2,                  // axial module
+//!   "starts": 1, "diameterFactor": 10, "length": 40,
+//!   "pressureAngle": 20,          // normal, degrees
+//!   "addendum": 1, "dedendum": 1.25, "rootFillet": 0.38,
+//!   "backlash": 0,                // axial thread thinning
+//!   "hand": "right" | "left",
+//!   "tolerance": 2e-5, "boreDiameter": 8,
+//!   "origin": [0, 0, 0], "axis": [0, 0, 1], "xDirection": [1, 0, 0],
+//!   "phase": 0
+//! }
+//! ```
+//!
+//! `makeWormWheelDetailed` takes the worm's tooth-form fields (`module`,
+//! `starts`, `diameterFactor`, `pressureAngle`, `addendum`, `dedendum`,
+//! `rootFillet`, `hand`) with the wheel's own `teeth`, `faceWidth` and
+//! optional `backlash` (circumferential, at its pitch circle),
+//! `tolerance`, `boreDiameter` and placement, and builds the helical wheel
+//! that meshes with that worm: the worm's hand, helix angle equal to the
+//! lead angle. Its `details.geometry` is a helical gear's plus
+//! `centerDistance`, the distance between the crossed axes. The pair is a
+//! crossed helical drive (point contact), not a hobbed throated wheel.
+//! Worm flanks are certified fits of the involute helicoid, and its
+//! `details.geometry` carries the lead angle in degrees.
+//!
 //! Unknown keys refuse, so a misspelled option never silently falls back to
 //! its default. Angles are degrees at this boundary and radians natively,
 //! as for `revolve`.
@@ -97,7 +128,8 @@ use remus_math::vec::{Point3, Vec3};
 use remus_operations::gear::{
     BevelGearGeometry, BevelGearOutcome, BevelGearParams, CylinderGearOptions, GearError, GearFit,
     GearGeometry, GearKind, GearOutcome, GearParams, GearPlacement, GearRefusal, GearWarning, Hand,
-    bevel_gear_geometry, cut_gear_teeth, make_bevel_gear, make_gear,
+    WormGeometry, WormOutcome, WormParams, bevel_gear_geometry, cut_gear_teeth, make_bevel_gear,
+    make_gear, make_worm, worm_geometry, worm_wheel,
 };
 
 use crate::error::StructuredWasmError;
@@ -283,6 +315,139 @@ impl BevelGearSpec {
             phase: self.phase.to_radians(),
         };
         (params, placement)
+    }
+}
+
+/// The JSON worm specification (see the module docs).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct WormSpec {
+    module: f64,
+    starts: u32,
+    diameter_factor: f64,
+    length: f64,
+    #[serde(default = "default_pressure_angle")]
+    pressure_angle: f64,
+    #[serde(default = "default_addendum")]
+    addendum: f64,
+    #[serde(default = "default_dedendum")]
+    dedendum: f64,
+    #[serde(default = "default_root_fillet")]
+    root_fillet: f64,
+    #[serde(default)]
+    backlash: f64,
+    #[serde(default)]
+    hand: HandSpec,
+    tolerance: Option<f64>,
+    bore_diameter: Option<f64>,
+    #[serde(default)]
+    origin: Option<[f64; 3]>,
+    #[serde(default)]
+    axis: Option<[f64; 3]>,
+    #[serde(default)]
+    x_direction: Option<[f64; 3]>,
+    #[serde(default)]
+    phase: f64,
+}
+
+/// A placement from optional JSON fields (degrees for the phase).
+fn placement_of(
+    origin: Option<[f64; 3]>,
+    axis: Option<[f64; 3]>,
+    x_direction: Option<[f64; 3]>,
+    phase: f64,
+) -> GearPlacement {
+    let defaults = GearPlacement::default();
+    let point = |p: [f64; 3]| Point3::new(p[0], p[1], p[2]);
+    let vector = |v: [f64; 3]| Vec3::new(v[0], v[1], v[2]);
+    GearPlacement {
+        origin: origin.map_or(defaults.origin, point),
+        axis: axis.map_or(defaults.axis, vector),
+        x_direction: x_direction.map_or(defaults.x_direction, vector),
+        phase: phase.to_radians(),
+    }
+}
+
+impl WormSpec {
+    fn split(self) -> (WormParams, GearPlacement) {
+        let params = WormParams {
+            module: self.module,
+            starts: self.starts,
+            diameter_factor: self.diameter_factor,
+            pressure_angle: self.pressure_angle.to_radians(),
+            length: self.length,
+            addendum: self.addendum,
+            dedendum: self.dedendum,
+            root_fillet: self.root_fillet,
+            backlash: self.backlash,
+            hand: self.hand.into(),
+            tolerance: self.tolerance,
+            bore_diameter: self.bore_diameter,
+        };
+        let placement = placement_of(self.origin, self.axis, self.x_direction, self.phase);
+        (params, placement)
+    }
+}
+
+/// The JSON worm wheel specification (see the module docs).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct WormWheelSpec {
+    module: f64,
+    starts: u32,
+    diameter_factor: f64,
+    teeth: u32,
+    face_width: f64,
+    #[serde(default = "default_pressure_angle")]
+    pressure_angle: f64,
+    #[serde(default = "default_addendum")]
+    addendum: f64,
+    #[serde(default = "default_dedendum")]
+    dedendum: f64,
+    #[serde(default = "default_root_fillet")]
+    root_fillet: f64,
+    #[serde(default)]
+    hand: HandSpec,
+    #[serde(default)]
+    backlash: f64,
+    tolerance: Option<f64>,
+    bore_diameter: Option<f64>,
+    #[serde(default)]
+    origin: Option<[f64; 3]>,
+    #[serde(default)]
+    axis: Option<[f64; 3]>,
+    #[serde(default)]
+    x_direction: Option<[f64; 3]>,
+    #[serde(default)]
+    phase: f64,
+}
+
+impl WormWheelSpec {
+    /// The mating worm (its length is irrelevant to the wheel), the wheel's
+    /// tooth count, face width, backlash, tolerance, bore and placement.
+    fn split(self) -> (WormParams, GearParams, GearPlacement) {
+        let worm = WormParams {
+            module: self.module,
+            starts: self.starts,
+            diameter_factor: self.diameter_factor,
+            pressure_angle: self.pressure_angle.to_radians(),
+            length: 1.0,
+            addendum: self.addendum,
+            dedendum: self.dedendum,
+            root_fillet: self.root_fillet,
+            backlash: 0.0,
+            hand: self.hand.into(),
+            tolerance: None,
+            bore_diameter: None,
+        };
+        let wheel = GearParams {
+            backlash: self.backlash,
+            tolerance: self.tolerance,
+            bore_diameter: self.bore_diameter,
+            ..GearParams::standard(GearKind::External, self.module, self.teeth, self.face_width)
+        };
+        let placement = placement_of(self.origin, self.axis, self.x_direction, self.phase);
+        (worm, wheel, placement)
     }
 }
 
@@ -488,6 +653,54 @@ fn bevel_geometry_json(geometry: &BevelGearGeometry) -> Value {
     })
 }
 
+fn worm_details(outcome: &WormOutcome) -> Map<String, Value> {
+    let mut details = Map::new();
+    details.insert("quality".into(), Value::from("approximate"));
+    details.insert(
+        "approximated".into(),
+        Value::from("involute helicoid flanks"),
+    );
+    details.insert(
+        "flankDeviationBound".into(),
+        Value::from(outcome.flank_deviation_bound),
+    );
+    details.insert("spansPerFlank".into(), Value::from(outcome.spans_per_flank));
+    details.insert(
+        "spansAlongAxis".into(),
+        Value::from(outcome.spans_along_axis),
+    );
+    details.insert("geometry".into(), worm_geometry_json(&outcome.geometry));
+    details.insert("warnings".into(), warnings_json(&outcome.geometry.warnings));
+    details.insert(
+        "faceRoles".into(),
+        Value::Array(
+            outcome
+                .face_roles
+                .iter()
+                .map(|(face, role)| json!({ "face": face_id_to_u32(*face), "role": role.name() }))
+                .collect(),
+        ),
+    );
+    details
+}
+
+fn worm_geometry_json(geometry: &WormGeometry) -> Value {
+    json!({
+        "axialModule": geometry.axial_module,
+        "normalModule": geometry.normal_module,
+        "transverseModule": geometry.transverse_module,
+        "leadAngle": geometry.lead_angle.to_degrees(),
+        "axialPitch": geometry.axial_pitch,
+        "lead": geometry.lead,
+        "pitchDiameter": geometry.pitch_diameter,
+        "tipDiameter": geometry.tip_diameter,
+        "rootDiameter": geometry.root_diameter,
+        "baseDiameter": geometry.base_diameter,
+        "axialThickness": geometry.axial_thickness,
+        "axialTipThickness": geometry.axial_tip_thickness,
+    })
+}
+
 fn warnings_json(warnings: &[GearWarning]) -> Value {
     Value::Array(
         warnings
@@ -570,6 +783,44 @@ impl RemusKernel {
             Ok(value) => self.make_bevel_gear_detailed_impl(&value),
             Err(error) => SolidOperationDetailedResult::error(
                 StructuredWasmError::invalid_json(&error).with_direct_operation("makeBevelGear"),
+            ),
+        };
+        Ok(result.into_ts()?)
+    }
+
+    /// Build a cylindrical involute (ZI) worm from a JSON specification, as
+    /// typed data (see the module docs for the fields).
+    ///
+    /// Never throws on a refusal: the envelope's `status` is `"error"` with
+    /// a `gear:<reason>` code and the session unchanged.
+    #[wasm_bindgen(js_name = "makeWormDetailed")]
+    pub fn make_worm_detailed(
+        &mut self,
+        spec: &str,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        let result = match serde_json::from_str::<Value>(spec) {
+            Ok(value) => self.make_worm_detailed_impl(&value),
+            Err(error) => SolidOperationDetailedResult::error(
+                StructuredWasmError::invalid_json(&error).with_direct_operation("makeWorm"),
+            ),
+        };
+        Ok(result.into_ts()?)
+    }
+
+    /// Build the helical wheel that meshes with a worm from a JSON
+    /// specification, as typed data (see the module docs for the fields).
+    ///
+    /// Never throws on a refusal: the envelope's `status` is `"error"` with
+    /// a `gear:<reason>` code and the session unchanged.
+    #[wasm_bindgen(js_name = "makeWormWheelDetailed")]
+    pub fn make_worm_wheel_detailed(
+        &mut self,
+        spec: &str,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        let result = match serde_json::from_str::<Value>(spec) {
+            Ok(value) => self.make_worm_wheel_detailed_impl(&value),
+            Err(error) => SolidOperationDetailedResult::error(
+                StructuredWasmError::invalid_json(&error).with_direct_operation("makeWormWheel"),
             ),
         };
         Ok(result.into_ts()?)
@@ -665,6 +916,73 @@ impl RemusKernel {
             }
             Err(error) => {
                 SolidOperationDetailedResult::error(error.with_direct_operation("makeBevelGear"))
+            }
+        }
+    }
+
+    pub(crate) fn make_worm_detailed_impl(&mut self, spec: &Value) -> SolidOperationDetailedResult {
+        let result = (|| -> Result<(u32, Map<String, Value>), StructuredWasmError> {
+            let spec = WormSpec::deserialize(spec).map_err(|error| {
+                StructuredWasmError::invalid_argument(format!("invalid worm spec: {error}"), None)
+            })?;
+            let (params, placement) = spec.split();
+            let outcome = make_worm(self.topo_mut(), &params, &placement).map_err(|error| {
+                // Worm refusals carry no gear geometry; attach the worm's
+                // dimensions whenever the parameters admit them.
+                let dimensions = worm_geometry(&params).ok();
+                let mut structured = gear_failure(error);
+                if let Some(geometry) = dimensions {
+                    structured = structured
+                        .with_detail("geometry", worm_geometry_json(&geometry))
+                        .with_detail("warnings", warnings_json(&geometry.warnings));
+                }
+                structured
+            })?;
+            Ok((solid_id_to_u32(outcome.solid), worm_details(&outcome)))
+        })();
+        match result {
+            Ok((solid, details)) => {
+                SolidOperationDetailedResult::success_with_details(solid, details)
+            }
+            Err(error) => {
+                SolidOperationDetailedResult::error(error.with_direct_operation("makeWorm"))
+            }
+        }
+    }
+
+    pub(crate) fn make_worm_wheel_detailed_impl(
+        &mut self,
+        spec: &Value,
+    ) -> SolidOperationDetailedResult {
+        let result = (|| -> Result<(u32, Map<String, Value>), StructuredWasmError> {
+            let spec = WormWheelSpec::deserialize(spec).map_err(|error| {
+                StructuredWasmError::invalid_argument(
+                    format!("invalid worm wheel spec: {error}"),
+                    None,
+                )
+            })?;
+            let (worm, wheel, placement) = spec.split();
+            let matched = worm_wheel(&worm, wheel.teeth, wheel.face_width).map_err(gear_failure)?;
+            let params = GearParams {
+                backlash: wheel.backlash,
+                tolerance: wheel.tolerance,
+                bore_diameter: wheel.bore_diameter,
+                ..matched.params
+            };
+            let center_distance = Value::from(matched.center_distance);
+            let outcome = make_gear(self.topo_mut(), &params, &placement).map_err(gear_failure)?;
+            let mut details = outcome_details(&outcome, params.kind);
+            if let Some(Value::Object(geometry)) = details.get_mut("geometry") {
+                geometry.insert("centerDistance".into(), center_distance);
+            }
+            Ok((solid_id_to_u32(outcome.solid), details))
+        })();
+        match result {
+            Ok((solid, details)) => {
+                SolidOperationDetailedResult::success_with_details(solid, details)
+            }
+            Err(error) => {
+                SolidOperationDetailedResult::error(error.with_direct_operation("makeWormWheel"))
             }
         }
     }

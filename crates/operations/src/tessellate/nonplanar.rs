@@ -3974,11 +3974,16 @@ fn project_to_surface_uv(
 ///
 /// The seed grid is the one `project_point_to_surface` rebuilds on every
 /// call (81 surface evaluations); building it once per face returns the same
-/// projection bit for bit.
+/// projection bit for bit. A projection that fails to converge from it is
+/// retried from a node in every knot span (built on first need): on a
+/// carrier of many spans, such as a swept strip that winds many times round
+/// a worm, the nearest coarse node can lie a radian or more along the strip
+/// from the answer.
 pub(super) struct NurbsFrame {
     anchor: Point3,
     surface: FaceSurface,
     grid: remus_math::nurbs::projection::SurfaceSeedGrid,
+    span_grid: std::cell::OnceCell<remus_math::nurbs::projection::SurfaceSeedGrid>,
 }
 
 impl NurbsFrame {
@@ -4002,6 +4007,7 @@ impl NurbsFrame {
             anchor,
             surface: FaceSurface::Nurbs(rel),
             grid,
+            span_grid: std::cell::OnceCell::new(),
         })
     }
 
@@ -4041,14 +4047,20 @@ impl NurbsFrame {
                 reason: "NURBS frame without a NURBS carrier".into(),
             });
         };
-        remus_math::nurbs::projection::project_point_to_surface_with_grid(
-            rel,
-            self_relative(point, self.anchor),
-            1e-6,
-            &self.grid,
-        )
-        .map(|proj| (proj.u, proj.v))
-        .map_err(crate::OperationsError::Math)
+        let relative = self_relative(point, self.anchor);
+        let project = |grid| {
+            remus_math::nurbs::projection::project_point_to_surface_with_grid(
+                rel, relative, 1e-6, grid,
+            )
+            .map(|proj| (proj.u, proj.v))
+        };
+        project(&self.grid)
+            .or_else(|_| {
+                project(self.span_grid.get_or_init(|| {
+                    remus_math::nurbs::projection::SurfaceSeedGrid::for_surface_spans(rel)
+                }))
+            })
+            .map_err(crate::OperationsError::Math)
     }
 }
 
@@ -6828,6 +6840,9 @@ pub(super) fn tessellate_nonplanar_snap(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod frame_projection_tests;
 
 #[cfg(test)]
 mod interior_sample_tests;

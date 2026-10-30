@@ -862,7 +862,7 @@ fn line_segment_intersect_2d(
 
 /// Closest point on an oriented edge to `target`, returned as a normalized
 /// traversal parameter, the curve point, and the residual distance.
-fn closest_on_oriented_edge(
+pub fn closest_on_oriented_edge(
     topo: &Topology,
     oriented: OrientedEdge,
     target: Point3,
@@ -1476,6 +1476,311 @@ fn trim_with_section_closure(
         new_vertices: vec![anchored_vertex, open_vertex],
         contact_edge: Some(contact_edge),
     }))
+}
+
+// ===========================================================================
+// Cuts along a path of new edges
+// ===========================================================================
+
+/// The boundary vertex of the face's outer boundary `wire` at `point`.
+///
+/// An existing vertex within `tolerance` is reused: where two cuts meet on one
+/// boundary edge (consecutive supports of one fillet band, say), the second
+/// must end on the vertex the first one made rather than split the edge again
+/// at its own end. Otherwise the nearest boundary edge that is not one of
+/// `avoid_edges` is split there, every use of it in `wire` takes the two
+/// halves, and so does every other face of the body through `edit`. Returns
+/// `None`, before any mutation, when the point is on no boundary edge.
+///
+/// # Errors
+///
+/// Returns [`BlendError`] when the split cannot be certified or a topology
+/// lookup fails.
+pub fn boundary_vertex_at(
+    topo: &mut Topology,
+    edit: &mut BodyEdit<'_>,
+    face_id: FaceId,
+    wire: &mut Vec<OrientedEdge>,
+    point: Point3,
+    tolerance: f64,
+    avoid_edges: &[EdgeId],
+) -> Result<Option<VertexId>, BlendError> {
+    let mut nearest_vertex: Option<(VertexId, f64)> = None;
+    for oriented in wire.iter() {
+        let vertex = oriented.oriented_start(topo.edge(oriented.edge())?);
+        let distance = (topo.vertex(vertex)?.point() - point).length();
+        if distance <= tolerance && nearest_vertex.is_none_or(|(_, best)| distance < best) {
+            nearest_vertex = Some((vertex, distance));
+        }
+    }
+    if let Some((vertex, _)) = nearest_vertex {
+        return Ok(Some(vertex));
+    }
+
+    let mut nearest_edge: Option<(usize, f64)> = None;
+    for (position, oriented) in wire.iter().enumerate() {
+        if avoid_edges.contains(&oriented.edge()) {
+            continue;
+        }
+        let (_, _, distance) = closest_on_oriented_edge(topo, *oriented, point)?;
+        if distance <= tolerance && nearest_edge.is_none_or(|(_, best)| distance < best) {
+            nearest_edge = Some((position, distance));
+        }
+    }
+    let Some((position, distance)) = nearest_edge else {
+        return Ok(None);
+    };
+    let split = wire[position];
+    let vertex = topo.add_vertex(Vertex::new(point, distance.max(VERTEX_TOL)));
+    let (before, after) = split_edge_at(topo, edit, Some(face_id), &split, vertex)?;
+    // A seam edge is used twice, once each way: the other use reads the two
+    // halves backwards.
+    let mut rewritten = Vec::with_capacity(wire.len() + 2);
+    for oriented in wire.iter() {
+        if oriented.edge() != split.edge() {
+            rewritten.push(*oriented);
+        } else if oriented.is_forward() == split.is_forward() {
+            rewritten.extend([before, after]);
+        } else {
+            rewritten.extend([
+                OrientedEdge::new(after.edge(), !after.is_forward()),
+                OrientedEdge::new(before.edge(), !before.is_forward()),
+            ]);
+        }
+    }
+    *wire = rewritten;
+    Ok(Some(vertex))
+}
+
+/// The position in `wire` whose edge use starts at `vertex`, choosing among
+/// repeated occurrences the one whose side of the face `toward` lies on.
+///
+/// A vertex on a periodic seam occurs twice in the boundary, once on each
+/// side of the seam; a cut arriving at it from one side must join the
+/// boundary on that side. Each occurrence's side is the direction into the
+/// face's material there (the outward normal crossed with the effective
+/// traversal of the edges through it), so the occurrence `toward` agrees with
+/// most is the one. Returns `None` when `vertex` does not occur.
+///
+/// # Errors
+///
+/// Returns [`BlendError`] if a topology lookup fails.
+pub fn vertex_occurrence(
+    topo: &Topology,
+    face_id: FaceId,
+    wire: &[OrientedEdge],
+    vertex: VertexId,
+    toward: Point3,
+) -> Result<Option<usize>, BlendError> {
+    let mut occurrences = Vec::new();
+    for (position, oriented) in wire.iter().enumerate() {
+        if oriented.oriented_start(topo.edge(oriented.edge())?) == vertex {
+            occurrences.push(position);
+        }
+    }
+    if occurrences.len() <= 1 {
+        return Ok(occurrences.first().copied());
+    }
+    let face = topo.face(face_id)?;
+    let point = topo.vertex(vertex)?.point();
+    let Some(outward) = outward_normal_at(face.surface(), face.is_reversed(), point) else {
+        return Ok(None);
+    };
+    let offset = toward - point;
+    let n = wire.len();
+    let mut best: Option<(usize, f64)> = None;
+    for position in occurrences {
+        let outgoing = use_tangent(topo, wire[position], true)?;
+        let incoming = use_tangent(topo, wire[(position + n - 1) % n], false)?;
+        let mut score = 0.0;
+        for along in [outgoing, incoming] {
+            let along = if face.is_reversed() { -along } else { along };
+            if let Ok(into) = outward.cross(along).normalize() {
+                score += into.dot(offset);
+            }
+        }
+        if best.is_none_or(|(_, top)| score > top) {
+            best = Some((position, score));
+        }
+    }
+    Ok(best.map(|(position, _)| position))
+}
+
+/// Unit outward normal of a face on `surface` at `point`.
+fn outward_normal_at(
+    surface: &FaceSurface,
+    reversed: bool,
+    point: Point3,
+) -> Option<remus_math::vec::Vec3> {
+    let raw = match surface {
+        FaceSurface::Plane { normal, .. } => *normal,
+        surface => {
+            let (u, v) = surface.project_point(point)?;
+            surface.normal(u, v)
+        }
+    };
+    let raw = raw.normalize().ok()?;
+    Some(if reversed { -raw } else { raw })
+}
+
+/// Tangent of an edge use in its traversal direction, at its oriented start
+/// (`at_start`) or end.
+fn use_tangent(
+    topo: &Topology,
+    oriented: OrientedEdge,
+    at_start: bool,
+) -> Result<remus_math::vec::Vec3, BlendError> {
+    let edge = topo.edge(oriented.edge())?;
+    let start = topo.vertex(edge.start())?.point();
+    let end = topo.vertex(edge.end())?.point();
+    let tangent = if matches!(edge.curve(), EdgeCurve::Line) {
+        end - start
+    } else {
+        let (t0, t1) = edge.strict_domain().map_err(crate::edge_domain_input)?;
+        let parameter = if at_start == oriented.is_forward() {
+            t0
+        } else {
+            t1
+        };
+        edge.curve().tangent_with_endpoints(parameter, start, end)
+    };
+    Ok(if oriented.is_forward() {
+        tangent
+    } else {
+        -tangent
+    })
+}
+
+/// A run of new edges across a face, from the boundary vertex at wire
+/// position `from` to the one at position `to`.
+pub struct CutPiece {
+    /// Wire position of the vertex the piece starts at.
+    pub from: usize,
+    /// Wire position of the vertex the piece ends at.
+    pub to: usize,
+    /// The piece's edges, chained from `from` to `to`.
+    pub edges: Vec<OrientedEdge>,
+}
+
+/// The face on `face_id`'s surface bounded by what `pieces` keep of the outer
+/// boundary `wire`.
+///
+/// The pieces' ends cut the boundary into arcs. An arc holding one of
+/// `avoid_edges` (the blended edges) lies in the material the blend consumes
+/// and is dropped; the others are kept, joined end to start by the pieces
+/// between them. One piece between two arcs is an ordinary trim. Two pieces
+/// meeting at a seam vertex's two occurrences cut a strip that crosses the
+/// seam: the seam's far part, and whatever the boundary does beyond it, is
+/// kept between them.
+///
+/// # Errors
+///
+/// Returns [`BlendError::TrimmingFailure`] when the pieces do not cut the
+/// boundary into alternating kept and dropped arcs that close one loop.
+pub fn cut_face(
+    topo: &mut Topology,
+    face_id: FaceId,
+    wire: &[OrientedEdge],
+    pieces: &[CutPiece],
+    avoid_edges: &[EdgeId],
+) -> Result<FaceId, BlendError> {
+    let failure = || BlendError::TrimmingFailure { face: face_id };
+    let n = wire.len();
+    // Wire position -> (piece, whether the piece starts there).
+    let mut ends: Vec<(usize, usize, bool)> = Vec::with_capacity(2 * pieces.len());
+    for (index, piece) in pieces.iter().enumerate() {
+        if piece.from >= n || piece.to >= n || piece.edges.is_empty() {
+            return Err(failure());
+        }
+        ends.push((piece.from, index, true));
+        ends.push((piece.to, index, false));
+    }
+    ends.compact_sort_by_key(|&(position, ..)| position);
+    if ends.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err(failure());
+    }
+    // Arc `k` runs from cut `k` to cut `k + 1`, cyclically.
+    let arcs: Vec<Vec<OrientedEdge>> = (0..ends.len())
+        .map(|k| {
+            let (start, end) = (ends[k].0, ends[(k + 1) % ends.len()].0);
+            let mut arc = Vec::new();
+            let mut position = start;
+            loop {
+                arc.push(wire[position]);
+                position = (position + 1) % n;
+                if position == end {
+                    break arc;
+                }
+            }
+        })
+        .collect();
+    let kept: Vec<bool> = arcs
+        .iter()
+        .map(|arc| !arc.iter().any(|oe| avoid_edges.contains(&oe.edge())))
+        .collect();
+    let Some(first) = kept.iter().position(|&keep| keep) else {
+        return Err(failure());
+    };
+    if kept.iter().all(|&keep| keep) {
+        return Err(failure());
+    }
+
+    let mut loop_edges: Vec<OrientedEdge> = Vec::new();
+    let mut visited = vec![false; arcs.len()];
+    let mut used = vec![false; pieces.len()];
+    let mut arc = first;
+    while !visited[arc] {
+        if !kept[arc] {
+            return Err(failure());
+        }
+        visited[arc] = true;
+        loop_edges.extend_from_slice(&arcs[arc]);
+        // The piece that starts or ends where this arc ends, then the arc
+        // starting where that piece leaves the boundary.
+        let (_, index, starts_here) = ends[(arc + 1) % ends.len()];
+        if used[index] {
+            return Err(failure());
+        }
+        used[index] = true;
+        let piece = &pieces[index];
+        let resume = if starts_here {
+            loop_edges.extend_from_slice(&piece.edges);
+            piece.to
+        } else {
+            loop_edges.extend(
+                piece
+                    .edges
+                    .iter()
+                    .rev()
+                    .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward())),
+            );
+            piece.from
+        };
+        arc = ends
+            .iter()
+            .position(|&(position, ..)| position == resume)
+            .ok_or_else(failure)?;
+    }
+    if arc != first
+        || kept
+            .iter()
+            .zip(&visited)
+            .any(|(&keep, &seen)| keep && !seen)
+        || used.iter().any(|&u| !u)
+    {
+        return Err(failure());
+    }
+
+    let face = topo.face(face_id)?;
+    let (surface, reversed, inner_wires) = (
+        face.surface().clone(),
+        face.is_reversed(),
+        face.inner_wires().to_vec(),
+    );
+    let wire_id = topo.add_wire(Wire::new(loop_edges, true)?);
+    let mut trimmed = Face::new(wire_id, inner_wires, surface);
+    trimmed.set_reversed(reversed);
+    Ok(topo.add_face(trimmed))
 }
 
 /// Create an untrimmed result (face returned as-is).
