@@ -317,7 +317,7 @@ const TORUS_GRAZE_SLOPE: f64 = 1e-6;
 /// count would read as one crossing. Here a root that absorbed an even number
 /// of candidates is [`ContactKind::Tangential`], an odd number above one is
 /// [`ContactKind::Unclassified`] (an inflectional contact may cross), and a
-/// lone root meeting the surface within [`TORUS_GRAZE_SLOPE`] of tangency is
+/// lone root meeting the surface within `1e-6` rad of tangency is
 /// [`ContactKind::Unclassified`] too. `spread` is the solver's merge radius
 /// `1e-9 (1 + |t|)` for every non-transversal hit. The roots are the same
 /// values, in the same order, as `intersect_line_torus` returns.
