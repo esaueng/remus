@@ -4324,6 +4324,8 @@ fn arrangement_regions_from_inputs(
     // the reversed twin as an inner wire of its direct container.
     let face_key = |f: &[usize], twin: bool| -> Vec<usize> {
         let mut k: Vec<usize> = f.iter().map(|&h| if twin { h ^ 1 } else { h }).collect();
+        // hot: 17,408+ calls, ~139,000 n*log2(n) work in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         k.sort_unstable();
         k
     };
@@ -4969,7 +4971,7 @@ fn split_cylinder_band_by_arrangement(
         .iter()
         .map(|f| {
             let mut segs: Vec<usize> = f.iter().map(|&h| halfs[h].seg_id).collect();
-            segs.sort_unstable();
+            segs.compact_sort_unstable();
             segs
         })
         .collect();
@@ -8527,7 +8529,7 @@ fn split_face_2d_impl(
                 (tag, endpoints, midpoint)
             })
             .collect();
-        keys.sort_unstable();
+        keys.compact_sort_unstable();
         keys
     };
     for hole in holes {
@@ -8894,13 +8896,17 @@ pub fn interior_point_3d(sub_face: &SplitSubFace, frame: Option<&PlaneFrame>) ->
 }
 
 /// Are several CLOSED section curves on a plane face pairwise separate — each
-/// bounding its own disc, none nested inside or straddling another?
+/// bounding its own disc, none straddling another?
 ///
 /// Every section here is already known to be a closed curve, so each one is a
 /// complete loop on its own and `split_face_with_internal_loops` can carve one
-/// disc per loop. That reading only holds when the loops don't interact: a
-/// loop nested inside another (a re-bored opening) or two overlapping loops
-/// (a deepened pocket) need the wire builder's arrangement instead.
+/// disc per loop. That reading only holds when the loops don't cross: two
+/// overlapping loops (a deepened pocket) need the wire builder's arrangement
+/// instead. Strict nesting is fine — a section circle wholly inside another,
+/// or an inner wire wholly inside a section circle (a coaxial tube cut into
+/// a ring gear's web: two rim circles around the tooth outline). The
+/// internal-loops path nests those regions itself and moves an enclosed hole
+/// to its innermost loop.
 ///
 /// The test is deliberately conservative — anything it cannot prove separate
 /// falls through to the generic path unchanged. A circle (a section, or an
@@ -9051,9 +9057,19 @@ fn plane_closed_loops_separate(
         a.1 + tol >= b.0 && b.1 + tol >= a.0 && a.3 + tol >= b.2 && b.3 + tol >= a.2
     };
     // Discs when both outlines are circles, boxes otherwise.
-    let interact = |a: (Bounds, Option<Disc>), b: (Bounds, Option<Disc>)| match (a.1, b.1) {
-        (Some(a), Some(b)) => !discs_separate(a, b, tol),
-        _ => overlaps(a.0, b.0),
+    let separate = |a: (Bounds, Option<Disc>), b: (Bounds, Option<Disc>)| match (a.1, b.1) {
+        (Some(a), Some(b)) => discs_separate(a, b, tol),
+        _ => !overlaps(a.0, b.0),
+    };
+    // A section circle `outer` strictly contains another circle's disc.
+    let disc_in_disc = |outer: Option<Disc>, inner: Option<Disc>| match (outer, inner) {
+        (Some((center, radius)), Some((c, r))) => {
+            (c.x() - center.x()).hypot(c.y() - center.y()) + r < radius - tol
+        }
+        _ => false,
+    };
+    let sections_interact = |a: (Bounds, Option<Disc>), b: (Bounds, Option<Disc>)| {
+        !(separate(a, b) || disc_in_disc(a.1, b.1) || disc_in_disc(b.1, a.1))
     };
     for (index, (&bounds, &disc)) in boxes.iter().zip(&section_discs).enumerate() {
         let inside_outer = disc.map_or_else(
@@ -9075,14 +9091,18 @@ fn plane_closed_loops_separate(
         if hole_boxes
             .iter()
             .zip(&hole_discs)
-            .any(|(&hole, &hole_disc)| interact((bounds, disc), (hole, hole_disc)))
+            .zip(inner_wires)
+            .any(|((&hole, &hole_disc), wire)| {
+                !(separate((bounds, disc), (hole, hole_disc))
+                    || disc.is_some_and(|d| wire_inside_disc(wire, d, frame, tol)))
+            })
         {
             return false;
         }
         if boxes[index + 1..]
             .iter()
             .zip(&section_discs[index + 1..])
-            .any(|(&other, &other_disc)| interact((bounds, disc), (other, other_disc)))
+            .any(|(&other, &other_disc)| sections_interact((bounds, disc), (other, other_disc)))
         {
             return false;
         }
@@ -9118,6 +9138,31 @@ fn wire_circle_disc(wire: &[OrientedPCurveEdge], frame: &PlaneFrame, tol: f64) -
         })
         .then(|| circle_disc(&first.curve_3d, frame))
         .flatten()
+}
+
+/// Whether every edge of `wire` lies inside `disc` with more than `tol` to
+/// spare. Sound per edge kind, since the disc is convex: a line by its
+/// endpoints, a NURBS curve by its control polygon (the convex-hull
+/// property), a circle or ellipse arc by the disc of its whole carrier.
+/// Hyperbolas and parabolas are unbounded carriers and never qualify.
+fn wire_inside_disc(
+    wire: &[OrientedPCurveEdge],
+    (center, radius): Disc,
+    frame: &PlaneFrame,
+    tol: f64,
+) -> bool {
+    let inside = |p: Point3, reach: f64| {
+        let uv = frame.project(p);
+        (uv.x() - center.x()).hypot(uv.y() - center.y()) + reach < radius - tol
+    };
+    !wire.is_empty()
+        && wire.iter().all(|edge| match &edge.curve_3d {
+            EdgeCurve::Line => inside(edge.start_3d, 0.0) && inside(edge.end_3d, 0.0),
+            EdgeCurve::NurbsCurve(curve) => curve.control_points().iter().all(|&p| inside(p, 0.0)),
+            EdgeCurve::Circle(circle) => inside(circle.center(), circle.radius()),
+            EdgeCurve::Ellipse(ellipse) => inside(ellipse.center(), ellipse.semi_major()),
+            EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => false,
+        })
 }
 
 /// Whether two discs are disjoint with more than `tol` between them.

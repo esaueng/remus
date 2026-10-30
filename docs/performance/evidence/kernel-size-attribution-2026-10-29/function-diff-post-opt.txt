@@ -1,0 +1,56 @@
+functions: base 5312  cur 5958  new 1370 (1,261,513 B)  removed 724 (206,748 B)
+existing functions that grew: 1,031,551 B   shrank: -428,006 B
+
+Largest growth among existing functions:
+  +71,021   540,504 ->   611,525  "function names" subsection
+  +49,431    32,250 ->    81,681  remus_check::properties::face_integrator::integrate_parametric
+  +48,827     1,401 ->    50,228  remus_operations::blend_ops::fillet_cascade
+  +37,323    25,266 ->    62,589  remus_check::properties::face_integrator::integrate_face_impl
+  +35,524       950 ->    36,474  remus_operations::thicken::thicken
+  +28,976    95,420 ->   124,396  remus_algo::pave_filler::phase_ff::perform_seeded
+  +26,141     3,944 ->    30,085  remus_operations::project_curve::project_curve_onto_face::{{closure}}
+  +22,619   182,722 ->   205,341  remus_operations::tessellate::solid::tessellate_faces_core
+  +22,184   168,743 ->   190,927  core::slice::sort::unstable::quicksort::quicksort
+  +20,052     1,123 ->    21,175  data segment ".rodata.32"
+  +19,136   121,249 ->   140,385  remus_operations::blend_ops::planar_fillet_result
+  +18,546       782 ->    19,328  data segment ".rodata.108"
+  +17,251   307,688 ->   324,939  remus_algo::builder::face_splitter::split_face_2d_impl
+  +16,087     3,763 ->    19,850  brepkernel_offsetPolygon2d multivalue shim
+  +15,389     1,658 ->    17,047  data segment ".rodata.30"
+  +14,992   129,236 ->   144,228  remus_wasm::bindings::batch::<impl remus_wasm::kernel::BrepKernel>::dispatch_op
+  +14,598    29,877 ->    44,475  remus_operations::boolean::run_mesh_fallback
+  +14,051       569 ->    14,620  remus_algo::builder::face_splitter::special_cases::split_noseam_face_direct::{{closure}}
+  +13,886   216,863 ->   230,749  core::slice::sort::stable::quicksort::quicksort
+  +13,431     3,052 ->    16,483  remus_math::nurbs::intersection::line::intersect_line_nurbs_with_grid
+  +12,401    27,502 ->    39,903  remus_algo::pave_filler::phase_ef::check_edge_face_pairs
+  +11,341        14 ->    11,355  data segment ".rodata.55"
+  +11,216     5,910 ->    17,126  data segment ".rodata.31"
+  +10,744    44,951 ->    55,695  hashbrown::map::HashMap<K,V,S,A>::insert
+  +10,482         9 ->    10,491  data segment ".rodata.120"
+
+Largest new functions:
+   61,296  remus_topology::validation::check_same_parameter_strict_with_tolerance
+   44,194  remus_topology::transaction::run_transacted
+   30,396  remus_algo::pave_filler::phase_ff::circular_cap_clip::clip_closed_ellipse_with_events
+   23,928  remus_operations::heal::apply_edge_repairs
+   21,425  remus_operations::projection::silhouette::project_silhouettes
+   18,003  remus_operations::resize_blend::execute_translation
+   16,948  remus_operations::resize_blend::analyze_translation
+   16,675  remus_wasm::bindings::construction_imprint::<impl remus_wasm::kernel::BrepKernel>::imprint_planar_polygon_impl
+   16,065  remus_algo::pave_filler::phase_ff::compute_raw_curves
+   15,078  remus_operations::project_curve::regular_nurbs_image_with_denominator
+   14,520  remus_operations::section::curved::trim_polygon
+   13,494  remus_operations::resize_blend::remove_rebuild_suffix
+   13,044  remus_operations::tessellate::nonplanar::fill_sphere_hemisphere_patch_impl
+   12,877  remus_algo::pave_filler::curved_section_clip::bezier_cylinder_residual_bound
+   11,950  brepkernel_copyDocument multivalue shim
+   11,914  remus_operations::measure::face_box_memo::face_bounding_box
+   11,683  remus_check::classify::boundary::qualified_sphere_trim_contains
+   11,377  remus_operations::measure::volume_memo::append_face
+   11,089  remus_operations::tessellate::nonplanar::sphere_chart_orientation::qualifies
+   10,853  remus_check::properties::face_integrator::sphere_latitude::partition_samples
+   10,758  remus_operations::transform::plan_solid_transform
+   10,529  remus_check::properties::face_integrator::sphere_latitude::ring
+   10,503  remus_algo::builder::face_splitter::special_cases::cylinder_seam::all_sections_clear
+   10,441  remus_operations::resize_blend::fillet_reorder::reorder
+   10,296  remus_operations::fillet::arc_torus::bounded_tab_supports::reach_is_clear

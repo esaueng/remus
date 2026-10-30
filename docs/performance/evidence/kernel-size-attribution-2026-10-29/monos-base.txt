@@ -1,0 +1,34 @@
+ Apprx. Bloat Bytes │ Apprx. Bloat % │ Bytes   │ %      │ Monomorphizations
+────────────────────┼────────────────┼─────────┼────────┼───────────────────────────────────────────────────────────────────────────────────────────────────
+             210483 ┊          2.12% ┊  216863 ┊  2.18% ┊ core::slice::sort::stable::quicksort::quicksort
+                    ┊                ┊  216863 ┊  2.18% ┊     ... and 75 more.
+             160511 ┊          1.62% ┊  168743 ┊  1.70% ┊ core::slice::sort::unstable::quicksort::quicksort
+                    ┊                ┊  168743 ┊  1.70% ┊     ... and 40 more.
+             106366 ┊          1.07% ┊  109425 ┊  1.10% ┊ core::slice::sort::stable::drift::sort
+                    ┊                ┊  109425 ┊  1.10% ┊     ... and 75 more.
+              68799 ┊          0.69% ┊   76127 ┊  0.77% ┊ <core::iter::adapters::GenericShunt<I,R> as core::iter::traits::iterator::Iterator>::next
+                    ┊                ┊   76127 ┊  0.77% ┊     ... and 83 more.
+              48170 ┊          0.49% ┊   49215 ┊  0.50% ┊ hashbrown::raw::RawTable<T,A>::reserve_rehash
+                    ┊                ┊   49215 ┊  0.50% ┊     ... and 77 more.
+              43304 ┊          0.44% ┊   44951 ┊  0.45% ┊ hashbrown::map::HashMap<K,V,S,A>::insert
+                    ┊                ┊   44951 ┊  0.45% ┊     ... and 67 more.
+              38597 ┊          0.39% ┊   41647 ┊  0.42% ┊ alloc::collections::btree::map::BTreeMap<K,V,A>::insert
+                    ┊                ┊   41647 ┊  0.42% ┊     ... and 20 more.
+              34663 ┊          0.35% ┊   69326 ┊  0.70% ┊ remus_sketch::gcs::constraint::eval_jacobian
+                    ┊                ┊   69326 ┊  0.70% ┊     ... and 2 more.
+              28809 ┊          0.29% ┊   32250 ┊  0.32% ┊ remus_check::properties::face_integrator::integrate_parametric
+                    ┊                ┊   32250 ┊  0.32% ┊     ... and 10 more.
+              25920 ┊          0.26% ┊   27450 ┊  0.28% ┊ hashbrown::rustc_entry::<impl hashbrown::map::HashMap<K,V,S,A>>::rustc_entry
+                    ┊                ┊   27450 ┊  0.28% ┊     ... and 43 more.
+              24119 ┊          0.24% ┊   25993 ┊  0.26% ┊ <alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter
+                    ┊                ┊   25993 ┊  0.26% ┊     ... and 58 more.
+              20542 ┊          0.21% ┊   22086 ┊  0.22% ┊ <core::iter::adapters::filter_map::FilterMap<I,F> as core::iter::traits::iterator::Iterator>::next
+                    ┊                ┊   22086 ┊  0.22% ┊     ... and 31 more.
+              19152 ┊          0.19% ┊   23940 ┊  0.24% ┊ remus_check::properties::face_integrator::adaptive::Integrator<S>::refine
+                    ┊                ┊   23940 ┊  0.24% ┊     ... and 5 more.
+              18375 ┊          0.19% ┊   19406 ┊  0.20% ┊ core::slice::sort::shared::pivot::median3_rec
+                    ┊                ┊   19406 ┊  0.20% ┊     ... and 77 more.
+              17966 ┊          0.18% ┊   19528 ┊  0.20% ┊ core::hash::BuildHasher::hash_one
+                    ┊                ┊   19528 ┊  0.20% ┊     ... and 35 more.
+             444325 ┊          4.47% ┊ 7469015 ┊ 75.22% ┊ ... and 6846 more.
+            1310101 ┊         13.19% ┊ 8415965 ┊ 84.76% ┊ Σ [6876 Total Rows]

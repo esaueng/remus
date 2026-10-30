@@ -935,7 +935,7 @@ fn split_mesh_conforming(
     let mut edge_points: DetHashMap<EdgeKey, Vec<Point3>> = DetHashMap::default();
 
     let mut host_indices: Vec<usize> = host_segments.keys().copied().collect();
-    host_indices.sort_unstable();
+    host_indices.compact_sort_unstable();
 
     for &host in &host_indices {
         let segs = &host_segments[&host];

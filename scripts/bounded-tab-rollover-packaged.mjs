@@ -88,11 +88,11 @@ function meshCensus(mesh, quantum) {
   for (const directions of uses.values()) assert.deepEqual(directions.slice().sort(), [-1,1]);
   return volume;
 }
-export function runBoundedTabRolloverPackaged({ BrepKernel, decodeEvolutionPayload }) {
+export function runBoundedTabRolloverPackaged({ RemusKernel, decodeEvolutionPayload }) {
   const source = readFileSync(new URL('../crates/operations/tests/data/rollover_tabbed_source.arena.json', import.meta.url));
   let expected;
   for (const surface of ['direct','directDetailed','evolution','executeBatch:fillet','executeBatchV2:fillet','executeBatch:filletDetailed','executeBatchV2:filletDetailed']) {
-    const k = new BrepKernel();
+    const k = new RemusKernel();
     try {
       const body = k.deserializeSolid(source), other = k.makeBox(1,2,3), selected = selection(k,body);
       const before = bytes(k,body), otherBefore = bytes(k,other), checkpoint = k.checkpoint();
@@ -127,7 +127,7 @@ export function runBoundedTabRolloverPackaged({ BrepKernel, decodeEvolutionPaylo
   // Actual user recipe, including preserved F1/F2 geometry. These public
   // meshes are checked separately from the native raw pre-weld regression.
   for (const prefix of [false,true]) {
-    const k = new BrepKernel();
+    const k = new RemusKernel();
     try {
       const input = freshBracket(k,prefix), selected = selection(k,input), before = bytes(k,input);
       const result = k.filletDetailed(input,selected,3,true);

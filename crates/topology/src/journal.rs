@@ -652,7 +652,7 @@ impl Journal {
             self.rollback_scope(self.entries.len(), &created);
             return Err(TopologyError::JournalDuplicateEvent { ordinal });
         }
-        scope.sort_unstable();
+        scope.compact_sort_unstable();
         scope.dedup();
         let op = self.issue_op();
         self.entries.push(JournalEntry {
@@ -684,7 +684,7 @@ impl Journal {
         for key in pre_scope.into_iter().chain(affected) {
             affected_ordinals.push(self.intern_tracked(key, &mut created));
         }
-        affected_ordinals.sort_unstable();
+        affected_ordinals.compact_sort_unstable();
         affected_ordinals.dedup();
         let op = self.issue_op();
         self.entries.push(JournalEntry {
@@ -910,7 +910,7 @@ impl Journal {
             .iter()
             .map(|(&ordinal, &key)| (ordinal, key))
             .collect();
-        index.sort_unstable_by_key(|(ordinal, _)| *ordinal);
+        index.compact_sort_unstable_by_key(|(ordinal, _)| *ordinal);
         let entries = self.entries.iter().map(JournalEntry::snapshot).collect();
         JournalSnapshot {
             next_op: self.next_op,
@@ -953,7 +953,7 @@ impl Journal {
         for entry in &self.entries {
             nodes.extend(entry.mentions().iter().map(|ordinal| ordinal.0));
         }
-        nodes.sort_unstable();
+        nodes.compact_sort_unstable();
         nodes.dedup();
         let node = |ordinal: u64| nodes.partition_point(|&candidate| candidate < ordinal);
         let mut parent: Vec<usize> = (0..nodes.len()).collect();
@@ -1010,7 +1010,7 @@ impl Journal {
             .filter(|(ordinal, _)| mentioned[node(**ordinal)])
             .map(|(&ordinal, &key)| (ordinal, key))
             .collect();
-        index.sort_unstable_by_key(|(ordinal, _)| *ordinal);
+        index.compact_sort_unstable_by_key(|(ordinal, _)| *ordinal);
         JournalSnapshot {
             next_op: self.next_op,
             next_ordinal: self.next_ordinal,
@@ -1086,7 +1086,7 @@ impl Journal {
                     events,
                 } => {
                     let mut scope = resolve_all(scope)?;
-                    scope.sort_unstable();
+                    scope.compact_sort_unstable();
                     scope.dedup();
                     let mut rebuilt = Vec::with_capacity(events.len());
                     for (subject, event) in events {
@@ -1139,7 +1139,7 @@ impl Journal {
                             EntityEvent::Deleted => {}
                         }
                     }
-                    scope_with_events.sort_unstable();
+                    scope_with_events.compact_sort_unstable();
                     scope_with_events.dedup();
                     EntryPayload::Evolution {
                         origin: if construction {
@@ -1153,7 +1153,7 @@ impl Journal {
                 }
                 PayloadSnapshot::Barrier { affected } => {
                     let mut affected = resolve_all(affected)?;
-                    affected.sort_unstable();
+                    affected.compact_sort_unstable();
                     affected.dedup();
                     EntryPayload::Barrier { affected }
                 }

@@ -11,7 +11,7 @@ use remus_operations::compound_ops;
 use crate::error::{StructuredWasmError, WasmError, validate_finite};
 use crate::handles::solid_id_to_u32;
 use crate::helpers::{build_triangle_mesh, panic_message, parse_boolean_op, triangle_mesh_to_js};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::shapes::JsMesh;
 use crate::types::{
     BooleanQualityResult, CancellableBooleanResult, CancellableOperationStatus,
@@ -92,7 +92,7 @@ pub(crate) fn coincident_face_pairs_to_json(
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     // ── Boolean operations ──────────────────────────────────────────
 
     /// Perform an exact boolean whose disconnected volumetric regions remain
@@ -199,7 +199,7 @@ impl BrepKernel {
 }
 
 /// Natively-testable boolean bodies (`Ts` cannot be inspected off-wasm).
-impl BrepKernel {
+impl RemusKernel {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn boolean_with_quality_impl(
         &mut self,
@@ -292,7 +292,7 @@ impl BrepKernel {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Performs a boolean governed by a cooperative cancellation token.
     ///
     /// Cancellation is typed (`operation_cancelled`) and transactional: no
@@ -713,7 +713,7 @@ impl BrepKernel {
 // safety — any panic that unwinds across the wasm-bindgen boundary leaves
 // its internal RefCell borrowed, breaking all subsequent JS calls.
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Cut a target solid by multiple tool solids in a single pass.
     ///
     /// This is more efficient than sequential `cut()` calls when many tools
@@ -732,7 +732,7 @@ impl BrepKernel {
     pub fn compound_cut(&mut self, target: u32, tool_ids: &[u32]) -> Result<u32, JsError> {
         if self.poisoned {
             return Err(JsError::new(
-                "Kernel poisoned after panic. Create a new BrepKernel instance.",
+                "Kernel poisoned after panic. Create a new RemusKernel instance.",
             ));
         }
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -760,7 +760,7 @@ impl BrepKernel {
 }
 
 // Private helpers (not exported to JS).
-impl BrepKernel {
+impl RemusKernel {
     /// Shared natively-testable body for the additive binary-boolean twins.
     fn binary_boolean_detailed_impl(
         &mut self,
@@ -947,7 +947,7 @@ mod tests {
 
     use super::OperationCancellationToken;
     use crate::error::StructuredWasmError;
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
     use crate::types::CancellableOperationStatus;
 
     /// Helper: parse batch result and check a single op returned ok or error.
@@ -972,7 +972,7 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     fn sphere_inside_cylinder_plain_detailed_and_batches_preserve_the_cavity() {
         for route in 0..5 {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let cylinder = kernel.make_cylinder_solid(10.0, 20.0).unwrap();
             let sphere = kernel.make_sphere_solid(8.0, 32).unwrap();
             kernel
@@ -1065,7 +1065,7 @@ mod tests {
     fn axial_sphere_cylinder_contact_keeps_public_fuse_support() {
         for swapped in [false, true] {
             for batch in [false, true] {
-                let mut kernel = BrepKernel::new();
+                let mut kernel = RemusKernel::new();
                 let cylinder = kernel.make_cylinder_solid(10.0, 20.0).unwrap();
                 let sphere = kernel.make_sphere_solid(8.0, 32).unwrap();
                 kernel
@@ -1139,7 +1139,7 @@ mod tests {
     fn far_cartesian_sphere_cylinder_public_cuts_keep_the_cavity() {
         for translation in [1e13, -1e13] {
             for batch in [false, true] {
-                let mut kernel = BrepKernel::new();
+                let mut kernel = RemusKernel::new();
                 let cylinder = kernel.make_cylinder_solid(10.0, 20.0).unwrap();
                 let sphere = kernel.make_sphere_solid(8.0, 32).unwrap();
                 for (solid, z) in [(cylinder, translation), (sphere, translation + 10.0)] {
@@ -1229,7 +1229,7 @@ mod tests {
     #[test]
     fn sphere_inside_cylinder_entity_history_refusals_leave_operands_and_journal_unchanged() {
         for op in ["cutWithEntityEvolution", "cutJournaled"] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let cylinder = kernel.make_cylinder_solid(10.0, 20.0).unwrap();
             let sphere = kernel.make_sphere_solid(8.0, 32).unwrap();
             kernel
@@ -1279,8 +1279,8 @@ mod tests {
     }
 
     /// Create two overlapping boxes via batch, return the raw JSON result.
-    fn two_boxes_batch() -> (BrepKernel, String) {
-        let mut k = BrepKernel::new();
+    fn two_boxes_batch() -> (RemusKernel, String) {
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 2, "height": 2, "depth": 2}},
@@ -1306,7 +1306,7 @@ mod tests {
 
     #[test]
     fn boolean_regions_direct_and_batch_preserve_disjoint_fuse_members() {
-        let mut direct = BrepKernel::new();
+        let mut direct = RemusKernel::new();
         let direct_a = direct.make_box_solid(2.0, 3.0, 4.0).unwrap();
         let direct_b = direct.make_box_solid(5.0, 2.0, 1.0).unwrap();
         let direct_b_id = direct.resolve_solid(direct_b).unwrap();
@@ -1325,7 +1325,7 @@ mod tests {
             .collect::<Vec<_>>();
         direct_volumes.sort_by(f64::total_cmp);
 
-        let mut batch = BrepKernel::new();
+        let mut batch = RemusKernel::new();
         let response = batch.execute_batch(
             r#"[
                 {"op":"makeBox","args":{"width":2,"height":3,"depth":4}},
@@ -1353,7 +1353,7 @@ mod tests {
 
     #[test]
     fn boolean_compound_regions_direct_and_batch_preserve_disjoint_members() {
-        let mut direct = BrepKernel::new();
+        let mut direct = RemusKernel::new();
         let a = direct.make_box_solid(1.0, 2.0, 3.0).unwrap();
         let b = direct.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let c = direct.make_box_solid(3.0, 2.0, 1.0).unwrap();
@@ -1379,7 +1379,7 @@ mod tests {
         let direct_members = direct.get_compound_solids(result).unwrap();
         assert_eq!(direct_members, vec![a, b, c]);
 
-        let mut batch = BrepKernel::new();
+        let mut batch = RemusKernel::new();
         let response = batch.execute_batch(
             r#"[
                 {"op":"makeBox","args":{"width":1,"height":2,"depth":3}},
@@ -1403,7 +1403,7 @@ mod tests {
 
     #[test]
     fn cancelled_boolean_is_typed_and_preserves_topology() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let a = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let b = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let counts_before = (
@@ -1480,7 +1480,7 @@ mod tests {
 
     #[test]
     fn uncancelled_boolean_returns_a_completed_typed_result() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let a = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let b = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let token = OperationCancellationToken::new();
@@ -1549,7 +1549,7 @@ mod tests {
     /// must both cut the corner-coincident cylinder and agree geometrically.
     #[test]
     fn cut_detailed_readme_example_matches_batch_v2() {
-        let mut direct = BrepKernel::new();
+        let mut direct = RemusKernel::new();
         let block = direct.make_box_solid(30.0, 20.0, 10.0).unwrap();
         let cutter = direct.make_cylinder_solid(5.0, 15.0).unwrap();
         let direct_result =
@@ -1562,7 +1562,7 @@ mod tests {
         let direct_handle = u32::try_from(direct_json["value"].as_u64().unwrap()).unwrap();
         let direct_volume = direct.volume(direct_handle, 0.1).unwrap();
 
-        let mut batch = BrepKernel::new();
+        let mut batch = RemusKernel::new();
         let response = batch.execute_batch_v2(
             r#"[
                 {"op": "makeBox", "args": {"width": 30, "height": 20, "depth": 10}},
@@ -1591,7 +1591,7 @@ mod tests {
         ] {
             let fixture: serde_json::Value = serde_json::from_str(fixture).unwrap();
             let setup = &fixture["operations"].as_array().unwrap()[..9];
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let response: serde_json::Value = serde_json::from_str(
                 &kernel.execute_batch_v2(&serde_json::to_string(setup).unwrap()),
             )
@@ -1643,7 +1643,7 @@ mod tests {
             (BooleanOp::Cut, "cut"),
             (BooleanOp::Intersect, "intersect"),
         ] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let a = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
             let b = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
             let result = kernel.binary_boolean_detailed_impl(op, operation, a, b);
@@ -1665,13 +1665,13 @@ mod tests {
         use remus_math::mat::Mat4;
         use remus_operations::transform::transform_solid;
 
-        let placed_box = |kernel: &mut BrepKernel, x, y, z, dx, dy, dz| {
+        let placed_box = |kernel: &mut RemusKernel, x, y, z, dx, dy, dz| {
             let handle = kernel.make_box_solid(dx, dy, dz).unwrap();
             let solid = kernel.resolve_solid(handle).unwrap();
             transform_solid(kernel.topo_mut(), solid, &Mat4::translation(x, y, z)).unwrap();
             handle
         };
-        let detailed = |kernel: &mut BrepKernel, op, name, a, b| {
+        let detailed = |kernel: &mut RemusKernel, op, name, a, b| {
             let result =
                 serde_json::to_value(kernel.binary_boolean_detailed_impl(op, name, a, b)).unwrap();
             assert_eq!(result["status"], "ok", "{name}: {result}");
@@ -1689,7 +1689,7 @@ mod tests {
                     (BooleanOp::Cut, "cut", cup_volume - 24.),
                     (BooleanOp::Intersect, "intersect", 24.),
                 ] {
-                    let mut kernel = BrepKernel::new();
+                    let mut kernel = RemusKernel::new();
                     let outer = placed_box(&mut kernel, 0., 0., 0., 20., 20., 10.);
                     let cavity = placed_box(&mut kernel, 2., 2., 2., 16., 16., 10.);
                     let cup = detailed(&mut kernel, BooleanOp::Cut, "cut", outer, cavity);
@@ -1733,7 +1733,7 @@ mod tests {
             (BooleanOp::Intersect, "intersect"),
         ] {
             for invalid_a in [true, false] {
-                let mut kernel = BrepKernel::new();
+                let mut kernel = RemusKernel::new();
                 let valid = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
                 let invalid = u32::MAX;
                 let (a, b) = if invalid_a {
@@ -1793,7 +1793,7 @@ mod tests {
 
     #[test]
     fn cut_detailed_operation_refusal_matches_batch_v2_and_rolls_back() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let counts_before = (
             kernel.topo().num_vertices(),
@@ -1905,7 +1905,7 @@ mod tests {
 
     #[test]
     fn compound_cut_multiple_tools() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 4, "height": 4, "depth": 4}},
@@ -1999,7 +1999,7 @@ mod tests {
 
     #[test]
     fn mesh_boolean_fuse_returns_non_empty_mesh() {
-        let k = BrepKernel::new();
+        let k = RemusKernel::new();
         #[rustfmt::skip]
         let positions = vec![
             0.0, 0.0, 0.0,
@@ -2060,7 +2060,7 @@ mod tests {
 
     #[test]
     fn cut_reduces_volume() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 2, "height": 2, "depth": 2}},
@@ -2085,7 +2085,7 @@ mod tests {
     fn cut_with_options_preserves_volume() {
         // Corner-notch cut through the unifyFaces post-pass: the result must
         // survive unification with the exact expected volume.
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 4, "height": 4, "depth": 4}},
@@ -2109,7 +2109,7 @@ mod tests {
 
     #[test]
     fn fuse_with_options_defaults_and_explicit_false_both_work() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[
                 {"op": "makeBox", "args": {"width": 2, "height": 2, "depth": 2}},
@@ -2131,7 +2131,7 @@ mod tests {
 
     #[test]
     fn intersect_with_options_invalid_handle_is_error() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[{"op": "intersectWithOptions", "args": {"solidA": 9999, "solidB": 9998}}]"#,
         );
@@ -2142,7 +2142,7 @@ mod tests {
 
     #[test]
     fn compound_cut_volume_decreases() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         // Target: 10x10x10 box at origin. Tool: 1x1x1 box at origin.
         // The tool overlaps one corner, so volume decreases.
         let r = k.execute_batch(
@@ -2168,7 +2168,7 @@ mod tests {
 
     #[test]
     fn boolean_with_quality_reports_exact_on_clean_boxes() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let a = k.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let b = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let out = k
@@ -2187,7 +2187,7 @@ mod tests {
 
     #[test]
     fn boolean_with_quality_exact_only_succeeds_on_exact_path() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let a = k.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let b = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let out = k
@@ -2265,7 +2265,7 @@ mod tests {
 
     #[test]
     fn boolean_with_quality_accepts_explicit_ssi_budgets() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let a = k.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let b = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
         // Analytic operands never enter NURBS SSI, so every cap (even 0)
@@ -2292,7 +2292,7 @@ mod tests {
 
     #[test]
     fn boolean_with_cancellation_impl_accepts_ssi_budgets() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let a = k.make_box_solid(2.0, 2.0, 2.0).unwrap();
         let b = k.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let token = super::OperationCancellationToken::new();
@@ -2320,8 +2320,8 @@ mod tests {
     /// one lump, an overlapping pair, one lump — and return the lump each
     /// published face belongs to (`0`, `1` = the pair, `2`) with consecutive
     /// repeats collapsed.
-    fn batch_fuse_all_lump_order(k: &mut BrepKernel) -> Vec<usize> {
-        let run = |k: &mut BrepKernel, ops: serde_json::Value| -> Vec<serde_json::Value> {
+    fn batch_fuse_all_lump_order(k: &mut RemusKernel) -> Vec<usize> {
+        let run = |k: &mut RemusKernel, ops: serde_json::Value| -> Vec<serde_json::Value> {
             let out: serde_json::Value = serde_json::from_str(&k.execute_batch(&ops.to_string()))
                 .expect("batch output is JSON");
             out.as_array()
@@ -2400,7 +2400,7 @@ mod tests {
     /// a checkpoint replay and a cold kernel could enumerate faces differently.
     #[test]
     fn fuse_all_lump_order_is_input_order_regardless_of_prior_work() {
-        let mut cold = BrepKernel::new();
+        let mut cold = RemusKernel::new();
         assert_eq!(batch_fuse_all_lump_order(&mut cold), vec![0, 1, 2]);
 
         for _ in 0..8 {

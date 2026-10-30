@@ -27,7 +27,7 @@ use crate::helpers::{
     TOL, classify_to_string, create_apex_face, fillet_failure_js_error, panic_message,
     parse_points, silhouettes_json, try_chamfer_with_origins, try_fillet_with_origins,
 };
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::types::FaceEvolutionPayloadV1;
 use tsify::Tsify as _;
 
@@ -52,7 +52,7 @@ fn optional_fillet_number(spec: &serde_json::Value, field: &str) -> Result<Optio
 }
 
 pub(super) fn parse_variable_fillet_specs(
-    kernel: &BrepKernel,
+    kernel: &RemusKernel,
     specs: &[serde_json::Value],
 ) -> Result<Vec<remus_operations::fillet::FilletEdgeSetback>, WasmError> {
     let mut edge_specs = Vec::with_capacity(specs.len());
@@ -337,7 +337,7 @@ pub(super) fn parse_sweep_options(
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     // ── Section ───────────────────────────────────────────────────
 
     /// Section a solid with a plane, returning cross-section face handles.
@@ -580,7 +580,7 @@ impl BrepKernel {
     ) -> Result<u32, JsError> {
         if self.poisoned {
             return Err(JsError::new(
-                "Kernel poisoned after panic. Create a new BrepKernel instance.",
+                "Kernel poisoned after panic. Create a new RemusKernel instance.",
             ));
         }
         validate_positive(radius, "radius")?;
@@ -646,7 +646,7 @@ impl BrepKernel {
 }
 
 /// Natively-testable evolution bodies (`Ts` cannot be inspected off-wasm).
-impl BrepKernel {
+impl RemusKernel {
     pub(crate) fn chamfer_with_evolution_impl(
         &mut self,
         solid: u32,
@@ -690,7 +690,7 @@ impl BrepKernel {
     ) -> Result<FaceEvolutionPayloadV1, JsError> {
         if self.poisoned {
             return Err(JsError::new(
-                "Kernel poisoned after panic. Create a new BrepKernel instance.",
+                "Kernel poisoned after panic. Create a new RemusKernel instance.",
             ));
         }
         validate_positive(radius, "radius")?;
@@ -739,7 +739,7 @@ impl BrepKernel {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     // ── Operations ─────────────────────────────────────────────────
 
     /// Move a planar face of a solid along its outward normal.
@@ -918,7 +918,7 @@ impl BrepKernel {
 }
 
 /// Natively-testable resize-blend evolution body.
-impl BrepKernel {
+impl RemusKernel {
     pub(crate) fn resize_blend_with_evolution_impl(
         &mut self,
         solid: u32,
@@ -972,7 +972,7 @@ impl BrepKernel {
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     /// Extrude a planar face along a direction vector to create a solid.
     ///
     /// Returns a solid handle (`u32`).
@@ -2568,7 +2568,7 @@ impl BrepKernel {
 }
 
 /// Natively-testable distance-angle chamfer evolution body.
-impl BrepKernel {
+impl RemusKernel {
     #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn chamfer_distance_angle_with_evolution_impl(
         &mut self,
@@ -2617,7 +2617,7 @@ impl BrepKernel {
     }
 }
 
-impl BrepKernel {
+impl RemusKernel {
     pub(crate) fn shell_with_quality_impl(
         &mut self,
         solid: u32,
@@ -2712,7 +2712,7 @@ type RawNurbs<'a> = (u32, Vec<f64>, &'a [f64], Vec<f64>);
 /// Natively testable bodies of the sweep bindings. Each runs its operation
 /// inside `run_transacted`, so a refusal after the operation has allocated
 /// (placed profile copies, side faces) leaves the session unchanged.
-impl BrepKernel {
+impl RemusKernel {
     /// Sweep callbacks only change topology and publish their result handle
     /// after success. If a checkpoint already shares the entry document, keep
     /// that exact owner on refusal as well as its geometry/history. Otherwise
@@ -2905,11 +2905,11 @@ mod tests {
         edge_id_to_u32, face_id_to_u32, shell_id_to_u32, solid_id_to_u32, wire_id_to_u32,
     };
     use crate::helpers::TOL;
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
     #[test]
     fn variable_fillet_json_rejects_malformed_references_and_laws_without_mutation() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let edge = kernel.get_solid_edges(solid).unwrap()[0];
         let before = kernel.serialize_solids(&[solid]).unwrap();
@@ -2950,7 +2950,7 @@ mod tests {
 
     #[test]
     fn variable_fillet_json_rejects_malformed_explicit_numeric_fields() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let edge = kernel.get_solid_edges(solid).unwrap()[0];
         for field in [
@@ -2991,7 +2991,7 @@ mod tests {
     fn variable_fillet_json_keeps_numeric_null_defaults_and_alias_precedence() {
         use remus_operations::fillet::FilletRadiusLaw;
 
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let edge = kernel.get_solid_edges(solid).unwrap()[0];
         let specs = [
@@ -3023,7 +3023,7 @@ mod tests {
     fn variable_fillet_json_keeps_omitted_law_defaults_and_radius_aliases() {
         use remus_operations::fillet::FilletRadiusLaw;
 
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let edge = kernel.get_solid_edges(solid).unwrap()[0];
         let specs = [
@@ -3080,7 +3080,7 @@ mod tests {
             super::validate_offset_sample_grid(0, "approximationSamples").unwrap(),
             0
         );
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(2.0, 3.0, 4.0).unwrap();
         let solid_id = kernel.resolve_solid(solid).unwrap();
         let face = face_id_to_u32(
@@ -3115,7 +3115,7 @@ mod tests {
         }
     }
 
-    fn square_wire(k: &mut BrepKernel) -> u32 {
+    fn square_wire(k: &mut RemusKernel) -> u32 {
         let pts = [
             Point3::new(0.0, 0.0, 0.0),
             Point3::new(10.0, 0.0, 0.0),
@@ -3126,7 +3126,7 @@ mod tests {
         wire_id_to_u32(wid)
     }
 
-    fn l_bracket_handle(k: &mut BrepKernel) -> u32 {
+    fn l_bracket_handle(k: &mut RemusKernel) -> u32 {
         let profile = make_planar_face(
             k.topo_mut(),
             &[
@@ -3150,7 +3150,7 @@ mod tests {
         solid_id_to_u32(solid)
     }
 
-    fn saddle_annulus_profile(k: &mut BrepKernel) -> u32 {
+    fn saddle_annulus_profile(k: &mut RemusKernel) -> u32 {
         let height = |x: f64, y: f64| 0.1 * x * y;
         let point = |x: f64, y: f64| Point3::new(x, y, height(x, y));
         let outer_points = [
@@ -3185,7 +3185,7 @@ mod tests {
         face_id_to_u32(face)
     }
 
-    fn assert_saddle_annulus_sweep(k: &BrepKernel, handle: u32, label: &str) -> f64 {
+    fn assert_saddle_annulus_sweep(k: &RemusKernel, handle: u32, label: &str) -> f64 {
         let solid = k.resolve_solid(handle).unwrap();
         let faces = remus_topology::explorer::solid_faces(k.topo(), solid).unwrap();
         let holed_caps = faces
@@ -3249,7 +3249,7 @@ mod tests {
 
     #[test]
     fn direct_offset_exports_rollback_postcondition_failure() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let before = topology_counts(kernel.topo());
 
@@ -3279,7 +3279,7 @@ mod tests {
 
     #[test]
     fn folded_l_bracket_shell_has_direct_batch_parity() {
-        let mut direct = BrepKernel::new();
+        let mut direct = RemusKernel::new();
         let direct_source = l_bracket_handle(&mut direct);
         let direct_result = direct.shell_solid(direct_source, 0.6, Vec::new()).unwrap();
         let direct_id = direct.resolve_solid(direct_result).unwrap();
@@ -3289,7 +3289,7 @@ mod tests {
         assert_eq!(direct_faces.len(), 8);
         assert!((direct_volume - 14.0).abs() < 1e-10);
 
-        let mut batch = BrepKernel::new();
+        let mut batch = RemusKernel::new();
         let batch_source = l_bracket_handle(&mut batch);
         let output = dispatch(
             &mut batch,
@@ -3321,14 +3321,14 @@ mod tests {
         assert_eq!(structured_volume.to_bits(), direct_volume.to_bits());
     }
 
-    fn dispatch(k: &mut BrepKernel, op: &str, args: serde_json::Value) -> serde_json::Value {
+    fn dispatch(k: &mut RemusKernel, op: &str, args: serde_json::Value) -> serde_json::Value {
         let batch = serde_json::json!([{ "op": op, "args": args }]);
         let out = k.execute_batch(&batch.to_string());
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
         parsed[0].clone()
     }
 
-    fn cylindrical_sheet_handles(k: &mut BrepKernel) -> (u32, u32) {
+    fn cylindrical_sheet_handles(k: &mut RemusKernel) -> (u32, u32) {
         let blank = remus_operations::primitives::make_box(k.topo_mut(), 10.0, 10.0, 10.0).unwrap();
         let carrier = remus_operations::primitives::make_cylinder(k.topo_mut(), 2.0, 12.0).unwrap();
         remus_operations::transform::transform_solid(
@@ -3351,7 +3351,7 @@ mod tests {
         (solid_id_to_u32(blank), shell_id_to_u32(sheet))
     }
 
-    fn planar_sheet_handles(k: &mut BrepKernel) -> (u32, u32) {
+    fn planar_sheet_handles(k: &mut RemusKernel) -> (u32, u32) {
         let blank = remus_operations::primitives::make_box(k.topo_mut(), 10.0, 10.0, 10.0).unwrap();
         let points = [
             Point3::new(-2.0, -2.0, 5.0),
@@ -3372,8 +3372,8 @@ mod tests {
         (solid_id_to_u32(blank), shell_id_to_u32(sheet))
     }
 
-    fn perpendicular_sheet_handles(k: &mut BrepKernel) -> (u32, u32) {
-        let make_sheet = |k: &mut BrepKernel, points: [Point3; 4], normal: Vec3, d: f64| {
+    fn perpendicular_sheet_handles(k: &mut RemusKernel) -> (u32, u32) {
+        let make_sheet = |k: &mut RemusKernel, points: [Point3; 4], normal: Vec3, d: f64| {
             let wire = make_polygon_wire(k.topo_mut(), &points, TOL).unwrap();
             let face = k.topo_mut().add_face(Face::new(
                 wire,
@@ -3407,8 +3407,8 @@ mod tests {
         (horizontal, vertical)
     }
 
-    fn disjoint_face_handles(k: &mut BrepKernel) -> (u32, u32) {
-        let make_face = |k: &mut BrepKernel, points: [Point3; 4], normal: Vec3| {
+    fn disjoint_face_handles(k: &mut RemusKernel) -> (u32, u32) {
+        let make_face = |k: &mut RemusKernel, points: [Point3; 4], normal: Vec3| {
             let wire = make_polygon_wire(k.topo_mut(), &points, TOL).unwrap();
             face_id_to_u32(k.topo_mut().add_face(Face::new(
                 wire,
@@ -3444,7 +3444,7 @@ mod tests {
         let mut signatures = Vec::new();
         for use_hold in [false, true] {
             for batch in [false, true] {
-                let mut kernel = BrepKernel::new();
+                let mut kernel = RemusKernel::new();
                 let (first, second) = disjoint_face_handles(&mut kernel);
                 let sheet = match (use_hold, batch) {
                     (false, false) => kernel.face_face_blend(first, second, 1.0).unwrap(),
@@ -3504,7 +3504,7 @@ mod tests {
 
     #[test]
     fn batch_v2_face_face_hold_mismatch_is_typed_and_transactional() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let (first, second) = disjoint_face_handles(&mut kernel);
         let before = topology_counts(kernel.topo());
         let input = serde_json::json!([{
@@ -3536,7 +3536,7 @@ mod tests {
     fn direct_and_batch_split_by_sheet_return_valid_compounds() {
         let mut signatures = Vec::new();
         for batch in [false, true] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let (solid, sheet) = cylindrical_sheet_handles(&mut kernel);
             let compound = if batch {
                 dispatch(
@@ -3568,7 +3568,7 @@ mod tests {
 
     #[test]
     fn batch_v2_split_by_sheet_preserves_typed_refusal() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let blank =
             remus_operations::primitives::make_box(kernel.topo_mut(), 10.0, 10.0, 10.0).unwrap();
         let face = remus_topology::explorer::solid_faces(kernel.topo(), blank).unwrap()[0];
@@ -3594,7 +3594,7 @@ mod tests {
         let mut signatures = Vec::new();
         for batch in [false, true] {
             for keep_inside in [true, false] {
-                let mut kernel = BrepKernel::new();
+                let mut kernel = RemusKernel::new();
                 let (solid, sheet) = planar_sheet_handles(&mut kernel);
                 let trimmed = if batch {
                     dispatch(
@@ -3634,7 +3634,7 @@ mod tests {
 
     #[test]
     fn batch_v2_trim_sheet_by_solid_preserves_typed_refusal() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let blank =
             remus_operations::primitives::make_box(kernel.topo_mut(), 10.0, 10.0, 10.0).unwrap();
         let face = remus_topology::explorer::solid_faces(kernel.topo(), blank).unwrap()[0];
@@ -3660,7 +3660,7 @@ mod tests {
     fn direct_and_batch_planar_sheet_trims_match() {
         let mut signatures = Vec::new();
         for batch in [false, true] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let (target, tool) = perpendicular_sheet_handles(&mut kernel);
             let one_way = if batch {
                 dispatch(
@@ -3682,7 +3682,7 @@ mod tests {
                 remus_operations::measure::sheet_surface_area(kernel.topo(), one_way_id, 1.0e-3)
                     .unwrap();
 
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let (sheet_a, sheet_b) = perpendicular_sheet_handles(&mut kernel);
             let mutual = if batch {
                 dispatch(
@@ -3726,7 +3726,7 @@ mod tests {
 
     #[test]
     fn batch_v2_mutual_sheet_trim_preserves_typed_refusal() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let (sheet, _) = perpendicular_sheet_handles(&mut kernel);
         let input = serde_json::json!([{
             "op": "mutualTrimSheets",
@@ -3754,7 +3754,7 @@ mod tests {
             as u32
     }
 
-    fn assert_batch_solid_geometry(k: &BrepKernel, handle: u32, label: &str) {
+    fn assert_batch_solid_geometry(k: &RemusKernel, handle: u32, label: &str) {
         let solid = k.resolve_solid(handle).unwrap();
         let shell = k
             .topo
@@ -3774,7 +3774,7 @@ mod tests {
         );
     }
 
-    fn cylinder_cone_shoulder_handles(k: &mut BrepKernel) -> (u32, u32) {
+    fn cylinder_cone_shoulder_handles(k: &mut RemusKernel) -> (u32, u32) {
         let cylinder = remus_operations::primitives::make_cylinder(k.topo_mut(), 3.0, 5.0).unwrap();
         let cone = remus_operations::primitives::make_cone(k.topo_mut(), 3.0, 1.0, 4.0).unwrap();
         remus_operations::transform::transform_solid(
@@ -3810,7 +3810,7 @@ mod tests {
         (solid_id_to_u32(solid), edge_id_to_u32(shoulder))
     }
 
-    fn wire_perimeter(k: &BrepKernel, wire_handle: u32) -> f64 {
+    fn wire_perimeter(k: &RemusKernel, wire_handle: u32) -> f64 {
         let wid = k.resolve_wire(wire_handle).unwrap();
         remus_operations::measure::wire_length(&k.topo, wid).unwrap()
     }
@@ -3827,7 +3827,7 @@ mod tests {
     const RIM_H: f64 = 10.0;
 
     /// Cylinder solid handle plus the handles of its two closed rim circles.
-    fn rim_cylinder(k: &mut BrepKernel) -> (u32, Vec<u32>) {
+    fn rim_cylinder(k: &mut RemusKernel) -> (u32, Vec<u32>) {
         use remus_topology::explorer::solid_faces;
 
         let cyl = remus_operations::primitives::make_cylinder(k.topo_mut(), RIM_R, RIM_H).unwrap();
@@ -3896,7 +3896,7 @@ mod tests {
     #[test]
     fn fillet_evolution_payload_covers_single_and_multi_edge_boxes() {
         for edge_slots in [&[0_usize][..], &[0_usize, 2][..]] {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
             let edges = kernel.get_solid_edges(solid).unwrap();
             let selected: Vec<u32> = edge_slots.iter().map(|&slot| edges[slot]).collect();
@@ -3929,7 +3929,7 @@ mod tests {
     /// selections come out of JS — must be collapsed, not refused.
     #[test]
     fn fillet_v2_binding_takes_a_repeated_selection_past_the_old_handle_cap() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let edges = kernel.get_solid_edges(solid).unwrap();
         let selection: Vec<u32> = std::iter::repeat_n(edges[0], 300).collect();
@@ -3950,7 +3950,7 @@ mod tests {
 
     #[test]
     fn cylinder_cone_fillet_matches_direct_and_batch_wasm_routes() {
-        let mut direct = BrepKernel::new();
+        let mut direct = RemusKernel::new();
         let (solid, shoulder) = cylinder_cone_shoulder_handles(&mut direct);
         let direct_result = direct.fillet_v2(solid, vec![shoulder], 0.25).unwrap();
         assert_batch_solid_geometry(&direct, direct_result, "direct cylinder-cone fillet");
@@ -3961,7 +3961,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut batch = BrepKernel::new();
+        let mut batch = RemusKernel::new();
         let (solid, shoulder) = cylinder_cone_shoulder_handles(&mut batch);
         let response = dispatch(
             &mut batch,
@@ -3986,7 +3986,7 @@ mod tests {
     #[test]
     fn all_edge_box_vertex_blend_matches_direct_and_batch_wasm_routes() {
         let run = |batch_route: bool| {
-            let mut kernel = BrepKernel::new();
+            let mut kernel = RemusKernel::new();
             let solid = kernel.make_box_solid(12.0, 10.0, 8.0).unwrap();
             let edges = kernel.get_solid_edges(solid).unwrap();
             assert_eq!(edges.len(), 12);
@@ -4026,7 +4026,7 @@ mod tests {
 
     #[test]
     fn resize_blend_bindings_preserve_v1_evolution_contract() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let sharp = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let edge = kernel.get_solid_edges(sharp).unwrap()[0];
         let fillet = kernel
@@ -4060,7 +4060,7 @@ mod tests {
         assert!(resized.evolution.deleted.contains(&band));
         assert_complete_evolution(&resized);
 
-        let mut direct_kernel = BrepKernel::new();
+        let mut direct_kernel = RemusKernel::new();
         let sharp = direct_kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let edge = direct_kernel.get_solid_edges(sharp).unwrap()[0];
         let fillet = direct_kernel
@@ -4075,7 +4075,7 @@ mod tests {
 
     #[test]
     fn fillet_and_chamfer_evolution_cover_cylinder_rims() {
-        let mut fillet_kernel = BrepKernel::new();
+        let mut fillet_kernel = RemusKernel::new();
         let (fillet_solid, fillet_rims) = rim_cylinder(&mut fillet_kernel);
         let fillet = fillet_kernel
             .fillet_with_evolution_impl(fillet_solid, vec![fillet_rims[0]], 2.0)
@@ -4087,7 +4087,7 @@ mod tests {
         assert!(!fillet.evolution.generated.is_empty());
         assert_complete_evolution(&fillet);
 
-        let mut chamfer_kernel = BrepKernel::new();
+        let mut chamfer_kernel = RemusKernel::new();
         let (chamfer_solid, chamfer_rims) = rim_cylinder(&mut chamfer_kernel);
         let chamfer = chamfer_kernel
             .chamfer_with_evolution_impl(chamfer_solid, vec![chamfer_rims[0]], 2.0)
@@ -4102,7 +4102,7 @@ mod tests {
 
     #[test]
     fn chamfer_evolution_payload_covers_box_bevels() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let edge = kernel.get_solid_edges(solid).unwrap()[0];
         let payload = kernel
@@ -4131,7 +4131,7 @@ mod tests {
         let angle = std::f64::consts::FRAC_PI_3;
         let expected = 1000.0 - (2.0 * 2.0 * angle.tan() / 2.0) * 10.0;
 
-        let mut plain = BrepKernel::new();
+        let mut plain = RemusKernel::new();
         let plain_solid = plain.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let plain_edge = plain.get_solid_edges(plain_solid).unwrap()[0];
         let plain_result = plain
@@ -4140,7 +4140,7 @@ mod tests {
         let plain_volume = plain.volume(plain_result, 0.1).unwrap();
         assert!((plain_volume - expected).abs() < 1e-6);
 
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
         let edge = kernel.get_solid_edges(solid).unwrap()[0];
         let payload = kernel
@@ -4182,7 +4182,7 @@ mod tests {
     }
 
     /// Chamfer one edge through `entry`, returning the result solid handle.
-    fn chamfer_via(k: &mut BrepKernel, entry: Entry, solid: u32, edge: u32, d: f64) -> u32 {
+    fn chamfer_via(k: &mut RemusKernel, entry: Entry, solid: u32, edge: u32, d: f64) -> u32 {
         match entry {
             Entry::Binding => k.chamfer_solid(solid, vec![edge], d).unwrap(),
             Entry::Batch => {
@@ -4204,7 +4204,7 @@ mod tests {
     /// also watertight, and whose volume matches the analytic ring wedge.
     /// A closed B-Rep can still tessellate open, so both are checked.
     /// Returns the measured volume so callers can compare entry points.
-    fn assert_rim_chamfer_ok(k: &BrepKernel, handle: u32, d: f64, label: &str) -> f64 {
+    fn assert_rim_chamfer_ok(k: &RemusKernel, handle: u32, d: f64, label: &str) -> f64 {
         let sid = k.resolve_solid(handle).unwrap();
         let shell = k
             .topo
@@ -4247,7 +4247,7 @@ mod tests {
             for rim_index in 0..2 {
                 let mut volumes = Vec::new();
                 for entry in [Entry::Binding, Entry::Batch] {
-                    let mut k = BrepKernel::new();
+                    let mut k = RemusKernel::new();
                     let (cyl, rims) = rim_cylinder(&mut k);
                     let out = chamfer_via(&mut k, entry, cyl, rims[rim_index], d);
                     let label = format!("{} d={d} rim={rim_index}", entry.label());
@@ -4272,7 +4272,7 @@ mod tests {
         let d = 1.0;
         let mut volumes = Vec::new();
         for entry in [Entry::Binding, Entry::Batch] {
-            let mut k = BrepKernel::new();
+            let mut k = RemusKernel::new();
             let cube =
                 remus_operations::primitives::make_box(k.topo_mut(), 10.0, 10.0, 10.0).unwrap();
             let edge = first_box_edge(&k, cube);
@@ -4293,7 +4293,7 @@ mod tests {
         );
     }
 
-    fn first_box_edge(k: &BrepKernel, solid: remus_topology::solid::SolidId) -> u32 {
+    fn first_box_edge(k: &RemusKernel, solid: remus_topology::solid::SolidId) -> u32 {
         let topo = &k.topo;
         let shell = topo
             .shell(topo.solid(solid).unwrap().outer_shell())
@@ -4305,7 +4305,7 @@ mod tests {
 
     #[test]
     fn multi_section_sweep_lofts_circles_along_line() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let big = k.make_circle_face(10.0, 24).unwrap();
         let small = k.make_circle_face(5.0, 24).unwrap();
         // Degree-1 line spine from the origin to (0, 0, 50).
@@ -4332,7 +4332,7 @@ mod tests {
 
     #[test]
     fn multi_section_sweep_batch_accepts_analytic_line_spine() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let big = k.make_circle_face(10.0, 24).unwrap();
         let small = k.make_circle_face(5.0, 24).unwrap();
         let spine = k.make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 50.0).unwrap();
@@ -4352,7 +4352,7 @@ mod tests {
 
     #[test]
     fn guided_sweep_produces_solid() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let profile = k.make_circle_face(2.0, 24).unwrap();
         // Spine: line (0,0,0)→(0,0,20). Aux: parallel guide offset +10 in X.
         let solid = k
@@ -4374,10 +4374,10 @@ mod tests {
 
     #[test]
     fn guided_sweep_batch_accepts_analytic_line_spine_and_guide() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let profile = k.make_circle_face(2.0, 24).unwrap();
         let mk_line =
-            |k: &mut BrepKernel, x: f64| k.make_line_edge(x, 0.0, 0.0, x, 0.0, 20.0).unwrap();
+            |k: &mut RemusKernel, x: f64| k.make_line_edge(x, 0.0, 0.0, x, 0.0, 20.0).unwrap();
         let spine = mk_line(&mut k, 0.0);
         let aux = mk_line(&mut k, 10.0);
         let out = dispatch(
@@ -4391,7 +4391,7 @@ mod tests {
 
     #[test]
     fn sweep_batch_accepts_analytic_line_path() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let profile = k.make_rectangle(2.0, 3.0).unwrap();
         let path = k.make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 12.0).unwrap();
         let out = dispatch(
@@ -4405,7 +4405,7 @@ mod tests {
 
     #[test]
     fn nonplanar_annulus_sweep_matches_direct_and_batch_contracts() {
-        let mut direct = BrepKernel::new();
+        let mut direct = RemusKernel::new();
         let direct_profile = saddle_annulus_profile(&mut direct);
         let direct_solid = direct
             .sweep_face(
@@ -4418,7 +4418,7 @@ mod tests {
             .unwrap();
         let direct_volume = assert_saddle_annulus_sweep(&direct, direct_solid, "direct sweep");
 
-        let mut batch = BrepKernel::new();
+        let mut batch = RemusKernel::new();
         let batch_profile = saddle_annulus_profile(&mut batch);
         let path = batch.make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 6.0).unwrap();
         let result = dispatch(
@@ -4435,7 +4435,7 @@ mod tests {
     /// B12 annular-Coons cell: hexagon-outer / iso-rect-hole saddle profile.
     /// The carrier comes from the shared cap builder so the hole loop sits
     /// at exactly the carrier-evaluated positions the certifier requires.
-    fn hexagon_annulus_profile(k: &mut BrepKernel) -> u32 {
+    fn hexagon_annulus_profile(k: &mut RemusKernel) -> u32 {
         const OUTER_XY: [[f64; 2]; 6] = [
             [-2.0, -1.0],
             [0.0, -2.0],
@@ -4462,7 +4462,7 @@ mod tests {
         face_id_to_u32(face)
     }
 
-    fn assert_hexagon_annulus_sweep(k: &BrepKernel, handle: u32, label: &str) -> f64 {
+    fn assert_hexagon_annulus_sweep(k: &RemusKernel, handle: u32, label: &str) -> f64 {
         let solid = k.resolve_solid(handle).unwrap();
         let faces = remus_topology::explorer::solid_faces(k.topo(), solid).unwrap();
         let holed_caps = faces
@@ -4578,7 +4578,7 @@ mod tests {
 
     #[test]
     fn nsided_annulus_sweep_matches_direct_and_batch_contracts() {
-        let mut direct = BrepKernel::new();
+        let mut direct = RemusKernel::new();
         let direct_profile = hexagon_annulus_profile(&mut direct);
         let direct_solid = direct
             .sweep_face(
@@ -4591,7 +4591,7 @@ mod tests {
             .unwrap();
         let direct_volume = assert_hexagon_annulus_sweep(&direct, direct_solid, "direct sweep");
 
-        let mut batch = BrepKernel::new();
+        let mut batch = RemusKernel::new();
         let batch_profile = hexagon_annulus_profile(&mut batch);
         let path = batch.make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 6.0).unwrap();
         let result = dispatch(
@@ -4607,7 +4607,7 @@ mod tests {
 
     #[test]
     fn wire_sweep_has_direct_and_batch_measurement_parity() {
-        let mut direct = BrepKernel::new();
+        let mut direct = RemusKernel::new();
         let direct_profile = square_wire(&mut direct);
         let direct_path = direct
             .make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 12.0)
@@ -4616,7 +4616,7 @@ mod tests {
         assert!((direct.wire_length(direct_profile).unwrap() - 40.0).abs() < 1e-9);
         assert!((direct.volume(direct_solid, 0.1).unwrap() - 1200.0).abs() < 1e-7);
 
-        let mut batch = BrepKernel::new();
+        let mut batch = RemusKernel::new();
         let batch_profile = square_wire(&mut batch);
         let batch_path = batch.make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 12.0).unwrap();
         let length = dispatch(
@@ -4637,7 +4637,7 @@ mod tests {
 
     #[test]
     fn pipe_batch_accepts_analytic_line_path() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let profile = k.make_rectangle(2.0, 3.0).unwrap();
         let path = k.make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 12.0).unwrap();
         let out = dispatch(
@@ -4651,7 +4651,7 @@ mod tests {
 
     #[test]
     fn sweep_with_options_batch_dispatches_all_options() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let profile = k.make_rectangle(2.0, 3.0).unwrap();
         let path = k.make_line_edge(0.0, 0.0, 0.0, 0.0, 0.0, 12.0).unwrap();
         let out = dispatch(
@@ -4672,7 +4672,7 @@ mod tests {
 
     #[test]
     fn loft_with_options_batch_dispatches_options_object() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let lower = k.make_circle_face(4.0, 24).unwrap();
         let upper = k.make_circle_face(2.0, 24).unwrap();
         k.transform_face(
@@ -4696,7 +4696,7 @@ mod tests {
 
     #[test]
     fn helical_sweep_batch_dispatches_parameters() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let profile = k.make_rectangle(1.0, 1.0).unwrap();
         let out = dispatch(
             &mut k,
@@ -4720,7 +4720,7 @@ mod tests {
 
     #[test]
     fn validate_solid_batch_returns_error_count() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = remus_operations::primitives::make_box(k.topo_mut(), 2.0, 3.0, 4.0).unwrap();
         let out = dispatch(
             &mut k,
@@ -4737,7 +4737,7 @@ mod tests {
             "cutWithEvolution",
             "intersectWithEvolution",
         ] {
-            let mut k = BrepKernel::new();
+            let mut k = RemusKernel::new();
             let a = k.make_box_solid(4.0, 4.0, 4.0).unwrap();
             let b = k
                 .copy_and_transform_solid(
@@ -4760,7 +4760,7 @@ mod tests {
 
     #[test]
     fn fillet_2d_batch_returns_rounded_polygon() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let coords = [0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0];
         let out = dispatch(
             &mut k,
@@ -4773,7 +4773,7 @@ mod tests {
 
     #[test]
     fn chamfer_2d_batch_returns_beveled_polygon() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let coords = [0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0];
         let out = dispatch(
             &mut k,
@@ -4786,7 +4786,7 @@ mod tests {
 
     #[test]
     fn minkowski_sum_binding_box10_box2_is_box12() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let a = remus_operations::primitives::make_box(k.topo_mut(), 10.0, 10.0, 10.0).unwrap();
         let b = remus_operations::primitives::make_box(k.topo_mut(), 2.0, 2.0, 2.0).unwrap();
         let sum = k
@@ -4801,7 +4801,7 @@ mod tests {
 
     #[test]
     fn minkowski_sum_batch_dispatch() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let a = remus_operations::primitives::make_box(k.topo_mut(), 4.0, 4.0, 4.0).unwrap();
         let b = remus_operations::primitives::make_box(k.topo_mut(), 2.0, 2.0, 2.0).unwrap();
         let out = dispatch(
@@ -4817,7 +4817,7 @@ mod tests {
 
     #[test]
     fn project_edges_batch_dispatch_box_oblique() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = remus_operations::primitives::make_box(k.topo_mut(), 10.0, 10.0, 10.0).unwrap();
         let out = dispatch(
             &mut k,
@@ -4845,7 +4845,7 @@ mod tests {
     /// and a NURBS face a traced one, listed as approximate.
     #[test]
     fn project_silhouettes_batch_dispatch_cylinder_torus_and_nurbs() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let cylinder =
             remus_operations::primitives::make_cylinder(k.topo_mut(), 5.0, 10.0).unwrap();
         let view = |solid| {
@@ -4919,7 +4919,7 @@ mod tests {
 
     #[test]
     fn offset_wire_2d_with_join_routes_arc_distinct_from_chamfer() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let w_int = square_wire(&mut k);
         let w_arc = square_wire(&mut k);
         let w_chamfer = square_wire(&mut k);
@@ -4968,7 +4968,7 @@ mod tests {
 
     #[test]
     fn offset_wire_2d_with_join_rejects_unknown_join_type() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let w = square_wire(&mut k);
         let entry = dispatch(
             &mut k,
@@ -4983,7 +4983,7 @@ mod tests {
 
     #[test]
     fn reverse_shape_reverses_authoritative_curve_trim() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let circle = remus_math::curves::Circle3D::new(
             Point3::new(0.0, 0.0, 0.0),
             remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
@@ -5019,7 +5019,7 @@ mod tests {
         assert!(
             (kernel.topo().vertex(reversed_edge.end()).unwrap().point() - start).length() < 1e-12
         );
-        let midpoint = BrepKernel::curve_point(
+        let midpoint = RemusKernel::curve_point(
             reversed_edge.curve(),
             f64::midpoint(end_parameter, start_parameter),
         );
@@ -5034,11 +5034,11 @@ mod offset_refusal_contract_tests {
 
     use super::super::transaction_tests::{assert_stale, observe, slot_marks};
     use crate::error::StructuredWasmError;
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
     use serde_json::{Value, json};
 
-    fn setup() -> (BrepKernel, u32) {
-        let mut k = BrepKernel::new();
+    fn setup() -> (RemusKernel, u32) {
+        let mut k = RemusKernel::new();
         let result: Vec<Value> = serde_json::from_str(&k.execute_batch(r#"[
             {"op":"makeCylinder","args":{"radius":1,"height":1}},
             {"op":"makeBox","args":{"width":1,"height":1,"depth":1}},

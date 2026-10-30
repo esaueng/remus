@@ -285,7 +285,7 @@ fn opseq81_native_batch_crosscheck() {
         // fresh arena (reusing one kernel across bundles aliases solid 2
         // of bundle N onto bundle 1's result — a harness defect that once
         // read F1's pi as F2's fuse volume).
-        let mut kernel = remus_wasm::kernel::BrepKernel::new();
+        let mut kernel = remus_wasm::kernel::RemusKernel::new();
         let path = format!("{dir}/{}", check.file);
         let json = std::fs::read_to_string(&path).unwrap_or_else(|_| {
             panic!(
@@ -477,14 +477,14 @@ fn f13_both_batches_keep_holed_sphere_mesh_closed_on_cache_replay() {
             ("fuse", true, 113.711_520_498_865_48),
             ("intersect", false, 0.385_815_030_367_076_43),
         ] {
-            let mut kernel = remus_wasm::kernel::BrepKernel::new();
+            let mut kernel = remus_wasm::kernel::RemusKernel::new();
             let mut ops = bundle.operations.clone();
             ops[3]["args"]["operation"] = serde_json::json!(operation);
             if reverse {
                 ops[3]["args"]["solidA"] = serde_json::json!(0);
                 ops[3]["args"]["solidB"] = serde_json::json!(1);
             }
-            let run = |kernel: &mut remus_wasm::kernel::BrepKernel, request: &str| {
+            let run = |kernel: &mut remus_wasm::kernel::RemusKernel, request: &str| {
                 if v2 {
                     kernel.execute_batch_v2(request)
                 } else {

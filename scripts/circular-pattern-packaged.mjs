@@ -278,12 +278,12 @@ const assertSolidIsUnitBox = (kernel, solid, label) => {
   }
 };
 
-export function runCircularPatternPackaged({ BrepKernel }) {
+export function runCircularPatternPackaged({ RemusKernel }) {
   // 1. Origin 10-box count 2 about +Z through all three creation paths.
   //    Independent geometry: 180-degree rotation, per-instance 1000 volume,
   //    planar census, total 12/24/16 history with original attribution.
   for (const route of ROUTES) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       let source;
       if (route === 'direct') {
@@ -314,7 +314,7 @@ export function runCircularPatternPackaged({ BrepKernel }) {
       // 180-degree rotation about Z through the origin.
       assertRotatedCopy(kernel, members[0], members[1], Math.PI, `origin count2 ${route}`);
       // Non-unit axis along the same line behaves as its normalization.
-      const normKernel = new BrepKernel();
+      const normKernel = new RemusKernel();
       try {
         const normSource = normKernel.makeBox(10, 10, 10);
         const normed = parseDirectPattern(normKernel.circularPatternJournaled(normSource, 0, 0, 5, 2));
@@ -333,7 +333,7 @@ export function runCircularPatternPackaged({ BrepKernel }) {
   // 2. Offset 10-box (+30 X) count 3 about +Z through all three paths.
   //    Three disjoint instances 120 degrees apart; rotation verified per copy.
   for (const route of ROUTES) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       let source;
       if (route === 'direct') {
@@ -392,7 +392,7 @@ export function runCircularPatternPackaged({ BrepKernel }) {
   // 3. Typed refusals preserve the session on every path: minimum count,
   //    origin-based axis, material overlap, and foreign handles.
   for (const route of ROUTES) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       let source;
       if (route === 'direct') {
@@ -454,7 +454,7 @@ export function runCircularPatternPackaged({ BrepKernel }) {
   // 4. Material overlap and foreign handles refuse with typed errors and no
   //    published history, on every path.
   for (const route of ROUTES) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       let cylinder;
       if (route === 'direct') {
@@ -548,7 +548,7 @@ if (process.argv[1] && process.argv[1].endsWith('circular-pattern-packaged.mjs')
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const projectRoot = resolve(__dirname, '..');
   const require = createRequire(import.meta.url);
-  const { BrepKernel } = require(resolve(projectRoot, 'crates/wasm/pkg/remus_wasm_node.cjs'));
-  runCircularPatternPackaged({ BrepKernel });
+  const { RemusKernel } = require(resolve(projectRoot, 'crates/wasm/pkg/remus_wasm_node.cjs'));
+  runCircularPatternPackaged({ RemusKernel });
   console.log('\nAll circular-pattern packaged witnesses passed');
 }

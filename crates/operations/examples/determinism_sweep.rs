@@ -2,7 +2,8 @@
     clippy::unwrap_used,
     clippy::print_stdout,
     clippy::print_stderr,
-    missing_docs
+    missing_docs,
+    clippy::disallowed_methods
 )]
 //! Cross-process determinism sweep.
 //!

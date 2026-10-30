@@ -43,11 +43,11 @@ function checkMesh(kernel, solid, deflection, scale, matrix, label) {
   return error;
 }
 
-export function runOpseqTorusPropertiesPackaged({ BrepKernel }) {
+export function runOpseqTorusPropertiesPackaged({ RemusKernel }) {
   let cells = 0;
   for (const api of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const scale of [1, 0.001, 1000]) for (const placed of [false, true]) {
-      const kernel = new BrepKernel();
+      const kernel = new RemusKernel();
       const label = `periodic torus pocket ${api} scale=${scale} placed=${placed}`;
       try {
         const torus = run(kernel, api, 'makeTorus', { majorRadius: 5, minorRadius: 2, segments: 16 },

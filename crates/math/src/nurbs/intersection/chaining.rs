@@ -334,6 +334,8 @@ pub fn chain_intersection_points(
         }
     }
     for list in &mut adj {
+        // hot: 4,096+ calls in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         list.sort_unstable();
     }
 

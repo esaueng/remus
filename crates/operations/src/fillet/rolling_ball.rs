@@ -89,7 +89,7 @@ fn origins_from_face_specs(
         .chain(unattributed.keys())
         .copied()
         .collect();
-    result_indices.sort_unstable();
+    result_indices.compact_sort_unstable();
     result_indices.dedup();
 
     let mut origins = BlendFaceOrigins::default();

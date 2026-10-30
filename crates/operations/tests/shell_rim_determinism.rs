@@ -18,7 +18,7 @@
 //! processes directly, run `cargo run --release --example determinism_sweep -p
 //! remus-operations` several times and diff the output.
 
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::disallowed_methods)]
 
 use remus_operations::measure::solid_volume;
 use remus_operations::primitives::make_cylinder;

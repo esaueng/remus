@@ -3691,29 +3691,46 @@ pub(super) fn split_face_with_internal_loops(
         // arc-true: loops are sampled through the face frame, so a hole
         // bounded by a single closed circle is compared against its real
         // outline rather than its degenerate start/end chord.
-        for (li, loop_edges) in loops.iter().enumerate() {
-            let lp = super::sampling::sample_wire_loop_uv_via_frame(loop_edges, &frame);
-            if lp.len() < 3 {
+        //
+        // Nested loops (two coaxial rim circles around a ring gear's tooth
+        // outline) all enclose the hole; it bounds the INNERMOST one, the
+        // smallest enclosing loop, and the outer loops' regions are rings
+        // around that loop instead.
+        let loop_polys: Vec<Vec<Point2>> = loops
+            .iter()
+            .map(|loop_edges| super::sampling::sample_wire_loop_uv_via_frame(loop_edges, &frame))
+            .collect();
+        let loop_areas: Vec<f64> = loop_polys
+            .iter()
+            .map(|lp| super::super::classify_2d::signed_area_2d(lp).abs())
+            .collect();
+        for (hi, hole) in original_inner_wires.iter().enumerate() {
+            if consumed_holes.contains(&hi) {
                 continue;
             }
-            for (hi, hole) in original_inner_wires.iter().enumerate() {
-                if consumed_holes.contains(&hi) || nested_holes.contains(&hi) {
-                    continue;
-                }
-                let hp = super::sampling::sample_wire_loop_uv_via_frame(hole, &frame);
-                if hp.len() < 3 {
-                    continue;
-                }
-                // Every sampled point inside — a hole merely touching or
-                // straddling the loop is left to the existing behaviour.
-                if hp
-                    .iter()
-                    .all(|&p| super::super::classify_2d::point_in_polygon_2d(p, &lp))
-                {
-                    nested_holes_by_loop[li].push(hi);
-                    nested_holes.insert(hi);
-                }
+            let hp = super::sampling::sample_wire_loop_uv_via_frame(hole, &frame);
+            if hp.len() < 3 {
+                continue;
             }
+            // Every sampled point inside — a hole merely touching or
+            // straddling the loop is left to the existing behaviour.
+            let innermost = loop_polys
+                .iter()
+                .enumerate()
+                .filter(|(_, lp)| {
+                    lp.len() >= 3
+                        && hp
+                            .iter()
+                            .all(|&p| super::super::classify_2d::point_in_polygon_2d(p, lp))
+                })
+                .min_by(|(a, _), (b, _)| loop_areas[*a].total_cmp(&loop_areas[*b]))
+                .map(|(li, _)| li);
+            if let Some(li) = innermost {
+                nested_holes_by_loop[li].push(hi);
+                nested_holes.insert(hi);
+            }
+        }
+        for (li, loop_edges) in loops.iter().enumerate() {
             if !nested_holes_by_loop[li].is_empty() {
                 nested_interior_by_loop[li] = Some(
                     annulus_interior_3d(
@@ -5337,7 +5354,7 @@ pub(super) fn try_split_crossing_plane_face(
         };
         section_indices.push(idx);
     }
-    section_indices.sort_unstable();
+    section_indices.compact_sort_unstable();
     section_indices.dedup();
     if section_indices.len() != section_endpoints.len() || section_indices.len() < 3 {
         return Ok(None);

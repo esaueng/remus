@@ -1,5 +1,5 @@
 //! Native per-stage timings for interactive CAD edit loops, with the same
-//! module-wide caches the browser kernel enables (`BrepKernel::new`).
+//! module-wide caches the browser kernel enables (`RemusKernel::new`).
 //!
 //! ```text
 //! cargo build --profile profiling -p remus-wasm --example kernel_perf_probe
@@ -507,7 +507,7 @@ fn plate(stage: &str, iters: usize) {
 
 fn main() {
     // Enables the same module-wide caches the browser kernel uses.
-    let _kernel = remus_wasm::kernel::BrepKernel::new();
+    let _kernel = remus_wasm::kernel::RemusKernel::new();
     let args: Vec<String> = std::env::args().collect();
     let scenario = args.get(1).map_or("hammer", String::as_str);
     let stage = args.get(2).map_or("all", String::as_str);

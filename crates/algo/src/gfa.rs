@@ -982,6 +982,70 @@ impl EntityLineage {
     }
 }
 
+/// Result edges whose two faces descend from an intersected face pair.
+///
+/// The face splitter builds a curved section (a cylinder meeting a plane, two
+/// cylinders meeting) from the whole intersection curve rather than from its
+/// pave blocks, so the edges it materialises carry no construction tag and
+/// the chase in [`export_entity_evolution`] cannot reach the section record.
+/// Straight sections go through their pave blocks and never needed this.
+///
+/// The record still exists one level up. A result edge bounds exactly two
+/// result faces; the builder recorded each face's input source; and the FF
+/// phase recorded every input face pair it intersected. When the two sources
+/// are such a pair, the edge lies on both and is that pair's section. Both
+/// facts are construction records, not geometry, so this binds nothing by
+/// guessing. An edge with one face (a seam), a face with no recorded source,
+/// or a pair the FF phase never intersected stays unresolved.
+///
+/// Returned as store edge index → the pair in the order the FF phase recorded
+/// it.
+fn section_pairs_by_incidence(
+    store: &crate::ds::GfaShapeStore,
+    store_result: SolidId,
+    store_origins: &crate::builder::FaceProvenance,
+    lineage: &EntityLineage,
+) -> Result<std::collections::BTreeMap<usize, (usize, usize)>, AlgoError> {
+    let intersected: std::collections::BTreeMap<(usize, usize), (usize, usize)> = lineage
+        .section_origins
+        .values()
+        .map(|&(a, b)| ((a.min(b), a.max(b)), (a, b)))
+        .collect();
+    let source: DetHashMap<usize, usize> = store_origins
+        .iter()
+        .filter_map(|(out, src)| src.map(|src| (out.index(), src.index())))
+        .collect();
+
+    let mut incident: std::collections::BTreeMap<usize, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for face_id in remus_topology::explorer::solid_faces(&store.topo, store_result)? {
+        let face = store.topo.face(face_id)?;
+        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+        {
+            for oriented in store.topo.wire(wire_id)?.edges() {
+                let faces = incident.entry(oriented.edge().index()).or_default();
+                if !faces.contains(&face_id.index()) {
+                    faces.push(face_id.index());
+                }
+            }
+        }
+    }
+
+    let mut pairs = std::collections::BTreeMap::new();
+    for (edge, faces) in incident {
+        let [first, second] = faces.as_slice() else {
+            continue;
+        };
+        let (Some(&a), Some(&b)) = (source.get(first), source.get(second)) else {
+            continue;
+        };
+        if let Some(&pair) = intersected.get(&(a.min(b), a.max(b))) {
+            pairs.insert(edge, pair);
+        }
+    }
+    Ok(pairs)
+}
+
 fn export_entity_evolution(
     topo: &mut Topology,
     store: &crate::ds::GfaShapeStore,
@@ -991,6 +1055,8 @@ fn export_entity_evolution(
     lineage: &EntityLineage,
 ) -> Result<(SolidId, EntityEvolution), AlgoError> {
     let (result, export) = store.export_solid_with_entity_maps(topo, store_result)?;
+    let section_by_incidence =
+        section_pairs_by_incidence(store, store_result, &store_origins, lineage)?;
 
     let mut faces = Vec::with_capacity(store_origins.len());
     for (store_out, store_src) in store_origins {
@@ -1045,7 +1111,13 @@ fn export_entity_evolution(
             }
             break;
         }
-        EdgeEvent::Unresolved
+        match section_by_incidence.get(&store_index) {
+            Some(&(face_a, face_b)) => EdgeEvent::Generated {
+                face_a: store.input_face_to_caller.get(&face_a).copied(),
+                face_b: store.input_face_to_caller.get(&face_b).copied(),
+            },
+            None => EdgeEvent::Unresolved,
+        }
     };
 
     let mut edges: Vec<(usize, EdgeEvent)> = export

@@ -62,7 +62,7 @@ entity/reference budget. Old and new topologies coexist during the copy.
 
 ## Explicit WASM ownership boundary
 
-Tier: core. The additive `BrepKernel.copyDocument(solids, sheets, wires,
+Tier: core. The additive `RemusKernel.copyDocument(solids, sheets, wires,
 maxEntities?)` binding applies the same selected-document copy inside the
 module. `maxEntities` may lower the default entity/reference limit. It returns
 a `KernelDocumentCopy` with ordered `solids`, `sheets` and `wires` getters and

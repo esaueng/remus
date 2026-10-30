@@ -332,7 +332,7 @@ pub fn build_solids_with_origins(
                 )
             })
             .collect();
-        rows.sort_unstable();
+        rows.compact_sort_unstable();
         log::debug!("FACES pre-assemble face_ids={rows:?}");
     }
 
@@ -1647,7 +1647,7 @@ fn perform_areas(topo: &Topology, shells: &[Vec<FaceId>]) -> (Vec<Vec<FaceId>>, 
                 }
             }
             let mut mix: Vec<_> = mix.into_iter().collect();
-            mix.sort_unstable();
+            mix.compact_sort_unstable();
             log::debug!(
                 "growth shell AREAS shell faces={} mix={mix:?} signed_vol={signed_vol:.6} lone={} outward={:?} -> {}",
                 shell.len(),
@@ -2315,7 +2315,7 @@ fn log_open_growth_shell(
         }
     }
     let mut allmix: Vec<_> = allmix.into_iter().collect();
-    allmix.sort_unstable();
+    allmix.compact_sort_unstable();
     log::debug!("growth shell OPENSHELL selected-total {allmix:?}");
     let pad = 0.5;
     for &ofid in all {
@@ -3676,12 +3676,15 @@ fn split_arc_edges_at_collinear_vertices(
     } in arc_edges
     {
         // A closed (full) circle/ellipse CAN be refined — at global vertices
-        // that lie on it — but only into 3+ sub-arcs. With a single interior
-        // cut the two halves share BOTH endpoints, and the endpoint-keyed
-        // duplicate merge below would conflate them into one arc. The mate
-        // side of a full rim is typically already split at the crossing
-        // vertices (e.g. a pad bore poking through inset walls), so matching
-        // its partition here is what lets the flood-fill pair the shells.
+        // that lie on it. The mate side of a full rim is typically already
+        // split at the crossing vertices (e.g. a pad bore poking through inset
+        // walls), so matching its partition here is what lets the flood-fill
+        // pair the shells. One interior cut leaves two halves sharing BOTH
+        // endpoints; the duplicate merge below keeps such conic halves apart
+        // by their midpoints. A single cut is still taken only where another
+        // arc of the same conic ends (a coaxial tube whose rim seam sits at
+        // another angle splits its rim there), never at a stray vertex that
+        // merely touches the circle.
         let is_closed = (ep - sp).length() < snap;
         // `snap` is a LINEAR tolerance (model units); the span / branch tests
         // below are in the curve's ANGULAR domain (radians). Convert via the
@@ -3856,6 +3859,7 @@ fn split_arc_edges_at_collinear_vertices(
         let band = snap + sagitta;
 
         let mut cuts: Vec<(f64, VertexId)> = Vec::new();
+        let mut mate_cuts = 0_usize;
         for ci in grid.box_candidates(amin, amax, band) {
             let (vid, p) = verts[ci];
             // Skip the arc's own endpoints.
@@ -3895,8 +3899,9 @@ fn split_arc_edges_at_collinear_vertices(
                 continue;
             }
             cuts.push((fraction, vid));
+            mate_cuts += usize::from(has_mate_partition);
         }
-        if cuts.is_empty() || (is_closed && cuts.len() < 2) {
+        if cuts.is_empty() || (is_closed && cuts.len() < 2 && mate_cuts == 0) {
             continue;
         }
         // Total order: angle then vertex index (the `vert_at` HashMap iteration
@@ -4766,6 +4771,8 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
         .map(|e| e.face_idx)
         .collect();
     let mut faces_to_rebuild_sorted: Vec<usize> = faces_to_rebuild.into_iter().collect();
+    // hot: ~21,000 n*log2(n) work, n up to 1,018 in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     faces_to_rebuild_sorted.sort_unstable();
 
     for &fi in &faces_to_rebuild_sorted {
@@ -4852,7 +4859,7 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
             .iter()
             .map(|(dup, (canon, flip))| (dup.index(), canon.index(), *flip))
             .collect();
-        rows.sort_unstable();
+        rows.compact_sort_unstable();
         for (dup, canon, flip) in rows {
             log::debug!("MERGE dup=Id({dup}) canon=Id({canon}) flip={flip}");
         }
@@ -6218,9 +6225,9 @@ mod tests {
 
     #[test]
     fn closed_circle_with_single_cut_vertex_stays_whole() {
-        // One interior cut would produce two arcs sharing BOTH endpoints —
-        // the endpoint-keyed merge would conflate them. The refinement must
-        // leave the circle whole in that case.
+        // A lone vertex that only touches the circle (no arc of the same
+        // circle ends there) is no partition to match: the refinement must
+        // leave the circle whole.
         use remus_math::curves::Circle3D;
         use remus_topology::edge::{Edge, EdgeCurve};
         use remus_topology::face::{Face, FaceSurface};

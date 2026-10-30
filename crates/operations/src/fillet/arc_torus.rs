@@ -510,6 +510,7 @@ mod inner_tangent_tests {
 /// relaxed by these read-only queries.
 mod bounded_tab_supports {
     use super::{Circle3D, FaceSurface, Point3, Tolerance, ToroidalSurface, Vec3};
+    use remus_math::compact_sort::CompactSort;
     use remus_math::surfaces::CylindricalSurface;
     use remus_topology::Topology;
     use remus_topology::edge::{EdgeCurve, EdgeId};
@@ -1676,7 +1677,7 @@ mod bounded_tab_supports {
                 new_specs.push((vertices, surface, true, parents));
             }
         }
-        changed.sort_unstable();
+        changed.compact_sort_unstable();
         changed.dedup();
         let mut result_faces = Vec::new();
         let mut modified = DetHashMap::default();
@@ -1871,7 +1872,7 @@ mod bounded_tab_supports {
             parents.entry(canonical).or_default().push(original.id);
         }
         for ids in parents.values_mut() {
-            ids.sort_unstable();
+            ids.compact_sort_unstable();
             ids.dedup();
         }
         let floor = feet.first()?.floor;
@@ -1981,7 +1982,7 @@ mod bounded_tab_supports {
                 }
             }
         }
-        deleted.sort_unstable();
+        deleted.compact_sort_unstable();
         Some(OriginalRegions {
             parents,
             main_floor: main.id,
@@ -2027,14 +2028,14 @@ mod bounded_tab_supports {
             {
                 from.push(spandrel);
             }
-            from.sort_unstable();
+            from.compact_sort_unstable();
             from.dedup();
             origins.created.push((*result, from));
         }
-        origins.survived.sort_unstable();
+        origins.survived.compact_sort_unstable();
         origins
             .created
-            .sort_unstable_by_key(|(face, _)| face.index());
+            .compact_sort_unstable_by_key(|(face, _)| face.index());
         origins.deleted = regions.deleted;
         Some(origins)
     }

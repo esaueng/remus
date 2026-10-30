@@ -82,7 +82,7 @@ a Remus type counts toward that crate:
 | --- | ---: |
 | std/core/alloc/hashbrown generics with no Remus type in the name | 32.4% |
 | `remus_operations` | 19.0% |
-| Binding layer and glue (`BrepKernel`, wasm-bindgen, serde, tsify) | 14.9% |
+| Binding layer and glue (`RemusKernel`, wasm-bindgen, serde, tsify) | 14.9% |
 | `remus_algo` | 11.4% |
 | math, topology, check, blend, heal, offset, sketch, io, geometry | 19.3% |
 | Other (`robust`, std formatting/panic, `remus_wasm`, misc.) | 3.0% |
@@ -317,7 +317,7 @@ bytes against main's kernel (raw 10,484,484 / gzip 3,673,721).
 | W1 growth control | PR #1030: CI fails a PR over any hard limit, or growing the kernel more than 64 KiB raw without a `WASM-Size:` line naming a tier; wired into `CI Pass`. It edits fleet workflows, so it needs an owner CI bypass and a merge-commit landing (fleet pins must be main ancestors). |
 | W2 ceiling step 1 | PR #1028 + OpenZCAD #658: 11/12 MiB raw, 4.5 MiB gzip, 3 MiB Brotli, with the seven-point evidence recorded in OpenZCAD `docs/kernel-wasm-size-policy.md`. |
 | W3.1 one dispatch path | **Not worth it.** Deleting every `executeBatch` arm saves only 157 KB raw / 29 KB gzip; a shared implementation projects to about 34 KB, and many direct/batch pairs differ in validation on purpose. The earlier −0.3 to −0.6 MB estimate counted kernel code inlined into bindings. |
-| W3.2 generic bloat | PR #1031: the largest family was stable sort (≈ 1.07 MB in 267 per-comparator copies), not hash tables (≈ 145 KB after `wasm-opt` merging). A shared `CompactSort` on ≈ 205 cold sites, 31 measured hot sites unchanged: **−754 KB raw / −106 KB gzip**, outputs identical, instruction counts within spread on all 113 native cases and WASM suites. |
+| W3.2 generic bloat | PR #1031: the largest family was stable sort (≈ 1.07 MB in 267 per-comparator copies), not hash tables (≈ 145 KB after `wasm-opt` merging). A shared `CompactSort` on ≈ 205 cold sites, 31 measured hot sites unchanged: **−754 KB raw / −106 KB gzip**, outputs identical, instruction counts within spread on all 113 native cases and WASM suites. Follow-up (2026-10-30): the lint also covers `sort_unstable*`, the gap that let 42 new unstable call sites in since 2026-10-13. `CompactSort` gained `compact_sort_unstable*`, which match the std unstable sort only where no two distinguishable elements tie, so each converted site was checked for that (169 cold sites; 6 tie-dependent and 35 measured hot sites unchanged). Unstable-sort family 77 copies / 204 KB → 35 / 105 KB: **−101 KB raw / −24 KB gzip**, fixed-work instruction counts within noise. |
 | W3.3 serde | PR #1029: hand-written arena and persistent-reference codec, byte-identical output and error kinds against a verbatim oracle: **−267 KB raw / −78 KB gzip** in the kernel (−208 KB in the translator), 5–33% fewer instructions in serialize/deserialize. |
 | W4 lazy modules | **No candidate passes the combined size-and-speed bar.** The sketch solver split clears 250 KiB at today's optimization level (254 KiB; 151 KiB only under a size profile, which W0.1 rejects), but its 1.5–2 µs module round trip makes 10-parameter solves 5–10% slower. Repair + analysis + NURBS reuse + projection together: 175 KiB. A prototype is kept unpublished for a later re-check if the solver grows by about 100 KiB. |
 | W5 tier rule | PR #1027. |
@@ -330,3 +330,56 @@ there the step-1 ceiling leaves about 3.1 MB raw (≈ 6 weeks at 0.5 MB/week)
 and 1.2 MB gzip (≈ 7 weeks), and mobile-class cold load drops by about
 0.16 s. Keeping new cold code on `CompactSort` and new capabilities on the
 tier rule is what keeps that runway.
+
+## Growth attribution (2026-10-29)
+
+The kernel grew from 9,412,128 B (v2026.1.57, built just after #1031) to
+11,005,504 B (v2026.1.86) in 16 days, about **0.7 MB raw per week**. That is
+faster than the 0.5 MB/week the runway above assumes. At that rate the
+step-1 review limits are reached in days and the hard limits in about two
+weeks. Both sources were rebuilt with the shipped pipeline and attributed
+with twiggy. Evidence, commands and scripts:
+[`docs/performance/evidence/kernel-size-attribution-2026-10-29/`](../performance/evidence/kernel-size-attribution-2026-10-29/README.md).
+The rebuilds land within 0.3% of the shipped packages, so absolute bytes are
+approximate.
+
+| Shipped-equivalent | Base `89a3eac5` | Cur `d8195032` | Growth |
+| --- | ---: | ---: | ---: |
+| Raw | 9,386,948 | 10,974,155 | +1,587,207 |
+| gzip (Node defaults) | 3,481,345 | 4,079,297 | +597,952 |
+| Brotli q11 | 2,484,589 | 2,904,757 | +420,168 |
+
+**Most of the growth is new code, not generic bloat.** 1,370 new functions
+add 1.26 MB and 724 removed functions take away 0.21 MB. Existing functions
+grew by 1.03 MB in total and shrank by 0.43 MB.
+
+| Group (after `wasm-opt`) | Growth | Largest modules |
+| --- | ---: | --- |
+| `remus_operations` | +569 KB (34%) | tessellate +96K, blend_ops +92K (fillet cascade), resize_blend +84K, fillet +50K, measure +47K, thicken +41K, project_curve +38K, section +37K; push_pull −48K, defeature −44K |
+| `remus_algo` | +221 KB | pave_filler +160K (phase-FF seeding, circular-cap and curved-section clipping) |
+| `remus_check` | +218 KB | properties +138K (face integrator), classify +70K |
+| `remus_topology` | +140 KB | validation +60K (`check_same_parameter_strict_with_tolerance`, 61 KB), transaction +38K (`run_transacted`, 44 KB) |
+| std/core/alloc/hashbrown generics | +114 KB | sorts, hash maps |
+| `remus_math` | +78 KB | nurbs +70K |
+| `remus_wasm` | +74 KB | bindings +68K (batch `dispatch_op` +15K) |
+| data segments | +36 KB | |
+
+**Recoverable duplication, about 100–150 KB raw (estimate):**
+
+1. `integrate_parametric` (`crates/check/src/properties/face_integrator.rs`)
+   is monomorphized 11 times, 81.7 KB in total, of which twiggy counts about
+   68.7 KB as duplication.
+2. **The sort lint has a gap.** The kernel crates' `clippy.toml` disallows
+   `sort_by` and `sort_by_key` but not `sort_unstable*`. Since `89a3eac5`,
+   non-test kernel code gained 22 `sort_unstable`, 12 `sort_unstable_by_key`
+   and 8 `sort_by` call sites. The `core::slice::sort` families grew by
+   +52.6 KB and 35 copies (579 KB in 396 copies → 632 KB in 431). Closing the
+   gap needs an unstable `CompactSort`: substituting the stable one can
+   reorder ties and change geometry output.
+3. **Opt-in memo modules** grew from 59 KB to 107 KB. Performance caches
+   should be declared on the `WASM-Size:` line like any other capability.
+4. **hashbrown instantiations** grew by 18 KB across 44 new copies.
+
+Trimming these restores weeks, not months, of runway. The trend comes from
+qualified features landing in core, so the remaining levers are the ceiling,
+an explicit growth budget, and structural splitting.

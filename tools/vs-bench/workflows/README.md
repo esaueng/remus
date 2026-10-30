@@ -27,7 +27,7 @@ surfaces must match the manifest's expected stable error code. The report
 retains actual diagnostics, observations, and the manifest SHA-256.
 
 The diagnostic-only `workflow-probes` feature adds `workflowStateSnapshot`.
-Its derived Debug representation includes every logical `BrepKernel` field,
+Its derived Debug representation includes every logical `RemusKernel` field,
 including topology arenas and retired slots, attributes, journal, sketches,
 assemblies, checkpoints, and poison state. The native oracle uses the complete
 `Model` Debug representation, including its operation context. Snapshot bytes

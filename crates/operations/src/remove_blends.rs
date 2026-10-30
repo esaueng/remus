@@ -26,6 +26,7 @@ use remus_topology::solid::SolidId;
 use crate::OperationsError;
 use crate::evolution::EvolutionMap;
 use crate::resize_blend::{ResizeBlendError, blend_region};
+use remus_math::compact_sort::CompactSort;
 
 /// Exact result of removing a connected group of analytic blend bands.
 #[derive(Debug)]
@@ -121,12 +122,12 @@ fn remove_blends_inner(
 
     let mut evolution = EvolutionMap::exact();
     let mut face_map: Vec<_> = reconstructed.face_map.into_iter().collect();
-    face_map.sort_unstable_by_key(|(source, target)| (*source, target.index()));
+    face_map.compact_sort_unstable_by_key(|(source, target)| (*source, target.index()));
     for (source, target) in face_map {
         evolution.add_modified(source, target.index());
     }
     let mut removed_faces: Vec<_> = removed.into_iter().collect();
-    removed_faces.sort_unstable();
+    removed_faces.compact_sort_unstable();
     for face in removed_faces {
         evolution.add_deleted(face);
     }
@@ -162,7 +163,7 @@ fn recognize_group(
         .into_iter()
         .collect();
     let mut seeds = seeds.to_vec();
-    seeds.sort_unstable_by_key(|face| face.index());
+    seeds.compact_sort_unstable_by_key(|face| face.index());
     seeds.dedup();
     if let Some(face) = seeds.iter().find(|face| !solid_faces.contains(face)) {
         return Err(invalid(format!(
@@ -369,7 +370,7 @@ fn face_edges(topo: &Topology, face: FaceId) -> Result<Vec<EdgeId>, OperationsEr
                 .map(remus_topology::wire::OrientedEdge::edge),
         );
     }
-    edges.sort_unstable_by_key(|edge| edge.index());
+    edges.compact_sort_unstable_by_key(|edge| edge.index());
     edges.dedup();
     Ok(edges)
 }
@@ -380,7 +381,7 @@ fn validate_boundary_history(
     result: SolidId,
     mut history: Vec<(EntityKey, Option<EntityKey>)>,
 ) -> Result<Vec<(EntityKey, Option<EntityKey>)>, OperationsError> {
-    history.sort_unstable();
+    history.compact_sort_unstable();
     if history.windows(2).any(|pair| pair[0] == pair[1]) {
         return Err(reconstruction(
             "connected blend removal has duplicate boundary history records",

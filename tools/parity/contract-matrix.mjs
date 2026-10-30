@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { kernelClass } from '../../scripts/kernel-class.cjs';
 import { runNpm } from './npm-cli.mjs';
 import { performance } from 'node:perf_hooks';
 import {
@@ -763,9 +764,9 @@ export function installPackage(packageDir, temporaryRoot, label) {
 }
 
 function batchObservation(c, modulePath) {
-  const { BrepKernel } = createRequire(import.meta.url)(modulePath);
+  const RemusKernel = kernelClass(createRequire(import.meta.url)(modulePath));
   const initStarted = performance.now();
-  const kernel = new BrepKernel();
+  const kernel = new RemusKernel();
   const coldInitMs = performance.now() - initStarted;
   try {
     const batchStarted = performance.now();
@@ -840,9 +841,9 @@ function finalizeBatchObservation(c, responses, coldInitMs, batchDurationMs) {
 
 export function directObservation(c, modulePath) {
   const mod = createRequire(import.meta.url)(modulePath);
-  const { BrepKernel } = mod;
+  const RemusKernel = kernelClass(mod);
   const initStarted = performance.now();
-  const kernel = new BrepKernel();
+  const kernel = new RemusKernel();
   const coldInitMs = performance.now() - initStarted;
   try {
     const batchStarted = performance.now();

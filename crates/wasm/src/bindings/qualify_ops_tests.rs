@@ -10,7 +10,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 use remus_math::mat::Mat4;
 use remus_math::tolerance::Tolerance;
@@ -22,12 +22,12 @@ use remus_operations::transform::transform_solid;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::explorer::{face_vertices, solid_edges, solid_faces};
 
-fn run(k: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn run(k: &mut RemusKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let json = serde_json::Value::Array(ops.to_vec()).to_string();
     serde_json::from_str(&k.execute_batch(&json)).unwrap()
 }
 
-fn run_all_ok(k: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn run_all_ok(k: &mut RemusKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let results = run(k, ops);
     for (i, r) in results.iter().enumerate() {
         assert!(
@@ -50,7 +50,7 @@ fn as_u32(v: &serde_json::Value) -> u32 {
     u32::try_from(v.as_u64().unwrap()).unwrap()
 }
 
-fn generalized_move_fixture(kernel: &mut BrepKernel) -> (u32, u32) {
+fn generalized_move_fixture(kernel: &mut RemusKernel) -> (u32, u32) {
     let topo = kernel.topo_mut();
     let plate = make_box(topo, 40.0, 40.0, 5.0).expect("plate");
     let boss = make_box(topo, 16.0, 16.0, 10.0).expect("boss");
@@ -103,13 +103,13 @@ fn generalized_move_fixture(kernel: &mut BrepKernel) -> (u32, u32) {
     )
 }
 
-fn kernel_volume(kernel: &BrepKernel, solid: u32) -> f64 {
+fn kernel_volume(kernel: &RemusKernel, solid: u32) -> f64 {
     let solid = kernel.resolve_solid(solid).expect("solid handle");
     remus_operations::measure::solid_volume(kernel.topo(), solid, 0.001).expect("volume")
 }
 
-/// The wall of `solid` whose stored plane normal is closest to `target`.
-fn wall_by_normal(k: &mut BrepKernel, solid: u32, target: [f64; 3]) -> u32 {
+/// The wall of `solid` whose outward normal is closest to `target`.
+fn wall_by_normal(k: &mut RemusKernel, solid: u32, target: [f64; 3]) -> u32 {
     let faces = run_all_ok(
         k,
         &[op("getSolidFaces", serde_json::json!({"solid": solid}))],
@@ -138,7 +138,7 @@ fn wall_by_normal(k: &mut BrepKernel, solid: u32, target: [f64; 3]) -> u32 {
 /// D-1 unit contract on both entry points.
 #[test]
 fn batch_draft_volume_matches_closed_form() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let out = run_all_ok(
         &mut k,
         &[op(
@@ -182,7 +182,7 @@ fn batch_draft_volume_matches_closed_form() {
 /// restores the plain box volume exactly.
 #[test]
 fn batch_defeature_restores_plain_box() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let out = run_all_ok(
         &mut k,
         &[
@@ -275,7 +275,7 @@ fn batch_defeature_restores_plain_box() {
 #[test]
 fn batch_draft_is_deterministic() {
     let run_once = || {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let out = run_all_ok(
             &mut k,
             &[op(
@@ -313,7 +313,7 @@ fn batch_draft_is_deterministic() {
 /// parity: the batch arm previously passed its `angle` through as radians).
 #[test]
 fn direct_and_batch_draft_match_in_degrees() {
-    let fixture = |kernel: &mut BrepKernel| {
+    let fixture = |kernel: &mut RemusKernel| {
         let out = run_all_ok(
             kernel,
             &[op(
@@ -324,14 +324,14 @@ fn direct_and_batch_draft_match_in_degrees() {
         let cube = as_u32(&out[0]);
         (cube, wall_by_normal(kernel, cube, [1.0, 0.0, 0.0]))
     };
-    let mut direct = BrepKernel::new();
+    let mut direct = RemusKernel::new();
     let (solid, wall) = fixture(&mut direct);
     let direct_result = direct
         .draft_solid(solid, vec![wall], 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 5.0)
         .expect("direct draft");
     let direct_volume = kernel_volume(&direct, direct_result);
 
-    let mut batch = BrepKernel::new();
+    let mut batch = RemusKernel::new();
     let (solid, wall) = fixture(&mut batch);
     let output = run_all_ok(
         &mut batch,
@@ -359,14 +359,14 @@ fn direct_and_batch_draft_match_in_degrees() {
 /// boss/plate/fillet/hole re-limitation cell.
 #[test]
 fn direct_and_batch_move_faces_match_generalized_witness() {
-    let mut direct = BrepKernel::new();
+    let mut direct = RemusKernel::new();
     let (solid, cap) = generalized_move_fixture(&mut direct);
     let direct_result = direct
         .move_faces_binding(solid, vec![cap], 2.0)
         .expect("direct moveFaces");
     let direct_volume = kernel_volume(&direct, direct_result);
 
-    let mut batch = BrepKernel::new();
+    let mut batch = RemusKernel::new();
     let (solid, cap) = generalized_move_fixture(&mut batch);
     let output = run_all_ok(
         &mut batch,
@@ -383,7 +383,7 @@ fn direct_and_batch_move_faces_match_generalized_witness() {
 
 #[test]
 fn direct_and_batch_defeature_restore_curved_rim() {
-    let fixture = |kernel: &mut BrepKernel| {
+    let fixture = |kernel: &mut RemusKernel| {
         let topo = kernel.topo_mut();
         let sharp = make_cylinder(topo, 10.0, 20.0).unwrap();
         let rim = solid_edges(topo, sharp)
@@ -407,11 +407,11 @@ fn direct_and_batch_defeature_restore_curved_rim() {
             crate::handles::face_id_to_u32(band),
         )
     };
-    let mut direct = BrepKernel::new();
+    let mut direct = RemusKernel::new();
     let (input, band) = fixture(&mut direct);
     let result = direct.defeature(input, vec![band]).unwrap();
     let direct_volume = kernel_volume(&direct, result);
-    let mut batch = BrepKernel::new();
+    let mut batch = RemusKernel::new();
     let (input, band) = fixture(&mut batch);
     let result = run_all_ok(
         &mut batch,
@@ -428,7 +428,7 @@ fn direct_and_batch_defeature_restore_curved_rim() {
 
 #[test]
 fn direct_and_batch_defeature_restore_curved_wall_boss() {
-    let fixture = |kernel: &mut BrepKernel| {
+    let fixture = |kernel: &mut RemusKernel| {
         let topo = kernel.topo_mut();
         let base = make_cylinder(topo, 10.0, 20.0).unwrap();
         let boss = make_box(topo, 5.0, 4.0, 4.0).unwrap();
@@ -464,11 +464,11 @@ fn direct_and_batch_defeature_restore_curved_wall_boss() {
         assert_eq!(selected.len(), 5);
         (crate::handles::solid_id_to_u32(input), selected)
     };
-    let mut direct = BrepKernel::new();
+    let mut direct = RemusKernel::new();
     let (input, faces) = fixture(&mut direct);
     let result = direct.defeature(input, faces).unwrap();
     let direct_volume = kernel_volume(&direct, result);
-    let mut batch = BrepKernel::new();
+    let mut batch = RemusKernel::new();
     let (input, faces) = fixture(&mut batch);
     let result = run_all_ok(
         &mut batch,
@@ -494,7 +494,7 @@ fn batch_offset_cone_sphere_boolean_retains_exact_carriers() {
         ("cut", 208.0 * std::f64::consts::PI - overlap),
         ("intersect", overlap),
     ] {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let inputs = run_all_ok(
             &mut kernel,
             &[
@@ -540,7 +540,7 @@ fn batch_offset_sphere_cylinder_boolean_retains_exact_carriers() {
         ("cut", 288.0 * std::f64::consts::PI - overlap),
         ("intersect", overlap),
     ] {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let inputs = run_all_ok(
             &mut kernel,
             &[
@@ -586,7 +586,7 @@ fn batch_offset_torus_sphere_boolean_retains_exact_carriers() {
         ("cut", 48.0 * std::f64::consts::PI.powi(2) - overlap),
         ("intersect", overlap),
     ] {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let inputs = run_all_ok(
             &mut kernel,
             &[
@@ -630,7 +630,7 @@ fn batch_through_tool_booleans_preserve_material_across_scales() {
         let scale = 10.0_f64.powi(exponent);
         for placed in [false, true] {
             for (operation, expected) in [("fuse", 1.16), ("cut", 0.84), ("intersect", 0.16)] {
-                let mut kernel = BrepKernel::new();
+                let mut kernel = RemusKernel::new();
                 let inputs = run_all_ok(
                     &mut kernel,
                     &[
@@ -698,7 +698,7 @@ fn batch_shell_scale_matrix_matches_closed_forms() {
     for exponent in [-3, 0, 3] {
         let scale = 10.0_f64.powi(exponent);
         // Closed hollow box 10^3 - 8^3.
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let out = run_all_ok(
             &mut kernel,
             &[op(
@@ -730,7 +730,7 @@ fn batch_shell_scale_matrix_matches_closed_forms() {
         );
 
         // Open-top cylinder cup.
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let out = run_all_ok(
             &mut kernel,
             &[op(
@@ -774,7 +774,7 @@ fn batch_shell_scale_matrix_matches_closed_forms() {
         assert_eq!(validation[0], 0);
 
         // Closed hollow sphere.
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let out = run_all_ok(
             &mut kernel,
             &[op(
@@ -811,7 +811,7 @@ fn batch_shell_scale_matrix_matches_closed_forms() {
 fn batch_shell_with_quality_reports_exact_on_analytic_solids() {
     // B25: the quality-disclosing shell reports "exact" (no deflection, no
     // sampled faces) on analytic solids, direct and batch alike.
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let out = run_all_ok(
         &mut kernel,
         &[op(
@@ -849,7 +849,7 @@ fn batch_shell_with_quality_reports_exact_on_analytic_solids() {
 fn batch_offset_face_with_quality_reports_exact_on_planes() {
     // B25: the quality-disclosing face offset reports "exact" on a planar
     // face and refuses a NURBS face under the exact-only policy.
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let out = run_all_ok(
         &mut kernel,
         &[op(
@@ -907,7 +907,7 @@ fn cone_rim_removed_volume(r_rim: f64, alpha: f64, sigma: f64, r: f64) -> f64 {
 }
 
 /// Bottom circle-edge handle of a batch-built solid (extremal −z centre).
-fn bottom_rim_handle(kernel: &mut BrepKernel, solid: u32) -> u32 {
+fn bottom_rim_handle(kernel: &mut RemusKernel, solid: u32) -> u32 {
     let out = run_all_ok(
         kernel,
         &[op("solidEdges", serde_json::json!({"solid": solid}))],
@@ -935,7 +935,7 @@ fn bottom_rim_handle(kernel: &mut BrepKernel, solid: u32) -> u32 {
     best.map(|(handle, _)| handle).expect("cone has a rim")
 }
 
-fn batch_volume(kernel: &mut BrepKernel, solid: u32) -> f64 {
+fn batch_volume(kernel: &mut RemusKernel, solid: u32) -> f64 {
     let out = run_all_ok(
         kernel,
         &[op(
@@ -952,7 +952,7 @@ fn batch_volume(kernel: &mut BrepKernel, solid: u32) -> f64 {
 /// 0.44512), return a new handle, and validate clean.
 #[test]
 fn batch_cone_base_rim_fillet_removes_rolling_ball_volume() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let out = run_all_ok(
         &mut kernel,
         &[op(

@@ -62,23 +62,28 @@ fn face_area_uncached(
 ) -> Result<f64, crate::OperationsError> {
     let face = topo.face(face_id)?;
     match face.surface() {
-        FaceSurface::Plane { .. } => {
-            if planar_boundary_needs_curve_integral(topo, face_id)? {
-                // `integrate_face` is the fixed rule about the origin.
-                Ok(
-                    remus_check::properties::face_cache::integrate_face_fixed_about_memoized(
-                        topo,
-                        face_id,
-                        5,
-                        Point3::new(0.0, 0.0, 0.0),
-                    )?
-                    .area
-                    .abs(),
-                )
-            } else {
-                planar_face_area(topo, face_id)
+        FaceSurface::Plane { .. } => match planar_boundary(topo, face_id)? {
+            // `integrate_face` is the fixed rule about the origin.
+            PlanarBoundary::Exact => Ok(
+                remus_check::properties::face_cache::integrate_face_fixed_about_memoized(
+                    topo,
+                    face_id,
+                    5,
+                    Point3::new(0.0, 0.0, 0.0),
+                )?
+                .area
+                .abs(),
+            ),
+            PlanarBoundary::Adaptive => {
+                match remus_check::properties::face_integrator::planar_face_exact_area(
+                    topo, face_id,
+                )? {
+                    Some(area) => Ok(area.abs()),
+                    None => planar_face_area(topo, face_id),
+                }
             }
-        }
+            PlanarBoundary::Lines => planar_face_area(topo, face_id),
+        },
         // Analytic curved faces reduce their area to exact boundary
         // integrals (Green's theorem), falling back to Gauss quadrature of
         // the exact surface over the trimmed domain; either way the area is
@@ -102,28 +107,38 @@ fn face_area_uncached(
     }
 }
 
-/// Whether the boundary needs and supports the exact curved-edge planar
-/// moment integrator in `remus-check`.
+/// How [`face_area`] measures a planar face's boundary.
+enum PlanarBoundary {
+    /// Straight edges only: the exact Newell polygon.
+    Lines,
+    /// Curves the moment integrator in `remus-check` has an exact rule for.
+    Exact,
+    /// A NURBS edge with no exact rule (rational, or past degree six): the
+    /// integrator's self-certified adaptive rule, or this module's
+    /// 256-sample polygon where that rule declines.
+    Adaptive,
+}
+
+/// Classify the boundary of a planar face for [`face_area`].
 ///
-/// Keep this list deliberately identical to
-/// `face_integrator::planar_wire_monomial_moments`: routing an unsupported
-/// edge through `integrate_face` would silently replace this module's
-/// established 256-sample fallback with the check crate's coarser generic
-/// polygon path. A line-only boundary stays on the cheaper exact Newell path.
-///
-/// Native circle, ellipse, parabola, and hyperbola edges are exact. A NURBS
-/// edge is exact only when curve recognition identifies it as one of those
-/// forms at a scale-relative tolerance (see
-/// `face_integrator::nurbs_boundary_is_recognized`); any other NURBS keeps
-/// the whole face on the sampled fallback.
-fn planar_boundary_needs_curve_integral(
+/// Keep the exact list identical to
+/// `face_integrator::planar_wire_monomial_moments`. Native circle, ellipse,
+/// parabola, and hyperbola edges are exact. A NURBS edge is exact when it is
+/// a unit-weight polynomial curve of degree at most six (the integrator's
+/// exact per-span rule, see `face_integrator::has_exact_polynomial_green_rule`)
+/// or when curve recognition identifies it as one of those forms at a
+/// scale-relative tolerance (see [`nurbs_boundary_is_recognized`]); any other
+/// NURBS edge is adaptive. The adaptive route goes through
+/// `planar_face_exact_area`, never `integrate_face`, whose own fallback is a
+/// coarser polygon than this module's.
+fn planar_boundary(
     topo: &Topology,
     face_id: FaceId,
-) -> Result<bool, crate::OperationsError> {
+) -> Result<PlanarBoundary, crate::OperationsError> {
     use remus_topology::edge::EdgeCurve;
 
     let face = topo.face(face_id)?;
-    let mut has_supported_curve = false;
+    let mut class = PlanarBoundary::Lines;
     for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
         let wire = topo.wire(wire_id)?;
         for oriented in wire.edges() {
@@ -133,26 +148,39 @@ fn planar_boundary_needs_curve_integral(
                 EdgeCurve::Circle(_)
                 | EdgeCurve::Ellipse(_)
                 | EdgeCurve::Parabola(_)
-                | EdgeCurve::Hyperbola(_) => has_supported_curve = true,
+                | EdgeCurve::Hyperbola(_) => class = PlanarBoundary::Exact,
                 EdgeCurve::NurbsCurve(nc) => {
-                    if !nurbs_boundary_is_recognized(topo, edge, nc)? {
-                        return Ok(false);
+                    if !has_exact_polynomial_green_rule(nc)
+                        && !nurbs_boundary_is_recognized(topo, edge, nc)?
+                    {
+                        return Ok(PlanarBoundary::Adaptive);
                     }
-                    has_supported_curve = true;
+                    class = PlanarBoundary::Exact;
                 }
             }
         }
     }
-    Ok(has_supported_curve)
+    Ok(class)
+}
+
+/// Whether the planar moment integrator has an exact span rule for `nc`:
+/// unit weights (an algebraic precondition, not a closeness test) and degree
+/// at most six. Mirrors `face_integrator::has_exact_polynomial_green_rule`,
+/// duplicated because `operations` cannot call into `check`'s private
+/// helpers.
+fn has_exact_polynomial_green_rule(nc: &remus_math::nurbs::curve::NurbsCurve) -> bool {
+    nc.degree() <= 6
+        && nc
+            .weights()
+            .iter()
+            .all(|weight| weight.to_bits() == 1.0_f64.to_bits())
 }
 
 /// Whether a NURBS boundary edge is recognized as an analytic form at a
 /// scale-relative tolerance.
 ///
-/// Mirrors `face_integrator::nurbs_boundary_is_recognized` (which owns the
-/// tolerance doctrine); duplicated rather than shared because `operations`
-/// cannot call into `check`'s private helpers and the predicate itself is
-/// three lines.
+/// Uses the scale-relative tolerance of `face_integrator`'s recognized-edge
+/// arm.
 fn nurbs_boundary_is_recognized(
     topo: &Topology,
     edge: &remus_topology::edge::Edge,

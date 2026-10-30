@@ -850,7 +850,7 @@ fn emit_cycle_wire(
                 .all(|h| arrangement.half_edges[*h].source.use_id == use_id)
             {
                 let mut undirected: Vec<usize> = halves.iter().map(|h| h / 2).collect();
-                undirected.sort_unstable();
+                undirected.compact_sort_unstable();
                 undirected.dedup();
                 if undirected.len() == 2 {
                     return true;
@@ -1353,7 +1353,7 @@ impl<'a> Collector<'a> {
                 return Ok(false);
             }
             let mut distinct: Vec<usize> = members.iter().map(|(u, _)| *u).collect();
-            distinct.sort_unstable();
+            distinct.compact_sort_unstable();
             distinct.dedup();
             if distinct.len() < 3 {
                 continue;

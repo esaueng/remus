@@ -114,9 +114,9 @@ function checkMesh(kernel, solid, doc, matrix, scale, deflection, label, angular
   assert.equal(quality.isWatertight, true, `${label}: public mesh closure`);
 }
 
-function checkFixture(BrepKernel, api, scale, placed, segments, side, fuse = false, reverse = false) {
+function checkFixture(RemusKernel, api, scale, placed, segments, side, fuse = false, reverse = false) {
   const label = `F6 ${api} scale=${scale} placed=${placed} segments=${segments} side=${side} fuse=${fuse} reverse=${reverse}`;
-  const kernel = new BrepKernel();
+  const kernel = new RemusKernel();
   const run = (op, args, direct) => invoke(kernel, api, op, args, direct, label);
   try {
     const makeCube = () => run('makeBox', { width: side * scale, height: side * scale, depth: side * scale }, [side * scale, side * scale, side * scale]);
@@ -182,9 +182,9 @@ function checkFixture(BrepKernel, api, scale, placed, segments, side, fuse = fal
   console.log(`ok - ${label}: material, quantities, strict topology and three raw mesh deflections`);
 }
 
-function checkLatitudeCut(BrepKernel, api) {
+function checkLatitudeCut(RemusKernel, api) {
   const label = `F6 compatibility ${api}: radius-10 sphere cut above z=5`;
-  const kernel = new BrepKernel();
+  const kernel = new RemusKernel();
   const run = (op, args, direct) => invoke(kernel, api, op, args, direct, label);
   try {
     const sphere = run('makeSphere', { radius: 10, segments: 32 }, [10, 32]);
@@ -211,14 +211,14 @@ function checkLatitudeCut(BrepKernel, api) {
   console.log(`ok - ${label}: exact quantities and four raw mesh deflections`);
 }
 
-export function runOpseqF6Packaged({ BrepKernel }) {
+export function runOpseqF6Packaged({ RemusKernel }) {
   for (const api of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const scale of [1, 0.001, 1000]) {
-      for (const placed of [false, true]) checkFixture(BrepKernel, api, scale, placed, 16, 1);
+      for (const placed of [false, true]) checkFixture(RemusKernel, api, scale, placed, 16, 1);
     }
-    for (const segments of [8, 32]) checkFixture(BrepKernel, api, 1, false, segments, 1);
-    checkFixture(BrepKernel, api, 1, false, 16, 1.25);
-    for (const reverse of [false, true]) checkFixture(BrepKernel, api, 1, false, 16, 1, true, reverse);
-    checkLatitudeCut(BrepKernel, api);
+    for (const segments of [8, 32]) checkFixture(RemusKernel, api, 1, false, segments, 1);
+    checkFixture(RemusKernel, api, 1, false, 16, 1.25);
+    for (const reverse of [false, true]) checkFixture(RemusKernel, api, 1, false, 16, 1, true, reverse);
+    checkLatitudeCut(RemusKernel, api);
   }
 }

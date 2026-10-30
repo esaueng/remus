@@ -1713,6 +1713,23 @@ fn newton_refine_torus(
 /// adjacent faces, which is what makes the notch watertight.
 #[must_use]
 pub fn intersect_line_torus(torus: &ToroidalSurface, origin: Point3, dir: Vec3) -> Vec<f64> {
+    intersect_line_torus_counted(torus, origin, dir)
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect()
+}
+
+/// [`intersect_line_torus`] with each root's multiplicity: how many of the
+/// quartic solver's real candidates it absorbed (see
+/// [`real_roots_quartic`]). A tangent line's double root often comes
+/// back as two candidates merged into one root, so an even count marks a
+/// contact without a parity change. The roots are bit-identical to
+/// [`intersect_line_torus`]'s, in the same order.
+pub(crate) fn intersect_line_torus_counted(
+    torus: &ToroidalSurface,
+    origin: Point3,
+    dir: Vec3,
+) -> Vec<(f64, usize)> {
     let c = torus.center();
     let (xa, ya, za) = (torus.x_axis(), torus.y_axis(), torus.z_axis());
     let big_r = torus.major_radius();
@@ -1753,7 +1770,7 @@ pub fn intersect_line_torus(torus: &ToroidalSurface, origin: Point3, dir: Vec3) 
         let (a, b, cc) = (xa.dot(q), ya.dot(q), za.dot(q));
         (a.hypot(b) - big_r).hypot(cc) - small_r
     };
-    for t in &mut roots {
+    for (t, _) in &mut roots {
         let eps = 1e-7;
         let f = impl_f(*t);
         let df = (impl_f(*t + eps) - impl_f(*t - eps)) / (2.0 * eps);
@@ -1761,7 +1778,7 @@ pub fn intersect_line_torus(torus: &ToroidalSurface, origin: Point3, dir: Vec3) 
             *t -= f / df;
         }
     }
-    roots.compact_sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    roots.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     roots
 }
 
@@ -1821,10 +1838,17 @@ const fn durand_kerner_budget_end(first: usize, updates: usize) -> usize {
 /// the sweep budget would end on are the cycle member at the same phase. The
 /// loop jumps there, and the root filter sees exactly the iterates running out
 /// the budget would have left.
-fn real_roots_quartic(c4: f64, c3: f64, c2: f64, c1: f64, c0: f64) -> Vec<f64> {
+///
+/// Each root comes with its multiplicity: the number of accepted real
+/// candidates the near-equal de-dup merged into it. The lower-degree
+/// fallbacks report every root once.
+fn real_roots_quartic(c4: f64, c3: f64, c2: f64, c1: f64, c0: f64) -> Vec<(f64, usize)> {
     // Degenerate leading coefficient → lower degree.
     if c4.abs() < 1e-14 {
-        return real_roots_cubic(c3, c2, c1, c0);
+        return real_roots_cubic(c3, c2, c1, c0)
+            .into_iter()
+            .map(|x| (x, 1))
+            .collect();
     }
     // Monic: x⁴ + a x³ + b x² + c x + d.
     let (a, b, c, d) = (c3 / c4, c2 / c4, c1 / c4, c0 / c4);
@@ -1904,7 +1928,7 @@ fn real_roots_quartic(c4: f64, c3: f64, c2: f64, c1: f64, c0: f64) -> Vec<f64> {
     // keep only |p(x)| below a magnitude-scaled tolerance; de-dup near-equal
     // roots (a double root converges to two near-identical iterates).
     let p_real = |x: f64| -> f64 { (((x + a) * x + b) * x + c) * x + d };
-    let mut out: Vec<f64> = Vec::new();
+    let mut out: Vec<(f64, usize)> = Vec::new();
     for z in r {
         if z.im.abs() >= 1e-7 {
             continue;
@@ -1916,10 +1940,14 @@ fn real_roots_quartic(c4: f64, c3: f64, c2: f64, c1: f64, c0: f64) -> Vec<f64> {
         if p_real(x).abs() > 1e-6 * scale {
             continue;
         }
-        if out.iter().any(|&y| (y - x).abs() < 1e-9 * (1.0 + x.abs())) {
+        if let Some(merged) = out
+            .iter_mut()
+            .find(|(y, _)| (*y - x).abs() < 1e-9 * (1.0 + x.abs()))
+        {
+            merged.1 += 1;
             continue;
         }
-        out.push(x);
+        out.push((x, 1));
     }
     out
 }

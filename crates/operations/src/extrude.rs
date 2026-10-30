@@ -51,6 +51,18 @@ pub(crate) struct ExtrudedWire {
     original_verts: Vec<VertexId>,
 }
 
+impl ExtrudedWire {
+    /// The pre-split profile edge each post-split position came from.
+    pub(crate) fn source_edges(&self) -> &[EdgeId] {
+        &self.source_edges
+    }
+
+    /// The top edge at each post-split position.
+    pub(crate) fn top_edge_ids(&self) -> &[EdgeId] {
+        &self.top_edge_ids
+    }
+}
+
 /// Split closed single-edge wires (e.g. a full circle represented as one
 /// NURBS edge with start==end) into multiple edges so that downstream
 /// extrusion logic can create proper side faces.
@@ -1113,7 +1125,7 @@ pub(crate) struct ExtrudedHole {
 }
 
 #[allow(clippy::too_many_lines)]
-fn extrude_impl(
+pub(crate) fn extrude_impl(
     topo: &mut Topology,
     face: FaceId,
     direction: Vec3,
@@ -1807,6 +1819,9 @@ fn reverse_edge_curve(curve: &EdgeCurve) -> Result<EdgeCurve, crate::OperationsE
         }
     })
 }
+
+pub(crate) mod taper;
+pub(crate) mod twist;
 
 #[cfg(test)]
 mod tests;

@@ -5,11 +5,19 @@ avoid-breaking-exported-api = false
 cognitive-complexity-threshold = 25
 
 # Each `sort_by` / `sort_by_key` call compiles its own copy of the standard
-# stable sort (2-5 KB each in the WASM kernel). Use
-# `remus_math::compact_sort::CompactSort` (same order, ties included). A sort
-# that is a measurable share of a workload keeps `sort_by` behind
-# `#[allow(clippy::disallowed_methods)]` with a `// hot: <evidence>` line.
+# stable sort (2-5 KB each in the WASM kernel), and each `sort_unstable*` call
+# (per comparator, or per element type for `sort_unstable`) its own unstable
+# sort. Use `remus_math::compact_sort::CompactSort`: the stable sorts keep the
+# same order, ties included; the unstable ones match only where no two
+# distinguishable elements compare equal (identical ties or unique keys). A
+# sort that is a measurable share of a workload keeps the std sort behind
+# `#[allow(clippy::disallowed_methods)]` with a `// hot: <evidence>` line, and
+# an unstable sort whose tie order reaches its result keeps it with a
+# `// ties: <reason>` line.
 disallowed-methods = [
   {path = "slice::sort_by", reason = "compiles a stable sort per call site; use remus_math::compact_sort::CompactSort::compact_sort_by unless measured hot"},
   {path = "slice::sort_by_key", reason = "compiles a stable sort per call site; use remus_math::compact_sort::CompactSort::compact_sort_by_key unless measured hot"},
+  {path = "slice::sort_unstable", reason = "compiles an unstable sort per element type; use remus_math::compact_sort::CompactSort::compact_sort_unstable unless measured hot"},
+  {path = "slice::sort_unstable_by", reason = "compiles an unstable sort per call site; use remus_math::compact_sort::CompactSort::compact_sort_unstable_by unless measured hot or its tie order matters"},
+  {path = "slice::sort_unstable_by_key", reason = "compiles an unstable sort per call site; use remus_math::compact_sort::CompactSort::compact_sort_unstable_by_key unless measured hot or its tie order matters"},
 ]

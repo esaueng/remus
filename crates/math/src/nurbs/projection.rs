@@ -38,6 +38,14 @@ const SEEDED_MAX_ITERATIONS: usize = 12;
 /// Number of grid subdivisions per direction for surface coarse search.
 const SURFACE_GRID_SIZE: usize = 8;
 
+/// Seed intervals per knot span on each axis of
+/// [`SurfaceSeedGrid::for_surface_spans`].
+const SPAN_SEED_SAMPLES: usize = 4;
+
+/// Most nodes on one axis of [`SurfaceSeedGrid::for_surface_spans`], so a
+/// surface of very many spans costs at most `MAX_SPAN_SEED_AXIS²` evaluations.
+const MAX_SPAN_SEED_AXIS: usize = 257;
+
 // ---------------------------------------------------------------------------
 // Public result types
 // ---------------------------------------------------------------------------
@@ -381,6 +389,34 @@ impl SurfaceSeedGrid {
         surface.seed_grid().clone()
     }
 
+    /// A seed grid with nodes in every knot span of `surface`.
+    ///
+    /// The coarse grid has nine nodes per axis whatever the knot vector, so
+    /// on an axis of many spans a node can lie a span or more from the
+    /// answer, and Newton from there settles on another stationary point of
+    /// the distance: a cubic flank of 28 spans read an edge lying on it as
+    /// 6.7e-3 off. Each axis here takes every distinct knot and four
+    /// intervals per span, never fewer nodes than the coarse grid, and at
+    /// most 257 nodes (uniform past that).
+    /// It costs one evaluation per node, so build it once per surface and
+    /// only where the coarse seed has been seen to miss.
+    #[must_use]
+    pub fn for_surface_spans(surface: &NurbsSurface) -> Self {
+        let (u_min, u_max, v_min, v_max) = surface_domain(surface);
+        let us = span_seed_axis(surface.knots_u(), (u_min, u_max));
+        let vs = span_seed_axis(surface.knots_v(), (v_min, v_max));
+        let mut nodes = Vec::with_capacity(us.len() * vs.len());
+        for &u in &us {
+            for &v in &vs {
+                nodes.push((u, v, surface.evaluate(u, v)));
+            }
+        }
+        Self {
+            nodes,
+            origin: (u_min, v_min),
+        }
+    }
+
     /// Evaluate the coarse grid for `surface`.
     pub(crate) fn build(surface: &NurbsSurface) -> Self {
         let (u_min, u_max, v_min, v_max) = surface_domain(surface);
@@ -576,6 +612,35 @@ fn surface_domain(surface: &NurbsSurface) -> (f64, f64, f64, f64) {
     )
 }
 
+/// The node parameters of one axis of [`SurfaceSeedGrid::for_surface_spans`]:
+/// every distinct knot inside `domain`, its ends, and evenly spaced nodes
+/// within each span; uniform when that would exceed [`MAX_SPAN_SEED_AXIS`].
+#[allow(clippy::cast_precision_loss)]
+fn span_seed_axis(knots: &[f64], domain: (f64, f64)) -> Vec<f64> {
+    let (lo, hi) = domain;
+    let mut breaks = vec![lo];
+    breaks.extend(knots.iter().copied().filter(|&k| k > lo && k < hi));
+    breaks.push(hi);
+    breaks.dedup();
+    let spans = breaks.len() - 1;
+    // Never coarser than the grid the plain search already scans.
+    let per_span = SPAN_SEED_SAMPLES.max(SURFACE_GRID_SIZE.div_ceil(spans.max(1)));
+    if spans * per_span + 1 > MAX_SPAN_SEED_AXIS {
+        let n = MAX_SPAN_SEED_AXIS - 1;
+        return (0..=n)
+            .map(|i| (i as f64 / n as f64).fma(hi - lo, lo))
+            .collect();
+    }
+    let mut nodes = Vec::with_capacity(spans * per_span + 1);
+    for pair in breaks.windows(2) {
+        for j in 0..per_span {
+            nodes.push((j as f64 / per_span as f64).fma(pair[1] - pair[0], pair[0]));
+        }
+    }
+    nodes.push(hi);
+    nodes
+}
+
 /// Coarse search: evaluate surface on a uniform grid and find the closest
 /// grid point.
 #[allow(clippy::cast_precision_loss)]
@@ -725,6 +790,32 @@ fn surface_newton_refine(
         // step — never a spurious convergence, so the check stays sound.
         let step = (deriv_u * (u_new - u) + deriv_v * (v_new - v)).length();
         if step < tolerance {
+            // A vanishing partial leaves Gauss–Newton blind along that
+            // parameter: with S_v = 0 the v-row of the system is zero, so
+            // the step is negligible without the point being a foot. A curve
+            // that starts with zero speed does this — an involute leaving
+            // its base circle, carried into a fitted gear flank, projected
+            // points near the flank's root onto the root corner 7e-3 away.
+            // Step on the second derivative instead: |S − P|² ≈ |r|² +
+            // (S_vv·r)·dv² + ¼|S_vv|²·dv⁴ near such a point, which descends
+            // wherever S_vv·r < 0 and is least at dv² = −2·S_vv·r / |S_vv|².
+            if let Some((u_next, v_next, pt_next)) = second_order_step(
+                surface,
+                point,
+                (u, v),
+                (du_len, dv_len),
+                dist,
+                (u_min, u_max, v_min, v_max),
+                (closed_u, closed_v),
+                &advance,
+            ) {
+                u = u_next;
+                v = v_next;
+                if (pt_next - point).length() < tolerance {
+                    return Ok((u, v, pt_next));
+                }
+                continue;
+            }
             let pt = surface.evaluate(u_new, v_new);
             return Ok((u_new, v_new, pt));
         }
@@ -736,6 +827,68 @@ fn surface_newton_refine(
     Err(MathError::ConvergenceFailure {
         iterations: max_iterations,
     })
+}
+
+/// Largest `|S_t| / |S_s|` at which the partial along `t` counts as
+/// vanished: far below any regular parameterization's speed ratio. The
+/// second-order step is tried only where Newton's own step was negligible,
+/// so it replaces a stalled answer and nothing else.
+const VANISHED_PARTIAL: f64 = 1e-9;
+
+/// The second-order step of [`surface_newton_refine`] along a parameter
+/// whose partial has vanished, or `None` when neither partial has, when the
+/// second derivative does not descend, or when neither side of the step
+/// brings the surface within half of `dist`. Returns the new `(u, v)` and the
+/// surface point there.
+#[allow(clippy::too_many_arguments)]
+fn second_order_step(
+    surface: &NurbsSurface,
+    point: Point3,
+    (u, v): (f64, f64),
+    (du_len, dv_len): (f64, f64),
+    dist: f64,
+    (u_min, u_max, v_min, v_max): (f64, f64, f64, f64),
+    (closed_u, closed_v): (bool, bool),
+    advance: &impl Fn(f64, f64, f64, f64, bool) -> f64,
+) -> Option<(f64, f64, Point3)> {
+    let along_v = dv_len <= VANISHED_PARTIAL * du_len;
+    let along_u = du_len <= VANISHED_PARTIAL * dv_len;
+    if along_u == along_v {
+        // Neither has vanished, or both (a collapsed point): Newton's own
+        // regularised step handles those.
+        return None;
+    }
+    let ders = surface.derivatives(u, v, 2);
+    let position = ders[0][0];
+    let r = Point3::new(position.x(), position.y(), position.z()) - point;
+    let second = if along_v { ders[0][2] } else { ders[2][0] };
+    let curvature = second.dot(r);
+    let second_sq = second.dot(second);
+    if !(curvature < 0.0 && second_sq > 0.0) {
+        return None;
+    }
+    let step = (-2.0 * curvature / second_sq).sqrt();
+    let candidate = |sign: f64| {
+        let (u_new, v_new) = if along_v {
+            (u, advance(v, sign * step, v_min, v_max, closed_v))
+        } else {
+            (advance(u, sign * step, u_min, u_max, closed_u), v)
+        };
+        let pt = surface.evaluate(u_new, v_new);
+        (u_new, v_new, pt, (pt - point).length())
+    };
+    let (forward, backward) = (candidate(1.0), candidate(-1.0));
+    let best = if forward.3 <= backward.3 {
+        forward
+    } else {
+        backward
+    };
+    // A stall leaves the point far from its foot, so the step must at least
+    // halve the distance. A point already within a hair of the surface at a
+    // vanished partial (an imported patch's flat row) gains next to nothing
+    // from a long parameter jump along a nearly flat direction, and keeps
+    // Newton's answer.
+    (best.3 <= 0.5 * dist).then_some((best.0, best.1, best.2))
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,6 +1231,81 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A degree-1 × cubic ruled strip of 28 v spans whose cross-section is
+    /// a hairpin: out along x, then back 1.0 above itself at another pace.
+    /// A point on one leg lies 1.0 from the other but up to a coarse node
+    /// spacing (several units) from any node on its own leg, so the
+    /// nine-node grid seeds it on the wrong leg, where Newton settles on the
+    /// foot across the gap.
+    fn hairpin_strip() -> NurbsSurface {
+        let n: u32 = 31;
+        let mut knots_v = vec![0.0; 4];
+        knots_v.extend((1..n - 3).map(|i| f64::from(i) / f64::from(n - 3)));
+        knots_v.extend([1.0; 4]);
+        let row = |y: f64| -> Vec<Point3> {
+            (0..n)
+                .map(|j| {
+                    if j < 16 {
+                        Point3::new(2.0 * f64::from(j), y, 0.0)
+                    } else {
+                        Point3::new(30.0 - 1.3 * f64::from(j - 15), y, 1.0)
+                    }
+                })
+                .collect()
+        };
+        NurbsSurface::new(
+            1,
+            3,
+            vec![0.0, 0.0, 1.0, 1.0],
+            knots_v,
+            vec![row(0.0), row(5.0)],
+            vec![vec![1.0; 31]; 2],
+        )
+        .expect("valid hairpin strip")
+    }
+
+    #[test]
+    fn a_span_grid_finds_points_the_coarse_grid_seeds_away_from() {
+        let s = hairpin_strip();
+        let coarse = SurfaceSeedGrid::for_surface(&s);
+        let spans = SurfaceSeedGrid::for_surface_spans(&s);
+        let mut coarse_misses = 0;
+        for k in 0..=280 {
+            let v = f64::from(k) / 280.0;
+            let p = s.evaluate(0.37, v);
+            let seeded = project_point_to_surface_with_grid(&s, p, 1e-9, &coarse);
+            if seeded.map_or(true, |projection| projection.distance > 1e-6) {
+                coarse_misses += 1;
+            }
+            let found = project_point_to_surface_with_grid(&s, p, 1e-9, &spans)
+                .expect("the span grid seeds inside the answer's span");
+            assert!(found.distance < 1e-9, "v = {v}: {}", found.distance);
+        }
+        // The regression the span grid exists for: points lying on the
+        // surface that the coarse seed reads as off it.
+        assert!(coarse_misses > 0);
+    }
+
+    #[test]
+    fn span_grid_axes_hold_every_knot_and_cap_their_size() {
+        let s = hairpin_strip();
+        let v_nodes = span_seed_axis(s.knots_v(), (0.0, 1.0));
+        assert_eq!(v_nodes.len(), 28 * SPAN_SEED_SAMPLES + 1);
+        for &k in s.knots_v() {
+            assert!(v_nodes.iter().any(|&x| (x - k).abs() < 1e-15), "knot {k}");
+        }
+        // One span still gets at least the coarse grid's nine nodes.
+        assert_eq!(
+            span_seed_axis(s.knots_u(), (0.0, 1.0)).len(),
+            SURFACE_GRID_SIZE + 1
+        );
+        // A thousand spans fall back to the uniform cap.
+        let many: Vec<f64> = (0..=1000).map(|i| f64::from(i) / 1000.0).collect();
+        let capped = span_seed_axis(&many, (0.0, 1.0));
+        assert_eq!(capped.len(), MAX_SPAN_SEED_AXIS);
+        assert_eq!((capped[0], capped[MAX_SPAN_SEED_AXIS - 1]), (0.0, 1.0));
     }
 
     #[test]
@@ -1532,6 +1760,69 @@ mod tests {
             "nearest point z should be ≈ 0.05, got z={:.4}",
             res.point.z()
         );
+    }
+
+    /// A ruled patch whose v-direction cubic repeats its first control point,
+    /// so `S_v = 0` along the `v = 0` edge: the involute flank of a gear,
+    /// which leaves its base circle with zero speed.
+    fn zero_speed_patch() -> NurbsSurface {
+        let row = |z: f64| {
+            vec![
+                Point3::new(0.0, 0.0, z),
+                Point3::new(0.0, 0.0, z),
+                Point3::new(1.0, 2.0, z),
+                Point3::new(3.0, 3.0, z),
+            ]
+        };
+        NurbsSurface::new(
+            1,
+            3,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![row(0.0), row(10.0)],
+            vec![vec![1.0; 4]; 2],
+        )
+        .expect("valid zero-speed patch")
+    }
+
+    /// Points on the surface just past the zero-speed edge project onto
+    /// themselves. Gauss-Newton alone has no v-step there and returned the
+    /// edge's corner, 2.6e-2 away for `v = 1/16`.
+    #[test]
+    fn project_past_a_zero_speed_edge() {
+        let s = zero_speed_patch();
+        let grid = SurfaceSeedGrid::for_surface(&s);
+        for (u, v) in [
+            (0.0, 1.0 / 16.0),
+            (0.0, 1.0 / 32.0),
+            (1.0, 1.0 / 16.0),
+            (0.5, 0.1),
+        ] {
+            let on = s.evaluate(u, v);
+            for res in [
+                project_point_to_surface(&s, on, 1e-9).expect("coarse projection"),
+                project_point_to_surface_with_grid(&s, on, 1e-9, &grid).expect("seeded"),
+            ] {
+                assert!(
+                    res.distance < 1e-9,
+                    "S({u}, {v}) projected {:.3e} away to ({}, {})",
+                    res.distance,
+                    res.u,
+                    res.v
+                );
+            }
+        }
+    }
+
+    /// The step only moves when the second derivative descends: a point
+    /// beyond the zero-speed corner still projects onto the corner.
+    #[test]
+    fn zero_speed_corner_stays_the_foot_for_points_behind_it() {
+        let s = zero_speed_patch();
+        let behind = Point3::new(-1.0, -2.0, 4.0);
+        let res = project_point_to_surface(&s, behind, 1e-9).expect("projection");
+        assert!(res.v.abs() < 1e-12, "v = {}", res.v);
+        assert!((res.point - Point3::new(0.0, 0.0, 4.0)).length() < 1e-9);
     }
 }
 

@@ -8,7 +8,7 @@ use crate::error::{
     WasmError, validate_all_finite, validate_finite, validate_positive, validate_work_product,
 };
 use crate::helpers::{parse_polygon_2d, parse_polygon_2d_checked, polygons_overlap_2d};
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::types::PolygonBoolean2dResult;
 use remus_math::polygon_boolean::{BooleanOp as PolyBooleanOp, polygon_boolean};
 use remus_math::polygon2d::{
@@ -118,7 +118,7 @@ pub fn polygon_boolean_2d_impl(
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     // ── Batch 6: Polygon offset ──────────────────────────────────────
 
     /// Offset a 2D polygon by a signed distance.
@@ -361,7 +361,7 @@ mod polygon_boolean_tests {
     /// Run one batch op and return the `ok` payload, panicking with the
     /// kernel's own message if the op errored.
     fn run_ok(op: &str, args: serde_json::Value) -> serde_json::Value {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let json = serde_json::json!([{"op": op, "args": args}]).to_string();
         let raw = k.execute_batch(&json);
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap();
@@ -374,7 +374,7 @@ mod polygon_boolean_tests {
 
     /// Run one batch op and return the `error` message.
     fn run_err(op: &str, args: serde_json::Value) -> String {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let json = serde_json::json!([{"op": op, "args": args}]).to_string();
         let raw = k.execute_batch(&json);
         let parsed: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap();
@@ -728,7 +728,7 @@ mod polygon_boolean_tests {
     /// inside-out loop; the collapsed offset is now an empty array.
     #[test]
     fn offset_polygon_2d_returns_empty_when_the_inset_collapses() {
-        let k = BrepKernel::new();
+        let k = RemusKernel::new();
         let rect = vec![0.0, 0.0, 4.0, 0.0, 4.0, 2.0, 0.0, 2.0];
         for d in [-1.5, -2.5] {
             let inset = k.offset_polygon_2d(rect.clone(), d, 1e-10).unwrap();
@@ -741,7 +741,7 @@ mod polygon_boolean_tests {
     /// MATH-7b: a clockwise clip polygon used to clip everything away.
     #[test]
     fn intersect_polygons_2d_accepts_a_clockwise_clip() {
-        let k = BrepKernel::new();
+        let k = RemusKernel::new();
         let clip_cw = vec![1.0, 1.0, 1.0, 3.0, 3.0, 3.0, 3.0, 1.0];
         let overlap = k.intersect_polygons_2d(sq(0.0, 0.0, 2.0), clip_cw).unwrap();
         assert!((signed_area(&overlap) - 1.0).abs() < 1e-12, "{overlap:?}");
@@ -776,7 +776,7 @@ mod polygon_boolean_tests {
 
     #[test]
     fn a_failed_polygon_op_does_not_stop_the_rest_of_the_batch() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let json = serde_json::json!([
             {"op": "polygonBoolean2d", "args": {
                 "coordsA": sq(0.0, 0.0, 1.0), "coordsB": sq(0.0, 0.0, 1.0), "operation": "xor"}},

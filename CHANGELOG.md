@@ -8,6 +8,60 @@ historical predecessor-line records, retained for provenance. The
 
 ### Added
 
+* **operations,wasm:** `make_gear` / `makeGearDetailed` build involute external
+  spur gears, internal (ring) gears and straight racks as one extruded outline.
+  Involute flanks are certified cubic B-splines: results report
+  `quality: "approximate"` with a proven `flankDeviationBound` (racks are
+  exact). Dimensions, guideline warnings and typed `gear:<reason>` refusals
+  are returned as data.
+* **operations,wasm:** `cut_gear_teeth` / `cutGearTeethDetailed` cut gear
+  teeth along the whole length of a solid's boss (external) or bore
+  (internal), keeping its diameter or using a given module; the input solid is
+  kept. A feature crossing the tooth band, or a span over part of the face,
+  refuses with a typed `gear:<reason>` code. Gear results now name every gear
+  face (`faceRoles`, e.g. `tooth[3].flank.plus`) and report the `module`.
+* **operations,wasm:** helical gears. `GearParams::helix_angle` and `hand`
+  (`helixAngle` in degrees, `hand: "right" | "left"`) make external and
+  internal helical gears, standalone or cut into a boss or bore (ISO 21771:
+  normal module, pressure angle and coefficients). The transverse profile
+  turns along the axis; lands concentric with the axis stay exact cylinders
+  while they sweep less than a full turn (longer ones are swept, since a
+  cylinder face cannot cover itself twice), and flanks and fillets are
+  certified swept surfaces whose
+  `flankDeviationBound` covers the exact involute helicoid. Results report
+  `transverseModule`, `helixAngle`, `lead` and `spansAlongAxis`. Helical
+  racks refuse for now.
+* **operations,wasm:** herringbone gears. `GearParams::herringbone`
+  (`herringbone: true`) reverses a helical gear's hand at the middle of the
+  face width, standalone or cut into a boss or bore. The two twisted halves
+  share their mid-plane edges and form one solid without a boolean. Each
+  half's swept faces carry `.start-half` or `.end-half` on their role.
+  `GearOutcome::face_roles` now pairs each face with a `GearFace` (its
+  `GearFaceRole` and the half) instead of a bare `GearFaceRole`.
+* **operations,wasm:** straight bevel gears. `make_bevel_gear` /
+  `makeBevelGearDetailed` build a gear on a pitch cone set by its tooth
+  count, its mate's and the shaft angle (default 90°), with teeth tapering to
+  the cone apex and a flat heel and toe. Flanks are certified fits of the
+  spherical involute (`quality: "approximate"`, with a proven
+  `flankDeviationBound`); tip and root lands are exact cones. Results report
+  the cone angles and distances; refusals carry them when the parameters
+  admit them. The new tapered extrusion (`extrude::taper`) sweeps a planar
+  profile toward an apex.
+* **operations,wasm:** worm gears. `make_worm` / `makeWormDetailed` build a
+  cylindrical involute (ZI) worm from its axial module, starts and diameter
+  factor (lead angle up to 45°): its thread flanks are certified fits of the
+  involute helicoid (`flankDeviationBound`). `worm_wheel` /
+  `makeWormWheelDetailed` give the helical wheel that meshes with it at 90°
+  (the worm's hand, helix angle equal to the lead angle) and its
+  `centerDistance`. The pair is a crossed helical drive with point contact,
+  not a hobbed throated wheel.
+* **math:** `nurbs::screw` fits helices and screw-motion swept surfaces as
+  NURBS with a proven bound; fits sharing one plan share their knots, so
+  neighbouring faces and edges match exactly.
+* **math:** `nurbs::hermite_fit::fit_cubic_hermite` fits a parametric curve
+  with uniform cubic Hermite spans and a proven remainder bound from a
+  caller-supplied fourth-derivative bound.
+
 * **wasm:** `getFaceDraftAngle` exposes signed carrier-local draft angles and
   outward normals; `getPlanarSolidDraft` reports constant angles for every
   planar outer/cavity face. Direct and legacy/V2 batch routes preserve the
@@ -19,6 +73,22 @@ historical predecessor-line records, retained for provenance. The
 * Adopt the `YYYY.RELEASE.PATCH` Remus scheme, beginning at `2026.1.0`.
 
 ### ⚠ BREAKING CHANGES
+
+* **wasm:** batch `getFaceNormal` (`executeBatch` / `executeBatchV2`) now
+  returns a planar face's outward normal, flipped by the face's `reversed`
+  flag, the same vector as the direct `getFaceNormal`. It used to return the
+  stored plane normal, which points into the material on reversed faces such
+  as the walls a `cut` leaves (a 2×2×2 box cut by a 1×1×4 box reported `[1,0,0]`
+  and `[0,1,0]` for its inner walls instead of `[-1,0,0]` and `[0,-1,0]`).
+  Faces that are not reversed, including every primitive face, are unchanged.
+  Curved faces still report the stored surface normal at `(u, v) = (0, 0)`
+  in a batch, where the direct method refuses.
+
+* **wasm:** the kernel class is renamed from `BrepKernel`, the predecessor
+  line's name, to `RemusKernel`. JavaScript consumers keep a deprecated
+  `BrepKernel` alias of the same class in `remus-wasm` (ESM, CommonJS and
+  TypeScript) for a transition period; switch to `RemusKernel`, since a later
+  release removes the alias. Native Rust callers of `remus-wasm` get no alias.
 
 * **math (Rust callers):** `approximate_lspia` and
   `approximate_surface_lspia` now return `LspiaFit` and `LspiaSurfaceFit`.
@@ -35,10 +105,10 @@ historical predecessor-line records, retained for provenance. The
   estimates rather than global certificates.
   Nested bodies measure boundary separation, as point-to-solid queries do.
 
-* **wasm (native Rust callers):** `BrepKernel::checkpoint`, `gcs_new`,
+* **wasm (native Rust callers):** `RemusKernel::checkpoint`, `gcs_new`,
   `sketch_new`, and `assembly_new` now return `Result<u32, JsError>` so handle
   exhaustion fails before allocating. JavaScript keeps the number-or-throw
-  contract. `BrepKernel::new` retains its existing signature. Checkpoint IDs
+  contract. `RemusKernel::new` retains its existing signature. Checkpoint IDs
   are opaque: retain the returned ID; `checkpointCount` counts live checkpoints
   and is not an allocation cursor.
 
@@ -123,6 +193,67 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **algo,operations:** `resize_cylindrical_face` no longer refuses small radius
+  changes. The resize sleeve leaves a thin annulus on each cap, and two
+  boolean-builder tests read it against the chords of its circles: same-domain
+  detection missed the hole around it and paired it with the coplanar face
+  outside, and the split-cap interior search stepped past it into the hole.
+  Both now decide line and circle boundaries on the curves. A bored cylinder
+  of r 12.25 refused ±0.05 and one of r 24.5 refused ±0.1; every step now
+  resizes to one analytic wall.
+* **operations:** a bore whose rims are rounded onto perpendicular planar caps
+  now carries its rounds to the new radius (remove the rounds, resize the sharp
+  wall, roll the same radius back on) instead of leaving them at the old one.
+  The sleeve cut met the round at its tangent boundary and refused: an r 6 bore
+  with a 1 mm rim round refused every growth. Bosses keep the sleeve path.
+* **operations:** growing a cylindrical boss now adds only the sleeve between
+  the old and new radii. It fused a solid cylinder of the new radius, which
+  also filled any bore inside the boss, so growing the outer wall of a turned
+  part around a bore refused.
+* **algo:** a plane holding one of a torus face's rim circles (a cylinder cap
+  level with a fillet band's tangent rim) now takes that rim's exact boundary
+  arcs as its section. The sampled plane × torus trace of the rim sat on the
+  face boundary, where face restriction kept arbitrary pieces of it and
+  slit the fillet face open.
+* **algo:** the ray-cast point classifier tests planar faces against their
+  circular edges exactly. It used inscribed polygons (17 points per full
+  circle, four chords per arc), whose chords fall short of the rim by up to
+  1.7% of a full circle's radius and more on a split rim, so points just
+  inside a circular boundary could classify Outside.
+
+* **algo:** the point classifier now reads a torus fillet band as its exact
+  torus when a rim of the band is split into arcs, as STEP writers emit a
+  full-revolution fillet whose rim meets a neighbouring face's seam. It used
+  to fall back to a flat boundary polygon that horizontal rays never crossed,
+  so points level with such a fillet classified Outside. A boolean then
+  dropped the faces sampled there: resizing the bore or wall of an imported
+  revolved part refused with `exact_only_unattainable`.
+
+* **algo:** the ray-cast point classifier no longer double-counts crossings
+  near the rims of a partial cylinder face whose trim is not a rectangle in
+  its `(u, v)` chart (a helical gear's tip and root lands, bounded by
+  helices): it tests the hit against the face's trim polygon instead of the
+  rectangle spanning every angle the face reaches. Rectangular patches keep
+  their model. A cut against a helical gear's bore discarded a coplanar cap
+  and left an open shell.
+
+* **algo:** exact booleans against coaxial tubes, the steps of cutting gear
+  teeth into an existing cylinder. A turned groove whose tube caps lie inside
+  the cylinder and whose outer wall stands outside it no longer refuses
+  (the cap annulus outside the cylinder sampled its interior inside its own
+  hole). A tube wall coincident with an existing cylinder no longer depends
+  on the two seams lining up: a mismatched seam refused, or, for a cut whose
+  caps lie inside the cylinder, returned the uncut body. A planar face whose
+  inner wire is not a circle (an internal gear's tooth outline) now splits
+  along nested coaxial section circles.
+* **math:** point-to-surface projection no longer stalls where a partial
+  derivative vanishes, as along a fitted involute flank leaving its base
+  circle. `solid_volume` of a gear on its shaft read its clamp mesh, 1.6e-4
+  low, at coarse deflections; it now takes the exact face integrals at every
+  deflection.
+* **operations:** `face_area` of a planar face bounded by polynomial NURBS
+  edges (cubic flank traces, for example) integrates them exactly instead of
+  sampling the whole boundary; a bored gear cap read 2.6e-5 high.
 * **operations:** a fillet whose tangent chain runs over the end arc of an
   earlier convex fillet band of the same radius now rounds that stretch as an
   exact sphere triangle, bounded by three great circles, instead of a lofted

@@ -59,7 +59,7 @@ For profiling a bench, see CLAUDE.md, Profiling, and the profiling skill. For cr
 `crates/wasm/src/bindings/gridfinity_tests.rs` is the template (`mod gridfinity_tests` under `#[cfg(test)]` in `bindings/mod.rs`). Pattern:
 
 ```rust
-let mut k = BrepKernel::new();
+let mut k = RemusKernel::new();
 let result = k.execute_batch(
     r#"[{"op": "makeBox", "args": {"width": 10.0, "height": 5.0, "depth": 10.0}},
         {"op": "volume", "args": {"solid": 0}}]"#,

@@ -47,10 +47,10 @@ That writes `crates/wasm/pkg`, which you can consume with `npm install
 ./crates/wasm/pkg` or a workspace link.
 
 ```typescript
-import init, { BrepKernel } from 'remus-wasm';
+import init, { RemusKernel } from 'remus-wasm';
 
 await init();
-const kernel = new BrepKernel();
+const kernel = new RemusKernel();
 const solid = kernel.makeBox(10, 20, 30);
 ```
 

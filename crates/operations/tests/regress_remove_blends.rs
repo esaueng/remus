@@ -4,7 +4,12 @@
 //! never by arena index. Successful cases compare against a sharp construction
 //! oracle, verify construction history, and exercise the public operation.
 
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::disallowed_methods
+)]
 
 use std::collections::{BTreeMap, BTreeSet};
 
