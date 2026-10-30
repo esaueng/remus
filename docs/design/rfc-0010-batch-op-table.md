@@ -122,12 +122,13 @@ Not drift: `offsetSolid` and `offsetSolidV2` are the same operation under
 two names on both surfaces; `validateSolid`'s batch-only "error count exceeds
 u32" is unreachable.
 
-D1 needs an owner decision before any fix: `qualify_ops_tests.rs`
-(`wall_by_normal`) and `project_curve.rs` (`box_top_face`) depend on the
-batch's stored-normal behaviour, and the batch arm's comment presents it as
-intended ("Enough to pick a wall by direction from a batch script"). On a
-boolean result, though, a script picking walls by batch normal picks the
-wrong side. Changing either surface breaks someone.
+D1 is decided (owner, 2026-10-30): the outward normal is correct, so
+`getFaceNormal` returns `effective_plane_normal` on both surfaces. The batch
+fix is esaueng/remus#1371, a breaking JS-visible change for reversed planar
+faces only; faces that are not reversed, every primitive face included, keep
+their normal, so `qualify_ops_tests.rs` (`wall_by_normal`, updated in that PR)
+and `project_curve.rs` (`box_top_face`, a primitive face) still pick the same
+faces. D1b (curved faces) stays open.
 
 ## 2. Proposal: a `macro_rules!` op table
 
@@ -522,7 +523,7 @@ suite, the O4.7 gate, and `node scripts/test-wasm-smoke.mjs` on a fresh
 | 8 | Typed twins (`*Detailed`): metadata only, bodies already shared | 13 | `qualify_ops_tests.rs` envelope parity |
 | 9 | Sub-dispatchers: naming, evolution, GCS, linked sketch, curve projection, NURBS reuse; delete the six `dispatch_*_op` fallthroughs | 64 | B75 GCS parity tests; projection and imprint wrapper tests |
 | 10 | `io`-gated ops; delete `dispatch_op` and `batch_op_kind`; the legacy copy stays in the oracle | 4 | `--features io` and default builds both |
-| 11 | Drift fixes, **one PR per drift id**, each a deliberate JS-visible change: an oracle exemption naming the op and the corpus cases it changes, a regression test, owner sign-off, release note. D1 first needs an owner decision on which surface is right | — | after the release that ships it, the legacy copy is pruned from the oracle row by row |
+| 11 | Drift fixes, **one PR per drift id**, each a deliberate JS-visible change: an oracle exemption naming the op and the corpus cases it changes, a regression test, owner sign-off, release note. D1 is decided (outward normal) and fixed by esaueng/remus#1371 | — | after the release that ships it, the legacy copy is pruned from the oracle row by row |
 
 Direct shims are introduced only in stage 11, when a fix makes a row
 `Shared`, or for rows that are already `Shared`, as a separate follow-up
@@ -542,6 +543,7 @@ once.
 * **`macro_rules!` diagnostics.** A malformed row produces a poor error.
   Mitigation: the grammar stays small, and the macro module carries one
   compiled example row per construct as a test.
-* **Owner decisions needed:** D1 (which `getFaceNormal` is right), D6
+* **Owner decisions needed:** D6
   (whether the batch heal family's result shapes are contractual) and D10
-  (the `sewFaces` default).
+  (the `sewFaces` default). D1 is decided: `getFaceNormal` returns the
+  outward normal (esaueng/remus#1371).
