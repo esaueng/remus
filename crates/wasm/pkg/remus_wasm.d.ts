@@ -1309,6 +1309,21 @@ export class RemusKernel {
      */
     boundingBox(solid: number): Float64Array;
     /**
+     * Counters, entries and estimated retained bytes of every cache the
+     * kernel reads, as camelCase JSON: `{ caches: { <name>: { scope, ... } },
+     * estimatedBytes }`.
+     *
+     * `scope` is `"session"` for caches this kernel's cache scope holds (RFC
+     * 0009) and `"thread"` for caches still shared by the whole module. A
+     * cache that is off reads `null`; a byte figure the cache does not track
+     * reads `null` and is left out of `estimatedBytes`. Byte figures are
+     * estimates, not RSS. Contains no geometry or arena handles.
+     *
+     * # Errors
+     * Returns an error when the diagnostic cannot be serialized.
+     */
+    cacheMemoryStats(): string;
+    /**
      * Captures an entity's geometric signature as a portable reference
      * string — the inference-tier recovery anchor. `quantum` is the
      * tolerance-derived quantization (pass the model's linear
@@ -3320,6 +3335,22 @@ export class RemusKernel {
      * Returns an error if any radius is non-positive.
      */
     makeEllipsoid(rx: number, ry: number, rz: number): number;
+    /**
+     * Build a double-enveloping (Hindley) worm from a JSON specification,
+     * as typed data (see the module docs for the fields).
+     *
+     * Never throws on a refusal: the envelope's `status` is `"error"` with
+     * a `gear:<reason>` code and the session unchanged.
+     */
+    makeEnvelopingWormDetailed(spec: string): SolidOperationDetailedResult;
+    /**
+     * Build the wheel a double-enveloping (Hindley) worm drives from a JSON
+     * specification, as typed data (see the module docs for the fields).
+     *
+     * Never throws on a refusal: the envelope's `status` is `"error"` with
+     * a `gear:<reason>` code and the session unchanged.
+     */
+    makeEnvelopingWormWheelDetailed(spec: string): SolidOperationDetailedResult;
     /**
      * Create a face from a wire.
      *
