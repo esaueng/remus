@@ -15,7 +15,7 @@ from fleet_workflows import (
     RETIRED, workflow_calls, workflow_manifest, workflow_path, workflow_text,
 )
 from test_jane_helper_workflows import STAGE
-from test_fleet_actions_stage import FleetActionsStageTests
+from test_fleet_actions_stage import FleetActionsStageTests, revert_action_updates, staged_action_update
 
 CI_V4_LANDED = '9e5b65b9e00f004d83eb583ab3934c863ad7956d'
 CI_V9_LANDED = '4e355573ffe9b1bc0466d0a57fcc98677d5fc5eb'
@@ -34,6 +34,7 @@ def historical_workflow(family, text):
             ['git', 'show', f'{CI_V4_LANDED}:.github/workflows/fleet-ci-v4.yml'],
             cwd=ROOT, text=True,
         )
+    text = revert_action_updates(family, text)
     if family == 'benchmark' and 'auto-push: ${{ github.ref' in text:
         text = retained_workflow('fleet-benchmark-v3.yml')
     return (text.replace('esaueng/remus/.github/actions/fleet-guard@' + STAGE['guard'],
@@ -348,7 +349,8 @@ class FleetWorkflowTests(unittest.TestCase):
                 main_file = main_manifest[family]
                 allowed = {f"fleet-{family}{suffix}.yml" for suffix in ("", "-v2", "-v3", "-v4")}
                 allowed.update({'fleet-ci-v6.yml', 'fleet-ci-v7.yml', 'fleet-ci-v9.yml'} if family == 'ci'
-                               else {STAGE['workflows'][family]['staged']})
+                               else {STAGE['workflows'][family]['staged']}
+                               | staged_action_update(family))
                 self.assertIn(main_file, allowed)
                 main_active = subprocess.check_output(
                     ["git", "show", f"origin/main:.github/workflows/{main_file}"], cwd=ROOT, text=True,

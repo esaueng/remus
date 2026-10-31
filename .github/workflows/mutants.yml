@@ -25,14 +25,14 @@ permissions:
 #
 # Pin rule (scripts/test-ubuntu-ci-routing.py): the pin must be a commit on
 # main whose copy of the callee is byte-identical to the checked-in file. A PR
-# that edits fleet-mutants-sharded-v4.yml therefore cannot re-pin to its own
+# that edits fleet-mutants-sharded-v5.yml therefore cannot re-pin to its own
 # branch commit (it dangles after squash-merge, PR #499); land the callee
 # change first, then re-pin to that squash commit in a follow-up, checking
 # `git merge-base --is-ancestor <sha> origin/main` and the file content.
 # Keep the callee commit when merging so this pin remains on main.
 jobs:
   checks:
-    uses: esaueng/remus/.github/workflows/fleet-mutants-sharded-v4.yml@4e5bd846fae03e87e3d4ca1169e35b18952d4fb9
+    uses: esaueng/remus/.github/workflows/fleet-mutants-sharded-v5.yml@31f97ee5d86dbe749243d19dba73d98cb6312c2e
     permissions:
       contents: read
       pull-requests: read

@@ -18,6 +18,10 @@ PREFIX = "esaueng/remus/.github/workflows/"
 RETIRED = {
     "fleet-benchmark-v3.yml": "4e5bd846fae03e87e3d4ca1169e35b18952d4fb9",
     "fleet-ci-v7.yml": "3d648c419a95680ff5d6c9f46cb749b6a8fe0e5a",
+    "fleet-mutants-sharded-v4.yml": "4e5bd846fae03e87e3d4ca1169e35b18952d4fb9",
+    "fleet-mutation-scope-v3.yml": "4e5bd846fae03e87e3d4ca1169e35b18952d4fb9",
+    "fleet-osv-v5.yml": "4e5bd846fae03e87e3d4ca1169e35b18952d4fb9",
+    "fleet-wasm-candidate-v4.yml": "4e5bd846fae03e87e3d4ca1169e35b18952d4fb9",
 }
 
 
