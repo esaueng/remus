@@ -206,6 +206,7 @@ Quick reference — find the right file for any task:
 | Chord deviation arc discretization | `chord.rs` |
 | Gauss-Legendre quadrature | `quadrature.rs` |
 | Operation tolerance and resource policy | `context.rs` |
+| Owned cache scopes: type-indexed cache parts and the thread's ambient scope (RFC 0009) | `context/cache.rs` |
 | Deterministic hashing (seed-stable maps/sets) | `det_hash.rs` |
 | Stable and unstable sorts compiled once for all comparators (`CompactSort`, for cold sorts; keeps WASM code size down) | `compact_sort.rs` |
 | Correctly rounded `fma` that stays fast on `wasm32` (bit-identical to `mul_add`) | `fma.rs` |
@@ -542,6 +543,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | 128-bit exact content digest of a single face (handle-free; lets a consumer keep what it derived from faces an edit left untouched) | `measure/face_digest.rs` |
 | Bounded opt-in exact-content memo of single-face bounding boxes (the move's swept-region refusal), and its bit-identity tests | `measure/face_box_memo.rs`, `measure/face_box_memo/tests.rs` |
 | Bounded opt-in host-clock phase timings | `performance.rs` |
+| The thread's default cache scope, shared by kernels and the `*_thread_*` cache switches (RFC 0009) | `cache.rs` |
 | Distance queries | `distance.rs` |
 | Independent global maximum-distance oracles (tests) | `distance/maximum_tests.rs` |
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
@@ -571,7 +573,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Pattern (linear/circular) | `pattern.rs` |
 | Shape queries (edge filtering) | `query.rs` |
 | Oracle for the prepared `ConcavityProbe` against the one-shot edge concavity on primitives, booleans and STEP bodies (tests) | `query/concavity_probe_oracle_tests.rs` |
-| Opt-in per-thread exact-content memo of the edge-concavity probes' per-face ray crossing counts, so relations and recognition after an edit recount only changed faces (the WASM kernel enables it) | `query/crossing_memo.rs` |
+| Opt-in exact-content memo of the edge-concavity probes' per-face ray crossing counts, a part of the owner's cache scope (RFC 0009 stage 1), so relations and recognition after an edit recount only changed faces (the WASM kernel enables it) | `query/crossing_memo.rs` |
 | Sewing | `sew.rs` |
 | Thickening | `thicken.rs` |
 | Untrimming | `untrim.rs` |

@@ -88,6 +88,7 @@ pub mod validate;
 pub mod tessellate;
 
 pub mod assembly;
+pub mod cache;
 pub(crate) mod cap;
 /// Carrier surface shared with sweep/pipe/loft end caps: re-exported so
 /// profile builders (and their fixtures) construct hole loops at exactly

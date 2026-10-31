@@ -4,8 +4,9 @@
 //
 // Every sample loads a fresh module instance, so its thread-local caches start
 // empty, and records the cache counters its timed phases added. The package
-// exposes counters only for mesh-stage reuse, measurement reuse and the volume
-// memo; RFC 0009 stage 1 adds the rest.
+// reports every cache through `cacheMemoryStats` from RFC 0009 stage 1 on;
+// earlier packages expose only mesh-stage reuse, measurement reuse and the
+// volume memo.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { performance } = require('node:perf_hooks');
@@ -37,8 +38,43 @@ function sameBits(a, b, what) {
   assert(Object.is(a, b), `${what}: ${a} !== ${b}`);
 }
 
+// Packages with `cacheMemoryStats` (RFC 0009 stage 1) report every cache; the
+// counters are renamed to the native worker's keys. Older packages expose only
+// mesh-stage reuse, measurement reuse and the volume memo.
+const NOT_COUNTERS = new Set([
+  'scope',
+  'enabled',
+  'entries',
+  'maxEntries',
+  'faces',
+  'retainedBytes',
+  'maxBytes',
+]);
+const snake = (name) => name.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+
+function cacheRows(kernel) {
+  if (typeof kernel.cacheMemoryStats !== 'function') return null;
+  const { caches } = JSON.parse(kernel.cacheMemoryStats());
+  // The library path the native worker drives has no classification cache.
+  delete caches.classification;
+  return caches;
+}
+
 // Counters only; entries and bytes are reported separately.
 function counters(kernel) {
+  const rows = cacheRows(kernel);
+  if (rows) {
+    return Object.fromEntries(
+      Object.entries(rows).map(([name, row]) => [
+        snake(name),
+        Object.fromEntries(
+          Object.entries(row ?? {})
+            .filter(([key]) => !NOT_COUNTERS.has(key))
+            .map(([key, value]) => [snake(key), value]),
+        ),
+      ]),
+    );
+  }
   const mesh = JSON.parse(kernel.meshReuseStats());
   const measure = JSON.parse(kernel.measurementReuseStats());
   const pick = (obj, keys) => Object.fromEntries(keys.map((k) => [k, obj ? obj[k] : 0]));
@@ -64,6 +100,12 @@ function counters(kernel) {
 }
 
 function entries(kernel) {
+  const rows = cacheRows(kernel);
+  if (rows) {
+    return Object.fromEntries(
+      Object.entries(rows).map(([name, row]) => [snake(name), row ? row.entries : 0]),
+    );
+  }
   const mesh = JSON.parse(kernel.meshReuseStats());
   const measure = JSON.parse(kernel.measurementReuseStats());
   return {

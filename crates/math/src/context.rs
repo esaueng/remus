@@ -21,6 +21,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod cache;
+
+pub use cache::CacheScope;
+
 use crate::MathError;
 use crate::tolerance::Tolerance;
 
