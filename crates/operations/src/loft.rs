@@ -17,8 +17,8 @@ use remus_topology::solid::{Solid, SolidId};
 use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire};
 
-use crate::boolean::face_polygon;
 use crate::dot_normal_point;
+use crate::polygon::face_polygon;
 use crate::winding::ensure_ccw_profiles;
 
 /// A repeated polygon junction has no line image to loft. Keep each exact

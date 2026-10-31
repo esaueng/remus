@@ -3,11 +3,12 @@
 //! Performs structural and geometric validation on solids.
 
 use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::TopologyError;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::explorer;
-use remus_topology::face::{Face, FaceSurface};
+use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 
 /// A validation issue found in a solid.
@@ -259,7 +260,7 @@ fn outer_components_materially_overlap(
         let genus_2 = component_genus_2.get(ci).copied().unwrap_or(0);
         let mut pts: Vec<remus_math::vec::Point3> = Vec::new();
         for &fid in comp {
-            if let Ok(poly) = crate::boolean::face_polygon(topo, fid) {
+            if let Ok(poly) = crate::polygon::face_polygon(topo, fid) {
                 pts.extend(poly);
             }
         }
@@ -271,7 +272,7 @@ fn outer_components_materially_overlap(
         boxes.push((ci, remus_math::aabb::Aabb3::from_points(pts), genus_2));
     }
 
-    let eps = crate::boolean::COMPONENT_OVERLAP_MARGIN_MM;
+    let eps = COMPONENT_OVERLAP_MARGIN_MM;
     let contains = |o: &remus_math::aabb::Aabb3, i: &remus_math::aabb::Aabb3| {
         o.min.x() - eps <= i.min.x()
             && o.min.y() - eps <= i.min.y()
@@ -326,7 +327,7 @@ fn outer_components_materially_overlap(
                 if triangles[0].iter().any(|&ta| {
                     triangles[1]
                         .iter()
-                        .any(|&tb| crate::mesh_boolean::triangles_intersect(ta, tb, eps))
+                        .any(|&tb| crate::triangle_intersection::triangles_intersect(ta, tb, eps))
                 }) {
                     return Ok(true);
                 }
@@ -347,7 +348,7 @@ fn outer_components_materially_overlap(
                     if probes.is_empty() {
                         return Ok(true);
                     }
-                    match crate::boolean::component_encloses_any_point(
+                    match component_encloses_any_point(
                         topo,
                         &components[surface_ci],
                         &probes,
@@ -364,15 +365,10 @@ fn outer_components_materially_overlap(
             // surface, so a piece merely sitting in a ring's hole survives.
             let diag = (outer_box.max - outer_box.min).length();
             let deflection = (diag / 200.0).max(1e-4);
-            let Some(probe) = crate::boolean::any_vertex_of(topo, &components[inner_ci]) else {
+            let Some(probe) = any_vertex_of(topo, &components[inner_ci]) else {
                 return Ok(true);
             };
-            match crate::boolean::component_encloses_point(
-                topo,
-                &components[outer_ci],
-                probe,
-                deflection,
-            ) {
+            match component_encloses_point(topo, &components[outer_ci], probe, deflection) {
                 Some(true) => return Ok(true),
                 Some(false) => {}
                 None => return Ok(true),
@@ -1548,6 +1544,87 @@ fn polygon_area_3d(positions: &[remus_math::vec::Point3]) -> f64 {
     }
 
     sum.length() * 0.5
+}
+
+/// Strict margin used by the disjoint-component shortcut's AABB containment
+/// pre-filter, in mm.
+pub(crate) const COMPONENT_OVERLAP_MARGIN_MM: f64 = 1e-7;
+
+/// Does the closed surface made of `faces` enclose `p`?
+///
+/// Ray-parity against the component's own tessellation. Read-only by design:
+/// building a temporary solid per component would add entities to an arena that
+/// never reclaims, which is the growth cliff fixed in #1237.
+///
+/// `watertight_ray_triangle_intersect` reports exactly one hit on a shared edge,
+/// so parity is meaningful across face boundaries. The direction is deliberately
+/// irrational so the ray does not graze a face boundary or lie in a face plane —
+/// the degeneracy that makes axis-aligned probes unreliable on the feature-plane
+/// intersections these pieces are full of. Returns `None` when the component
+/// cannot be tessellated, so callers can fall back rather than guess.
+pub(crate) fn component_encloses_point(
+    topo: &Topology,
+    faces: &[FaceId],
+    p: Point3,
+    deflection: f64,
+) -> Option<bool> {
+    component_encloses_any_point(topo, faces, &[p], deflection)
+}
+
+/// Does the closed surface made of `faces` enclose any of `points`?
+///
+/// Tessellates the component only once, which keeps multi-probe validation from
+/// repeating the expensive face tessellation for every boundary vertex.
+pub(crate) fn component_encloses_any_point(
+    topo: &Topology,
+    faces: &[FaceId],
+    points: &[Point3],
+    deflection: f64,
+) -> Option<bool> {
+    // A sqrt-prime direction: irrational in every component, so the ray cannot
+    // lie in a face plane or run along an edge — the same generic-direction
+    // escape the ray-cast classifier uses for degenerate probes.
+    let dir = Vec3::new(2.0_f64.sqrt(), 3.0_f64.sqrt(), 5.0_f64.sqrt())
+        .normalize()
+        .ok()?;
+    let mut crossings = vec![0usize; points.len()];
+    let mut any_triangle = false;
+    for &fid in faces {
+        let mesh = crate::tessellate::tessellate_with_uvs(topo, fid, deflection).ok()?;
+        let pos = &mesh.mesh.positions;
+        for tri in mesh.mesh.indices.chunks_exact(3) {
+            let (a, b, c) = (
+                pos[tri[0] as usize],
+                pos[tri[1] as usize],
+                pos[tri[2] as usize],
+            );
+            any_triangle = true;
+            for (&point, count) in points.iter().zip(&mut crossings) {
+                if let Some(hit) =
+                    remus_math::ray_triangle::watertight_ray_triangle_intersect(point, dir, a, b, c)
+                    && hit.t > 1e-9
+                {
+                    *count += 1;
+                }
+            }
+        }
+    }
+    any_triangle.then_some(crossings.into_iter().any(|count| count % 2 == 1))
+}
+
+/// Any vertex position on `faces`, for use as a probe point.
+pub(crate) fn any_vertex_of(topo: &Topology, faces: &[FaceId]) -> Option<Point3> {
+    for &fid in faces {
+        let face = topo.face(fid).ok()?;
+        let wire = topo.wire(face.outer_wire()).ok()?;
+        if let Some(oe) = wire.edges().first()
+            && let Ok(edge) = topo.edge(oe.edge())
+            && let Ok(v) = topo.vertex(edge.start())
+        {
+            return Some(v.point());
+        }
+    }
+    None
 }
 
 #[cfg(test)]

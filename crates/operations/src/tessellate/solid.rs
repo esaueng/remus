@@ -2087,16 +2087,17 @@ fn tessellate_faces_core(
                                 face_cache::NormalSlot::Unknown => {
                                     let surf = face_data.surface();
                                     let grid = seed_grids.entry(fid).or_default();
-                                    let fresh = crate::fillet::face_surface_normal_with_grid(
-                                        surf, pos, grid,
-                                    )
-                                    .map(|n| {
-                                        if face_data.is_reversed() {
-                                            Vec3::new(-n.x(), -n.y(), -n.z())
-                                        } else {
-                                            n
-                                        }
-                                    });
+                                    let fresh =
+                                        super::surface_normal::face_surface_normal_with_grid(
+                                            surf, pos, grid,
+                                        )
+                                        .map(|n| {
+                                            if face_data.is_reversed() {
+                                                Vec3::new(-n.x(), -n.y(), -n.z())
+                                            } else {
+                                                n
+                                            }
+                                        });
                                     if let Some(session) = cache_session.as_mut() {
                                         session.record_normal(fid, gid, fresh);
                                     }

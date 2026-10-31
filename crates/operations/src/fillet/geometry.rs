@@ -1,12 +1,7 @@
 //! Edge sampling and surface normal utilities for fillet operations.
 
-use remus_math::nurbs::projection::{
-    SurfaceSeedGrid, project_point_to_surface, project_point_to_surface_with_grid,
-};
-use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::edge::EdgeCurve;
-use remus_topology::face::FaceSurface;
 
 /// Sample a point along an edge curve at normalised parameter `t` ∈ [0, 1].
 ///
@@ -158,97 +153,5 @@ pub(super) fn cross_section_dirs(
         ld2,
         bisector,
         half_angle,
-    }
-}
-
-/// Compute the outward surface normal of a `FaceSurface` at a given 3D point.
-///
-/// For analytic surfaces this is exact (no parameter-space projection needed).
-/// For NURBS surfaces, uses the midpoint normal as an approximation (full
-/// point-inversion would be needed for exactness, but this suffices for fillet
-/// cross-section geometry where the point is known to lie on the surface).
-pub fn face_surface_normal_at(surface: &FaceSurface, point: Point3) -> Option<Vec3> {
-    match surface {
-        FaceSurface::Plane { normal, .. } => Some(*normal),
-        FaceSurface::Cylinder(cyl) => {
-            // Project point onto cylinder axis to find closest axis point,
-            // then the normal is the radial direction from axis to point.
-            let dp = point - cyl.origin();
-            let along_axis = dp.dot(cyl.axis());
-            let on_axis = cyl.origin() + cyl.axis() * along_axis;
-            (point - on_axis).normalize().ok()
-        }
-        FaceSurface::Cone(cone) => {
-            // For a cone, the normal is perpendicular to the surface.
-            // Project point onto axis, compute the radial direction,
-            // then rotate by (90° - half_angle) around the tangent.
-            let dp = point - cone.apex();
-            let along_axis = dp.dot(cone.axis());
-            let radial = dp - cone.axis() * along_axis;
-            let radial_n = radial.normalize().ok()?;
-            let (sin_a, cos_a) = cone.half_angle().sin_cos();
-            Some(radial_n * sin_a + cone.axis() * (-cos_a))
-        }
-        FaceSurface::Sphere(sph) => (point - sph.center()).normalize().ok(),
-        FaceSurface::Torus(tor) => {
-            // Project point onto the major circle plane to find the closest
-            // point on the major circle, then the normal is from the tube
-            // center toward the point.
-            let dp = point - tor.center();
-            let along_axis = dp.dot(tor.z_axis());
-            let in_plane = dp - tor.z_axis() * along_axis;
-            let ring_dir = in_plane.normalize().ok()?;
-            let tube_center = tor.center() + ring_dir * tor.major_radius();
-            (point - tube_center).normalize().ok()
-        }
-        FaceSurface::Nurbs(srf) => {
-            // Project the point onto the NURBS surface to find (u, v), then
-            // evaluate the exact normal at that parameter.  Tolerance 1e-4 is
-            // sufficient here — we only need (u,v) accurate enough for a
-            // reliable normal direction, not for position reconstruction.
-            // Use a projection tolerance derived from the standard linear
-            // tolerance (×1000) — loose enough for normal-direction accuracy
-            // without over-iterating, and scale-aware via Tolerance::new().
-            nurbs_normal_at(srf, point, None)
-        }
-    }
-}
-
-/// [`face_surface_normal_at`] for a NURBS face whose coarse projection grid
-/// the caller keeps, built once per surface: bit for bit the same normal,
-/// without re-evaluating the grid on every call (see
-/// [`SurfaceSeedGrid`]). Other surfaces never project and take
-/// [`face_surface_normal_at`] directly.
-pub fn face_surface_normal_with_grid(
-    surface: &FaceSurface,
-    point: Point3,
-    grid: &mut Option<SurfaceSeedGrid>,
-) -> Option<Vec3> {
-    match surface {
-        FaceSurface::Nurbs(srf) => {
-            let grid = grid.get_or_insert_with(|| SurfaceSeedGrid::for_surface(srf));
-            nurbs_normal_at(srf, point, Some(grid))
-        }
-        FaceSurface::Plane { .. }
-        | FaceSurface::Cylinder(_)
-        | FaceSurface::Cone(_)
-        | FaceSurface::Sphere(_)
-        | FaceSurface::Torus(_) => face_surface_normal_at(surface, point),
-    }
-}
-
-fn nurbs_normal_at(
-    srf: &remus_math::nurbs::surface::NurbsSurface,
-    point: Point3,
-    grid: Option<&SurfaceSeedGrid>,
-) -> Option<Vec3> {
-    let proj_tol = Tolerance::new().linear * 1e3;
-    let projection = match grid {
-        Some(grid) => project_point_to_surface_with_grid(srf, point, proj_tol, grid),
-        None => project_point_to_surface(srf, point, proj_tol),
-    };
-    match projection {
-        Ok(proj) => srf.normal(proj.u, proj.v).ok(),
-        Err(_) => srf.normal(0.5, 0.5).ok(), // fallback to midpoint
     }
 }

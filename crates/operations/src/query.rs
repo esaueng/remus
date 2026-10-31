@@ -13,9 +13,9 @@ use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
-use crate::boolean::{face_polygon, wire_polygon};
 use crate::classify::{PointClassification, RobustClassifier};
 use crate::measure::face_area;
+use crate::polygon::{face_polygon, wire_polygon};
 
 mod crossing_memo;
 pub use crossing_memo::{
