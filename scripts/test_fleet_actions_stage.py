@@ -43,6 +43,20 @@ def updated(content):
     return content
 
 
+def staged_action_update(family):
+    """The #1297 auxiliary file for a family, once it may be the active callee."""
+    return {WORKFLOWS[family][1]} if family in WORKFLOWS and family != "ci" else set()
+
+
+def revert_action_updates(family, text):
+    """Map an activated #1297 auxiliary back to the bytes it was staged from."""
+    if not staged_action_update(family):
+        return text
+    for action, (old, new) in UPDATES.items():
+        text = text.replace(f"uses: {action}@{new}", f"uses: {action}@{old}")
+    return text
+
+
 def validate_stage(content, source):
     if content != updated(source):
         raise ValueError("Staged workflow may change only the reviewed Action pins and comments")

@@ -270,8 +270,21 @@ landed main commit after the staging PR passes all required checks.
 `fleet-ci-v8.yml` is v7 plus these pins, but CI activated v9 (#1323, #1328)
 from v7 without them, so v8 can no longer be activated: switching to it would
 drop v9's shared builds. Adopting the CI half needs a new stage, v9 plus the
-same two pin updates, staged and landed before its activation. The other four
-staged files still differ from their active callees only by these pins.
+same two pin updates, staged and landed before its activation.
+
+The other four files are active: `mutants.yml`, `mutation-scope.yml`,
+`osv-scan.yml` and `openzcad-wasm-release.yml` pin them at #1297's landed
+commit `31f97ee5d86dbe749243d19dba73d98cb6312c2e`, and the files they replace
+are retired (`RETIRED` in `scripts/fleet_workflows.py`). Before Jane executes
+them, append these exact entries to `ci-trusted-main`, retaining every
+existing entry and restriction:
+
+```text
+esaueng/remus/.github/workflows/fleet-mutants-sharded-v5.yml@31f97ee5d86dbe749243d19dba73d98cb6312c2e
+esaueng/remus/.github/workflows/fleet-mutation-scope-v4.yml@31f97ee5d86dbe749243d19dba73d98cb6312c2e
+esaueng/remus/.github/workflows/fleet-osv-v6.yml@31f97ee5d86dbe749243d19dba73d98cb6312c2e
+esaueng/remus/.github/workflows/fleet-wasm-candidate-v5.yml@31f97ee5d86dbe749243d19dba73d98cb6312c2e
+```
 
 `.github/fleet-workflows.json` names the active file for each workflow family.
 Routing and policy tests read those selected files and require every caller to
