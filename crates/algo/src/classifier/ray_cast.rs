@@ -9,6 +9,7 @@
 //! disagree.
 
 use remus_math::predicates::point_in_polygon;
+use remus_math::ray::TangentPolicy;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
@@ -552,10 +553,9 @@ enum PlaneHit {
 fn plane_hit(origin: Point3, ray_dir: Vec3, denom: f64, numer: f64, tol: Tolerance) -> PlaneHit {
     crate::perf::bump_ray_work(RayWork::PlaneEval);
     let near = 10.0 * tol.linear;
-    if denom.abs() < tol.angular {
+    let Some(t) = remus_math::ray::plane_parameter(denom, numer, tol.angular) else {
         return PlaneHit::Parallel(numer.abs() <= near);
-    }
-    let t = numer / denom;
+    };
     if t <= tol.linear {
         return PlaneHit::Behind;
     }
@@ -1906,28 +1906,19 @@ fn ray_cylinder_crossings(
     let near = 10.0 * tol.linear;
     let (v_min, v_max) = v_range;
     let axis = surface.axis();
-    let m = origin - surface.origin();
-    let d_perp = ray_dir - axis * ray_dir.dot(axis);
-    let m_perp = m - axis * m.dot(axis);
-
-    let a = d_perp.dot(d_perp);
-    if a < 1e-14 {
-        return (0, false);
-    }
-    let b = 2.0 * m_perp.dot(d_perp);
-    let c = surface
-        .radius()
-        .mul_add(-surface.radius(), m_perp.dot(m_perp));
-    let disc = b.mul_add(b, -4.0 * a * c);
-    // Treat near-tangent rays as misses: counting one graze flips parity.
-    if disc < 1e-12 * a * surface.radius() * surface.radius() {
-        return (0, false);
-    }
-    let sqrt_disc = disc.sqrt();
+    // Near-tangent rays read as misses: counting one graze flips parity.
+    let hits = remus_math::ray::ray_cylinder_with(
+        origin,
+        ray_dir,
+        surface,
+        TangentPolicy::DropRelative {
+            scale: surface.radius(),
+        },
+    );
     let mut crossings = 0;
     let mut suspicious = false;
     let near_angle = near / surface.radius().max(near);
-    for t in [(-b - sqrt_disc) / (2.0 * a), (-b + sqrt_disc) / (2.0 * a)] {
+    for t in hits.iter().map(|hit| hit.t) {
         if t <= tol.linear {
             continue;
         }
@@ -2162,39 +2153,17 @@ fn ray_cone_crossings(
 ) -> (i32, bool) {
     let near = 10.0 * tol.linear;
     let (v_min, v_max) = v_range;
-    let axis = surface.axis();
-    let m = origin - surface.apex();
-    let sin_a = surface.half_angle().sin();
-    let sin2 = sin_a * sin_a;
-
-    // Cone condition `cos²a·h² = sin²a·ρ²` (h axial, ρ radial) reduces to
-    // `h² − sin²a·|w|² = 0` for w around the apex.
-    let d_a = ray_dir.dot(axis);
-    let m_a = m.dot(axis);
-    let a = sin2.mul_add(-ray_dir.dot(ray_dir), d_a * d_a);
-    let half_b = sin2.mul_add(-ray_dir.dot(m), d_a * m_a);
-    let c = sin2.mul_add(-m.dot(m), m_a * m_a);
-
     let r_max = surface.radius_at(v_min.abs().max(v_max.abs()));
-    let mut roots = [None, None];
-    if a.abs() < 1e-14 {
-        if half_b.abs() < 1e-14 {
-            return (0, false);
-        }
-        roots[0] = Some(-c / (2.0 * half_b));
-    } else {
-        let disc = half_b.mul_add(half_b, -(a * c));
-        if disc < 1e-12 * a.abs() * r_max * r_max {
-            return (0, false);
-        }
-        let sqrt_disc = disc.sqrt();
-        roots[0] = Some((-half_b - sqrt_disc) / a);
-        roots[1] = Some((-half_b + sqrt_disc) / a);
-    }
+    let hits = remus_math::ray::ray_cone_with(
+        origin,
+        ray_dir,
+        surface,
+        TangentPolicy::DropRelative { scale: r_max },
+    );
 
     let mut crossings = 0;
     let mut suspicious = false;
-    for t in roots.into_iter().flatten() {
+    for t in hits.iter().map(|hit| hit.t) {
         if t <= tol.linear {
             continue;
         }
@@ -2929,3 +2898,6 @@ mod gate_oracle_tests;
 
 #[cfg(test)]
 mod torus_cull_oracle_tests;
+
+#[cfg(test)]
+mod quadric_policy_oracle_tests;

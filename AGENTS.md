@@ -191,7 +191,7 @@ Quick reference — find the right file for any task:
 | Filtered exact predicates | `filtered.rs` |
 | Float tolerance | `tolerance.rs` |
 | Geometric predicates (orient2d/3d) | `predicates.rs` |
-| Qualified ray–cylinder/cone/sphere intersection (cancellation-free quadratic, relative tangency band) and ray–torus (merged double roots as tangential): transversal/tangential/unclassified hits (RFC 0008 §3.2) | `ray.rs`, `ray/tests.rs` |
+| Qualified ray–cylinder/cone/sphere intersection (cancellation-free quadratic, relative tangency band) and ray–torus (merged double roots as tangential): transversal/tangential/unclassified hits (RFC 0008 §3.2); `TangentPolicy::DropRelative` carries the GFA classifier's tangent-dropping cylinder/cone roots bit for bit, and `plane_parameter` the shared ray–plane parameter | `ray.rs`, `ray/tests.rs` |
 | Ray-triangle intersection | `ray_triangle.rs` |
 | 2D polygon offset | `polygon_offset.rs` |
 | 2D polygon ops (clip, fillet, chamfer) | `polygon2d.rs` |
@@ -305,6 +305,7 @@ Quick reference — find the right file for any task:
 | Ray-cast classifier | `classifier/ray_cast.rs` |
 | Closed-form and differential oracles for the ray-cast polygon gate and shared plane hits (tests) | `classifier/ray_cast/gate_oracle_tests.rs` |
 | Differential oracles for the ray-cast torus line cull: no quartic roots on a cleared line, ray triples against the unculled vote loop, near and far past the reach cap, near-miss roots only the margin keeps (tests) | `classifier/ray_cast/torus_cull_oracle_tests.rs` |
+| Bit-identity oracle for the ray-cast plane, cylinder and cone hits routed through `remus_math::ray`: the pre-routing functions kept verbatim, on random, tangent, near-tangent, axis- and generator-parallel and in-plane rays at scales 1e-3 to 1e6 (tests) | `classifier/ray_cast/quadric_policy_oracle_tests.rs` |
 | Recognition of bounded rectangular torus patches | `classifier/torus_patch.rs` |
 | Shell assembly (4-phase `BuilderSolid`) | `builder/builder_solid.rs` |
 | Boolean preflight diagnostics | `diagnostic.rs` |
