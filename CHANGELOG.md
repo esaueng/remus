@@ -107,8 +107,14 @@ historical predecessor-line records, retained for provenance. The
   as the walls a `cut` leaves (a 2×2×2 box cut by a 1×1×4 box reported `[1,0,0]`
   and `[0,1,0]` for its inner walls instead of `[-1,0,0]` and `[0,-1,0]`).
   Faces that are not reversed, including every primitive face, are unchanged.
-  Curved faces still report the stored surface normal at `(u, v) = (0, 0)`
-  in a batch, where the direct method refuses.
+
+* **wasm:** batch `getFaceNormal` now refuses a face that is not planar
+  (cylinder, cone, sphere, torus or NURBS) with the direct method's error,
+  "invalid input: getFaceNormal only works on planar faces". It used to
+  return the surface normal at `(u, v) = (0, 0)`, a point that need not lie
+  on the face, without flipping it for a reversed face. For a curved face's
+  outward normal at a chosen `(u, v)`, use the direct `evaluateSurfaceNormal`
+  or the `outwardNormal` of `getFaceDraftAngle`, which a batch also runs.
 
 * **wasm:** the kernel class is renamed from `BrepKernel`, the predecessor
   line's name, to `RemusKernel`. JavaScript consumers keep a deprecated

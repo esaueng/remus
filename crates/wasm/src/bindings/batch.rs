@@ -2684,23 +2684,12 @@ impl RemusKernel {
                 }))
             }
             "getFaceNormal" => {
-                // A planar face reports its outward normal, oriented by the
-                // `reversed` flag exactly as the direct `getFaceNormal`
-                // (boolean results carry reversed walls whose stored plane
-                // normal points into the material). A curved face still
-                // reports its stored surface normal at parameter-space origin,
-                // where the direct method refuses (RFC 0010 drift D1b).
-                let f = get_u32(args, "face")?;
-                let face_id = self.resolve_face(f).map_err(StructuredWasmError::from)?;
-                let face = self
-                    .topo()
-                    .face(face_id)
-                    .map_err(crate::error::WasmError::from)
+                // The direct body: a planar face's outward normal, and a
+                // refusal for every other face.
+                let normal = self
+                    .face_normal_impl(get_u32(args, "face")?)
                     .map_err(StructuredWasmError::from)?;
-                let normal = face
-                    .effective_plane_normal()
-                    .unwrap_or_else(|| face.surface().normal(0.0, 0.0));
-                Ok(serde_json::json!([normal.x(), normal.y(), normal.z()]))
+                Ok(serde_json::json!(normal))
             }
             "getFaceDraftAngle" => {
                 let result = self.face_draft_result(

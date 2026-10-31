@@ -12,8 +12,15 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
   same vector as the direct `getFaceNormal`. It used to return the stored
   plane normal, which points into the material on reversed faces such as the
   walls a `cut` leaves. Faces that are not reversed, including every
-  primitive face, are unchanged. Curved faces still report the stored surface
-  normal at `(u, v) = (0, 0)` in a batch, where the direct method refuses.
+  primitive face, are unchanged.
+
+* Batch `getFaceNormal` now refuses a face that is not planar (cylinder,
+  cone, sphere, torus or NURBS) with the direct method's error, "invalid
+  input: getFaceNormal only works on planar faces". It used to return the
+  surface normal at `(u, v) = (0, 0)`, a point that need not lie on the face,
+  without flipping it for a reversed face. For a curved face's outward normal
+  at a chosen `(u, v)`, use the direct `evaluateSurfaceNormal` or the
+  `outwardNormal` of `getFaceDraftAngle`, which a batch also runs.
 
 * Batch `sewFaces` without a `tolerance` now sews at 1e-7, the default of
   every other batch tolerance, instead of 1e-6. Vertices between about 1e-7
