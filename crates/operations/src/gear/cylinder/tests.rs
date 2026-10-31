@@ -227,6 +227,7 @@ fn a_given_module_turns_the_boss_down_and_phase_turns_the_teeth() {
         fit: GearFit::UseModule,
         x_direction: Some(Vec3::new(1.0, 0.0, 0.0)),
         phase: 0.5 * pitch_angle,
+        ..CylinderGearOptions::default()
     };
     let outcome = cut_gear_teeth(&mut topo, blank, face, &params, &options).unwrap();
     assert_valid_and_watertight(&topo, outcome.solid);
@@ -288,12 +289,13 @@ fn unbuildable_requests_refuse_atomically() {
         GearRefusal::CylinderTooSmall
     );
 
-    // Teeth over part of the face only are refused, longer or shorter.
-    for width in [6.5, 5.0] {
-        let partial = GearParams::standard(GearKind::External, 1.0, 20, width);
+    // Teeth reaching past either end of the face are refused.
+    for (offset, width) in [(0.0, 6.5), (2.0, 5.0), (-0.5, 4.0)] {
+        let past = GearParams::standard(GearKind::External, 1.0, 20, width);
+        let options = CylinderGearOptions { offset, ..defaults };
         assert_eq!(
-            refusal(&mut topo, blank, face, &partial, &defaults),
-            GearRefusal::PartialSpan
+            refusal(&mut topo, blank, face, &past, &options),
+            GearRefusal::SpanOutsideFace
         );
     }
 
@@ -450,11 +452,135 @@ fn herringbone_teeth_on_a_boss_keep_its_diameter_and_match_the_standalone_gear()
     );
 }
 
+/// The stepped, bored shaft of the hub test with teeth over the middle six
+/// of the hub's ten: collars of the r 12 hub stay above and below.
+fn mid_hub_blank(topo: &mut Topology) -> (SolidId, FaceId, f64) {
+    let hub = make_cylinder(topo, 12.0, 10.0).unwrap();
+    let shaft = moved_cylinder(topo, 5.0, 30.0, -10.0);
+    let stepped = boolean(topo, BooleanOp::Fuse, hub, shaft).unwrap();
+    let drill = moved_cylinder(topo, 2.5, 50.0, -20.0);
+    let blank = boolean(topo, BooleanOp::Cut, stepped, drill).unwrap();
+    // Closed form: hub, shaft beyond it, less the bore through all 30 of it.
+    let closed = PI * 144.0 * 10.0 + PI * 25.0 * 20.0 - PI * 6.25 * 30.0;
+    let face = cylinder_face(topo, blank, 12.0);
+    (blank, face, closed)
+}
+
+/// Keep-diameter teeth over z 2..8 of the hub: their tips are flush with the
+/// collars. Only the band changes, from the r 12 disc to the gear outline.
+#[test]
+fn keep_diameter_teeth_on_the_middle_of_a_stepped_bored_hub() {
+    let mut topo = Topology::new();
+    let (blank, face, closed) = mid_hub_blank(&mut topo);
+    assert!(((volume(&topo, blank) - closed) / closed).abs() < 1e-9);
+    let params = GearParams::standard(GearKind::External, 1.0, 22, 6.0);
+    let options = CylinderGearOptions {
+        offset: 2.0,
+        ..CylinderGearOptions::default()
+    };
+    let outcome = cut_gear_teeth(&mut topo, blank, face, &params, &options).unwrap();
+    assert_valid_and_watertight(&topo, outcome.solid);
+    let expected = closed - (PI * 144.0 - outline_area(&params)) * 6.0;
+    let got = volume(&topo, outcome.solid);
+    assert!(
+        ((got - expected) / expected).abs() < 1e-9,
+        "{got} vs {expected}"
+    );
+    // The collars keep the full r 12 disc; the band has tooth spaces.
+    let pitch = 2.0 * PI / 22.0;
+    let probe = |angle: f64, z: f64| {
+        let (sin, cos) = angle.sin_cos();
+        let point = Point3::new(11.5 * cos, 11.5 * sin, z);
+        classify_point(&topo, outcome.solid, point, 0.01, 1e-6).unwrap()
+    };
+    let mut spaces = 0;
+    for k in 0..44 {
+        let angle = f64::from(k) * 0.5 * pitch + 0.1;
+        assert_eq!(probe(angle, 1.0), PointClassification::Inside);
+        assert_eq!(probe(angle, 9.0), PointClassification::Inside);
+        spaces += usize::from(probe(angle, 5.0) == PointClassification::Outside);
+    }
+    assert!(
+        (15..=29).contains(&spaces),
+        "{spaces} of 44 probes in tooth spaces"
+    );
+    assert_roles_are_unique_and_typed(&topo, &outcome, 22);
+}
+
+/// A given module turns the band down below the collars: the ring's caps
+/// meet the collars' annular caps around the whole closed tooth outline.
+#[test]
+fn turned_down_teeth_on_the_middle_of_a_stepped_bored_hub() {
+    let mut topo = Topology::new();
+    let (blank, face, closed) = mid_hub_blank(&mut topo);
+    let params = GearParams::standard(GearKind::External, 0.9, 22, 6.0);
+    let options = CylinderGearOptions {
+        fit: GearFit::UseModule,
+        offset: 2.0,
+        ..CylinderGearOptions::default()
+    };
+    let outcome = cut_gear_teeth(&mut topo, blank, face, &params, &options).unwrap();
+    assert_valid_and_watertight(&topo, outcome.solid);
+    assert!((outcome.geometry.tip_diameter.unwrap() - 21.6).abs() < 1e-9);
+    let expected = closed - (PI * 144.0 - outline_area(&params)) * 6.0;
+    let got = volume(&topo, outcome.solid);
+    assert!(
+        ((got - expected) / expected).abs() < 1e-9,
+        "{got} vs {expected}"
+    );
+    let probe = |r: f64, z: f64| {
+        classify_point(&topo, outcome.solid, Point3::new(0.0, r, z), 0.01, 1e-6).unwrap()
+    };
+    assert_eq!(probe(11.5, 0.5), PointClassification::Inside);
+    assert_eq!(probe(11.5, 5.0), PointClassification::Outside);
+    assert_eq!(probe(11.5, 9.5), PointClassification::Inside);
+}
+
+/// Internal teeth over part of a bore are refused: their outline would end
+/// on the bore circle of the collars' caps.
+#[test]
+fn internal_teeth_over_part_of_a_bore_refuse() {
+    let mut topo = Topology::new();
+    let outer = make_cylinder(&mut topo, 30.0, 9.0).unwrap();
+    let drill = moved_cylinder(&mut topo, 19.0, 20.0, -5.0);
+    let ring = boolean(&mut topo, BooleanOp::Cut, outer, drill).unwrap();
+    let face = cylinder_face(&topo, ring, 19.0);
+    let params = GearParams::standard(GearKind::Internal, 1.0, 40, 5.0);
+    let options = CylinderGearOptions {
+        offset: 2.0,
+        ..CylinderGearOptions::default()
+    };
+    assert_eq!(
+        refusal(&mut topo, ring, face, &params, &options),
+        GearRefusal::PartialSpan
+    );
+}
+
 /// The circles the operation adds start on the phase reference, not on the
-/// face's seam: any reference builds the same teeth.
+/// face's seam: any reference gives the same volume, whole face or partial.
 #[test]
 fn any_phase_reference_builds_the_same_teeth() {
-    let params = GearParams::standard(GearKind::External, 1.0, 20, 6.0);
+    let params = GearParams::standard(GearKind::External, 1.0, 22, 6.0);
+    for degrees in [0.0_f64, 37.0, 90.0, 200.0] {
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        let mut topo = Topology::new();
+        let (blank, face, closed) = mid_hub_blank(&mut topo);
+        let options = CylinderGearOptions {
+            offset: 2.0,
+            x_direction: Some(Vec3::new(cos, sin, 0.0)),
+            ..CylinderGearOptions::default()
+        };
+        let outcome = cut_gear_teeth(&mut topo, blank, face, &params, &options)
+            .unwrap_or_else(|error| panic!("reference {degrees}°: {error}"));
+        assert_valid_and_watertight(&topo, outcome.solid);
+        let got = volume(&topo, outcome.solid);
+        let expected = closed - (PI * 144.0 - outline_area(&params)) * 6.0;
+        assert!(
+            ((got - expected) / expected).abs() < 1e-9,
+            "reference {degrees}°: {got} vs {expected}"
+        );
+    }
+    let whole = GearParams::standard(GearKind::External, 1.0, 20, 6.0);
     for degrees in [37.0_f64, 271.0] {
         let (sin, cos) = degrees.to_radians().sin_cos();
         let mut topo = Topology::new();
@@ -464,14 +590,43 @@ fn any_phase_reference_builds_the_same_teeth() {
             x_direction: Some(Vec3::new(cos, sin, 0.0)),
             ..CylinderGearOptions::default()
         };
-        let outcome = cut_gear_teeth(&mut topo, blank, face, &params, &options)
-            .unwrap_or_else(|error| panic!("reference {degrees}°: {error}"));
+        let outcome = cut_gear_teeth(&mut topo, blank, face, &whole, &options)
+            .unwrap_or_else(|error| panic!("whole face, reference {degrees}°: {error}"));
         assert_valid_and_watertight(&topo, outcome.solid);
-        let expected = outline_area(&params) * 6.0;
+        let expected = outline_area(&whole) * 6.0;
         let got = volume(&topo, outcome.solid);
         assert!(
             ((got - expected) / expected).abs() < 1e-9,
-            "reference {degrees}°: {got} vs {expected}"
+            "whole face, reference {degrees}°: {got} vs {expected}"
+        );
+    }
+}
+
+/// Flush tips over the middle of a plain boss, for every tooth count from 16
+/// to 30: tip lands ride the collars' rims, and wherever a rim's seam or
+/// quarter station falls on a tip land the ring's cap still pairs with the
+/// collar's.
+#[test]
+fn keep_diameter_teeth_on_the_middle_of_a_plain_boss() {
+    for teeth in 16_u32..=30 {
+        let radius = 0.5 * f64::from(teeth + 2);
+        let mut topo = Topology::new();
+        let blank = make_cylinder(&mut topo, radius, 6.0).unwrap();
+        let face = cylinder_face(&topo, blank, radius);
+        let params = GearParams::standard(GearKind::External, 1.0, teeth, 3.0);
+        let options = CylinderGearOptions {
+            offset: 1.5,
+            ..CylinderGearOptions::default()
+        };
+        let outcome = cut_gear_teeth(&mut topo, blank, face, &params, &options)
+            .unwrap_or_else(|error| panic!("{teeth} teeth: {error}"));
+        assert_valid_and_watertight(&topo, outcome.solid);
+        let expected =
+            PI * radius * radius * 6.0 - (PI * radius * radius - outline_area(&params)) * 3.0;
+        let got = volume(&topo, outcome.solid);
+        assert!(
+            ((got - expected) / expected).abs() < 1e-9,
+            "{teeth} teeth: {got} vs {expected}"
         );
     }
 }

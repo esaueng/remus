@@ -46,8 +46,10 @@
 //! their role, e.g. `tooth[3].flank.plus.end-half`.
 //!
 //! `cutGearTeethDetailed` spec: `kind` (`"external"` for a boss,
-//! `"internal"` for a bore), `teeth`, `faceWidth` (the face's length:
-//! partial spans refuse), `fit` (`"keepDiameter"`, the default, solves the
+//! `"internal"` for a bore), `teeth`, `faceWidth` (along the axis, at most
+//! the face's length), `offset` (from the face's lower end along the axis to
+//! the teeth's first cap, default 0; the cylinder beside the teeth is kept),
+//! `fit` (`"keepDiameter"`, the default, solves the
 //! module so the tip (inner tip) diameter is the cylinder's; `"module"` uses
 //! `module`), the same tooth-form fields as above (including `helixAngle`,
 //! `hand` and `herringbone`), and optional `xDirection` and `phase` (default: the face's
@@ -669,6 +671,8 @@ struct CylinderGearSpec {
     root_fillet: f64,
     tolerance: Option<f64>,
     #[serde(default)]
+    offset: f64,
+    #[serde(default)]
     x_direction: Option<[f64; 3]>,
     #[serde(default)]
     phase: f64,
@@ -722,6 +726,7 @@ impl CylinderGearSpec {
         };
         let options = CylinderGearOptions {
             fit,
+            offset: self.offset,
             x_direction: self.x_direction.map(|v| Vec3::new(v[0], v[1], v[2])),
             phase: self.phase.to_radians(),
         };
@@ -1007,7 +1012,7 @@ fn gear_failure(error: GearError) -> StructuredWasmError {
             geometry,
         } => {
             let argument = match code {
-                GearRefusal::PartialSpan => Some("faceWidth"),
+                GearRefusal::SpanOutsideFace => Some("faceWidth"),
                 GearRefusal::BoreTooLarge => Some("boreDiameter"),
                 GearRefusal::RimTooSmall => Some("rimDiameter"),
                 GearRefusal::ToleranceTooTight => Some("tolerance"),

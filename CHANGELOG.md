@@ -15,11 +15,15 @@ historical predecessor-line records, retained for provenance. The
   exact). Dimensions, guideline warnings and typed `gear:<reason>` refusals
   are returned as data.
 * **operations,wasm:** `cut_gear_teeth` / `cutGearTeethDetailed` cut gear
-  teeth along the whole length of a solid's boss (external) or bore
-  (internal), keeping its diameter or using a given module; the input solid is
-  kept. A feature crossing the tooth band, or a span over part of the face,
-  refuses with a typed `gear:<reason>` code. Gear results now name every gear
-  face (`faceRoles`, e.g. `tooth[3].flank.plus`) and report the `module`.
+  teeth into a solid's boss (external) or bore (internal), keeping its
+  diameter or using a given module; the input solid is kept. External teeth
+  run along the whole face or over a band of it from `offset`, collars of the
+  boss staying on either side, with tips flush or turned down below them;
+  internal teeth span the whole bore. A feature crossing the tooth band, a
+  span reaching past an end of the face (`gear:span-outside-face`) or internal
+  teeth over part of a bore (`gear:partial-span-unsupported`) refuse with a
+  typed `gear:<reason>` code. Gear results now name every gear face
+  (`faceRoles`, e.g. `tooth[3].flank.plus`) and report the `module`.
 * **operations,wasm:** helical gears. `GearParams::helix_angle` and `hand`
   (`helixAngle` in degrees, `hand: "right" | "left"`) make external and
   internal helical gears, standalone or cut into a boss or bore (ISO 21771:
