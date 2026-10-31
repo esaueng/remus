@@ -53,6 +53,7 @@ use crate::OperationsError;
 mod bevel;
 mod cylinder;
 mod enveloping;
+mod hindley_wheel;
 mod jet;
 mod profile;
 mod throat;
@@ -66,6 +67,9 @@ pub use cylinder::{CylinderGearOptions, GearFit, cut_gear_teeth};
 pub use enveloping::{
     EnvelopingWormGeometry, EnvelopingWormOutcome, EnvelopingWormParams, MIN_ENVELOPED_TEETH,
     enveloping_worm_geometry, make_enveloping_worm,
+};
+pub use hindley_wheel::{
+    EnvelopingWheelOptions, EnvelopingWheelOutcome, make_enveloping_worm_wheel,
 };
 pub use worm::{
     MAX_LEAD_ANGLE_DEG, MAX_WORM_STARTS, ThroatedWheelOptions, ThroatedWheelOutcome, WormGeometry,

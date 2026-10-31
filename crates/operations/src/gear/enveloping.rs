@@ -215,29 +215,29 @@ pub struct EnvelopingWormOutcome {
 /// Derived construction quantities, in the worm's local frame: worm axis
 /// `z`, throat at the origin, wheel center at `(0, a, 0)`, wheel axis `x`.
 #[derive(Debug, Clone)]
-struct Hindley {
-    a: f64,
+pub(super) struct Hindley {
+    pub(super) a: f64,
     /// Base circle radius `r_b`.
-    rb: f64,
+    pub(super) rb: f64,
     /// Ratio `i`.
-    ratio: f64,
+    pub(super) ratio: f64,
     /// +1 right hand, −1 left hand.
-    sigma: f64,
-    starts: u32,
-    wheel_teeth: u32,
+    pub(super) sigma: f64,
+    pub(super) starts: u32,
+    pub(super) wheel_teeth: u32,
     /// Half length `h`.
-    half: f64,
-    rho_tip: f64,
-    rho_root: f64,
+    pub(super) half: f64,
+    pub(super) rho_tip: f64,
+    pub(super) rho_root: f64,
     /// Polar angles about the wheel center of the tangent points of tooth
     /// 0's plus and minus flank lines.
-    tangent_plus: f64,
-    tangent_minus: f64,
-    phase: f64,
+    pub(super) tangent_plus: f64,
+    pub(super) tangent_minus: f64,
+    pub(super) phase: f64,
 }
 
 impl Hindley {
-    fn new(params: &EnvelopingWormParams, phase: f64) -> Self {
+    pub(super) fn new(params: &EnvelopingWormParams, phase: f64) -> Self {
         let m = params.module;
         let r2 = 0.5 * m * f64::from(params.wheel_teeth);
         let r1 = 0.5 * m * params.diameter_factor;
@@ -273,7 +273,7 @@ impl Hindley {
 
     /// Polar angle about the wheel center of tooth 0's flank line at
     /// radius `rho ≥ r_b`.
-    fn line_angle(&self, side: ToothSide, rho: f64) -> f64 {
+    pub(super) fn line_angle(&self, side: ToothSide, rho: f64) -> f64 {
         let off = rho
             .mul_add(rho, -self.rb * self.rb)
             .max(0.0)
@@ -355,6 +355,31 @@ impl Hindley {
         let (sw, cw) = w.sin_cos();
         let y = z.mul_add(-sw, self.rb) / cw;
         y.hypot(z)
+    }
+
+    /// A signed margin of a local point inside the worm's material: positive
+    /// inside the hourglass blank and clear of every wheel tooth that cut the
+    /// groove, negative outside; roughly the distance to the nearest of
+    /// those boundaries.
+    pub(super) fn material_margin(&self, p: Point3) -> f64 {
+        let u = p.y().atan2(p.x());
+        let r = p.x().hypot(p.y());
+        let (y, z) = (r - self.a, p.z());
+        let rho = y.hypot(z);
+        let blank = (self.half - z.abs()).min(rho - self.rho_tip);
+        let phi = (FRAC_PI_2 + self.phase - u) / (self.sigma * self.ratio);
+        let pitch = TAU / f64::from(self.wheel_teeth);
+        let angle = z.atan2(y) - phi;
+        let radius = rho.max(self.rb);
+        let lo = self.line_angle(ToothSide::Minus, radius);
+        let width = self.line_angle(ToothSide::Plus, radius) - lo;
+        let offset = (angle - lo).rem_euclid(pitch);
+        let angular = if offset <= width {
+            -offset.min(width - offset)
+        } else {
+            (offset - width).min(pitch - offset)
+        };
+        blank.min((angular * rho).max(rho - self.rho_root))
     }
 
     /// Whether a local point lies inside one of the wheel teeth that cut
@@ -588,11 +613,6 @@ impl World {
 
     fn vector(&self, v: Vec3) -> Vec3 {
         self.e1 * v.x() + self.e2 * v.y() + self.e3 * v.z()
-    }
-
-    fn local(&self, p: Point3) -> Point3 {
-        let d = p - self.origin;
-        Point3::new(d.dot(self.e1), d.dot(self.e2), d.dot(self.e3))
     }
 }
 
@@ -1496,7 +1516,7 @@ fn build(
         let mut edges = cap_edges[end].clone();
         edges.extend(flanks.iter().filter_map(|flank| flank.ends[end]));
         let outward = if end == 1 { e3 } else { -e3 };
-        let loop_edges = cap_loop(topo, &edges, outward, world)?;
+        let loop_edges = cap_loop(topo, &edges, outward)?;
         let wire = topo.add_wire(Wire::new(loop_edges, true)?);
         let mut inner = Vec::new();
         if let Some(circle) = bore_circles[end] {
@@ -1574,13 +1594,12 @@ fn flank_role(h: &Hindley, start: u32, side: ToothSide) -> GearFaceRole {
     }
 }
 
-/// Chain a cap's edges into one loop running counter-clockwise about its
-/// outward normal.
-fn cap_loop(
+/// Chain a planar cap's edges into one loop running counter-clockwise about
+/// its outward normal.
+pub(super) fn cap_loop(
     topo: &Topology,
     edges: &[EdgeId],
     outward: Vec3,
-    world: &World,
 ) -> Result<Vec<OrientedEdge>, GearError> {
     let ends: Vec<(VertexId, VertexId)> = edges
         .iter()
@@ -1605,31 +1624,43 @@ fn cap_loop(
     if used.iter().any(|&u| !u) {
         return Err(unbuildable("an end cap's outline is not one loop"));
     }
-    // Signed area about the outward normal from points along every edge.
-    let origin_point = Point3::new(0.0, 0.0, 0.0);
+    // Signed area in a basis whose cross product is the outward normal, from
+    // points along every edge.
+    let normal = outward
+        .normalize()
+        .map_err(|_| unbuildable("an end cap has no normal"))?;
+    let helper = if normal.x().abs() < 0.9 {
+        Vec3::new(1.0, 0.0, 0.0)
+    } else {
+        Vec3::new(0.0, 1.0, 0.0)
+    };
+    let ea = normal
+        .cross(helper)
+        .normalize()
+        .map_err(|_| unbuildable("an end cap has no plane basis"))?;
+    let eb = normal.cross(ea);
     let mut points = Vec::new();
     for oriented in &chain {
         let edge = topo.edge(oriented.edge())?;
-        let (t0, t1) = edge
-            .trim()
-            .ok_or_else(|| unbuildable("an end cap edge has no trim"))?;
+        let start = topo.vertex(edge.start())?.point();
+        let finish = topo.vertex(edge.end())?.point();
+        let (t0, t1) = edge.curve().domain_with_endpoints(start, finish);
+        let (t0, t1) = edge.trim().unwrap_or((t0, t1));
         for i in 0..8 {
             let s = f64::from(i) / 8.0;
             let s = if oriented.is_forward() { s } else { 1.0 - s };
             let t = s.mul_add(t1 - t0, t0);
-            let p = edge
-                .curve()
-                .evaluate_with_endpoints(t, origin_point, origin_point);
-            points.push(world.local(p));
+            let p = edge.curve().evaluate_with_endpoints(t, start, finish);
+            let v = Vec3::new(p.x(), p.y(), p.z());
+            points.push((v.dot(ea), v.dot(eb)));
         }
     }
     let mut area = 0.0;
     for i in 0..points.len() {
         let (p, q) = (points[i], points[(i + 1) % points.len()]);
-        area += p.x().mul_add(q.y(), -q.x() * p.y());
+        area += p.0.mul_add(q.1, -q.0 * p.1);
     }
-    let up = outward.dot(world.e3) > 0.0;
-    if (area > 0.0) != up {
+    if area < 0.0 {
         chain = chain
             .into_iter()
             .rev()
