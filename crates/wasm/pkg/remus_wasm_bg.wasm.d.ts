@@ -256,6 +256,7 @@ export const remuskernel_makeEllipseArc3d: (a: number, b: number, c: number, d: 
 export const remuskernel_makeEllipseEdge: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
 export const remuskernel_makeEllipseEdgeWithRef: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number];
 export const remuskernel_makeEllipsoid: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const remuskernel_makeEnvelopingWormDetailed: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_makeFaceFromWire: (a: number, b: number) => [number, number, number];
 export const remuskernel_makeFaceFromWires: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const remuskernel_makeGearDetailed: (a: number, b: number, c: number) => [number, number, number];

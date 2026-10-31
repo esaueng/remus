@@ -5549,6 +5549,24 @@ class RemusKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Build a double-enveloping (Hindley) worm from a JSON specification,
+     * as typed data (see the module docs for the fields).
+     *
+     * Never throws on a refusal: the envelope's `status` is `"error"` with
+     * a `gear:<reason>` code and the session unchanged.
+     * @param {string} spec
+     * @returns {SolidOperationDetailedResult}
+     */
+    makeEnvelopingWormDetailed(spec) {
+        const ptr0 = passStringToWasm0(spec, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_makeEnvelopingWormDetailed(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Create a face from a wire.
      *
      * Samples the wire's edges and attaches a planar surface only if the
