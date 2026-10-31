@@ -3,9 +3,10 @@
 //! Shoots rays from a sample point and counts boundary crossings
 //! to determine inside/outside status.
 //!
-//! NOTE: `operations/boolean/classify.rs` contains a duplicate of this
-//! logic. Bug fixes should be applied here first; the operations copy
-//! will be deleted during the GFA step 5 switchover.
+//! NOTE: `remus_check::classify` is a second, independent ray classifier;
+//! RFC 0008 (`docs/design/rfc-0008-unified-classification.md`) plans their
+//! merge, and `crates/io/tests/classify_engine_oracle.rs` pins where they
+//! disagree.
 
 use remus_math::predicates::point_in_polygon;
 use remus_math::tolerance::Tolerance;
