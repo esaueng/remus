@@ -288,10 +288,22 @@ pub(super) fn boundary_edges_to_pcurve_with_images(
             })?;
             (su, eu)
         } else {
-            (
-                project_point_on_surface(start_3d, surface, wire_pts, frame)?,
-                project_point_on_surface(end_3d, surface, wire_pts, frame)?,
-            )
+            let start_uv = project_point_on_surface(start_3d, surface, wire_pts, frame)?;
+            let end_uv = project_point_on_surface(end_3d, surface, wire_pts, frame)?;
+            // Each end projects into [0, 2π) on its own, so an arc crossing
+            // the surface's u-seam would read as its complement. The pcurve
+            // follows the arc itself: keep its u sweep from the start.
+            let periodic = super::super::pcurve_compute::surface_periods(surface).0;
+            let end_uv = if let Some(period) = periodic
+                && !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line)
+            {
+                let sweep = pcurve.evaluate(1.0).x() - pcurve.evaluate(0.0).x();
+                let turns = ((start_uv.x() + sweep - end_uv.x()) / period).round();
+                Point2::new(period.mul_add(turns, end_uv.x()), end_uv.y())
+            } else {
+                end_uv
+            };
+            (start_uv, end_uv)
         };
 
         result.push(OrientedPCurveEdge {
