@@ -1501,21 +1501,25 @@ fn separated_cropped_carriers_preserve_approximate_only_policy() {
     shift(&mut topo, b, 0.0, 0.0, 4.0);
     let context =
         OperationContext::new().with_fallback(FallbackPolicy::ApproximateOnly { budget: 0.1 });
-    let counts = live_counts(&topo);
-    let slots = topo.allocated_slot_count();
-    let journal = topo.journal().snapshot();
-    // The existing mesh route rejects this fixture's free boundaries. The
-    // disjoint exact certificate must not bypass an ApproximateOnly request.
-    let error = boolean_with_context(&mut topo, BooleanOp::Fuse, a, b, &context).unwrap_err();
-    assert!(
-        matches!(error, remus_operations::OperationsError::InvalidInput { reason }
-        if reason.contains("non-manifold") && reason.contains("free boundary"))
+    let operands = [operand_geometry(&topo, a), operand_geometry(&topo, b)];
+    // The disjoint exact certificate must not bypass an ApproximateOnly
+    // request: the fuse takes the mesh route and says so.
+    let outcome = boolean_with_context(&mut topo, BooleanOp::Fuse, a, b, &context).unwrap();
+    assert_eq!(
+        outcome.quality,
+        BooleanQuality::Approximate { deflection: 0.1 }
     );
-    assert_eq!(live_counts(&topo), counts);
-    // Failed mesh work may reserve retired handles; rollback preserves their
-    // high-water marks rather than permitting those IDs to alias later work.
-    assert!(topo.allocated_slot_count() >= slots);
-    assert_eq!(topo.journal().snapshot(), journal);
+    // Two half cylinders r 2, h 2, within the mesh's accuracy.
+    let volume = remus_operations::measure::solid_volume(&topo, outcome.solid, 0.1).unwrap();
+    let expected = 2.0 * std::f64::consts::PI * 4.0;
+    assert!(
+        (volume - expected).abs() / expected < 1e-2,
+        "{volume} vs {expected}"
+    );
+    assert_eq!(
+        [operand_geometry(&topo, a), operand_geometry(&topo, b)],
+        operands
+    );
 }
 
 #[test]

@@ -1873,9 +1873,21 @@ fn refine_crossing(
         }
     }
 
+    // The search only narrows the bracket to (2/3)^30 of its width, so a
+    // minimum AT a bracket end (an edge endpoint lying on the surface) would
+    // come back that half-width short of it: 2e-7 along a 5 mm edge sampled
+    // 64 times, past the endpoint window, minting a near-duplicate vertex.
     let t = f64::midpoint(lo, hi);
     let pt = curve.evaluate_with_endpoints(t, start_pos, end_pos);
-    (t, pt)
+    let mut best = (distance_to_surface(pt, surface, grid), t, pt);
+    for end in [t_lo, t_hi] {
+        let end_pt = curve.evaluate_with_endpoints(end, start_pos, end_pos);
+        let d = distance_to_surface(end_pt, surface, grid);
+        if d <= best.0 {
+            best = (d, end, end_pt);
+        }
+    }
+    (best.1, best.2)
 }
 
 /// The edge box for the NURBS-carrier gate: the frame-tight `tight` box

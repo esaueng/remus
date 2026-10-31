@@ -1562,6 +1562,8 @@ fn orient_selected_fuse_analytic_holes(
         }
         let inner_wires = face.inner_wires().to_vec();
         let outer_wire = face.outer_wire();
+        let surface = face.surface().clone();
+        let outer_ring = u_ring_progress(topo, outer_wire, &surface);
         let mut replacements = Vec::with_capacity(inner_wires.len());
 
         for wire_id in inner_wires {
@@ -1569,6 +1571,17 @@ fn orient_selected_fuse_analytic_holes(
                 replacements.clear();
                 break;
             };
+            // Two loops that each wrap the surface's u period (a sphere band
+            // between latitude circles) have no UV area to carry the stored
+            // convention; the hole must simply wrap opposite to the outer
+            // wire, and the splitter may already have it so.
+            if let (Some(outer), Some(inner)) =
+                (outer_ring, u_ring_progress(topo, wire_id, &surface))
+                && (outer > 0.0) != (inner > 0.0)
+            {
+                replacements.push(wire_id);
+                continue;
+            }
             let edges: Vec<_> = wire
                 .edges()
                 .iter()
@@ -1588,6 +1601,39 @@ fn orient_selected_fuse_analytic_holes(
             let _ = topo.set_face_boundary_wires(selected_face.face_id, outer_wire, replacements);
         }
     }
+}
+
+/// The u travel of a wire that wraps the surface's u period once (a ring in
+/// UV), or `None` for a loop that encloses an area there.
+fn u_ring_progress(
+    topo: &Topology,
+    wire_id: remus_topology::wire::WireId,
+    surface: &remus_topology::face::FaceSurface,
+) -> Option<f64> {
+    use std::f64::consts::{PI, TAU};
+    const SAMPLES: u32 = 8;
+    let mut us: Vec<f64> = Vec::new();
+    for oe in topo.wire(wire_id).ok()?.edges() {
+        let edge = topo.edge(oe.edge()).ok()?;
+        let start = topo.vertex(edge.start()).ok()?.point();
+        let end = topo.vertex(edge.end()).ok()?.point();
+        let (t0, t1) = edge.strict_domain().ok()?;
+        let (t0, t1) = if oe.is_forward() { (t0, t1) } else { (t1, t0) };
+        for k in 0..SAMPLES {
+            let t = (t1 - t0).mul_add(f64::from(k) / f64::from(SAMPLES), t0);
+            let (u, _) =
+                surface.project_point(edge.curve().evaluate_with_endpoints(t, start, end))?;
+            let u = match us.last() {
+                Some(&prev) => u + ((prev - u) / TAU).round() * TAU,
+                None => u,
+            };
+            us.push(u);
+        }
+    }
+    let (&first, &last) = (us.first()?, us.last()?);
+    let progress = last - first;
+    // A ring's samples advance most of a turn and close by jumping back.
+    (progress.abs() > 1.5 * PI).then_some(progress)
 }
 
 /// Move a full cylindrical band's classification sample off isolated plane contacts.

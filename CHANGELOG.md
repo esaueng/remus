@@ -15,11 +15,15 @@ historical predecessor-line records, retained for provenance. The
   exact). Dimensions, guideline warnings and typed `gear:<reason>` refusals
   are returned as data.
 * **operations,wasm:** `cut_gear_teeth` / `cutGearTeethDetailed` cut gear
-  teeth along the whole length of a solid's boss (external) or bore
-  (internal), keeping its diameter or using a given module; the input solid is
-  kept. A feature crossing the tooth band, or a span over part of the face,
-  refuses with a typed `gear:<reason>` code. Gear results now name every gear
-  face (`faceRoles`, e.g. `tooth[3].flank.plus`) and report the `module`.
+  teeth into a solid's boss (external) or bore (internal), keeping its
+  diameter or using a given module; the input solid is kept. External teeth
+  run along the whole face or over a band of it from `offset`, collars of the
+  boss staying on either side, with tips flush or turned down below them;
+  internal teeth span the whole bore. A feature crossing the tooth band, a
+  span reaching past an end of the face (`gear:span-outside-face`) or internal
+  teeth over part of a bore (`gear:partial-span-unsupported`) refuse with a
+  typed `gear:<reason>` code. Gear results now name every gear face
+  (`faceRoles`, e.g. `tooth[3].flank.plus`) and report the `module`.
 * **operations,wasm:** helical gears. `GearParams::helix_angle` and `hand`
   (`helixAngle` in degrees, `hand: "right" | "left"`) make external and
   internal helical gears, standalone or cut into a boss or bore (ISO 21771:
@@ -225,6 +229,20 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **algo:** booleans whose coplanar caps put one body's outline inside the
+  other's cap face — a prism standing on a cylinder's cap, a tooth ring fused
+  into a groove of a boss — split that face exactly instead of refusing or,
+  for a few tooth counts, returning a wrong volume. A straight section that
+  crosses nothing on a planar face is kept when it lies in the face; a
+  section circle that never enters a planar face's material no longer weaves
+  a phantom region; vertex-on-edge incidence takes the exact foot on lines
+  and circles; edge-edge crossings found between sampled polylines are
+  settled on the true curves (a flank running up to a rim no longer crosses
+  the rim's polygon short of it); an edge endpoint on a surface is no longer
+  reported a little inside the edge; narrow partial-arc cylinder faces (gear
+  tip and root lands) keep their section arcs; faces left unsplit take the
+  split images of their curved edges; and a rim's quarter-turn arrangement
+  station is not added beside a split already within 1/64 turn of it.
 * **check:** a full-turn cylinder band whose rims arrive in many arcs (a
   collar beside flush gear teeth, its rim split at every tip) integrates over
   its exact `(u, v)` rectangle instead of refusing past the 4096-point trim
