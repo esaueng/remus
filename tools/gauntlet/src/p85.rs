@@ -2090,6 +2090,7 @@ fn validate_all(topology: &Topology, solids: &[SolidId], started: Instant) -> St
                 remus_check::validate::CheckId::VertexOnSurface => "vertex_on_surface",
                 remus_check::validate::CheckId::EdgeNoCurve3D => "edge_no_curve_3d",
                 remus_check::validate::CheckId::EdgeSameParameter => "edge_same_parameter",
+                remus_check::validate::CheckId::EdgeOnSurface => "edge_on_surface",
                 remus_check::validate::CheckId::EdgeRangeValid => "edge_range_valid",
                 remus_check::validate::CheckId::EdgeDegenerate => "edge_degenerate",
                 remus_check::validate::CheckId::EdgeCurveDirection => "edge_curve_direction",

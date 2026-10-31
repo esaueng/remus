@@ -1322,6 +1322,7 @@ fn check_id_code(check: CheckId) -> &'static str {
         CheckId::VertexOnSurface => "vertex_on_surface",
         CheckId::EdgeNoCurve3D => "edge_no_curve_3d",
         CheckId::EdgeSameParameter => "edge_same_parameter",
+        CheckId::EdgeOnSurface => "edge_on_surface",
         CheckId::EdgeRangeValid => "edge_range_valid",
         CheckId::EdgeDegenerate => "edge_degenerate",
         CheckId::EdgeCurveDirection => "edge_curve_direction",
