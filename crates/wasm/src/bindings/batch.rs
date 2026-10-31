@@ -338,6 +338,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "makeWormDetailed"
         | "makeWormWheelDetailed"
         | "makeEnvelopingWormDetailed"
+        | "makeEnvelopingWormWheelDetailed"
         | "cutGearTeethDetailed"
         | "imprintPlanarPolygon"
         | "revolve"
@@ -1812,6 +1813,10 @@ impl RemusKernel {
                 .map_err(StructuredWasmError::from),
             "makeEnvelopingWormDetailed" => {
                 serde_json::to_value(self.make_enveloping_worm_detailed_impl(args))
+                    .map_err(StructuredWasmError::from)
+            }
+            "makeEnvelopingWormWheelDetailed" => {
+                serde_json::to_value(self.make_enveloping_worm_wheel_detailed_impl(args))
                     .map_err(StructuredWasmError::from)
             }
             "makeWormWheelDetailed" => {

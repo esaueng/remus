@@ -666,4 +666,5 @@ fn every_face_of_a_new_gear_has_one_unique_construction_role() {
 mod enveloping;
 mod helical;
 mod herringbone;
+mod hindley_wheel;
 mod worm;

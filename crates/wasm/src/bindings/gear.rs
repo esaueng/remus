@@ -4,13 +4,15 @@
 //! `makeGearDetailed(spec)` builds a new gear body,
 //! `makeBevelGearDetailed(spec)` a straight bevel gear,
 //! `makeWormDetailed(spec)` a worm and `makeWormWheelDetailed(spec)` its
-//! wheel, and
+//! wheel, `makeEnvelopingWormDetailed(spec)` a double-enveloping worm and
+//! `makeEnvelopingWormWheelDetailed(spec)` its wheel, and
 //! `cutGearTeethDetailed(solid, face, spec)` cuts teeth along the whole
 //! length of a solid's cylindrical face (external teeth on a boss, internal
 //! teeth in a bore). Both return the typed [`SolidOperationDetailedResult`]
 //! envelope; the `executeBatch` / `executeBatchV2` ops of the same names take
 //! the spec as their `args` (`makeGearDetailed`, `makeBevelGearDetailed`,
-//! `makeWormDetailed`, `makeWormWheelDetailed`) or as `args.spec` beside
+//! `makeWormDetailed`, `makeWormWheelDetailed`, `makeEnvelopingWormDetailed`,
+//! `makeEnvelopingWormWheelDetailed`) or as `args.spec` beside
 //! `args.solid` and `args.face` (`cutGearTeethDetailed`), so direct and batch
 //! results are identical by construction.
 //!
@@ -133,6 +135,29 @@
 //! diameters, the lead and wrap angles in degrees, and `details.wheelCenter`
 //! and `details.wheelAxis` place the wheel it envelops.
 //!
+//! `makeEnvelopingWormWheelDetailed` takes the worm's tooth-form fields
+//! (`module`, `starts`, `wheelTeeth`, `diameterFactor`, `length`,
+//! `pressureAngle`, `addendum`, `dedendum`, `hand`) with the wheel's own
+//! `faceWidth` and optional `backlash` (on its pitch circle),
+//! `outsideDiameter` (beside the throat, default the throat diameter plus
+//! one module), `tolerance`, `boreDiameter` and placement, and builds the
+//! wheel that worm drives. In the wheel's mid-plane its teeth are exactly
+//! the straight-sided teeth the worm was swept by; off it each flank stays
+//! straight in every section, turned and moved so the tooth stays inside
+//! the tooth a hob shaped like the worm (without its backlash, so the two
+//! backlashes add) cuts, with a crease along the mid-plane line where the
+//! hobbed tooth has one. That fit is sampled, not proven:
+//! `details.relief` is the largest sampled gap it leaves inside the hobbed
+//! tooth. Its tips follow the throat torus across the throat and stand at
+//! the outside diameter either side (`tooth[k].throat`,
+//! `tooth[k].tip.start-half` / `.end-half`), and its flank roles are
+//! `tooth[k].flank.plus.start-half` / `.end-half`. `details.geometry`
+//! carries the center distance and the pitch, throat, root and outside
+//! diameters, the throat radius and width, and the flank laws
+//! (`flankTurn`, `flankOffset`, below then above the mid-plane);
+//! `details.wormPlacement` is the placement (`origin`, `axis`,
+//! `xDirection`, `phase` in degrees) that meshes the worm with it.
+//!
 //! Unknown keys refuse, so a misspelled option never silently falls back to
 //! its default. Angles are degrees at this boundary and radians natively,
 //! as for `revolve`.
@@ -161,11 +186,12 @@ use wasm_bindgen::prelude::*;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::gear::{
     BevelGearGeometry, BevelGearOutcome, BevelGearParams, CylinderGearOptions,
-    EnvelopingWormGeometry, EnvelopingWormOutcome, EnvelopingWormParams, GearError, GearFit,
-    GearGeometry, GearKind, GearOutcome, GearParams, GearPlacement, GearRefusal, GearWarning, Hand,
-    ThroatedWheelOptions, WormGeometry, WormOutcome, WormParams, bevel_gear_geometry,
-    cut_gear_teeth, enveloping_worm_geometry, make_bevel_gear, make_enveloping_worm, make_gear,
-    make_throated_worm_wheel, make_worm, worm_geometry, worm_wheel,
+    EnvelopingWheelOptions, EnvelopingWheelOutcome, EnvelopingWormGeometry, EnvelopingWormOutcome,
+    EnvelopingWormParams, GearError, GearFit, GearGeometry, GearKind, GearOutcome, GearParams,
+    GearPlacement, GearRefusal, GearWarning, Hand, ThroatedWheelOptions, WormGeometry, WormOutcome,
+    WormParams, bevel_gear_geometry, cut_gear_teeth, enveloping_worm_geometry, make_bevel_gear,
+    make_enveloping_worm, make_enveloping_worm_wheel, make_gear, make_throated_worm_wheel,
+    make_worm, worm_geometry, worm_wheel,
 };
 
 use crate::error::StructuredWasmError;
@@ -435,6 +461,67 @@ impl EnvelopingWormSpec {
         };
         let placement = placement_of(self.origin, self.axis, self.x_direction, self.phase);
         (params, placement)
+    }
+}
+
+/// The JSON double-enveloping wheel specification (see the module docs).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct EnvelopingWheelSpec {
+    module: f64,
+    starts: u32,
+    wheel_teeth: u32,
+    diameter_factor: f64,
+    length: f64,
+    #[serde(default = "default_pressure_angle")]
+    pressure_angle: f64,
+    #[serde(default = "default_addendum")]
+    addendum: f64,
+    #[serde(default = "default_dedendum")]
+    dedendum: f64,
+    #[serde(default)]
+    hand: HandSpec,
+    face_width: f64,
+    #[serde(default)]
+    backlash: f64,
+    outside_diameter: Option<f64>,
+    tolerance: Option<f64>,
+    bore_diameter: Option<f64>,
+    #[serde(default)]
+    origin: Option<[f64; 3]>,
+    #[serde(default)]
+    axis: Option<[f64; 3]>,
+    #[serde(default)]
+    x_direction: Option<[f64; 3]>,
+    #[serde(default)]
+    phase: f64,
+}
+
+impl EnvelopingWheelSpec {
+    fn split(self) -> (EnvelopingWormParams, EnvelopingWheelOptions, GearPlacement) {
+        let worm = EnvelopingWormParams {
+            module: self.module,
+            starts: self.starts,
+            wheel_teeth: self.wheel_teeth,
+            diameter_factor: self.diameter_factor,
+            pressure_angle: self.pressure_angle.to_radians(),
+            length: self.length,
+            addendum: self.addendum,
+            dedendum: self.dedendum,
+            backlash: 0.0,
+            hand: self.hand.into(),
+            tolerance: None,
+            bore_diameter: None,
+        };
+        let options = EnvelopingWheelOptions {
+            face_width: self.face_width,
+            backlash: self.backlash,
+            outside_diameter: self.outside_diameter,
+            tolerance: self.tolerance,
+            bore_diameter: self.bore_diameter,
+        };
+        let placement = placement_of(self.origin, self.axis, self.x_direction, self.phase);
+        (worm, options, placement)
     }
 }
 
@@ -826,6 +913,56 @@ fn enveloping_details(outcome: &EnvelopingWormOutcome) -> Map<String, Value> {
     details
 }
 
+fn enveloping_wheel_details(outcome: &EnvelopingWheelOutcome) -> Map<String, Value> {
+    let mut details = Map::new();
+    details.insert("quality".into(), Value::from("approximate"));
+    details.insert(
+        "approximated".into(),
+        Value::from("Hindley wheel flanks off the mid-plane"),
+    );
+    details.insert(
+        "flankDeviationBound".into(),
+        Value::from(outcome.flank_deviation_bound),
+    );
+    details.insert("relief".into(), Value::from(outcome.relief));
+    details.insert(
+        "geometry".into(),
+        json!({
+            "centerDistance": outcome.center_distance,
+            "pitchDiameter": outcome.pitch_diameter,
+            "throatDiameter": outcome.throat_diameter,
+            "rootDiameter": outcome.root_diameter,
+            "outsideDiameter": outcome.outside_diameter,
+            "throatRadius": outcome.throat_radius,
+            "throatWidth": outcome.throat_width,
+            "flankTurn": outcome.flank_turn,
+            "flankOffset": outcome.flank_offset,
+        }),
+    );
+    let placement = &outcome.worm_placement;
+    let (o, a, x) = (placement.origin, placement.axis, placement.x_direction);
+    details.insert(
+        "wormPlacement".into(),
+        json!({
+            "origin": [o.x(), o.y(), o.z()],
+            "axis": [a.x(), a.y(), a.z()],
+            "xDirection": [x.x(), x.y(), x.z()],
+            "phase": placement.phase.to_degrees(),
+        }),
+    );
+    details.insert(
+        "faceRoles".into(),
+        Value::Array(
+            outcome
+                .face_roles
+                .iter()
+                .map(|(face, role)| json!({ "face": face_id_to_u32(*face), "role": role.name() }))
+                .collect(),
+        ),
+    );
+    details
+}
+
 fn enveloping_geometry_json(geometry: &EnvelopingWormGeometry) -> Value {
     json!({
         "centerDistance": geometry.center_distance,
@@ -966,6 +1103,26 @@ impl RemusKernel {
             Err(error) => SolidOperationDetailedResult::error(
                 StructuredWasmError::invalid_json(&error)
                     .with_direct_operation("makeEnvelopingWorm"),
+            ),
+        };
+        Ok(result.into_ts()?)
+    }
+
+    /// Build the wheel a double-enveloping (Hindley) worm drives from a JSON
+    /// specification, as typed data (see the module docs for the fields).
+    ///
+    /// Never throws on a refusal: the envelope's `status` is `"error"` with
+    /// a `gear:<reason>` code and the session unchanged.
+    #[wasm_bindgen(js_name = "makeEnvelopingWormWheelDetailed")]
+    pub fn make_enveloping_worm_wheel_detailed(
+        &mut self,
+        spec: &str,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        let result = match serde_json::from_str::<Value>(spec) {
+            Ok(value) => self.make_enveloping_worm_wheel_detailed_impl(&value),
+            Err(error) => SolidOperationDetailedResult::error(
+                StructuredWasmError::invalid_json(&error)
+                    .with_direct_operation("makeEnvelopingWormWheel"),
             ),
         };
         Ok(result.into_ts()?)
@@ -1147,6 +1304,45 @@ impl RemusKernel {
             }
             Err(error) => SolidOperationDetailedResult::error(
                 error.with_direct_operation("makeEnvelopingWorm"),
+            ),
+        }
+    }
+
+    pub(crate) fn make_enveloping_worm_wheel_detailed_impl(
+        &mut self,
+        spec: &Value,
+    ) -> SolidOperationDetailedResult {
+        let result = (|| -> Result<(u32, Map<String, Value>), StructuredWasmError> {
+            let spec = EnvelopingWheelSpec::deserialize(spec).map_err(|error| {
+                StructuredWasmError::invalid_argument(
+                    format!("invalid enveloping worm wheel spec: {error}"),
+                    None,
+                )
+            })?;
+            let (worm, options, placement) = spec.split();
+            let outcome = make_enveloping_worm_wheel(self.topo_mut(), &worm, &options, &placement)
+                .map_err(|error| {
+                    // Attach the worm's dimensions whenever its parameters
+                    // admit them.
+                    let dimensions = enveloping_worm_geometry(&worm).ok();
+                    let mut structured = gear_failure(error);
+                    if let Some(geometry) = dimensions {
+                        structured = structured
+                            .with_detail("wormGeometry", enveloping_geometry_json(&geometry));
+                    }
+                    structured
+                })?;
+            Ok((
+                solid_id_to_u32(outcome.solid),
+                enveloping_wheel_details(&outcome),
+            ))
+        })();
+        match result {
+            Ok((solid, details)) => {
+                SolidOperationDetailedResult::success_with_details(solid, details)
+            }
+            Err(error) => SolidOperationDetailedResult::error(
+                error.with_direct_operation("makeEnvelopingWormWheel"),
             ),
         }
     }

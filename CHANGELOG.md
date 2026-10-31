@@ -71,6 +71,16 @@ historical predecessor-line records, retained for provenance. The
   `tooth[k].tip[p]` and `root[k][p]` name the patches from the start cap.
   `GearFaceRole` gains `FlankPiece`, `TipPiece` and `RootPiece`, which breaks
   exhaustive matches on it.
+* **operations,wasm:** double-enveloping (Hindley) worm wheels.
+  `make_enveloping_worm_wheel` / `makeEnvelopingWormWheelDetailed` build the
+  wheel a Hindley worm drives. Its mid-plane teeth are exactly the
+  straight-sided teeth the worm was swept by. Off the mid-plane each flank
+  stays straight in every section and is fitted inside the tooth a hob of
+  the worm's shape cuts; the hobbed tooth is creased along the mid-plane
+  line, so each flank is two faces meeting there. The fit is sampled, not
+  proven (`relief`, the largest sampled gap). Tips follow the throat torus
+  and stand at the outside diameter beside it; flanks are certified ruled
+  patches (`flankDeviationBound`).
 * **math:** `nurbs::screw` fits helices and screw-motion swept surfaces as
   NURBS with a proven bound; fits sharing one plan share their knots, so
   neighbouring faces and edges match exactly.
