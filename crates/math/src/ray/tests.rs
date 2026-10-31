@@ -441,12 +441,6 @@ fn torus_tangent_lines_never_read_as_one_crossing() {
     let mut total = 0usize;
     for &s in &[1e-3, 0.37, 1.0, 13.0, 1e3] {
         for &offset in &[0.0, 1e3, 1e6] {
-            // Past a 1e6 coordinate-to-tube ratio the quartic solve itself
-            // (an absolute finite-difference Newton polish and residual
-            // filter) misplaces near-tangent roots; that is not this layer's.
-            if offset > 1e6 * s {
-                continue;
-            }
             let by = shift(offset);
             let tor =
                 ToroidalSurface::new(Point3::new(by.x(), by.y(), by.z()), 3.0 * s, s).unwrap();
