@@ -2825,7 +2825,28 @@ impl FaceExtent {
                 }
                 (max_x - min_x).min(max_y - min_y).abs()
             }
-            Self::Analytic { v0, v1, .. } => (v1 - v0).abs(),
+            Self::Analytic {
+                surface,
+                v0,
+                v1,
+                u_gap,
+                ..
+            } => {
+                // A partial-arc patch (a gear tooth's tip land) can be far
+                // narrower around the axis than along it.
+                let width = match (surface, u_gap) {
+                    (FaceSurface::Cylinder(c), Some((g0, g1))) => {
+                        c.radius()
+                            * (std::f64::consts::TAU - (g1 - g0).rem_euclid(std::f64::consts::TAU))
+                    }
+                    (FaceSurface::Cone(c), Some((g0, g1))) => {
+                        c.radius_at(*v0).abs().min(c.radius_at(*v1).abs())
+                            * (std::f64::consts::TAU - (g1 - g0).rem_euclid(std::f64::consts::TAU))
+                    }
+                    _ => f64::INFINITY,
+                };
+                (v1 - v0).abs().min(width)
+            }
             Self::Hemisphere { radius, .. } => *radius,
             Self::Nurbs { surface, poly, .. } => {
                 let (mut min_u, mut max_u) = (f64::INFINITY, f64::NEG_INFINITY);

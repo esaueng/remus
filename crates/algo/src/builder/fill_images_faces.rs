@@ -965,17 +965,12 @@ fn rebuild_face_with_edge_images(
         (surface, is_reversed, outer_edges, inner_edges_list)
     };
 
-    // Only expand LINE edges with multi-split images. Curved edges
-    // (Circle, Ellipse, NURBS) need special angular-range handling
-    // that this simple expand_edge doesn't support.
+    // Only expand edges `expand_edge` can order: lines and open curves.
     let has_multi_split = outer_edges
         .iter()
         .chain(inner_edges_list.iter().flatten())
         .any(|(eid, _)| {
-            non_degenerate_image_count(topo, *eid, edge_images) > 1
-                && topo
-                    .edge(*eid)
-                    .is_ok_and(|e| matches!(e.curve(), remus_topology::edge::EdgeCurve::Line))
+            non_degenerate_image_count(topo, *eid, edge_images) > 1 && expandable(topo, *eid)
         });
 
     if !has_multi_split {
@@ -1040,8 +1035,17 @@ fn non_degenerate_image_count(
     })
 }
 
+/// Whether `expand_edge` may replace an edge by its images: a line, or an
+/// open curve. A closed curve's images start at its seam, which a wire using
+/// it from another vertex cannot follow.
+fn expandable(topo: &Topology, eid: EdgeId) -> bool {
+    topo.edge(eid).is_ok_and(|e| {
+        matches!(e.curve(), remus_topology::edge::EdgeCurve::Line) || e.start() != e.end()
+    })
+}
+
 /// Expand a single edge into its multi-split image edges.
-/// Only expands Line edges with 2+ non-degenerate children; keeps
+/// Only expands lines and open curves with 2+ non-degenerate children; keeps
 /// everything else (including edges whose only extra images are
 /// zero-length stubs) as-is.
 fn expand_edge(
@@ -1050,11 +1054,7 @@ fn expand_edge(
     fwd: bool,
     edge_images: &DetHashMap<EdgeId, Vec<EdgeId>>,
 ) -> Vec<OrientedEdge> {
-    // Only expand Line edges
-    if !topo
-        .edge(eid)
-        .is_ok_and(|e| matches!(e.curve(), remus_topology::edge::EdgeCurve::Line))
-    {
+    if !expandable(topo, eid) {
         return vec![OrientedEdge::new(eid, fwd)];
     }
     let real_imgs: Vec<EdgeId> = match edge_images.get(&eid) {
@@ -1066,6 +1066,17 @@ fn expand_edge(
         None => return vec![OrientedEdge::new(eid, fwd)],
     };
     if real_imgs.len() < 2 {
+        return vec![OrientedEdge::new(eid, fwd)];
+    }
+    // The images run in parameter order from the parent's start; a curved
+    // parent whose children do not chain that way keeps its original edge.
+    let chained = real_imgs
+        .windows(2)
+        .all(|pair| match (topo.edge(pair[0]), topo.edge(pair[1])) {
+            (Ok(a), Ok(b)) => a.end() == b.start(),
+            _ => false,
+        });
+    if !chained {
         return vec![OrientedEdge::new(eid, fwd)];
     }
     if fwd {
@@ -2211,6 +2222,7 @@ fn build_section_edges(
         Ok(f) => f,
         Err(_) => return Ok(Vec::new()),
     };
+    let plane_material = PlaneMaterial::new(topo, face);
 
     // Pre-compute wire points for PCurve (needed for plane frame).
     let wire_pts: Vec<Point3> = topo
@@ -2264,6 +2276,18 @@ fn build_section_edges(
                 };
                 if closed_curve_coincides_with_boundary(topo, face_id, &curve_ds.curve, tol)
                     && circle_inside_face(topo, partner, &curve_ds.curve, tol)?
+                {
+                    continue;
+                }
+
+                // A circle that leaves a plane face and never enters its
+                // material bounds no region of it: a collar's rim against a
+                // tooth outline that only touches it at the tips, or runs
+                // along it over flush tip lands. Threaded in, it weaves a
+                // phantom region from the outline out to the circle.
+                if matches!(curve_ds.curve, EdgeCurve::Circle(_))
+                    && let Some(material) = &plane_material
+                    && curved_section_misses_material(material, &sample_curve_interior(curve_ds))
                 {
                     continue;
                 }
@@ -3527,16 +3551,14 @@ fn clip_line_to_face_boundary(
     clip_line_to_face_extent(topo, face_id, line_start, line_end, tol, true)
 }
 
-fn clip_line_to_face_extent(
-    topo: &Topology,
-    face_id: FaceId,
-    line_start: Point3,
-    line_end: Point3,
-    tol: f64,
-    discard_boundary_retraces: bool,
-) -> Option<Vec<(Point3, Point3)>> {
-    let face = topo.face(face_id).ok()?;
-    let wire = topo.wire(face.outer_wire()).ok()?;
+/// A wire's edges as oriented chord segments, and the true geometry of each
+/// curved one (`None` for a straight one).
+type WireBoundary = (Vec<(Point3, Point3)>, Vec<Option<BoundaryArc>>);
+
+/// A wire's edges as oriented chord segments, with the true geometry of each
+/// curved edge (`None` for a straight one).
+fn wire_boundary(topo: &Topology, wire_id: remus_topology::wire::WireId) -> Option<WireBoundary> {
+    let wire = topo.wire(wire_id).ok()?;
 
     // Collect boundary edges as line segments (vertex positions in traversal
     // order); for curved edges keep the geometry so the section line can be
@@ -3575,6 +3597,163 @@ fn clip_line_to_face_extent(
             }
         }
     }
+
+    Some((boundary_segments, boundary_arcs))
+}
+
+/// The arc-true polygon of a wire in a plane face's frame: each edge's start
+/// vertex, then dense samples along each curved edge.
+fn wire_arc_polygon(
+    boundary_segments: &[(Point3, Point3)],
+    boundary_arcs: &[Option<BoundaryArc>],
+    frame: &crate::builder::plane_frame::PlaneFrame,
+) -> Vec<remus_math::vec::Point2> {
+    let mut poly = Vec::new();
+    for (seg_idx, (sp, ep)) in boundary_segments.iter().enumerate() {
+        poly.push(frame.project(*sp));
+        if let Some((curve, asp, aep, closed, trim)) = &boundary_arcs[seg_idx] {
+            // Dense sampling: at 12 samples an r=4 quarter-arc's chord
+            // sagitta is ~0.14 — larger than the ~0.1 mm groove-mouth
+            // slivers this polygon must classify. 96 samples keep the
+            // polygon error well under the features decided by it.
+            //
+            // A CLOSED rim edge (a disc rim: the same seam vertex at both
+            // ends) has a degenerate endpoint span — `evaluate_edge_at_t`
+            // would collapse every sample to the seam and the polygon to
+            // a point, so everything but the seam neighbourhood
+            // classified outside (the lite pad top-disc's wall chords).
+            // Sample its full period from the seam angle instead.
+            // Closedness is vertex IDENTITY, so a genuine open arc with
+            // near-coincident endpoints keeps the span sampling.
+            if *closed && let EdgeCurve::Circle(c) = curve {
+                let a_seam = c.project(*asp);
+                for k in 1..96 {
+                    let a = std::f64::consts::TAU.mul_add(f64::from(k) / 96.0, a_seam);
+                    poly.push(frame.project(c.evaluate(a)));
+                }
+            } else if *closed && let EdgeCurve::Ellipse(el) = curve {
+                let a_seam = el.project(*asp);
+                for k in 1..96 {
+                    let a = std::f64::consts::TAU.mul_add(f64::from(k) / 96.0, a_seam);
+                    poly.push(frame.project(el.evaluate(a)));
+                }
+            } else {
+                let Some(domain) = *trim else {
+                    continue;
+                };
+                for k in 1..96 {
+                    let f = f64::from(k) / 96.0;
+                    let p3 =
+                        super::pcurve_compute::evaluate_edge_at_t(curve, *asp, *aep, domain, f);
+                    poly.push(frame.project(p3));
+                }
+            }
+        }
+        let _ = ep;
+    }
+    poly
+}
+
+/// Whether no sample lies strictly in the material while some sample lies
+/// strictly outside it. A curve on the boundary has neither.
+fn curved_section_misses_material(material: &PlaneMaterial, samples: &[Point3]) -> bool {
+    !samples.iter().any(|&p| material.strictly_in_material(p))
+        && samples
+            .iter()
+            .any(|&p| material.strictly_out_of_material(p))
+}
+
+/// A plane face's outer wire and holes as arc-true polygons in one frame.
+struct PlaneMaterial {
+    frame: crate::builder::plane_frame::PlaneFrame,
+    outer: Vec<remus_math::vec::Point2>,
+    holes: Vec<Vec<remus_math::vec::Point2>>,
+}
+
+impl PlaneMaterial {
+    fn new(topo: &Topology, face: &remus_topology::face::Face) -> Option<Self> {
+        let FaceSurface::Plane { normal, .. } = face.surface() else {
+            return None;
+        };
+        let (segments, arcs) = wire_boundary(topo, face.outer_wire())?;
+        let starts: Vec<Point3> = segments.iter().map(|&(s, _)| s).collect();
+        let frame = crate::builder::plane_frame::PlaneFrame::from_plane_face(*normal, &starts);
+        let outer = wire_arc_polygon(&segments, &arcs, &frame);
+        let holes = face
+            .inner_wires()
+            .iter()
+            .filter_map(|&wire| wire_boundary(topo, wire))
+            .map(|(segments, arcs)| wire_arc_polygon(&segments, &arcs, &frame))
+            .collect();
+        Some(Self {
+            frame,
+            outer,
+            holes,
+        })
+    }
+
+    /// Inside `poly` and clear of its boundary band.
+    fn strictly_in(poly: &[remus_math::vec::Point2], p: remus_math::vec::Point2) -> bool {
+        use crate::builder::classify_2d::{
+            boundary_eps, distance_to_polygon_boundary, point_in_polygon_2d,
+        };
+        point_in_polygon_2d(p, poly) && distance_to_polygon_boundary(p, poly) > boundary_eps(poly)
+    }
+
+    /// Outside `poly` and clear of its boundary band.
+    fn strictly_out(poly: &[remus_math::vec::Point2], p: remus_math::vec::Point2) -> bool {
+        use crate::builder::classify_2d::{
+            boundary_eps, distance_to_polygon_boundary, point_in_polygon_2d,
+        };
+        !point_in_polygon_2d(p, poly) && distance_to_polygon_boundary(p, poly) > boundary_eps(poly)
+    }
+
+    fn in_hole(&self, p: remus_math::vec::Point2) -> bool {
+        self.holes
+            .iter()
+            .any(|hole| crate::builder::classify_2d::point_in_polygon_2d(p, hole))
+    }
+
+    /// Strictly inside the face's material, off every boundary.
+    fn strictly_in_material(&self, p: Point3) -> bool {
+        let p = self.frame.project(p);
+        Self::strictly_in(&self.outer, p)
+            && self.holes.iter().all(|hole| Self::strictly_out(hole, p))
+    }
+
+    /// Strictly outside the face's material, off every boundary.
+    fn strictly_out_of_material(&self, p: Point3) -> bool {
+        let p = self.frame.project(p);
+        Self::strictly_out(&self.outer, p)
+            || self.holes.iter().any(|hole| Self::strictly_in(hole, p))
+    }
+
+    /// Whether a segment that does not cross the outer wire lies in the
+    /// material: strictly inside the outer wire, and with some point outside
+    /// every hole. Holed faces take whole sections (their weave splits them
+    /// against the holes), so a section is kept when any of its probes is in
+    /// material.
+    fn holds_uncrossed_segment(&self, start: Point3, end: Point3) -> bool {
+        // No outer crossing: the midpoint decides for the whole segment.
+        if !Self::strictly_in(&self.outer, self.frame.project(start + (end - start) * 0.5)) {
+            return false;
+        }
+        [0.25, 0.5, 0.75]
+            .into_iter()
+            .any(|t| !self.in_hole(self.frame.project(start + (end - start) * t)))
+    }
+}
+
+fn clip_line_to_face_extent(
+    topo: &Topology,
+    face_id: FaceId,
+    line_start: Point3,
+    line_end: Point3,
+    tol: f64,
+    discard_boundary_retraces: bool,
+) -> Option<Vec<(Point3, Point3)>> {
+    let face = topo.face(face_id).ok()?;
+    let (boundary_segments, boundary_arcs) = wire_boundary(topo, face.outer_wire())?;
 
     let line_dir = line_end - line_start;
     let line_len = line_dir.length();
@@ -3728,6 +3907,16 @@ fn clip_line_to_face_extent(
         {
             return Some(vec![(line_start, line_end)]);
         }
+        // A plane face's section that never crosses its outer wire lies
+        // wholly inside or wholly outside it: a coplanar cap's outline (a
+        // prism standing on a disc, gear teeth against a collar's annular
+        // cap) runs inside the face and must split it.
+        if only_endpoint_crossings
+            && PlaneMaterial::new(topo, face)
+                .is_some_and(|material| material.holds_uncrossed_segment(line_start, line_end))
+        {
+            return Some(vec![(line_start, line_end)]);
+        }
         return None;
     }
 
@@ -3772,52 +3961,9 @@ fn clip_line_to_face_extent(
         | FaceSurface::Sphere(_)
         | FaceSurface::Torus(_) => None,
     };
-    let poly: Option<Vec<remus_math::vec::Point2>> = plane_frame.as_ref().map(|frame| {
-        let mut poly = Vec::new();
-        for (seg_idx, (sp, ep)) in boundary_segments.iter().enumerate() {
-            poly.push(frame.project(*sp));
-            if let Some((curve, asp, aep, closed, trim)) = &boundary_arcs[seg_idx] {
-                // Dense sampling: at 12 samples an r=4 quarter-arc's chord
-                // sagitta is ~0.14 — larger than the ~0.1 mm groove-mouth
-                // slivers this polygon must classify. 96 samples keep the
-                // polygon error well under the features decided by it.
-                //
-                // A CLOSED rim edge (a disc rim: the same seam vertex at both
-                // ends) has a degenerate endpoint span — `evaluate_edge_at_t`
-                // would collapse every sample to the seam and the polygon to
-                // a point, so everything but the seam neighbourhood
-                // classified outside (the lite pad top-disc's wall chords).
-                // Sample its full period from the seam angle instead.
-                // Closedness is vertex IDENTITY, so a genuine open arc with
-                // near-coincident endpoints keeps the span sampling.
-                if *closed && let EdgeCurve::Circle(c) = curve {
-                    let a_seam = c.project(*asp);
-                    for k in 1..96 {
-                        let a = std::f64::consts::TAU.mul_add(f64::from(k) / 96.0, a_seam);
-                        poly.push(frame.project(c.evaluate(a)));
-                    }
-                } else if *closed && let EdgeCurve::Ellipse(el) = curve {
-                    let a_seam = el.project(*asp);
-                    for k in 1..96 {
-                        let a = std::f64::consts::TAU.mul_add(f64::from(k) / 96.0, a_seam);
-                        poly.push(frame.project(el.evaluate(a)));
-                    }
-                } else {
-                    let Some(domain) = *trim else {
-                        continue;
-                    };
-                    for k in 1..96 {
-                        let f = f64::from(k) / 96.0;
-                        let p3 =
-                            super::pcurve_compute::evaluate_edge_at_t(curve, *asp, *aep, domain, f);
-                        poly.push(frame.project(p3));
-                    }
-                }
-            }
-            let _ = ep;
-        }
-        poly
-    });
+    let poly: Option<Vec<remus_math::vec::Point2>> = plane_frame
+        .as_ref()
+        .map(|frame| wire_arc_polygon(&boundary_segments, &boundary_arcs, frame));
 
     // Midpoint classification only steers hole-free faces: a holed face's
     // sections are the hole weave's input, and that machinery (promotion,

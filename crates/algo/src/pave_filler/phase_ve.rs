@@ -261,8 +261,36 @@ fn project_point_on_edge(
             lo = m1;
         }
     }
+    let searched = f64::midpoint(lo, hi);
 
-    Ok(f64::midpoint(lo, hi))
+    // The search leaves the parameter within (2/3)^20 of two sample spans,
+    // about 1e-5 of the edge's length: on a 0.7 mm tip-land arc that is
+    // 7e-6 off the foot, so a vertex lying exactly on the arc failed the
+    // 1e-7 incidence test. Lines and circles have a closed-form foot; take
+    // it when it lies in the domain.
+    let exact = match edge.curve() {
+        EdgeCurve::Line => {
+            let d = end_pos - start_pos;
+            let len_sq = d.length_squared();
+            (len_sq > 0.0).then(|| (t1 - t0).mul_add((point - start_pos).dot(d) / len_sq, t0))
+        }
+        EdgeCurve::Circle(circle) => {
+            let angle = circle.project(point);
+            // The domain may sit anywhere on the real line (an arc past the
+            // seam runs beyond 2π); take the turn nearest the search.
+            Some(
+                angle
+                    + ((searched - angle) / std::f64::consts::TAU).round() * std::f64::consts::TAU,
+            )
+        }
+        EdgeCurve::Ellipse(_)
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => None,
+    };
+    Ok(exact
+        .filter(|&t| t >= domain_lo && t <= domain_hi)
+        .unwrap_or(searched))
 }
 
 #[cfg(test)]
@@ -275,6 +303,39 @@ mod tests {
     use remus_topology::vertex::Vertex;
 
     use super::*;
+
+    #[test]
+    fn line_and_arc_feet_are_exact_far_from_the_samples() {
+        // A 0.7 mm arc of an r 12 circle and a long line, each with a point
+        // between two of the 32 search samples.
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            12.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let mut topo = Topology::new();
+        let (t0, t1) = (6.25, 6.25 + 0.0588);
+        let a = topo.add_vertex(Vertex::new(circle.evaluate(t0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(circle.evaluate(t1), 1e-7));
+        let mut arc = Edge::new(a, b, EdgeCurve::Circle(circle.clone()));
+        arc.set_trim(Some((t0, t1)));
+        let arc = topo.add_edge(arc);
+        let t = t0 + 0.0588 * 0.371_234_5;
+        let found = project_point_on_edge(&topo, arc, circle.evaluate(t)).unwrap();
+        assert!((found - t).abs() < 1e-13, "{found} vs {t}");
+
+        let (p, q) = (Point3::new(0.0, 0.0, 0.0), Point3::new(10.0, 3.0, 0.0));
+        let (vp, vq) = (
+            topo.add_vertex(Vertex::new(p, 1e-7)),
+            topo.add_vertex(Vertex::new(q, 1e-7)),
+        );
+        let line = topo.add_edge(Edge::new(vp, vq, EdgeCurve::Line));
+        let s = 0.371_234_5;
+        let found = project_point_on_edge(&topo, line, p + (q - p) * s).unwrap();
+        assert!((found - s).abs() < 1e-13, "{found} vs {s}");
+    }
 
     #[test]
     fn reversed_circle_accepts_and_records_an_interior_vertex() {

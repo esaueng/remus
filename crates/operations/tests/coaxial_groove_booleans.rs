@@ -11,6 +11,9 @@
 //! 4. Planar faces bounded by polynomial NURBS edges: their area, and the
 //!    volume of a boolean result whose ruled NURBS walls start with zero
 //!    speed (an involute flank leaving its base circle).
+//! 5. Tooth caps coplanar with a cylinder's caps: a prism standing on a disc,
+//!    and star-shaped tooth rings fused into grooves, their tips turned down
+//!    below the collars or flush with them.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
 
@@ -553,4 +556,122 @@ fn zero_speed_nurbs_walls_keep_the_exact_volume_at_every_deflection() {
         1e-12,
         "plate on shaft",
     );
+}
+
+// ---------------------------------------------------------------------------
+// 5. Coplanar tooth caps
+// ---------------------------------------------------------------------------
+
+/// The closed polygon through `points` (counter-clockwise, all at the same
+/// height) extruded by `height`, with a hole of radius `bore` if given.
+/// Returns the solid and the extruded area.
+fn polygon_prism(
+    topo: &mut Topology,
+    points: &[Point3],
+    bore: Option<f64>,
+    height: f64,
+) -> (SolidId, f64) {
+    let n = points.len();
+    let z = points[0].z();
+    let vertices: Vec<_> = points
+        .iter()
+        .map(|&p| topo.add_vertex(Vertex::new(p, 1e-7)))
+        .collect();
+    let mut area = 0.0;
+    let mut outline = Vec::new();
+    for k in 0..n {
+        let (a, b) = (points[k], points[(k + 1) % n]);
+        area += 0.5 * a.x().mul_add(b.y(), -(a.y() * b.x()));
+        let edge = Edge::new(vertices[k], vertices[(k + 1) % n], EdgeCurve::Line);
+        outline.push(OrientedEdge::new(topo.add_edge(edge), true));
+    }
+    let holes = bore.map_or_else(Vec::new, |r| {
+        area -= PI * r * r;
+        vec![vec![OrientedEdge::new(
+            circle(topo, r, z, direction(0.0)),
+            false,
+        )]]
+    });
+    (prism(topo, outline, holes, z, height), area)
+}
+
+/// `n` teeth alternating root r 10 and `tip` at height `z`, the first root
+/// 0.01 rad off +x.
+fn star(n: u32, tip: f64, z: f64) -> Vec<Point3> {
+    (0..2 * n)
+        .map(|k| {
+            let radius = if k % 2 == 0 { 10.0 } else { tip };
+            polar(radius, TAU * f64::from(k) / f64::from(2 * n) + 0.01, z)
+        })
+        .collect()
+}
+
+/// A square prism standing on the bottom cap of a cylinder: the square's top
+/// edges lie inside the disc, crossing nothing, and must still split it.
+#[test]
+fn a_prism_standing_on_a_cylinder_cap_fuses_exactly() {
+    let mut topo = Topology::new();
+    let square: Vec<Point3> = (0..4)
+        .map(|k| polar(11.0, TAU * f64::from(k) / 4.0 + 0.01, 0.0))
+        .collect();
+    let (block, area) = polygon_prism(&mut topo, &square, None, 6.0);
+    let cylinder = make_cylinder(&mut topo, 12.0, 4.0).unwrap();
+    transform_solid(&mut topo, cylinder, &Mat4::translation(0.0, 0.0, 6.0)).unwrap();
+    let what = "square on disc";
+    let result = exact_boolean(&mut topo, BooleanOp::Fuse, block, cylinder, what);
+    assert_valid(&topo, result, what);
+    assert_analytic(&topo, result, 8, what);
+    assert_volume(&topo, result, area * 6.0 + PI * 144.0 * 4.0, 1e-12, what);
+}
+
+/// A tooth ring (a star outline around a bore r 9) fused into the groove r
+/// 9..12 it exactly fills along the axis, over the middle of the boss (both
+/// caps against collars) or from its bottom (one). Tips at r 11 are turned
+/// down below the collars, so the outline lies inside their annular caps;
+/// tips at r 12 are flush, touching the collars' rims. Seven wide teeth cross
+/// the rim cylinder at a shallow angle at each tip; three leave the rim
+/// circle outside the ring's caps except where the tips touch it.
+#[test]
+fn star_rings_fuse_into_grooves_exactly() {
+    for teeth in [3_u32, 7, 20] {
+        for tip in [11.0, 12.0] {
+            for (z0, height) in [(2.0, 6.0), (0.0, 6.0)] {
+                let what = format!("{teeth} teeth, tip {tip}, z {z0}..{}", z0 + height);
+                let mut topo = Topology::new();
+                let cylinder = boss(&mut topo);
+                let groove = tube(&mut topo, (9.0, 12.0), (z0, height), direction(0.0));
+                let grooved = exact_boolean(&mut topo, BooleanOp::Cut, cylinder, groove, &what);
+                let (ring, ring_area) =
+                    polygon_prism(&mut topo, &star(teeth, tip, z0), Some(9.0), height);
+                let result = exact_boolean(&mut topo, BooleanOp::Fuse, grooved, ring, &what);
+                assert_valid(&topo, result, &what);
+                let expected = PI * 144.0 * 10.0 - annulus(9.0, 12.0, height) + ring_area * height;
+                assert_volume(&topo, result, expected, 1e-12, &what);
+                let mid = z0 + 0.5 * height;
+                let collar = if z0 > 0.0 { 1.0 } else { 9.0 };
+                for k in 0..teeth {
+                    let root = TAU * f64::from(2 * k) / f64::from(2 * teeth) + 0.01;
+                    let tip_angle = root + PI / f64::from(teeth);
+                    assert_class(
+                        &topo,
+                        result,
+                        polar(10.5, root, mid),
+                        PointClassification::Outside,
+                    );
+                    assert_class(
+                        &topo,
+                        result,
+                        polar(10.2, tip_angle, mid),
+                        PointClassification::Inside,
+                    );
+                    assert_class(
+                        &topo,
+                        result,
+                        polar(11.5, root, collar),
+                        PointClassification::Inside,
+                    );
+                }
+            }
+        }
+    }
 }
