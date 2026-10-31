@@ -3321,6 +3321,14 @@ export class RemusKernel {
      */
     makeEllipsoid(rx: number, ry: number, rz: number): number;
     /**
+     * Build a double-enveloping (Hindley) worm from a JSON specification,
+     * as typed data (see the module docs for the fields).
+     *
+     * Never throws on a refusal: the envelope's `status` is `"error"` with
+     * a `gear:<reason>` code and the session unchanged.
+     */
+    makeEnvelopingWormDetailed(spec: string): SolidOperationDetailedResult;
+    /**
      * Create a face from a wire.
      *
      * Samples the wire's edges and attaches a planar surface only if the
