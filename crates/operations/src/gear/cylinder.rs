@@ -71,11 +71,6 @@ pub enum GearFit {
 pub struct CylinderGearOptions {
     /// Sizing mode.
     pub fit: GearFit,
-    /// Axial distance from the start of the face (its lower end along the
-    /// cylinder's axis) to the teeth's first cap. The teeth then run
-    /// `params.face_width` along the axis and must stay on the face; the
-    /// cylinder outside that span is kept as collars beside the teeth.
-    pub offset: f64,
     /// Reference direction for `phase`; `None` uses the direction of the
     /// face's seam (the cylinder's own x axis when the face has none).
     pub x_direction: Option<Vec3>,
@@ -87,16 +82,14 @@ impl Default for CylinderGearOptions {
     fn default() -> Self {
         Self {
             fit: GearFit::KeepDiameter,
-            offset: 0.0,
             x_direction: None,
             phase: 0.0,
         }
     }
 }
 
-/// Cut gear teeth into `solid` along its cylindrical `face`, over
-/// `params.face_width` from `options.offset`: the whole face, or a band of
-/// it with collars of the cylinder left on either side.
+/// Cut gear teeth into `solid` along the whole length of its cylindrical
+/// `face`.
 ///
 /// `params.kind` must match the face: [`GearKind::External`] for a boss,
 /// [`GearKind::Internal`] for a bore. `params.module` is ignored under
@@ -112,8 +105,8 @@ impl Default for CylinderGearOptions {
 ///
 /// [`GearError::Refused`] for an out-of-range parameter, a face that is not
 /// a full-turn cylinder of `solid`, a cylinder too
-/// small (or a bore too large) for the requested module, teeth reaching past
-/// either end of the face, a profile that
+/// small (or a bore too large) for the requested module, a face width other
+/// than the face's length, a profile that
 /// cannot be built, or features crossing the tooth band;
 /// [`GearError::Operations`] when a boolean fails. Refusals and failures
 /// leave the topology unchanged.
@@ -144,41 +137,28 @@ pub fn cut_gear_teeth(
             "teeth on a cylinder take their bore or rim from the existing body",
         ));
     }
+    // Teeth span the whole face. A partial span leaves collars of the
+    // cylinder beside the teeth, and the coplanar contact between the gear
+    // ring's tooth-outline caps and the collars' annular caps is one the
+    // exact boolean resolves only for some tooth counts with flush tips, and
+    // not at all with turned-down or internal teeth, so partial spans are
+    // refused.
     let width = params.face_width;
     let length = v1 - v0;
-    let offset = options.offset;
+    let start = v0;
     if !(width.is_finite() && width > 0.0) {
         return Err(GearError::invalid(format!(
             "face width must be positive and finite, got {width}"
         )));
     }
-    if !offset.is_finite() {
-        return Err(GearError::invalid(format!(
-            "offset must be finite, got {offset}"
-        )));
-    }
-    // A span within rounding of an end of the face snaps to it, so a
-    // whole-face request never leaves a sliver collar.
-    let snap = 1e-9 * length.max(radius);
-    let (offset, width) = {
-        let lo = if offset.abs() <= snap { 0.0 } else { offset };
-        let hi = if (offset + width - length).abs() <= snap {
-            length
-        } else {
-            offset + width
-        };
-        (lo, hi - lo)
-    };
-    if offset < 0.0 || offset + width > length {
+    if (width - length).abs() > 1e-9 * length.max(radius) {
         return Err(GearError::refused(
-            GearRefusal::SpanOutsideFace,
+            GearRefusal::PartialSpan,
             format!(
-                "the teeth span {offset}..{} along the face, which is {length} long",
-                offset + width
+                "the teeth must span the whole face ({length} long), got a face width of {width}"
             ),
         ));
     }
-    let start = v0 + offset;
 
     // Boss or bore, from which side of the face is material.
     let mid = start + 0.5 * width;

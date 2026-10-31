@@ -515,8 +515,8 @@ pub enum GearRefusal {
     NotACylinder,
     /// The picked cylinder has material on neither or both sides.
     NotABossOrBore,
-    /// The teeth would reach past an end of the picked face.
-    SpanOutsideFace,
+    /// The teeth would cover only part of the picked face.
+    PartialSpan,
     /// The tip circle is larger than the picked boss.
     CylinderTooSmall,
     /// A hole, slot or other feature crosses the band the teeth rebuild.
@@ -538,7 +538,7 @@ impl GearRefusal {
             Self::ToleranceTooTight => "tolerance-too-tight",
             Self::NotACylinder => "not-a-cylinder",
             Self::NotABossOrBore => "not-a-boss-or-bore",
-            Self::SpanOutsideFace => "span-outside-face",
+            Self::PartialSpan => "partial-span-unsupported",
             Self::CylinderTooSmall => "cylinder-too-small",
             Self::FeaturesInToothRegion => "features-in-tooth-region",
         }
