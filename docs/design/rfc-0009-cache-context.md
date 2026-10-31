@@ -459,7 +459,7 @@ Every stage moves one cache family. Each stage ships with:
 
 | Stage | Family | Work | Public API |
 |---|---|---|---|
-| 0 | none | Warm-cache suite cases and the stats-equality recorder (§4.2, 4.4). Baselines recorded. | none |
+| 0 | none | Warm-cache suite cases and the stats-equality recorder (§4.2, 4.4). Baselines recorded. **Landed:** `run.py --family warm`, `cache_stats.py`; baseline in [`cache-context-stage0-baseline-2026-10-31.md`](../performance/cache-context-stage0-baseline-2026-10-31.md). | none |
 | 1 | Crossing memo (#11), the pilot | `CacheScope`, `CacheProvider` and `OperationContext::caches` (first consumer). `ContentCaches` holding only `crossing`. Kernel owns `CacheContext`, enters in `topo()`/`topo_mut()`. `SolidCrossingMemo` holds the leaf instead of reading `MEMO`. It is already injected through `FaceCrossingMemo`, so this is the smallest change. | Additive: `remus_math::context::{CacheScope, CacheProvider}`, `OperationContext::with_caches`; `remus_operations::cache::CacheContext`; JS `cacheMemoryStats`. `enable_thread_crossing_memo` & co. deprecated. |
 | 2 | Algo memos (#1–#3) | `AlgoCaches`. Resolved once in `boolean_with_context` and carried on the GFA state. The only family on a path that already carries a context, so no ambient read. | `remus_algo::AlgoCaches`; `enable_thread_{pcurve,wire_area,ray_geom}_memo` deprecated |
 | 3 | Face integrals (#4) | `CheckCaches`. `_memoized` functions take `&FaceIntegralCache`; the ambient bridge serves validate and measure. Gate `translated_reuse`. | `remus_check::CheckCaches`; `*_thread_face_cache*` deprecated |

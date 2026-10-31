@@ -105,13 +105,48 @@ class ProtocolTests(unittest.TestCase):
         manifest = json.loads(baseline.MANIFEST.read_text())
         cases = manifest["cases"]
         self.assertEqual(len(cases), len({c["id"] for c in cases}))
-        self.assertEqual({c["family"] for c in cases}, {"nurbs", "transform", "chain", "boolean"})
+        self.assertEqual({c["family"] for c in cases}, {"nurbs", "transform", "chain", "boolean", "warm"})
         for path in ["native_transform_direct", "native_transform_batch", "wasm_transform_direct", "wasm_transform_batch"]:
             self.assertEqual([c["size"] for c in cases if c["scenario"] == path], [50, 200, 400])
         for path in ["native_bool_fuse", "native_bool_refused", "wasm_bool_fuse", "wasm_bool_refused"]:
             self.assertEqual([c["size"] for c in cases if c["scenario"] == path], [50, 200, 400])
         for fixture in manifest["fixtures"]:
             self.assertEqual(baseline.digest(baseline.ROOT / fixture["path"]), fixture["sha256"])
+
+    def test_warm_cases_pair_native_and_wasm_on_the_same_workload(self):
+        cases = [c for c in json.loads(baseline.MANIFEST.read_text())["cases"] if c["family"] == "warm"]
+        native = {(c["scenario"].removeprefix("native_"), c["size"]) for c in cases if c["scenario"].startswith("native_")}
+        wasm = {(c["scenario"].removeprefix("wasm_"), c["size"]) for c in cases if c["scenario"].startswith("wasm_")}
+        self.assertEqual(native, wasm)
+        self.assertEqual({w for w, _ in native}, {"warm_measure", "warm_edit", "warm_cuts", "warm_plate"})
+
+
+class CacheStatsTests(unittest.TestCase):
+    def rows(self, stats):
+        return [{"warmup": i == 0, "metrics": {"cache_stats": s, "cache_entries": {"pcurve": 3},
+                 "phases_ms": {"a": 1.0 + i, "b": 2.0}}} for i, s in enumerate(stats)]
+
+    def test_equal_counters_are_reported_once(self):
+        stats = {"pcurve": {"hits": 4, "misses": 2}}
+        self.assertEqual(baseline.cache_stats(self.rows([stats] * 3)),
+                         {"cache_stats": stats, "cache_entries": {"pcurve": 3}})
+
+    def test_counters_that_differ_between_samples_reject_the_case(self):
+        rows = self.rows([{"pcurve": {"hits": 4}}, {"pcurve": {"hits": 4}}, {"pcurve": {"hits": 5}}])
+        with self.assertRaisesRegex(ValueError, "differ"):
+            baseline.cache_stats(rows)
+
+    def test_counters_missing_from_one_sample_reject_the_case(self):
+        rows = self.rows([{"pcurve": {"hits": 4}}] * 2)
+        del rows[1]["metrics"]["cache_stats"]
+        with self.assertRaisesRegex(ValueError, "missing"):
+            baseline.cache_stats(rows)
+
+    def test_cases_without_counters_report_none(self):
+        self.assertIsNone(baseline.cache_stats([{"metrics": {"points": 1}}]))
+
+    def test_phase_medians_skip_warmup(self):
+        self.assertEqual(baseline.phase_medians(self.rows([{}] * 3)), {"a": 2.5, "b": 2.0})
 
 
 if __name__ == "__main__":

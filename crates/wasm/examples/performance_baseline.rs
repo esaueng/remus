@@ -10,6 +10,10 @@ use remus_math::{
 use remus_wasm::kernel::RemusKernel;
 use serde_json::{Value, json};
 
+#[cfg(feature = "io")]
+#[path = "performance_baseline/warm.rs"]
+mod warm;
+
 const CALLS: usize = 150;
 const MATRIX: [f64; 16] = [
     1., 0., 0., 0.001, 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
@@ -368,6 +372,13 @@ fn emit(scenario: &str, size: usize, sample: usize, warmup: usize, ns: u128, met
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--export-hammer-arena") {
+        assert_eq!(args.len(), 2, "--export-hammer-arena <path>");
+        #[cfg(feature = "io")]
+        return Ok(std::fs::write(&args[1], warm::hammer_arena())?);
+        #[cfg(not(feature = "io"))]
+        return Err("the hammer-holder arena requires --features io".into());
+    }
     assert_eq!(args.len(), 4, "scenario size samples warmup");
     let scenario = args[0].as_str();
     let size: usize = args[1].parse().expect("size");
@@ -402,6 +413,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     bool_refused(size)
                 };
                 emit(scenario, size, sample, warmup, ns, metrics);
+            }
+        }
+        "native_warm_measure" | "native_warm_edit" | "native_warm_cuts" | "native_warm_plate" => {
+            #[cfg(not(feature = "io"))]
+            return Err("warm-cache workloads require --features io".into());
+            #[cfg(feature = "io")]
+            {
+                let arena = (scenario != "native_warm_plate").then(warm::hammer_arena);
+                if scenario == "native_warm_plate" {
+                    assert!((2..=32).contains(&size));
+                } else {
+                    assert_eq!(size, 160, "holder workloads are sized by its face count");
+                }
+                for sample in 0..samples + warmup {
+                    let (ns, metrics) = match scenario {
+                        "native_warm_measure" => warm::measure(arena.as_deref().unwrap()),
+                        "native_warm_edit" => warm::edit(arena.as_deref().unwrap()),
+                        "native_warm_cuts" => warm::cuts(arena.as_deref().unwrap()),
+                        _ => warm::plate(size),
+                    };
+                    emit(scenario, size, sample, warmup, ns, metrics);
+                }
             }
         }
         _ => return Err(format!("unknown scenario: {scenario}").into()),
