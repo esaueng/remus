@@ -601,11 +601,19 @@ fn parallel_plane_cylinder_edge(
     }
     let foot = cylinder.origin() + radial_normal * radial_distance;
     let branch_direction = axis.cross(radial_normal).normalize()?;
-    let half_span = cylinder
-        .radius()
-        .mul_add(cylinder.radius(), -(radial_distance * radial_distance))
-        .max(0.0)
-        .sqrt();
+    // A tangent plane (a blend seam) touches along the foot line. Rounding in
+    // r² − d² is amplified by the square root, so a plane that is tangent
+    // within tolerance would otherwise split into two branches ~1e-7 apart and
+    // leave the rebuilt seam off its own vertices.
+    let half_span = if (cylinder.radius() - radial_distance.abs()).abs() <= tolerance {
+        0.0
+    } else {
+        cylinder
+            .radius()
+            .mul_add(cylinder.radius(), -(radial_distance * radial_distance))
+            .max(0.0)
+            .sqrt()
+    };
     let branches = [
         foot + branch_direction * half_span,
         foot - branch_direction * half_span,
