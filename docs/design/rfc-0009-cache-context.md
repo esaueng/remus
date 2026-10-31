@@ -189,6 +189,15 @@ RFC 0001's context lives in L0 `math`, which cannot name algo or operations
 types. The context therefore carries an opaque handle, in the same way it
 already carries `CancellationToken`:
 
+> **As built (stage 1).** The scope landed as a type-indexed set of parts,
+> not a provider trait: `CacheScope(Arc<Parts>)`, where each layer defines
+> its part type and calls `scope.part::<T>()` (created on first use) or
+> `scope.existing::<T>()`. A provider struct that names every part would
+> have to live in the lowest operations module tier and name types from the
+> higher tiers, which `scripts/check-ops-module-graph.py` (RFC 0007) rejects.
+> With a type-indexed set, no layer names a part above it. The design below
+> is kept as proposed; §5 records what each stage built.
+
 ```rust
 // remus-math (L0)
 pub trait CacheProvider: Send + Sync + fmt::Debug {
@@ -459,9 +468,9 @@ Every stage moves one cache family. Each stage ships with:
 
 | Stage | Family | Work | Public API |
 |---|---|---|---|
-| 0 | none | Warm-cache suite cases and the stats-equality recorder (§4.2, 4.4). Baselines recorded. | none |
-| 1 | Crossing memo (#11), the pilot | `CacheScope`, `CacheProvider` and `OperationContext::caches` (first consumer). `ContentCaches` holding only `crossing`. Kernel owns `CacheContext`, enters in `topo()`/`topo_mut()`. `SolidCrossingMemo` holds the leaf instead of reading `MEMO`. It is already injected through `FaceCrossingMemo`, so this is the smallest change. | Additive: `remus_math::context::{CacheScope, CacheProvider}`, `OperationContext::with_caches`; `remus_operations::cache::CacheContext`; JS `cacheMemoryStats`. `enable_thread_crossing_memo` & co. deprecated. |
-| 2 | Algo memos (#1–#3) | `AlgoCaches`. Resolved once in `boolean_with_context` and carried on the GFA state. The only family on a path that already carries a context, so no ambient read. | `remus_algo::AlgoCaches`; `enable_thread_{pcurve,wire_area,ray_geom}_memo` deprecated |
+| 0 | none | Warm-cache suite cases and the stats-equality recorder (§4.2, 4.4). Baselines recorded. **Landed:** `run.py --family warm`, `cache_stats.py`; baseline in [`cache-context-stage0-baseline-2026-10-31.md`](../performance/cache-context-stage0-baseline-2026-10-31.md). | none |
+| 1 | Crossing memo (#11), the pilot | `CacheScope`, `CacheProvider` and `OperationContext::caches` (first consumer). `ContentCaches` holding only `crossing`. Kernel owns `CacheContext`, enters in `topo()`/`topo_mut()`. `SolidCrossingMemo` holds the leaf instead of reading `MEMO`. It is already injected through `FaceCrossingMemo`, so this is the smallest change. **Landed** as follows. `remus_math::context::CacheScope` is a type-indexed part set with the ambient slot (`ambient`, `enter`, `install`), see §3.2. The crossing memo is a part of the scope, and `SolidCrossingMemo` holds an `Arc` of it; every access uses `try_lock` with the old `try_borrow` fallback. `remus_operations::cache::thread_default_scope` is the thread's scope, created on first use; the kernel holds it (`RemusKernel::caches`), so kernels on one thread still share content hits. Changes from the plan: `OperationContext::caches` waits for stage 2, because no entry point that takes a context reaches the crossing memo (RFC 0001 ground rule 3). The kernel does not enter its scope per call: while every kernel holds the thread's default scope there is nothing to switch, so per-call entering lands with isolated kernels (stage 6). The `CacheContext` owner type lands with the session caches (stage 6). `cacheMemoryStats` reports all eleven content caches plus classification, each tagged `scope: "session"` or `"thread"`. | Additive: `remus_math::context::CacheScope`; `remus_operations::cache::thread_default_scope`; `query::{enable,disable}_crossing_memo`, `set_crossing_memo_limits`, `crossing_memo_stats`, `crossing_memo_content_bytes` (scope-taking); JS `cacheMemoryStats`. The `*_thread_crossing_memo*` functions now act on the thread's default scope and are documented as remaining until stage 8; no `#[deprecated]` attribute, so the oracles run unmodified. |
+| 2 | Algo memos (#1–#3) | `OperationContext::caches` (deferred from stage 1, its first consumer). `AlgoCaches`. Resolved once in `boolean_with_context` and carried on the GFA state. The only family on a path that already carries a context, so no ambient read. | `remus_algo::AlgoCaches`; `enable_thread_{pcurve,wire_area,ray_geom}_memo` deprecated |
 | 3 | Face integrals (#4) | `CheckCaches`. `_memoized` functions take `&FaceIntegralCache`; the ambient bridge serves validate and measure. Gate `translated_reuse`. | `remus_check::CheckCaches`; `*_thread_face_cache*` deprecated |
 | 4 | Measurement (#5–#8) | Volume moves to `SessionCaches`. NURBS area, face box and face-area reuse move to `ContentCaches`. `volume_memo::scoped` becomes an operation-local stand-in passed by `&mut`. Moved as one family because #6 builds on #5's key. | `measure::*_thread_*` deprecated; `setMeasurementReuseEnabled` reads/writes the kernel scope |
 | 5 | Tessellation (#9, #10) | One `TessellationCaches` holding both, sharing one display/quantity budget class. Gate translated hits by `translated_reuse`. | `tessellate::{enable_face_mesh_cache,enable_mesh_reuse,...}` deprecated; `setMeshReuseEnabled` reads/writes the kernel scope |

@@ -36,7 +36,7 @@ mod rolling_ball;
 mod tests;
 mod vertex_snap;
 
-pub(crate) use geometry::{face_surface_normal_at, face_surface_normal_with_grid};
+pub(crate) use crate::tessellate::surface_normal::face_surface_normal_at;
 pub use remus_blend::radius_law::StandardRadiusLaw as FilletRadiusLaw;
 #[allow(deprecated)]
 pub use rolling_ball::fillet_rolling_ball;

@@ -54,34 +54,7 @@ pub fn boolean_kind(op: BooleanOp) -> &'static str {
     }
 }
 
-/// Every face, edge, and vertex of a solid as journal entity keys.
-///
-/// # Errors
-///
-/// Returns [`OperationsError`] if the solid's topology tree contains an
-/// invalid handle.
-pub fn solid_entity_keys(
-    topo: &Topology,
-    solid: SolidId,
-) -> Result<Vec<EntityKey>, OperationsError> {
-    let mut keys = Vec::new();
-    keys.extend(
-        solid_faces(topo, solid)?
-            .into_iter()
-            .map(|id| EntityKey::face(id.index())),
-    );
-    keys.extend(
-        solid_edges(topo, solid)?
-            .into_iter()
-            .map(|id| EntityKey::edge(id.index())),
-    );
-    keys.extend(
-        solid_vertices(topo, solid)?
-            .into_iter()
-            .map(|id| EntityKey::vertex(id.index())),
-    );
-    Ok(keys)
-}
+pub use crate::evolution::solid_entity_keys;
 
 /// Opens a journaled operation, capturing the pre-operation half of its
 /// scope.

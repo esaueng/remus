@@ -387,11 +387,11 @@ fn validate_boundary_history(
             "connected blend removal has duplicate boundary history records",
         ));
     }
-    let source_boundaries: BTreeSet<_> = crate::journal_ops::solid_entity_keys(topo, source)?
+    let source_boundaries: BTreeSet<_> = crate::evolution::solid_entity_keys(topo, source)?
         .into_iter()
         .filter(|key| key.kind != EntityKind::Face)
         .collect();
-    let result_boundaries: BTreeSet<_> = crate::journal_ops::solid_entity_keys(topo, result)?
+    let result_boundaries: BTreeSet<_> = crate::evolution::solid_entity_keys(topo, result)?
         .into_iter()
         .filter(|key| key.kind != EntityKind::Face)
         .collect();
@@ -423,7 +423,7 @@ mod tests {
     use remus_topology::explorer::solid_edges;
 
     use super::*;
-    use crate::test_helpers::{blended_box, cylinder_faces, split_band};
+    use crate::resize_blend::test_fixtures::{blended_box, cylinder_faces, split_band};
 
     /// Run group recognition with a watchdog: a carrier walk that re-queues
     /// faces it already found never terminates, which must fail the test

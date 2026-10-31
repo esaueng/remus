@@ -52,6 +52,9 @@ use crate::OperationsError;
 
 mod bevel;
 mod cylinder;
+mod enveloping;
+mod hindley_wheel;
+mod jet;
 mod profile;
 mod throat;
 mod worm;
@@ -61,6 +64,13 @@ pub use bevel::{
     make_bevel_gear,
 };
 pub use cylinder::{CylinderGearOptions, GearFit, cut_gear_teeth};
+pub use enveloping::{
+    EnvelopingWormGeometry, EnvelopingWormOutcome, EnvelopingWormParams, MIN_ENVELOPED_TEETH,
+    enveloping_worm_geometry, make_enveloping_worm,
+};
+pub use hindley_wheel::{
+    EnvelopingWheelOptions, EnvelopingWheelOutcome, make_enveloping_worm_wheel,
+};
 pub use worm::{
     MAX_LEAD_ANGLE_DEG, MAX_WORM_STARTS, ThroatedWheelOptions, ThroatedWheelOutcome, WormGeometry,
     WormOutcome, WormParams, WormWheel, make_throated_worm_wheel, make_worm, worm_geometry,
@@ -326,6 +336,32 @@ pub enum GearFaceRole {
         /// Index of the tooth before the land.
         gap: u32,
     },
+    /// One ruled patch of an enveloping worm's thread flank, counted from
+    /// the start cap.
+    FlankPiece {
+        /// Thread index.
+        tooth: u32,
+        /// Which flank.
+        side: ToothSide,
+        /// Patch index from the start cap.
+        piece: u32,
+    },
+    /// One torus patch of an enveloping worm's thread tip, counted from the
+    /// start cap.
+    TipPiece {
+        /// Thread index.
+        tooth: u32,
+        /// Patch index from the start cap.
+        piece: u32,
+    },
+    /// One torus patch of an enveloping worm's root floor between threads
+    /// `gap` and `gap + 1`, counted from the start cap.
+    RootPiece {
+        /// Index of the thread before the floor.
+        gap: u32,
+        /// Patch index from the start cap.
+        piece: u32,
+    },
     /// Planar end cap.
     Cap(GearEnd),
     /// Bore of an external gear.
@@ -391,6 +427,13 @@ impl GearFaceRole {
             Self::Tip { tooth } => format!("tooth[{tooth}].tip"),
             Self::Throat { tooth } => format!("tooth[{tooth}].throat"),
             Self::Root { gap } => format!("root[{gap}]"),
+            Self::FlankPiece {
+                tooth,
+                side: s,
+                piece,
+            } => format!("tooth[{tooth}].flank.{}[{piece}]", side(s)),
+            Self::TipPiece { tooth, piece } => format!("tooth[{tooth}].tip[{piece}]"),
+            Self::RootPiece { gap, piece } => format!("root[{gap}][{piece}]"),
             Self::Cap(e) => format!("cap.{}", end(e)),
             Self::Bore => "bore".to_owned(),
             Self::Rim => "rim".to_owned(),
@@ -423,6 +466,19 @@ impl GearFaceRole {
                 tooth: shift(tooth),
             },
             Self::Root { gap } => Self::Root { gap: shift(gap) },
+            Self::FlankPiece { tooth, side, piece } => Self::FlankPiece {
+                tooth: shift(tooth),
+                side,
+                piece,
+            },
+            Self::TipPiece { tooth, piece } => Self::TipPiece {
+                tooth: shift(tooth),
+                piece,
+            },
+            Self::RootPiece { gap, piece } => Self::RootPiece {
+                gap: shift(gap),
+                piece,
+            },
             other => other,
         }
     }

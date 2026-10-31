@@ -5,7 +5,8 @@ use std::f64::consts::PI;
 use remus_topology::Topology;
 
 use super::*;
-use crate::test_helpers::{assert_euler_genus0, assert_volume_near, euler_characteristic};
+use crate::measure::test_support::assert_volume_near;
+use crate::test_utils::{assert_euler_genus0, euler_characteristic};
 
 #[test]
 fn make_box_unit_cube() {

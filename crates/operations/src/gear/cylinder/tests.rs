@@ -449,3 +449,29 @@ fn herringbone_teeth_on_a_boss_keep_its_diameter_and_match_the_standalone_gear()
         "both halves' flanks keep their roles through the fuse"
     );
 }
+
+/// The circles the operation adds start on the phase reference, not on the
+/// face's seam: any reference builds the same teeth.
+#[test]
+fn any_phase_reference_builds_the_same_teeth() {
+    let params = GearParams::standard(GearKind::External, 1.0, 20, 6.0);
+    for degrees in [37.0_f64, 271.0] {
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        let mut topo = Topology::new();
+        let blank = make_cylinder(&mut topo, 11.0, 6.0).unwrap();
+        let face = cylinder_face(&topo, blank, 11.0);
+        let options = CylinderGearOptions {
+            x_direction: Some(Vec3::new(cos, sin, 0.0)),
+            ..CylinderGearOptions::default()
+        };
+        let outcome = cut_gear_teeth(&mut topo, blank, face, &params, &options)
+            .unwrap_or_else(|error| panic!("reference {degrees}°: {error}"));
+        assert_valid_and_watertight(&topo, outcome.solid);
+        let expected = outline_area(&params) * 6.0;
+        let got = volume(&topo, outcome.solid);
+        assert!(
+            ((got - expected) / expected).abs() < 1e-9,
+            "reference {degrees}°: {got} vs {expected}"
+        );
+    }
+}

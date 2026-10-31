@@ -6,15 +6,18 @@ const [pkg, scenario, sizeArg, samplesArg, warmupArg] = process.argv.slice(2);
 const size = Number(sizeArg),
   samples = Number(samplesArg),
   warmup = Number(warmupArg);
-assert(
-  ['wasm_transform_direct', 'wasm_transform_batch', 'wasm_bool_fuse', 'wasm_bool_refused'].includes(
-    scenario,
-  ),
-);
+const WARM = ['wasm_warm_measure', 'wasm_warm_edit', 'wasm_warm_cuts', 'wasm_warm_plate'];
+const COLD = ['wasm_transform_direct', 'wasm_transform_batch', 'wasm_bool_fuse', 'wasm_bool_refused'];
+assert([...COLD, ...WARM].includes(scenario));
 assert(Number.isInteger(size) && size >= 2 && size <= 8192);
 assert(Number.isInteger(samples) && samples >= 1 && samples <= 1000);
 assert(Number.isInteger(warmup) && warmup >= 1 && warmup <= 100);
-const RemusKernel = kernelClass(require(path.join(path.resolve(pkg), 'remus_wasm_node.cjs')));
+const modulePath = path.join(path.resolve(pkg), 'remus_wasm_node.cjs');
+const RemusKernel = kernelClass(require(modulePath));
+if (WARM.includes(scenario)) {
+  require('./warm.cjs').run({ modulePath, kernelClass, scenario, size, samples, warmup });
+  process.exit(0);
+}
 const calls = 150;
 const matrix = [1, 0, 0, 0.001, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 function checked(output, count) {

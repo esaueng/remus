@@ -961,7 +961,7 @@ fn sweep_smooth_closed_path() {
 #[test]
 fn sweep_cw_profile_produces_correct_solid() {
     let path = straight_z_path(3.0);
-    crate::test_helpers::assert_cw_profile_produces_valid_solid(
+    crate::measure::test_support::assert_cw_profile_produces_valid_solid(
         |topo, face| sweep(topo, face, &path).unwrap(),
         3.0,
         0.05,
@@ -1835,7 +1835,7 @@ fn sweep_nonplanar_saddle_profile_is_valid_solid() {
     // A non-planar (saddle) profile swept along a straight path: previously
     // rejected by the planar-only gate, now closed with bilinear caps.
     let mut topo = Topology::new();
-    let profile = crate::test_helpers::make_saddle_profile(&mut topo, 2.0);
+    let profile = crate::fill_face::test_fixtures::make_saddle_profile(&mut topo, 2.0);
     assert!(
         !topo.face(profile).unwrap().surface().is_planar(),
         "saddle profile must be a non-planar face"
@@ -2063,7 +2063,7 @@ fn sweep_smooth_nonplanar_saddle_is_valid_solid() {
     // (~4×4) swept 6 along +Z is a prism of volume ~96 (the bilinear caps fill
     // the non-planar end rings).
     let mut topo = Topology::new();
-    let profile = crate::test_helpers::make_saddle_profile(&mut topo, 2.0);
+    let profile = crate::fill_face::test_fixtures::make_saddle_profile(&mut topo, 2.0);
     assert!(!topo.face(profile).unwrap().surface().is_planar());
     let solid = sweep_smooth(&mut topo, profile, &straight_z_path(6.0)).unwrap();
     assert!(
@@ -2082,7 +2082,7 @@ fn sweep_smooth_nonplanar_saddle_is_valid_solid() {
 #[test]
 fn sweep_with_options_nonplanar_saddle_is_valid_solid() {
     let mut topo = Topology::new();
-    let profile = crate::test_helpers::make_saddle_profile(&mut topo, 2.0);
+    let profile = crate::fill_face::test_fixtures::make_saddle_profile(&mut topo, 2.0);
     let solid = sweep_with_options(
         &mut topo,
         profile,
@@ -2109,8 +2109,8 @@ fn multi_section_sweep_nonplanar_sections_is_valid_solid() {
     // them; loft handles non-planar sections, so saddle sections now work
     // (previously gated by "multi-section sweep profiles must be planar").
     let mut topo = Topology::new();
-    let a = crate::test_helpers::make_saddle_profile(&mut topo, 2.0);
-    let b = crate::test_helpers::make_saddle_profile(&mut topo, 2.0);
+    let a = crate::fill_face::test_fixtures::make_saddle_profile(&mut topo, 2.0);
+    let b = crate::fill_face::test_fixtures::make_saddle_profile(&mut topo, 2.0);
     let solid = multi_section_sweep(
         &mut topo,
         &straight_z_path(6.0),

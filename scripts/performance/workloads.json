@@ -17,6 +17,13 @@
     "straight-chain": {
       "point_rule": "(i, 0, 0), i in 0..size",
       "threshold": 1.1
+    },
+    "drilled-plate": {
+      "plate": [100, 100, 5],
+      "hole_radius": 1.5,
+      "grid": "size x size holes at pitch 100/(size+1), drilled one cut at a time",
+      "slots": 6,
+      "slot": [1, 80, 7]
     }
   },
   "cases": [
@@ -222,6 +229,62 @@
       "scenario": "native_chain",
       "size": 2048,
       "fixture": "straight-chain"
+    },
+    {
+      "id": "native_warm_measure",
+      "family": "warm",
+      "scenario": "native_warm_measure",
+      "size": 160,
+      "fixture": "hammer-holder"
+    },
+    {
+      "id": "native_warm_edit",
+      "family": "warm",
+      "scenario": "native_warm_edit",
+      "size": 160,
+      "fixture": "hammer-holder"
+    },
+    {
+      "id": "native_warm_cuts",
+      "family": "warm",
+      "scenario": "native_warm_cuts",
+      "size": 160,
+      "fixture": "hammer-holder"
+    },
+    {
+      "id": "native_warm_plate_12",
+      "family": "warm",
+      "scenario": "native_warm_plate",
+      "size": 12,
+      "fixture": "drilled-plate"
+    },
+    {
+      "id": "wasm_warm_measure",
+      "family": "warm",
+      "scenario": "wasm_warm_measure",
+      "size": 160,
+      "fixture": "hammer-holder"
+    },
+    {
+      "id": "wasm_warm_edit",
+      "family": "warm",
+      "scenario": "wasm_warm_edit",
+      "size": 160,
+      "fixture": "hammer-holder"
+    },
+    {
+      "id": "wasm_warm_cuts",
+      "family": "warm",
+      "scenario": "wasm_warm_cuts",
+      "size": 160,
+      "fixture": "hammer-holder"
+    },
+    {
+      "id": "wasm_warm_plate_12",
+      "family": "warm",
+      "scenario": "wasm_warm_plate",
+      "size": 12,
+      "fixture": "drilled-plate"
     }
   ]
 }

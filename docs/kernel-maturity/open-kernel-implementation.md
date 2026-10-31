@@ -462,7 +462,7 @@ prerequisite made explicit: gates need baselines to gate.
 
 `crates/topology/src/` (new `spatial.rs`) · consumers:
 `crates/check/src/classify/mod.rs`, `crates/check/src/distance/mod.rs`,
-`crates/operations/src/distance.rs`, `crates/operations/src/boolean/classify.rs`
+`crates/operations/src/distance.rs`
 
 All seven BVH consumers currently rebuild per query. Add a face-level
 AABB/BVH cache keyed by (solid id, journal revision): the evolution

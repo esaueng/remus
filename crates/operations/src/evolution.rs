@@ -660,6 +660,35 @@ fn all_cosurface(input_faces: &[FaceSignature], indices: &[usize], plane_tol: f6
     })
 }
 
+/// Every face, edge, and vertex of a solid as journal entity keys.
+///
+/// # Errors
+///
+/// Returns [`OperationsError`](crate::OperationsError) if the solid's topology tree contains an
+/// invalid handle.
+pub fn solid_entity_keys(
+    topo: &remus_topology::Topology,
+    solid: remus_topology::solid::SolidId,
+) -> Result<Vec<remus_topology::journal::EntityKey>, crate::OperationsError> {
+    let mut keys = Vec::new();
+    keys.extend(
+        remus_topology::explorer::solid_faces(topo, solid)?
+            .into_iter()
+            .map(|id| remus_topology::journal::EntityKey::face(id.index())),
+    );
+    keys.extend(
+        remus_topology::explorer::solid_edges(topo, solid)?
+            .into_iter()
+            .map(|id| remus_topology::journal::EntityKey::edge(id.index())),
+    );
+    keys.extend(
+        remus_topology::explorer::solid_vertices(topo, solid)?
+            .into_iter()
+            .map(|id| remus_topology::journal::EntityKey::vertex(id.index())),
+    );
+    Ok(keys)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

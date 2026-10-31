@@ -25,13 +25,22 @@
 //!
 //! # Bounds and lifetime
 //!
-//! Off by default; applications opt in per thread, as for the face-box and
-//! NURBS-area memos (the WASM kernel does on construction). Counts and
+//! The memo is a part of a [`CacheScope`] (RFC 0009): it lives as long as the
+//! scope's owner holds it and is shared by everyone that shares the scope.
+//! The classifier reaches it through the thread's ambient scope; outside any
+//! scope, or while the scope's memo is off, no key is built. Off by default;
+//! the WASM kernel turns it on in its scope on construction. Counts and
 //! interned contents are each evicted in FIFO order under their own limits; a
 //! count whose content was evicted is never looked up again and ages out.
+//!
+//! The `*_thread_*` functions act on the thread's default scope
+//! ([`crate::cache::thread_default_scope`]), as they acted on a thread-local
+//! memo before. They remain until RFC 0009 stage 8; new code takes a scope.
 
-use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
+use remus_math::context::CacheScope;
 
 use remus_math::det_hash::DetHashMap;
 use remus_math::vec::{Point3, Vec3};
@@ -50,7 +59,7 @@ pub const DEFAULT_CROSSING_MEMO_FACE_CAPACITY: usize = 4_096;
 /// Default bound on the retained face-content words, in bytes.
 pub const DEFAULT_CROSSING_MEMO_FACE_BYTE_BUDGET: usize = 8 * 1024 * 1024;
 
-/// Counters and bounds of a thread's crossing memo.
+/// Counters and bounds of a crossing memo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CrossingMemoStats {
     /// Counts answered from the memo.
@@ -174,83 +183,132 @@ const fn words_bytes(words: &[u64]) -> usize {
     2 * std::mem::size_of_val(words)
 }
 
-thread_local! {
-    static MEMO: RefCell<Option<Memo>> = const { RefCell::new(None) };
+/// A scope's crossing memo; `None` until it is enabled.
+///
+/// Every access uses `try_lock` and takes the uncounted path when the lock is
+/// held elsewhere, as the thread-local memo's `try_borrow` did, so a nested
+/// use can neither block nor deadlock.
+#[derive(Debug, Default)]
+struct CrossingLeaf(Mutex<Option<Memo>>);
+
+impl CrossingLeaf {
+    fn with<R>(&self, f: impl FnOnce(&mut Option<Memo>) -> R) -> Option<R> {
+        let mut slot = match self.0.try_lock() {
+            Ok(slot) => slot,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        Some(f(&mut slot))
+    }
 }
 
-/// Initialize this thread's memo with default bounds when no instance exists.
+/// Initialize `scope`'s memo with default bounds when it has none.
 ///
 /// Existing bounds, entries and counters are preserved.
-pub fn enable_thread_crossing_memo() {
-    MEMO.with(|cell| {
-        if let Ok(mut slot) = cell.try_borrow_mut() {
-            slot.get_or_insert_with(|| {
-                Memo::new(
-                    DEFAULT_CROSSING_MEMO_CAPACITY,
-                    DEFAULT_CROSSING_MEMO_FACE_CAPACITY,
-                    DEFAULT_CROSSING_MEMO_FACE_BYTE_BUDGET,
-                )
-            });
-        }
+pub fn enable_crossing_memo(scope: &CacheScope) {
+    scope.part::<CrossingLeaf>().with(|slot| {
+        slot.get_or_insert_with(|| {
+            Memo::new(
+                DEFAULT_CROSSING_MEMO_CAPACITY,
+                DEFAULT_CROSSING_MEMO_FACE_CAPACITY,
+                DEFAULT_CROSSING_MEMO_FACE_BYTE_BUDGET,
+            )
+        });
     });
 }
 
-/// Set this thread's memo bounds, evicting oldest entries immediately to fit.
+/// Set `scope`'s memo bounds, evicting oldest entries immediately to fit.
 ///
 /// A zero bound disables lookups and retention without discarding counters.
+pub fn set_crossing_memo_limits(
+    scope: &CacheScope,
+    capacity: usize,
+    face_capacity: usize,
+    face_byte_budget: usize,
+) {
+    scope.part::<CrossingLeaf>().with(|slot| {
+        let memo = slot.get_or_insert_with(|| Memo::new(capacity, face_capacity, face_byte_budget));
+        memo.capacity = capacity;
+        memo.face_capacity = face_capacity;
+        memo.face_byte_budget = face_byte_budget;
+        memo.enforce_limits();
+    });
+}
+
+/// Disable `scope`'s memo and release its entries and counters.
+pub fn disable_crossing_memo(scope: &CacheScope) {
+    if let Some(leaf) = scope.existing::<CrossingLeaf>() {
+        leaf.with(|slot| *slot = None);
+    }
+}
+
+/// Counters and bounds of `scope`'s memo, or `None` while it has none.
+#[must_use]
+pub fn crossing_memo_stats(scope: &CacheScope) -> Option<CrossingMemoStats> {
+    scope
+        .existing::<CrossingLeaf>()?
+        .with(|slot| slot.as_ref().map(Memo::stats))
+        .flatten()
+}
+
+/// Estimated bytes `scope`'s memo retains in interned face contents (not RSS).
+#[must_use]
+pub fn crossing_memo_content_bytes(scope: &CacheScope) -> usize {
+    scope
+        .existing::<CrossingLeaf>()
+        .and_then(|leaf| leaf.with(|slot| slot.as_ref().map_or(0, |memo| memo.content_bytes)))
+        .unwrap_or(0)
+}
+
+/// [`enable_crossing_memo`] on the thread's default scope.
+pub fn enable_thread_crossing_memo() {
+    enable_crossing_memo(&crate::cache::thread_default_scope());
+}
+
+/// [`set_crossing_memo_limits`] on the thread's default scope.
 pub fn set_thread_crossing_memo_limits(
     capacity: usize,
     face_capacity: usize,
     face_byte_budget: usize,
 ) {
-    MEMO.with(|cell| {
-        if let Ok(mut slot) = cell.try_borrow_mut() {
-            let memo =
-                slot.get_or_insert_with(|| Memo::new(capacity, face_capacity, face_byte_budget));
-            memo.capacity = capacity;
-            memo.face_capacity = face_capacity;
-            memo.face_byte_budget = face_byte_budget;
-            memo.enforce_limits();
-        }
-    });
+    set_crossing_memo_limits(
+        &crate::cache::thread_default_scope(),
+        capacity,
+        face_capacity,
+        face_byte_budget,
+    );
 }
 
-/// Disable this thread's memo and release its entries and counters.
+/// [`disable_crossing_memo`] on the thread's ambient scope, if any.
 pub fn disable_thread_crossing_memo() {
-    MEMO.with(|cell| {
-        if let Ok(mut slot) = cell.try_borrow_mut() {
-            *slot = None;
-        }
-    });
+    if let Some(scope) = CacheScope::ambient() {
+        disable_crossing_memo(&scope);
+    }
 }
 
-/// Return counters and bounds, or `None` without an available memo instance.
+/// [`crossing_memo_stats`] of the thread's ambient scope, if any.
 #[must_use]
 pub fn thread_crossing_memo_stats() -> Option<CrossingMemoStats> {
-    MEMO.with(|cell| {
-        cell.try_borrow()
-            .ok()
-            .and_then(|slot| slot.as_ref().map(Memo::stats))
-    })
+    crossing_memo_stats(&CacheScope::ambient()?)
 }
 
 /// The interned content id of every non-planar face of one solid, for the
-/// classifier to consult this thread's memo with.
+/// classifier to consult the ambient scope's memo with.
 #[derive(Debug)]
 pub struct SolidCrossingMemo {
+    leaf: Arc<CrossingLeaf>,
     ids: DetHashMap<FaceId, u64>,
 }
 
 impl SolidCrossingMemo {
-    /// Intern `solid`'s non-planar faces, or `None` while the memo is off (no
-    /// key is built then).
+    /// Intern `solid`'s non-planar faces, or `None` outside a scope or while
+    /// its memo is off (no key is built then).
     pub fn for_solid(topo: &Topology, solid: SolidId) -> Option<Self> {
-        let enabled = MEMO.with(|cell| {
-            cell.try_borrow()
-                .ok()
-                .is_some_and(|slot| slot.as_ref().is_some_and(Memo::enabled))
-        });
-        if !enabled {
+        let leaf = CacheScope::ambient()?.existing::<CrossingLeaf>()?;
+        if !leaf
+            .with(|slot| slot.as_ref().is_some_and(Memo::enabled))
+            .unwrap_or(false)
+        {
             return None;
         }
         let faces = remus_topology::explorer::solid_faces(topo, solid).ok()?;
@@ -265,16 +323,14 @@ impl SolidCrossingMemo {
             let Some(words) = face_content_words(topo, face) else {
                 continue;
             };
-            let id = MEMO.with(|cell| {
-                cell.try_borrow_mut()
-                    .ok()
-                    .and_then(|mut slot| slot.as_mut().and_then(|memo| memo.content_id(words)))
-            });
+            let id = leaf
+                .with(|slot| slot.as_mut().and_then(|memo| memo.content_id(words)))
+                .flatten();
             if let Some(id) = id {
                 ids.insert(face, id);
             }
         }
-        Some(Self { ids })
+        Some(Self { leaf, ids })
     }
 }
 
@@ -282,13 +338,14 @@ impl remus_check::classify::FaceCrossingMemo for SolidCrossingMemo {
     fn crossings(&self, face: FaceId, origin: Point3, direction: Vec3) -> Option<u32> {
         let &id = self.ids.get(&face)?;
         let key = CountKey::new(id, origin, direction);
-        MEMO.with(|cell| {
-            let mut slot = cell.try_borrow_mut().ok()?;
-            let memo = slot.as_mut().filter(|memo| memo.enabled())?;
-            let count = memo.counts.get(&key).copied()?;
-            memo.hits += 1;
-            Some(count)
-        })
+        self.leaf
+            .with(|slot| {
+                let memo = slot.as_mut().filter(|memo| memo.enabled())?;
+                let count = memo.counts.get(&key).copied()?;
+                memo.hits += 1;
+                Some(count)
+            })
+            .flatten()
     }
 
     fn record(&self, face: FaceId, origin: Point3, direction: Vec3, crossings: u32) {
@@ -296,10 +353,8 @@ impl remus_check::classify::FaceCrossingMemo for SolidCrossingMemo {
             return;
         };
         let key = CountKey::new(id, origin, direction);
-        MEMO.with(|cell| {
-            if let Ok(mut slot) = cell.try_borrow_mut()
-                && let Some(memo) = slot.as_mut().filter(|memo| memo.enabled())
-            {
+        self.leaf.with(|slot| {
+            if let Some(memo) = slot.as_mut().filter(|memo| memo.enabled()) {
                 memo.misses += 1;
                 if memo.counts.insert(key, crossings).is_none() {
                     memo.count_order.push_back(key);

@@ -13,6 +13,9 @@ version = "2026.1.0"
 # the boolean hot paths, `remus-check` for the PERF-Q01 classification
 # preparation counts.
 perf-counters = ["remus-algo/perf-counters", "remus-check/perf-counters"]
+# Exposes the pure-topology assertions in `test_utils` to tests outside this
+# crate (RFC 0007). No production dependency enables it.
+test-utils = []
 
 [dependencies]
 log.workspace = true

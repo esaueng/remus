@@ -5,7 +5,6 @@
 //! invalid results.
 
 pub mod assembly;
-mod classify;
 mod local_cut;
 mod store_local;
 mod types;
@@ -483,15 +482,10 @@ pub fn boolean_compound_regions(
 
 /// Minimum distance used when healing coincident result boundaries, in mm.
 const COINCIDENT_BOUNDARY_FLOOR_MM: f64 = 1e-6;
-/// Strict margin used by the disjoint-component shortcut's AABB containment
-/// pre-filter, in mm.
-pub(crate) const COMPONENT_OVERLAP_MARGIN_MM: f64 = 1e-7;
 /// Deterministic work limits for the disjoint-component narrow phase.
 const MAX_COMPONENT_NARROW_PHASE_PAIRS: usize = 32;
 const MAX_COMPONENT_TRIANGLES: usize = 100_000;
 const MAX_COMPONENT_TRIANGLE_TESTS: usize = 200_000;
-/// Endpoint distance below which a sampled curve is treated as closed, in mm.
-const CLOSED_CURVE_ENDPOINT_TOL_MM: f64 = 1e-6;
 
 // WASM-compatible timer: `std::time::Instant` panics on wasm32 targets.
 #[cfg(not(target_arch = "wasm32"))]
@@ -511,6 +505,9 @@ pub(super) fn timer_elapsed_ms(_t: f64) -> f64 {
     0.0
 }
 
+pub(crate) use crate::polygon::sample_edge_curve;
+pub use crate::polygon::{face_polygon, wire_polygon, wire_polygon_closed_subloops};
+use crate::validate::COMPONENT_OVERLAP_MARGIN_MM;
 use remus_math::det_hash::{DetHashMap as HashMap, DetHashSet as HashSet};
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -6006,68 +6003,6 @@ fn component_material_probe(
     None
 }
 
-/// Does the closed surface made of `faces` enclose `p`?
-///
-/// Ray-parity against the component's own tessellation. Read-only by design:
-/// building a temporary solid per component would add entities to an arena that
-/// never reclaims, which is the growth cliff fixed in #1237.
-///
-/// `watertight_ray_triangle_intersect` reports exactly one hit on a shared edge,
-/// so parity is meaningful across face boundaries. The direction is deliberately
-/// irrational so the ray does not graze a face boundary or lie in a face plane —
-/// the degeneracy that makes axis-aligned probes unreliable on the feature-plane
-/// intersections these pieces are full of. Returns `None` when the component
-/// cannot be tessellated, so callers can fall back rather than guess.
-pub(crate) fn component_encloses_point(
-    topo: &Topology,
-    faces: &[FaceId],
-    p: Point3,
-    deflection: f64,
-) -> Option<bool> {
-    component_encloses_any_point(topo, faces, &[p], deflection)
-}
-
-/// Does the closed surface made of `faces` enclose any of `points`?
-///
-/// Tessellates the component only once, which keeps multi-probe validation from
-/// repeating the expensive face tessellation for every boundary vertex.
-pub(crate) fn component_encloses_any_point(
-    topo: &Topology,
-    faces: &[FaceId],
-    points: &[Point3],
-    deflection: f64,
-) -> Option<bool> {
-    // A sqrt-prime direction: irrational in every component, so the ray cannot
-    // lie in a face plane or run along an edge — the same generic-direction
-    // escape the ray-cast classifier uses for degenerate probes.
-    let dir = Vec3::new(2.0_f64.sqrt(), 3.0_f64.sqrt(), 5.0_f64.sqrt())
-        .normalize()
-        .ok()?;
-    let mut crossings = vec![0usize; points.len()];
-    let mut any_triangle = false;
-    for &fid in faces {
-        let mesh = crate::tessellate::tessellate_with_uvs(topo, fid, deflection).ok()?;
-        let pos = &mesh.mesh.positions;
-        for tri in mesh.mesh.indices.chunks_exact(3) {
-            let (a, b, c) = (
-                pos[tri[0] as usize],
-                pos[tri[1] as usize],
-                pos[tri[2] as usize],
-            );
-            any_triangle = true;
-            for (&point, count) in points.iter().zip(&mut crossings) {
-                if let Some(hit) =
-                    remus_math::ray_triangle::watertight_ray_triangle_intersect(point, dir, a, b, c)
-                    && hit.t > 1e-9
-                {
-                    *count += 1;
-                }
-            }
-        }
-    }
-    any_triangle.then_some(crossings.into_iter().any(|count| count % 2 == 1))
-}
-
 /// Trim-honouring triangles of one closed face component (B53): the
 /// shared-edge-pool face-set mesher, so a trimmed cone wall meshes its trimmed
 /// region rather than its parametric rectangle. `None` when the component
@@ -6118,21 +6053,6 @@ fn triangles_enclose_points(triangles: &[[Point3; 3]], points: &[Point3]) -> Opt
             })
             .collect(),
     )
-}
-
-/// Any vertex position on `faces`, for use as a probe point.
-pub(crate) fn any_vertex_of(topo: &Topology, faces: &[FaceId]) -> Option<Point3> {
-    for &fid in faces {
-        let face = topo.face(fid).ok()?;
-        let wire = topo.wire(face.outer_wire()).ok()?;
-        if let Some(oe) = wire.edges().first()
-            && let Ok(edge) = topo.edge(oe.edge())
-            && let Ok(v) = topo.vertex(edge.start())
-        {
-            return Some(v.point());
-        }
-    }
-    None
 }
 
 /// [`any_vertex_of`] skipping positions within tolerance of `exclude`.
@@ -7535,188 +7455,6 @@ fn enforce_manifold_shell(
     Ok(topo.add_solid(remus_topology::solid::Solid::new(outer_id, inner_ids)))
 }
 
-/// Sample `n` evenly-spaced points along a closed edge curve.
-///
-/// For `Circle` and `Ellipse`, samples at `TAU * i / n`.
-/// For closed `NurbsCurve`, samples across the domain avoiding endpoint
-/// duplication. Returns an empty vec for `Line` (no sampling possible).
-pub(crate) fn sample_edge_curve(curve: &EdgeCurve, n: usize) -> Vec<Point3> {
-    match curve {
-        EdgeCurve::Circle(c) => (0..n)
-            .map(|i| {
-                #[allow(clippy::cast_precision_loss)]
-                let t = std::f64::consts::TAU * (i as f64) / (n as f64);
-                c.evaluate(t)
-            })
-            .collect(),
-        EdgeCurve::Ellipse(e) => (0..n)
-            .map(|i| {
-                #[allow(clippy::cast_precision_loss)]
-                let t = std::f64::consts::TAU * (i as f64) / (n as f64);
-                e.evaluate(t)
-            })
-            .collect(),
-        EdgeCurve::NurbsCurve(nc) => {
-            let (u0, u1) = nc.domain();
-            // For closed curves (start ~ end), use n as divisor to avoid
-            // duplicating the first point at t=u_max.
-            let start_pt = nc.evaluate(u0);
-            let end_pt = nc.evaluate(u1);
-            // A 1e-6 mm endpoint gap is treated as closed to avoid
-            // duplicating the first point at t=u_max.
-            let is_closed = (start_pt - end_pt).length() < CLOSED_CURVE_ENDPOINT_TOL_MM;
-            let divisor = if is_closed { n } else { n - 1 };
-            (0..n)
-                .map(|i| {
-                    #[allow(clippy::cast_precision_loss)]
-                    let t = u0 + (u1 - u0) * (i as f64) / (divisor as f64);
-                    nc.evaluate(t)
-                })
-                .collect()
-        }
-        // Never closed: an unbounded branch has no periodic domain, and
-        // this entry point carries no endpoints to trim with.
-        EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => vec![],
-    }
-}
-
-/// Get a polygon approximation of a face by sampling curved edges.
-///
-/// Samples circle/ellipse edges into 32 points so faces with a
-/// single closed-curve edge (e.g. cylinder caps) get a proper polygon.
-///
-/// # Errors
-///
-/// Returns an error if the face or its wire cannot be resolved.
-pub fn face_polygon(
-    topo: &Topology,
-    face_id: FaceId,
-) -> Result<Vec<Point3>, crate::OperationsError> {
-    wire_polygon(topo, topo.face(face_id)?.outer_wire())
-}
-
-/// Get a polygon approximation of any wire by sampling its curved edges.
-///
-/// The same sampling [`face_polygon`] applies to a face's outer wire, exposed
-/// for a face's INNER wires — a hole's rim is often a single closed circle
-/// edge, which is one vertex and no polygon at all until it is sampled. Both
-/// take the same number of samples, so a bore's rim traced as a hole in its
-/// cap lands on the same positions as the same rim traced along its wall, and
-/// the assembler's vertex dedup joins them.
-///
-/// # Errors
-///
-/// Returns an error if the wire or any of its edges cannot be resolved.
-pub fn wire_polygon(
-    topo: &Topology,
-    wire_id: remus_topology::wire::WireId,
-) -> Result<Vec<Point3>, crate::OperationsError> {
-    let wire = topo.wire(wire_id)?;
-    let mut pts = Vec::new();
-
-    for oe in wire.edges() {
-        let edge = topo.edge(oe.edge())?;
-        let curve = edge.curve();
-        // Sample closed parametric edges (start == end vertex).
-        // Partial arcs fall through to the vertex-based path.
-        let start_vid = edge.start();
-        let end_vid = edge.end();
-        let is_closed_edge = start_vid == end_vid
-            && matches!(
-                curve,
-                EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_)
-            );
-        if is_closed_edge {
-            // Must use CLOSED_CURVE_SAMPLES (not a larger value) — vertex count
-            // must match create_band_fragments and inner-wire dedup for sharing.
-            let mut sampled = sample_edge_curve(curve, types::CLOSED_CURVE_SAMPLES);
-            if !oe.is_forward() {
-                sampled.reverse();
-            }
-            pts.extend(sampled);
-        } else {
-            let vid = oe.oriented_start(edge);
-            pts.push(topo.vertex(vid)?.point());
-        }
-    }
-
-    Ok(pts)
-}
-
-/// Like [`wire_polygon`], but every closed edge returns to its own start
-/// before the traversal moves on.
-///
-/// [`wire_polygon`] lays a closed circle edge down as an open chain of
-/// samples, so the polygon's last-to-first step cuts across from the end of
-/// one circle to the start of the next. On a cylindrical wall — two rim
-/// circles joined by a seam — that means the wall's own rims are never
-/// closed: it publishes 31 of each rim's 32 chords plus two diagonals, and
-/// the cap that meets it along those rims cannot find the chords to share.
-///
-/// Here each circle closes, the seam is traversed once each way as a BRep
-/// seam should be, and the rims come out as the full loops their neighbours
-/// also trace. The repeat leaves consecutive duplicate positions, which the
-/// assembler skips as degenerate.
-///
-/// # Errors
-///
-/// Returns an error if the wire or any of its edges cannot be resolved.
-pub fn wire_polygon_closed_subloops(
-    topo: &Topology,
-    wire_id: remus_topology::wire::WireId,
-) -> Result<Vec<Point3>, crate::OperationsError> {
-    let wire = topo.wire(wire_id)?;
-    let mut pts = Vec::new();
-
-    for oe in wire.edges() {
-        let edge = topo.edge(oe.edge())?;
-        let curve = edge.curve();
-        let is_closed_edge = edge.start() == edge.end()
-            && matches!(
-                curve,
-                EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_)
-            );
-        if is_closed_edge {
-            let mut sampled = sample_edge_curve(curve, types::CLOSED_CURVE_SAMPLES);
-            if sampled.is_empty() {
-                continue;
-            }
-            // `sample_edge_curve` starts at the CURVE's parameter origin,
-            // which need not be the vertex the wire enters this edge at — a
-            // cylinder's rim circle can be stored a quarter turn off its own
-            // seam. Rotate so the loop opens and closes where the wire joins
-            // it, or the sub-loop's closing chord lands a quarter of the way
-            // round and the seam runs diagonally across the face.
-            let anchor = topo.vertex(edge.start())?.point();
-            if let Some(at) = sampled
-                .iter()
-                .enumerate()
-                .min_by(|a, b| {
-                    (*a.1 - anchor)
-                        .length()
-                        .partial_cmp(&(*b.1 - anchor).length())
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .map(|(i, _)| i)
-            {
-                sampled.rotate_left(at);
-            }
-            if !oe.is_forward() {
-                // Reverse the traversal but keep the start vertex first: the
-                // wire arrives at it, whichever way round the circle goes.
-                sampled[1..].reverse();
-            }
-            pts.extend(sampled.iter().copied());
-            pts.push(sampled[0]);
-        } else {
-            let vid = oe.oriented_start(edge);
-            pts.push(topo.vertex(vid)?.point());
-        }
-    }
-
-    Ok(pts)
-}
-
 /// Collect face signatures (index, normal, centroid) for evolution tracking.
 ///
 /// For each face of the solid, computes a representative normal and centroid
@@ -7752,7 +7490,7 @@ pub fn collect_face_signatures(
             Vec3::new(0.0, 0.0, 1.0)
         };
 
-        let centroid = classify::polygon_centroid(&verts);
+        let centroid = assembly::polygon_centroid(&verts);
         result.push((fid.index(), normal, centroid));
     }
 

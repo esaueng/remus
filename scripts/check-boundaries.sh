@@ -38,7 +38,11 @@ check_deps() {
   local deps_section
   deps_section=$(sed -n '/^\[dependencies\]/,/^\[/p' "$cargo_toml" 2>/dev/null || true)
 
-  for dep in remus remus-math remus-topology remus-algo remus-blend remus-heal remus-check remus-geometry remus-offset remus-sketch remus-operations remus-io remus-render; do
+  # Every workspace crate name must be listed here, or a dependency on it is
+  # never checked. The remus-ops-* through remus-features names are the planned
+  # RFC 0007 split of remus-operations; none exists yet.
+  for dep in remus remus-math remus-topology remus-algo remus-blend remus-heal remus-check remus-geometry remus-offset remus-sketch remus-operations remus-io remus-render \
+    remus-ops-core remus-transform remus-tessellate remus-measure remus-construct remus-boolean remus-features; do
     if echo "$deps_section" | grep -Eq "^${dep}[[:space:]]*="; then
       local is_allowed=false
       for a in "${allowed[@]}"; do
@@ -77,6 +81,16 @@ check_deps "render"     "remus-math" "remus-topology" "remus-operations"
 check_deps "wasm"       "remus-math" "remus-topology" "remus-algo" "remus-blend" "remus-heal" "remus-check" "remus-geometry" "remus-offset" "remus-sketch" "remus-operations" "remus-io"
 check_deps "wasm-io"    "remus-math" "remus-topology" "remus-operations" "remus-io"
 check_deps "remus"      "remus-operations" "remus-io" "remus-check" "remus-heal" "remus-math" "remus-topology" "remus-sketch"
+
+# Module-level order inside remus-operations (RFC 0007): keeps the planned
+# crate split possible while the code still lives in one crate.
+if ! python3 scripts/test-ops-module-graph.py >/dev/null 2>&1; then
+  echo "VIOLATION: scripts/test-ops-module-graph.py fails; the module-graph check is untrusted"
+  FAIL=1
+fi
+if ! python3 scripts/check-ops-module-graph.py; then
+  FAIL=1
+fi
 
 if [ $FAIL -ne 0 ]; then
   echo "❌ Boundary check failed."

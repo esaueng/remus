@@ -17,7 +17,7 @@ use remus_topology::validation::validate_shell_manifold;
 use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire};
 
-use crate::test_helpers::assert_volume_near;
+use crate::measure::test_support::assert_volume_near;
 
 use super::*;
 

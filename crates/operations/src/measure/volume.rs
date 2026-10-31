@@ -1196,7 +1196,7 @@ fn quadric_wall_is_notched_band(topo: &Topology, fid: FaceId) -> bool {
     if !face.inner_wires().is_empty() {
         return false;
     }
-    let Ok(pts) = crate::boolean::face_polygon(topo, fid) else {
+    let Ok(pts) = crate::polygon::face_polygon(topo, fid) else {
         return false;
     };
     if pts.len() < 4 {
@@ -1264,7 +1264,7 @@ fn quadric_wall_boundary_winds_period(topo: &Topology, fid: FaceId) -> bool {
     };
     let fy = axis.cross(fx);
 
-    let Ok(pts) = crate::boolean::face_polygon(topo, fid) else {
+    let Ok(pts) = crate::polygon::face_polygon(topo, fid) else {
         return false;
     };
     if pts.len() < 3 {
@@ -4050,7 +4050,7 @@ fn analytic_sphere_signed_volume(
         let upper = if winding.abs() > std::f64::consts::PI {
             winding > 0.0
         } else {
-            let positions = crate::boolean::face_polygon(topo, face_id)?;
+            let positions = crate::polygon::face_polygon(topo, face_id)?;
             if positions.is_empty() {
                 return Ok(0.0);
             }

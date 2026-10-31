@@ -34,6 +34,7 @@ mod reuse;
 pub(crate) mod rim_chain;
 mod solid;
 mod sphere_pole_patch;
+pub(crate) mod surface_normal;
 #[cfg(test)]
 mod tests;
 

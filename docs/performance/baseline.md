@@ -18,6 +18,7 @@ Results go into a new `target/performance/<UTC timestamp>` directory. A complete
 | Transform | 150 translations with 50/200/400 preexisting unit boxes; native direct/batch and committed WASM direct/batch | Every call/batch item succeeds; translated bounds, unit volume, and an untouched solid's bounds match expectations                                                                            |
 | Chain     | Straight chains of 128/512/2048 points, threshold 1.1                                                        | One component, every point exactly once in expected order, positions and carried parameters preserved                                                                                         |
 | Boolean   | Fixed local fuse of half-overlap unit boxes, plus refused self-cut, each with 50/200/400 preexisting unit boxes; native direct and committed WASM batch | Fuse: 1.5 volume, 1.5-wide bounds, untouched solid intact. Refused: typed `operation_failed`/`internal` error with identical code on both runtimes; operands and untouched solid bit-identical afterward |
+| Warm      | Cache-reusing edit sequences (RFC 0009 stage 0): holder measurements, the face-move edit loop, holder cuts, and a 144-hole plate with six slots; native and committed WASM | Strict validation, repeated readings bit-identical to the first, holder volume within 1e-6 of 50 245.22, plate volume against its closed form; every sample records the same per-cache counters (see below) |
 
 The hammer-holder mass reference is the existing `50_240.482_8` regression value in `crates/io/tests/regress_shapr3d_reversed_nurbs_faces.rs`; it is a measured reference, not a new independent exact oracle for all mass properties. Center and inertia checks detect invalid output but do not independently establish their numerical accuracy. The chain is intentionally a sparse scaling witness, not coverage of branches, loops or tangencies.
 
@@ -31,13 +32,20 @@ The hammer-holder mass reference is the existing `50_240.482_8` regression value
 
 These boundaries are not the same as the old audit's batch-normalized scratch chain probe. Compare future runs of this runner to each other. Independent processes are sequential, not concurrent; within-process samples share allocator/runtime state. Setup, startup, validation and teardown still affect process wall time and cache state. A CPU profile of the entire worker includes those phases; this command is not yet a scoped CPU/allocation profiler.
 
+- Each warm-cache sample starts from empty caches: natively the kernel's cache switches are turned on and every cache is cleared and checked empty; in WASM a fresh module instance is loaded. Fixture loading and the face selection are outside the timer. The timed total is the sum of the named phases, reported separately as `phases_ms`. The holder cases read an exact arena document of the hammer holder that the native worker writes into the results directory, so both runtimes start from the same handles.
+
+## Cache counters
+
+Warm-cache samples also record `cache_stats`, the hits, misses and evictions each cache added during the timed phases, and `cache_entries`, the entries left held. Counters are a pure function of the call sequence: a case whose samples disagree fails the run, and the agreed counters go to `cache_stats.json`. `scripts/performance/cache_stats.py BASELINE CANDIDATE` compares two runs and exits 1 on any difference. A change that only moves where caches live (RFC 0009) must keep them identical. Natively all eleven of the kernel constructor's caches are counted; the WASM package exposes mesh-stage reuse, measurement reuse and the volume memo. The first recorded baseline is [cache-context-stage0-baseline-2026-10-31.md](cache-context-stage0-baseline-2026-10-31.md).
+
 ## Results and provenance
 
 - `run.json`: manifest copy/hash, selected cases, fixture hashes, source commit, dirty status and working-tree content hash, toolchain/platform/CPU, relevant environment overrides, native executable hash, package file hashes and package-refresh commit message.
 - `build.jsonl` / `build.stderr.txt`: Cargo's build output and exact executable location. The explicit command fixes the target/feature union; the source hash also covers Cargo configuration and the lockfile. Ambient build overrides are recorded, not silently cleared.
 - `<case>.<process>.stdout.jsonl`, `.stderr.txt`, `.process.json`: raw worker records, errors, exit status and whole-process duration.
 - `samples.jsonl`: validated raw records including warmups and process identity. Inspect `run.json` before using partial samples from an interrupted/failed run.
-- `summary.json` and `summary.md`: min/median/max and per-process medians for every selected case; emitted only after all selected workers pass and the source identity remains unchanged. No p95/p99 estimates or automatic performance pass/fail threshold are claimed.
+- `summary.json` and `summary.md`: min/median/max and per-process medians for every selected case (`summary.json` also carries per-phase medians for cases that report phases); emitted only after all selected workers pass and the source identity remains unchanged.
+- `cache_stats.json` (warm family) and `hammer-holder.arena`: the agreed cache counters per case, and the arena document the holder cases read (its hash is in `run.json`). No p95/p99 estimates or automatic performance pass/fail threshold are claimed.
 
 A native worker uses current source. A WASM worker executes the **already committed package**, which may come from an earlier source. Package hashes, version and refresh message remain separate from native provenance. There is no automatic rebuild, parity claim, or cross-runtime speedup calculation. Browser timing, cold-load time, memory attribution, broader gauntlet coverage, and CI regression gates remain follow-up work.
 
@@ -51,6 +59,10 @@ python3 scripts/performance/run.py --offline --processes 1 --samples 1
 
 # Retain more samples for the next profiling target.
 python3 scripts/performance/run.py --family nurbs --processes 3 --samples 10
+
+# Warm-cache family, then compare its cache counters with an earlier run.
+python3 scripts/performance/run.py --family warm --output /tmp/remus-warm-candidate
+python3 scripts/performance/cache_stats.py /tmp/remus-warm-baseline /tmp/remus-warm-candidate
 
 # Repeat --family to select several families; choose a new output directory.
 python3 scripts/performance/run.py --family transform --family chain --output /tmp/remus-baseline-candidate

@@ -369,6 +369,55 @@ Each stage is one PR, behavior-preserving, with no public path change through
   upward edge between future crate groups. That keeps the DAG from regressing
   while the stages land.
 
+*Stage 0a as landed.* The cycle breakers, the `check-boundaries.sh` name list
+and the module-graph check (`scripts/check-ops-module-graph.py`, run by
+`check-boundaries.sh`) landed first; the `test_helpers` split and the
+`test-hooks` feature are left to a stage 0b PR. Moving the 12 items whole
+took their private dependencies with them, beyond what the table above names:
+
+- `sample_edge_curve` and `CLOSED_CURVE_SAMPLES` went to `polygon` with
+  `face_polygon`.
+- `HealingChange` and `HealingChangeKind` went to `error_payloads` with
+  `HealingReport`.
+- `face_surface_normal_at` went to `tessellate::surface_normal` with
+  `face_surface_normal_with_grid`.
+- `triangles_intersect` wraps the whole triangle–triangle narrow phase of
+  `mesh_boolean` (`intersect_triangles` and 12 helpers, about 500 lines). That
+  became `triangle_intersection` in the `remus-measure` tier.
+- The new `gear` module (added after this RFC) sits in the facade tier: it
+  uses `boolean`, `extrude`, `classify` and `measure`.
+
+*Stage 0b as landed.* `test_helpers` is gone. Its helpers moved to the tier
+that provides what they call:
+
+- `test_utils` (core tier): `euler_characteristic`, `assert_euler_genus0`,
+  `assert_manifold`, `assert_point_near`, `assert_volume_conservation`.
+  It is compiled for the crate's tests and, behind the new `test-utils`
+  feature, for downstream tests. The module-graph check now treats
+  `#[cfg(any(test, ..))]` code as production, so it stays core-only.
+- `measure::test_support`: `assert_volume_near`, `assert_area_near`,
+  `assert_cw_profile_produces_valid_solid`.
+- `fill_face::test_fixtures`: `make_saddle_profile`.
+- `resize_blend::test_fixtures`: `blended_box`, `cylinder_faces`,
+  `split_band`.
+
+The `test-hooks` feature was **not** added: it cannot work as specified.
+`constructed_tab_runout_for_test` builds its body from
+`tests/data/rollover_tabbed_source.arena.json` and checks it through
+`remus_io`, which is a dev-only dependency that sits above `remus-operations`.
+A feature-gated, non-test build of the hook cannot link it. The hook's one
+cross-tier user, `tessellate/solid.rs`'s `inner_tangent_runout_tests`, also
+reads tessellate internals (`build_boundary_plan`,
+`tessellate_face_with_shared_edges`, `edge_to_face_map_for_faces`), so it
+cannot simply move up to the fillet tier either. Stage 1 has to decide that
+test's home. The two candidates are:
+
+1. Freeze the four constructed bodies as arena fixtures, with a fillet-side
+   test that the constructor still reproduces them. The tessellate test then
+   needs only `remus_io` and its own internals.
+2. Expose the tessellate internals it reads under a test feature, and make
+   it a fillet-tier integration test.
+
 **Stage 1: `remus-ops-core` + `remus-tessellate`.** This is the most
 self-contained pair: tessellate's production code references only
 `OperationsError` (5 variants), `authoritative_edge_domain`,

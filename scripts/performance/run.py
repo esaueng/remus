@@ -82,12 +82,39 @@ def validate_records(text, case, samples, warmup):
     return rows
 
 
+def cache_stats(rows):
+    """The cache counters every sample of a warm-cache case recorded.
+
+    Counters are a pure function of the call sequence, so samples that differ
+    mean the workload is not deterministic and its timings cannot be compared.
+    """
+    seen = [(r["metrics"].get("cache_stats"), r["metrics"].get("cache_entries")) for r in rows]
+    if all(stats is None and held is None for stats, held in seen):
+        return None
+    if any(stats is None or held is None for stats, held in seen):
+        raise ValueError("cache counters missing from some samples")
+    if any(item != seen[0] for item in seen[1:]):
+        raise ValueError("cache counters differ between samples")
+    return {"cache_stats": seen[0][0], "cache_entries": seen[0][1]}
+
+
+def phase_medians(rows):
+    retained = [r for r in rows if not r["warmup"]]
+    names = [list(r["metrics"].get("phases_ms", {})) for r in retained]
+    if not names or not names[0]:
+        return None
+    if any(n != names[0] for n in names[1:]):
+        raise ValueError("phases differ between samples")
+    return {name: statistics.median(r["metrics"]["phases_ms"][name] for r in retained) for name in names[0]}
+
+
 def summarize(rows):
     retained = [r for r in rows if not r["warmup"]]
     values = [r["operation_ns"] / 1e6 for r in retained]
     if not values:
         raise ValueError("no retained samples")
     processes = sorted({r["process"] for r in retained})
+    phases = phase_medians(rows)
     return {
         "samples": len(values), "unit": "ms per named operation", "min": min(values),
         "median": statistics.median(values), "max": max(values),
@@ -95,6 +122,7 @@ def summarize(rows):
                              if r["process"] == process) for process in processes],
         "tail_percentiles": None,
         "tail_note": "No p95/p99 estimate: this baseline does not qualify tail sample independence or sample count.",
+        **({"phase_medians_ms": phases} if phases else {}),
     }
 
 
@@ -157,14 +185,19 @@ def run(args):
             "python": sys.version, "rustc": command(["rustc", "-Vv"]),
             "cargo": command(["cargo", "-V"]), "environment": build_environment(env),
             "harness_sha256": {os.path.relpath(p, ROOT): digest(p) for p in
-                [Path(__file__), MANIFEST, Path(__file__).with_name("wasm.cjs"), ROOT / "crates/wasm/examples/performance_baseline.rs"]}}
+                [Path(__file__), MANIFEST, Path(__file__).with_name("wasm.cjs"), Path(__file__).with_name("warm.cjs"),
+                 ROOT / "crates/wasm/examples/performance_baseline.rs",
+                 ROOT / "crates/wasm/examples/performance_baseline/warm.rs"]}}
     write_json(output / "run.json", info)
     try:
         for fixture in manifest["fixtures"]:
             if digest(ROOT / fixture["path"]) != fixture["sha256"]:
                 raise ValueError(f"fixture hash mismatch: {fixture['id']}")
-        native = any(c["scenario"].startswith("native_") for c in selected)
         wasm = any(c["scenario"].startswith("wasm_") for c in selected)
+        # The WASM holder workloads read the arena document the native worker writes.
+        arena_needed = any(c["scenario"].startswith("wasm_warm_") and c.get("fixture") == "hammer-holder"
+                           for c in selected)
+        native = arena_needed or any(c["scenario"].startswith("native_") for c in selected)
         binary = None
         if native:
             build = ["cargo", "build", "--locked", "--profile", "profiling", "--no-default-features", "--features", "io",
@@ -184,6 +217,11 @@ def run(args):
             if not binary:
                 raise ValueError("Cargo did not report the benchmark executable")
             info["native_binary_sha256"] = digest(binary)
+        if arena_needed:
+            arena = output / "hammer-holder.arena"
+            subprocess.run([str(binary), "--export-hammer-arena", str(arena)], cwd=ROOT, env=env, check=True)
+            env["REMUS_PERF_HAMMER_ARENA"] = str(arena)
+            info["hammer_arena_sha256"] = digest(arena)
         pkg = ROOT / "crates/wasm/pkg"
         if wasm:
             info["node"] = command(["node", "--version"])
@@ -196,6 +234,7 @@ def run(args):
             }
         write_json(output / "run.json", info)
         summaries = []
+        counters = {}
         with (output / "samples.jsonl").open("w") as all_samples:
             for case in selected:
                 records = []
@@ -211,12 +250,17 @@ def run(args):
                         all_samples.write(json.dumps(row, allow_nan=False) + "\n")
                     all_samples.flush()
                     records.extend(rows)
+                stats = cache_stats(records)
+                if stats:
+                    counters[case["id"]] = stats
                 summaries.append({"case_id": case["id"], **summarize(records)})
                 print(f"{case['id']}: median {summaries[-1]['median']:.3f} ms; correctness passed", flush=True)
         if source_identity() != info["source"]:
             raise ValueError("source changed during the run; baseline rejected")
         info["status"] = "passed"
         write_json(output / "summary.json", {"schema": "remus-performance-summary-v1", "cases": summaries})
+        if counters:
+            write_json(output / "cache_stats.json", {"schema": "remus-performance-cache-stats-v1", "cases": counters})
         (output / "summary.md").write_text(
             "# Performance baseline\n\nAll selected correctness checks passed. Timings are diagnostic, not release gates.\n\n"
             "| Case | Samples | Median ms | Min ms | Max ms |\n| --- | ---: | ---: | ---: | ---: |\n" +
@@ -233,7 +277,7 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="new results directory; never overwrite a baseline")
-    parser.add_argument("--family", action="append", choices=["nurbs", "transform", "chain", "boolean"], help="repeat to select families; default: all")
+    parser.add_argument("--family", action="append", choices=["nurbs", "transform", "chain", "boolean", "warm"], help="repeat to select families; default: all")
     parser.add_argument("--processes", type=positive, default=3)
     parser.add_argument("--samples", type=positive, default=5)
     parser.add_argument("--warmup", type=positive, default=1)
