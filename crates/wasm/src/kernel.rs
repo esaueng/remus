@@ -79,8 +79,10 @@ impl RemusKernel {
         // default). Module-wide on purpose: a body validated in one kernel is
         // a content-keyed hit when a short-lived probe kernel validates its
         // deserialized copy, and an unchanged hole rim, wall or blend is a
-        // hit on every later cut of the same body. Every hit is bit-identical
-        // to recomputing. Idempotent.
+        // hit on every later cut of the same body. Hits are bit-identical to
+        // recomputing, except the face-integral cache's re-referenced and
+        // translated volume terms and the face-mesh cache's translated hits,
+        // which agree to rounding (RFC 0009 §2.3). Idempotent.
         remus_check::properties::face_cache::enable_thread_face_cache();
         remus_operations::measure::enable_thread_volume_memo();
         remus_operations::measure::enable_default_measurement_reuse();
