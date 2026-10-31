@@ -2834,16 +2834,24 @@ impl FaceExtent {
             } => {
                 // A partial-arc patch (a gear tooth's tip land) can be far
                 // narrower around the axis than along it.
-                let width = match (surface, u_gap) {
-                    (FaceSurface::Cylinder(c), Some((g0, g1))) => {
-                        c.radius()
-                            * (std::f64::consts::TAU - (g1 - g0).rem_euclid(std::f64::consts::TAU))
+                let covered = u_gap.map(|(g0, g1)| {
+                    std::f64::consts::TAU - (g1 - g0).rem_euclid(std::f64::consts::TAU)
+                });
+                // `u_gap` is only recorded for cylinders and cones.
+                let width = match (surface, covered) {
+                    (FaceSurface::Cylinder(c), Some(covered)) => c.radius() * covered,
+                    (FaceSurface::Cone(c), Some(covered)) => {
+                        c.radius_at(*v0).abs().min(c.radius_at(*v1).abs()) * covered
                     }
-                    (FaceSurface::Cone(c), Some((g0, g1))) => {
-                        c.radius_at(*v0).abs().min(c.radius_at(*v1).abs())
-                            * (std::f64::consts::TAU - (g1 - g0).rem_euclid(std::f64::consts::TAU))
-                    }
-                    _ => f64::INFINITY,
+                    (
+                        FaceSurface::Plane { .. }
+                        | FaceSurface::Nurbs(_)
+                        | FaceSurface::Cylinder(_)
+                        | FaceSurface::Cone(_)
+                        | FaceSurface::Sphere(_)
+                        | FaceSurface::Torus(_),
+                        _,
+                    ) => f64::INFINITY,
                 };
                 (v1 - v0).abs().min(width)
             }
