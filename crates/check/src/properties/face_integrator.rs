@@ -21,6 +21,8 @@ use crate::CheckError;
 
 mod adaptive;
 mod boundary_area;
+#[cfg(test)]
+mod cylinder_band_tests;
 mod loop_index;
 #[cfg(test)]
 mod nurbs_rows_oracle_tests;
@@ -483,6 +485,23 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                     );
                 }
                 partition_samples = sphere_latitude::partition_samples(topo, face, sphere)?;
+            }
+            // A full-turn cylinder band whose rims arrive in many arcs (a
+            // collar beside flush gear teeth, its rim split at every tip)
+            // is the same rectangle in (u, v) as one bounded by two closed
+            // circles: integrate that domain, with no trim to sample.
+            if let FaceSurface::Cylinder(cylinder) = face.surface()
+                && let Some(v_range) = cylinder_band_domain(topo, face, cylinder)?
+            {
+                return integrate_parametric::<_, AREA_ONLY>(
+                    cylinder,
+                    (0.0, std::f64::consts::TAU),
+                    v_range,
+                    rule,
+                    if face.is_reversed() { -1.0 } else { 1.0 },
+                    &UvTrim::new(None, &[], &[], true),
+                    PatchScale::ANGULAR,
+                );
             }
             if partition_samples.is_none() {
                 return Err(error);
@@ -1035,6 +1054,71 @@ fn check_trim_point_budget(topo: &Topology, face: &Face) -> Result<(), CheckErro
         }
     }
     Ok(())
+}
+
+/// The axial range `(v_lo, v_hi)` of a full-turn cylinder band: a face with
+/// no inner wire bounded only by arcs of circles centred on the axis,
+/// perpendicular to it, at the cylinder's radius, and by lines parallel to
+/// the axis, whose arcs lie on exactly two `v` levels and sweep one turn on
+/// each. Such a face is the whole rectangle `[0, 2π) × [v_lo, v_hi]` of the
+/// surface however its rims are split. Anything else is `None`.
+fn cylinder_band_domain(
+    topo: &Topology,
+    face: &Face,
+    cylinder: &remus_math::surfaces::CylindricalSurface,
+) -> Result<Option<(f64, f64)>, CheckError> {
+    use std::f64::consts::TAU;
+    if !face.inner_wires().is_empty() {
+        return Ok(None);
+    }
+    let axis = cylinder.axis();
+    let scale = cylinder.radius().max(1.0);
+    let mut levels: Vec<(f64, f64)> = Vec::new();
+    for oriented in topo.wire(face.outer_wire())?.edges() {
+        let edge = topo.edge(oriented.edge())?;
+        let tolerance = edge.tolerance().unwrap_or(1e-7).max(1e-12 * scale);
+        match edge.curve() {
+            EdgeCurve::Circle(circle) => {
+                let (_, v) = cylinder.project_point(circle.center());
+                let on_axis = (cylinder.origin() + axis * v - circle.center()).length();
+                if on_axis > tolerance
+                    || circle.normal().cross(axis).length() > 1e-9
+                    || (circle.radius() - cylinder.radius()).abs() > tolerance
+                {
+                    return Ok(None);
+                }
+                let (t0, t1) = edge
+                    .strict_domain()
+                    .map_err(crate::error::edge_domain_validation)?;
+                match levels
+                    .iter_mut()
+                    .find(|(level, _)| (*level - v).abs() <= tolerance)
+                {
+                    Some((_, sweep)) => *sweep += (t1 - t0).abs(),
+                    None => levels.push((v, (t1 - t0).abs())),
+                }
+            }
+            EdgeCurve::Line => {
+                let start = topo.vertex(edge.start())?.point();
+                let end = topo.vertex(edge.end())?.point();
+                let along = end - start;
+                if along.cross(axis).length() > tolerance {
+                    return Ok(None);
+                }
+            }
+            EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return Ok(None),
+        }
+    }
+    let [(a, sweep_a), (b, sweep_b)] = levels.as_slice() else {
+        return Ok(None);
+    };
+    if (sweep_a - TAU).abs() > 1e-9 || (sweep_b - TAU).abs() > 1e-9 {
+        return Ok(None);
+    }
+    Ok(Some((a.min(*b), a.max(*b))))
 }
 
 /// The `v` extent a face's own boundary curves cover on its surface.
