@@ -15,11 +15,15 @@ historical predecessor-line records, retained for provenance. The
   exact). Dimensions, guideline warnings and typed `gear:<reason>` refusals
   are returned as data.
 * **operations,wasm:** `cut_gear_teeth` / `cutGearTeethDetailed` cut gear
-  teeth along the whole length of a solid's boss (external) or bore
-  (internal), keeping its diameter or using a given module; the input solid is
-  kept. A feature crossing the tooth band, or a span over part of the face,
-  refuses with a typed `gear:<reason>` code. Gear results now name every gear
-  face (`faceRoles`, e.g. `tooth[3].flank.plus`) and report the `module`.
+  teeth into a solid's boss (external) or bore (internal), along the whole
+  face or over a band of it from `offset` (collars of the cylinder stay on
+  either side), keeping its diameter or using a given module; the input solid
+  is kept. A feature crossing the tooth band refuses with a typed
+  `gear:<reason>` code, and a span reaching past an end of the face with
+  `gear:span-outside-face`. Some partial spans (turned-down or internal teeth,
+  and flush teeth at some tooth counts) still refuse in the exact boolean with
+  `exact_only_unattainable`. Gear results now name every gear face
+  (`faceRoles`, e.g. `tooth[3].flank.plus`) and report the `module`.
 * **operations,wasm:** helical gears. `GearParams::helix_angle` and `hand`
   (`helixAngle` in degrees, `hand: "right" | "left"`) make external and
   internal helical gears, standalone or cut into a boss or bore (ISO 21771:
@@ -200,6 +204,10 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **check:** a full-turn cylinder band whose rims arrive in many arcs (a
+  collar beside flush gear teeth, its rim split at every tip) integrates over
+  its exact `(u, v)` rectangle instead of refusing past the 4096-point trim
+  budget, so `solid_volume` and `mass_properties` measure such bodies exactly.
 * **algo,operations:** `resize_cylindrical_face` no longer refuses small radius
   changes. The resize sleeve leaves a thin annulus on each cap, and two
   boolean-builder tests read it against the chords of its circles: same-domain

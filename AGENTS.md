@@ -430,6 +430,8 @@ Quick reference — find the right file for any task:
 | Exact boundary reduction (Green's theorem) of cylinder, cone, sphere and torus face areas behind `analytic_face_area`, with the trimmed quadrature as fallback | `properties/face_integrator/boundary_area.rs` |
 | Bit-identity oracle for the NURBS row and grid quadrature (per-axis basis tables) against the verbatim per-abscissa `integrate_parametric` (tests) | `properties/face_integrator/nurbs_rows_oracle_tests.rs` |
 | Bit-identity oracle for `integrate_parametric` with its sliced request out of line and its knot-aligned path reached through `as_nurbs`, against the verbatim previous function (tests) | `properties/face_integrator/parametric_split_oracle_tests.rs` |
+| Full-turn cylinder bands with rims split into many arcs, integrated over their exact `(u, v)` rectangle past the trim budget (tests) | `properties/face_integrator/cylinder_band_tests.rs` |
+| Full-turn cylinder bands with rims split into many arcs, integrated over their exact `(u, v)` rectangle past the trim budget (tests) | `properties/face_integrator/cylinder_band_tests.rs` |
 | Independent polynomial Green-moment and authoritative-trim oracles (tests) | `properties/face_integrator/polynomial_boundary_tests.rs` |
 | Properties orchestrator (volume, area, CoM) | `properties/mod.rs` |
 | Opt-in content-keyed memo of fixed-order face integrals (`FaceIntegralCache`, PERF-V02 subset) | `properties/face_cache.rs` |
@@ -512,8 +514,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Cylindrical involute (ZI) worms: the involute helical gear with the starts as teeth and helix angle 90° − lead angle (a many-turn twisted extrusion), axial-module conventions, and the crossed-helical wheel that meshes with it | `gear/worm.rs` |
 | Throated worm wheels without a boolean: each tooth tip rebuilt as two outside-cylinder strips and an exact torus patch, each flank stopped at the throat along a certified fit of its torus intersection (fourth-derivative bound carried through Faà di Bruno) | `gear/throat.rs` |
 | Worm oracles: closed-form dimensions, Cavalieri volumes, flank points on the exact involute helicoid, axial thread thickness and pitch read off the body by classification, hand, the matching wheel's dimensions and clearance; throated wheels' section-integral volumes (exact truncated-profile areas), throat and rim classification, throat curves on the torus, roles, refusals (tests) | `gear/tests/worm.rs` |
-| Gear teeth along the whole length of an existing boss or bore: keep-diameter or given-module fit, exact tooth-band material proof, tube cut then gear-ring fuse on one coaxial seam, roles carried through the fuse | `gear/cylinder.rs` |
-| Teeth-on-cylinder oracles: standalone-gear and closed-form volumes on a boss, a stepped bored shaft and a bored ring, turn-down fit and phase probes, cross-hole and partial-span refusals (tests) | `gear/cylinder/tests.rs` |
+| Gear teeth on an existing boss or bore, over the whole face or a band of it (`offset`, collars kept): keep-diameter or given-module fit, exact tooth-band material proof, tube cut then gear-ring fuse on one coaxial cylinder, circles started on the phase reference, roles carried through the fuse | `gear/cylinder.rs` |
+| Teeth-on-cylinder oracles: standalone-gear and closed-form volumes on a boss, a stepped bored shaft (whole hub and its middle) and a bored ring, turn-down fit and phase probes, any phase reference, cross-hole and span-outside-face refusals; ignored ready repros for the partial spans the exact boolean still refuses (tests) | `gear/cylinder/tests.rs` |
 | Helical sweep | `helix.rs` |
 | Chamfer, Fillet | `chamfer.rs`, `fillet/` (mod, rolling_ball, g1_chain, geometry, radius_law, helpers, notch_torus, tests) |
 | Rolling-ball arc stripe between a plane and a coaxial cylinder as an exact torus, or a sphere triangle at the band's own radius (a fillet riding an earlier band's end) | `fillet/arc_torus.rs` |
