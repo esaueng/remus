@@ -59,6 +59,7 @@ export const remuskernel_booleanRegions: (a: number, b: number, c: number, d: nu
 export const remuskernel_booleanWithCancellation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number) => [number, number, number];
 export const remuskernel_booleanWithQuality: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number) => [number, number, number];
 export const remuskernel_boundingBox: (a: number, b: number) => [number, number, number, number];
+export const remuskernel_cacheMemoryStats: (a: number) => [number, number, number, number];
 export const remuskernel_captureSignatureRef: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const remuskernel_centerOfMass: (a: number, b: number, c: number) => [number, number, number, number];
 export const remuskernel_chamfer: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
@@ -256,6 +257,7 @@ export const remuskernel_makeEllipseArc3d: (a: number, b: number, c: number, d: 
 export const remuskernel_makeEllipseEdge: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
 export const remuskernel_makeEllipseEdgeWithRef: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number];
 export const remuskernel_makeEllipsoid: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const remuskernel_makeEnvelopingWormDetailed: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_makeFaceFromWire: (a: number, b: number) => [number, number, number];
 export const remuskernel_makeFaceFromWires: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const remuskernel_makeGearDetailed: (a: number, b: number, c: number) => [number, number, number];
