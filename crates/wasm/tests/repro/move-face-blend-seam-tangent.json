@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "name": "move-face-blend-seam-tangent",
+  "description": "Raising a top face past a fillet seam rebuilds the seam as a plane-cylinder intersection. At tangency sqrt(r^2 - d^2) amplified ~1e-14 of rounding into a ~1e-7 branch offset, so the fillet arc's tangent vertex left its trim and the next move of the same face refused with 'misses its parameter authority'. Both moves must succeed with the closed-form volume.",
+  "revision": "f5d7235a",
+  "operations": [
+    {
+      "op": "makeBox",
+      "args": {
+        "width": 30,
+        "height": 18,
+        "depth": 6.65
+      }
+    },
+    {
+      "op": "makeCylinder",
+      "args": {
+        "radius": 6,
+        "height": 28
+      }
+    },
+    {
+      "op": "fuse",
+      "args": {
+        "solidA": 0,
+        "solidB": 1
+      }
+    },
+    {
+      "op": "filletDetailed",
+      "args": {
+        "solid": 2,
+        "edges": [
+          20
+        ],
+        "radius": 7.7
+      }
+    },
+    {
+      "op": "moveFaces",
+      "args": {
+        "solid": 3,
+        "faces": [
+          29
+        ],
+        "distance": 16
+      }
+    },
+    {
+      "op": "moveFaces",
+      "args": {
+        "solid": 4,
+        "faces": [
+          38
+        ],
+        "distance": 1
+      }
+    },
+    {
+      "op": "validateSolid",
+      "args": {
+        "solid": 5
+      }
+    },
+    {
+      "op": "volume",
+      "args": {
+        "solid": 5,
+        "deflection": 0.01
+      }
+    }
+  ],
+  "expect": [
+    {
+      "ok": 0
+    },
+    {
+      "ok": 1
+    },
+    {
+      "ok": 2
+    },
+    null,
+    {
+      "ok": 4
+    },
+    {
+      "ok": 5
+    },
+    {
+      "ok": 0
+    },
+    {
+      "okNear": 14968.120879102215,
+      "tol": 1e-06
+    }
+  ]
+}
