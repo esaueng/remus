@@ -1,0 +1,51 @@
+<!doctype html><meta charset="utf-8" /><title>split test</title>
+<script type="module">
+  import { init } from './split-entry.js';
+  const q = new URLSearchParams(location.search);
+  const v = '../' + q.get('v');
+  const meta = await (await fetch(`./${v}/remus_wasm_split.json`)).json();
+  const out = {};
+  function syncBytes(url) {
+    // the only synchronous fetch a document has: sync XHR, text-mode hack
+    const x = new XMLHttpRequest();
+    x.open('GET', url, false);
+    x.overrideMimeType('text/plain; charset=x-user-defined');
+    x.send();
+    const s = x.responseText,
+      b = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 0xff;
+    return b;
+  }
+  let k;
+  const t0 = performance.now();
+  const kern = await init({
+    primaryUrl: `./${v}/remus_wasm_bg.wasm`,
+    secondaryUrl: `./${v}/${meta.secondary}`,
+    placeholderTable: meta.placeholderTable,
+    onPlaceholder(slot) {
+      if (q.get('mode') === 'throw') throw new Error(`deferred slot ${slot} before load`);
+      const t = performance.now();
+      kern.loadSync(syncBytes(`./${v}/${meta.secondary}`));
+      out.syncLoadMs = performance.now() - t;
+    },
+  });
+  out.primaryReadyMs = performance.now() - t0;
+  const K = kern.bg.RemusKernel;
+  k = new K();
+  try {
+    if (q.get('mode') === 'preload') {
+      const t = performance.now();
+      await kern.preload();
+      out.preloadMs = performance.now() - t;
+    }
+    const b = k.makeBox(10, 10, 10),
+      c = k.makeCylinder(2, 20);
+    out.volume = k.volume(k.cut(b, c), 0.001);
+  } catch (e) {
+    out.error = String(e).slice(0, 300);
+  }
+  out.loaded = kern.loaded;
+  out.placeholderCalls = kern.state.placeholderCalls;
+  document.title = 'done';
+  window.result = out;
+</script>
