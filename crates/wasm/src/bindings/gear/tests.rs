@@ -287,6 +287,36 @@ fn teeth_on_a_boss_match_between_direct_and_batch_and_solve_the_module() {
     assert_eq!(batch["ok"], direct);
 }
 
+/// Teeth over part of the face: `offset` places them, the collars stay, and
+/// both entry points agree.
+#[test]
+fn teeth_over_the_middle_of_a_boss_keep_its_collars() {
+    let spec = json!({ "kind": "external", "teeth": 22, "faceWidth": 3.0, "offset": 1.5 });
+    let mut direct_kernel = RemusKernel::new();
+    let blank = direct_kernel.make_cylinder_solid(12.0, 6.0).unwrap();
+    let face = side_face(&direct_kernel, blank);
+    let direct =
+        serde_json::to_value(direct_kernel.cut_gear_teeth_detailed_impl(blank, face, &spec))
+            .unwrap();
+    assert_eq!(direct["status"], "ok", "{direct}");
+    let solid = handle(&direct["value"]);
+    assert_valid(&direct_kernel, solid);
+    // Only the middle three of the six units lose their tooth spaces.
+    let whole = std::f64::consts::PI * 144.0 * 6.0;
+    let id = direct_kernel.resolve_solid(solid).unwrap();
+    let volume = remus_operations::measure::solid_volume(direct_kernel.topo(), id, 1e-3).unwrap();
+    assert!(
+        volume < whole && volume > whole * 0.9,
+        "{volume} of {whole}"
+    );
+
+    let mut batch_kernel = RemusKernel::new();
+    let batch_blank = batch_kernel.make_cylinder_solid(12.0, 6.0).unwrap();
+    let batch_face = side_face(&batch_kernel, batch_blank);
+    let batch = cut_batch(&mut batch_kernel, batch_blank, batch_face, &spec);
+    assert_eq!(batch["ok"], direct);
+}
+
 #[test]
 fn cylinder_refusals_are_typed_and_atomic() {
     let mut kernel = RemusKernel::new();
@@ -300,8 +330,8 @@ fn cylinder_refusals_are_typed_and_atomic() {
     let cases = [
         (
             face,
-            json!({ "kind": "external", "teeth": 20, "faceWidth": 4.0 }),
-            "gear:partial-span-unsupported",
+            json!({ "kind": "external", "teeth": 20, "faceWidth": 4.0, "offset": 3.0 }),
+            "gear:span-outside-face",
         ),
         (
             cap,
@@ -353,13 +383,13 @@ fn cylinder_refusals_are_typed_and_atomic() {
             "{spec}"
         );
     }
-    let partial = serde_json::to_value(kernel.cut_gear_teeth_detailed_impl(
+    let past = serde_json::to_value(kernel.cut_gear_teeth_detailed_impl(
         blank,
         face,
-        &json!({ "kind": "external", "teeth": 20, "faceWidth": 4.0 }),
+        &json!({ "kind": "external", "teeth": 20, "faceWidth": 4.0, "offset": 3.0 }),
     ))
     .unwrap();
-    assert_eq!(partial["details"]["argument"], "faceWidth");
+    assert_eq!(past["details"]["argument"], "faceWidth");
     let missing = cut_batch(
         &mut kernel,
         blank,

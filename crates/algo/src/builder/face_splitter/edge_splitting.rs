@@ -399,6 +399,7 @@ fn subdivide_ambiguous_closed_rim_pieces(
     // it too.
     const MAX_PIECE: f64 = 0.5;
     const PIECE_EPS: f64 = 1e-9;
+    const STATION_SNAP: f64 = 1.0 / 64.0;
     let dir = if forward { 1.0 } else { -1.0 };
     // Four or more boundary crossings can cut a disc into multiple disjoint
     // exterior lobes. The planar arrangement reasons about each circular arc
@@ -407,7 +408,11 @@ fn subdivide_ambiguous_closed_rim_pieces(
     // extremum and changes which arrangement cell it bounds.
     if splits.len() >= 4 {
         for t in [0.25, 0.5, 0.75] {
-            if splits.iter().all(|(s, _)| (*s - t).abs() >= PIECE_EPS) {
+            // A split already within 1/64 turn holds the extremum to that
+            // angle. Adding the station anyway would put a vertex on the rim
+            // that a coplanar partner face lacks (a gear tooth's tip land
+            // straddling it), and the pair would no longer match.
+            if splits.iter().all(|(s, _)| (*s - t).abs() >= STATION_SNAP) {
                 let angle = std::f64::consts::TAU.mul_add(dir * t, base);
                 splits.push((t, circle.evaluate(angle)));
             }

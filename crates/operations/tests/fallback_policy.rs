@@ -69,12 +69,13 @@ fn approximate_only_skips_the_exact_pipeline_and_discloses_quality() {
 /// A boss whose wall is a hair off tangent to the block's side (B21 fixture,
 /// shared with the WASM batch contract): the exact pipeline cannot assemble
 /// it, so it is the one configuration that exercises the mesh fallback
-/// without corrupting an operand.
+/// without corrupting an operand. The wall pokes 1e-5 past the side; at 1e-3
+/// the exact pipeline now builds it.
 fn tangent_boss(topo: &mut Topology) -> (remus_topology::SolidId, remus_topology::SolidId) {
     use remus_operations::primitives::make_cylinder;
     let block = make_box(topo, 60.0, 40.0, 8.0).unwrap();
     let boss = make_cylinder(topo, 10.0, 16.0).unwrap();
-    transform_solid(topo, boss, &Mat4::translation(9.999, 20.0, 0.0)).unwrap();
+    transform_solid(topo, boss, &Mat4::translation(9.999_99, 20.0, 0.0)).unwrap();
     (block, boss)
 }
 

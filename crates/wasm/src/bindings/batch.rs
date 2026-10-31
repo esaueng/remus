@@ -4664,7 +4664,7 @@ mod batch_contract_tests {
                 r#"[
                     {{"op":"makeBox","args":{{"width":60,"height":40,"depth":8}}}},
                     {{"op":"makeCylinder","args":{{"radius":10,"height":16}}}},
-                    {{"op":"transform","args":{{"solid":1,"matrix":[1,0,0,9.999,0,1,0,20,0,0,1,0,0,0,0,1]}}}},
+                    {{"op":"transform","args":{{"solid":1,"matrix":[1,0,0,9.99999,0,1,0,20,0,0,1,0,0,0,0,1]}}}},
                     {op},
                     {{"op":"volume","args":{{"solid":0,"deflection":0.01}}}},
                     {{"op":"booleanWithQuality","args":{{"operation":"fuse","solidA":0,"solidB":1}}}}
@@ -4725,7 +4725,7 @@ mod batch_contract_tests {
             r#"[
                 {"op":"makeBox","args":{"width":60,"height":40,"depth":8}},
                 {"op":"makeCylinder","args":{"radius":10,"height":16}},
-                {"op":"transform","args":{"solid":1,"matrix":[1,0,0,9.999,0,1,0,20,0,0,1,0,0,0,0,1]}},
+                {"op":"transform","args":{"solid":1,"matrix":[1,0,0,9.99999,0,1,0,20,0,0,1,0,0,0,0,1]}},
                 {"op":"booleanWithQuality","args":{"operation":"fuse","solidA":0,"solidB":1,"exactOnly":true}},
                 {"op":"volume","args":{"solid":0,"deflection":0.01}},
                 {"op":"booleanWithQuality","args":{"operation":"fuse","solidA":0,"solidB":1}},
@@ -4753,7 +4753,7 @@ mod batch_contract_tests {
         assert_eq!(response[5]["ok"]["deflection"], 0.1);
         let volume = response[6]["ok"].as_f64().expect("numeric volume");
         let radius = 10.0_f64;
-        let d = -0.001_f64;
+        let d = -0.000_01_f64;
         let wall_from_axis = radius + d;
         let outside_segment = radius.powi(2) * (wall_from_axis / radius).acos()
             - wall_from_axis * (radius.powi(2) - wall_from_axis.powi(2)).sqrt();

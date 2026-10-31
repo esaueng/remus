@@ -268,11 +268,13 @@ fn find_edge_edge_crossings(
                 continue;
             }
 
-            if let Some((t_a, t_b, pt)) = closest_segment_pair(
+            if let Some((t_a, t_b, _)) = closest_segment_pair(
                 [&pts_a[i], &pts_a[i + 1]],
                 [&pts_b[j], &pts_b[j + 1]],
                 acceptance,
-            ) && domain_a.contains(&t_a)
+            ) && let Some((t_a, t_b, pt)) =
+                refine_on_curves(edge_a.curve(), ea, edge_b.curve(), eb, t_a, t_b, acceptance)
+                && domain_a.contains(&t_a)
                 && domain_b.contains(&t_b)
             {
                 // Deduplicate: skip if too close to existing crossing
@@ -289,6 +291,72 @@ fn find_edge_edge_crossings(
     }
 
     Ok(crossings)
+}
+
+/// Settle a polyline crossing onto the true curves and keep it only where
+/// they meet within `acceptance`.
+///
+/// The 32-sample polylines cut inside curved edges by their sagitta (0.06
+/// on an r 12 rim), so a curve running up to a rim crosses the rim's polygon
+/// short of the rim itself: a gear flank ending on its tip circle "crossed"
+/// it 0.03 inside, minting a phantom vertex on both edges. Gauss-Newton on
+/// both parameters, clamped to the edge domains, finds the true closest pair.
+#[allow(clippy::many_single_char_names)]
+fn refine_on_curves(
+    curve_a: &EdgeCurve,
+    ea: &EdgeData,
+    curve_b: &EdgeCurve,
+    eb: &EdgeData,
+    mut t_a: f64,
+    mut t_b: f64,
+    acceptance: f64,
+) -> Option<(f64, f64, Point3)> {
+    let at_a = |t: f64| curve_a.evaluate_with_endpoints(t, ea.start_pos, ea.end_pos);
+    let at_b = |t: f64| curve_b.evaluate_with_endpoints(t, eb.start_pos, eb.end_pos);
+    let (lo_a, hi_a) = (ea.t0.min(ea.t1), ea.t0.max(ea.t1));
+    let (lo_b, hi_b) = (eb.t0.min(eb.t1), eb.t0.max(eb.t1));
+    let (h_a, h_b) = ((hi_a - lo_a) * 1e-7, (hi_b - lo_b) * 1e-7);
+    if h_a <= 0.0 || h_b <= 0.0 {
+        return None;
+    }
+    for _ in 0..30 {
+        let r = at_a(t_a) - at_b(t_b);
+        let da = (at_a((t_a + h_a).min(hi_a)) - at_a((t_a - h_a).max(lo_a)))
+            * ((t_a + h_a).min(hi_a) - (t_a - h_a).max(lo_a)).recip();
+        let db = (at_b((t_b + h_b).min(hi_b)) - at_b((t_b - h_b).max(lo_b)))
+            * ((t_b + h_b).min(hi_b) - (t_b - h_b).max(lo_b)).recip();
+        // Normal equations of min |A(t_a) - B(t_b)|² in (t_a, t_b).
+        let (aa, ab, bb) = (da.dot(da), -da.dot(db), db.dot(db));
+        let (ga, gb) = (da.dot(r), -db.dot(r));
+        let det = aa.mul_add(bb, -(ab * ab));
+        if det.abs() <= 1e-24 * aa * bb {
+            break; // Parallel contact: keep the current pair.
+        }
+        let step_a = (ab * gb - bb * ga) / det;
+        let step_b = (ab * ga - aa * gb) / det;
+        let (next_a, next_b) = (
+            (t_a + step_a).clamp(lo_a, hi_a),
+            (t_b + step_b).clamp(lo_b, hi_b),
+        );
+        let moved = (next_a - t_a).abs() / (hi_a - lo_a) + (next_b - t_b).abs() / (hi_b - lo_b);
+        t_a = next_a;
+        t_b = next_b;
+        if moved < 1e-15 {
+            break;
+        }
+    }
+    let (p_a, p_b) = (at_a(t_a), at_b(t_b));
+    ((p_a - p_b).length() <= acceptance).then(|| {
+        (
+            t_a,
+            t_b,
+            Point3::new(
+                f64::midpoint(p_a.x(), p_b.x()),
+                f64::midpoint(p_a.y(), p_b.y()),
+                f64::midpoint(p_a.z(), p_b.z()),
+            ),
+        )
+    })
 }
 
 /// Exact line-segment vs circular-arc intersection.
@@ -650,5 +718,61 @@ mod tests {
             1,
             "5e-8 closest approach is inside the band"
         );
+    }
+
+    /// A closed circle r 12 and a closed ellipse, both about the z axis, on
+    /// the generic sampled path.
+    fn circle_and_ellipse(semi_major: f64) -> (Topology, EdgeId, EdgeId) {
+        use remus_math::curves::Ellipse3D;
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let circle = Circle3D::new_with_ref(origin, z, 12.0, Vec3::new(1.0, 0.0, 0.0)).unwrap();
+        // Its tip faces the middle of a 32-sample chord of the circle, where
+        // the circle's polygon undercuts it by its full 0.058 sagitta.
+        let (sin, cos) = (std::f64::consts::PI / 32.0).sin_cos();
+        let ellipse =
+            Ellipse3D::new_with_ref(origin, z, semi_major, 5.0, Vec3::new(cos, sin, 0.0)).unwrap();
+        let mut topo = Topology::new();
+        let vc = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let ve = topo.add_vertex(Vertex::new(ellipse.evaluate(0.0), 1e-7));
+        let mut ec = Edge::new(vc, vc, EdgeCurve::Circle(circle));
+        ec.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let mut ee = Edge::new(ve, ve, EdgeCurve::Ellipse(ellipse));
+        ee.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let (ec, ee) = (topo.add_edge(ec), topo.add_edge(ee));
+        (topo, ec, ee)
+    }
+
+    #[test]
+    fn a_crossing_only_between_the_sampled_polygons_is_not_a_crossing() {
+        // The ellipse stays 0.03 inside the circle but crosses its polygon.
+        let (topo, ec, ee) = circle_and_ellipse(11.97);
+        let tol = Tolerance::default();
+        let data = collect_edge_data(&topo, &[ec, ee], tol.linear).unwrap();
+        let crossings =
+            find_edge_edge_crossings(&topo, ec, &data[0], ee, &data[1], tol, tol.linear).unwrap();
+        assert!(crossings.is_empty(), "{crossings:?}");
+    }
+
+    #[test]
+    fn sampled_crossings_land_on_both_curves() {
+        let (topo, ec, ee) = circle_and_ellipse(12.5);
+        let tol = Tolerance::default();
+        let data = collect_edge_data(&topo, &[ec, ee], tol.linear).unwrap();
+        let crossings =
+            find_edge_edge_crossings(&topo, ec, &data[0], ee, &data[1], tol, tol.linear).unwrap();
+        assert_eq!(crossings.len(), 4, "{crossings:?}");
+        let (edge_c, edge_e) = (topo.edge(ec).unwrap(), topo.edge(ee).unwrap());
+        for (t_c, t_e, point) in crossings {
+            let on_c =
+                edge_c
+                    .curve()
+                    .evaluate_with_endpoints(t_c, data[0].start_pos, data[0].end_pos);
+            let on_e =
+                edge_e
+                    .curve()
+                    .evaluate_with_endpoints(t_e, data[1].start_pos, data[1].end_pos);
+            assert!((on_c - point).length() < 1e-9 && (on_e - point).length() < 1e-9);
+        }
     }
 }
