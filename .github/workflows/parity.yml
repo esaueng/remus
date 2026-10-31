@@ -84,16 +84,16 @@ jobs:
       - name: Select the native Windows ARM toolchain
         if: matrix.os == 'windows-11-arm'
         run: echo 'RUSTUP_TOOLCHAIN=1.96.0-aarch64-pc-windows-msvc' >> "$GITHUB_ENV"
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         if: matrix.os != 'windows-11-arm'
         with:
           tool: wasm-pack
       # These two Windows build helpers are x64-emulated; the compiler, Cargo,
       # Node process and both executed Remus geometry programs must be ARM64.
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         if: matrix.os == 'windows-11-arm'
         with:
           tool: wasm-pack@0.15.0,wasm-bindgen@0.2.126
