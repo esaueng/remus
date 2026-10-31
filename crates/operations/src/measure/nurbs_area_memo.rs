@@ -41,6 +41,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::hash::Hasher;
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::curves2d::Curve2D;
 use remus_math::det_hash::{DetHashMap, DetHashSet, DetHasher};
 use remus_math::nurbs::surface::NurbsSurface;
@@ -473,7 +474,7 @@ impl KeyWriter {
         // The boundary pool inserts edges in arena-index order and keeps the
         // first point landing in each merge cell, so that order is content.
         let mut by_arena: Vec<(usize, u64)> = edge_ordinals.into_iter().collect();
-        by_arena.sort_unstable();
+        by_arena.compact_sort_unstable();
         for (_, ordinal) in by_arena {
             self.word(ordinal);
         }

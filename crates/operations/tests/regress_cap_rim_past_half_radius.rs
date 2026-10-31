@@ -24,7 +24,12 @@
 //! with 128 cone faces against the kernel's 5, at −0.0023% to −0.0078% volume
 //! error and +44% triangles, because its guards admit `0 < f < r`.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::disallowed_methods
+)]
 
 use std::collections::HashMap;
 

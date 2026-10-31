@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { performance } = require('node:perf_hooks');
 const path = require('node:path');
+const { kernelClass } = require('../../kernel-class.cjs');
 
 // Representative packaged-WASM GCS runs. Construction stays outside the
 // timer; only gcsSolve / gcsSolveDetailed (or the warm drag re-solves) are
@@ -18,7 +19,7 @@ assert(['solve', 'detailed'].includes(mode), `mode ${mode}`);
 assert(Number.isInteger(samples) && samples >= 1 && samples <= 1000);
 assert(Number.isInteger(warmup) && warmup >= 0 && warmup <= 100);
 
-const { BrepKernel } = require(path.join(path.resolve(pkg), 'remus_wasm_node.cjs'));
+const RemusKernel = kernelClass(require(path.join(path.resolve(pkg), 'remus_wasm_node.cjs')));
 
 const TOL = 1e-10;
 const MAX_ITER = 100;
@@ -73,7 +74,7 @@ function collectPoints(kernel, sk, count) {
 }
 
 for (let sample = 0; sample < samples + warmup; sample++) {
-  const kernel = new BrepKernel();
+  const kernel = new RemusKernel();
   try {
     const sk = kernel.gcsNew();
     let pts = [];

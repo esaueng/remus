@@ -12,16 +12,16 @@ use crate::bindings::transaction_tests::{break_fixed_point, high_water};
 use crate::error::StructuredWasmError;
 use crate::handles::{edge_id_to_u32, face_id_to_u32};
 use crate::helpers::panic_message;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::types::SolidOperationDetailedResult;
 
 thread_local! {
     /// Routes `run_modifier_detailed` through
-    /// [`BrepKernel::legacy_run_modifier_detailed`].
+    /// [`RemusKernel::legacy_run_modifier_detailed`].
     pub(super) static LEGACY_ENVELOPE: Cell<bool> = const { Cell::new(false) };
 }
 
-impl BrepKernel {
+impl RemusKernel {
     /// `run_modifier_detailed` before it moved onto a rollback scope,
     /// verbatim.
     pub(super) fn legacy_run_modifier_detailed(
@@ -33,7 +33,7 @@ impl BrepKernel {
         if self.poisoned {
             return SolidOperationDetailedResult::error(
                 StructuredWasmError::operation_failed(
-                    "Kernel poisoned after panic. Create a new BrepKernel instance.",
+                    "Kernel poisoned after panic. Create a new RemusKernel instance.",
                 )
                 .with_direct_operation(operation),
             );
@@ -60,7 +60,7 @@ impl BrepKernel {
     }
 }
 
-type Call = fn(&mut BrepKernel, u32, u32, u32) -> SolidOperationDetailedResult;
+type Call = fn(&mut RemusKernel, u32, u32, u32) -> SolidOperationDetailedResult;
 
 /// `(name, twin call)` over a solid, one of its edges and one of its faces:
 /// refusals that run the engine (and roll back) before and after a success.
@@ -101,8 +101,8 @@ fn calls() -> Vec<(&'static str, Call)> {
 
 /// A kernel holding a 10³ box and a smaller one, with the box's first edge
 /// and face.
-fn kernel() -> (BrepKernel, u32, u32, u32) {
-    let mut k = BrepKernel::new();
+fn kernel() -> (RemusKernel, u32, u32, u32) {
+    let mut k = RemusKernel::new();
     let solid = k.make_box_solid(10.0, 10.0, 10.0).unwrap();
     k.make_box_solid(4.0, 4.0, 4.0).unwrap();
     let id = k.resolve_solid(solid).unwrap();

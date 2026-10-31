@@ -1,5 +1,5 @@
 //! Native per-stage timings of the browser face-drag preview loop, with the
-//! module-wide caches the browser kernel enables (`BrepKernel::new`).
+//! module-wide caches the browser kernel enables (`RemusKernel::new`).
 //!
 //! ```text
 //! cargo build --profile profiling -p remus-wasm --example face_drag_loop
@@ -286,7 +286,7 @@ fn run(label: &str, scenario: fn() -> Scenario, frames: usize, prepared: bool) {
 }
 
 fn main() {
-    let _kernel = remus_wasm::kernel::BrepKernel::new();
+    let _kernel = remus_wasm::kernel::RemusKernel::new();
     if std::env::var_os("PHASES").is_some() {
         remus_operations::performance::configure(Some(host_clock));
     }

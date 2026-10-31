@@ -8,12 +8,6 @@ use remus_math::vec::{Point3, Vec3};
 use remus_topology::edge::EdgeCurve;
 use remus_topology::face::{FaceId, FaceSurface};
 
-/// Number of samples used when discretizing closed curves (circles, ellipses)
-/// in the analytic boolean path. All code paths must use this constant so that
-/// band fragments, cap face polygons, and holed-face inner wires share the
-/// same vertices and edges at their boundaries.
-pub(super) const CLOSED_CURVE_SAMPLES: usize = 32;
-
 /// Minimum fragment count for parallel classification via rayon.
 /// Below this threshold, sequential iteration is faster due to rayon's
 /// thread-pool synchronization overhead (~5-20us).

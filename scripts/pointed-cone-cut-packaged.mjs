@@ -104,8 +104,8 @@ function checkMesh(kernel, solid, boundary, apex, up, height, expectedVolume, de
   // control, separate from the 1e-9 exact BREP-volume assertion below.
   close(volume, expectedVolume, 4 * deflection, `${label}: oriented chordal mesh volume`);
 }
-function fixture(BrepKernel, route, item) {
-  const label = `pointed cone ${item.name}, ${route}`, kernel = new BrepKernel();
+function fixture(RemusKernel, route, item) {
+  const label = `pointed cone ${item.name}, ${route}`, kernel = new RemusKernel();
   const run = (op, args, direct) => invoke(kernel, route, op, args, direct, label);
   try {
     const height = item.height ?? 4;
@@ -150,10 +150,10 @@ function fixture(BrepKernel, route, item) {
   } finally { kernel.free(); }
   console.log(`ok - ${label}: exact volume, oriented topology/mesh and material`);
 }
-export function runPointedConeCutPackaged({ BrepKernel }) {
+export function runPointedConeCutPackaged({ RemusKernel }) {
   const failures = [];
   for (const route of ['direct', 'executeBatch', 'executeBatchV2']) for (const item of fixtures) {
-    try { fixture(BrepKernel, route, item); }
+    try { fixture(RemusKernel, route, item); }
     catch (error) { failures.push(error); console.error(`FAIL - pointed cone ${item.name}, ${route}: ${error.message}`); }
   }
   if (failures.length) throw new AggregateError(failures, `${failures.length} pointed-cone packaged cells failed`);

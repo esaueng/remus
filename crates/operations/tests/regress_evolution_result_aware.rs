@@ -34,7 +34,12 @@
 //! inputs into one output), splits (one input into several outputs) and
 //! generated bands with several legitimate parents are all accepted.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::disallowed_methods
+)]
 
 use std::collections::{BTreeSet, HashSet};
 

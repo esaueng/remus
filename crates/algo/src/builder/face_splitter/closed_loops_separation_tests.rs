@@ -216,3 +216,68 @@ fn disc_against_the_outer_outline() {
     assert!(in_diamond(22.0, 22.0));
     assert!(!in_diamond(23.0, 23.0));
 }
+
+/// A star-shaped bore (an internal gear's tooth outline, here an 80-gon
+/// alternating r 19.5 and r 21) inside two coaxial section circles r 25 and
+/// r 27: a tube cut into the ring's web. The circles nest (27 > 25 + 0) and
+/// both contain every polygon vertex, so the loops do not cross.
+#[test]
+fn nested_section_circles_around_a_star_bore_pass() {
+    let frame = frame();
+    let star: Vec<(f64, f64)> = (0..80)
+        .map(|k| {
+            let r = if k % 2 == 0 { 19.5 } else { 21.0 };
+            let a = TAU * f64::from(k) / 80.0;
+            (r * a.cos(), r * a.sin())
+        })
+        .collect();
+    let bore = vec![polygon(&frame, &star)];
+    assert!(separate(
+        &[
+            section_circle(0.0, 0.0, 25.0),
+            section_circle(0.0, 0.0, 27.0)
+        ],
+        &bore
+    ));
+    // The star's box corners reach 21·√2 ≈ 29.7 > 25: a box test alone
+    // would refuse, the vertex test must not.
+    assert!(separate(&[section_circle(0.0, 0.0, 25.0)], &bore));
+}
+
+/// Nesting needs clearance: a circle through the star's tips (r 21), or one
+/// crossing it (r 20), still straddles the bore, and two circles that cross
+/// each other are not nested.
+#[test]
+fn circles_meeting_the_bore_or_each_other_do_not_pass() {
+    let frame = frame();
+    let star: Vec<(f64, f64)> = (0..80)
+        .map(|k| {
+            let r = if k % 2 == 0 { 19.5 } else { 21.0 };
+            let a = TAU * f64::from(k) / 80.0;
+            (r * a.cos(), r * a.sin())
+        })
+        .collect();
+    let bore = vec![polygon(&frame, &star)];
+    for r in [20.0, 21.0] {
+        assert!(!separate(
+            &[section_circle(0.0, 0.0, r), section_circle(0.0, 0.0, 27.0)],
+            &bore
+        ));
+    }
+    // r 25 about the origin and r 5 about (22, 0) cross: 22 + 5 > 25.
+    assert!(!separate(
+        &[
+            section_circle(0.0, 0.0, 25.0),
+            section_circle(22.0, 0.0, 5.0)
+        ],
+        &[]
+    ));
+    // Fully inside it (16 + 5 < 25 − tol) they nest.
+    assert!(separate(
+        &[
+            section_circle(0.0, 0.0, 25.0),
+            section_circle(16.0, 0.0, 5.0)
+        ],
+        &[]
+    ));
+}

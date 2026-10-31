@@ -89,8 +89,8 @@ function assertOpposingCoedges(kernel, solid, label) {
   return cylinders;
 }
 
-function checkFixture(BrepKernel, surface, { region, b, scale, placed }) {
-  const kernel = new BrepKernel();
+function checkFixture(RemusKernel, surface, { region, b, scale, placed }) {
+  const kernel = new RemusKernel();
   const label = `${surface} F5 ${region} b=${b} scale=${scale} placed=${placed}`;
   const run = (op, args, direct) => invoke(kernel, surface, op, args, direct, label);
   try {
@@ -173,8 +173,8 @@ function translatedCylinderQuantities() {
   return { volume: 2 * area, area: 2 * area + 2 * perimeter };
 }
 
-function checkTranslatedCylinders(BrepKernel, surface, { scale, placed }) {
-  const kernel = new BrepKernel();
+function checkTranslatedCylinders(RemusKernel, surface, { scale, placed }) {
+  const kernel = new RemusKernel();
   const label = `${surface} F12 translated-cylinder cut scale=${scale} placed=${placed}`;
   const run = (op, args, direct) => invoke(kernel, surface, op, args, direct, label);
   try {
@@ -259,7 +259,7 @@ function checkTranslatedCylinders(BrepKernel, surface, { scale, placed }) {
   }
 }
 
-export function runOpseqF5Packaged({ BrepKernel }) {
+export function runOpseqF5Packaged({ RemusKernel }) {
   const fixtures = [
     ...[1, 1000].flatMap(scale => [false, true].map(placed => ({ region: 'cylinderCut', b: 1, scale, placed }))),
     ...['boxCut', 'intersection', 'union'].map(region => ({ region, b: 1, scale: 1, placed: false })),
@@ -271,7 +271,7 @@ export function runOpseqF5Packaged({ BrepKernel }) {
   for (const surface of ['direct', 'executeBatch', 'executeBatchV2']) {
     for (const fixture of fixtures) {
       try {
-        checkFixture(BrepKernel, surface, fixture);
+        checkFixture(RemusKernel, surface, fixture);
         passed += 1;
       } catch (error) {
         failures.push(error);
@@ -279,7 +279,7 @@ export function runOpseqF5Packaged({ BrepKernel }) {
     }
     for (const fixture of translatedFixtures) {
       try {
-        checkTranslatedCylinders(BrepKernel, surface, fixture);
+        checkTranslatedCylinders(RemusKernel, surface, fixture);
         passed += 1;
       } catch (error) {
         failures.push(error);

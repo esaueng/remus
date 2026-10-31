@@ -50,6 +50,7 @@ use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
 use crate::evolution::{CompletenessReport, EvolutionMap};
+use remus_math::compact_sort::CompactSort;
 
 /// Why a result entity could not be attributed.
 ///
@@ -303,7 +304,7 @@ impl SourceIncidence {
             by_vertex_key.entry(faces).or_default().push(vertex);
         }
         for list in by_edge_key.values_mut().chain(by_vertex_key.values_mut()) {
-            list.sort_unstable();
+            list.compact_sort_unstable();
         }
         Ok(Self {
             edges: by_edge_key,
@@ -337,7 +338,7 @@ fn incidence(topo: &Topology, solid: SolidId) -> Result<IncidenceMaps, Operation
         }
     }
     for faces in edges.values_mut() {
-        faces.sort_unstable();
+        faces.compact_sort_unstable();
     }
     Ok((
         edges,
@@ -389,7 +390,7 @@ fn induced_event(
         };
         key.push(source_face);
     }
-    key.sort_unstable();
+    key.compact_sort_unstable();
     if dedup {
         key.dedup();
     }

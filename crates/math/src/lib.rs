@@ -171,6 +171,7 @@ pub mod polygon_boolean;
 pub mod polygon_offset;
 pub mod predicates;
 pub mod quadrature;
+pub mod ray;
 pub mod ray_triangle;
 pub mod surfaces;
 pub mod tolerance;

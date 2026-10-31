@@ -231,6 +231,10 @@ controller select Jane for the old Remus manifest during the transition.
 permission, runner expression and other command is unchanged.
 `scripts/test-ci-v7-stage.py`, run by the required direct-fleet entrypoint,
 pins it to v6's immutable bytes plus exactly those edits.
+The v9 activation (#1328) superseded v7, and its file is retired from the
+tree; this proof and the other stage proofs read v7, like the superseded
+`fleet-benchmark-v3.yml`, from its landed commit (`RETIRED` in
+`scripts/fleet_workflows.py`).
 
 - **Complexity Guards** runs the `perf-counters` `scaling_` tests that used
   to end Test. They need their own build of remus-operations (about four
@@ -263,6 +267,11 @@ their exact dependency-only delta against the prior main commit, preserves
 active and current-main callee bytes, and binds the Windows ARM installer
 receipts to the workflow pin. Activate these files together at the actual
 landed main commit after the staging PR passes all required checks.
+`fleet-ci-v8.yml` is v7 plus these pins, but CI activated v9 (#1323, #1328)
+from v7 without them, so v8 can no longer be activated: switching to it would
+drop v9's shared builds. Adopting the CI half needs a new stage, v9 plus the
+same two pin updates, staged and landed before its activation. The other four
+staged files still differ from their active callees only by these pins.
 
 `.github/fleet-workflows.json` names the active file for each workflow family.
 Routing and policy tests read those selected files and require every caller to

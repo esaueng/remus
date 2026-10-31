@@ -1,6 +1,6 @@
 //! Native mirror of the WASM smoke's hammer-holder opening replay
 //! (`scripts/test-wasm-smoke.mjs`, "hammer opening replay"), step for step,
-//! in ONE kernel topology like the smoke's single `BrepKernel`:
+//! in ONE kernel topology like the smoke's single `RemusKernel`:
 //! the STEP fixture enters through the translator's arena document
 //! (`read_step` → `serialize_solids` → `deserialize_solids`), every STEP round
 //! trip re-enters the same topology, and the shifted operand is a fresh

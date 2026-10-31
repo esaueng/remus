@@ -80,13 +80,13 @@ impl PatternTracker {
             .into_iter()
             .map(remus_topology::arena::Id::index)
             .collect();
-        source_edges.sort_unstable();
+        source_edges.compact_sort_unstable();
         let mut source_vertices: Vec<usize> =
             remus_topology::explorer::solid_vertices(topo, solid)?
                 .into_iter()
                 .map(remus_topology::arena::Id::index)
                 .collect();
-        source_vertices.sort_unstable();
+        source_vertices.compact_sort_unstable();
         Ok(Self {
             evo,
             source_edges,
@@ -98,18 +98,18 @@ impl PatternTracker {
 
     fn record_instance(&mut self, copied: &CopiedSolidEntities) {
         let mut sources: Vec<usize> = copied.face_map.keys().copied().collect();
-        sources.sort_unstable();
+        sources.compact_sort_unstable();
         for src in sources {
             let dst = copied.face_map[&src].index();
             self.evo.add_generated(src, dst);
         }
         let mut edge_sources: Vec<usize> = copied.edge_map.keys().copied().collect();
-        edge_sources.sort_unstable();
+        edge_sources.compact_sort_unstable();
         for src in edge_sources {
             self.edge_copies.push((src, copied.edge_map[&src].index()));
         }
         let mut vertex_sources: Vec<usize> = copied.vertex_map.keys().copied().collect();
-        vertex_sources.sort_unstable();
+        vertex_sources.compact_sort_unstable();
         for src in vertex_sources {
             self.vertex_copies
                 .push((src, copied.vertex_map[&src].index()));

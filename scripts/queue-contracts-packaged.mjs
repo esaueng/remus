@@ -59,8 +59,8 @@ function cubeBrep() {
   return { vertices, edges: pairs.map(([a, b], i) => ({ id: 100 + i,
     curveType: 'line', startVertex: 10 + a, endVertex: 10 + b })), faces };
 }
-function brepWitness({ BrepKernel }) {
-  const kernel = new BrepKernel();
+function brepWitness({ RemusKernel }) {
+  const kernel = new RemusKernel();
   try {
     const retained = kernel.makeBox(2, 3, 4), doc = cubeBrep();
     const control = kernel.fromBREP(JSON.stringify(doc));
@@ -81,9 +81,9 @@ function brepWitness({ BrepKernel }) {
     close(kernel.volume(retained, 0.01), 24, 'retained solid after BREP refusals');
   } finally { kernel.free(); }
 }
-function optionalArgumentsWitness({ BrepKernel }) {
+function optionalArgumentsWitness({ RemusKernel }) {
   for (const route of ['executeBatch', 'executeBatchV2']) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const solid = kernel.makeBox(2, 3, 4), other = kernel.makeBox(1, 1, 1);
       const face = kernel.makeRectangle(4, 2);
@@ -129,8 +129,8 @@ function optionalArgumentsWitness({ BrepKernel }) {
     } finally { kernel.free(); }
   }
 }
-function legacySketchWitness({ BrepKernel }) {
-  const kernel = new BrepKernel();
+function legacySketchWitness({ RemusKernel }) {
+  const kernel = new RemusKernel();
   try {
     const sketch = kernel.sketchNew(), points = [[0, 0], [1, 0], [0, 1], [1, 1]];
     for (const [x, y] of points) kernel.sketchAddPoint(sketch, x, y, true);
@@ -152,9 +152,9 @@ function legacySketchWitness({ BrepKernel }) {
     assert.equal(JSON.parse(kernel.sketchSolve(sketch, 20, 1e-8)).converged, true);
   } finally { kernel.free(); }
 }
-function ellipseWitness({ BrepKernel }) {
+function ellipseWitness({ RemusKernel }) {
   for (const a of [5, 3]) for (const route of ['executeBatch', 'executeBatchV2']) {
-    const kernel = new BrepKernel();
+    const kernel = new RemusKernel();
     try {
       const ops = [
         { op: 'gcsNew', args: {} },
@@ -186,8 +186,8 @@ function ellipseWitness({ BrepKernel }) {
     } finally { kernel.free(); }
   }
 }
-function sweepWitness({ BrepKernel }) {
-  const kernel = new BrepKernel();
+function sweepWitness({ RemusKernel }) {
+  const kernel = new RemusKernel();
   try {
     const retained = kernel.makeBox(1, 1, 1), a = kernel.makeRectangle(2, 2), b = kernel.makeRectangle(2, 2);
     const knots = Float64Array.of(0, 0, 1, 1), points = Float64Array.of(0, 0, 0, 0, 0, 10);
@@ -215,8 +215,8 @@ function sweepWitness({ BrepKernel }) {
 }
 const tetra = [[10, 20, 30], [11, 20, 30], [10, 21, 30], [10, 20, 31]];
 const tetraFaces = [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
-function plyWitness({ BrepKernel, RemusIo }) {
-  const io = new RemusIo(), kernel = new BrepKernel();
+function plyWitness({ RemusKernel, RemusIo }) {
+  const io = new RemusIo(), kernel = new RemusKernel();
   try {
     const header = 'ply\nformat binary_little_endian 1.0\nelement vertex 4\n' +
       'property float x\nproperty float y\nproperty float z\nproperty uchar red\n' +
@@ -264,7 +264,7 @@ function modelZip(xml) {
   end.writeUInt32LE(central.length + name.length, 12); end.writeUInt32LE(local.length + name.length + data.length, 16);
   return Buffer.concat([local, name, data, central, name, end]);
 }
-function threemfWitness({ BrepKernel, RemusIo }) {
+function threemfWitness({ RemusKernel, RemusIo }) {
   const corners = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
     [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]];
   const triangles = [[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4],
@@ -280,7 +280,7 @@ function threemfWitness({ BrepKernel, RemusIo }) {
     '<item objectid="1" transform="1 0 0 0 1 0 0 0 1 0 -7 0"/>' +
     '<item objectid="1" transform="-1 0 0 0 1 0 0 0 1 -5 0 0"/></build>' +
     '<v:build><v:item objectid="2"/></v:build></model>';
-  const io = new RemusIo(), kernel = new BrepKernel();
+  const io = new RemusIo(), kernel = new RemusKernel();
   try {
     const solids = Array.from(kernel.deserializeSolids(io.import3mf(modelZip(xml))));
     assert.equal(solids.length, 4, 'one solid per core build item, multiplicity and no unused resource');
@@ -296,8 +296,8 @@ function threemfWitness({ BrepKernel, RemusIo }) {
   } finally { kernel.free(); io.free(); }
 }
 // Independent document witnesses avoid endpoint failures masking missing carrier checks.
-function analyticCarrierWitness({ BrepKernel, RemusIo }) {
-  const kernel = new BrepKernel(), io = new RemusIo();
+function analyticCarrierWitness({ RemusKernel, RemusIo }) {
+  const kernel = new RemusKernel(), io = new RemusIo();
   const document = (wire) => JSON.parse(new TextDecoder().decode(kernel.serializeWire(wire)));
   try {
     const circleEdge = kernel.makeCircleEdge(0, 0, 0, 0, 0, 1, 1e6);
@@ -342,9 +342,9 @@ function transformVia(kernel, route, solid, matrix) {
   if (route === 'direct') kernel.transformSolid(solid, Float64Array.from(matrix));
   else okay(batch(kernel, route, 'transform', { solid, matrix }), `${route} transform`);
 }
-function apexChartWitness({ BrepKernel, RemusIo }) {
+function apexChartWitness({ RemusKernel, RemusIo }) {
   for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
-    const kernel = new BrepKernel(), io = new RemusIo();
+    const kernel = new RemusKernel(), io = new RemusIo();
     try {
       const source = kernel.makeCone(2, 0, 3);
       kernel.transformSolid(source, Float64Array.from(rotationZ(1.5 * Math.PI)));
@@ -375,11 +375,11 @@ function apexChartWitness({ BrepKernel, RemusIo }) {
     } finally { kernel.free(); io.free(); }
   }
 }
-function smallScaleChartWitness({ BrepKernel, RemusIo }) {
+function smallScaleChartWitness({ RemusKernel, RemusIo }) {
   const dot = (a, b) => a.reduce((sum, x, i) => sum + x * b[i], 0);
   const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
   for (const route of ['direct', 'executeBatch', 'executeBatchV2']) {
-    const kernel = new BrepKernel(), io = new RemusIo();
+    const kernel = new RemusKernel(), io = new RemusIo();
     try {
       const source = kernel.makeBox(1e16, 1e16, 1e16);
       const doc = JSON.parse(new TextDecoder().decode(kernel.serializeSolid(source)));

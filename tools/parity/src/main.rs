@@ -1391,10 +1391,10 @@ fn dispatch(
                 args.get("face").ok_or_else(|| ops_err("missing 'face'"))?,
             )?;
             let face_data = model.topology().face(face)?;
-            let normal = match face_data.surface() {
-                remus_topology::face::FaceSurface::Plane { normal, .. } => *normal,
-                other => other.normal(0.0, 0.0),
-            };
+            // Mirrors the batch arm: outward (orientation-aware) for planes.
+            let normal = face_data
+                .effective_plane_normal()
+                .unwrap_or_else(|| face_data.surface().normal(0.0, 0.0));
             Ok(serde_json::json!([normal.x(), normal.y(), normal.z()]))
         }
         _ => Err(ops_err(&format!("unsupported batch op '{op}'"))),

@@ -179,6 +179,8 @@ pub fn face_set_vertex_bounding_box(
             }
         }
     }
+    // hot: 1,326+ calls, ~3,484,000 n*log2(n) work, n up to 4,592 in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     vertex_ids.sort_unstable();
     vertex_ids.dedup();
 

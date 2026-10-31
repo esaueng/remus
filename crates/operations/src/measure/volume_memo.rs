@@ -704,6 +704,8 @@ impl ContentWriter {
 
     fn finish(mut self) -> ContentKey {
         if let Some(mut handles) = self.handles {
+            // hot: ~29,000 n*log2(n) work, n up to 294 in one criterion --test + native perf pass.
+            #[allow(clippy::disallowed_methods)]
             handles.sort_unstable();
             let mut previous = None;
             let mut ordinal = 0_u64;

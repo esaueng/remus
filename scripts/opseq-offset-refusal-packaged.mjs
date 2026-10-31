@@ -61,13 +61,13 @@ function refusal(k, surface, operation, solid, distance, label, invalid = false)
   assert.match(error.message, invalid ? /distance/ : /assembly failed: wire loop walk/, label);
 }
 
-export function runOpseqOffsetRefusalPackaged({ BrepKernel }) {
+export function runOpseqOffsetRefusalPackaged({ RemusKernel }) {
   let passed = 0;
   for (const width of [0.9, 1, 1.1]) {
     for (const distance of [-0.2, -0.25, -0.3]) {
       for (const scale of [1, 1000]) {
         for (const placed of [false, true]) {
-          const k = new BrepKernel();
+          const k = new RemusKernel();
           const label = `F7 width=${width} distance=${distance} scale=${scale} placed=${placed}`;
           try {
             // Preserve the original literal's dense cylinder/box/fuse prefix.

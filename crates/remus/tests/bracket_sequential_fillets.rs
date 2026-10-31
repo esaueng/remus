@@ -777,3 +777,37 @@ fn bounded_tab_rollover_is_covariant_under_rigid_placement_scale_and_reflection(
         }
     }
 }
+
+/// With the rounded corners and slot (F1, F2) built first, the tab-base chain
+/// past its reach is a chain one face carries across a tangent seam, so the
+/// rail-chain engine takes it, and its band self-intersects. That attempt must
+/// not replace the walking engine's own verdict: the selection is refused as
+/// the seam crossing it is, with the input untouched.
+#[test]
+fn prefixed_tab_base_beyond_reach_keeps_the_seam_crossing_refusal() {
+    let mut model = Model::new();
+    let s0 = bracket(&mut model);
+    let edges = f1_edges(&model, s0);
+    let s1 = model.fillet(s0, &edges, 6.0).unwrap().solid;
+    let edges = f2_edges(&model, s1);
+    let s2 = model.fillet(s1, &edges, 2.0).unwrap().solid;
+    let edges = f3_edges(&model, s2);
+    let s3 = model.fillet(s2, &edges, 2.0).unwrap().solid;
+    let before = remus_topology::explorer::solid_entity_counts(model.topology(), s3).unwrap();
+    let volume = model.volume(s3, 0.01).unwrap();
+
+    let edges = f4_edges(&model, s3);
+    let Err(error) = model.fillet(s3, &edges, 4.1) else {
+        panic!("F4 past its reach must be refused");
+    };
+    assert!(
+        matches!(
+            error,
+            OperationsError::Blend(BlendError::UnsupportedSeamCrossing { .. })
+        ),
+        "unexpected refusal: {error}"
+    );
+    let after = remus_topology::explorer::solid_entity_counts(model.topology(), s3).unwrap();
+    assert_eq!(before, after);
+    assert!((model.volume(s3, 0.01).unwrap() - volume).abs() < 1e-9);
+}

@@ -27,6 +27,7 @@
 use remus_math::vec::{Point3, Vec3};
 
 pub mod extrude;
+pub mod gear;
 pub mod helix;
 pub mod linked_sketch;
 pub mod loft;
@@ -94,9 +95,12 @@ pub(crate) mod cap;
 pub use cap::nonplanar_ring_surface;
 pub mod boundary_evolution;
 pub mod compound_ops;
+pub(crate) mod error_payloads;
 pub mod evolution;
 pub mod journal_ops;
+pub(crate) mod polygon;
 pub mod sketch;
+pub(crate) mod triangle_intersection;
 pub(crate) mod winding;
 
 #[cfg(test)]
@@ -382,7 +386,7 @@ pub enum OperationsError {
         /// Error count from the independent L2 check validator.
         check_errors: usize,
         /// Exact repair categories attempted before rollback.
-        healing: crate::heal::HealingReport,
+        healing: crate::error_payloads::HealingReport,
     },
 
     /// A validator errored before it could establish the healed result's
@@ -394,7 +398,7 @@ pub enum OperationsError {
         /// Typed lower-layer failure rendered for diagnostics.
         reason: String,
         /// Exact repair categories attempted before rollback.
-        healing: crate::heal::HealingReport,
+        healing: crate::error_payloads::HealingReport,
     },
 
     /// A configured fixer declined at least one requested repair. Any repairs
@@ -476,7 +480,7 @@ pub enum OperationsError {
 
     /// An exact blend-band resize was refused.
     #[error("resize blend: {0}")]
-    ResizeBlend(#[from] resize_blend::ResizeBlendError),
+    ResizeBlend(#[from] error_payloads::ResizeBlendError),
 
     /// A check (classification/validation/distance) error occurred.
     #[error("check: {0}")]

@@ -20,12 +20,12 @@
 
 use serde_json::{Value, json};
 
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::types::SolidOperationDetailedResult;
 
 type Counts = (usize, usize, usize, usize, usize);
 
-fn counts(kernel: &BrepKernel) -> Counts {
+fn counts(kernel: &RemusKernel) -> Counts {
     let topo = kernel.topo();
     (
         topo.num_vertices(),
@@ -39,7 +39,7 @@ fn counts(kernel: &BrepKernel) -> Counts {
 /// Live entity counts, without the handle high-water mark: a rollback after
 /// an attempt that allocated keeps those slots retired so no stale handle
 /// can alias a later entity.
-fn live_counts(kernel: &BrepKernel) -> (usize, usize, usize, usize) {
+fn live_counts(kernel: &RemusKernel) -> (usize, usize, usize, usize) {
     let (vertices, edges, faces, solids, _) = counts(kernel);
     (vertices, edges, faces, solids)
 }
@@ -48,11 +48,11 @@ fn envelope(result: SolidOperationDetailedResult) -> Value {
     serde_json::to_value(result).unwrap()
 }
 
-fn batch_v2(kernel: &mut BrepKernel, ops: &Value) -> Value {
+fn batch_v2(kernel: &mut RemusKernel, ops: &Value) -> Value {
     serde_json::from_str(&kernel.execute_batch_v2(&ops.to_string())).unwrap()
 }
 
-fn batch_legacy(kernel: &mut BrepKernel, ops: &Value) -> Value {
+fn batch_legacy(kernel: &mut RemusKernel, ops: &Value) -> Value {
     serde_json::from_str(&kernel.execute_batch(&ops.to_string())).unwrap()
 }
 
@@ -90,7 +90,7 @@ fn assert_ok_details<'a>(env: &'a Value, quality: &str) -> &'a Value {
 /// everything above z=1.0 and below z=-1.0 cut away. GFA leaves a general
 /// sphere patch outside the exact class (fitted path / exact-only refusal)
 /// alongside exact hemispheres and discs.
-fn make_trimmed_sphere(kernel: &mut BrepKernel) -> u32 {
+fn make_trimmed_sphere(kernel: &mut RemusKernel) -> u32 {
     let sphere = kernel.make_sphere_solid(2.0, 16).unwrap();
     let top_cutter = kernel.make_box_solid(20.0, 20.0, 20.0).unwrap();
     kernel
@@ -124,8 +124,8 @@ fn make_trimmed_sphere(kernel: &mut BrepKernel) -> u32 {
 
 #[test]
 fn transform_detailed_reports_carriers_and_matches_batch() {
-    let mut direct = BrepKernel::new();
-    let mut batched = BrepKernel::new();
+    let mut direct = RemusKernel::new();
+    let mut batched = RemusKernel::new();
     let direct_solid = direct.make_box_solid(2.0, 3.0, 4.0).unwrap();
     let batched_solid = batched.make_box_solid(2.0, 3.0, 4.0).unwrap();
     assert_eq!(direct_solid, batched_solid);
@@ -171,7 +171,7 @@ fn transform_detailed_reports_carriers_and_matches_batch() {
 #[test]
 fn transform_detailed_discloses_nurbs_wall_and_orientation() {
     // Cylinder wall converts exactly; nothing is fitted.
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let solid = kernel.make_cylinder_solid(1.0, 2.0).unwrap();
     let env = envelope(kernel.transform_detailed_impl(solid, &diag_aniso(), false));
     let details = assert_ok_details(&env, "exact");
@@ -183,7 +183,7 @@ fn transform_detailed_discloses_nurbs_wall_and_orientation() {
 
     // Mirror-scaled sphere: two exact hemisphere conversions plus the
     // orientation flag.
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let solid = kernel.make_sphere_solid(1.0, 16).unwrap();
     let env = envelope(kernel.transform_detailed_impl(solid, &mirror_aniso(), false));
     let details = assert_ok_details(&env, "exact");
@@ -209,7 +209,7 @@ fn transform_detailed_discloses_nurbs_wall_and_orientation() {
 
 #[test]
 fn transform_detailed_refusals_are_typed_data() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let solid = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
 
     // Short matrix.
@@ -244,7 +244,7 @@ fn transform_detailed_refusals_are_typed_data() {
 #[test]
 fn malformed_batch_transform_twin_arguments_stay_in_typed_envelopes() {
     for op in ["transformDetailed", "copyAndTransformSolidDetailed"] {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let solid = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
         let before = live_counts(&kernel);
         let direct_short = if op == "transformDetailed" {
@@ -262,8 +262,8 @@ fn malformed_batch_transform_twin_arguments_stay_in_typed_envelopes() {
             {"op": op, "args": {"solid": 9999, "matrix": valid_matrix}},
         ]);
         for run in [
-            batch_v2 as fn(&mut BrepKernel, &Value) -> Value,
-            batch_legacy as fn(&mut BrepKernel, &Value) -> Value,
+            batch_v2 as fn(&mut RemusKernel, &Value) -> Value,
+            batch_legacy as fn(&mut RemusKernel, &Value) -> Value,
         ] {
             let results = run(&mut kernel, &cases);
             assert_eq!(results[0]["ok"], direct_short, "{op} short matrix parity");
@@ -291,7 +291,7 @@ fn malformed_batch_transform_twin_arguments_stay_in_typed_envelopes() {
 
 #[test]
 fn transform_detailed_refusals_roll_back() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let solid = kernel.make_cylinder_solid(1.0, 2.0).unwrap();
     let before = live_counts(&kernel);
     let volume_before = kernel.volume(solid, 0.01).unwrap();
@@ -337,8 +337,8 @@ fn transform_detailed_refusals_roll_back() {
 
 #[test]
 fn copy_transform_twin_matches_direct_and_batch() {
-    let mut direct = BrepKernel::new();
-    let mut batched = BrepKernel::new();
+    let mut direct = RemusKernel::new();
+    let mut batched = RemusKernel::new();
     let direct_solid = direct.make_sphere_solid(1.0, 16).unwrap();
     let batched_solid = batched.make_sphere_solid(1.0, 16).unwrap();
     assert_eq!(direct_solid, batched_solid);
@@ -369,8 +369,8 @@ fn copy_transform_twin_matches_direct_and_batch() {
 
 #[test]
 fn copy_transform_exact_only_refuses_fitted_result() {
-    let mut direct = BrepKernel::new();
-    let mut batched = BrepKernel::new();
+    let mut direct = RemusKernel::new();
+    let mut batched = RemusKernel::new();
     let direct_solid = make_trimmed_sphere(&mut direct);
     let batched_solid = make_trimmed_sphere(&mut batched);
     let before = live_counts(&direct);
@@ -411,7 +411,7 @@ fn copy_transform_exact_only_refuses_fitted_result() {
 
 #[test]
 fn copy_transform_refusals_preserve_topology() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let solid = kernel.make_box_solid(1.0, 1.0, 1.0).unwrap();
     let before = live_counts(&kernel);
 
@@ -440,14 +440,14 @@ fn copy_transform_refusals_preserve_topology() {
 fn copy_transform_legacy_geometry_agrees() {
     // Legacy shape unchanged: the throwing copy route builds the same
     // geometry the twin reports.
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let solid = kernel.make_cylinder_solid(1.0, 2.0).unwrap();
     let copied = kernel
         .copy_and_transform_solid(solid, diag_aniso())
         .unwrap();
     assert_ne!(copied, solid);
 
-    let mut twin = BrepKernel::new();
+    let mut twin = RemusKernel::new();
     let source = twin.make_cylinder_solid(1.0, 2.0).unwrap();
     let env = envelope(twin.copy_and_transform_solid_detailed_impl(source, &diag_aniso(), false));
     assert_ok_details(&env, "exact");

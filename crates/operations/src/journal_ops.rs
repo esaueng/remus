@@ -32,6 +32,7 @@ use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
 use crate::evolution::EvolutionMap;
+use remus_math::compact_sort::CompactSort;
 
 /// A journaled boolean's result: the solid and the journal entry that
 /// records its history.
@@ -53,34 +54,7 @@ pub fn boolean_kind(op: BooleanOp) -> &'static str {
     }
 }
 
-/// Every face, edge, and vertex of a solid as journal entity keys.
-///
-/// # Errors
-///
-/// Returns [`OperationsError`] if the solid's topology tree contains an
-/// invalid handle.
-pub fn solid_entity_keys(
-    topo: &Topology,
-    solid: SolidId,
-) -> Result<Vec<EntityKey>, OperationsError> {
-    let mut keys = Vec::new();
-    keys.extend(
-        solid_faces(topo, solid)?
-            .into_iter()
-            .map(|id| EntityKey::face(id.index())),
-    );
-    keys.extend(
-        solid_edges(topo, solid)?
-            .into_iter()
-            .map(|id| EntityKey::edge(id.index())),
-    );
-    keys.extend(
-        solid_vertices(topo, solid)?
-            .into_iter()
-            .map(|id| EntityKey::vertex(id.index())),
-    );
-    Ok(keys)
-}
+pub use crate::evolution::solid_entity_keys;
 
 /// Opens a journaled operation, capturing the pre-operation half of its
 /// scope.
@@ -318,7 +292,7 @@ fn record_entity_evolution_with_outputs(
         }
     }
     for (output, mut inputs) in modified_by_output {
-        inputs.sort_unstable();
+        inputs.compact_sort_unstable();
         let event = match inputs.as_slice() {
             [single] => EventDraft::Modified {
                 from: EntityKey::face(*single),
@@ -337,7 +311,7 @@ fn record_entity_evolution_with_outputs(
         }
     }
     for (output, mut inputs) in generated_by_output {
-        inputs.sort_unstable();
+        inputs.compact_sort_unstable();
         draft.push(
             EntityKey::face(output),
             EventDraft::Generated {
@@ -347,7 +321,7 @@ fn record_entity_evolution_with_outputs(
     }
 
     let mut deleted: Vec<usize> = map.deleted.iter().copied().collect();
-    deleted.sort_unstable();
+    deleted.compact_sort_unstable();
     for input in deleted {
         draft.push(EntityKey::face(input), EventDraft::Deleted);
     }
@@ -366,7 +340,7 @@ fn record_entity_evolution_with_outputs(
         boundary_sources.entry(target).or_default().push(source);
     }
     for (target, mut sources) in boundary_sources {
-        sources.sort_unstable();
+        sources.compact_sort_unstable();
         sources.dedup();
         let event = match sources.as_slice() {
             [source] => EventDraft::Modified { from: *source },
@@ -516,7 +490,7 @@ pub fn linear_pattern_journaled(
                 },
             ));
         }
-        additional.sort_unstable_by_key(|(subject, _)| *subject);
+        additional.compact_sort_unstable_by_key(|(subject, _)| *subject);
         let op = record_entity_evolution_with_outputs(
             topo,
             pending,
@@ -600,7 +574,7 @@ pub fn circular_pattern_journaled(
                 },
             ));
         }
-        additional.sort_unstable_by_key(|(subject, _)| *subject);
+        additional.compact_sort_unstable_by_key(|(subject, _)| *subject);
         let op = record_entity_evolution_with_outputs(
             topo,
             pending,
@@ -688,7 +662,7 @@ pub fn grid_pattern_journaled(
                 },
             ));
         }
-        additional.sort_unstable_by_key(|(subject, _)| *subject);
+        additional.compact_sort_unstable_by_key(|(subject, _)| *subject);
         let op = record_entity_evolution_with_outputs(
             topo,
             pending,
@@ -1117,7 +1091,7 @@ pub fn resize_blend_journaled(
                 None => deleted.push((source, EventDraft::Deleted)),
             }
         }
-        deleted.sort_unstable_by_key(|(source, _)| *source);
+        deleted.compact_sort_unstable_by_key(|(source, _)| *source);
         let op = record_entity_evolution_with_outputs(
             topo,
             pending,
@@ -1160,7 +1134,7 @@ pub fn remove_blends_journaled(
                 None => deleted.push((source, EventDraft::Deleted)),
             }
         }
-        deleted.sort_unstable_by_key(|(source, _)| *source);
+        deleted.compact_sort_unstable_by_key(|(source, _)| *source);
         let op = record_entity_evolution_with_outputs(
             topo,
             pending,
@@ -1256,7 +1230,7 @@ pub fn defeature_journaled(
                 None => deleted.push((source, EventDraft::Deleted)),
             }
         }
-        deleted.sort_unstable_by_key(|(source, _)| *source);
+        deleted.compact_sort_unstable_by_key(|(source, _)| *source);
         let op = record_entity_evolution_with_outputs(
             topo,
             pending,
@@ -1374,7 +1348,7 @@ fn compose_healing_history(
                     break;
                 }
             }
-            next.sort_unstable();
+            next.compact_sort_unstable();
             next.dedup();
             *targets = known.then_some(next);
         }
@@ -1439,7 +1413,7 @@ fn record_healing_replacements(
     for &target in &live {
         let event = match by_target.remove(&target) {
             Some(mut sources) => {
-                sources.sort_unstable();
+                sources.compact_sort_unstable();
                 sources.dedup();
                 match sources.as_slice() {
                     [source] => EventDraft::Modified { from: *source },

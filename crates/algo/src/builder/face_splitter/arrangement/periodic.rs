@@ -173,7 +173,7 @@ pub(super) fn quotient(
                 }
             }
         }
-        cells.sort_unstable();
+        cells.compact_sort_unstable();
         let mut boundary = BTreeSet::new();
         let mut vertices = BTreeSet::new();
         let mut edges = BTreeSet::new();

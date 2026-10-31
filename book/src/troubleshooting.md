@@ -22,7 +22,7 @@ to improve display quality.
 
 Handles are kernel-local and can become invalid after using the wrong kernel
 instance or mixing face, edge, and solid handles. Keep each model's handles
-with its `BrepKernel` instance.
+with its `RemusKernel` instance.
 
 ## Rendering tests skip locally
 

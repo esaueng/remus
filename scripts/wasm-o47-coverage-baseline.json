@@ -1,6 +1,6 @@
 {
   "meta": {
-    "scope": "mutating BrepKernel JS exports and session transfer exports, with their O4.7 typed-result classification",
+    "scope": "mutating RemusKernel JS exports and session transfer exports, with their O4.7 typed-result classification",
     "source": "crates/wasm/src via js_name discovery; generated-package provenance tracked separately",
     "covered_schema": "solid_envelope",
     "detail": "queries (&self) carry no rows; every mutating export carries exactly one row"
@@ -441,6 +441,16 @@
       "coverage": "special",
       "owner": "O4.7",
       "reason": "O4.7 twin; the typed surface itself, no further twin required"
+    },
+    {
+      "js": "cutGearTeethDetailed",
+      "rust": "cut_gear_teeth_detailed",
+      "file": "bindings/gear.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "typed solid envelope by construction; no legacy throwing method to twin"
     },
     {
       "js": "cutJournaled",
@@ -1462,6 +1472,16 @@
       "reason": "sweep/loft/pipe family; O4.7 solid twin pending"
     },
     {
+      "js": "makeBevelGearDetailed",
+      "rust": "make_bevel_gear_detailed",
+      "file": "bindings/gear.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "typed solid envelope by construction; no legacy throwing method to twin"
+    },
+    {
       "js": "makeBox",
       "rust": "make_box_solid",
       "file": "bindings/primitives.rs",
@@ -1612,6 +1632,16 @@
       "reason": "topology constructor; O4.7 solid twin pending"
     },
     {
+      "js": "makeGearDetailed",
+      "rust": "make_gear_detailed",
+      "file": "bindings/gear.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "typed solid envelope by construction; no legacy throwing method to twin"
+    },
+    {
       "js": "makeLineEdge",
       "rust": "make_line_edge",
       "file": "bindings/shapes.rs",
@@ -1750,6 +1780,26 @@
       "coverage": "uncovered",
       "owner": "O4.7",
       "reason": "topology constructor; O4.7 solid twin pending"
+    },
+    {
+      "js": "makeWormDetailed",
+      "rust": "make_worm_detailed",
+      "file": "bindings/gear.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "typed solid envelope by construction; no legacy throwing method to twin"
+    },
+    {
+      "js": "makeWormWheelDetailed",
+      "rust": "make_worm_wheel_detailed",
+      "file": "bindings/gear.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "typed solid envelope by construction; no legacy throwing method to twin"
     },
     {
       "js": "mergeCoincidentVertices",

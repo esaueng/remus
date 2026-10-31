@@ -37,6 +37,7 @@ use crate::journal::{
     EntityEvent, EntityKey, EntityKind, EntryPayload, JournalEntry, JournalOrdinal, OpId,
     RecordedOrigin,
 };
+use remus_math::compact_sort::CompactSort;
 
 /// A persistent reference: an anchor plus optional discriminators.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -466,7 +467,7 @@ pub fn resolve(topo: &Topology, reference: &PersistentRef) -> Resolution {
         .filter_map(|&ordinal| journal.key_of(ordinal))
         .filter(|key| key.kind == reference.entity_kind && key.index != EntityKey::UNMAPPED)
         .collect();
-    entities.sort_unstable();
+    entities.compact_sort_unstable();
 
     // 5. A mapped key the history calls current must name a live entity.
     // A checkpoint restore keeps retirements while the journal and the
@@ -596,7 +597,7 @@ fn chase_one_entry(
     if hopped && origin == RecordedOrigin::Geometry {
         *provenance = Provenance::Inferred;
     }
-    next.sort_unstable();
+    next.compact_sort_unstable();
     next.dedup();
     if next.is_empty() {
         return ChaseStep::Stop(Resolution::Dangling {
@@ -1091,7 +1092,7 @@ fn resolve_signature(topo: &Topology, signature: &EntitySignature) -> Vec<Entity
             }
         }
     }
-    matches.sort_unstable();
+    matches.compact_sort_unstable();
     matches
 }
 

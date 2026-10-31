@@ -12,12 +12,12 @@ use crate::bindings::transaction_tests::{
     session_state,
 };
 use crate::error::WasmError;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
 /// `dispatch_with_rollback` before the mutating arm moved onto a rollback
 /// scope, verbatim.
 fn legacy_dispatch_with_rollback(
-    kernel: &mut BrepKernel,
+    kernel: &mut RemusKernel,
     kind: BatchOpKind,
     op: &str,
     args: &serde_json::Value,
@@ -46,7 +46,7 @@ fn legacy_dispatch_with_rollback(
 /// `with_topology_transaction` before it moved onto a rollback scope,
 /// verbatim.
 fn legacy_with_topology_transaction<T, E>(
-    kernel: &mut BrepKernel,
+    kernel: &mut RemusKernel,
     operation: impl FnOnce(&mut Topology) -> Result<T, E>,
 ) -> Result<T, E> {
     let snapshot = kernel.topo().clone();
@@ -58,7 +58,7 @@ fn legacy_with_topology_transaction<T, E>(
 }
 
 /// `from_brep_impl` before it moved onto a rollback scope, verbatim.
-fn legacy_from_brep_impl(kernel: &mut BrepKernel, json: &str) -> Result<u32, WasmError> {
+fn legacy_from_brep_impl(kernel: &mut RemusKernel, json: &str) -> Result<u32, WasmError> {
     let snapshot = kernel.topo().clone();
     let result = kernel.from_brep_impl_unchecked(json);
     if result.is_err() {
@@ -79,8 +79,8 @@ fn rollback_scope_matches_the_full_copy_dispatcher() {
     // Two kernels with one history; with and without a retained checkpoint,
     // so the scope also opens on a copy-on-write first write.
     for retain_checkpoint in [false, true] {
-        let mut current = BrepKernel::new();
-        let mut legacy = BrepKernel::new();
+        let mut current = RemusKernel::new();
+        let mut legacy = RemusKernel::new();
         let f = fixture(&mut current);
         fixture(&mut legacy);
         if retain_checkpoint {
@@ -122,7 +122,7 @@ fn rollback_scope_matches_the_full_copy_dispatcher() {
 /// (most operations also roll back natively).
 #[test]
 fn corpus_refusals_really_dirty_the_document_without_rollback() {
-    let mut raw = BrepKernel::new();
+    let mut raw = RemusKernel::new();
     let f = fixture(&mut raw);
     let mut dirty = Vec::new();
     for (family, _, bad) in batch_cases(&f) {
@@ -145,7 +145,7 @@ type Body = Box<dyn Fn(&mut Topology) -> Result<(), remus_operations::Operations
 /// Asserts the two kernels hold the same complete topology (`Debug`,
 /// tombstones and the pcurve index included), high-water marks and session
 /// state.
-fn assert_same_document(current: &BrepKernel, legacy: &BrepKernel, context: &str) {
+fn assert_same_document(current: &RemusKernel, legacy: &RemusKernel, context: &str) {
     assert_eq!(
         format!("{:?}", current.topo()),
         format!("{:?}", legacy.topo()),
@@ -167,8 +167,8 @@ fn refusals_off_the_restore_fixed_point_match_the_full_copy_boundary() {
     // (direct, batch and fromBREP paths), while the boolean arm, which
     // always rolled back exactly, must keep the entry state as it was.
     for retain_checkpoint in [false, true] {
-        let mut current = BrepKernel::new();
-        let mut legacy = BrepKernel::new();
+        let mut current = RemusKernel::new();
+        let mut legacy = RemusKernel::new();
         let f = fixture(&mut current);
         fixture(&mut legacy);
         if retain_checkpoint {

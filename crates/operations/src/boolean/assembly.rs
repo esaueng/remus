@@ -19,9 +19,25 @@ use remus_topology::solid::{Solid, SolidId};
 use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
-use super::classify::polygon_centroid;
 use super::face_polygon;
 use super::types::{FaceSpec, MIN_SOLID_FACES};
+
+/// Compute the centroid of a polygon.
+///
+/// Returns the origin if the polygon is empty (should not happen in
+/// practice since fragments are filtered for `len >= 3`).
+#[inline]
+pub(super) fn polygon_centroid(vertices: &[Point3]) -> Point3 {
+    if vertices.is_empty() {
+        return Point3::new(0.0, 0.0, 0.0);
+    }
+    #[allow(clippy::cast_precision_loss)] // polygon vertex counts fit in f64
+    let inv_n = 1.0 / vertices.len() as f64;
+    let (sx, sy, sz) = vertices.iter().fold((0.0, 0.0, 0.0), |(ax, ay, az), v| {
+        (ax + v.x(), ay + v.y(), az + v.z())
+    });
+    Point3::new(sx * inv_n, sy * inv_n, sz * inv_n)
+}
 
 fn edge_with_trim(
     start: VertexId,
@@ -1895,6 +1911,8 @@ pub(crate) fn face_components(topo: &Topology, solid: SolidId) -> Vec<Vec<FaceId
     // shuffled face order, which percolates through the boolean pipeline
     // and makes `compound_cut_*` tests flaky.
     for neighbors in &mut adj {
+        // hot: 31,744+ calls, ~556,000 n*log2(n) work, n up to 364 in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         neighbors.sort_unstable();
         neighbors.dedup();
     }

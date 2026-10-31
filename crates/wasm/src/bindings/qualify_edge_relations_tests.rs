@@ -30,19 +30,19 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::types::{EdgeConvexityRelation, FaceMaterialSense};
 
 mod ray_crossing_nurbs_tests {
     //! Public query contracts over exact NURBS carriers, including frozen preparation.
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
     use remus_check::classify::{ClassifyOptions, PointClassification, PreparedSolid};
     use remus_math::vec::Point3;
     use serde_json::{Value, json};
 
-    fn batch(kernel: &mut BrepKernel, op: &str, args: Value) -> Value {
+    fn batch(kernel: &mut RemusKernel, op: &str, args: Value) -> Value {
         let rows: Value = serde_json::from_str(
             &kernel.execute_batch(&json!([{ "op": op, "args": args }]).to_string()),
         )
@@ -55,7 +55,7 @@ mod ray_crossing_nurbs_tests {
     fn ray_crossing_nurbs_batch_box_relations_and_prepared_material() {
         for scale in [0.01, 1.0, 100.0] {
             for translated in [false, true] {
-                let mut kernel = BrepKernel::new();
+                let mut kernel = RemusKernel::new();
                 let solid = batch(
                     &mut kernel,
                     "makeBox",
@@ -123,12 +123,12 @@ mod ray_crossing_nurbs_tests {
     }
 }
 
-fn run(k: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn run(k: &mut RemusKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let json = serde_json::Value::Array(ops.to_vec()).to_string();
     serde_json::from_str(&k.execute_batch(&json)).unwrap()
 }
 
-fn run_all_ok(k: &mut BrepKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
+fn run_all_ok(k: &mut RemusKernel, ops: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let results = run(k, ops);
     for (i, r) in results.iter().enumerate() {
         assert!(
@@ -151,11 +151,11 @@ fn as_u32(v: &serde_json::Value) -> u32 {
     u32::try_from(v.as_u64().unwrap()).unwrap()
 }
 
-fn batch_solid(k: &mut BrepKernel, make: &str, args: serde_json::Value) -> u32 {
+fn batch_solid(k: &mut RemusKernel, make: &str, args: serde_json::Value) -> u32 {
     as_u32(&run_all_ok(k, &[op(make, args)])[0])
 }
 
-fn batch_edges(k: &mut BrepKernel, solid: u32) -> Vec<u32> {
+fn batch_edges(k: &mut RemusKernel, solid: u32) -> Vec<u32> {
     let out = run_all_ok(k, &[op("solidEdges", serde_json::json!({"solid": solid}))]);
     out[0]
         .as_array()
@@ -166,7 +166,7 @@ fn batch_edges(k: &mut BrepKernel, solid: u32) -> Vec<u32> {
 }
 
 /// One `edgeConvexity` batch cell as `(relation, dihedral_angle)`.
-fn batch_convexity(k: &mut BrepKernel, solid: u32, edge: u32) -> (String, Option<f64>) {
+fn batch_convexity(k: &mut RemusKernel, solid: u32, edge: u32) -> (String, Option<f64>) {
     let out = run_all_ok(
         k,
         &[op(
@@ -180,7 +180,7 @@ fn batch_convexity(k: &mut BrepKernel, solid: u32, edge: u32) -> (String, Option
 }
 
 /// Direct `*_impl` verdict for the same cell (batch == direct).
-fn direct_convexity(k: &BrepKernel, solid: u32, edge: u32) -> (String, Option<f64>) {
+fn direct_convexity(k: &RemusKernel, solid: u32, edge: u32) -> (String, Option<f64>) {
     let result = k.edge_convexity_impl(solid, edge, None).unwrap();
     let relation = match result.relation {
         EdgeConvexityRelation::Convex => "convex",
@@ -192,7 +192,7 @@ fn direct_convexity(k: &BrepKernel, solid: u32, edge: u32) -> (String, Option<f6
     (relation, result.dihedral_angle)
 }
 
-fn assert_batch_matches_direct(k: &mut BrepKernel, solid: u32, edge: u32) {
+fn assert_batch_matches_direct(k: &mut RemusKernel, solid: u32, edge: u32) {
     let batch = batch_convexity(k, solid, edge);
     let direct = direct_convexity(k, solid, edge);
     assert_eq!(
@@ -209,7 +209,7 @@ fn assert_batch_matches_direct(k: &mut BrepKernel, solid: u32, edge: u32) {
     }
 }
 
-fn transform_rigid(k: &mut BrepKernel, solid: u32, scale: f64) {
+fn transform_rigid(k: &mut RemusKernel, solid: u32, scale: f64) {
     let c = 0.37_f64.cos();
     let s = 0.37_f64.sin();
     let _ = run_all_ok(
@@ -226,7 +226,7 @@ fn transform_rigid(k: &mut BrepKernel, solid: u32, scale: f64) {
     );
 }
 
-fn circle_rim_at_z(k: &BrepKernel, solid: u32, z: f64, tol: f64) -> u32 {
+fn circle_rim_at_z(k: &RemusKernel, solid: u32, z: f64, tol: f64) -> u32 {
     let solid_id = k.resolve_solid(solid).unwrap();
     remus_topology::explorer::solid_edges(k.topo(), solid_id)
         .unwrap()
@@ -240,7 +240,7 @@ fn circle_rim_at_z(k: &BrepKernel, solid: u32, z: f64, tol: f64) -> u32 {
         .expect("circle rim")
 }
 
-fn cylinder_walls(k: &BrepKernel, solid: u32) -> Vec<u32> {
+fn cylinder_walls(k: &RemusKernel, solid: u32) -> Vec<u32> {
     let solid_id = k.resolve_solid(solid).unwrap();
     remus_topology::explorer::solid_faces(k.topo(), solid_id)
         .unwrap()
@@ -255,7 +255,7 @@ fn cylinder_walls(k: &BrepKernel, solid: u32) -> Vec<u32> {
         .collect()
 }
 
-fn batch_sense(k: &mut BrepKernel, solid: u32, face: u32) -> String {
+fn batch_sense(k: &mut RemusKernel, solid: u32, face: u32) -> String {
     run_all_ok(
         k,
         &[op(
@@ -271,7 +271,7 @@ fn batch_sense(k: &mut BrepKernel, solid: u32, face: u32) -> String {
 #[test]
 fn batch_box_edges_convex_with_pi_half() {
     for scale in [1e-3_f64, 1.0, 1e3] {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let solid = batch_solid(
             &mut k,
             "makeBox",
@@ -319,7 +319,7 @@ fn batch_box_edges_convex_with_pi_half() {
 
 #[test]
 fn batch_box_convexity_survives_rigid_placement() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let solid = batch_solid(
         &mut k,
         "makeBox",
@@ -337,7 +337,7 @@ fn batch_box_convexity_survives_rigid_placement() {
 #[test]
 fn batch_boss_foot_concave_top_convex_wall_outward() {
     for scale in [1e-3_f64, 1.0, 1e3] {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let plate = batch_solid(
             &mut k,
             "makeBox",
@@ -389,7 +389,7 @@ fn batch_boss_foot_concave_top_convex_wall_outward() {
 #[test]
 fn batch_through_bore_rims_convex_wall_inward() {
     for scale in [1e-3_f64, 1.0, 1e3] {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let plate = batch_solid(
             &mut k,
             "makeBox",
@@ -439,7 +439,7 @@ fn batch_through_bore_rims_convex_wall_inward() {
 
 #[test]
 fn batch_blind_hole_floor_concave() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let plate = batch_solid(
         &mut k,
         "makeBox",
@@ -482,7 +482,7 @@ fn batch_blind_hole_floor_concave() {
 
 #[test]
 fn batch_pocket_floor_walls_concave() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let base = batch_solid(
         &mut k,
         "makeBox",
@@ -532,7 +532,7 @@ fn batch_pocket_floor_walls_concave() {
 
 #[test]
 fn batch_fillet_band_edges_tangent() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let solid = batch_solid(
         &mut k,
         "makeBox",
@@ -569,7 +569,7 @@ fn batch_fillet_band_edges_tangent() {
 
 #[test]
 fn batch_cone_rim_convex_wall_outward() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let cone = batch_solid(
         &mut k,
         "makeCone",
@@ -585,7 +585,7 @@ fn batch_cone_rim_convex_wall_outward() {
 
 #[test]
 fn batch_seam_is_unknown_never_a_guess() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let solid = batch_solid(
         &mut k,
         "makeCylinder",
@@ -612,7 +612,7 @@ fn batch_seam_is_unknown_never_a_guess() {
 
 #[test]
 fn batch_refuses_foreign_and_deleted_handles_naming_them() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let solid = batch_solid(
         &mut k,
         "makeBox",
@@ -667,7 +667,7 @@ fn batch_refuses_foreign_and_deleted_handles_naming_them() {
 /// path, instead of reading as an `unknown` relation.
 #[test]
 fn batch_and_direct_refuse_an_entity_of_another_valid_solid() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let boxed = batch_solid(
         &mut k,
         "makeBox",
@@ -720,7 +720,7 @@ fn batch_and_direct_refuse_an_entity_of_another_valid_solid() {
 
 #[test]
 fn batch_refuses_bad_probes_and_plane_sense() {
-    let mut k = BrepKernel::new();
+    let mut k = RemusKernel::new();
     let solid = batch_solid(
         &mut k,
         "makeBox",
@@ -778,12 +778,12 @@ mod ray_crossing_torus_tests {
     //! Batch query contracts on periodic and notched torus boundaries.
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
     use remus_check::classify::{ClassifyOptions, PointClassification, PreparedSolid};
     use remus_math::vec::Point3;
     use serde_json::{Value, json};
 
-    fn batch(kernel: &mut BrepKernel, op: &str, args: Value) -> Value {
+    fn batch(kernel: &mut RemusKernel, op: &str, args: Value) -> Value {
         let rows: Value = serde_json::from_str(
             &kernel.execute_batch(&json!([{ "op": op, "args": args }]).to_string()),
         )
@@ -797,7 +797,7 @@ mod ray_crossing_torus_tests {
     #[test]
     #[ignore = "open: trimmed torus boundary containment reports Outside on retained curved support"]
     fn ray_crossing_torus_notch_curved_boundary_ready_repro() {
-        let mut kernel = BrepKernel::new();
+        let mut kernel = RemusKernel::new();
         let torus = batch(
             &mut kernel,
             "makeTorus",
@@ -840,7 +840,7 @@ mod ray_crossing_torus_tests {
     fn ray_crossing_torus_batch_notch_preserves_material_and_edge_verdicts() {
         for scale in [0.1, 1.0, 10.0] {
             for placed in [false, true] {
-                let mut kernel = BrepKernel::new();
+                let mut kernel = RemusKernel::new();
                 let torus = batch(
                     &mut kernel,
                     "makeTorus",

@@ -12,12 +12,12 @@
 
 use std::time::Instant;
 
-use remus_wasm::kernel::BrepKernel;
+use remus_wasm::kernel::RemusKernel;
 
 /// Seeds a kernel with `boxes` solids so the arenas are non-trivial before the
 /// measured batch runs.
-fn seeded_kernel(boxes: usize) -> BrepKernel {
-    let mut kernel = BrepKernel::new();
+fn seeded_kernel(boxes: usize) -> RemusKernel {
+    let mut kernel = RemusKernel::new();
     let ops: Vec<String> = (0..boxes)
         .map(|i| {
             let s = 1.0 + (i % 7) as f64 * 0.1;
@@ -89,7 +89,7 @@ fn report(label: &str, seed: usize, ops: usize, samples: &[std::time::Duration])
 /// Runs `body` `reps` times on a freshly seeded kernel, returning each timing.
 fn sample<F>(seed: usize, reps: usize, mut body: F) -> Vec<std::time::Duration>
 where
-    F: FnMut(&mut BrepKernel) -> std::time::Duration,
+    F: FnMut(&mut RemusKernel) -> std::time::Duration,
 {
     (0..reps)
         .map(|_| {
@@ -100,7 +100,7 @@ where
 }
 
 /// Times one `executeBatch` call, asserting every operation succeeded.
-fn time_batch(kernel: &mut BrepKernel, batch: &str, label: &str) -> std::time::Duration {
+fn time_batch(kernel: &mut RemusKernel, batch: &str, label: &str) -> std::time::Duration {
     let start = Instant::now();
     let out = kernel.execute_batch(batch);
     let elapsed = start.elapsed();
@@ -110,7 +110,7 @@ fn time_batch(kernel: &mut BrepKernel, batch: &str, label: &str) -> std::time::D
 
 /// `transformSolid` goes through `with_topology_transaction`; called per
 /// instance in array workflows.
-fn transaction_loop(kernel: &mut BrepKernel, base: u32, calls: usize) -> std::time::Duration {
+fn transaction_loop(kernel: &mut RemusKernel, base: u32, calls: usize) -> std::time::Duration {
     let matrix: Vec<f64> = vec![
         1.0, 0.0, 0.0, 0.001, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     ];

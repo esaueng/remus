@@ -7,6 +7,25 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### ⚠ BREAKING CHANGES
 
+* Batch `getFaceNormal` (`executeBatch` / `executeBatchV2`) now returns a
+  planar face's outward normal, flipped by the face's `reversed` flag, the
+  same vector as the direct `getFaceNormal`. It used to return the stored
+  plane normal, which points into the material on reversed faces such as the
+  walls a `cut` leaves. Faces that are not reversed, including every
+  primitive face, are unchanged. Curved faces still report the stored surface
+  normal at `(u, v) = (0, 0)` in a batch, where the direct method refuses.
+
+* Batch `sewFaces` without a `tolerance` now sews at 1e-7, the default of
+  every other batch tolerance, instead of 1e-6. Vertices between about 1e-7
+  and 1e-6 apart are no longer joined unless the call passes `tolerance`
+  explicitly. The direct `sewFaces` always required `tolerance` and is
+  unchanged.
+
+* The kernel class is renamed from `BrepKernel` to `RemusKernel`. The package
+  still exports `BrepKernel` as a deprecated alias of the same class (ESM,
+  CommonJS and TypeScript) for a transition period; switch to `RemusKernel`,
+  since a later release removes the alias. Native Rust callers get no alias.
+
 * `solidToSolidDistance` now requires complete native sphere pairs or
   straight-edged planar boundaries, including certified affine NURBS planes.
   Other curved pairs fail instead of returning sampled/chord estimates as
@@ -19,7 +38,7 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
   the next ID. For native Rust callers, `checkpoint`, `gcs_new`, `sketch_new`,
   and `assembly_new` now return `Result<u32, JsError>` to report exhaustion
   before allocation. JavaScript keeps its number-or-throw contract, and
-  `BrepKernel::new` keeps its existing signature.
+  `RemusKernel::new` keeps its existing signature.
 
 * `shell` is now exact-only: a solid whose kept faces include a NURBS face
   fails with category `unsupported` instead of returning a handle to a body

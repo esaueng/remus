@@ -3,9 +3,10 @@
 //! Shoots rays from a sample point and counts boundary crossings
 //! to determine inside/outside status.
 //!
-//! NOTE: `operations/boolean/classify.rs` contains a duplicate of this
-//! logic. Bug fixes should be applied here first; the operations copy
-//! will be deleted during the GFA step 5 switchover.
+//! NOTE: `remus_check::classify` is a second, independent ray classifier;
+//! RFC 0008 (`docs/design/rfc-0008-unified-classification.md`) plans their
+//! merge, and `crates/io/tests/classify_engine_oracle.rs` pins where they
+//! disagree.
 
 use remus_math::predicates::point_in_polygon;
 use remus_math::tolerance::Tolerance;
@@ -16,6 +17,7 @@ use remus_topology::solid::SolidId;
 use crate::builder::FaceClass;
 use crate::error::AlgoError;
 use crate::perf::RayWork;
+use remus_math::compact_sort::CompactSort;
 
 /// Per-face geometry used for ray crossing tests.
 enum FaceGeom {
@@ -51,6 +53,19 @@ enum FaceGeom {
         /// excluded. `None` for a full-period lateral.
         u_gap: Option<(f64, f64)>,
     },
+    /// A partial cylindrical patch whose trim is not a rectangle in its
+    /// `(u, v)` chart, such as a helical gear's tip land bounded by two
+    /// helices. Crossings are the exact ray/cylinder roots whose chart point
+    /// lies inside the trim polygon. The polygon lives in the length-scaled
+    /// chart `(r·u, v)` with `u` unwrapped about `centre_u`. The rectangle
+    /// the `Cylinder` variant assumes is the union over `v` of every angular
+    /// span, which is wider than such a patch near its rims and counts a
+    /// neighbouring patch's crossing twice.
+    TrimmedCylinder {
+        surface: remus_math::surfaces::CylindricalSurface,
+        polygon: Vec<Point2>,
+        centre_u: f64,
+    },
     /// A conical face without inner wires, full-period or partial-arc.
     /// Crossings come from the ray/double-cone quadratic filtered to the
     /// face's slant range (`v` = distance from apex along the generator,
@@ -85,14 +100,45 @@ impl FaceGeom {
     /// A planar face with outer polygon `verts`, hole polygons `holes`, and the
     /// supporting plane `normal · x = d`.
     fn planar(verts: Vec<Point3>, holes: Vec<Vec<Point3>>, normal: Vec3, d: f64) -> Self {
+        let outer = (verts, Vec::new());
+        let holes = holes.into_iter().map(|h| (h, Vec::new())).collect();
+        Self::planar_with_arcs(outer, holes, normal, d)
+    }
+
+    /// [`Self::planar`] with the circular arcs each polygon chords, as
+    /// [`wire_polygon_arcs`] reports them.
+    fn planar_with_arcs(
+        outer: (Vec<Point3>, Vec<Option<ChordArc>>),
+        holes: Vec<(Vec<Point3>, Vec<Option<ChordArc>>)>,
+        normal: Vec3,
+        d: f64,
+    ) -> Self {
         let axis = Axis::of(normal);
         Self::Planar {
             normal,
             d,
             axis,
-            face: PlanarFace::new(verts, holes, axis),
+            face: PlanarFace::new(outer, holes, normal, axis),
         }
     }
+}
+
+/// The circle a boundary polygon segment is a chord of.
+///
+/// A planar face bounded by circles is tested against inscribed polygons, and
+/// a chord falls short of its arc by the sagitta: 0.28 mm on the 17-gon of a
+/// 16.5 mm rim, more on a split rim's arcs. A hit in that circular segment
+/// lies inside the face but outside the polygon, so the loop's containment is
+/// flipped there: the polygon and its circular segments together are the
+/// exact region.
+#[derive(Debug, Clone, Copy)]
+struct ChordArc {
+    center: Point3,
+    /// The circle's axis.
+    axis: Vec3,
+    radius: f64,
+    /// How far the arc stands off its chord.
+    sagitta: f64,
 }
 
 /// The coordinate plane a planar face's polygons are projected into: the one
@@ -211,6 +257,8 @@ struct PlanarFace {
     slack: f64,
     /// Every coordinate of every loop is a [`gate_coord`].
     cullable: bool,
+    /// The supporting plane's normal, which orients the arc chords.
+    normal: Vec3,
     loops: Box<PlanarLoops>,
 }
 
@@ -224,14 +272,61 @@ struct PlanarLoops {
 struct Loop {
     pts: Vec<Point3>,
     flat: Vec<Point2>,
+    /// Bounds of the projected loop, its circular segments included.
     bounds: [f64; 4],
+    /// The arc segment `i` (from `pts[i]` to the next point) chords, if any;
+    /// empty when no segment chords an arc.
+    arcs: Vec<Option<ChordArc>>,
 }
 
 impl Loop {
-    fn new(pts: Vec<Point3>, axis: Axis) -> Self {
+    fn new(pts: Vec<Point3>, arcs: Vec<Option<ChordArc>>, axis: Axis) -> Self {
         let flat: Vec<Point2> = pts.iter().map(|&p| axis.project(p)).collect();
-        let bounds = bounds_of(&flat);
-        Self { pts, flat, bounds }
+        let mut bounds = bounds_of(&flat);
+        // An arc lies within its sagitta of its chord.
+        for (i, arc) in arcs.iter().enumerate() {
+            if let Some(arc) = arc {
+                let (a, b) = (flat[i], flat[(i + 1) % flat.len()]);
+                bounds = [
+                    bounds[0].min(a.x().min(b.x()) - arc.sagitta),
+                    bounds[1].min(a.y().min(b.y()) - arc.sagitta),
+                    bounds[2].max(a.x().max(b.x()) + arc.sagitta),
+                    bounds[3].max(a.y().max(b.y()) + arc.sagitta),
+                ];
+            }
+        }
+        Self {
+            pts,
+            flat,
+            bounds,
+            arcs,
+        }
+    }
+
+    /// The circular segments of this loop's arc chords that hold `hit`, and
+    /// whether `hit` lies within `near` of one of those arcs. `normal` is the
+    /// face plane's.
+    fn arc_segments(&self, hit: Point3, normal: Vec3, near: f64) -> (usize, bool) {
+        let n = self.pts.len();
+        let mut held = 0;
+        let mut grazes = false;
+        for (i, arc) in self.arcs.iter().enumerate() {
+            let Some(arc) = arc else { continue };
+            let (a, b) = (self.pts[i], self.pts[(i + 1) % n]);
+            let chord = b - a;
+            // The centre and the arc lie on opposite sides of the chord.
+            let centre_side = chord.cross(arc.center - a).dot(normal);
+            let hit_side = chord.cross(hit - a).dot(normal);
+            if centre_side == 0.0 || hit_side * centre_side > 0.0 {
+                continue;
+            }
+            let distance = (hit - arc.center).length();
+            if distance < arc.radius {
+                held += 1;
+            }
+            grazes |= (distance - arc.radius).abs() <= near;
+        }
+        (held, grazes)
     }
 
     /// Whether some segment lies within `near` of `hit`, computing the
@@ -257,17 +352,25 @@ impl Loop {
 }
 
 impl PlanarFace {
-    fn new(verts: Vec<Point3>, holes: Vec<Vec<Point3>>, axis: Axis) -> Self {
+    fn new(
+        (verts, arcs): (Vec<Point3>, Vec<Option<ChordArc>>),
+        holes: Vec<(Vec<Point3>, Vec<Option<ChordArc>>)>,
+        normal: Vec3,
+        axis: Axis,
+    ) -> Self {
         let mut scale = 0.0_f64;
         let mut cullable = true;
-        for p in verts.iter().chain(holes.iter().flatten()) {
+        for p in verts.iter().chain(holes.iter().flat_map(|h| h.0.iter())) {
             for c in [p.x(), p.y(), p.z()] {
                 cullable &= gate_coord(c);
                 scale = scale.max(c.abs());
             }
         }
-        let outer = Loop::new(verts, axis);
-        let holes: Vec<Loop> = holes.into_iter().map(|h| Loop::new(h, axis)).collect();
+        let outer = Loop::new(verts, arcs, axis);
+        let holes: Vec<Loop> = holes
+            .into_iter()
+            .map(|(h, arcs)| Loop::new(h, arcs, axis))
+            .collect();
         let union_box = holes.iter().fold(outer.bounds, |u, h| {
             [
                 u[0].min(h.bounds[0]),
@@ -280,6 +383,7 @@ impl PlanarFace {
             union_box,
             slack: 16.0 * f64::EPSILON * scale,
             cullable,
+            normal,
             loops: Box::new(PlanarLoops { outer, holes }),
         }
     }
@@ -295,6 +399,17 @@ impl PlanarFace {
     fn polygon_hit(&self, hit: Point3, p: Point2, near: f64) -> (i32, bool) {
         crate::perf::bump_ray_work(RayWork::PolygonTest);
         let PlanarLoops { outer, holes } = &*self.loops;
+        // A hit in an odd number of a loop's circular segments flips the
+        // polygon's verdict (see [`ChordArc`]).
+        let arc_graze = std::cell::Cell::new(false);
+        let arcs_flip = |l: &Loop| {
+            if l.arcs.is_empty() {
+                return false;
+            }
+            let (held, grazes) = l.arc_segments(hit, self.normal, near);
+            arc_graze.set(arc_graze.get() | grazes);
+            held % 2 == 1
+        };
         let (graze, inside) = if self.cullable && gate_applies(near, p) {
             let margin = 2.0 * near + self.slack;
             if outside(p, self.union_box, margin) {
@@ -304,17 +419,18 @@ impl PlanarFace {
             let graze = std::iter::once(outer)
                 .chain(holes)
                 .any(|l| l.grazes(hit, p, near, margin));
-            let inside = |l: &Loop| !outside(p, l.bounds, 0.0) && winds(p, &l.flat);
+            let inside =
+                |l: &Loop| !outside(p, l.bounds, 0.0) && (winds(p, &l.flat) != arcs_flip(l));
             (graze, inside(outer) && !holes.iter().any(inside))
         } else {
             let graze = dist_to_polygon_boundary(hit, &outer.pts) <= near
                 || holes
                     .iter()
                     .any(|h| dist_to_polygon_boundary(hit, &h.pts) <= near);
-            let inside = |l: &Loop| winds(p, &l.flat);
+            let inside = |l: &Loop| winds(p, &l.flat) != arcs_flip(l);
             (graze, inside(outer) && !holes.iter().any(inside))
         };
-        (i32::from(inside), graze)
+        (i32::from(inside), graze || arc_graze.get())
     }
 }
 
@@ -902,7 +1018,10 @@ fn line_clears_carrier(geom: &FaceGeom, origin: Point3, ray_dir: Vec3) -> bool {
         FaceGeom::Torus { surface, .. } | FaceGeom::TrimmedTorus { surface, .. } => {
             torus_line_is_clear(surface, origin, ray_dir)
         }
-        FaceGeom::Planar { .. } | FaceGeom::Cylinder { .. } | FaceGeom::Cone { .. } => false,
+        FaceGeom::Planar { .. }
+        | FaceGeom::Cylinder { .. }
+        | FaceGeom::TrimmedCylinder { .. }
+        | FaceGeom::Cone { .. } => false,
     }
 }
 
@@ -1010,6 +1129,7 @@ fn geom_kind(geom: &FaceGeom) -> String {
     match geom {
         FaceGeom::Planar { face, .. } => face.kind(),
         FaceGeom::Cylinder { v_min, v_max, .. } => format!("Cylinder(v {v_min:.2}..{v_max:.2})"),
+        FaceGeom::TrimmedCylinder { polygon, .. } => format!("TrimmedCylinder({})", polygon.len()),
         FaceGeom::Cone { .. } => "Cone".into(),
         FaceGeom::Torus { .. } => "Torus".into(),
         FaceGeom::TrimmedTorus { .. } => "TrimmedTorus".into(),
@@ -1055,9 +1175,19 @@ fn wire_polygon(
     topo: &Topology,
     wire_id: remus_topology::wire::WireId,
 ) -> Result<Vec<Point3>, AlgoError> {
+    wire_polygon_arcs(topo, wire_id).map(|(verts, _)| verts)
+}
+
+/// [`wire_polygon`] with, for each segment from `verts[i]` to the next
+/// vertex, the circle it is a chord of when its edge is a circular arc.
+fn wire_polygon_arcs(
+    topo: &Topology,
+    wire_id: remus_topology::wire::WireId,
+) -> Result<(Vec<Point3>, Vec<Option<ChordArc>>), AlgoError> {
     let wire = topo.wire(wire_id)?;
 
-    let mut polylines: Vec<Vec<Point3>> = Vec::with_capacity(wire.edges().len());
+    let mut polylines: Vec<(Vec<Point3>, Option<remus_math::curves::Circle3D>)> =
+        Vec::with_capacity(wire.edges().len());
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge())?;
         let raw_start = topo.vertex(edge.start())?.point();
@@ -1084,23 +1214,35 @@ fn wire_polygon(
         if !oe.is_forward() {
             pts.reverse();
         }
-        polylines.push(pts);
+        let circle = if let remus_topology::edge::EdgeCurve::Circle(circle) = edge.curve() {
+            Some(circle.clone())
+        } else {
+            None
+        };
+        polylines.push((pts, circle));
     }
 
+    // `segs[i]` is the circle of the segment ending at `verts[i + 1]`.
+    let mut segs: Vec<Option<remus_math::curves::Circle3D>> = Vec::new();
     let join_tol = 1e-6;
     let mut used = vec![false; polylines.len()];
-    let mut verts: Vec<Point3> = Vec::with_capacity(polylines.iter().map(Vec::len).sum());
-    let Some(first) = polylines.first() else {
-        return Ok(verts);
+    let mut verts: Vec<Point3> =
+        Vec::with_capacity(polylines.iter().map(|(pts, _)| pts.len()).sum());
+    let Some((first, first_circle)) = polylines.first() else {
+        return Ok((verts, Vec::new()));
     };
     verts.extend_from_slice(first);
+    segs.extend(std::iter::repeat_n(
+        first_circle.clone(),
+        first.len().saturating_sub(1),
+    ));
     used[0] = true;
     for _ in 1..polylines.len() {
         let tail = match verts.last() {
             Some(p) => *p,
             None => break,
         };
-        let next = polylines.iter().enumerate().find_map(|(i, pl)| {
+        let next = polylines.iter().enumerate().find_map(|(i, (pl, _))| {
             if used[i] {
                 return None;
             }
@@ -1116,31 +1258,62 @@ fn wire_polygon(
         });
         let Some((idx, rev)) = next else { break };
         used[idx] = true;
-        let pl = &polylines[idx];
+        let (pl, circle) = &polylines[idx];
         if rev {
             // The reversed polyline minus its first point, without a copy.
             verts.extend(pl.iter().rev().skip(1));
         } else {
             verts.extend_from_slice(&pl[1..]);
         }
+        segs.extend(std::iter::repeat_n(
+            circle.clone(),
+            pl.len().saturating_sub(1),
+        ));
     }
     // Append any unchained polylines so no geometry is silently lost
-    // (matches the previous behavior of emitting all edge samples).
-    for (i, pl) in polylines.iter().enumerate() {
+    // (matches the previous behavior of emitting all edge samples). Their
+    // junctions are not arcs, so no segment of theirs claims one.
+    let chained = polylines.iter().zip(&used).all(|(_, &u)| u);
+    for (i, (pl, _)) in polylines.iter().enumerate() {
         if !used[i] {
             verts.extend_from_slice(pl);
         }
     }
     // Drop the duplicated closing point.
+    let mut closed = false;
     if verts.len() >= 2 {
         let first_pt = verts[0];
         if let Some(last) = verts.last()
             && (*last - first_pt).length() < join_tol
         {
             verts.pop();
+            closed = true;
         }
     }
-    Ok(verts)
+    // Arcs are reported only for a loop chained end to end, whose segments
+    // `segs` describes one for one (the closing segment last).
+    let arcs = if chained && closed && segs.len() == verts.len() {
+        verts
+            .iter()
+            .enumerate()
+            .map(|(i, &a)| {
+                let circle = segs[i].as_ref()?;
+                let b = verts[(i + 1) % verts.len()];
+                let radius = circle.radius();
+                let half = (b - a).length() / 2.0;
+                let sagitta = radius - (radius * radius - half * half).max(0.0).sqrt();
+                Some(ChordArc {
+                    center: circle.center(),
+                    axis: circle.normal(),
+                    radius,
+                    sagitta,
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok((verts, arcs))
 }
 
 /// Collect per-face ray-cast geometry from a solid.
@@ -1291,6 +1464,17 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
                         pv_max = pv_max.max(v);
                         u_samples.push(u);
                     }
+                    if pv_min.is_finite()
+                        && pv_max > pv_min
+                        && let Some((polygon, centre_u)) = sheared_cylinder_trim(cyl, &verts)
+                    {
+                        result.push(FaceGeom::TrimmedCylinder {
+                            surface: cyl.clone(),
+                            polygon,
+                            centre_u,
+                        });
+                        continue;
+                    }
                     if pv_min.is_finite() && pv_max > pv_min {
                         // `largest_u_gap` returning `None` means the boundary
                         // samples leave no angular gap above threshold — that
@@ -1428,7 +1612,7 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
                 // large angular gap (a genuine partial patch leaves at least
                 // its own missing arc; sampled rim circles leave only the
                 // inter-sample spacing).
-                us.sort_unstable_by(f64::total_cmp);
+                us.compact_sort_unstable_by(f64::total_cmp);
                 let mut u_gap = -1.0_f64;
                 for i in 0..us.len() {
                     let next = us[(i + 1) % us.len()];
@@ -1442,7 +1626,7 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
                     // two-rim band is SIDE-AMBIGUOUS from boundary vertices
                     // alone (the rims bound either half), so it keeps the
                     // polygon fallback rather than guessing.
-                    vs.sort_unstable_by(f64::total_cmp);
+                    vs.compact_sort_unstable_by(f64::total_cmp);
                     let mut gap = -1.0_f64;
                     for i in 0..vs.len() {
                         let next = vs[(i + 1) % vs.len()];
@@ -1462,7 +1646,7 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
             }
         }
 
-        let verts = wire_polygon(topo, face.outer_wire())?;
+        let (verts, outer_arcs) = wire_polygon_arcs(topo, face.outer_wire())?;
         if verts.len() < 3 {
             continue;
         }
@@ -1506,18 +1690,19 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
 
         let mut holes = Vec::with_capacity(face.inner_wires().len());
         for &iw in face.inner_wires() {
-            let hole = wire_polygon(topo, iw)?;
-            if hole.len() >= 3 {
+            let hole = wire_polygon_arcs(topo, iw)?;
+            if hole.0.len() >= 3 {
                 holes.push(hole);
             }
         }
 
-        let raw_normal =
+        let plane_normal =
             if let remus_topology::face::FaceSurface::Plane { normal, .. } = face.surface() {
-                *normal
+                Some(*normal)
             } else {
-                newell_normal(&verts)
+                None
             };
+        let raw_normal = plane_normal.unwrap_or_else(|| newell_normal(&verts));
         let normal = if face.is_reversed() {
             -raw_normal
         } else {
@@ -1525,7 +1710,28 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
         };
 
         let d = dot_normal_point(normal, verts[0]);
-        result.push(FaceGeom::planar(verts, holes, normal, d));
+        // Only a true plane's circular edges lie in the plane the polygon is
+        // tested in; a planar-approximated curved face keeps its chords.
+        let coplanar = |arcs: Vec<Option<ChordArc>>| -> Vec<Option<ChordArc>> {
+            if plane_normal.is_none() {
+                return Vec::new();
+            }
+            arcs.into_iter()
+                .map(|arc| {
+                    arc.filter(|arc| {
+                        arc.axis.cross(normal).length() <= 1e-9
+                            && (dot_normal_point(normal, arc.center) - d).abs()
+                                <= 1e-9 * arc.radius.max(1.0)
+                    })
+                })
+                .collect()
+        };
+        let outer = (verts, coplanar(outer_arcs));
+        let holes = holes
+            .into_iter()
+            .map(|(hole, arcs)| (hole, coplanar(arcs)))
+            .collect();
+        result.push(FaceGeom::planar_with_arcs(outer, holes, normal, d));
     }
 
     Ok(result)
@@ -1606,6 +1812,11 @@ fn ray_geom_crossings(
             *u_gap,
             tol,
         ),
+        FaceGeom::TrimmedCylinder {
+            surface,
+            polygon,
+            centre_u,
+        } => ray_trimmed_cylinder_crossings(origin, ray_dir, surface, polygon, *centre_u, tol),
         FaceGeom::Cone {
             surface,
             v_min,
@@ -1765,6 +1976,109 @@ fn near_gap_border(u: f64, gap: (f64, f64), eps: f64) -> bool {
         }
     }
     false
+}
+
+/// A partial cylinder patch's trim polygon in the length-scaled chart
+/// `(r·u, v)` with `u` unwrapped along the boundary, and the unwrapped `u`
+/// it centres on, when the trim is NOT a rectangle in that chart. `None`
+/// for a rectangular trim (the [`FaceGeom::Cylinder`] model is exact there
+/// and keeps its calibrated verdicts) and for a boundary that winds around
+/// the axis.
+fn sheared_cylinder_trim(
+    cyl: &remus_math::surfaces::CylindricalSurface,
+    verts: &[Point3],
+) -> Option<(Vec<Point2>, f64)> {
+    use std::f64::consts::{PI, TAU};
+    let radius = cyl.radius();
+    let mut chart: Vec<(f64, f64)> = Vec::with_capacity(verts.len());
+    for &p in verts {
+        let (mut u, v) = cyl.project_point(p);
+        if let Some(&(previous, _)) = chart.last() {
+            u += TAU * ((previous - u) / TAU).round();
+        }
+        chart.push((u, v));
+    }
+    let (&(first, _), &(last, _)) = (chart.first()?, chart.last()?);
+    // A loop that winds around the axis is a full-period band, not a patch.
+    if (last - first).abs() > PI {
+        return None;
+    }
+    let (mut u_lo, mut u_hi, mut v_lo, mut v_hi) = (
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for &(u, v) in &chart {
+        u_lo = u_lo.min(u);
+        u_hi = u_hi.max(u);
+        v_lo = v_lo.min(v);
+        v_hi = v_hi.max(v);
+    }
+    let eps = 1e-7 * radius.max(v_hi.abs()).max(v_lo.abs()).max(1.0);
+    let on_box = |&(u, v): &(f64, f64)| {
+        (radius * (u - u_lo)).abs() <= eps
+            || (radius * (u_hi - u)).abs() <= eps
+            || (v - v_lo).abs() <= eps
+            || (v_hi - v).abs() <= eps
+    };
+    if chart.iter().all(on_box) {
+        return None;
+    }
+    let centre_u = 0.5 * (u_lo + u_hi);
+    let polygon = chart
+        .into_iter()
+        .map(|(u, v)| Point2::new(radius * u, v))
+        .collect();
+    Some((polygon, centre_u))
+}
+
+/// Crossings with a [`FaceGeom::TrimmedCylinder`]: the ray/cylinder roots
+/// (near-tangent rays count as misses, as for a full cylinder) whose chart
+/// point lies inside the trim polygon. A root near the polygon boundary
+/// flags the ray as suspicious.
+fn ray_trimmed_cylinder_crossings(
+    origin: Point3,
+    ray_dir: Vec3,
+    surface: &remus_math::surfaces::CylindricalSurface,
+    polygon: &[Point2],
+    centre_u: f64,
+    tol: Tolerance,
+) -> (i32, bool) {
+    use std::f64::consts::TAU;
+    let near = 10.0 * tol.linear;
+    let axis = surface.axis();
+    let m = origin - surface.origin();
+    let d_perp = ray_dir - axis * ray_dir.dot(axis);
+    let m_perp = m - axis * m.dot(axis);
+    let a = d_perp.dot(d_perp);
+    if a < 1e-14 {
+        return (0, false);
+    }
+    let b = 2.0 * m_perp.dot(d_perp);
+    let c = surface
+        .radius()
+        .mul_add(-surface.radius(), m_perp.dot(m_perp));
+    let disc = b.mul_add(b, -4.0 * a * c);
+    if disc < 1e-12 * a * surface.radius() * surface.radius() {
+        return (0, false);
+    }
+    let sqrt_disc = disc.sqrt();
+    let mut crossings = 0;
+    let mut suspicious = false;
+    for t in [(-b - sqrt_disc) / (2.0 * a), (-b + sqrt_disc) / (2.0 * a)] {
+        if t <= tol.linear {
+            continue;
+        }
+        let (mut u, v) = surface.project_point(origin + ray_dir * t);
+        u += TAU * ((centre_u - u) / TAU).round();
+        let p = Point2::new(surface.radius() * u, v);
+        suspicious |= crate::builder::classify_2d::distance_to_polygon_boundary(p, polygon) <= near;
+        if crate::builder::classify_2d::point_in_polygon_2d(p, polygon) {
+            crossings += 1;
+        }
+    }
+    (crossings, suspicious)
 }
 
 /// Count ray crossings with a full-major-revolution toroidal face.
@@ -2391,6 +2705,36 @@ mod tests {
         }
     }
 
+    /// A cap is tested against the 17-gon inscribed in its rim, whose chords
+    /// fall short of the circle by the sagitta (0.034 at r = 2). A point just
+    /// inside the wall halfway between two polygon vertices sent its axial ray
+    /// through that gap and lost the vote; on a rim of radius 16.5 the gap is
+    /// 0.28, and the cap level with a fillet's rim was dropped from a cut.
+    #[test]
+    fn cap_hits_between_rim_chords_count() {
+        use std::f64::consts::{PI, TAU};
+        for k in 0..4 {
+            let seam = f64::from(k).mul_add(TAU / 7.0, 0.3);
+            let mut topo = Topology::default();
+            let solid = make_seamed_cylinder(&mut topo, seam);
+            for gap in 0..17 {
+                let angle = seam + PI / 17.0 * f64::from(2 * gap + 1);
+                for (radius, votes) in [(1.99_f64, 3), (2.01, 0)] {
+                    let point = Point3::new(
+                        radius.mul_add(angle.cos(), 0.5),
+                        radius.mul_add(angle.sin(), -1.5),
+                        0.1,
+                    );
+                    assert_eq!(
+                        ray_cast_inside_votes(&topo, solid, point).unwrap(),
+                        votes,
+                        "seam {seam:.3}, gap {gap}, radius {radius}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn empty_face_polygons_returns_error() {
         let mut topo = Topology::default();
@@ -2524,6 +2868,59 @@ mod tests {
             classify_ray_cast_cached(&geoms, outside).unwrap(),
             FaceClass::Outside
         );
+    }
+
+    /// A helical-land-like patch: a parallelogram in the cylinder's chart,
+    /// sheared by one radian over its height. The rectangle model would span
+    /// every `u` the patch reaches at any height and count rays that pass
+    /// beside it near its rims.
+    #[test]
+    fn sheared_cylinder_patches_count_only_crossings_inside_their_trim() {
+        let cyl = remus_math::surfaces::CylindricalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            2.0,
+        )
+        .unwrap();
+        let chart = |u: f64, v: f64| Point3::new(2.0 * u.cos(), 2.0 * u.sin(), v);
+        // Boundary samples as `wire_polygon` would give them: corners plus
+        // interior points along each side.
+        let corners = [(0.0, 0.0), (0.5, 0.0), (1.5, 4.0), (1.0, 4.0)];
+        let mut verts = Vec::new();
+        for k in 0..4 {
+            let (a, b) = (corners[k], corners[(k + 1) % 4]);
+            for i in 0..4 {
+                let t = f64::from(i) / 4.0;
+                verts.push(chart(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t));
+            }
+        }
+        let (polygon, centre_u) = sheared_cylinder_trim(&cyl, &verts).unwrap();
+        let tol = Tolerance::default();
+        let ray = |u: f64, v: f64| {
+            let (s, c) = u.sin_cos();
+            ray_trimmed_cylinder_crossings(
+                Point3::new(0.0, 0.0, v),
+                Vec3::new(c, s, 0.0),
+                &cyl,
+                &polygon,
+                centre_u,
+                tol,
+            )
+        };
+        // Near the bottom rim the patch spans u in [0.025, 0.525]; near the
+        // top, [0.975, 1.475].
+        assert_eq!(ray(0.3, 0.1), (1, false));
+        assert_eq!(ray(1.2, 0.1).0, 0);
+        assert_eq!(ray(0.0, 0.1).0, 0);
+        assert_eq!(ray(1.2, 3.9), (1, false));
+        assert_eq!(ray(0.3, 3.9).0, 0);
+
+        // A rectangular patch keeps the rectangle model.
+        let rectangle: Vec<Point3> = [(0.0, 0.0), (0.5, 0.0), (0.5, 4.0), (0.0, 4.0)]
+            .iter()
+            .map(|&(u, v)| chart(u, v))
+            .collect();
+        assert!(sheared_cylinder_trim(&cyl, &rectangle).is_none());
     }
 }
 

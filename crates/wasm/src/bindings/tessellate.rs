@@ -6,7 +6,7 @@ use remus_operations::tessellate;
 use wasm_bindgen::prelude::*;
 
 use crate::error::validate_positive;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 use crate::shapes::{JsGroupedMesh, JsMesh};
 use crate::types::{GroupedMeshResult, UvMeshResult};
 
@@ -23,7 +23,7 @@ pub(super) fn resolve_angular_tol(angular_tolerance: Option<f64>) -> Result<f64,
 }
 
 #[wasm_bindgen]
-impl BrepKernel {
+impl RemusKernel {
     // ── Tessellation ───────────────────────────────────────────────
 
     /// Tessellate a single face into a triangle mesh.
@@ -294,11 +294,11 @@ impl BrepKernel {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use crate::kernel::BrepKernel;
+    use crate::kernel::RemusKernel;
 
     /// Create a kernel containing a 2×3×4 box and return (kernel, solid_handle).
-    fn kernel_with_box() -> (BrepKernel, u32) {
-        let mut k = BrepKernel::new();
+    fn kernel_with_box() -> (RemusKernel, u32) {
+        let mut k = RemusKernel::new();
         let solid = k.make_box_solid(2.0, 3.0, 4.0).unwrap();
         (k, solid)
     }
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn tessellate_solid_invalid_handle_returns_error() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[{"op": "tessellateSolid", "args": {"solid": 9999, "deflection": 0.1}}]"#,
         );
@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn mesh_edges_all_invalid_handle_returns_error() {
-        let mut k = BrepKernel::new();
+        let mut k = RemusKernel::new();
         let r = k.execute_batch(
             r#"[{"op": "meshEdgesAll", "args": {"solid": 9999, "deflection": 0.1}}]"#,
         );

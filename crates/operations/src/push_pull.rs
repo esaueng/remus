@@ -1008,6 +1008,14 @@ pub fn resize_cylindrical_face(
         return resize_partial_cylindrical_face(topo, solid, face, &cyl, new_radius);
     }
 
+    // A bore whose rims are blended onto its caps carries those blends to the
+    // new radius; the sleeve below would leave them behind at the old one.
+    if let Some(result) =
+        crate::resize_blend::resize_cylindrical_face_with_blends(topo, solid, face, new_radius)?
+    {
+        return Ok(result);
+    }
+
     let axis = unit(cyl.axis())?;
     if axis.dot(Vec3::new(0.0, 0.0, 1.0)) > 1.0 - tol.angular {
         return resize_cylindrical_face_aligned(topo, solid, face, new_radius, false)
@@ -1422,13 +1430,22 @@ fn resize_cylindrical_face_aligned(
 
     // Growing the wall sweeps it into open space, shrinking it sweeps back
     // through material already there. Either way the material that moves is the
-    // annular sleeve between the two radii over the face's own extent — a plain
-    // cylinder when growing (the sleeve's inner radius is the axis), a tube
-    // when shrinking. Only whether it is added or removed changes.
+    // annular sleeve between the two radii over the face's own extent. Only
+    // whether it is added or removed changes. A growing bore may cut a plain
+    // cylinder (inside the bore there is nothing to remove), but a growing
+    // boss adds a tube: a solid cylinder would also fill any bore inside it.
     let (op, tool) = match (concavity, grows) {
         (Concavity::Boss, true) => (
             BooleanOp::Fuse,
-            place_cylinder(topo, base, axis, seam_direction, new_radius, height)?,
+            make_tube(
+                topo,
+                base,
+                axis,
+                seam_direction,
+                old_radius,
+                new_radius,
+                height,
+            )?,
         ),
         (Concavity::Hole, true) => (
             BooleanOp::Cut,
@@ -1627,7 +1644,7 @@ pub(crate) fn radius_subdivision_outputs(
                 .iter()
                 .flat_map(|edge| generated_edges[edge].iter().copied())
                 .collect();
-            sources.sort_unstable();
+            sources.compact_sort_unstable();
             sources.dedup();
             outputs.push((
                 EntityKey::vertex(vertex),
@@ -1754,7 +1771,7 @@ fn radius_boundary_pairs(
         else {
             return Ok(Vec::new());
         };
-        key.sort_unstable();
+        key.compact_sort_unstable();
         key.dedup();
         groups.entry(key).or_default().push(edge);
     }
@@ -1766,7 +1783,7 @@ fn radius_boundary_pairs(
         if distinct.len() > 1 && key.iter().all(|parent| *parent == key[0]) {
             continue;
         }
-        key.sort_unstable();
+        key.compact_sort_unstable();
         key.dedup();
         let Some(candidates) = groups.get(&key) else {
             return Ok(Vec::new());
@@ -1794,7 +1811,7 @@ fn radius_boundary_pairs(
     }
     let mut vertex_groups = BTreeMap::<Vec<usize>, Vec<usize>>::new();
     for (vertex, mut edges) in new_vertices {
-        edges.sort_unstable();
+        edges.compact_sort_unstable();
         vertex_groups.entry(edges).or_default().push(vertex);
     }
     let mut old_vertices = BTreeMap::<usize, Vec<usize>>::new();
@@ -1810,7 +1827,7 @@ fn radius_boundary_pairs(
     let mut vertex_map = HashMap::new();
     let mut used_vertices = HashSet::new();
     for (vertex, mut edges) in old_vertices {
-        edges.sort_unstable();
+        edges.compact_sort_unstable();
         let Some(candidates) = vertex_groups.get(&edges) else {
             return Ok(Vec::new());
         };
@@ -1885,8 +1902,8 @@ fn radius_boundary_pairs(
                 }
             }
         }
-        expected.sort_unstable();
-        actual.sort_unstable();
+        expected.compact_sort_unstable();
+        actual.compact_sort_unstable();
         if expected != actual {
             return Ok(Vec::new());
         }
@@ -2000,7 +2017,7 @@ fn radius_face_history(
                     live.contains(&final_face).then_some(final_face)
                 })
                 .collect::<Vec<_>>();
-            outputs.sort_unstable();
+            outputs.compact_sort_unstable();
             outputs.dedup();
             if outputs.is_empty() && boolean_history.deleted.contains(&source.index()) {
                 history.add_deleted(source.index());
@@ -3134,6 +3151,35 @@ mod tests {
         assert_volume(&topo, out, 40.0f64.mul_add(40.0 * 10.0, PI * 64.0 * 10.0));
         assert_watertight(&topo, out);
         assert_eq!(face_count(&topo, out, "cylinder"), 1);
+    }
+
+    #[test]
+    fn growing_a_hollow_boss_keeps_its_bore() {
+        // A bore sunk into the boss lies inside the wall being grown. The
+        // material added is the sleeve between the two radii; fusing a solid
+        // cylinder of the new radius filled the bore as well.
+        let mut topo = Topology::new();
+        let bossed = bossed_block(&mut topo);
+        let drill = cylinder_at(&mut topo, 2.0, 10.0, 20.0, 20.0, 14.0);
+        let hollow = boolean(&mut topo, BooleanOp::Cut, bossed, drill).unwrap();
+        let wall = solid_faces(&topo, hollow)
+            .unwrap()
+            .into_iter()
+            .find(|&f| {
+                matches!(topo.face(f).unwrap().surface(),
+                    FaceSurface::Cylinder(c) if (c.radius() - 5.0).abs() < 1e-9)
+            })
+            .unwrap();
+
+        let out = resize_cylindrical_face(&mut topo, hollow, wall, 8.0).unwrap();
+
+        assert_volume(
+            &topo,
+            out,
+            40.0f64.mul_add(40.0 * 10.0, PI * 64.0 * 10.0) - PI * 4.0 * 6.0,
+        );
+        assert_watertight(&topo, out);
+        assert_eq!(face_count(&topo, out, "cylinder"), 2);
     }
 
     #[test]

@@ -6,7 +6,12 @@
 //! collapses them to one sharp edge, records total construction history, and
 //! rolls back malformed chains.
 
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::disallowed_methods
+)]
 
 use std::collections::HashSet;
 

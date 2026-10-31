@@ -36,7 +36,7 @@ mod rolling_ball;
 mod tests;
 mod vertex_snap;
 
-pub(crate) use geometry::{face_surface_normal_at, face_surface_normal_with_grid};
+pub(crate) use crate::tessellate::surface_normal::face_surface_normal_at;
 pub use remus_blend::radius_law::StandardRadiusLaw as FilletRadiusLaw;
 #[allow(deprecated)]
 pub use rolling_ball::fillet_rolling_ball;
@@ -1089,7 +1089,7 @@ fn fillet_variable_transacted(
         (remus_topology::vertex::VertexId, Point3, f64, bool),
     > = HashMap::default();
     let mut selected_vertex_indices: Vec<_> = vertex_fillet_edges.keys().copied().collect();
-    selected_vertex_indices.sort_unstable();
+    selected_vertex_indices.compact_sort_unstable();
     for vertex_index in selected_vertex_indices {
         let incident_edges = &vertex_fillet_edges[&vertex_index];
         let declared_count = incident_edges
@@ -1691,7 +1691,7 @@ fn fillet_variable_transacted(
     // the same tangency point through two incident stripes, then ordered
     // counter-clockwise about the cap's outward radial direction.
     let mut corner_indices: Vec<_> = qualified_setback_corners.keys().copied().collect();
-    corner_indices.sort_unstable();
+    corner_indices.compact_sort_unstable();
     for vertex_index in corner_indices {
         let (vertex, center, radius, is_concave) = qualified_setback_corners[&vertex_index];
         let mut contacts = Vec::new();

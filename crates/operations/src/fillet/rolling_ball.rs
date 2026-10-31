@@ -19,10 +19,9 @@ use remus_topology::vertex::VertexId;
 use crate::boolean::FaceSpec;
 use crate::dot_normal_point;
 
-use super::geometry::{
-    edge_v_samples, face_surface_normal_at, sample_edge_point, sample_edge_tangent,
-};
+use super::geometry::{edge_v_samples, sample_edge_point, sample_edge_tangent};
 use super::helpers::{FacePolygon, extract_inner_wire_positions};
+use crate::tessellate::surface_normal::face_surface_normal_at;
 
 #[derive(Clone)]
 enum FaceSpecOrigin {
@@ -89,7 +88,7 @@ fn origins_from_face_specs(
         .chain(unattributed.keys())
         .copied()
         .collect();
-    result_indices.sort_unstable();
+    result_indices.compact_sort_unstable();
     result_indices.dedup();
 
     let mut origins = BlendFaceOrigins::default();

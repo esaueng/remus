@@ -12,9 +12,9 @@
 use remus_math::vec::Point3;
 
 use crate::handles::face_id_to_u32;
-use crate::kernel::BrepKernel;
+use crate::kernel::RemusKernel;
 
-fn counts(kernel: &BrepKernel) -> [usize; 6] {
+fn counts(kernel: &RemusKernel) -> [usize; 6] {
     let t = kernel.topo();
     [
         t.num_vertices(),
@@ -26,7 +26,7 @@ fn counts(kernel: &BrepKernel) -> [usize; 6] {
     ]
 }
 
-fn square(kernel: &mut BrepKernel) -> u32 {
+fn square(kernel: &mut RemusKernel) -> u32 {
     let points = [
         Point3::new(-1.0, -1.0, 0.0),
         Point3::new(1.0, -1.0, 0.0),
@@ -43,7 +43,7 @@ const SPINE_POINTS: [f64; 6] = [0.0, 0.0, 0.0, 0.0, 0.0, 10.0];
 /// copies fails after both copies exist (8 vertices and 2 faces leaked).
 #[test]
 fn refused_multi_section_sweep_leaves_the_session_unchanged() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let (a, b) = (square(&mut kernel), square(&mut kernel));
     let before = counts(&kernel);
     let refused = kernel.multi_section_sweep_impl(
@@ -75,7 +75,7 @@ fn refused_multi_section_sweep_leaves_the_session_unchanged() {
 
 #[test]
 fn batch_multi_section_sweep_refusal_matches_the_direct_path() {
-    let mut kernel = BrepKernel::new();
+    let mut kernel = RemusKernel::new();
     let (a, b) = (square(&mut kernel), square(&mut kernel));
     let spine: Vec<serde_json::Value> = serde_json::from_str(&kernel.execute_batch(
         &serde_json::json!([{"op": "makeNurbsEdge", "args": {

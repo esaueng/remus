@@ -357,6 +357,8 @@ fn edge_census(indices: &[u32]) -> EdgeCensus {
         let bucket = &mut keyed[starts[v]..starts[v + 1]];
         #[cfg(test)]
         CENSUS_BUCKET_WORK.with(|work| work.set(work.get() + bucket.len() * bucket.len()));
+        // hot: 2,560+ calls, ~30,000 n*log2(n) work in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
         bucket.sort_unstable();
         for run in bucket.chunk_by(|a, b| a >> 2 == b >> 2) {
             if run.len() != 2 {
@@ -884,6 +886,9 @@ fn boundary_lies_on_faces(
             | FaceSurface::Sphere(_)
             | FaceSurface::Torus(_) => None,
         };
+        // The coarse grid seeds nine nodes per axis, too few for a carrier of
+        // many spans; where it misses, the span-aligned grid reseeds.
+        let mut span_grid = None;
         for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
             for oe in topo.wire(wid)?.edges() {
                 let edge = topo.edge(oe.edge())?;
@@ -905,7 +910,17 @@ fn boundary_lies_on_faces(
                         start.point(),
                         end.point(),
                     );
-                    let gap = surface_gap(surface, grid.as_ref(), p);
+                    let mut gap = surface_gap(surface, grid.as_ref(), p);
+                    // Any projection's distance bounds the true gap from
+                    // above, so a span-aligned reseed can only tighten it.
+                    if (gap.is_nan() || gap > tolerance)
+                        && let FaceSurface::Nurbs(nurbs) = surface
+                    {
+                        let fine = span_grid.get_or_insert_with(|| {
+                            remus_math::nurbs::projection::SurfaceSeedGrid::for_surface_spans(nurbs)
+                        });
+                        gap = gap.min(surface_gap(surface, Some(fine), p));
+                    }
                     if gap.is_nan() || gap > tolerance {
                         vol_trace(|| {
                             format!(
@@ -1181,7 +1196,7 @@ fn quadric_wall_is_notched_band(topo: &Topology, fid: FaceId) -> bool {
     if !face.inner_wires().is_empty() {
         return false;
     }
-    let Ok(pts) = crate::boolean::face_polygon(topo, fid) else {
+    let Ok(pts) = crate::polygon::face_polygon(topo, fid) else {
         return false;
     };
     if pts.len() < 4 {
@@ -1249,7 +1264,7 @@ fn quadric_wall_boundary_winds_period(topo: &Topology, fid: FaceId) -> bool {
     };
     let fy = axis.cross(fx);
 
-    let Ok(pts) = crate::boolean::face_polygon(topo, fid) else {
+    let Ok(pts) = crate::polygon::face_polygon(topo, fid) else {
         return false;
     };
     if pts.len() < 3 {
@@ -3094,6 +3109,8 @@ fn directed_edges_cancel<K: Copy + Ord>(triangles: impl IntoIterator<Item = [K; 
             }
         }
     }
+    // hot: ~12,000 n*log2(n) work, n up to 204 in one criterion --test + native perf pass.
+    #[allow(clippy::disallowed_methods)]
     uses.sort_unstable_by_key(|&(key, _)| key);
     uses.chunk_by(|x, y| x.0 == y.0)
         .all(|run| run.iter().map(|&(_, sign)| sign).sum::<i64>() == 0)
@@ -4033,7 +4050,7 @@ fn analytic_sphere_signed_volume(
         let upper = if winding.abs() > std::f64::consts::PI {
             winding > 0.0
         } else {
-            let positions = crate::boolean::face_polygon(topo, face_id)?;
+            let positions = crate::polygon::face_polygon(topo, face_id)?;
             if positions.is_empty() {
                 return Ok(0.0);
             }
@@ -6355,6 +6372,121 @@ mod face_integral_certificate_tests {
         assert!(
             ((volume - exact) / exact).abs() < 1e-9,
             "{volume} against {exact}"
+        );
+    }
+
+    /// A rational cubic hairpin of 28 spans, closed by a line and extruded:
+    /// out along x, then back 1.0 beside itself at another pace. Its side
+    /// wall is a 28-span ruled NURBS on which the nine-node coarse seed puts
+    /// points of one leg on the other, so the boundary check read an edge
+    /// lying on the wall as 1.0 off and the volume fell to a mesh; its caps
+    /// are bounded by a rational edge no fixed rule is exact for, which the
+    /// 32-chord fan read short. Both now take the face integrals, exactly.
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn a_rational_many_span_hairpin_extrude_measures_on_its_face_integrals() {
+        use remus_math::nurbs::NurbsCurve;
+        use remus_math::nurbs::projection::{SurfaceSeedGrid, project_point_to_surface_with_grid};
+        use remus_topology::edge::Edge;
+        use remus_topology::face::Face;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        const HEIGHT: f64 = 5.0;
+        let n: u32 = 31;
+        let mut knots = vec![0.0; 4];
+        knots.extend((1..n - 3).map(|i| f64::from(i) / f64::from(n - 3)));
+        knots.extend([1.0; 4]);
+        let points: Vec<_> = (0..n)
+            .map(|j| {
+                if j < 16 {
+                    Point3::new(2.0 * f64::from(j), 0.0, 0.0)
+                } else {
+                    Point3::new(30.0 - 1.3 * f64::from(j - 15), 1.0, 0.0)
+                }
+            })
+            .collect();
+        let weights: Vec<_> = (0..n).map(|j| 1.0 + 0.02 * f64::from(j)).collect();
+        let hairpin = NurbsCurve::new(3, knots, points, weights).unwrap();
+
+        // Area oracle with no Gauss rule in it: the closed chord polygon
+        // (the line closes it), Richardson-extrapolated over two halvings.
+        let shoelace = |samples: u32| {
+            let mut twice = 0.0;
+            for k in 0..samples {
+                let a = hairpin.evaluate(f64::from(k) / f64::from(samples));
+                let b = hairpin.evaluate(f64::from(k + 1) / f64::from(samples));
+                twice += a.x() * b.y() - b.x() * a.y();
+            }
+            let (a, b) = (hairpin.evaluate(1.0), hairpin.evaluate(0.0));
+            twice += a.x() * b.y() - b.x() * a.y();
+            (twice / 2.0).abs()
+        };
+        let (coarse, mid, fine) = (shoelace(1 << 12), shoelace(1 << 13), shoelace(1 << 14));
+        let once = [(4.0 * mid - coarse) / 3.0, (4.0 * fine - mid) / 3.0];
+        let exact = (16.0 * once[1] - once[0]) / 15.0 * HEIGHT;
+
+        let mut topo = Topology::new();
+        let ends = [hairpin.evaluate(0.0), hairpin.evaluate(1.0)]
+            .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+        let edges = [
+            topo.add_edge(Edge::new(ends[0], ends[1], EdgeCurve::NurbsCurve(hairpin))),
+            topo.add_edge(Edge::new(ends[1], ends[0], EdgeCurve::Line)),
+        ];
+        let wire = topo.add_wire(
+            Wire::new(
+                edges.iter().map(|&e| OrientedEdge::new(e, true)).collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, -1.0),
+                d: 0.0,
+            },
+        ));
+        let solid =
+            crate::extrude::extrude(&mut topo, face, Vec3::new(0.0, 0.0, 1.0), HEIGHT).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+
+        // The regression's precondition: the coarse seed alone misses
+        // points of a boundary edge that lies on the wall.
+        let mut coarse_miss = false;
+        for &fid in &faces {
+            let face = topo.face(fid).unwrap();
+            let FaceSurface::Nurbs(wall) = face.surface() else {
+                continue;
+            };
+            let grid = SurfaceSeedGrid::for_surface(wall);
+            for oe in topo.wire(face.outer_wire()).unwrap().edges() {
+                let edge = topo.edge(oe.edge()).unwrap();
+                let EdgeCurve::NurbsCurve(curve) = edge.curve() else {
+                    continue;
+                };
+                for k in 0..=200 {
+                    let p = curve.evaluate(f64::from(k) / 200.0);
+                    coarse_miss |= project_point_to_surface_with_grid(wall, p, 1e-9, &grid)
+                        .map_or(true, |projection| projection.distance > 1e-3);
+                }
+            }
+        }
+        assert!(coarse_miss);
+
+        assert!(boundary_lies_on_faces(&topo, &faces, 1e-9).unwrap());
+        // `face_area` takes the certified rule for the rational cap too,
+        // ahead of its 256-sample polygon.
+        let cap = crate::measure::face_area(&topo, face, 0.01).unwrap();
+        let area = exact / HEIGHT;
+        assert!(((cap - area) / area).abs() < 1e-12, "{cap} against {area}");
+        let integrals = qualified_face_integral_volume(&topo, solid)
+            .unwrap()
+            .expect("the face integrals qualify");
+        assert!(
+            ((integrals - exact) / exact).abs() < 1e-10,
+            "{integrals} against {exact}"
         );
     }
 }
