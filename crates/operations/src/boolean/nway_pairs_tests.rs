@@ -139,7 +139,7 @@ fn large_sparse_cluster_fuses_in_one_arrangement() {
         faces(&direct, nway).len(),
         "fuse_cluster did not take the N-way arrangement"
     );
-    crate::test_helpers::assert_volume_near(&fused, result, 11.01 * 11.01, 1e-9);
+    crate::measure::test_support::assert_volume_near(&fused, result, 11.01 * 11.01, 1e-9);
 }
 
 #[test]

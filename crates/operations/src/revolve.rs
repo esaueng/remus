@@ -2201,7 +2201,7 @@ mod tests {
     use remus_topology::face::FaceSurface;
     use remus_topology::test_utils::make_unit_square_face;
 
-    use crate::test_helpers::{assert_euler_genus0, euler_characteristic};
+    use crate::test_utils::{assert_euler_genus0, euler_characteristic};
 
     use super::*;
 

@@ -541,6 +541,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Bounded opt-in exact-content scalar memo for trimmed NURBS face areas | `measure/nurbs_area_memo.rs`, `measure/nurbs_area_memo/tests.rs` |
 | 128-bit exact content digest of a single face (handle-free; lets a consumer keep what it derived from faces an edit left untouched) | `measure/face_digest.rs` |
 | Bounded opt-in exact-content memo of single-face bounding boxes (the move's swept-region refusal), and its bit-identity tests | `measure/face_box_memo.rs`, `measure/face_box_memo/tests.rs` |
+| Test assertions that measure volumes and areas (tests) | `measure/test_support.rs` |
 | Bounded opt-in host-clock phase timings | `performance.rs` |
 | Distance queries | `distance.rs` |
 | Independent global maximum-distance oracles (tests) | `distance/maximum_tests.rs` |
@@ -607,10 +608,11 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Exact local reconstruction of analytic wounds | `local_wound.rs` |
 | Cylindrical blend removal with certified affine NURBS caps | `affine_blend_caps.rs` |
 | Atomic removal of explicitly selected connected blend groups | `remove_blends.rs` |
+| Split-band blend fixtures shared by the blend-editing tests (tests) | `resize_blend/test_fixtures.rs` |
 | Full-turn rim chain recognition | `tessellate/rim_chain.rs` |
 | Outward surface normals of face carriers at a 3D point (shared by the mesh assembler and the fillet engine) | `tessellate/surface_normal.rs` |
 | Sphere patches holding a pole (loop winds once around the axis) | `tessellate/sphere_pole_patch.rs` |
-| Shared test assertion helpers | `test_helpers.rs` |
+| Pure-topology test assertions (Euler characteristic, manifoldness, point distance, volume conservation); `test-utils` feature for downstream tests | `test_utils.rs` |
 
 ### L3: io (`crates/io/src/`)
 | Task | File(s) |
