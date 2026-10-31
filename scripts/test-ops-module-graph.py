@@ -90,6 +90,16 @@ class ModuleGraphTests(unittest.TestCase):
             "transform.rs": "",
         }), [])
 
+    def test_feature_gated_test_code_is_checked(self):
+        problems = self.run_check({
+            "lib.rs": self.LIB,
+            "tessellate.rs": '#[cfg(any(test, feature = "test-utils"))]\npub mod utils { use crate::fillet::f; }\n',
+            "fillet.rs": "",
+            "transform.rs": "",
+        })
+        self.assertEqual(len(problems), 1)
+        self.assertIn("`fillet::f`", problems[0])
+
     def test_super_resolves_through_inline_modules(self):
         # `super::helpers` inside `mod inner {}` of tessellate/mod.rs names
         # `tessellate::helpers`, not a crate-root module.

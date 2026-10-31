@@ -1612,6 +1612,26 @@
       "reason": "primitive constructor; O4.7 solid twin pending"
     },
     {
+      "js": "makeEnvelopingWormDetailed",
+      "rust": "make_enveloping_worm_detailed",
+      "file": "bindings/gear.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "typed solid envelope by construction; no legacy throwing method to twin"
+    },
+    {
+      "js": "makeEnvelopingWormWheelDetailed",
+      "rust": "make_enveloping_worm_wheel_detailed",
+      "file": "bindings/gear.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "typed solid envelope by construction; no legacy throwing method to twin"
+    },
+    {
       "js": "makeFaceFromWire",
       "rust": "make_face_from_wire",
       "file": "bindings/shapes.rs",

@@ -62,6 +62,25 @@ historical predecessor-line records, retained for provenance. The
   Built without a boolean: tip lands become two cylinder strips and an exact
   torus patch, and flanks stop at the throat along certified fits
   (`throatCurveBound`). The flanks stay the crossed helical wheel's.
+* **operations,wasm:** double-enveloping (Hindley) worms.
+  `make_enveloping_worm` / `makeEnvelopingWormDetailed` build the hourglass
+  worm that wraps a wheel of `wheelTeeth` teeth, its thread swept by the
+  wheel's straight-sided teeth. Lands and root floors are exact torus patches;
+  flanks are certified ruled patches between fitted rails
+  (`flankDeviationBound`). New face roles `tooth[k].flank.plus[p]`,
+  `tooth[k].tip[p]` and `root[k][p]` name the patches from the start cap.
+  `GearFaceRole` gains `FlankPiece`, `TipPiece` and `RootPiece`, which breaks
+  exhaustive matches on it.
+* **operations,wasm:** double-enveloping (Hindley) worm wheels.
+  `make_enveloping_worm_wheel` / `makeEnvelopingWormWheelDetailed` build the
+  wheel a Hindley worm drives. Its mid-plane teeth are exactly the
+  straight-sided teeth the worm was swept by. Off the mid-plane each flank
+  stays straight in every section and is fitted inside the tooth a hob of
+  the worm's shape cuts; the hobbed tooth is creased along the mid-plane
+  line, so each flank is two faces meeting there. The fit is sampled, not
+  proven (`relief`, the largest sampled gap). Tips follow the throat torus
+  and stand at the outside diameter beside it; flanks are certified ruled
+  patches (`flankDeviationBound`).
 * **math:** `nurbs::screw` fits helices and screw-motion swept surfaces as
   NURBS with a proven bound; fits sharing one plan share their knots, so
   neighbouring faces and edges match exactly.
@@ -200,6 +219,10 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **check:** a full-turn cylinder band whose rims arrive in many arcs (a
+  collar beside flush gear teeth, its rim split at every tip) integrates over
+  its exact `(u, v)` rectangle instead of refusing past the 4096-point trim
+  budget, so `solid_volume` and `mass_properties` measure such bodies exactly.
 * **algo,operations:** `resize_cylindrical_face` no longer refuses small radius
   changes. The resize sleeve leaves a thin annulus on each cap, and two
   boolean-builder tests read it against the chords of its circles: same-domain

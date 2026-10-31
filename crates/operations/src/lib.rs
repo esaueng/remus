@@ -88,6 +88,7 @@ pub mod validate;
 pub mod tessellate;
 
 pub mod assembly;
+pub mod cache;
 pub(crate) mod cap;
 /// Carrier surface shared with sweep/pipe/loft end caps: re-exported so
 /// profile builders (and their fixtures) construct hole loops at exactly
@@ -103,8 +104,8 @@ pub mod sketch;
 pub(crate) mod triangle_intersection;
 pub(crate) mod winding;
 
-#[cfg(test)]
-pub(crate) mod test_helpers;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils;
 
 /// Compute `n · p` treating a `Point3` as a direction vector.
 ///

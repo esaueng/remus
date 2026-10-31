@@ -260,24 +260,13 @@ fn check_fixture(
     );
     let expected_volume = PI * (height + 2.0 / 3.0);
     let expected_area = PI * (2.0 * height + 3.0);
-    let gauss = mass_properties(&topo, solid);
-    if segments == 32 {
-        // Geometry and both mesh routes succeed; this independent quadrature
-        // route retains its existing finite trim-integration resource limit.
-        let error = gauss.unwrap_err();
-        assert!(
-            matches!(error, remus_operations::OperationsError::Check(
-            remus_check::CheckError::IntegrationFailed(ref reason))
-            if reason == "face trim exceeds the 4096-point integration budget"),
-            "{label}: {error:?}"
-        );
-    } else {
-        let gauss = gauss.unwrap().mass / scale.powi(3);
-        assert!(
-            (gauss - expected_volume).abs() < 1e-9 * expected_volume,
-            "{label}: Gauss {gauss}"
-        );
-    }
+    // The 32-segment fixture's fragmented cylinder rims integrate over their
+    // exact band rectangle instead of the 4096-point trim budget.
+    let gauss = mass_properties(&topo, solid).unwrap().mass / scale.powi(3);
+    assert!(
+        (gauss - expected_volume).abs() < 1e-9 * expected_volume,
+        "{label}: Gauss {gauss}"
+    );
     for d in [0.0001, 0.00005] {
         let volume = solid_volume(&topo, solid, d * scale).unwrap() / scale.powi(3);
         assert!(

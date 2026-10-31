@@ -560,3 +560,81 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn plane_parameter_refuses_parallel_rays_only() {
+    assert_eq!(plane_parameter(0.0, 1.0, 1e-12), None);
+    assert_eq!(plane_parameter(-5e-13, 1.0, 1e-12), None);
+    assert_eq!(plane_parameter(1e-12, 2e-12, 1e-12), Some(2.0));
+    assert_eq!(plane_parameter(-2.0, 3.0, 1e-15), Some(-1.5));
+}
+
+#[test]
+fn qualify_policy_is_the_qualified_intersection() {
+    let cyl =
+        CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+    let cone =
+        ConicalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 0.7).unwrap();
+    let o = Point3::new(-5.0, 0.3, 1.0);
+    let d = Vec3::new(1.0, 0.1, 0.05);
+    assert_eq!(
+        ray_cylinder_with(o, d, &cyl, TangentPolicy::Qualify),
+        ray_cylinder(o, d, &cyl)
+    );
+    assert_eq!(
+        ray_cone_with(o, d, &cone, TangentPolicy::Qualify),
+        ray_cone(o, d, &cone)
+    );
+}
+
+#[test]
+fn drop_relative_policy_misses_tangent_and_axis_parallel_rays() {
+    let policy = TangentPolicy::DropRelative { scale: 2.0 };
+    let cyl =
+        CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap();
+    // Tangent to the wall at (0, 2, 0): no hits, where Qualify reports one
+    // tangential hit.
+    let (o, d) = (Point3::new(-3.0, 2.0, 0.0), Vec3::new(1.0, 0.0, 0.0));
+    assert!(ray_cylinder_with(o, d, &cyl, policy).is_empty());
+    assert_eq!(kinds(&ray_cylinder(o, d, &cyl)), [ContactKind::Tangential]);
+    // Axis-parallel: no hits.
+    let d = Vec3::new(0.0, 0.0, 1.0);
+    assert!(ray_cylinder_with(Point3::new(1.0, 0.0, 0.0), d, &cyl, policy).is_empty());
+    // A secant: two transversal hits in increasing t.
+    let hits = ray_cylinder_with(
+        Point3::new(-3.0, 0.0, 0.0),
+        Vec3::new(1.0, 0.0, 0.0),
+        &cyl,
+        policy,
+    );
+    assert_eq!(hits.iter().map(|h| h.t).collect::<Vec<_>>(), [1.0, 5.0]);
+    assert_eq!(kinds(&hits), [ContactKind::Transversal; 2]);
+}
+
+#[test]
+fn drop_relative_cone_keeps_a_generator_ray_and_orders_its_roots() {
+    let half_angle = std::f64::consts::FRAC_PI_4;
+    let cone = ConicalSurface::new(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        half_angle,
+    )
+    .unwrap();
+    let policy = TangentPolicy::DropRelative { scale: 1.0 };
+    // Parallel to the generator through (1, 0, 1), from (0.5, 0, 0) off the
+    // surface: the quadratic degenerates to one linear root, at t = -0.25.
+    let d = Vec3::new(1.0, 0.0, 1.0);
+    let hits = ray_cone_with(Point3::new(0.5, 0.0, 0.0), d, &cone, policy);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].kind, ContactKind::Transversal);
+    // A ray meeting both nappes (negative leading coefficient): roots come
+    // back in increasing t.
+    let hits = ray_cone_with(
+        Point3::new(0.0, 0.0, -3.0),
+        Vec3::new(0.2, 0.0, 1.0),
+        &cone,
+        policy,
+    );
+    assert_eq!(hits.len(), 2);
+    assert!(hits[0].t <= hits[1].t);
+}

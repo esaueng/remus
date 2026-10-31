@@ -376,6 +376,44 @@ fn build_clamped_knots(n: usize, degree: usize) -> Vec<f64> {
     knots
 }
 
+/// Non-planar profile fixtures for the sweep and pipe tests.
+#[cfg(test)]
+pub(crate) mod test_fixtures {
+    #![allow(clippy::unwrap_used)]
+
+    use remus_math::vec::Point3;
+    use remus_topology::Topology;
+    use remus_topology::face::FaceId;
+
+    /// Build a non-planar test profile: a 4-corner Coons patch with z-staggered
+    /// corners, so both its boundary (the four corners) and its surface are
+    /// non-planar. Centered at the origin with half-extent `half`.
+    pub fn make_saddle_profile(topo: &mut Topology, half: f64) -> FaceId {
+        let h = half;
+        let bottom = vec![
+            Point3::new(-h, -h, 0.3),
+            Point3::new(0.0, -h, 0.6),
+            Point3::new(h, -h, -0.3),
+        ];
+        let right = vec![
+            Point3::new(h, -h, -0.3),
+            Point3::new(h, 0.0, 0.6),
+            Point3::new(h, h, 0.3),
+        ];
+        let top = vec![
+            Point3::new(-h, h, -0.3),
+            Point3::new(0.0, h, 0.6),
+            Point3::new(h, h, 0.3),
+        ];
+        let left = vec![
+            Point3::new(-h, -h, 0.3),
+            Point3::new(-h, 0.0, 0.6),
+            Point3::new(-h, h, -0.3),
+        ];
+        crate::fill_face::fill_coons_patch(topo, &[bottom, right, top, left]).unwrap()
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

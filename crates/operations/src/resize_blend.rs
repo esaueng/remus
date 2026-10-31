@@ -5919,6 +5919,9 @@ mod fillet_reorder;
 pub(crate) use fillet_reorder::fillet_across_earlier_blends;
 
 #[cfg(test)]
+pub(crate) mod test_fixtures;
+
+#[cfg(test)]
 mod translation_oracle_tests;
 
 #[cfg(test)]
@@ -7182,8 +7185,8 @@ mod tests {
     fn declined_surgical_fixture(offset: f64) -> (Topology, SolidId, FaceId, BandDescription) {
         // A single spring tilted within the carrier's positional tolerance
         // declines the generatrix proof without requiring a large fixture.
-        let (mut topo, solid) = crate::test_helpers::blended_box(&[0]);
-        let face = crate::test_helpers::cylinder_faces(&topo, solid)[0];
+        let (mut topo, solid) = crate::resize_blend::test_fixtures::blended_box(&[0]);
+        let face = crate::resize_blend::test_fixtures::cylinder_faces(&topo, solid)[0];
         let band = describe_band(&topo, solid, face).unwrap();
         let support = band.supports[0];
         let spring = shared_edges(&topo, solid, support, face).unwrap()[0];
@@ -7233,8 +7236,8 @@ mod tests {
     fn declined_surgical_public_fallbacks_allocate_only_their_results() {
         for fraction in [0.25, 0.75] {
             for resize in [false, true] {
-                let (mut topo, solid) = crate::test_helpers::blended_box(&[0]);
-                let face = crate::test_helpers::cylinder_faces(&topo, solid)[0];
+                let (mut topo, solid) = crate::resize_blend::test_fixtures::blended_box(&[0]);
+                let face = crate::resize_blend::test_fixtures::cylinder_faces(&topo, solid)[0];
                 // Split one exact end arc without changing any geometry.
                 // The strip has three cross edges, outside surgical scope,
                 // but the positional fallback still reconstructs the box.
@@ -7486,8 +7489,8 @@ mod tests {
         // A cylindrical band split into two faces on one carrier is outside the
         // surgical scope: deleting one half must reach the established
         // defeature logic, not the single-face surgical selection rule.
-        let (mut topo, blended) = crate::test_helpers::blended_box(&[0]);
-        let (split, halves) = crate::test_helpers::split_band(&mut topo, blended);
+        let (mut topo, blended) = crate::resize_blend::test_fixtures::blended_box(&[0]);
+        let (split, halves) = crate::resize_blend::test_fixtures::split_band(&mut topo, blended);
         let error = crate::defeature::defeature(&mut topo, split, &[halves[0]])
             .expect_err("a half band has no exact sharp closure");
         assert!(

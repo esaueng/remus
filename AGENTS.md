@@ -191,7 +191,7 @@ Quick reference — find the right file for any task:
 | Filtered exact predicates | `filtered.rs` |
 | Float tolerance | `tolerance.rs` |
 | Geometric predicates (orient2d/3d) | `predicates.rs` |
-| Qualified ray–cylinder/cone/sphere intersection (cancellation-free quadratic, relative tangency band) and ray–torus (merged double roots as tangential): transversal/tangential/unclassified hits (RFC 0008 §3.2) | `ray.rs`, `ray/tests.rs` |
+| Qualified ray–cylinder/cone/sphere intersection (cancellation-free quadratic, relative tangency band) and ray–torus (merged double roots as tangential): transversal/tangential/unclassified hits (RFC 0008 §3.2); `TangentPolicy::DropRelative` carries the GFA classifier's tangent-dropping cylinder/cone roots bit for bit, and `plane_parameter` the shared ray–plane parameter | `ray.rs`, `ray/tests.rs` |
 | Ray-triangle intersection | `ray_triangle.rs` |
 | 2D polygon offset | `polygon_offset.rs` |
 | 2D polygon ops (clip, fillet, chamfer) | `polygon2d.rs` |
@@ -206,6 +206,7 @@ Quick reference — find the right file for any task:
 | Chord deviation arc discretization | `chord.rs` |
 | Gauss-Legendre quadrature | `quadrature.rs` |
 | Operation tolerance and resource policy | `context.rs` |
+| Owned cache scopes: type-indexed cache parts and the thread's ambient scope (RFC 0009) | `context/cache.rs` |
 | Deterministic hashing (seed-stable maps/sets) | `det_hash.rs` |
 | Stable and unstable sorts compiled once for all comparators (`CompactSort`, for cold sorts; keeps WASM code size down) | `compact_sort.rs` |
 | Correctly rounded `fma` that stays fast on `wasm32` (bit-identical to `mul_add`) | `fma.rs` |
@@ -305,6 +306,7 @@ Quick reference — find the right file for any task:
 | Ray-cast classifier | `classifier/ray_cast.rs` |
 | Closed-form and differential oracles for the ray-cast polygon gate and shared plane hits (tests) | `classifier/ray_cast/gate_oracle_tests.rs` |
 | Differential oracles for the ray-cast torus line cull: no quartic roots on a cleared line, ray triples against the unculled vote loop, near and far past the reach cap, near-miss roots only the margin keeps (tests) | `classifier/ray_cast/torus_cull_oracle_tests.rs` |
+| Bit-identity oracle for the ray-cast plane, cylinder and cone hits routed through `remus_math::ray`: the pre-routing functions kept verbatim, on random, tangent, near-tangent, axis- and generator-parallel and in-plane rays at scales 1e-3 to 1e6 (tests) | `classifier/ray_cast/quadric_policy_oracle_tests.rs` |
 | Recognition of bounded rectangular torus patches | `classifier/torus_patch.rs` |
 | Shell assembly (4-phase `BuilderSolid`) | `builder/builder_solid.rs` |
 | Boolean preflight diagnostics | `diagnostic.rs` |
@@ -430,6 +432,8 @@ Quick reference — find the right file for any task:
 | Exact boundary reduction (Green's theorem) of cylinder, cone, sphere and torus face areas behind `analytic_face_area`, with the trimmed quadrature as fallback | `properties/face_integrator/boundary_area.rs` |
 | Bit-identity oracle for the NURBS row and grid quadrature (per-axis basis tables) against the verbatim per-abscissa `integrate_parametric` (tests) | `properties/face_integrator/nurbs_rows_oracle_tests.rs` |
 | Bit-identity oracle for `integrate_parametric` with its sliced request out of line and its knot-aligned path reached through `as_nurbs`, against the verbatim previous function (tests) | `properties/face_integrator/parametric_split_oracle_tests.rs` |
+| Full-turn cylinder bands with rims split into many arcs, integrated over their exact `(u, v)` rectangle past the trim budget (tests) | `properties/face_integrator/cylinder_band_tests.rs` |
+| Full-turn cylinder bands with rims split into many arcs, integrated over their exact `(u, v)` rectangle past the trim budget (tests) | `properties/face_integrator/cylinder_band_tests.rs` |
 | Independent polynomial Green-moment and authoritative-trim oracles (tests) | `properties/face_integrator/polynomial_boundary_tests.rs` |
 | Properties orchestrator (volume, area, CoM) | `properties/mod.rs` |
 | Opt-in content-keyed memo of fixed-order face integrals (`FaceIntegralCache`, PERF-V02 subset) | `properties/face_cache.rs` |
@@ -512,9 +516,14 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Bevel gear oracles: closed-form cone angles and mate pitch angles, cap areas against the exact spherical-involute heel outline, apex-sweep volumes, flank points on the exact spherical-involute cones, pitch-cone classification, roles, refusals (tests) | `gear/bevel/tests.rs` |
 | Cylindrical involute (ZI) worms: the involute helical gear with the starts as teeth and helix angle 90° − lead angle (a many-turn twisted extrusion), axial-module conventions, and the crossed-helical wheel that meshes with it | `gear/worm.rs` |
 | Throated worm wheels without a boolean: each tooth tip rebuilt as two outside-cylinder strips and an exact torus patch, each flank stopped at the throat along a certified fit of its torus intersection (fourth-derivative bound carried through Faà di Bruno) | `gear/throat.rs` |
+| Double-enveloping (Hindley) worms without a boolean: the hourglass blank cut by the wheel's straight-sided teeth swept with it; lands and root floors as exact torus patches between rails that are lines in the torus's `(u, v)`, cut every half turn; flanks as ruled patches between certified rail fits, split along straight rulings at the same cuts; end caps meeting the tori in exact circles and the flanks along certified section fits | `gear/enveloping.rs` |
+| Interval bounds on a function and its first four derivatives through compositions and products (the gear fits' fourth-derivative bounds) | `gear/jet.rs` |
+| Enveloping worm oracles: volumes against an exact interval integral of the axial sections (hourglass blank less straight-sided teeth), every sampled point's material in closed form, closed-form dimensions, hand, unique roles, refusals (tests) | `gear/tests/enveloping.rs` |
+| Double-enveloping (Hindley) wheels: the worm used as a hob (`HobSweep`: material margin over every mesh angle, bisected hobbed edges), flank laws fitted per side of the mid-plane (straight in every section, exact in the mid-plane, creased along it as the hobbed tooth is) by least squares raised until no sample is cut, each flank two ruled faces between certified rail fits, tips on the throat torus and outside cylinder | `gear/hindley_wheel.rs` |
+| Hindley wheel oracles: volumes against a section integral of the straight-sided laws, the exact mid-plane tooth by classification, clearance from the worm used as a hob, the worm's backlash leaving the wheel unchanged, unique roles, refusals (tests) | `gear/tests/hindley_wheel.rs` |
 | Worm oracles: closed-form dimensions, Cavalieri volumes, flank points on the exact involute helicoid, axial thread thickness and pitch read off the body by classification, hand, the matching wheel's dimensions and clearance; throated wheels' section-integral volumes (exact truncated-profile areas), throat and rim classification, throat curves on the torus, roles, refusals (tests) | `gear/tests/worm.rs` |
-| Gear teeth along the whole length of an existing boss or bore: keep-diameter or given-module fit, exact tooth-band material proof, tube cut then gear-ring fuse on one coaxial seam, roles carried through the fuse | `gear/cylinder.rs` |
-| Teeth-on-cylinder oracles: standalone-gear and closed-form volumes on a boss, a stepped bored shaft and a bored ring, turn-down fit and phase probes, cross-hole and partial-span refusals (tests) | `gear/cylinder/tests.rs` |
+| Gear teeth along the whole length of an existing boss or bore: keep-diameter or given-module fit, exact tooth-band material proof, tube cut then gear-ring fuse on one coaxial cylinder, circles started on the phase reference, roles carried through the fuse | `gear/cylinder.rs` |
+| Teeth-on-cylinder oracles: standalone-gear and closed-form volumes on a boss, a stepped bored shaft and a bored ring, turn-down fit and phase probes, any phase reference, cross-hole and partial-span refusals (tests) | `gear/cylinder/tests.rs` |
 | Helical sweep | `helix.rs` |
 | Chamfer, Fillet | `chamfer.rs`, `fillet/` (mod, rolling_ball, g1_chain, geometry, radius_law, helpers, notch_torus, tests) |
 | Rolling-ball arc stripe between a plane and a coaxial cylinder as an exact torus, or a sphere triangle at the band's own radius (a fillet riding an earlier band's end) | `fillet/arc_torus.rs` |
@@ -541,7 +550,9 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Bounded opt-in exact-content scalar memo for trimmed NURBS face areas | `measure/nurbs_area_memo.rs`, `measure/nurbs_area_memo/tests.rs` |
 | 128-bit exact content digest of a single face (handle-free; lets a consumer keep what it derived from faces an edit left untouched) | `measure/face_digest.rs` |
 | Bounded opt-in exact-content memo of single-face bounding boxes (the move's swept-region refusal), and its bit-identity tests | `measure/face_box_memo.rs`, `measure/face_box_memo/tests.rs` |
+| Test assertions that measure volumes and areas (tests) | `measure/test_support.rs` |
 | Bounded opt-in host-clock phase timings | `performance.rs` |
+| The thread's default cache scope, shared by kernels and the `*_thread_*` cache switches (RFC 0009) | `cache.rs` |
 | Distance queries | `distance.rs` |
 | Independent global maximum-distance oracles (tests) | `distance/maximum_tests.rs` |
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
@@ -571,7 +582,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Pattern (linear/circular) | `pattern.rs` |
 | Shape queries (edge filtering) | `query.rs` |
 | Oracle for the prepared `ConcavityProbe` against the one-shot edge concavity on primitives, booleans and STEP bodies (tests) | `query/concavity_probe_oracle_tests.rs` |
-| Opt-in per-thread exact-content memo of the edge-concavity probes' per-face ray crossing counts, so relations and recognition after an edit recount only changed faces (the WASM kernel enables it) | `query/crossing_memo.rs` |
+| Opt-in exact-content memo of the edge-concavity probes' per-face ray crossing counts, a part of the owner's cache scope (RFC 0009 stage 1), so relations and recognition after an edit recount only changed faces (the WASM kernel enables it) | `query/crossing_memo.rs` |
 | Sewing | `sew.rs` |
 | Thickening | `thicken.rs` |
 | Untrimming | `untrim.rs` |
@@ -607,10 +618,11 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Exact local reconstruction of analytic wounds | `local_wound.rs` |
 | Cylindrical blend removal with certified affine NURBS caps | `affine_blend_caps.rs` |
 | Atomic removal of explicitly selected connected blend groups | `remove_blends.rs` |
+| Split-band blend fixtures shared by the blend-editing tests (tests) | `resize_blend/test_fixtures.rs` |
 | Full-turn rim chain recognition | `tessellate/rim_chain.rs` |
 | Outward surface normals of face carriers at a 3D point (shared by the mesh assembler and the fillet engine) | `tessellate/surface_normal.rs` |
 | Sphere patches holding a pole (loop winds once around the axis) | `tessellate/sphere_pole_patch.rs` |
-| Shared test assertion helpers | `test_helpers.rs` |
+| Pure-topology test assertions (Euler characteristic, manifoldness, point distance, volume conservation); `test-utils` feature for downstream tests | `test_utils.rs` |
 
 ### L3: io (`crates/io/src/`)
 | Task | File(s) |
@@ -669,7 +681,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Batch `getFaceNormal` returns the outward normal of reversed planar faces, matching the direct method (tests) | `bindings/face_normal_contract_tests.rs` |
 | Differential oracle: the modifier twins' full-copy rollback envelope kept verbatim, against the rollback scope (tests) | `bindings/modifier_detailed/envelope_oracle_tests.rs` |
 | Typed construction results (`extrudeDetailed`, `revolveDetailed`) | `bindings/construction_detailed.rs` |
-| Gear construction from a JSON spec: new bodies (`makeGearDetailed`), straight bevel gears (`makeBevelGearDetailed`), worms and their wheels, plain or throated (`makeWormDetailed`, `makeWormWheelDetailed`) and teeth on an existing cylinder (`cutGearTeethDetailed`), direct and batch | `bindings/gear.rs` |
+| Gear construction from a JSON spec: new bodies (`makeGearDetailed`), straight bevel gears (`makeBevelGearDetailed`), worms and their wheels, plain or throated (`makeWormDetailed`, `makeWormWheelDetailed`), double-enveloping worms and their wheels (`makeEnvelopingWormDetailed`, `makeEnvelopingWormWheelDetailed`) and teeth on an existing cylinder (`cutGearTeethDetailed`), direct and batch | `bindings/gear.rs` |
 | Live planar polygon imprint, direct and both batch adapters | `bindings/construction_imprint.rs` |
 | Transform, copy, mirror, pattern | `bindings/transforms.rs` |
 | Typed affine transform results and refusals | `bindings/transform_detailed.rs` |

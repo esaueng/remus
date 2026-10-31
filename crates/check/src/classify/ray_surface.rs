@@ -31,12 +31,12 @@ const RAY_T_MIN: f64 = 1e-12;
 /// Returns `Some(t)` if the ray hits the plane at `origin + t * direction`
 /// with `t > RAY_T_MIN`, or `None` if the ray is parallel or behind.
 pub fn ray_plane(origin: Point3, direction: Vec3, normal: Vec3, d: f64) -> Option<f64> {
-    let denom = normal.dot(direction);
-    if denom.abs() < NEAR_ZERO {
-        return None;
-    }
     let origin_vec = Vec3::new(origin.x(), origin.y(), origin.z());
-    let t = (d - normal.dot(origin_vec)) / denom;
+    let t = remus_math::ray::plane_parameter(
+        normal.dot(direction),
+        d - normal.dot(origin_vec),
+        NEAR_ZERO,
+    )?;
     if t <= RAY_T_MIN { None } else { Some(t) }
 }
 

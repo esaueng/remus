@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn pipe_cw_profile_produces_correct_solid() {
         let path = straight_z_path(3.0);
-        crate::test_helpers::assert_cw_profile_produces_valid_solid(
+        crate::measure::test_support::assert_cw_profile_produces_valid_solid(
             |topo, face| pipe(topo, face, &path, None).unwrap(),
             3.0,
             0.05,
@@ -617,7 +617,7 @@ mod tests {
         // A non-planar (saddle) profile piped along a straight path: previously
         // rejected by the planar-only gate, now closed with bilinear caps.
         let mut topo = Topology::new();
-        let profile = crate::test_helpers::make_saddle_profile(&mut topo, 2.0);
+        let profile = crate::fill_face::test_fixtures::make_saddle_profile(&mut topo, 2.0);
         assert!(!topo.face(profile).unwrap().surface().is_planar());
         let path = straight_z_path(6.0);
 

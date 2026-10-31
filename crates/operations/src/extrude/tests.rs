@@ -8,7 +8,7 @@ use remus_topology::face::FaceSurface;
 use remus_topology::test_utils::{make_unit_square_face, make_unit_triangle_face};
 
 use super::*;
-use crate::test_helpers::assert_euler_genus0;
+use crate::test_utils::assert_euler_genus0;
 
 #[test]
 fn extrude_square_creates_box() {
@@ -723,7 +723,7 @@ fn extrude_analytic_circle_hole_volume_is_exact() {
 
 #[test]
 fn extrude_cw_profile_produces_correct_solid() {
-    crate::test_helpers::assert_cw_profile_produces_valid_solid(
+    crate::measure::test_support::assert_cw_profile_produces_valid_solid(
         |topo, face| extrude(topo, face, Vec3::new(0.0, 0.0, 1.0), 2.0).unwrap(),
         2.0,
         0.01,

@@ -5,8 +5,9 @@ RFC 0007 (`docs/design/rfc-0007-operations-crate-split.md`) assigns every
 top-level module of `crates/operations/src` to a future L3 crate. A crate split
 only works if no module depends on a module of a crate that is not below its
 own, so this check fails on any production reference that points the wrong
-way. Test code (`#[cfg(test)]` items and files) is exempt: the RFC moves
-upward-reaching tests to integration tests at each stage.
+way. Test code (`#[cfg(test)]` and `#[cfg(all(test, ..))]` items and files)
+is exempt: the RFC moves upward-reaching tests to integration tests at each
+stage. `#[cfg(any(test, ..))]` code is checked, since a feature compiles it.
 
 A new top-level module must be added to TIERS. Pick the lowest tier whose
 modules it uses; the failure message names what it references.
@@ -31,7 +32,7 @@ SRC = os.path.join(REPO, "crates", "operations", "src")
 TIERS: dict[str, list[str]] = {
     "remus-ops-core": [
         "ROOT", "performance", "winding", "evolution", "boundary_evolution",
-        "polygon", "error_payloads",
+        "polygon", "error_payloads", "test_utils", "cache",
     ],
     "remus-transform": ["transform", "copy", "mirror"],
     "remus-tessellate": ["tessellate"],
@@ -56,7 +57,6 @@ TIERS: dict[str, list[str]] = {
     "remus-operations": [
         "journal_ops", "prepared_move", "imprint", "pattern", "assembly",
         "sketch", "linked_sketch", "sew", "untrim", "offset_wire", "gear",
-        "test_helpers",
     ],
 }
 
@@ -151,7 +151,8 @@ def matching_brace(s: str, open_at: int) -> int:
     return len(s) - 1
 
 
-TEST_ATTR = re.compile(r"#\[cfg\((?:test|all\(test\b[^\]]*|any\(test\b[^\]]*)\)\]")
+# `cfg(any(test, feature = ..))` is not exempt: a feature compiles it outside tests.
+TEST_ATTR = re.compile(r"#\[cfg\((?:test|all\(test\b[^\]]*)\)\]")
 
 
 def test_ranges(s: str) -> list[tuple[int, int]]:

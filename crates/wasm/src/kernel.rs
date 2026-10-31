@@ -58,6 +58,10 @@ pub struct RemusKernel {
     /// Session state outside the topology: checkpoints neither save nor
     /// restore it, and each prepared move checks its source on every call.
     pub(crate) prepared_moves: crate::bindings::prepared_move::PreparedMoves,
+    /// The content caches this session reads (RFC 0009). Every kernel on a
+    /// thread holds the thread's default scope, so they share content-keyed
+    /// hits; caches not yet moved into a scope are still thread-local.
+    pub(crate) caches: remus_math::context::CacheScope,
 }
 
 #[wasm_bindgen]
@@ -69,13 +73,16 @@ impl RemusKernel {
         crate::panics::install_hook();
         // Content-keyed face integrals, NURBS areas, face boxes, planar arc
         // pcurves, revolved wire areas, the ray classifier's torus trims and
-        // the edge-concavity probes' per-face ray crossings, plus
+        // the edge-concavity probes' per-face ray crossings (the last in the
+        // session's cache scope, the rest still thread-local), plus
         // identity-keyed volume readings (off in the library by
         // default). Module-wide on purpose: a body validated in one kernel is
         // a content-keyed hit when a short-lived probe kernel validates its
         // deserialized copy, and an unchanged hole rim, wall or blend is a
-        // hit on every later cut of the same body. Every hit is bit-identical
-        // to recomputing. Idempotent.
+        // hit on every later cut of the same body. Hits are bit-identical to
+        // recomputing, except the face-integral cache's re-referenced and
+        // translated volume terms and the face-mesh cache's translated hits,
+        // which agree to rounding (RFC 0009 §2.3). Idempotent.
         remus_check::properties::face_cache::enable_thread_face_cache();
         remus_operations::measure::enable_thread_volume_memo();
         remus_operations::measure::enable_default_measurement_reuse();
@@ -86,8 +93,9 @@ impl RemusKernel {
         remus_algo::pcurve_memo::enable_thread_pcurve_memo();
         remus_algo::wire_area_memo::enable_thread_wire_area_memo();
         remus_algo::ray_geom_memo::enable_thread_ray_geom_memo();
-        remus_operations::query::enable_thread_crossing_memo();
-        Self::from_document_topology(Topology::new())
+        let kernel = Self::from_document_topology(Topology::new());
+        remus_operations::query::enable_crossing_memo(&kernel.caches);
+        kernel
     }
 }
 
@@ -106,6 +114,7 @@ impl RemusKernel {
                 remus_check::classify::ClassificationCache::new(),
             ),
             prepared_moves: crate::bindings::prepared_move::PreparedMoves::default(),
+            caches: remus_operations::cache::thread_default_scope(),
         }
     }
 }
