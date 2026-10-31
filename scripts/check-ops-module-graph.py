@@ -32,7 +32,7 @@ SRC = os.path.join(REPO, "crates", "operations", "src")
 TIERS: dict[str, list[str]] = {
     "remus-ops-core": [
         "ROOT", "performance", "winding", "evolution", "boundary_evolution",
-        "polygon", "error_payloads", "test_utils",
+        "polygon", "error_payloads", "test_utils", "cache",
     ],
     "remus-transform": ["transform", "copy", "mirror"],
     "remus-tessellate": ["tessellate"],
