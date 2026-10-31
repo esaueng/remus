@@ -19,7 +19,7 @@ steady-state performance (owner decision 1 of the size architecture).
 
 - **It works mechanically with wasm-bindgen output.** The split kernel passes
   `scripts/test-wasm-smoke.mjs` in full: lazy loading, eager loading, and
-  three different profiles. One `BrepKernel` session spans both modules with
+  three different profiles. One `RemusKernel` session spans both modules with
   no document round trip. The glue needs a hand-written loader (about 60
   lines). wasm-bindgen has no support of its own, and the bundler entry has
   to be replaced.
@@ -45,7 +45,7 @@ steady-state performance (owner decision 1 of the size architecture).
 
 | Item | Value |
 | --- | --- |
-| Source | `c91287d` (main; glue byte-identical to the committed v2026.1.86 package glue apart from the `.wasm` path) |
+| Source | `c91287d` (main; glue byte-identical to the committed v2026.1.86 package glue apart from the `.wasm` path). Measured before #1358 renamed the kernel class to `RemusKernel`; the evidence scripts now use the new name. |
 | Rust / wasm-bindgen / wasm-pack | 1.96.0 / 0.2.126 / 0.15.0 (`cargo install wasm-pack --version 0.15.0 --locked`) |
 | Binaryen | `version_123` release (`wasm-opt`, `wasm-split`) |
 | Node / V8 | 22.22.0 / 12.4.254.21 |
@@ -158,7 +158,7 @@ secondary still has to be downloaded before any deferred operation.
   placeholder slots with the real functions, so after one instantiation every
   later call is a plain `call_indirect` and never touches JS again.
 - **Shared state.** Memory, the allocator, the externref table
-  (`__wbindgen_externrefs`) and every global are shared. One `BrepKernel`
+  (`__wbindgen_externrefs`) and every global are shared. One `RemusKernel`
   object, with its handles, journal and checkpoints, spans both modules.
 - **No exports moved.** The 432 wasm-bindgen exports stay exported from the
   primary under their original names. Exported functions that moved to the

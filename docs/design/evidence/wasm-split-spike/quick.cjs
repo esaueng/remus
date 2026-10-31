@@ -1,6 +1,6 @@
 const pkg = process.argv[2];
 const m = require(`${pkg}/remus_wasm_node.cjs`);
-const k = new m.BrepKernel();
+const k = new m.RemusKernel();
 const s = m.__remusSplit;
 const b = k.makeBox(10, 10, 10);
 console.log('after box: loaded', s?.state.loaded, 'placeholderCalls', s?.state.placeholderCalls);

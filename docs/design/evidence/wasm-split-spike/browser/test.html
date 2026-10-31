@@ -30,7 +30,7 @@
     },
   });
   out.primaryReadyMs = performance.now() - t0;
-  const K = kern.bg.BrepKernel;
+  const K = kern.bg.RemusKernel;
   k = new K();
   try {
     if (q.get('mode') === 'preload') {
