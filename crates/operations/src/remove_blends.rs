@@ -423,7 +423,7 @@ mod tests {
     use remus_topology::explorer::solid_edges;
 
     use super::*;
-    use crate::test_helpers::{blended_box, cylinder_faces, split_band};
+    use crate::resize_blend::test_fixtures::{blended_box, cylinder_faces, split_band};
 
     /// Run group recognition with a watchdog: a carrier walk that re-queues
     /// faces it already found never terminates, which must fail the test

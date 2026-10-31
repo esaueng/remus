@@ -12,6 +12,9 @@ mod reuse;
 mod volume;
 pub(crate) mod volume_memo;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 pub use area::{
     body_surface_area, face_area, sheet_center_of_area, sheet_surface_area, solid_surface_area,
 };
