@@ -187,6 +187,141 @@ pub fn quadratic_roots(q: &Quadratic) -> RayHits {
     hits
 }
 
+/// The ray parameter where a ray meets a plane, unfiltered by sign.
+///
+/// For the plane `normal · x = d`, pass `denom = normal · direction` and
+/// `numer = d − normal · origin`. `None` when `|denom| < parallel_below`:
+/// the ray runs parallel to the plane.
+#[must_use]
+pub fn plane_parameter(denom: f64, numer: f64, parallel_below: f64) -> Option<f64> {
+    if denom.abs() < parallel_below {
+        return None;
+    }
+    Some(numer / denom)
+}
+
+/// How [`ray_cylinder_with`] and [`ray_cone_with`] treat a near-tangent
+/// contact.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TangentPolicy {
+    /// Qualify every root, as [`ray_cylinder`] and [`ray_cone`] do.
+    Qualify,
+    /// The GFA ray classifier's rule: a discriminant below
+    /// `1e-12 · |a| · scale²` reads as a miss and gives no hits, and every
+    /// root returned is [`ContactKind::Transversal`]. An axis-parallel ray
+    /// (`a < 1e-14`) misses a cylinder; a cone ray along a generator
+    /// (`|a| < 1e-14`) gives its one linear root, or none when the linear
+    /// term is below `1e-14` too. `scale` is the cylinder's radius, or the
+    /// largest radius of the cone's face.
+    DropRelative {
+        /// The length the tangency band scales with.
+        scale: f64,
+    },
+}
+
+/// [`ray_cylinder`] under a choice of [`TangentPolicy`].
+#[must_use]
+pub fn ray_cylinder_with(
+    origin: Point3,
+    direction: Vec3,
+    cyl: &CylindricalSurface,
+    policy: TangentPolicy,
+) -> RayHits {
+    match policy {
+        TangentPolicy::Qualify => ray_cylinder(origin, direction, cyl),
+        TangentPolicy::DropRelative { scale } => {
+            ray_cylinder_dropping_tangents(origin, direction, cyl, scale)
+        }
+    }
+}
+
+/// [`ray_cone`] under a choice of [`TangentPolicy`].
+#[must_use]
+pub fn ray_cone_with(
+    origin: Point3,
+    direction: Vec3,
+    cone: &ConicalSurface,
+    policy: TangentPolicy,
+) -> RayHits {
+    match policy {
+        TangentPolicy::Qualify => ray_cone(origin, direction, cone),
+        TangentPolicy::DropRelative { scale } => {
+            ray_cone_dropping_tangents(origin, direction, cone, scale)
+        }
+    }
+}
+
+/// Up to two transversal hits in increasing `t`.
+fn transversal_pair(t0: f64, t1: f64) -> RayHits {
+    let (lo, hi) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+    let mut hits = RayHits::EMPTY;
+    hits.push(RayHit::transversal(lo));
+    hits.push(RayHit::transversal(hi));
+    hits
+}
+
+/// [`TangentPolicy::DropRelative`] for a cylinder. The arithmetic, `mul_add`
+/// placement included, is the GFA classifier's, so its roots are bit for bit
+/// the ones it always computed.
+fn ray_cylinder_dropping_tangents(
+    origin: Point3,
+    direction: Vec3,
+    cyl: &CylindricalSurface,
+    scale: f64,
+) -> RayHits {
+    let axis = cyl.axis();
+    let m = origin - cyl.origin();
+    let d_perp = direction - axis * direction.dot(axis);
+    let m_perp = m - axis * m.dot(axis);
+    let a = d_perp.dot(d_perp);
+    if a < 1e-14 {
+        return RayHits::EMPTY;
+    }
+    let b = 2.0 * m_perp.dot(d_perp);
+    let c = cyl.radius().mul_add(-cyl.radius(), m_perp.dot(m_perp));
+    let disc = b.mul_add(b, -4.0 * a * c);
+    // `a` is a sum of squares, so `a.abs()` is `a` bit for bit.
+    if disc < 1e-12 * a.abs() * scale * scale {
+        return RayHits::EMPTY;
+    }
+    let sqrt_disc = disc.sqrt();
+    transversal_pair((-b - sqrt_disc) / (2.0 * a), (-b + sqrt_disc) / (2.0 * a))
+}
+
+/// [`TangentPolicy::DropRelative`] for a cone, on the cone condition
+/// `h² − sin²a·|w|² = 0` (`h` axial, `w` from the apex). The arithmetic is
+/// the GFA classifier's, bit for bit.
+fn ray_cone_dropping_tangents(
+    origin: Point3,
+    direction: Vec3,
+    cone: &ConicalSurface,
+    scale: f64,
+) -> RayHits {
+    let axis = cone.axis();
+    let m = origin - cone.apex();
+    let sin_a = cone.half_angle().sin();
+    let sin2 = sin_a * sin_a;
+    let d_a = direction.dot(axis);
+    let m_a = m.dot(axis);
+    let a = sin2.mul_add(-direction.dot(direction), d_a * d_a);
+    let half_b = sin2.mul_add(-direction.dot(m), d_a * m_a);
+    let c = sin2.mul_add(-m.dot(m), m_a * m_a);
+    if a.abs() < 1e-14 {
+        if half_b.abs() < 1e-14 {
+            return RayHits::EMPTY;
+        }
+        let mut hits = RayHits::EMPTY;
+        hits.push(RayHit::transversal(-c / (2.0 * half_b)));
+        return hits;
+    }
+    let disc = half_b.mul_add(half_b, -(a * c));
+    if disc < 1e-12 * a.abs() * scale * scale {
+        return RayHits::EMPTY;
+    }
+    let sqrt_disc = disc.sqrt();
+    transversal_pair((-half_b - sqrt_disc) / a, (-half_b + sqrt_disc) / a)
+}
+
 /// Sum of absolute coordinates: the magnitude that rounding of a point's
 /// coordinates scales with.
 fn l1(p: Point3) -> f64 {
