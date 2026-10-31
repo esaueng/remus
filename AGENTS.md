@@ -499,6 +499,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Qualified local drilled-hole cut (through and blind holes; stages 1–2 of the local boolean) and its GFA oracle tests | `boolean/local_cut.rs`, `boolean/local_cut_tests.rs` |
 | Opt-in store-local cut, fuse and intersect: the GFA on the faces the tool touches, spliced onto the untouched ones (stage 4 of the local boolean), and its equivalence oracle tests | `boolean/store_local.rs`, `boolean/store_local_tests.rs` |
 | Mesh boolean (co-refinement) | `mesh_boolean.rs` |
+| Robust triangle-triangle intersection: the narrow phase shared by mesh co-refinement and validation's component-overlap check | `triangle_intersection.rs` |
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
 | Twisted extrusion: the straight extrusion's topology with the top cap turned, fitted helix edges and certified swept side faces (lands concentric with the axis stay exact cylinders while they sweep less than a full turn, and are swept like the rest past it); herringbone: two opposite-hand halves glued at their shared mid-plane edges | `extrude/twist.rs`, `extrude/twist/tests.rs` |
 | Tapered extrusion toward an apex: the straight extrusion's topology with the far cap scaled about the apex; lines sweep to planes through it, concentric circles to exact cones, other curves to ruled NURBS (a concentric hole stays a cylinder) | `extrude/taper.rs`, `extrude/taper/tests.rs` |
@@ -575,6 +576,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Thickening | `thicken.rs` |
 | Untrimming | `untrim.rs` |
 | Validation | `validate.rs` |
+| Polygon approximations of wires and faces (`face_polygon`, `wire_polygon`; re-exported from `boolean`) | `polygon.rs` |
+| Types carried inside `OperationsError` variants (`HealingReport`, `ResizeBlendError`; re-exported at their original paths) | `error_payloads.rs` |
 | Assembly management | `assembly.rs` |
 | 2D sketch constraint solver | `sketch.rs` |
 | Persistent planar sketch attachments and external line inputs | `linked_sketch.rs` |
@@ -605,6 +608,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Cylindrical blend removal with certified affine NURBS caps | `affine_blend_caps.rs` |
 | Atomic removal of explicitly selected connected blend groups | `remove_blends.rs` |
 | Full-turn rim chain recognition | `tessellate/rim_chain.rs` |
+| Outward surface normals of face carriers at a 3D point (shared by the mesh assembler and the fillet engine) | `tessellate/surface_normal.rs` |
 | Sphere patches holding a pole (loop winds once around the axis) | `tessellate/sphere_pole_patch.rs` |
 | Shared test assertion helpers | `test_helpers.rs` |
 

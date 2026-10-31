@@ -2958,7 +2958,7 @@ fn profile_to_frame_matrix(
     // Centroid of the sampled boundary — robust for a circle profile whose
     // outer wire is a single closed edge (where averaging start vertices would
     // collapse to the seam point).
-    let boundary = crate::boolean::face_polygon(topo, face_id)?;
+    let boundary = crate::polygon::face_polygon(topo, face_id)?;
     if boundary.is_empty() {
         return Err(crate::OperationsError::InvalidInput {
             reason: "multi-section sweep profile has no boundary".into(),

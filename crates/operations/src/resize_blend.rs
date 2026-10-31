@@ -30,69 +30,7 @@ use crate::blend_ops::{BlendFaceOrigins, fillet_v2};
 use crate::dot_normal_point;
 use crate::evolution::EvolutionMap;
 
-/// Stable, machine-readable refusal from [`resize_blend`].
-#[derive(Debug, thiserror::Error)]
-pub enum ResizeBlendError {
-    /// Caller arguments or handles cannot name a resize request.
-    #[error("invalid input: {reason}")]
-    InvalidInput {
-        /// Refusal detail.
-        reason: String,
-    },
-    /// The selected face is not a supported analytic blend surface.
-    #[error("selected face is not an analytic torus/cylinder/sphere blend: {surface}")]
-    BandNotAnalytic {
-        /// Selected surface type.
-        surface: &'static str,
-    },
-    /// Caller radius does not match the exact band radius.
-    #[error("expected radius {expected} mm, but the exact band radius is {actual} mm")]
-    RadiusMismatch {
-        /// Caller-provided witness.
-        expected: f64,
-        /// Exact topology measurement.
-        actual: f64,
-    },
-    /// The band closes into or is supported by freeform geometry.
-    #[error("blend band touches a freeform face")]
-    BandTouchesFreeform,
-    /// The support surfaces cannot be reconstructed exactly in this phase.
-    #[error("unsupported analytic support pair: {first} x {second}")]
-    UnsupportedSupportPair {
-        /// First support surface type.
-        first: &'static str,
-        /// Second support surface type.
-        second: &'static str,
-    },
-    /// The requested radius cannot fit on the recovered sharp feature.
-    #[error("radius {radius} mm does not fit on the recovered sharp feature")]
-    RadiusTooLarge {
-        /// Requested radius.
-        radius: f64,
-    },
-    /// Exact topology analysis or reconstruction could not produce one answer.
-    #[error("exact reconstruction refused: {reason}")]
-    ReconstructionFailed {
-        /// Refusal detail.
-        reason: String,
-    },
-}
-
-impl ResizeBlendError {
-    /// Stable code used across the WASM boundary.
-    #[must_use]
-    pub const fn code(&self) -> &'static str {
-        match self {
-            Self::InvalidInput { .. } => "invalid-input",
-            Self::BandNotAnalytic { .. } => "blend-band-not-analytic",
-            Self::RadiusMismatch { .. } => "blend-radius-mismatch",
-            Self::BandTouchesFreeform => "band-touches-freeform",
-            Self::UnsupportedSupportPair { .. } => "unsupported-support-pair",
-            Self::RadiusTooLarge { .. } => "radius-too-large",
-            Self::ReconstructionFailed { .. } => "resize-blend-failed",
-        }
-    }
-}
+pub use crate::error_payloads::ResizeBlendError;
 
 /// Result of an exact band resize, including source-to-result face evolution.
 #[derive(Debug)]
@@ -330,7 +268,7 @@ fn remove_blend_with_entity_evolution(
         ));
     }
     let boundaries = |solid| -> Result<HashSet<EntityKey>, OperationsError> {
-        Ok(crate::journal_ops::solid_entity_keys(topo, solid)?
+        Ok(crate::evolution::solid_entity_keys(topo, solid)?
             .into_iter()
             .filter(|key| key.kind != remus_topology::journal::EntityKind::Face)
             .collect())

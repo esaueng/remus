@@ -387,11 +387,11 @@ fn validate_boundary_history(
             "connected blend removal has duplicate boundary history records",
         ));
     }
-    let source_boundaries: BTreeSet<_> = crate::journal_ops::solid_entity_keys(topo, source)?
+    let source_boundaries: BTreeSet<_> = crate::evolution::solid_entity_keys(topo, source)?
         .into_iter()
         .filter(|key| key.kind != EntityKind::Face)
         .collect();
-    let result_boundaries: BTreeSet<_> = crate::journal_ops::solid_entity_keys(topo, result)?
+    let result_boundaries: BTreeSet<_> = crate::evolution::solid_entity_keys(topo, result)?
         .into_iter()
         .filter(|key| key.kind != EntityKind::Face)
         .collect();

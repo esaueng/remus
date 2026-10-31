@@ -369,6 +369,24 @@ Each stage is one PR, behavior-preserving, with no public path change through
   upward edge between future crate groups. That keeps the DAG from regressing
   while the stages land.
 
+*Stage 0a as landed.* The cycle breakers, the `check-boundaries.sh` name list
+and the module-graph check (`scripts/check-ops-module-graph.py`, run by
+`check-boundaries.sh`) landed first; the `test_helpers` split and the
+`test-hooks` feature are left to a stage 0b PR. Moving the 12 items whole
+took their private dependencies with them, beyond what the table above names:
+
+- `sample_edge_curve` and `CLOSED_CURVE_SAMPLES` went to `polygon` with
+  `face_polygon`.
+- `HealingChange` and `HealingChangeKind` went to `error_payloads` with
+  `HealingReport`.
+- `face_surface_normal_at` went to `tessellate::surface_normal` with
+  `face_surface_normal_with_grid`.
+- `triangles_intersect` wraps the whole triangle–triangle narrow phase of
+  `mesh_boolean` (`intersect_triangles` and 12 helpers, about 500 lines). That
+  became `triangle_intersection` in the `remus-measure` tier.
+- The new `gear` module (added after this RFC) sits in the facade tier: it
+  uses `boolean`, `extrude`, `classify` and `measure`.
+
 **Stage 1: `remus-ops-core` + `remus-tessellate`.** This is the most
 self-contained pair: tessellate's production code references only
 `OperationsError` (5 variants), `authoritative_edge_domain`,
