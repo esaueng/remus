@@ -1,7 +1,8 @@
 # Spike: profile-guided module splitting of the browser kernel (`wasm-split`)
 
-Status: **research spike, complete**. Recommendation: **reject as is**: see
-[Recommendation](#recommendation). Builds on the
+Status: **research spike, complete; evidence record only**. Recommendation:
+**do not adopt the split build as is**: see [Recommendation](#recommendation).
+Recording this result does not activate module splitting. Builds on the
 [browser kernel size architecture](kernel-wasm-size-architecture.md), which
 rejected the W4 lazy modules: they cross as arena documents, lose handle
 identity and add a 1.5–2 µs round trip.
@@ -295,9 +296,12 @@ The full 50-row table is in
 ### Results (default V8 tiering, pooled median delta vs. base)
 
 - **`main`, warm (12 cases):**
-  - Within noise everywhere except `wasm_bool_fuse_50` (1.05 ms):
+  - `wasm_bool_fuse_50` (1.05 ms) is slower beyond noise:
     `all` +9.9%, `smoke` +3.5%, `perf` +14.7%, with noise 2.4% and IQR 3.9%.
   - Three later diagnostic runs repeated it for `all`: +9.5, +14.0 and +6.9%.
+  - Two `perf` transform cells also exceed the noise rule:
+    `wasm_transform_direct_50` +1.4% and `wasm_transform_direct_400` +1.1%.
+    The other transform and fuse/refusal cells are within noise or faster.
   - The 200- and 400-body fuses are within noise or faster.
 - **`sketch`, warm (14 cells):**
   - Within noise apart from small slowdowns: `independent_solved_100` +1.4 to
