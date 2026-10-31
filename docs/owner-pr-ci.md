@@ -259,6 +259,18 @@ slots. Hosted runs pick them up in parallel.
 
 ## Updating immutable workflow dependencies
 
+PR #1449 stages the rust-cache, installer v2.87.31 and SARIF uploader v4.39.1
+updates in `fleet-ci-v11.yml`, `fleet-benchmark-v5.yml`, `fleet-fuzz-v5.yml`,
+`fleet-gauntlet-v5.yml`, `fleet-mutants-sharded-v6.yml`,
+`fleet-mutation-scope-v5.yml`, `fleet-osv-v7.yml` and
+`fleet-wasm-candidate-v6.yml`. `scripts/test_dependabot_actions_stage.py`
+compares each complete file with main commit
+`3862e7f9f162ed5c1fc651f9eba8d7ea7ef90fd3`, permitting only those exact
+Action pins and version comments. Existing active and historical stages stay
+byte-identical. Windows ARM receipt and workflow-policy checks bind the new
+installer SHA. A second protected PR must activate the new versions at the
+actual landed staging commit; runner variables and allowlists remain separate.
+
 PR #1297 stages the installer v2.87.29 and SARIF uploader v4.39.0 updates in
 `fleet-ci-v8.yml`, `fleet-mutants-sharded-v5.yml`,
 `fleet-mutation-scope-v4.yml`, `fleet-osv-v6.yml`, and

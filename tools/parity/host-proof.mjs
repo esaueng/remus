@@ -30,7 +30,7 @@ function requireWindowsExecutable(path) {
 
 export const WINDOWS_ARM_TOOLCHAIN = '1.96.0-aarch64-pc-windows-msvc';
 export const WINDOWS_ARM_INSTALLATION = Object.freeze({
-  action: 'taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283',
+  action: 'taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91',
   tool: 'wasm-pack@0.15.0,wasm-bindgen@0.2.126', checksum: true, fallback: 'none',
   assetUrl: 'https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.126/wasm-bindgen-0.2.126-x86_64-pc-windows-msvc.tar.gz',
   assetId: 456882691, archiveBytes: 7583858,
