@@ -798,3 +798,96 @@ fn throated_worm_wheels_report_their_throat_direct_and_batch() {
     assert_eq!(refused["details"]["argument"], "outsideDiameter");
     assert_eq!(live_counts(&batch_kernel), before);
 }
+
+fn enveloping_batch(kernel: &mut RemusKernel, args: &Value) -> Value {
+    worm_batch(kernel, "makeEnvelopingWormDetailed", args)
+}
+
+#[test]
+fn enveloping_worms_report_dimensions_and_roles_direct_and_batch() {
+    let spec = json!({
+        "module": 2.0, "starts": 1, "wheelTeeth": 30, "diameterFactor": 10.0,
+        "length": 16.0, "boreDiameter": 6.0, "hand": "left"
+    });
+    let mut direct_kernel = RemusKernel::new();
+    let direct =
+        serde_json::to_value(direct_kernel.make_enveloping_worm_detailed_impl(&spec)).unwrap();
+    assert_eq!(direct["status"], "ok", "{direct}");
+    let details = &direct["details"];
+    assert_eq!(details["quality"], "approximate");
+    assert_eq!(details["approximated"], "Hindley thread flanks");
+    let bound = details["flankDeviationBound"].as_f64().unwrap();
+    assert!(bound > 0.0 && bound <= 1e-5 * 2.0 * 1.01, "{bound}");
+    assert!(details["spansAlongFlank"].as_u64().unwrap() >= 1);
+    let geometry = &details["geometry"];
+    assert!((geometry["centerDistance"].as_f64().unwrap() - 40.0).abs() < 1e-12);
+    assert!((geometry["ratio"].as_f64().unwrap() - 30.0).abs() < 1e-12);
+    assert!((geometry["leadAngle"].as_f64().unwrap() - 0.1_f64.atan().to_degrees()).abs() < 1e-12);
+    assert!((geometry["throatTipDiameter"].as_f64().unwrap() - 24.0).abs() < 1e-12);
+    // The wheel sits on the x direction at the center distance from the
+    // throat, half way along the worm.
+    let center = &details["wheelCenter"];
+    assert!((center[0].as_f64().unwrap() - 40.0).abs() < 1e-12);
+    assert!((center[2].as_f64().unwrap() - 8.0).abs() < 1e-12);
+    let roles: Vec<&str> = details["faceRoles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["role"].as_str().unwrap())
+        .collect();
+    for name in [
+        "cap.start",
+        "cap.end",
+        "bore",
+        "tooth[0].flank.plus[0]",
+        "tooth[0].flank.minus[0]",
+        "tooth[0].tip[0]",
+        "root[0][0]",
+    ] {
+        assert!(roles.contains(&name), "{name}: {roles:?}");
+    }
+    let solid = handle(&direct["value"]);
+    assert_eq!(roles.len(), faces_of(&direct_kernel, solid).len());
+    assert_valid(&direct_kernel, solid);
+    let mut batch_kernel = RemusKernel::new();
+    assert_eq!(enveloping_batch(&mut batch_kernel, &spec)["ok"], direct);
+}
+
+#[test]
+fn enveloping_worm_refusals_carry_dimensions_and_keep_the_session() {
+    let mut kernel = RemusKernel::new();
+    let before = live_counts(&kernel);
+    let bored = json!({
+        "module": 2.0, "starts": 1, "wheelTeeth": 30, "diameterFactor": 10.0,
+        "length": 16.0, "boreDiameter": 15.0
+    });
+    let result = serde_json::to_value(kernel.make_enveloping_worm_detailed_impl(&bored)).unwrap();
+    assert_eq!(result["code"], "gear:bore-too-large", "{result}");
+    assert_eq!(result["details"]["argument"], "boreDiameter");
+    assert_eq!(result["details"]["operation"], "makeEnvelopingWorm");
+    assert!(
+        (result["details"]["geometry"]["throatRootDiameter"]
+            .as_f64()
+            .unwrap()
+            - 15.0)
+            .abs()
+            < 1e-12
+    );
+    assert_eq!(enveloping_batch(&mut kernel, &bored)["ok"], result);
+    // Longer than its tip hourglass: no worm to show.
+    let long = json!({
+        "module": 2.0, "starts": 1, "wheelTeeth": 30, "diameterFactor": 10.0, "length": 60.0
+    });
+    let result = serde_json::to_value(kernel.make_enveloping_worm_detailed_impl(&long)).unwrap();
+    assert_eq!(result["code"], "gear:invalid-parameter", "{result}");
+    assert!(result["details"].get("geometry").is_none());
+    // A misspelled key refuses rather than falling back to a default.
+    let typo = json!({
+        "module": 2.0, "starts": 1, "wheelTeeth": 30, "diameterFactor": 10.0,
+        "length": 16.0, "wheelTooth": 30
+    });
+    let result = serde_json::to_value(kernel.make_enveloping_worm_detailed_impl(&typo)).unwrap();
+    assert_eq!(result["code"], "invalid_argument", "{result}");
+    assert_eq!(enveloping_batch(&mut kernel, &typo)["ok"], result);
+    assert_eq!(live_counts(&kernel), before);
+}

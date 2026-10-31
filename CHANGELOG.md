@@ -62,6 +62,15 @@ historical predecessor-line records, retained for provenance. The
   Built without a boolean: tip lands become two cylinder strips and an exact
   torus patch, and flanks stop at the throat along certified fits
   (`throatCurveBound`). The flanks stay the crossed helical wheel's.
+* **operations,wasm:** double-enveloping (Hindley) worms.
+  `make_enveloping_worm` / `makeEnvelopingWormDetailed` build the hourglass
+  worm that wraps a wheel of `wheelTeeth` teeth, its thread swept by the
+  wheel's straight-sided teeth. Lands and root floors are exact torus patches;
+  flanks are certified ruled patches between fitted rails
+  (`flankDeviationBound`). New face roles `tooth[k].flank.plus[p]`,
+  `tooth[k].tip[p]` and `root[k][p]` name the patches from the start cap.
+  `GearFaceRole` gains `FlankPiece`, `TipPiece` and `RootPiece`, which breaks
+  exhaustive matches on it.
 * **math:** `nurbs::screw` fits helices and screw-motion swept surfaces as
   NURBS with a proven bound; fits sharing one plan share their knots, so
   neighbouring faces and edges match exactly.
