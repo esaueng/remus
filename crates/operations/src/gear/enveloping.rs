@@ -1644,8 +1644,9 @@ pub(super) fn cap_loop(
         let edge = topo.edge(oriented.edge())?;
         let start = topo.vertex(edge.start())?.point();
         let finish = topo.vertex(edge.end())?.point();
-        let (t0, t1) = edge.curve().domain_with_endpoints(start, finish);
-        let (t0, t1) = edge.trim().unwrap_or((t0, t1));
+        let (t0, t1) = edge
+            .strict_domain()
+            .map_err(|_| unbuildable("an end cap edge has no parameter domain"))?;
         for i in 0..8 {
             let s = f64::from(i) / 8.0;
             let s = if oriented.is_forward() { s } else { 1.0 - s };
