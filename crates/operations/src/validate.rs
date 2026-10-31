@@ -1265,8 +1265,56 @@ fn validate_solid_observed(
         }
     }
 
+    issues.extend(edge_on_surface_issues(topo, &faces, scale)?);
     issues.extend(native_pcurve_use_issues(topo, &faces, tol.linear)?);
     Ok(ValidationReport { issues })
+}
+
+/// Edge uses whose 3D curve leaves its face's surface between the end
+/// vertices ([`remus_check::validate::check_edge_on_surface`], at the check
+/// suite's `1e-4` geometric tolerance scaled like the other checks): an
+/// error past [`remus_check::validate::EDGE_OFF_SURFACE_ERROR_FACTOR`]
+/// allowances, a warning below it.
+fn edge_on_surface_issues(
+    topo: &Topology,
+    faces: &[remus_topology::face::FaceId],
+    scale: f64,
+) -> Result<Vec<ValidationIssue>, crate::OperationsError> {
+    let mut issues = Vec::new();
+    let mut checked = std::collections::BTreeSet::new();
+    for &face_id in faces {
+        let face = topo.face(face_id)?;
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oriented in topo.wire(wire)?.edges() {
+                if !checked.insert((oriented.edge().index(), face_id.index())) {
+                    continue;
+                }
+                for issue in remus_check::validate::check_edge_on_surface(
+                    topo,
+                    oriented.edge(),
+                    face_id,
+                    scale * 1e-4,
+                )
+                .map_err(|e| crate::OperationsError::InvalidInput {
+                    reason: e.to_string(),
+                })? {
+                    let severity = match issue.severity {
+                        remus_check::validate::checks::Severity::Error => Severity::Error,
+                        _ => Severity::Warning,
+                    };
+                    issues.push(ValidationIssue {
+                        severity,
+                        description: format!(
+                            "edge {}: {}",
+                            oriented.edge().index(),
+                            issue.description
+                        ),
+                    });
+                }
+            }
+        }
+    }
+    Ok(issues)
 }
 
 /// Validate a solid with relaxed checks suitable for assembled geometry.

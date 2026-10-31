@@ -18,6 +18,9 @@ pub enum CheckId {
     EdgeNoCurve3D,
     /// 3D curve deviates from PCurve(surface) beyond tolerance.
     EdgeSameParameter,
+    /// Edge 3D curve leaves the surface of a face that uses it, between its
+    /// end vertices, beyond tolerance.
+    EdgeOnSurface,
     /// Edge parameter range is invalid.
     EdgeRangeValid,
     /// Edge is degenerate (zero length).

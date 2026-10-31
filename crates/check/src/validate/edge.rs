@@ -376,6 +376,75 @@ pub fn check_edge_same_parameter(
     Ok(issues)
 }
 
+/// Interior parameters sampled per edge use by [`check_edge_on_surface`].
+const EDGE_ON_SURFACE_SAMPLES: usize = 8;
+
+/// An edge leaving its face by more than this many allowances is an error;
+/// a smaller excess, the fit noise of exported NURBS edges (up to about
+/// 5 allowances in the STEP corpus), is a warning.
+pub const EDGE_OFF_SURFACE_ERROR_FACTOR: f64 = 100.0;
+
+/// Check that an edge's 3D curve lies on the surface of a face that uses it.
+///
+/// Measures the distance from the face surface at interior samples of the
+/// edge's domain; the end vertices are [`super::vertex::check_vertex_on_surface`]'s.
+/// Without this, an edge whose ends sit on the face but whose span leaves it
+/// (a straight edge bounding a curved band) passed every check whenever the
+/// use carries no pcurve for [`check_edge_same_parameter`] to compare. The
+/// allowance is the larger of `tolerance` and the edge's own tolerance; a
+/// deviation above it is a warning, and above
+/// [`EDGE_OFF_SURFACE_ERROR_FACTOR`] allowances an error.
+///
+/// # Errors
+///
+/// Returns an error if a topology lookup fails.
+#[allow(clippy::cast_precision_loss)]
+pub fn check_edge_on_surface(
+    topo: &Topology,
+    edge_id: EdgeId,
+    face_id: FaceId,
+    tolerance: f64,
+) -> Result<Vec<ValidationIssue>, CheckError> {
+    let edge = topo.edge(edge_id)?;
+    let start_vertex = topo.vertex(edge.start())?;
+    let end_vertex = topo.vertex(edge.end())?;
+    let (start, end) = (start_vertex.point(), end_vertex.point());
+    let allowance = tolerance
+        .max(edge.effective_tolerance(start_vertex.tolerance().max(end_vertex.tolerance())));
+    // An invalid domain is `check_edge_range`'s finding.
+    let Ok((a, b)) = edge.strict_domain() else {
+        return Ok(Vec::new());
+    };
+    let surface = topo.face(face_id)?.surface();
+    let mut worst: Option<f64> = None;
+    for k in 1..EDGE_ON_SURFACE_SAMPLES {
+        let t = (b - a).mul_add(k as f64 / EDGE_ON_SURFACE_SAMPLES as f64, a);
+        let point = edge.curve().evaluate_with_endpoints(t, start, end);
+        if let Some(distance) =
+            super::vertex::point_surface_distance(surface, point, (allowance * 1e-3).max(1e-12))
+            && distance.is_finite()
+        {
+            worst = Some(worst.map_or(distance, |w: f64| w.max(distance)));
+        }
+    }
+    match worst {
+        Some(deviation) if deviation > allowance => Ok(vec![ValidationIssue {
+            check: CheckId::EdgeOnSurface,
+            severity: if deviation > EDGE_OFF_SURFACE_ERROR_FACTOR * allowance {
+                Severity::Error
+            } else {
+                Severity::Warning
+            },
+            entity: EntityRef::Edge(edge_id),
+            description: format!(
+                "edge leaves face {face_id:?} by {deviation:.2e} (tolerance {allowance:.2e})"
+            ),
+            deviation: Some(deviation),
+        }]),
+        _ => Ok(Vec::new()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

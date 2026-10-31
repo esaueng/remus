@@ -376,12 +376,30 @@ fn openzcad_nurbs_fillet_plate_volume_reports_the_files_parabolic_content() {
     // The fixture stores one band with ADVANCED_FACE.same_sense = .F.
     // and its loop in face sense per ISO 10303-42; strict validation
     // guards the reader's same_sense composition on B-spline faces.
+    //
+    // The file is not valid, though: each band meets the caps along a
+    // straight LINE edge (the parabola's chord) that leaves the band by
+    // 1.0607 at mid-span, 0.75·√2 (|chord midpoint (1.5, 1.5) − parabola
+    // midpoint (0.75, 0.75)|). Those 8 edge uses are the only errors.
     let report = validate_solid(&topo, solid).expect("validate imported solid");
-    assert!(
-        report.is_valid(),
-        "reversed-NURBS import failed strict validation: {:?}",
+    let errors: Vec<_> = report
+        .issues
+        .iter()
+        .filter(|issue| issue.severity == remus_operations::validate::Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        8,
+        "expected only the 8 chord edges off their bands: {:?}",
         report.issues
     );
+    for error in errors {
+        assert!(
+            error.description.contains("edge leaves face") && error.description.contains("1.06e0"),
+            "reversed-NURBS import failed strict validation: {:?}",
+            report.issues
+        );
+    }
 
     // The premise: four degree-(2,1) non-rational bands — parabolas, not arcs.
     for fid in solid_faces(&topo, solid).expect("faces") {

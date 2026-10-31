@@ -84,7 +84,33 @@ pub fn check_vertex_on_surface(
     let pos = vertex.point();
     let face = topo.face(face_id)?;
 
-    let deviation = match face.surface() {
+    let Some(deviation) = point_surface_distance(face.surface(), pos, tolerance) else {
+        return Ok(vec![]);
+    };
+
+    if deviation > tolerance {
+        return Ok(vec![ValidationIssue {
+            check: CheckId::VertexOnSurface,
+            severity: Severity::Warning,
+            entity: EntityRef::Vertex(vertex_id),
+            description: format!(
+                "vertex deviates {deviation:.2e} from face surface (tolerance {tolerance:.2e})"
+            ),
+            deviation: Some(deviation),
+        }]);
+    }
+    Ok(vec![])
+}
+
+/// Distance from `pos` to `surface`: exact for planes and the analytic
+/// quadrics, a projection to `tolerance` for NURBS. `None` when a NURBS
+/// projection fails.
+pub(super) fn point_surface_distance(
+    surface: &FaceSurface,
+    pos: remus_math::vec::Point3,
+    tolerance: f64,
+) -> Option<f64> {
+    let deviation = match surface {
         FaceSurface::Plane { normal, d } => {
             let pv = remus_math::vec::Vec3::new(pos.x(), pos.y(), pos.z());
             (normal.dot(pv) - d).abs()
@@ -108,23 +134,11 @@ pub fn check_vertex_on_surface(
         FaceSurface::Nurbs(s) => {
             match remus_math::nurbs::projection::project_point_to_surface(s, pos, tolerance) {
                 Ok(proj) => proj.distance,
-                Err(_) => return Ok(vec![]),
+                Err(_) => return None,
             }
         }
     };
-
-    if deviation > tolerance {
-        return Ok(vec![ValidationIssue {
-            check: CheckId::VertexOnSurface,
-            severity: Severity::Warning,
-            entity: EntityRef::Vertex(vertex_id),
-            description: format!(
-                "vertex deviates {deviation:.2e} from face surface (tolerance {tolerance:.2e})"
-            ),
-            deviation: Some(deviation),
-        }]);
-    }
-    Ok(vec![])
+    Some(deviation)
 }
 
 #[cfg(test)]

@@ -96,6 +96,10 @@ const PINNED: &[(&str, usize, usize)] = &[
     ("multicavity_cavity_1.step#0", 0, 0),
     ("openzcad_a_export_bored_plate.step#0", 0, 0),
     ("openzcad_e_analytic_fillet_plate.step#0", 0, 0),
+    // check's 6 are fixture-intrinsic: each cap meets a parabolic corner
+    // band along a straight chord edge that leaves the band by 1.06, so the
+    // caps leave slivers open and rays escape through them. Validation
+    // reports those 8 edge uses (`CheckId::EdgeOnSurface`).
     ("openzcad_e_nurbs_fillet_plate.step#0", 150, 6),
     ("oring_nested_holes.step#0", 0, 0),
     ("scale_platform_v1_linear_spline_edge.step#0", 0, 0),

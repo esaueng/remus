@@ -10,6 +10,7 @@ pub(crate) mod vertex;
 pub(crate) mod wire;
 
 pub use checks::{CheckId, EntityRef, Severity, ValidationIssue, ValidationReport};
+pub use edge::{EDGE_OFF_SURFACE_ERROR_FACTOR, check_edge_on_surface};
 pub use face::check_face_inner_wire_orientation;
 pub use wire::check_wire_self_intersection;
 
@@ -418,6 +419,27 @@ fn validate_shell_checks(
                                 options.tolerance_scale * 1e-4,
                             )?);
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // Edge on surface: each edge use's 3D curve against its face's surface.
+    if !options.disabled_checks.contains(&CheckId::EdgeOnSurface) {
+        let mut on_checked = HashSet::new();
+        for &fid in shell.faces() {
+            let face = topo.face(fid)?;
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oe in topo.wire(wid)?.edges() {
+                    if on_checked.insert((oe.edge(), fid)) {
+                        issues.extend(edge::check_edge_on_surface(
+                            topo,
+                            oe.edge(),
+                            fid,
+                            options.tolerance_scale * 1e-4,
+                        )?);
                     }
                 }
             }
