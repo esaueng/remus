@@ -5,7 +5,6 @@
 //! invalid results.
 
 pub mod assembly;
-mod classify;
 mod local_cut;
 mod store_local;
 mod types;
@@ -7752,7 +7751,7 @@ pub fn collect_face_signatures(
             Vec3::new(0.0, 0.0, 1.0)
         };
 
-        let centroid = classify::polygon_centroid(&verts);
+        let centroid = assembly::polygon_centroid(&verts);
         result.push((fid.index(), normal, centroid));
     }
 
