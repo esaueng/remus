@@ -572,7 +572,6 @@ fn internal_teeth_on_the_middle_of_a_bore() {
 #[test]
 fn any_phase_reference_builds_the_same_teeth() {
     let params = GearParams::standard(GearKind::External, 1.0, 22, 6.0);
-    let mut volumes = Vec::new();
     for degrees in [0.0_f64, 37.0, 90.0, 200.0] {
         let (sin, cos) = degrees.to_radians().sin_cos();
         let mut topo = Topology::new();
@@ -591,7 +590,6 @@ fn any_phase_reference_builds_the_same_teeth() {
             ((got - expected) / expected).abs() < 1e-9,
             "reference {degrees}°: {got} vs {expected}"
         );
-        volumes.push(got);
     }
     let whole = GearParams::standard(GearKind::External, 1.0, 20, 6.0);
     for degrees in [37.0_f64, 271.0] {
