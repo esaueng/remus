@@ -269,14 +269,8 @@ receipts to the workflow pin. Activate these files together at the actual
 landed main commit after the staging PR passes all required checks.
 `fleet-ci-v8.yml` is v7 plus these pins, but CI activated v9 (#1323, #1328)
 from v7 without them, so v8 can no longer be activated: switching to it would
-drop v9's shared builds. `fleet-ci-v10.yml` stages the CI half instead: it
-is v9's landed bytes (`4e355573`) plus the installer v2.87.29 pin at all nine
-install sites (v9 runs no SARIF upload). `scripts/test_fleet_ci_v10_stage.py`,
-loaded by the required owner-PR routing entrypoint, rejects any other delta
-and any edit to active v9 that v10 does not carry. After this stage lands,
-activate it by pinning `ci.yml` and the manifest to its landed main commit,
-appending `fleet-ci-v10.yml@<that sha>` to `ci-trusted-main`, and retiring
-v8 and v9. The other four
+drop v9's shared builds. Adopting the CI half needs a new stage, v9 plus the
+same two pin updates, staged and landed before its activation. The other four
 staged files still differ from their active callees only by these pins.
 
 `.github/fleet-workflows.json` names the active file for each workflow family.
@@ -544,3 +538,17 @@ verdicts. Only the redundant unprivileged identity workflow and the PR request
 round-trip are retired; PRs retain direct `pull_request_target` audits. Synthetic
 privacy regressions move into V9's required Repository Policy job. Scanner code,
 fingerprints, credentials, policy pin and App bindings remain unchanged.
+
+## Staged CI installer update
+
+`fleet-ci-v10.yml` stages the CI installer update on v9's landed bytes
+(`4e355573`), changing only the installer v2.87.29 pin at all nine install
+sites. V9 runs no SARIF upload. `scripts/test_fleet_ci_v10_stage.py`, loaded
+by the required owner-PR routing entrypoint, rejects any other delta and any
+edit to active v9 that v10 does not carry. This stage does not change the
+active CI caller or activate runners.
+
+After this stage lands, activate v10 in a separate PR by pinning `ci.yml`
+and the manifest to its landed main commit, appending
+`fleet-ci-v10.yml@<that sha>` to `ci-trusted-main`, and retiring v8 and v9.
+The auxiliary workflow activation is independent of this CI stage.
