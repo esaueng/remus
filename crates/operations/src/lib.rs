@@ -104,8 +104,8 @@ pub mod sketch;
 pub(crate) mod triangle_intersection;
 pub(crate) mod winding;
 
-#[cfg(test)]
-pub(crate) mod test_helpers;
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils;
 
 /// Compute `n · p` treating a `Point3` as a direction vector.
 ///

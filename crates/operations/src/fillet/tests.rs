@@ -18,7 +18,7 @@ use remus_topology::solid::SolidId;
 use remus_topology::test_utils::make_unit_cube_manifold;
 use remus_topology::validation::validate_shell_manifold;
 
-use crate::test_helpers::assert_euler_genus0;
+use crate::test_utils::assert_euler_genus0;
 
 use super::*;
 

@@ -107,6 +107,32 @@
 //! Worm flanks are certified fits of the involute helicoid, and its
 //! `details.geometry` carries the lead angle in degrees.
 //!
+//! `makeEnvelopingWormDetailed` spec (a double-enveloping Hindley worm,
+//! whose hourglass wraps the wheel of `wheelTeeth` teeth; values at the
+//! throat, coefficients in modules):
+//!
+//! ```json
+//! {
+//!   "module": 2,                  // the wheel's transverse module
+//!   "starts": 1, "wheelTeeth": 30, "diameterFactor": 10, "length": 24,
+//!   "pressureAngle": 20,          // the wheel's straight flanks, degrees
+//!   "addendum": 1, "dedendum": 1.25,
+//!   "backlash": 0,                // thread thinning on the wheel's pitch circle
+//!   "hand": "right" | "left",
+//!   "tolerance": 2e-5, "boreDiameter": 8,
+//!   "origin": [0, 0, 0], "axis": [0, 0, 1], "xDirection": [1, 0, 0],
+//!   "phase": 0
+//! }
+//! ```
+//!
+//! Its thread is the surface the wheel's straight flank lines sweep, so its
+//! lands and root floors are exact torus patches (`tooth[k].tip[p]`,
+//! `root[k][p]`, numbered from the start cap) and its flanks certified ruled
+//! patches (`tooth[k].flank.plus[p]`, `details.flankDeviationBound`).
+//! `details.geometry` carries the center distance and throat and end
+//! diameters, the lead and wrap angles in degrees, and `details.wheelCenter`
+//! and `details.wheelAxis` place the wheel it envelops.
+//!
 //! Unknown keys refuse, so a misspelled option never silently falls back to
 //! its default. Angles are degrees at this boundary and radians natively,
 //! as for `revolve`.
@@ -134,11 +160,12 @@ use wasm_bindgen::prelude::*;
 
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::gear::{
-    BevelGearGeometry, BevelGearOutcome, BevelGearParams, CylinderGearOptions, GearError, GearFit,
+    BevelGearGeometry, BevelGearOutcome, BevelGearParams, CylinderGearOptions,
+    EnvelopingWormGeometry, EnvelopingWormOutcome, EnvelopingWormParams, GearError, GearFit,
     GearGeometry, GearKind, GearOutcome, GearParams, GearPlacement, GearRefusal, GearWarning, Hand,
     ThroatedWheelOptions, WormGeometry, WormOutcome, WormParams, bevel_gear_geometry,
-    cut_gear_teeth, make_bevel_gear, make_gear, make_throated_worm_wheel, make_worm, worm_geometry,
-    worm_wheel,
+    cut_gear_teeth, enveloping_worm_geometry, make_bevel_gear, make_enveloping_worm, make_gear,
+    make_throated_worm_wheel, make_worm, worm_geometry, worm_wheel,
 };
 
 use crate::error::StructuredWasmError;
@@ -357,6 +384,58 @@ struct WormSpec {
     x_direction: Option<[f64; 3]>,
     #[serde(default)]
     phase: f64,
+}
+
+/// The JSON enveloping worm specification (see the module docs).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct EnvelopingWormSpec {
+    module: f64,
+    starts: u32,
+    wheel_teeth: u32,
+    diameter_factor: f64,
+    length: f64,
+    #[serde(default = "default_pressure_angle")]
+    pressure_angle: f64,
+    #[serde(default = "default_addendum")]
+    addendum: f64,
+    #[serde(default = "default_dedendum")]
+    dedendum: f64,
+    #[serde(default)]
+    backlash: f64,
+    #[serde(default)]
+    hand: HandSpec,
+    tolerance: Option<f64>,
+    bore_diameter: Option<f64>,
+    #[serde(default)]
+    origin: Option<[f64; 3]>,
+    #[serde(default)]
+    axis: Option<[f64; 3]>,
+    #[serde(default)]
+    x_direction: Option<[f64; 3]>,
+    #[serde(default)]
+    phase: f64,
+}
+
+impl EnvelopingWormSpec {
+    fn split(self) -> (EnvelopingWormParams, GearPlacement) {
+        let params = EnvelopingWormParams {
+            module: self.module,
+            starts: self.starts,
+            wheel_teeth: self.wheel_teeth,
+            diameter_factor: self.diameter_factor,
+            pressure_angle: self.pressure_angle.to_radians(),
+            length: self.length,
+            addendum: self.addendum,
+            dedendum: self.dedendum,
+            backlash: self.backlash,
+            hand: self.hand.into(),
+            tolerance: self.tolerance,
+            bore_diameter: self.bore_diameter,
+        };
+        let placement = placement_of(self.origin, self.axis, self.x_direction, self.phase);
+        (params, placement)
+    }
 }
 
 /// A placement from optional JSON fields (degrees for the phase).
@@ -713,6 +792,59 @@ fn worm_geometry_json(geometry: &WormGeometry) -> Value {
     })
 }
 
+fn enveloping_details(outcome: &EnvelopingWormOutcome) -> Map<String, Value> {
+    let mut details = Map::new();
+    details.insert("quality".into(), Value::from("approximate"));
+    details.insert("approximated".into(), Value::from("Hindley thread flanks"));
+    details.insert(
+        "flankDeviationBound".into(),
+        Value::from(outcome.flank_deviation_bound),
+    );
+    details.insert(
+        "spansAlongFlank".into(),
+        Value::from(outcome.spans_along_flank),
+    );
+    details.insert(
+        "geometry".into(),
+        enveloping_geometry_json(&outcome.geometry),
+    );
+    details.insert("warnings".into(), warnings_json(&outcome.geometry.warnings));
+    let c = outcome.wheel_center;
+    let w = outcome.wheel_axis;
+    details.insert("wheelCenter".into(), json!([c.x(), c.y(), c.z()]));
+    details.insert("wheelAxis".into(), json!([w.x(), w.y(), w.z()]));
+    details.insert(
+        "faceRoles".into(),
+        Value::Array(
+            outcome
+                .face_roles
+                .iter()
+                .map(|(face, role)| json!({ "face": face_id_to_u32(*face), "role": role.name() }))
+                .collect(),
+        ),
+    );
+    details
+}
+
+fn enveloping_geometry_json(geometry: &EnvelopingWormGeometry) -> Value {
+    json!({
+        "centerDistance": geometry.center_distance,
+        "ratio": geometry.ratio,
+        "leadAngle": geometry.lead_angle.to_degrees(),
+        "throatPitchDiameter": geometry.throat_pitch_diameter,
+        "throatTipDiameter": geometry.throat_tip_diameter,
+        "throatRootDiameter": geometry.throat_root_diameter,
+        "endTipDiameter": geometry.end_tip_diameter,
+        "endRootDiameter": geometry.end_root_diameter,
+        "wheelPitchDiameter": geometry.wheel_pitch_diameter,
+        "baseDiameter": geometry.base_diameter,
+        "wrapAngle": geometry.wrap_angle.to_degrees(),
+        "threadThickness": geometry.thread_thickness,
+        "tipThickness": geometry.tip_thickness,
+        "rootWidth": geometry.root_width,
+    })
+}
+
 fn warnings_json(warnings: &[GearWarning]) -> Value {
     Value::Array(
         warnings
@@ -814,6 +946,26 @@ impl RemusKernel {
             Ok(value) => self.make_worm_detailed_impl(&value),
             Err(error) => SolidOperationDetailedResult::error(
                 StructuredWasmError::invalid_json(&error).with_direct_operation("makeWorm"),
+            ),
+        };
+        Ok(result.into_ts()?)
+    }
+
+    /// Build a double-enveloping (Hindley) worm from a JSON specification,
+    /// as typed data (see the module docs for the fields).
+    ///
+    /// Never throws on a refusal: the envelope's `status` is `"error"` with
+    /// a `gear:<reason>` code and the session unchanged.
+    #[wasm_bindgen(js_name = "makeEnvelopingWormDetailed")]
+    pub fn make_enveloping_worm_detailed(
+        &mut self,
+        spec: &str,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        let result = match serde_json::from_str::<Value>(spec) {
+            Ok(value) => self.make_enveloping_worm_detailed_impl(&value),
+            Err(error) => SolidOperationDetailedResult::error(
+                StructuredWasmError::invalid_json(&error)
+                    .with_direct_operation("makeEnvelopingWorm"),
             ),
         };
         Ok(result.into_ts()?)
@@ -959,6 +1111,43 @@ impl RemusKernel {
             Err(error) => {
                 SolidOperationDetailedResult::error(error.with_direct_operation("makeWorm"))
             }
+        }
+    }
+
+    pub(crate) fn make_enveloping_worm_detailed_impl(
+        &mut self,
+        spec: &Value,
+    ) -> SolidOperationDetailedResult {
+        let result = (|| -> Result<(u32, Map<String, Value>), StructuredWasmError> {
+            let spec = EnvelopingWormSpec::deserialize(spec).map_err(|error| {
+                StructuredWasmError::invalid_argument(
+                    format!("invalid enveloping worm spec: {error}"),
+                    None,
+                )
+            })?;
+            let (params, placement) = spec.split();
+            let outcome =
+                make_enveloping_worm(self.topo_mut(), &params, &placement).map_err(|error| {
+                    // Attach the worm's dimensions whenever the parameters
+                    // admit them.
+                    let dimensions = enveloping_worm_geometry(&params).ok();
+                    let mut structured = gear_failure(error);
+                    if let Some(geometry) = dimensions {
+                        structured = structured
+                            .with_detail("geometry", enveloping_geometry_json(&geometry))
+                            .with_detail("warnings", warnings_json(&geometry.warnings));
+                    }
+                    structured
+                })?;
+            Ok((solid_id_to_u32(outcome.solid), enveloping_details(&outcome)))
+        })();
+        match result {
+            Ok((solid, details)) => {
+                SolidOperationDetailedResult::success_with_details(solid, details)
+            }
+            Err(error) => SolidOperationDetailedResult::error(
+                error.with_direct_operation("makeEnvelopingWorm"),
+            ),
         }
     }
 
