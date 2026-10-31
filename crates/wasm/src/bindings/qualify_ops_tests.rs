@@ -108,7 +108,8 @@ fn kernel_volume(kernel: &RemusKernel, solid: u32) -> f64 {
     remus_operations::measure::solid_volume(kernel.topo(), solid, 0.001).expect("volume")
 }
 
-/// The wall of `solid` whose outward normal is closest to `target`.
+/// The planar wall of `solid` whose outward normal is closest to `target`.
+/// `getFaceNormal` refuses curved faces, so those are skipped.
 fn wall_by_normal(k: &mut RemusKernel, solid: u32, target: [f64; 3]) -> u32 {
     let faces = run_all_ok(
         k,
@@ -117,8 +118,11 @@ fn wall_by_normal(k: &mut RemusKernel, solid: u32, target: [f64; 3]) -> u32 {
     let handles: Vec<u32> = faces[0].as_array().unwrap().iter().map(as_u32).collect();
     let mut best = (f64::MIN, 0u32);
     for h in handles {
-        let n = run_all_ok(k, &[op("getFaceNormal", serde_json::json!({"face": h}))]);
-        let n = n[0].as_array().unwrap();
+        let row = run(k, &[op("getFaceNormal", serde_json::json!({"face": h}))]);
+        let Some(n) = row[0].get("ok") else {
+            continue;
+        };
+        let n = n.as_array().unwrap();
         let dot = n[0].as_f64().unwrap() * target[0]
             + n[1].as_f64().unwrap() * target[1]
             + n[2].as_f64().unwrap() * target[2];

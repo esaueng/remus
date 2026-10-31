@@ -128,7 +128,8 @@ fix is esaueng/remus#1371, a breaking JS-visible change for reversed planar
 faces only; faces that are not reversed, every primitive face included, keep
 their normal, so `qualify_ops_tests.rs` (`wall_by_normal`, updated in that PR)
 and `project_curve.rs` (`box_top_face`, a primitive face) still pick the same
-faces. D1b (curved faces) stays open.
+faces. D1b is fixed the same way: the batch arm now calls the direct body,
+so a face that is not planar refuses on both surfaces.
 
 D6 is decided (owner, 2026-10-30): the batch heal family's result shapes are
 not a contract. Stage 11 may align them with the direct methods without a

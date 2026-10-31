@@ -1,13 +1,15 @@
 //! Batch `getFaceNormal` contract: a planar face reports its outward normal,
 //! oriented by the face's `reversed` flag, the same vector the direct
-//! `getFaceNormal` returns (RFC 0010 drift D1).
+//! `getFaceNormal` returns (RFC 0010 drift D1), and every other face is
+//! refused as the direct method refuses it (D1b).
 //!
 //! Boolean assembly emits reversed faces whose stored plane normal points
-//! into the material; the batch arm used to report that stored normal.
+//! into the material; the batch arm used to report that stored normal. It
+//! also used to answer a curved face with its surface normal at `(0, 0)`.
 //!
 //! Every query goes through `execute_batch`: `JsError` cannot be constructed
 //! on non-wasm targets. The direct method is called only on planar faces,
-//! where it succeeds.
+//! where it succeeds; its refusal is checked through the shared body.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -216,4 +218,60 @@ fn batch_and_direct_face_normal_agree_on_planar_faces_of_booleans() {
         reversed_planar > 0,
         "the fixtures must exercise reversed planar faces"
     );
+}
+
+/// Curved faces of every analytic primitive refuse in both batch contracts
+/// with the direct method's message; their planar caps still answer.
+#[test]
+fn batch_face_normal_refuses_curved_faces_like_the_direct_method() {
+    const MESSAGE: &str = "invalid input: getFaceNormal only works on planar faces";
+    let primitives = [
+        (
+            "makeCylinder",
+            serde_json::json!({"radius": 1.0, "height": 2.0}),
+        ),
+        (
+            "makeCone",
+            serde_json::json!({"bottomRadius": 1.0, "topRadius": 0.5, "height": 2.0}),
+        ),
+        ("makeSphere", serde_json::json!({"radius": 1.0})),
+        (
+            "makeTorus",
+            serde_json::json!({"majorRadius": 3.0, "minorRadius": 1.0}),
+        ),
+    ];
+    for (primitive, args) in primitives {
+        let mut k = RemusKernel::new();
+        let solid = as_u32(&run_ok(&mut k, primitive, args));
+        let mut curved = 0;
+        for face in solid_faces(&mut k, solid) {
+            let direct = k.face_normal_impl(face);
+            if is_planar(&k, face) {
+                let direct = direct.unwrap_or_else(|e| panic!("{primitive}: {e}"));
+                assert!(
+                    approx_eq3(batch_normal(&mut k, face), direct),
+                    "{primitive}"
+                );
+                continue;
+            }
+            curved += 1;
+            assert_eq!(
+                direct
+                    .expect_err("direct refuses a curved face")
+                    .to_string(),
+                MESSAGE
+            );
+            let request =
+                serde_json::json!([{"op": "getFaceNormal", "args": {"face": face}}]).to_string();
+            let legacy: serde_json::Value =
+                serde_json::from_str(&k.execute_batch(&request)).unwrap();
+            assert_eq!(legacy[0]["error"], MESSAGE, "{primitive}: {legacy}");
+            assert!(legacy[0].get("ok").is_none(), "{primitive}: {legacy}");
+            let v2: serde_json::Value =
+                serde_json::from_str(&k.execute_batch_v2(&request)).unwrap();
+            assert_eq!(v2[0]["error"]["message"], MESSAGE, "{primitive}: {v2}");
+            assert!(v2[0].get("ok").is_none(), "{primitive}: {v2}");
+        }
+        assert!(curved > 0, "{primitive}: no curved face");
+    }
 }

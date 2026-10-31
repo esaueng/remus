@@ -467,17 +467,7 @@ impl RemusKernel {
     /// Returns an error if the face is invalid or NURBS.
     #[wasm_bindgen(js_name = "getFaceNormal")]
     pub fn get_face_normal(&self, face: u32) -> Result<Vec<f64>, JsError> {
-        let face_id = self.resolve_face(face)?;
-        let face_data = self.topo.face(face_id)?;
-        face_data.effective_plane_normal().map_or_else(
-            || {
-                Err(WasmError::InvalidInput {
-                    reason: "getFaceNormal only works on planar faces".into(),
-                }
-                .into())
-            },
-            |normal| Ok(vec![normal.x(), normal.y(), normal.z()]),
-        )
+        Ok(self.face_normal_impl(face)?.to_vec())
     }
 
     /// Exact content digests of faces, one 32-character hex string per face
@@ -1950,6 +1940,24 @@ impl RemusKernel {
 // so the real work lives here behind a `WasmError` and stays reachable from
 // native tests and from `executeBatch` dispatch.
 impl RemusKernel {
+    /// Implementation behind `getFaceNormal`, shared by the direct method
+    /// and the batch arm.
+    ///
+    /// # Errors
+    ///
+    /// See [`get_face_normal`](Self::get_face_normal).
+    pub fn face_normal_impl(&self, face: u32) -> Result<[f64; 3], WasmError> {
+        let face_id = self.resolve_face(face)?;
+        let normal = self
+            .topo
+            .face(face_id)?
+            .effective_plane_normal()
+            .ok_or_else(|| WasmError::InvalidInput {
+                reason: "getFaceNormal only works on planar faces".into(),
+            })?;
+        Ok([normal.x(), normal.y(), normal.z()])
+    }
+
     /// Implementation behind `faceContentDigests`.
     ///
     /// # Errors

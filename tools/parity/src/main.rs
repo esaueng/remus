@@ -1391,10 +1391,10 @@ fn dispatch(
                 args.get("face").ok_or_else(|| ops_err("missing 'face'"))?,
             )?;
             let face_data = model.topology().face(face)?;
-            // Mirrors the batch arm: outward (orientation-aware) for planes.
+            // Mirrors the batch arm: outward for planes, refused otherwise.
             let normal = face_data
                 .effective_plane_normal()
-                .unwrap_or_else(|| face_data.surface().normal(0.0, 0.0));
+                .ok_or_else(|| ops_err("getFaceNormal only works on planar faces"))?;
             Ok(serde_json::json!([normal.x(), normal.y(), normal.z()]))
         }
         _ => Err(ops_err(&format!("unsupported batch op '{op}'"))),
