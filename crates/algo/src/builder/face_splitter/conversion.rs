@@ -292,10 +292,15 @@ pub(super) fn boundary_edges_to_pcurve_with_images(
             let end_uv = project_point_on_surface(end_3d, surface, wire_pts, frame)?;
             // Each end projects into [0, 2π) on its own, so an arc crossing
             // the surface's u-seam would read as its complement. The pcurve
-            // follows the arc itself: keep its u sweep from the start.
+            // follows the arc itself: keep its u sweep from the start. An end
+            // ON the seam is left to `resolve_seam_endpoint_uv`, which picks
+            // its image from wire continuity.
             let periodic = super::super::pcurve_compute::surface_periods(surface).0;
+            let on_seam = |u: f64, period: f64| u.abs() < 1e-9 || (u - period).abs() < 1e-9;
             let end_uv = if let Some(period) = periodic
                 && !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line)
+                && !on_seam(start_uv.x(), period)
+                && !on_seam(end_uv.x(), period)
             {
                 let sweep = pcurve.evaluate(1.0).x() - pcurve.evaluate(0.0).x();
                 let turns = ((start_uv.x() + sweep - end_uv.x()) / period).round();
