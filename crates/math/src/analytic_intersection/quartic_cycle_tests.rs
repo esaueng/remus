@@ -1,5 +1,6 @@
 //! The Durand–Kerner cycle jump in `real_roots_quartic` must reproduce the
-//! previous solver bit for bit: `intersect_line_torus` is compared against a
+//! previous solver bit for bit: the line–torus quartic roots (before the
+//! Newton polish, which the jump does not touch) are compared against a
 //! verbatim copy of the pre-jump algorithm (which always runs the sweep
 //! budget out) on rays that hit, graze and miss tori of several proportions
 //! and scales.
@@ -159,7 +160,18 @@ fn reference_real_roots_quartic(
     out
 }
 
-/// `intersect_line_torus` before the cycle jump, verbatim.
+/// The line–torus quartic roots, as `line_torus_quartic_roots` returns them
+/// (solver order, no polish).
+fn quartic_roots(torus: &ToroidalSurface, origin: Point3, dir: Vec3) -> Vec<f64> {
+    line_torus_quartic_roots(torus, origin, dir)
+        .1
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect()
+}
+
+/// The quartic roots of `intersect_line_torus` before the cycle jump, verbatim
+/// up to the solve (the polish and sort that followed are not part of it).
 fn reference_intersect_line_torus(
     torus: &ToroidalSurface,
     origin: Point3,
@@ -189,23 +201,7 @@ fn reference_intersect_line_torus(
     let e2 = g1.mul_add(g1, 2.0 * g2 * g0) - h2;
     let e1 = 2.0f64.mul_add(g1 * g0, -h1);
     let e0 = g0.mul_add(g0, -h0);
-    let mut roots = reference_real_roots_quartic(e4, e3, e2, e1, e0, stats);
-    let impl_f = |t: f64| -> f64 {
-        let p = origin + dir * t;
-        let q = Vec3::new(p.x() - c.x(), p.y() - c.y(), p.z() - c.z());
-        let (a, b, cc) = (xa.dot(q), ya.dot(q), za.dot(q));
-        (a.hypot(b) - big_r).hypot(cc) - small_r
-    };
-    for t in &mut roots {
-        let eps = 1e-7;
-        let f = impl_f(*t);
-        let df = (impl_f(*t + eps) - impl_f(*t - eps)) / (2.0 * eps);
-        if df.abs() > 1e-12 {
-            *t -= f / df;
-        }
-    }
-    roots.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    roots
+    reference_real_roots_quartic(e4, e3, e2, e1, e0, stats)
 }
 
 fn bits(ts: &[f64]) -> Vec<u64> {
@@ -292,7 +288,7 @@ fn cycle_jump_matches_the_full_budget_solver_bit_for_bit() {
                             let p = torus.evaluate(u, v);
                             // Start on the tangent line, one tube width away.
                             let start = p - tangent * (2.0 * minor);
-                            let out = intersect_line_torus(&torus, start, tangent);
+                            let out = quartic_roots(&torus, start, tangent);
                             let reference =
                                 reference_intersect_line_torus(&torus, start, tangent, &mut stats);
                             assert_eq!(bits(&out), bits(&reference), "tangent ray {i}");
@@ -305,7 +301,7 @@ fn cycle_jump_matches_the_full_budget_solver_bit_for_bit() {
                 // Any direction, at a non-unit length.
                 _ => unit(halton(i, 13), halton(i, 17)) * (0.25 + 4.0 * halton(i, 19)),
             };
-            let out = intersect_line_torus(&torus, origin, dir);
+            let out = quartic_roots(&torus, origin, dir);
             let reference = reference_intersect_line_torus(&torus, origin, dir, &mut stats);
             assert_eq!(
                 bits(&out),

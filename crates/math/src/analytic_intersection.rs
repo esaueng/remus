@@ -1704,9 +1704,10 @@ fn newton_refine_torus(
 /// A line meets a torus in up to four points (degree-4). Substituting the line
 /// into the torus implicit `(a² + b² + c² + R² − r²)² = 4R²(a² + b²)` — where
 /// `(a, b, c)` are the line point's coordinates in the torus frame — gives a
-/// quartic in `t`, solved here for its real roots (each refined by one Newton
-/// step against the implicit). `dir` need not be unit length; `t` is in units of
-/// `dir`. Returns the roots sorted ascending (0–4 of them).
+/// quartic in `t`, solved here for its real roots, each refined by one Newton
+/// step on the torus's signed distance that is kept only when it reduces the
+/// distance. `dir` need not be unit length; `t` is in units of `dir`. Returns
+/// the roots sorted ascending (0–4 of them).
 ///
 /// Used by the boolean section trimmer to find where a plane×torus oval exits a
 /// box face's straight boundary edge — the exact crossing shared by the two
@@ -1730,6 +1731,69 @@ pub(crate) fn intersect_line_torus_counted(
     origin: Point3,
     dir: Vec3,
 ) -> Vec<(f64, usize)> {
+    let (frame, mut roots) = line_torus_quartic_roots(torus, origin, dir);
+    for (t, _) in &mut roots {
+        *t = polish_line_torus_root(&frame, *t);
+    }
+    roots.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    roots
+}
+
+/// A line in a torus's frame: `(a, b, c)(t) = p0 + p1 t` relative to the
+/// centre, with the torus's radii.
+struct LineInTorusFrame {
+    p0: [f64; 3],
+    p1: [f64; 3],
+    big_r: f64,
+    small_r: f64,
+}
+
+impl LineInTorusFrame {
+    /// The torus's signed distance at `t` (negative inside the tube) and its
+    /// exact derivative in `t`, or `None` on the axis or the tube's core
+    /// circle, where the distance is not differentiable.
+    fn distance_and_slope(&self, t: f64) -> Option<(f64, f64)> {
+        let [a, b, c] = std::array::from_fn(|k| self.p1[k].fma(t, self.p0[k]));
+        let rho = a.hypot(b);
+        let w = rho - self.big_r;
+        let core = w.hypot(c);
+        if rho == 0.0 || core == 0.0 {
+            return None;
+        }
+        let d_rho = a.fma(self.p1[0], b * self.p1[1]) / rho;
+        let slope = w.fma(d_rho, c * self.p1[2]) / core;
+        Some((core - self.small_r, slope))
+    }
+}
+
+/// One Newton step on the torus's signed distance from a quartic root, kept
+/// only when it lowers the distance's magnitude.
+///
+/// Near a tangency the slope vanishes, so an unguarded step can throw an
+/// accurate root a long way off (a fixed finite-difference step made that
+/// worse at small scale). The distance is exact along the line and needs no
+/// step size.
+fn polish_line_torus_root(frame: &LineInTorusFrame, t: f64) -> f64 {
+    let Some((f, slope)) = frame.distance_and_slope(t) else {
+        return t;
+    };
+    if f == 0.0 || slope == 0.0 {
+        return t;
+    }
+    let next = t - f / slope;
+    match frame.distance_and_slope(next) {
+        Some((f_next, _)) if next.is_finite() && f_next.abs() < f.abs() => next,
+        _ => t,
+    }
+}
+
+/// The real roots of the line–torus quartic with their multiplicities, before
+/// the Newton polish, together with the line in the torus frame.
+fn line_torus_quartic_roots(
+    torus: &ToroidalSurface,
+    origin: Point3,
+    dir: Vec3,
+) -> (LineInTorusFrame, Vec<(f64, usize)>) {
     let c = torus.center();
     let (xa, ya, za) = (torus.x_axis(), torus.y_axis(), torus.z_axis());
     let big_r = torus.major_radius();
@@ -1762,24 +1826,13 @@ pub(crate) fn intersect_line_torus_counted(
     let e1 = 2.0f64.fma(g1 * g0, -h1);
     let e0 = g0.fma(g0, -h0);
 
-    let mut roots = real_roots_quartic(e4, e3, e2, e1, e0);
-    // One Newton polish against the torus implicit for full precision.
-    let impl_f = |t: f64| -> f64 {
-        let p = origin + dir * t;
-        let q = Vec3::new(p.x() - c.x(), p.y() - c.y(), p.z() - c.z());
-        let (a, b, cc) = (xa.dot(q), ya.dot(q), za.dot(q));
-        (a.hypot(b) - big_r).hypot(cc) - small_r
+    let frame = LineInTorusFrame {
+        p0: [a0, b0, c0],
+        p1: [a1, b1, c1],
+        big_r,
+        small_r,
     };
-    for (t, _) in &mut roots {
-        let eps = 1e-7;
-        let f = impl_f(*t);
-        let df = (impl_f(*t + eps) - impl_f(*t - eps)) / (2.0 * eps);
-        if df.abs() > 1e-12 {
-            *t -= f / df;
-        }
-    }
-    roots.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    roots
+    (frame, real_roots_quartic(e4, e3, e2, e1, e0))
 }
 
 /// Durand–Kerner sweep budget of [`real_roots_quartic`].
@@ -6367,6 +6420,116 @@ mod tests {
                         (torus.evaluate(u, v) - pts[i]).length() < 5e-5,
                         "fit leaves the torus at {:?}",
                         pts[i]
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod line_torus_polish_tests {
+    //! The Newton polish of `intersect_line_torus` must never move a root
+    //! off the surface: a near-tangent root used to be thrown up to a few
+    //! hundredths of the tube radius by a fixed finite-difference step.
+    #![allow(clippy::unwrap_used)]
+
+    use super::intersect_line_torus;
+    use crate::surfaces::ToroidalSurface;
+    use crate::vec::{Point3, Vec3};
+
+    fn tangent_dir(n: Vec3, theta: f64) -> Vec3 {
+        let helper = if n.x().abs() < 0.9 {
+            Vec3::new(1.0, 0.0, 0.0)
+        } else {
+            Vec3::new(0.0, 1.0, 0.0)
+        };
+        let e1 = n.cross(helper).normalize().unwrap();
+        let e2 = n.cross(e1);
+        e1 * theta.cos() + e2 * theta.sin()
+    }
+
+    /// Signed distance to the torus, computed independently of the solver.
+    fn distance(tor: &ToroidalSurface, p: Point3) -> f64 {
+        let q = p - tor.center();
+        let z = q.dot(tor.z_axis());
+        let rho = (q - tor.z_axis() * z).length();
+        (rho - tor.major_radius()).hypot(z) - tor.minor_radius()
+    }
+
+    /// Tangent lines on the convex outer part, which the line touches without
+    /// crossing anywhere near: every root within half a tube radius of the
+    /// tangent parameter must sit on it, up to the double root's
+    /// `sqrt(rounding)` spread. Translations stay within a 1e6
+    /// coordinate-to-tube ratio; past that, rounding the line itself makes it
+    /// cross.
+    #[test]
+    fn near_tangent_roots_stay_on_the_tangent_point() {
+        let mut checked = 0;
+        for &s in &[1e-3, 0.37, 1.0, 13.0, 1e3] {
+            for &offset in &[0.0, 1e3, 1e6] {
+                if offset > 1e6 * s {
+                    continue;
+                }
+                let c = Point3::new(offset, -0.5 * offset, offset / 3.0);
+                let tor = ToroidalSurface::new(c, 3.0 * s, s).unwrap();
+                for iu in 0..24 {
+                    for iv in 0..24 {
+                        let u = 0.1 + f64::from(iu) * 0.26;
+                        let v = f64::from(iv) * std::f64::consts::TAU / 24.0;
+                        if v.cos() <= 0.05 {
+                            continue;
+                        }
+                        for it in 0..4 {
+                            let d = tangent_dir(tor.normal(u, v), 0.2 + f64::from(it) * 0.8);
+                            let origin = tor.evaluate(u, v) - d * (2.0 * s);
+                            for t in intersect_line_torus(&tor, origin, d) {
+                                let off = (t - 2.0 * s).abs();
+                                assert!(
+                                    off <= 1e-4 * s || off >= 0.5 * s,
+                                    "s {s:e} offset {offset:e} u {u} v {v}: root {t} is {off:e} \
+                                     from the tangent point"
+                                );
+                            }
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 5000, "only {checked} tangent lines");
+    }
+
+    /// Well-conditioned crossings land on the surface to rounding at every
+    /// scale: the polish keeps full precision where it is useful.
+    #[test]
+    fn transversal_roots_lie_on_the_surface() {
+        for &s in &[1e-3, 0.37, 1.0, 13.0, 1e3] {
+            for &offset in &[0.0, 1e3, 1e6] {
+                if offset > 1e6 * s {
+                    continue;
+                }
+                let c = Point3::new(offset, -0.5 * offset, offset / 3.0);
+                let tor = ToroidalSurface::new(c, 3.0 * s, s).unwrap();
+                let scale = offset + 4.0 * s;
+                for k in 0..64 {
+                    let (u, v) = (0.37 * f64::from(k), 1.13 * f64::from(k));
+                    let target = tor.evaluate(u, v);
+                    let n = tor.normal(u, v);
+                    // A ray into the surface at 45 degrees to the normal.
+                    let d = (tangent_dir(n, f64::from(k)) - n).normalize().unwrap();
+                    let origin = target - d * (2.0 * s);
+                    let roots = intersect_line_torus(&tor, origin, d);
+                    let t = roots
+                        .iter()
+                        .copied()
+                        .min_by(|a, b| (a - 2.0 * s).abs().total_cmp(&(b - 2.0 * s).abs()))
+                        .unwrap();
+                    assert!((t - 2.0 * s).abs() <= 1e-9 * s.max(scale * 1e-6));
+                    let residual = distance(&tor, origin + d * t).abs();
+                    assert!(
+                        residual <= 64.0 * f64::EPSILON * scale,
+                        "s {s:e} offset {offset:e} k {k}: residual {residual:e}"
                     );
                 }
             }
