@@ -71,8 +71,8 @@ pub enum GearFit {
 pub struct CylinderGearOptions {
     /// Sizing mode.
     pub fit: GearFit,
-    /// Reference direction for `phase`; `None` uses the cylinder's own
-    /// x axis.
+    /// Reference direction for `phase`; `None` uses the direction of the
+    /// face's seam (the cylinder's own x axis when the face has none).
     pub x_direction: Option<Vec3>,
     /// Rotation of the first tooth from `x_direction`, radians.
     pub phase: f64,
@@ -138,10 +138,11 @@ pub fn cut_gear_teeth(
         ));
     }
     // Teeth span the whole face. A partial span leaves collars of the
-    // cylinder beside the teeth: the exact boolean refuses the turned-down
-    // case, and the flush-tip result it does build cannot be verified (its
-    // volume integration exceeds the trim budget), so partial spans are
-    // refused rather than shipped unverified.
+    // cylinder beside the teeth, and the coplanar contact between the gear
+    // ring's tooth-outline caps and the collars' annular caps is one the
+    // exact boolean resolves only for some tooth counts with flush tips, and
+    // not at all with turned-down or internal teeth, so partial spans are
+    // refused.
     let width = params.face_width;
     let length = v1 - v0;
     let start = v0;
@@ -228,9 +229,8 @@ pub fn cut_gear_teeth(
             ));
         }
         build_params.bore_diameter = Some(2.0 * seam);
-        // The tube's outer wall is the boss itself: a wall past it with
-        // caps inside the face's span (a turned groove) is a split the
-        // exact boolean refuses, while a coincident wall merges.
+        // The tube's outer wall is the boss itself, so no wall stands
+        // outside the body.
         (seam, radius)
     } else {
         if c.tip_radius < radius - fit_tol {
@@ -257,13 +257,16 @@ pub fn cut_gear_teeth(
         .warnings
         .retain(|warning| !matches!(warning, GearWarning::ThinRim { .. }));
 
-    let seam =
-        seam_direction(topo, face, cylinder.origin(), axis)?.unwrap_or_else(|| cylinder.x_axis());
+    let reference = match options.x_direction {
+        Some(direction) => direction,
+        None => seam_direction(topo, face, cylinder.origin(), axis)?
+            .unwrap_or_else(|| cylinder.x_axis()),
+    };
     let frame = Frame::new(
         &GearPlacement {
             origin: cylinder.origin() + axis * start,
             axis,
-            x_direction: options.x_direction.unwrap_or(seam),
+            x_direction: reference,
             phase: options.phase,
         },
         kind,
@@ -272,7 +275,7 @@ pub fn cut_gear_teeth(
     remus_topology::transaction::run_transacted(topo, |topo| {
         // The rebuilt band must be solid material in the input.
         let expected = PI * (band.1 * band.1 - band.0 * band.0) * width;
-        let check = tube(topo, &frame, seam, band.0, band.1, width)?;
+        let check = tube(topo, &frame, reference, band.0, band.1, width)?;
         let held = match boolean(topo, BooleanOp::Intersect, solid, check) {
             Ok(common) => crate::measure::solid_volume(topo, common, 1e-3 * radius)?,
             Err(OperationsError::EmptyResult { .. }) => 0.0,
@@ -297,7 +300,7 @@ pub fn cut_gear_teeth(
             ));
         }
 
-        let cut = tube(topo, &frame, seam, band.0, band.1, width)?;
+        let cut = tube(topo, &frame, reference, band.0, band.1, width)?;
         let kept = boolean(topo, BooleanOp::Cut, solid, cut)?;
         let local = local_outline(&build_params, &geometry, options.phase)?;
         let (profile_bound, spans_per_flank) = flank_bound(&local.outline, &geometry);
@@ -305,7 +308,7 @@ pub fn cut_gear_teeth(
             topo,
             local,
             &frame,
-            seam,
+            reference,
             width,
             twist(&build_params, &geometry).into(),
         )?;
@@ -350,9 +353,10 @@ pub fn cut_gear_teeth(
 }
 
 /// Radial direction of the picked face's seam: the start of its first
-/// closed circle or axis-parallel line edge. Coincident coaxial cylinders
-/// merge in the exact boolean only when their seams line up, so every
-/// circle this operation adds on the face's axis starts there.
+/// closed circle or axis-parallel line edge. It is only the default
+/// reference for `phase`; the circles this operation adds start wherever
+/// the reference points, since coincident coaxial walls merge whatever
+/// their seams.
 fn seam_direction(
     topo: &Topology,
     face: FaceId,
@@ -388,17 +392,18 @@ fn seam_direction(
 fn tube(
     topo: &mut Topology,
     frame: &Frame,
-    seam: Vec3,
+    reference: Vec3,
     inner: f64,
     outer: f64,
     width: f64,
 ) -> Result<SolidId, GearError> {
     let tol = remus_math::tolerance::Tolerance::new().linear;
-    let rim = make_circle_edge_with_ref(topo, frame.origin, frame.axis, outer, seam, tol)?;
+    let rim = make_circle_edge_with_ref(topo, frame.origin, frame.axis, outer, reference, tol)?;
     let outer_wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(rim, true)], true)?);
     let mut holes = Vec::new();
     if inner > 0.0 {
-        let hole = make_circle_edge_with_ref(topo, frame.origin, -frame.axis, inner, seam, tol)?;
+        let hole =
+            make_circle_edge_with_ref(topo, frame.origin, -frame.axis, inner, reference, tol)?;
         holes.push(topo.add_wire(Wire::new(vec![OrientedEdge::new(hole, true)], true)?));
     }
     let d = frame.axis.dot(Vec3::new(

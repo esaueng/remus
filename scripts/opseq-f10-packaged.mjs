@@ -152,14 +152,10 @@ function checkFixture(RemusKernel, api, scale, placed, swapped, segments = 16, h
     }
     assert.ok(coverage.every(n => n > 0), `${label}: all membership cells`);
     const expectedVolume = Math.PI * (height + 2 / 3), expectedArea = Math.PI * (2 * height + 3);
-    if (segments === 32) {
-      assert.throws(() => kernel.massProperties(solid), error => !(error instanceof WebAssembly.RuntimeError)
-        && error.message === 'check: integration did not converge: face trim exceeds the 4096-point integration budget',
-      `${label}: unchanged quadrature budget refusal`);
-    } else {
-      const gauss = JSON.parse(kernel.massProperties(solid)).volume / scale ** 3;
-      assert.ok(Math.abs(gauss - expectedVolume) < 1e-9 * expectedVolume, `${label}: Gauss ${gauss}`);
-    }
+    // The 32-segment fixture's fragmented cylinder rims integrate over their
+    // exact band rectangle instead of the 4096-point trim budget.
+    const gauss = JSON.parse(kernel.massProperties(solid)).volume / scale ** 3;
+    assert.ok(Math.abs(gauss - expectedVolume) < 1e-9 * expectedVolume, `${label}: Gauss ${gauss}`);
     for (const d of [0.0001, 0.00005]) {
       const volume = kernel.volume(solid, d * scale) / scale ** 3, area = kernel.surfaceArea(solid, d * scale) / scale ** 2;
       assert.ok(Math.abs(volume - expectedVolume) < 1e-4 * expectedVolume, `${label}: volume ${volume}`);

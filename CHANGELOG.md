@@ -209,6 +209,10 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **check:** a full-turn cylinder band whose rims arrive in many arcs (a
+  collar beside flush gear teeth, its rim split at every tip) integrates over
+  its exact `(u, v)` rectangle instead of refusing past the 4096-point trim
+  budget, so `solid_volume` and `mass_properties` measure such bodies exactly.
 * **algo,operations:** `resize_cylindrical_face` no longer refuses small radius
   changes. The resize sleeve leaves a thin annulus on each cap, and two
   boolean-builder tests read it against the chords of its circles: same-domain
