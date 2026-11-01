@@ -61,6 +61,26 @@ impl ExtrudedWire {
     pub(crate) fn top_edge_ids(&self) -> &[EdgeId] {
         &self.top_edge_ids
     }
+
+    /// The bottom (profile) edge at each post-split position.
+    pub(crate) fn edge_ids(&self) -> &[EdgeId] {
+        &self.edge_ids
+    }
+
+    /// The bottom vertex each post-split position's oriented edge starts at.
+    pub(crate) fn verts(&self) -> &[VertexId] {
+        &self.verts
+    }
+
+    /// The top vertex above each entry of [`Self::verts`].
+    pub(crate) fn top_verts(&self) -> &[VertexId] {
+        &self.top_verts
+    }
+
+    /// The vertical edge from each entry of [`Self::verts`] to its top vertex.
+    pub(crate) fn vertical_edge_ids(&self) -> &[EdgeId] {
+        &self.vertical_edge_ids
+    }
 }
 
 /// Split closed single-edge wires (e.g. a full circle represented as one

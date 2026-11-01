@@ -26,7 +26,9 @@
 //! [`ThreadRefusal::FeaturesInThreadRegion`] rather than being filled in.
 //!
 //! An end of the thread that stops short of the face's end meets a collar of
-//! the original cylinder; an end at the face's end runs out on its end plane.
+//! the original cylinder; an end at the face's end runs out on its end plane,
+//! plainly or through a [`ThreadEnd::Chamfer`] cone built into the ring
+//! (`chamfer`).
 //!
 //! The ring is a stack of segments of at most half a turn, glued at shared
 //! planes like the halves of a herringbone gear: a swept face that winds
@@ -34,11 +36,10 @@
 //! the wrong turn), which drops faces from the fuse. Under half a turn also
 //! keeps crest and root lands exact cylinders.
 //!
-//! Not covered: chamfered or tapered thread ends. The exact boolean cannot
-//! yet cut a cone through the swept flanks (it returns an open shell), so a
-//! chamfer needs the flank–cone curves (conical spirals, closed form) built
-//! into the ring directly.
+//! Not covered: tapered (pipe) threads, rounded crests and roots, and a
+//! chamfer at an end that stops short of the face's end.
 
+mod chamfer;
 pub(crate) mod profile;
 
 use std::f64::consts::{PI, TAU};
@@ -174,6 +175,21 @@ impl ThreadForm {
     }
 }
 
+/// How an end of the thread is finished.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ThreadEnd {
+    /// The thread runs at full depth up to the end plane.
+    Plain,
+    /// A cone through the thread from just inside the root on the end plane,
+    /// opening `angle` from the axis into the thread: the first turn tapers
+    /// to nothing instead of ending in a full-depth wedge, which prints
+    /// cleanly and starts a mating part. The end must be the end of the face.
+    Chamfer {
+        /// Cone angle from the axis, radians, in `(0, π/2)`; 45° is usual.
+        angle: f64,
+    },
+}
+
 /// Placement and sizing of a thread on a cylinder.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CylinderThreadOptions {
@@ -196,6 +212,10 @@ pub struct CylinderThreadOptions {
     /// Bound on the swept surfaces' distance from the exact thread; `None`
     /// uses [`DEFAULT_TOLERANCE_PER_PITCH`] of the pitch.
     pub tolerance: Option<f64>,
+    /// Finish of the thread's start (the end nearer the face's start).
+    pub start: ThreadEnd,
+    /// Finish of the thread's other end.
+    pub end: ThreadEnd,
 }
 
 impl Default for CylinderThreadOptions {
@@ -207,6 +227,8 @@ impl Default for CylinderThreadOptions {
             x_direction: None,
             phase: 0.0,
             tolerance: None,
+            start: ThreadEnd::Plain,
+            end: ThreadEnd::Plain,
         }
     }
 }
@@ -428,6 +450,16 @@ pub fn cut_thread(
     if let Some(tolerance) = options.tolerance {
         positive(tolerance, "tolerance")?;
     }
+    for (end, name) in [(options.start, "start"), (options.end, "end")] {
+        if let ThreadEnd::Chamfer { angle } = end {
+            require(angle.is_finite() && angle > 0.0 && angle < 0.5 * PI, || {
+                format!(
+                    "the {name} chamfer angle must be in (0°, 90°), got {}°",
+                    angle.to_degrees()
+                )
+            })?;
+        }
+    }
     if !solid_faces(topo, solid)?.contains(&face) {
         return Err(ThreadError::invalid(
             "the face does not belong to the solid",
@@ -470,6 +502,13 @@ pub fn cut_thread(
                 "the thread spans {offset}..{} along the face, which is {face_length} long",
                 offset + length
             ),
+        ));
+    }
+    let chamfer_short_of_end = (matches!(options.start, ThreadEnd::Chamfer { .. }) && offset > 0.0)
+        || (matches!(options.end, ThreadEnd::Chamfer { .. }) && offset + length < face_length);
+    if chamfer_short_of_end {
+        return Err(ThreadError::invalid(
+            "a chamfered end must run to that end of the face",
         ));
     }
     let start = v0 + offset;
@@ -608,11 +647,13 @@ pub fn cut_thread(
 
         let cut = tube(topo, &frame, band.0, band.1, length)?;
         let kept = boolean(topo, BooleanOp::Cut, solid, cut)?;
-        let outline = profile::outline(form, crest, root, options.phase, 0.5 * tolerance)?;
         let ring = thread_ring(
             topo,
             &frame,
-            &outline.segments,
+            form,
+            crest,
+            root,
+            options.phase,
             kind,
             if kind == ThreadKind::External {
                 band.0
@@ -620,11 +661,13 @@ pub fn cut_thread(
                 band.1
             },
             length,
-            form,
             0.5 * tolerance,
+            (options.start, options.end),
         )?;
         let twist = ring.spans;
         let ring_bound = ring.deviation_bound;
+        let outline_bound = ring.outline_bound;
+        let spans_per_flank = ring.spans_per_flank;
         let ring = ring.solid;
         // Glue the ring on where the faces it meets are recognized; the fuse
         // is the general fallback.
@@ -636,83 +679,79 @@ pub fn cut_thread(
         Ok(ThreadOutcome {
             solid: result,
             geometry: geometry.clone(),
-            deviation_bound: (64.0 * f64::EPSILON)
-                .mul_add(scale, outline.remainder_bound + ring_bound),
+            deviation_bound: (64.0 * f64::EPSILON).mul_add(scale, outline_bound + ring_bound),
             spans_along_axis: twist,
-            spans_per_flank: outline.spans_per_flank,
+            spans_per_flank,
             glued,
         })
     })
 }
 
 /// The swept thread ring: the outline twisted along the axis, with its
-/// seam cylinder as a bore (external) or rim (internal).
-#[allow(clippy::too_many_arguments)]
+/// seam cylinder as a bore (external) or rim (internal), and a cone chamfer
+/// built into either end that asks for one (see `chamfer`).
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn thread_ring(
     topo: &mut Topology,
     frame: &Frame,
-    segments: &[Segment],
+    form: &ThreadForm,
+    crest: f64,
+    root: f64,
+    phase: f64,
     kind: ThreadKind,
     seam: f64,
     length: f64,
-    form: &ThreadForm,
     tolerance: f64,
+    ends: (ThreadEnd, ThreadEnd),
 ) -> Result<Ring, ThreadError> {
-    let vertex_tol = Tolerance::new().linear;
-    let thread = build_wire(
-        topo,
-        segments,
-        frame,
-        vertex_tol,
-        kind == ThreadKind::Internal,
-    )?;
-    let circle = make_circle_edge_with_ref(
-        topo,
-        frame.origin,
-        if kind == ThreadKind::External {
-            -frame.axis
-        } else {
-            frame.axis
-        },
-        seam,
-        frame.x,
-        vertex_tol,
-    )?;
-    let circle = topo.add_wire(Wire::new(vec![OrientedEdge::new(circle, true)], true)?);
-    let (outer, inner) = match kind {
-        ThreadKind::External => (thread, circle),
-        ThreadKind::Internal => (circle, thread),
-    };
-    let profile = topo.add_face(Face::new(outer, vec![inner], frame.plane()));
     let sign = match form.hand {
         ThreadHand::Right => 1.0,
         ThreadHand::Left => -1.0,
     };
     let rate = sign * TAU / form.lead();
-    // Stack segments of at most `MAX_SEGMENT_TURN` turns, each the twisted
-    // extrusion of the previous one's top cap. Every segment shares its
-    // bottom boundary with the one below, so dropping the coincident caps
-    // leaves one closed shell with no boolean.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let segments = (length / (MAX_SEGMENT_TURN * form.lead())).ceil().max(1.0) as usize;
-    if segments > MAX_SEGMENTS {
-        return Err(ThreadError::invalid(format!(
-            "a thread {length} long turns {} times; at most {} turns are supported",
-            length / form.lead(),
-            MAX_SEGMENTS as f64 * MAX_SEGMENT_TURN
-        )));
-    }
-    #[allow(clippy::cast_precision_loss)]
-    let height = length / segments as f64;
-    let mut faces = Vec::new();
-    let mut seam_faces = Vec::with_capacity(segments);
-    let mut deviation_bound: f64 = 0.0;
-    let mut spans = 0;
-    let mut current = profile;
-    for index in 0..segments {
-        let twisted = crate::extrude::twist::twisted_extrude_impl(
+    let mut outline_bound: f64 = 0.0;
+    let mut spans_per_flank = 0;
+    // The thread's transverse section at height `z`: the outline at `z = 0`
+    // turned by the twist up to `z`.
+    let mut profile_at = |topo: &mut Topology, z: f64| -> Result<FaceId, ThreadError> {
+        let outline = profile::outline(form, crest, root, rate.mul_add(z, phase), tolerance)?;
+        outline_bound = outline_bound.max(outline.remainder_bound);
+        spans_per_flank = spans_per_flank.max(outline.spans_per_flank);
+        let at = Frame {
+            origin: frame.origin + frame.axis * z,
+            ..*frame
+        };
+        let vertex_tol = Tolerance::new().linear;
+        let thread = build_wire(
             topo,
-            current,
+            &outline.segments,
+            &at,
+            vertex_tol,
+            kind == ThreadKind::Internal,
+        )?;
+        let circle = make_circle_edge_with_ref(
+            topo,
+            at.origin,
+            if kind == ThreadKind::External {
+                -at.axis
+            } else {
+                at.axis
+            },
+            seam,
+            at.x,
+            vertex_tol,
+        )?;
+        let circle = topo.add_wire(Wire::new(vec![OrientedEdge::new(circle, true)], true)?);
+        let (outer, inner) = match kind {
+            ThreadKind::External => (thread, circle),
+            ThreadKind::Internal => (circle, thread),
+        };
+        Ok(topo.add_face(Face::new(outer, vec![inner], at.plane())))
+    };
+    let extrude = |topo: &mut Topology, face: FaceId, height: f64| {
+        crate::extrude::twist::twisted_extrude_impl(
+            topo,
+            face,
             frame.origin,
             frame.axis,
             height,
@@ -730,19 +769,112 @@ fn thread_ring(
                     ),
                 )
             }
-            other => other.into(),
-        })?;
-        let construction = &twisted.construction;
-        let seam_face = match kind {
-            ThreadKind::External => construction.holes.first().and_then(|h| h.sides.first()),
-            ThreadKind::Internal => construction.outer_sides.first(),
+            other => ThreadError::from(other),
+        })
+    };
+    let seam_face_of = |c: &crate::extrude::ExtrudeConstruction| {
+        match kind {
+            ThreadKind::External => c.holes.first().and_then(|h| h.sides.first()),
+            ThreadKind::Internal => c.outer_sides.first(),
         }
         .copied()
-        .ok_or_else(|| ThreadError::invalid("thread ring segment has no seam wall"))?;
+        .ok_or_else(|| ThreadError::invalid("thread ring segment has no seam wall"))
+    };
+    // A chamfer's cone crosses the end plane halfway between the root and
+    // the seam cylinder, so it touches neither.
+    let gap = (seam - root).abs();
+    let at_end = if kind == ThreadKind::External {
+        root - 0.5 * gap
+    } else {
+        root + 0.5 * gap
+    };
+    let cone_for = |angle: f64, at_start: bool| chamfer::Cone {
+        kind,
+        crest,
+        root,
+        at_end,
+        slope: angle.tan(),
+        end_z: if at_start { 0.0 } else { length },
+        inward: if at_start { 1.0 } else { -1.0 },
+    };
+    let start_cone = match ends.0 {
+        ThreadEnd::Chamfer { angle } => Some(cone_for(angle, true)),
+        ThreadEnd::Plain => None,
+    };
+    let end_cone = match ends.1 {
+        ThreadEnd::Chamfer { angle } => Some(cone_for(angle, false)),
+        ThreadEnd::Plain => None,
+    };
+    let lower = start_cone.map_or(0.0, |cone| cone.full_z());
+    let upper = end_cone.map_or(length, |cone| cone.full_z());
+    if upper < lower - 1e-12 * length {
+        return Err(ThreadError::invalid(format!(
+            "the chamfers reach {} and {} into a thread {length} long; shorten them or \
+             lengthen the thread",
+            lower,
+            length - upper
+        )));
+    }
+    let middle = (upper - lower).max(0.0);
+
+    let mut faces = Vec::new();
+    let mut seam_faces = Vec::new();
+    let mut deviation_bound: f64 = 0.0;
+    let mut spans = 0;
+    let mut trim_bound: f64 = 0.0;
+    // The face the next segment extrudes from, and whether it is a cap of
+    // the ring (true only for the bare start).
+    let (mut current, mut current_is_cap) = if let Some(cone) = start_cone {
+        let root_z = cone.root_z();
+        let profile = profile_at(topo, root_z)?;
+        let zone_ring = extrude(topo, profile, cone.full_z() - root_z)?;
+        let zone = chamfer::chamfer_zone(
+            topo,
+            frame,
+            &zone_ring,
+            &cone,
+            chamfer::RootSide::Bottom,
+            seam,
+            rate,
+            tolerance,
+        )?;
+        faces.extend(zone.faces);
+        seam_faces.extend(zone.walls);
+        deviation_bound = deviation_bound.max(zone_ring.deviation_bound);
+        trim_bound = trim_bound.max(zone.trim_bound);
+        spans += zone_ring.spans;
+        (zone_ring.construction.top, false)
+    } else {
+        (profile_at(topo, 0.0)?, true)
+    };
+
+    // Stack segments of at most `MAX_SEGMENT_TURN` turns, each the twisted
+    // extrusion of the previous one's top cap. Every segment shares its
+    // bottom boundary with the one below, so dropping the coincident caps
+    // leaves one closed shell with no boolean.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let segments = (middle / (MAX_SEGMENT_TURN * form.lead())).ceil() as usize;
+    if segments > MAX_SEGMENTS {
+        return Err(ThreadError::invalid(format!(
+            "a thread {length} long turns {} times; at most {} turns are supported",
+            length / form.lead(),
+            MAX_SEGMENTS as f64 * MAX_SEGMENT_TURN
+        )));
+    }
+    if segments == 0 && start_cone.is_none() && end_cone.is_none() {
+        return Err(ThreadError::invalid("the thread has no length"));
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let height = middle / segments.max(1) as f64;
+    for index in 0..segments {
+        let twisted = extrude(topo, current, height)?;
+        let construction = &twisted.construction;
+        let seam_face = seam_face_of(construction)?;
         seam_faces.push(seam_face);
+        let last = index + 1 == segments && end_cone.is_none();
         for face in solid_faces(topo, twisted.solid)? {
-            let dropped = (index > 0 && face == construction.bottom)
-                || (index + 1 < segments && face == construction.top)
+            let dropped = (face == construction.bottom && !current_is_cap)
+                || (face == construction.top && !last)
                 || face == seam_face;
             if !dropped {
                 faces.push(face);
@@ -751,23 +883,49 @@ fn thread_ring(
         deviation_bound = deviation_bound.max(twisted.deviation_bound);
         spans += twisted.spans;
         current = construction.top;
+        current_is_cap = false;
+    }
+    if let Some(cone) = end_cone {
+        let zone_ring = extrude(topo, current, cone.root_z() - upper)?;
+        let zone = chamfer::chamfer_zone(
+            topo,
+            frame,
+            &zone_ring,
+            &cone,
+            chamfer::RootSide::Top,
+            seam,
+            rate,
+            tolerance,
+        )?;
+        faces.extend(zone.faces);
+        seam_faces.extend(zone.walls);
+        deviation_bound = deviation_bound.max(zone_ring.deviation_bound);
+        trim_bound = trim_bound.max(zone.trim_bound);
+        spans += zone_ring.spans;
     }
     faces.push(merge_seam_walls(topo, &seam_faces)?);
     let shell = topo.add_shell(remus_topology::shell::Shell::new(faces)?);
     let solid = topo.add_solid(remus_topology::solid::Solid::new(shell, vec![]));
     Ok(Ring {
         solid,
-        deviation_bound,
+        deviation_bound: deviation_bound.max(trim_bound),
+        outline_bound,
         spans,
+        spans_per_flank,
     })
 }
 
 /// A built thread ring and its fit report.
 struct Ring {
     solid: SolidId,
+    /// Proven bound of the screw fits and chamfer trims.
     deviation_bound: f64,
+    /// Proven bound of the outline's flank fits.
+    outline_bound: f64,
     /// Hermite spans along the axis, over all segments.
     spans: usize,
+    /// Most Hermite spans across the profile in one flank.
+    spans_per_flank: usize,
 }
 
 /// Put the ring on the kept body without a boolean, or `None` when the
@@ -1696,6 +1854,7 @@ fn seam_direction(
 
 /// Orthonormal placement frame: local `(x, y, 0)` maps to
 /// `origin + x·X + y·Y`, with `Y = axis × X`.
+#[derive(Debug, Clone, Copy)]
 struct Frame {
     origin: Point3,
     axis: Vec3,

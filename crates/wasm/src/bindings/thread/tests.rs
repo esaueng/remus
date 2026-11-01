@@ -52,14 +52,15 @@ fn cut_batch(kernel: &mut RemusKernel, solid: u32, face: u32, spec: &Value) -> V
     results[0].clone()
 }
 
-/// ISO M6×1 on a 6 mm boss.
+/// ISO M6×1 on a 6 mm boss, chamfered at the free end.
 fn m6() -> Value {
     json!({
         "pitch": 1.0,
         "depth": 0.541_265_877_365_273_1,
         "crestWidth": 0.125,
         "upperFlankAngle": 30.0,
-        "lowerFlankAngle": 30.0
+        "lowerFlankAngle": 30.0,
+        "end": { "kind": "chamfer", "angle": 45.0 }
     })
 }
 
