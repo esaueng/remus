@@ -15,7 +15,7 @@ from fleet_workflows import workflow_text
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github/workflows"
-STAGED = (WORKFLOWS / "fleet-ci-v9.yml").read_text()
+STAGED = workflow_text("fleet-ci-v9.yml")
 PREVIOUS = workflow_text("fleet-ci-v7.yml")
 
 
@@ -226,7 +226,7 @@ class SpeedContractTests(unittest.TestCase):
             STAGED, re.M,
         )
         self.assertEqual(len(ci_expressions), 2)
-        benchmark = (WORKFLOWS / "fleet-benchmark-v4.yml").read_text()
+        benchmark = workflow_text("fleet-benchmark-v4.yml")
         bench_expression = re.search(r"runs-on: &fleet-runner (\$\{\{.+\}\})", benchmark)[1]
         for switch, expressions in (
             ("CI_FLEET_CI_V9_ENABLED", ci_expressions),
@@ -284,7 +284,7 @@ class SpeedContractTests(unittest.TestCase):
                 self.assertNotIn("secrets.", block)
 
     def test_benchmark_baseline_updates_only_on_nightly_or_main_dispatch(self):
-        benchmark = (WORKFLOWS / "fleet-benchmark-v4.yml").read_text()
+        benchmark = workflow_text("fleet-benchmark-v4.yml")
         push = re.search(r"auto-push: (.+)", benchmark)[1]
         self.assertIn("github.ref == 'refs/heads/main'", push)
         self.assertIn("github.event_name == 'schedule'", push)

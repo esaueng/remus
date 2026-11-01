@@ -16,6 +16,14 @@ PREFIX = "esaueng/remus/.github/workflows/"
 # Superseded callees removed from the tree, with the main commit that landed
 # their final bytes. Historical stage proofs read them from there.
 RETIRED = {
+    "fleet-benchmark-v4.yml": "ff8415b3005256df5a65af5c92b8c26caa4c878f",
+    "fleet-ci-v9.yml": "ff8415b3005256df5a65af5c92b8c26caa4c878f",
+    "fleet-fuzz-v4.yml": "ff8415b3005256df5a65af5c92b8c26caa4c878f",
+    "fleet-gauntlet-v4.yml": "ff8415b3005256df5a65af5c92b8c26caa4c878f",
+    "fleet-mutants-sharded-v5.yml": "ff8415b3005256df5a65af5c92b8c26caa4c878f",
+    "fleet-mutation-scope-v4.yml": "ff8415b3005256df5a65af5c92b8c26caa4c878f",
+    "fleet-osv-v6.yml": "ff8415b3005256df5a65af5c92b8c26caa4c878f",
+    "fleet-wasm-candidate-v5.yml": "ff8415b3005256df5a65af5c92b8c26caa4c878f",
     "fleet-benchmark-v3.yml": "4e5bd846fae03e87e3d4ca1169e35b18952d4fb9",
     "fleet-ci-v7.yml": "3d648c419a95680ff5d6c9f46cb749b6a8fe0e5a",
     "fleet-mutants-sharded-v4.yml": "4e5bd846fae03e87e3d4ca1169e35b18952d4fb9",

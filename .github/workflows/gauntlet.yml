@@ -29,7 +29,7 @@ concurrency:
 # a caller's `env` does not reach a reusable workflow.
 jobs:
   checks:
-    uses: esaueng/remus/.github/workflows/fleet-gauntlet-v4.yml@4e5bd846fae03e87e3d4ca1169e35b18952d4fb9
+    uses: esaueng/remus/.github/workflows/fleet-gauntlet-v5.yml@ff8415b3005256df5a65af5c92b8c26caa4c878f
     permissions:
       contents: write
       pull-requests: read
