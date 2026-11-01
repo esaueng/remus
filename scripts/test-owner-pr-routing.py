@@ -14,6 +14,7 @@ from fleet_workflows import workflow_path
 import test_fleet_workflows
 import test_ci_speed
 import test_fleet_ci_v10_stage
+import test_dependabot_actions_stage
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -91,6 +92,8 @@ class OwnerRoutingTests(unittest.TestCase):
         expected = {
             case.id() for case in loader.loadTestsFromTestCase(test_fleet_workflows.FleetWorkflowTests)
         }
+        expected.update(case.id() for case in loader.loadTestsFromTestCase(
+            test_dependabot_actions_stage.DependabotActionsStageTests))
 
         def case_ids(suite):
             for case in suite:
@@ -111,6 +114,7 @@ def load_tests(loader, tests, pattern):
     tests.addTests(loader.loadTestsFromModule(test_fleet_workflows, pattern=pattern))
     tests.addTests(loader.loadTestsFromModule(test_ci_speed, pattern=pattern))
     tests.addTests(loader.loadTestsFromModule(test_fleet_ci_v10_stage, pattern=pattern))
+    tests.addTests(loader.loadTestsFromModule(test_dependabot_actions_stage, pattern=pattern))
     return tests
 
 

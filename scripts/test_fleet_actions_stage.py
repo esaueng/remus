@@ -120,7 +120,8 @@ class FleetActionsStageTests(unittest.TestCase):
                                      "Preserve intervening workflow edits before activation")
 
     def test_windows_arm_receipts_match_the_executed_installer(self):
-        expected = "taiki-e/install-action@" + UPDATES["taiki-e/install-action"][1].split()[0]
+        from test_dependabot_actions_stage import INSTALLER_PIN
+        expected = "taiki-e/install-action@" + INSTALLER_PIN
         for workflow in ("windows-arm-tooling.yml", "parity.yml"):
             with self.subTest(workflow=workflow):
                 text = (ROOT / ".github/workflows" / workflow).read_text()
