@@ -211,6 +211,23 @@ THREE_SLOT_AUXILIARIES = {
 }
 
 
+def main_workflow_text(filename):
+    """Read a callee as origin/main holds it, or a retired one from its landed commit.
+
+    An activation PR retires the replaced file, so after it lands main no
+    longer carries it. Until then main must hold exactly the retired bytes.
+    """
+    path = f".github/workflows/{filename}"
+    on_main = subprocess.run(["git", "cat-file", "-e", f"origin/main:{path}"], cwd=ROOT, capture_output=True)
+    if filename not in RETIRED:
+        return subprocess.check_output(["git", "show", f"origin/main:{path}"], cwd=ROOT, text=True)
+    retired = workflow_text(filename)
+    if not on_main.returncode and subprocess.check_output(
+            ["git", "show", f"origin/main:{path}"], cwd=ROOT, text=True) != retired:
+        raise AssertionError(f"Main differs from the retired bytes of {filename}")
+    return retired
+
+
 class FleetWorkflowTests(unittest.TestCase):
     def test_reviewed_update_versions_include_multi_digit_callees(self):
         for version in (2, 9, 10, 11):
@@ -369,9 +386,7 @@ class FleetWorkflowTests(unittest.TestCase):
                 if family in DEPENDABOT_STAGES:
                     allowed.add(DEPENDABOT_STAGES[family][1])
                 self.assertIn(main_file, allowed)
-                main_active = subprocess.check_output(
-                    ["git", "show", f"origin/main:.github/workflows/{main_file}"], cwd=ROOT, text=True,
-                )
+                main_active = main_workflow_text(main_file)
                 if family == 'ci' and main_file == 'fleet-ci-v9.yml':
                     # The historical v2 proof still runs below; additionally bind
                     # active v9 to its separately reviewed, landed definition.
@@ -383,11 +398,20 @@ class FleetWorkflowTests(unittest.TestCase):
                                                carries_reviewed_updates(main_file))
 
     def test_historical_stage_proof_accepts_v9_after_main_activation(self):
-        # Model the post-activation main manifest even while a staging PR still
-        # sees v7 on origin/main. The staged v9 file already exists on main.
+        # Model the manifest that selected v9. #1457 retired v9 for v11, so its
+        # bytes come from the RETIRED commit and must still match CI_V9_LANDED.
         activated = {**main_workflow_manifest(), 'ci': 'fleet-ci-v9.yml'}
         with mock.patch(__name__ + '.main_workflow_manifest', return_value=activated):
             self.test_staged_v2_only_changes_reviewed_action_dependencies()
+
+    def test_main_reads_retired_callees_from_their_landed_bytes(self):
+        self.assertEqual(main_workflow_text('fleet-ci-v9.yml').encode(), subprocess.check_output(
+            ['git', 'show', f'{CI_V9_LANDED}:.github/workflows/fleet-ci-v9.yml'], cwd=ROOT))
+        # A file main still carries while it is being retired must match exactly.
+        with mock.patch.dict(RETIRED, {'fleet-ci-v11.yml': RETIRED['fleet-ci-v9.yml']}), \
+                mock.patch(__name__ + '.workflow_text', return_value='drifted\n'):
+            with self.assertRaisesRegex(AssertionError, 'retired bytes'):
+                main_workflow_text('fleet-ci-v11.yml')
 
     def test_staged_ci_v4_only_moves_fuzz_and_render_into_tier_one(self):
         expected = subprocess.check_output(
