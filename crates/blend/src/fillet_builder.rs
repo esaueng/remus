@@ -359,6 +359,31 @@ impl<'a> FilletBuilder<'a> {
                             }
                         }
                     }
+                    // A chain whose faces change on both sides (a box edge
+                    // running into an earlier seam band and up its mitre),
+                    // or several such chains, is one band each.
+                    if rail_chains
+                        && !external_support_side
+                        && let [RadiusLaw::Constant(radius)] = laws.as_slice()
+                    {
+                        let chains: Vec<Vec<EdgeId>> =
+                            chain_work.iter().map(|(chain, _)| chain.clone()).collect();
+                        match crate::ridge_chain::blend_all(
+                            topo,
+                            self.solid,
+                            &chains,
+                            crate::ridge_chain::RidgeBlend::Fillet(*radius),
+                            &original_faces,
+                            &inner_shells,
+                            &seeds_by_law.iter().flatten().copied().collect::<Vec<_>>(),
+                        ) {
+                            Ok(Some(result)) => return Ok(result),
+                            Ok(None) => {}
+                            Err(error) => {
+                                log::warn!("ridge-chain fillet failed: {error}");
+                            }
+                        }
+                    }
                     return Err(e);
                 }
                 Err(e) => {
@@ -681,14 +706,26 @@ fn wire_in_arc_plane(
     topo: &Topology,
     oes: &[OrientedEdge],
     arc: EdgeId,
+    cap_normal: Vec3,
 ) -> Result<bool, BlendError> {
     let arc_edge = topo.edge(arc)?;
-    let EdgeCurve::Circle(circle) = arc_edge.curve() else {
-        return Ok(false);
-    };
-    let normal = circle.normal();
     let start_point = topo.vertex(arc_edge.start())?.point();
-    let radius = circle.radius();
+    // A chamfer closes its end with a straight chord: the end plane is the
+    // spine's normal plane through it.
+    let (normal, radius) = match arc_edge.curve() {
+        EdgeCurve::Circle(circle) => (circle.normal(), circle.radius()),
+        EdgeCurve::Line => {
+            let Ok(normal) = cap_normal.normalize() else {
+                return Ok(false);
+            };
+            let end_point = topo.vertex(arc_edge.end())?.point();
+            (normal, (end_point - start_point).length())
+        }
+        EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return Ok(false),
+    };
     for oe in oes {
         let edge = topo.edge(oe.edge())?;
         for vid in [edge.start(), edge.end()] {
@@ -817,7 +854,7 @@ pub(crate) fn stitch_end(
         {
             continue;
         }
-        if !wire_in_arc_plane(topo, oes, arc)? {
+        if !wire_in_arc_plane(topo, oes, arc, cap_normal)? {
             continue;
         }
         let n = oes.len();

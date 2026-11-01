@@ -82,9 +82,9 @@ struct Support {
 
 /// The tangent seam between consecutive supports: the edge they share, as
 /// the later support uses it.
-struct SupportSeam {
-    next: FaceId,
-    edge: OrientedEdge,
+pub struct SupportSeam {
+    pub next: FaceId,
+    pub edge: OrientedEdge,
 }
 
 /// Where the rail contact meets the rail's boundary.
@@ -874,14 +874,14 @@ fn radial_distance(cylinder: &CylindricalSurface, point: Point3) -> f64 {
 
 /// The larger angle either contact direction turns through between two
 /// sections.
-fn turn(a: &CircSection, b: &CircSection) -> f64 {
+pub fn turn(a: &CircSection, b: &CircSection) -> f64 {
     let angle = |x: Vec3, y: Vec3| x.cross(y).length().atan2(x.dot(y));
     angle(a.p1 - a.center, b.p1 - b.center).max(angle(a.p2 - a.center, b.p2 - b.center))
 }
 
 /// The seam `from` and `to` share, as `to` uses it: of their common edges, the
 /// one nearest `near`.
-fn support_seam(
+pub fn support_seam(
     topo: &Topology,
     from: FaceId,
     to: FaceId,
@@ -909,7 +909,7 @@ fn support_seam(
 /// How far `point` lies past `seam` onto the later support, along that
 /// support's surface: negative while it is still on the earlier one. `None`
 /// when the frame at the seam is undefined.
-fn seam_offset(
+pub fn seam_offset(
     topo: &Topology,
     seam: &SupportSeam,
     point: Point3,
@@ -954,7 +954,7 @@ fn seam_offset(
 }
 
 /// The chain's first and last vertices.
-fn chain_ends(topo: &Topology, edges: &[EdgeId]) -> Result<(VertexId, VertexId), BlendError> {
+pub fn chain_ends(topo: &Topology, edges: &[EdgeId]) -> Result<(VertexId, VertexId), BlendError> {
     let first = topo.edge(edges[0])?;
     let second = topo.edge(edges[1])?;
     let start = if [second.start(), second.end()].contains(&first.start()) {
@@ -973,7 +973,7 @@ fn chain_ends(topo: &Topology, edges: &[EdgeId]) -> Result<(VertexId, VertexId),
 }
 
 /// The vertex two consecutive chain edges meet at.
-fn shared_vertex(topo: &Topology, a: EdgeId, b: EdgeId) -> Result<VertexId, BlendError> {
+pub fn shared_vertex(topo: &Topology, a: EdgeId, b: EdgeId) -> Result<VertexId, BlendError> {
     let a = topo.edge(a)?;
     let b = topo.edge(b)?;
     if [b.start(), b.end()].contains(&a.start()) {
@@ -1051,7 +1051,11 @@ fn closure_edge(
 
 /// Whether `face` traverses `edge` forward (wire flag, turned round on a
 /// reversed face); `None` when it does not use it.
-fn effective_use(topo: &Topology, face: FaceId, edge: EdgeId) -> Result<Option<bool>, BlendError> {
+pub fn effective_use(
+    topo: &Topology,
+    face: FaceId,
+    edge: EdgeId,
+) -> Result<Option<bool>, BlendError> {
     let face = topo.face(face)?;
     Ok(topo
         .wire(face.outer_wire())?
@@ -1062,7 +1066,7 @@ fn effective_use(topo: &Topology, face: FaceId, edge: EdgeId) -> Result<Option<b
 }
 
 /// The same loop traversed the other way.
-fn reversed_loop(edges: &[OrientedEdge]) -> Vec<OrientedEdge> {
+pub fn reversed_loop(edges: &[OrientedEdge]) -> Vec<OrientedEdge> {
     edges
         .iter()
         .rev()

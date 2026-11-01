@@ -58,6 +58,7 @@ pub struct ChamferBuilder<'a> {
     topo: &'a mut Topology,
     solid: SolidId,
     edge_sets: Vec<ChamferEdgeSet>,
+    ridge_chains: bool,
 }
 
 impl<'a> ChamferBuilder<'a> {
@@ -68,7 +69,21 @@ impl<'a> ChamferBuilder<'a> {
             topo,
             solid,
             edge_sets: Vec::new(),
+            ridge_chains: false,
         }
+    }
+
+    /// Chamfer each selected edge's whole tangent chain as one band when its
+    /// faces change across tangent seams along the way (a box edge running
+    /// into an earlier seam band and up its mitre), instead of edge by edge.
+    ///
+    /// Off by default, so every selection keeps the outcome it had; a caller
+    /// that validates the result enables it after the per-edge build refuses.
+    /// With it on, a selection that is not such a chain is refused rather
+    /// than built edge by edge again.
+    pub fn with_ridge_chains(&mut self) -> &mut Self {
+        self.ridge_chains = true;
+        self
     }
 
     /// Add edges with symmetric chamfer distance (d1 = d2 = d).
@@ -136,6 +151,7 @@ impl<'a> ChamferBuilder<'a> {
     /// [`BlendResult::failed`] rather than aborting the whole operation.
     #[allow(clippy::too_many_lines)]
     pub fn build(self) -> Result<BlendResult, BlendError> {
+        let ridge_chains = self.ridge_chains;
         let all_edges: Vec<(EdgeId, f64, f64)> = self
             .edge_sets
             .into_iter()
@@ -205,6 +221,32 @@ impl<'a> ChamferBuilder<'a> {
             )? {
                 return Ok(result);
             }
+            if ridge_chains {
+                let chains = crate::g1_chain::g1_chains(
+                    topo,
+                    self.solid,
+                    &edges,
+                    remus_math::tolerance::Tolerance::new(),
+                )?;
+                if let Some(result) = crate::ridge_chain::blend_all(
+                    topo,
+                    self.solid,
+                    &chains,
+                    crate::ridge_chain::RidgeBlend::Chamfer(first_d1),
+                    &original_faces,
+                    &inner_shells,
+                    &edges,
+                )? {
+                    return Ok(result);
+                }
+            }
+        }
+        // Ridge mode is a retry after the per-edge build refused: running that
+        // build again would only repeat its refusal.
+        if ridge_chains {
+            return Err(BlendError::InvalidInput {
+                reason: "chamfer: the selection is not a ridge chain".to_owned(),
+            });
         }
 
         let mut touched_faces: HashSet<FaceId> = HashSet::new();
