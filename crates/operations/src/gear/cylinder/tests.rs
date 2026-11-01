@@ -412,6 +412,44 @@ fn helical_teeth_on_a_boss_keep_its_diameter_and_match_the_standalone_gear() {
     assert_eq!(flanks, 40, "every flank keeps its role through the fuse");
 }
 
+/// Helical and herringbone teeth over part of a boss, collars kept either
+/// side: each twisted flank and land meets a collar cap only along its own end
+/// edge. The band changes from the r 12 disc to the gear's transverse outline.
+#[test]
+fn helical_teeth_over_part_of_a_boss_match_the_standalone_gear() {
+    let cases = [
+        (Hand::Right, false, 2.0, 6.0),
+        (Hand::Left, false, 4.0, 6.0),
+        (Hand::Right, true, 2.0, 6.0),
+    ];
+    for (hand, herringbone, offset, width) in cases {
+        let mut topo = Topology::new();
+        let blank = make_cylinder(&mut topo, 12.0, 10.0).unwrap();
+        let face = cylinder_face(&topo, blank, 12.0);
+        let params = GearParams {
+            helix_angle: 15.0_f64.to_radians(),
+            hand,
+            herringbone,
+            ..spur(22, width)
+        };
+        let options = CylinderGearOptions {
+            offset,
+            ..CylinderGearOptions::default()
+        };
+        let outcome = cut_gear_teeth(&mut topo, blank, face, &params, &options)
+            .unwrap_or_else(|error| panic!("{hand:?} herringbone {herringbone}: {error}"));
+        assert_valid_and_watertight(&topo, outcome.solid);
+        let mut standalone = params.clone();
+        standalone.module = outcome.geometry.module;
+        let expected = PI * 144.0 * 10.0 - (PI * 144.0 - outline_area(&standalone)) * width;
+        let got = volume(&topo, outcome.solid);
+        assert!(
+            ((got - expected) / expected).abs() < 1e-9,
+            "{hand:?} herringbone {herringbone} at {offset}: {got} vs {expected}"
+        );
+    }
+}
+
 #[test]
 fn herringbone_teeth_on_a_boss_keep_its_diameter_and_match_the_standalone_gear() {
     let mut topo = Topology::new();

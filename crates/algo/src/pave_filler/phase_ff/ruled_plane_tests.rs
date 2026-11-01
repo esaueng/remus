@@ -128,3 +128,70 @@ fn a_longitudinal_or_coincident_plane_is_not_a_transverse_section() {
         );
     }
 }
+
+/// A quadratic-in-u sweep that touches z = 10 only along its u = 2 row
+/// (every other row strictly below) meets that plane exactly in the row's
+/// curve. A sweep that crosses the plane, or whose touching row bows off it,
+/// is left to the general path.
+#[test]
+fn a_surface_touching_a_plane_along_one_boundary_row_meets_it_in_that_row() {
+    use super::exact_boundary_plane_section;
+    let row = |z: f64, twist: f64| -> Vec<Point3> {
+        [(0.0, 0.0), (1.0, -2.0), (2.0, 0.0)]
+            .iter()
+            .map(|&(x, y)| Point3::new(x + twist * y, y - twist * x, z))
+            .collect()
+    };
+    let sweep = |zs: [f64; 3], bow: f64| {
+        let mut rows = vec![row(zs[0], 0.0), row(zs[1], 0.1), row(zs[2], 0.2)];
+        rows[0][1] = rows[0][1] + Vec3::new(0.0, 0.0, bow);
+        NurbsSurface::new(
+            2,
+            2,
+            vec![2.0, 2.0, 2.0, 5.0, 5.0, 5.0],
+            vec![3.0, 3.0, 3.0, 7.0, 7.0, 7.0],
+            rows,
+            vec![vec![1.0, 0.75, 1.0]; 3],
+        )
+        .unwrap()
+    };
+    let up = Vec3::new(0.0, 0.0, 1.0);
+    let sections =
+        exact_boundary_plane_section(up, 10.0, &sweep([10.0, 9.0, 8.0], 0.0), Tolerance::new())
+            .unwrap()
+            .unwrap();
+    assert_eq!(sections.len(), 1);
+    let EdgeCurve::NurbsCurve(curve) = &sections[0].curve else {
+        unreachable!()
+    };
+    assert_eq!(curve.control_points(), row(10.0, 0.0).as_slice());
+    assert_eq!(curve.knots(), &[3.0, 3.0, 3.0, 7.0, 7.0, 7.0]);
+    for k in 0..=8 {
+        let t = 3.0 + 0.5 * f64::from(k);
+        assert!((curve.evaluate(t).z() - 10.0).abs() < 1e-12);
+    }
+    // The far end row touches the plane the same way.
+    assert!(
+        exact_boundary_plane_section(up, 8.0, &sweep([10.0, 9.0, 8.0], 0.0), Tolerance::new())
+            .unwrap()
+            .is_some()
+    );
+    // A plane through the middle row crosses the surface.
+    assert!(
+        exact_boundary_plane_section(up, 9.0, &sweep([10.0, 9.0, 8.0], 0.0), Tolerance::new())
+            .unwrap()
+            .is_none()
+    );
+    // A boundary row with a control point off the plane is not certified.
+    assert!(
+        exact_boundary_plane_section(up, 10.0, &sweep([10.0, 9.0, 8.0], 1e-3), Tolerance::new())
+            .unwrap()
+            .is_none()
+    );
+    // Rows on both sides of the plane through the boundary row: not certified.
+    assert!(
+        exact_boundary_plane_section(up, 10.0, &sweep([10.0, 11.0, 9.0], 0.0), Tolerance::new())
+            .unwrap()
+            .is_none()
+    );
+}

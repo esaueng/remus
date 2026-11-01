@@ -788,6 +788,8 @@ fn perform_seeded(
             };
             raw_curves =
                 restrict_exact_ruled_cap_spans(topo, fa, fb, surf_a, surf_b, raw_curves, tol)?;
+            raw_curves =
+                restrict_cylinder_end_cap_spans(topo, fa, fb, surf_a, surf_b, raw_curves, tol)?;
             // A tangent rim the pair carries exactly replaces any marched
             // trace of the same tangency: the trace is a co-endpoint duplicate
             // of the rim arc that the loop walker orders by a zero angle.
@@ -7316,6 +7318,10 @@ fn compute_raw_curves(
                 exact_ruled_plane_section(*normal, *d, nurbs, context.tolerance)?
             {
                 Ok(exact)
+            } else if let Some(exact) =
+                exact_boundary_plane_section(*normal, *d, nurbs, context.tolerance)?
+            {
+                Ok(exact)
             } else {
                 plane_nurbs_intersection(*normal, *d, nurbs)
             }
@@ -7965,8 +7971,12 @@ fn restrict_exact_ruled_cap_spans(
         } else {
             return Ok(raw_curves);
         };
-    let Some(exact) = exact_ruled_plane_section(normal, d, surface, tol)? else {
-        return Ok(raw_curves);
+    let exact = match exact_ruled_plane_section(normal, d, surface, tol)? {
+        Some(exact) => exact,
+        None => match exact_boundary_plane_section(normal, d, surface, tol)? {
+            Some(exact) => exact,
+            None => return Ok(raw_curves),
+        },
     };
     let Some(section) = exact.first() else {
         return Ok(raw_curves);
@@ -8011,6 +8021,111 @@ fn restrict_exact_ruled_cap_spans(
         } else {
             out.extend(spans);
         }
+    }
+    Ok(out)
+}
+
+/// A cylinder face ending on a plane perpendicular to its axis meets that
+/// plane only along its own boundary arcs there. The coaxial circle the pair
+/// computes, clipped to the face's angular extent, is wider wherever the face
+/// is not a straight band: a twisted gear's root land is a helical strip whose
+/// angular extent over its height overshoots its end arc. Replace the circle
+/// with the face's boundary arcs in the plane.
+fn restrict_cylinder_end_cap_spans(
+    topo: &Topology,
+    fa: FaceId,
+    fb: FaceId,
+    surf_a: &FaceSurface,
+    surf_b: &FaceSurface,
+    raw_curves: Vec<RawCurve>,
+    tol: Tolerance,
+) -> Result<Vec<RawCurve>, AlgoError> {
+    if raw_curves.is_empty() {
+        return Ok(raw_curves);
+    }
+    let (normal, d, cylinder, face) =
+        if let (FaceSurface::Plane { normal, d }, FaceSurface::Cylinder(c)) = (surf_a, surf_b) {
+            (*normal, *d, c, fb)
+        } else if let (FaceSurface::Cylinder(c), FaceSurface::Plane { normal, d }) =
+            (surf_a, surf_b)
+        {
+            (*normal, *d, c, fa)
+        } else {
+            return Ok(raw_curves);
+        };
+    if normal.cross(cylinder.axis()).length() > tol.angular.max(1e-12) {
+        return Ok(raw_curves);
+    }
+    let distance = |p: Point3| normal.dot(Vec3::new(p.x(), p.y(), p.z())) - d;
+    let edges = remus_topology::explorer::face_edges(topo, face)?;
+    // Lines on a cylinder are generators and circles on it are parallels, so
+    // a face bounded only by those is a straight band: its clipped circle is
+    // already its end arc, and the general path keeps handling it.
+    let mut curved_boundary = false;
+    for &eid in &edges {
+        curved_boundary |= !matches!(
+            topo.edge(eid)?.curve(),
+            EdgeCurve::Line | EdgeCurve::Circle(_)
+        );
+    }
+    if !curved_boundary {
+        return Ok(raw_curves);
+    }
+    // The whole face on one side of the plane: every edge sampled, so a
+    // helical boundary bowing across the plane is caught.
+    let mut side = 0.0_f64;
+    let mut in_plane = Vec::new();
+    for &eid in &edges {
+        let edge = topo.edge(eid)?;
+        let (t0, t1) = super::helpers::authoritative_edge_domain(edge, eid, "cylinder end cap")?;
+        let (s3, e3) = (
+            topo.vertex(edge.start())?.point(),
+            topo.vertex(edge.end())?.point(),
+        );
+        let mut all_on = true;
+        for k in 0..=16 {
+            let t = t0 + (t1 - t0) * f64::from(k) / 16.0;
+            let h = distance(edge.curve().evaluate_with_endpoints(t, s3, e3));
+            if h.abs() <= tol.linear {
+                continue;
+            }
+            all_on = false;
+            if h * side < 0.0 {
+                return Ok(raw_curves);
+            }
+            side = h;
+        }
+        if all_on && matches!(edge.curve(), EdgeCurve::Circle(_)) {
+            in_plane.push((eid, (t0.min(t1), t0.max(t1)), s3, e3));
+        }
+    }
+    if in_plane.is_empty() || side == 0.0 {
+        return Ok(raw_curves);
+    }
+    let coaxial_circle = |raw: &RawCurve| {
+        matches!(&raw.curve, EdgeCurve::Circle(c)
+            if (c.radius() - cylinder.radius()).abs() <= tol.linear
+                && distance(c.center()).abs() <= tol.linear)
+    };
+    if !raw_curves.iter().any(coaxial_circle) {
+        return Ok(raw_curves);
+    }
+    let mut out: Vec<RawCurve> = raw_curves
+        .into_iter()
+        .filter(|raw| !coaxial_circle(raw))
+        .collect();
+    for (eid, span, s3, e3) in in_plane {
+        let edge = topo.edge(eid)?;
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            continue;
+        };
+        out.push(RawCurve {
+            curve: edge.curve().clone(),
+            t_range: span,
+            p_start: s3,
+            p_end: e3,
+            bbox: circle_bbox(circle),
+        });
     }
     Ok(out)
 }
@@ -8092,6 +8207,106 @@ fn exact_ruled_plane_section(
         t_range: domain,
         curve: EdgeCurve::NurbsCurve(curve),
     }]))
+}
+
+/// A surface touching a plane only along one boundary: a twisted extrusion's
+/// flank against the cap plane at either end. When a boundary row (or column)
+/// of the control net lies in the plane and every other control point lies
+/// strictly on one side, positive weights keep every interior point off the
+/// plane, so the section is exactly that boundary iso-curve. Marching it
+/// instead gives an approximate copy that never links to the face's own
+/// boundary edge.
+#[allow(clippy::float_cmp)] // Knot clamping is an algebraic precondition.
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+fn exact_boundary_plane_section(
+    normal: Vec3,
+    d: f64,
+    surface: &remus_math::nurbs::surface::NurbsSurface,
+    tol: Tolerance,
+) -> Result<Option<Vec<RawCurve>>, AlgoError> {
+    let points = surface.control_points();
+    let weights = surface.weights();
+    let (Some(first_row), Some(last_row)) = (points.first(), points.last()) else {
+        return Ok(None);
+    };
+    if points.len() < 2 || first_row.len() < 2 {
+        return Ok(None);
+    }
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let distance = |p: Point3| normal.dot(p - origin) - d;
+    let scale = points.iter().flatten().fold(d.abs().max(1.0), |s, p| {
+        s.max(p.x().abs()).max(p.y().abs()).max(p.z().abs())
+    });
+    let roundoff = (32.0 * f64::EPSILON * scale).min(tol.linear);
+    let clamped = |knots: &[f64], degree: usize| {
+        knots.len() > 2 * degree + 1
+            && knots[..=degree].iter().all(|&k| k == knots[0])
+            && knots[knots.len() - degree - 1..]
+                .iter()
+                .all(|&k| k == knots[knots.len() - 1])
+    };
+    let (rows, cols) = (points.len(), first_row.len());
+    // (is a row, index): rows run along v, columns along u.
+    let boundaries = [(true, 0), (true, rows - 1), (false, 0), (false, cols - 1)];
+    for (is_row, index) in boundaries {
+        let on_boundary = |i: usize, j: usize| if is_row { i == index } else { j == index };
+        let (degree_across, knots_across) = if is_row {
+            (surface.degree_u(), surface.knots_u())
+        } else {
+            (surface.degree_v(), surface.knots_v())
+        };
+        if !clamped(knots_across, degree_across) {
+            continue;
+        }
+        let mut side = 0.0_f64;
+        let mut certified = true;
+        for (i, row) in points.iter().enumerate() {
+            for (j, &p) in row.iter().enumerate() {
+                let h = distance(p);
+                if on_boundary(i, j) {
+                    certified &= h.abs() <= roundoff;
+                } else if h.abs() <= roundoff || h * side < 0.0 {
+                    certified = false;
+                } else {
+                    side = h;
+                }
+            }
+        }
+        if !certified {
+            continue;
+        }
+        let (control_points, curve_weights, degree, knots) = if is_row {
+            (
+                points[index].clone(),
+                weights[index].clone(),
+                surface.degree_v(),
+                surface.knots_v().to_vec(),
+            )
+        } else {
+            (
+                points.iter().map(|row| row[index]).collect(),
+                weights.iter().map(|row| row[index]).collect(),
+                surface.degree_u(),
+                surface.knots_u().to_vec(),
+            )
+        };
+        let curve = remus_math::nurbs::curve::NurbsCurve::new(
+            degree,
+            knots,
+            control_points,
+            curve_weights,
+        )?;
+        let domain = curve.domain();
+        return Ok(Some(vec![RawCurve {
+            bbox: curve.aabb(),
+            p_start: curve.evaluate(domain.0),
+            p_end: curve.evaluate(domain.1),
+            t_range: domain,
+            curve: EdgeCurve::NurbsCurve(curve),
+        }]));
+    }
+    let _ = last_row;
+    Ok(None)
 }
 
 /// General plane-NURBS intersection when no algebraic section is qualified.
