@@ -267,9 +267,14 @@ fn edge_is_convex_across(
     let outward = |fid: FaceId| {
         let face = topo.face(fid).ok()?;
         // A plane has no UV projection; its normal is its own.
-        let n = match face.surface() {
+        let surface = face.surface();
+        let n = match surface {
             FaceSurface::Plane { normal, .. } => *normal,
-            surface => {
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => {
                 let (u, v) = surface.project_point(mid)?;
                 surface.normal(u, v)
             }
@@ -2126,8 +2131,12 @@ impl SeedCarrier {
             return false;
         };
         let ends = [start.point(), end.point()];
-        match (self, data.curve()) {
-            (Self::Line(a, b), EdgeCurve::Line) => {
+        let curve = data.curve();
+        match self {
+            Self::Line(a, b) => {
+                if !matches!(curve, EdgeCurve::Line) {
+                    return false;
+                }
                 let span = *b - *a;
                 let length = span.length();
                 if length <= tolerance {
@@ -2140,19 +2149,22 @@ impl SeedCarrier {
                     off.length() <= tolerance && t >= -tolerance && t <= length + tolerance
                 })
             }
-            (
-                Self::Circle {
-                    center,
-                    normal,
-                    radius,
-                },
-                EdgeCurve::Circle(circle),
-            ) => {
-                (circle.center() - *center).length() <= tolerance
-                    && (circle.radius() - radius).abs() <= tolerance
-                    && circle.normal().cross(*normal).length() <= tolerance
-            }
-            _ => false,
+            Self::Circle {
+                center,
+                normal,
+                radius,
+            } => match curve {
+                EdgeCurve::Circle(circle) => {
+                    (circle.center() - *center).length() <= tolerance
+                        && (circle.radius() - radius).abs() <= tolerance
+                        && circle.normal().cross(*normal).length() <= tolerance
+                }
+                EdgeCurve::Line
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_)
+                | EdgeCurve::NurbsCurve(_) => false,
+            },
         }
     }
 }
