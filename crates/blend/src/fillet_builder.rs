@@ -199,6 +199,29 @@ impl<'a> FilletBuilder<'a> {
             }
         }
 
+        // A concave seam along a boss whose other face turns sharp corners
+        // (or runs round the boss) is one assembly: each run's band carries
+        // on past a corner to mitre with the next.
+        if !external_support_side && let [RadiusLaw::Constant(radius)] = laws.as_slice() {
+            let edges: Vec<EdgeId> = chain_work
+                .iter()
+                .flat_map(|(chain, _)| chain.iter().copied())
+                .collect();
+            let requested: Vec<EdgeId> = seeds_by_law.iter().flatten().copied().collect();
+            if let Some(result) = crate::seam_chain::blend(
+                topo,
+                &adjacency,
+                &edges,
+                crate::seam_chain::SeamBlend::Fillet(*radius),
+                &mut scope,
+                &original_faces,
+                &inner_shells,
+                &requested,
+            )? {
+                return Ok(result);
+            }
+        }
+
         // Two or more chains touching the same vertex need a vertex blend
         // there. The corner solver computes exact geometry for that
         // (`corner::compute_corners` already returns patches), but this builder
