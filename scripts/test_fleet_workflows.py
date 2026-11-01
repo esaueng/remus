@@ -369,8 +369,11 @@ class FleetWorkflowTests(unittest.TestCase):
                 if family in DEPENDABOT_STAGES:
                     allowed.add(DEPENDABOT_STAGES[family][1])
                 self.assertIn(main_file, allowed)
+                # v9 left main when v11 was activated; its landed commit is
+                # the definition the check below binds it to anyway.
+                source = CI_V9_LANDED if family == 'ci' and main_file == 'fleet-ci-v9.yml' else 'origin/main'
                 main_active = subprocess.check_output(
-                    ["git", "show", f"origin/main:.github/workflows/{main_file}"], cwd=ROOT, text=True,
+                    ["git", "show", f"{source}:.github/workflows/{main_file}"], cwd=ROOT, text=True,
                 )
                 if family == 'ci' and main_file == 'fleet-ci-v9.yml':
                     # The historical v2 proof still runs below; additionally bind
