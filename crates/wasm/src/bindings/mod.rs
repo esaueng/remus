@@ -36,6 +36,7 @@ pub mod query;
 pub mod shapes;
 pub mod sketch;
 pub mod tessellate;
+pub mod thread;
 pub mod transform_detailed;
 pub mod transforms;
 

@@ -453,6 +453,16 @@
       "reason": "typed solid envelope by construction; no legacy throwing method to twin"
     },
     {
+      "js": "cutThreadDetailed",
+      "rust": "cut_thread_detailed",
+      "file": "bindings/thread.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "typed solid envelope by construction; no legacy throwing method to twin"
+    },
+    {
       "js": "cutJournaled",
       "rust": "cut_journaled",
       "file": "bindings/naming.rs",

@@ -36,6 +36,7 @@ pub mod primitives;
 pub mod projection;
 pub mod revolve;
 pub mod sweep;
+pub mod thread;
 
 pub mod copy;
 pub mod mirror;
