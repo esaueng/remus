@@ -343,6 +343,7 @@ Quick reference — find the right file for any task:
 | G1-continuous fillet edge-chain expansion | `g1_chain.rs` |
 | One band along a concave tangent chain whose second face changes (a boss seam over an earlier round): supports switched at bisected stations, the rail trimmed across its seam edge and closed back to the chain end | `rail_chain.rs` |
 | Fillet or chamfer along a boss's seam with a block whose face turns sharp corners (or runs round the boss): exact cylinder/torus (fillet) or plane/cone (chamfer) bands per run, mitred where runs meet, ends notched into or grown up to the face the chain runs into | `seam_chain.rs` |
+| One walked band along a convex tangent chain whose faces change on both sides (a block's top edge run into an earlier seam band): each side handed over at the bisected station where its contact reaches the seam, run out to a point where the last two faces are tangent; chamfer as the ruled band between the ball's contacts | `ridge_chain.rs` |
 | Verbatim per-call G1 chain expansion kept as an oracle for the shared `G1ChainIndex` (tests) | `g1_chain/tests.rs` |
 | Read-only analytic blend queries | `query.rs` |
 | Exact face-face blend bands for disjoint planar support patches | `face_face.rs` |
