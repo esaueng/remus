@@ -4646,13 +4646,13 @@ mod batch_contract_tests {
     fn plain_batch_booleans_refuse_instead_of_silently_approximating() {
         // B21: `fuse`, `cut`, `intersect`, and the `*WithOptions` /
         // `*WithEvolution` forms return a bare handle, so they can never
-        // disclose a mesh fallback. On the tangent-boss pair they must refuse
-        // with the typed exact-only code and leave the operands untouched;
-        // `booleanWithQuality` remains the opt-in, disclosed path.
-        // `fuseAll` joins this pin: it returns a bare handle and runs
-        // exact-only as well. (`compoundCut` is pinned separately below on a
-        // cylinder-cylinder tangent Cut, since the tangent-boss Cut succeeds
-        // exactly.)
+        // disclose a mesh fallback. On a near-tangent cylinder pair (walls
+        // overlapping by 1e-3, the second raised 3 mm, the native fallback
+        // fixture) they must refuse with the typed exact-only code and leave
+        // the operands untouched; `booleanWithQuality` remains the opt-in,
+        // disclosed path. `fuseAll` joins this pin: it returns a bare handle
+        // and runs exact-only as well. (`compoundCut` is pinned separately
+        // below.)
         for op in [
             r#"{"op":"fuse","args":{"solidA":0,"solidB":1}}"#,
             r#"{"op":"fuseWithOptions","args":{"solidA":0,"solidB":1,"unifyFaces":false}}"#,
@@ -4662,9 +4662,9 @@ mod batch_contract_tests {
             let mut kernel = RemusKernel::new();
             let response = parse(&kernel.execute_batch_v2(&format!(
                 r#"[
-                    {{"op":"makeBox","args":{{"width":60,"height":40,"depth":8}}}},
-                    {{"op":"makeCylinder","args":{{"radius":10,"height":16}}}},
-                    {{"op":"transform","args":{{"solid":1,"matrix":[1,0,0,9.99999,0,1,0,20,0,0,1,0,0,0,0,1]}}}},
+                    {{"op":"makeCylinder","args":{{"radius":5,"height":10}}}},
+                    {{"op":"makeCylinder","args":{{"radius":5,"height":10}}}},
+                    {{"op":"transform","args":{{"solid":1,"matrix":[1,0,0,9.999,0,1,0,0,0,0,1,3,0,0,0,1]}}}},
                     {op},
                     {{"op":"volume","args":{{"solid":0,"deflection":0.01}}}},
                     {{"op":"booleanWithQuality","args":{{"operation":"fuse","solidA":0,"solidB":1}}}}
@@ -4679,7 +4679,11 @@ mod batch_contract_tests {
                 response[3]["error"]["details"]["kernelCode"], "exact_only_unattainable",
                 "{op}"
             );
-            assert_eq!(response[4]["ok"], 19_200.0, "{op}: refusal must roll back");
+            let operand = response[4]["ok"].as_f64().expect("numeric volume");
+            assert!(
+                (operand - std::f64::consts::PI * 250.0).abs() < 1e-9,
+                "{op}: refusal must roll back: {operand}"
+            );
             assert_eq!(response[5]["ok"]["quality"], "approximate", "{op}");
         }
     }
@@ -4719,13 +4723,13 @@ mod batch_contract_tests {
     }
 
     #[test]
-    fn tangent_boss_batch_contract_refuses_exact_or_discloses_approximation() {
+    fn near_tangent_batch_contract_refuses_exact_or_discloses_approximation() {
         let mut kernel = RemusKernel::new();
         let response = parse(&kernel.execute_batch_v2(
             r#"[
-                {"op":"makeBox","args":{"width":60,"height":40,"depth":8}},
-                {"op":"makeCylinder","args":{"radius":10,"height":16}},
-                {"op":"transform","args":{"solid":1,"matrix":[1,0,0,9.99999,0,1,0,20,0,0,1,0,0,0,0,1]}},
+                {"op":"makeCylinder","args":{"radius":5,"height":10}},
+                {"op":"makeCylinder","args":{"radius":5,"height":10}},
+                {"op":"transform","args":{"solid":1,"matrix":[1,0,0,9.999,0,1,0,0,0,0,1,3,0,0,0,1]}},
                 {"op":"booleanWithQuality","args":{"operation":"fuse","solidA":0,"solidB":1,"exactOnly":true}},
                 {"op":"volume","args":{"solid":0,"deflection":0.01}},
                 {"op":"booleanWithQuality","args":{"operation":"fuse","solidA":0,"solidB":1}},
@@ -4744,24 +4748,26 @@ mod batch_contract_tests {
             response[3]["error"]["details"]["operation"],
             "booleanWithQuality"
         );
-        assert_eq!(response[4]["ok"], 19_200.0, "refusal must roll back");
+        let operand = response[4]["ok"].as_f64().expect("numeric volume");
+        assert!(
+            (operand - std::f64::consts::PI * 250.0).abs() < 1e-9,
+            "refusal must roll back: {operand}"
+        );
         assert_eq!(
             response[5]["ok"]["solid"], 5,
             "rolled-back handles must not alias the later result"
         );
         assert_eq!(response[5]["ok"]["quality"], "approximate");
         assert_eq!(response[5]["ok"]["deflection"], 0.1);
+        // Both cylinders less their lens, 1e-3 wide over the 7 mm they share.
         let volume = response[6]["ok"].as_f64().expect("numeric volume");
-        let radius = 10.0_f64;
-        let d = -0.000_01_f64;
-        let wall_from_axis = radius + d;
-        let outside_segment = radius.powi(2) * (wall_from_axis / radius).acos()
-            - wall_from_axis * (radius.powi(2) - wall_from_axis.powi(2)).sqrt();
-        let shared_area = std::f64::consts::PI * radius.powi(2) - outside_segment;
-        let expected = 19_200.0 + std::f64::consts::PI * radius.powi(2) * 16.0 - shared_area * 8.0;
+        let (radius, d) = (5.0_f64, 9.999_f64);
+        let lens = 2.0 * radius.powi(2) * (d / (2.0 * radius)).acos()
+            - 0.5 * d * 4.0_f64.mul_add(radius.powi(2), -(d * d)).sqrt();
+        let expected = 2.0 * std::f64::consts::PI * radius.powi(2) * 10.0 - lens * 7.0;
         assert!(
             (volume - expected).abs() / expected < 4e-3,
-            "tangent-boss fallback volume {volume} against {expected}"
+            "near-tangent fallback volume {volume} against {expected}"
         );
         assert_eq!(response[7]["ok"], 0);
     }

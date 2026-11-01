@@ -229,6 +229,13 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **algo:** a boss whose wall pokes 1e-9 to 5e-5 past a block side fuses
+  exactly instead of refusing. Near-tangent line-cylinder crossings settle on
+  the closed-form roots, and the planar splitter keeps the thin lens the
+  side's chord cuts off the boss's disc: arcs on a plane keep a curved pcurve
+  down to the linear tolerance, sections and material are judged against the
+  true lines and circles along straight edges, and a thin loop that does not
+  retrace itself is a region, not a sliver or a hole.
 * **operations:** `solid_volume` measures a boss fused a hair (1e-7, 1e-8)
   past a block side exactly. The cylinder sliver along the side has seams
   that lean off their rulings, or rims written as lines, which the exact

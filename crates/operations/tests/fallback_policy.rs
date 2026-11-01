@@ -66,17 +66,19 @@ fn approximate_only_skips_the_exact_pipeline_and_discloses_quality() {
     assert!((v - 15.0).abs() < 1e-3, "mesh fuse volume {v}");
 }
 
-/// A boss whose wall is a hair off tangent to the block's side (B21 fixture,
-/// shared with the WASM batch contract): the exact pipeline cannot assemble
-/// it, so it is the one configuration that exercises the mesh fallback
-/// without corrupting an operand. The wall pokes 1e-5 past the side; at 1e-3
-/// the exact pipeline now builds it.
-fn tangent_boss(topo: &mut Topology) -> (remus_topology::SolidId, remus_topology::SolidId) {
+/// Two r 5 cylinders whose walls overlap by 1e-3 (centres 9.999 apart), the
+/// second raised 3 mm: the exact pipeline, `fuse_solids`' parallel-cylinder
+/// cluster included, cannot assemble their fuse, so they exercise the mesh
+/// fallback without corrupting an operand. The B21 boss a hair past a block
+/// side served until the exact pipeline learned it.
+fn near_tangent_cylinders(
+    topo: &mut Topology,
+) -> (remus_topology::SolidId, remus_topology::SolidId) {
     use remus_operations::primitives::make_cylinder;
-    let block = make_box(topo, 60.0, 40.0, 8.0).unwrap();
-    let boss = make_cylinder(topo, 10.0, 16.0).unwrap();
-    transform_solid(topo, boss, &Mat4::translation(9.999_99, 20.0, 0.0)).unwrap();
-    (block, boss)
+    let a = make_cylinder(topo, 5.0, 10.0).unwrap();
+    let b = make_cylinder(topo, 5.0, 10.0).unwrap();
+    transform_solid(topo, b, &Mat4::translation(9.999, 0.0, 3.0)).unwrap();
+    (a, b)
 }
 
 fn live_counts(topo: &Topology) -> (usize, usize, usize, usize, usize, usize) {
@@ -91,11 +93,11 @@ fn live_counts(topo: &Topology) -> (usize, usize, usize, usize, usize, usize) {
 }
 
 #[test]
-fn tangent_boss_fixture_needs_the_fallback() {
+fn near_tangent_fixture_needs_the_fallback() {
     // Guard the fixture itself: if the exact pipeline learns this case, the
     // refusal tests below stop proving anything and must move fixtures.
     let mut topo = Topology::new();
-    let (a, b) = tangent_boss(&mut topo);
+    let (a, b) = near_tangent_cylinders(&mut topo);
     let out =
         boolean_with_context(&mut topo, BooleanOp::Fuse, a, b, &OperationContext::new()).unwrap();
     assert_eq!(
@@ -109,7 +111,7 @@ fn tangent_boss_fixture_needs_the_fallback() {
 fn plain_boolean_refuses_instead_of_silently_approximating() {
     use remus_operations::OperationsError;
     let mut topo = Topology::new();
-    let (a, b) = tangent_boss(&mut topo);
+    let (a, b) = near_tangent_cylinders(&mut topo);
     let before = live_counts(&topo);
     let err = boolean(&mut topo, BooleanOp::Fuse, a, b).unwrap_err();
     assert!(
@@ -123,7 +125,7 @@ fn plain_boolean_refuses_instead_of_silently_approximating() {
     );
     let v = solid_volume(&topo, a, 0.05).unwrap();
     assert!(
-        (v - 19_200.0).abs() < 1e-6,
+        (v - std::f64::consts::PI * 250.0).abs() < 1e-6,
         "operand must be untouched: {v}"
     );
 }
@@ -133,7 +135,7 @@ fn plain_options_boolean_refuses_like_the_handle_entry_point() {
     use remus_operations::OperationsError;
     use remus_operations::boolean::{BooleanOptions, boolean_with_options};
     let mut topo = Topology::new();
-    let (a, b) = tangent_boss(&mut topo);
+    let (a, b) = near_tangent_cylinders(&mut topo);
     let before = live_counts(&topo);
     let err = boolean_with_options(
         &mut topo,
@@ -158,7 +160,7 @@ fn plain_evolution_boolean_refuses_like_the_handle_entry_point() {
     use remus_operations::OperationsError;
     use remus_operations::boolean::boolean_with_evolution;
     let mut topo = Topology::new();
-    let (a, b) = tangent_boss(&mut topo);
+    let (a, b) = near_tangent_cylinders(&mut topo);
     let before = live_counts(&topo);
     let err = boolean_with_evolution(&mut topo, BooleanOp::Fuse, a, b).unwrap_err();
     assert!(
@@ -172,7 +174,7 @@ fn plain_evolution_boolean_refuses_like_the_handle_entry_point() {
 fn optioned_outcome_discloses_the_fallback_it_was_allowed_to_take() {
     use remus_operations::boolean::{BooleanOptions, boolean_outcome_with_options};
     let mut topo = Topology::new();
-    let (a, b) = tangent_boss(&mut topo);
+    let (a, b) = near_tangent_cylinders(&mut topo);
     let opts = BooleanOptions {
         unify_faces: true,
         ..BooleanOptions::default()
@@ -185,11 +187,10 @@ fn optioned_outcome_discloses_the_fallback_it_was_allowed_to_take() {
         BooleanQuality::Approximate { deflection: 0.05 },
         "the permissive path must disclose the fallback and its budget"
     );
-    // Block plus the boss volume outside it: the boss stands on the block's
-    // top face and its far half overhangs nothing, so it adds its full height
-    // above z = 8 (16 - 8 = 8 mm) times the disc area, within mesh accuracy.
+    // Both cylinders less their 1e-3-wide lens (under 1e-3 mm³ over the
+    // height), within mesh accuracy.
     let v = solid_volume(&topo, out.solid, 0.05).unwrap();
-    let expected = 19_200.0 + std::f64::consts::PI * 100.0 * 8.0;
+    let expected = 2.0 * std::f64::consts::PI * 250.0;
     assert!(
         (v - expected).abs() / expected < 0.02,
         "fused volume {v} vs {expected}"
@@ -197,7 +198,7 @@ fn optioned_outcome_discloses_the_fallback_it_was_allowed_to_take() {
 
     // The same options under exact-only are refused, with nothing retained.
     let mut topo = Topology::new();
-    let (a, b) = tangent_boss(&mut topo);
+    let (a, b) = near_tangent_cylinders(&mut topo);
     let before = live_counts(&topo);
     let exact = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
     let err =
@@ -217,7 +218,7 @@ fn fuse_solids_refuses_like_the_handle_entry_point() {
     use remus_operations::OperationsError;
     use remus_operations::compound_ops::fuse_solids;
     let mut topo = Topology::new();
-    let (a, b) = tangent_boss(&mut topo);
+    let (a, b) = near_tangent_cylinders(&mut topo);
     let before = live_counts(&topo);
     let err = fuse_solids(&mut topo, &[a, b]).unwrap_err();
     assert!(

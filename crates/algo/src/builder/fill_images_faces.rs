@@ -2222,7 +2222,7 @@ fn build_section_edges(
         Ok(f) => f,
         Err(_) => return Ok(Vec::new()),
     };
-    let plane_material = PlaneMaterial::new(topo, face);
+    let plane_material = PlaneMaterial::new(topo, face, tol);
 
     // Pre-compute wire points for PCurve (needed for plane frame).
     let wire_pts: Vec<Point3> = topo
@@ -3666,24 +3666,91 @@ fn curved_section_misses_material(material: &PlaneMaterial, samples: &[Point3]) 
 /// A plane face's outer wire and holes as arc-true polygons in one frame.
 struct PlaneMaterial {
     frame: crate::builder::plane_frame::PlaneFrame,
-    outer: Vec<remus_math::vec::Point2>,
-    holes: Vec<Vec<remus_math::vec::Point2>>,
+    outer: MaterialLoop,
+    holes: Vec<MaterialLoop>,
+}
+
+/// One wire of a plane face: its arc-true polygon and the polygon segments
+/// that are straight edges, which the polygon reproduces exactly.
+struct MaterialLoop {
+    poly: Vec<remus_math::vec::Point2>,
+    straight: Vec<bool>,
+    /// Boundary band along straight edges: the linear tolerance.
+    line_band: f64,
+}
+
+impl MaterialLoop {
+    fn new(
+        (segments, arcs): &WireBoundary,
+        frame: &crate::builder::plane_frame::PlaneFrame,
+        line_band: f64,
+    ) -> Self {
+        let poly = wire_arc_polygon(segments, arcs, frame);
+        let lines: Vec<(remus_math::vec::Point2, remus_math::vec::Point2)> = segments
+            .iter()
+            .zip(arcs)
+            .filter(|(_, arc)| arc.is_none())
+            .map(|(&(s, e), _)| (frame.project(s), frame.project(e)))
+            .collect();
+        let n = poly.len();
+        let straight = (0..n)
+            .map(|i| {
+                let (a, b) = (poly[i], poly[(i + 1) % n]);
+                lines.iter().any(|&(s, e)| s == a && e == b)
+            })
+            .collect();
+        Self {
+            poly,
+            straight,
+            line_band,
+        }
+    }
+
+    /// Clear of the boundary band. Arcs enter the polygon as chords, so near
+    /// them the band is scale-relative; a straight edge is exact, so near it
+    /// the band is the linear tolerance. One scale-relative band let a lens
+    /// bulging 3e-6 past a 60 mm block's side read as lying on that side.
+    fn clear_of_boundary(&self, p: remus_math::vec::Point2) -> bool {
+        use crate::builder::classify_2d::{boundary_eps, distance_to_polygon_boundary};
+        let eps = boundary_eps(&self.poly);
+        let n = self.poly.len();
+        (0..n).all(|i| {
+            let segment = [self.poly[i], self.poly[(i + 1) % n]];
+            let band = if self.straight[i] {
+                self.line_band
+            } else {
+                eps
+            };
+            distance_to_polygon_boundary(p, &segment) > band
+        })
+    }
+
+    /// Inside the polygon and clear of its boundary band.
+    fn strictly_in(&self, p: remus_math::vec::Point2) -> bool {
+        crate::builder::classify_2d::point_in_polygon_2d(p, &self.poly) && self.clear_of_boundary(p)
+    }
+
+    /// Outside the polygon and clear of its boundary band.
+    fn strictly_out(&self, p: remus_math::vec::Point2) -> bool {
+        !crate::builder::classify_2d::point_in_polygon_2d(p, &self.poly)
+            && self.clear_of_boundary(p)
+    }
 }
 
 impl PlaneMaterial {
-    fn new(topo: &Topology, face: &remus_topology::face::Face) -> Option<Self> {
+    fn new(topo: &Topology, face: &remus_topology::face::Face, tol: f64) -> Option<Self> {
         let FaceSurface::Plane { normal, .. } = face.surface() else {
             return None;
         };
-        let (segments, arcs) = wire_boundary(topo, face.outer_wire())?;
-        let starts: Vec<Point3> = segments.iter().map(|&(s, _)| s).collect();
+        let outer = wire_boundary(topo, face.outer_wire())?;
+        let starts: Vec<Point3> = outer.0.iter().map(|&(s, _)| s).collect();
         let frame = crate::builder::plane_frame::PlaneFrame::from_plane_face(*normal, &starts);
-        let outer = wire_arc_polygon(&segments, &arcs, &frame);
+        let outer = MaterialLoop::new(&outer, &frame, tol);
         let holes = face
             .inner_wires()
             .iter()
             .filter_map(|&wire| wire_boundary(topo, wire))
-            .map(|(segments, arcs)| wire_arc_polygon(&segments, &arcs, &frame))
+            .map(|wire| MaterialLoop::new(&wire, &frame, tol))
             .collect();
         Some(Self {
             frame,
@@ -3692,40 +3759,22 @@ impl PlaneMaterial {
         })
     }
 
-    /// Inside `poly` and clear of its boundary band.
-    fn strictly_in(poly: &[remus_math::vec::Point2], p: remus_math::vec::Point2) -> bool {
-        use crate::builder::classify_2d::{
-            boundary_eps, distance_to_polygon_boundary, point_in_polygon_2d,
-        };
-        point_in_polygon_2d(p, poly) && distance_to_polygon_boundary(p, poly) > boundary_eps(poly)
-    }
-
-    /// Outside `poly` and clear of its boundary band.
-    fn strictly_out(poly: &[remus_math::vec::Point2], p: remus_math::vec::Point2) -> bool {
-        use crate::builder::classify_2d::{
-            boundary_eps, distance_to_polygon_boundary, point_in_polygon_2d,
-        };
-        !point_in_polygon_2d(p, poly) && distance_to_polygon_boundary(p, poly) > boundary_eps(poly)
-    }
-
     fn in_hole(&self, p: remus_math::vec::Point2) -> bool {
         self.holes
             .iter()
-            .any(|hole| crate::builder::classify_2d::point_in_polygon_2d(p, hole))
+            .any(|hole| crate::builder::classify_2d::point_in_polygon_2d(p, &hole.poly))
     }
 
     /// Strictly inside the face's material, off every boundary.
     fn strictly_in_material(&self, p: Point3) -> bool {
         let p = self.frame.project(p);
-        Self::strictly_in(&self.outer, p)
-            && self.holes.iter().all(|hole| Self::strictly_out(hole, p))
+        self.outer.strictly_in(p) && self.holes.iter().all(|hole| hole.strictly_out(p))
     }
 
     /// Strictly outside the face's material, off every boundary.
     fn strictly_out_of_material(&self, p: Point3) -> bool {
         let p = self.frame.project(p);
-        Self::strictly_out(&self.outer, p)
-            || self.holes.iter().any(|hole| Self::strictly_in(hole, p))
+        self.outer.strictly_out(p) || self.holes.iter().any(|hole| hole.strictly_in(p))
     }
 
     /// Whether a segment that does not cross the outer wire lies in the
@@ -3735,7 +3784,10 @@ impl PlaneMaterial {
     /// material.
     fn holds_uncrossed_segment(&self, start: Point3, end: Point3) -> bool {
         // No outer crossing: the midpoint decides for the whole segment.
-        if !Self::strictly_in(&self.outer, self.frame.project(start + (end - start) * 0.5)) {
+        if !self
+            .outer
+            .strictly_in(self.frame.project(start + (end - start) * 0.5))
+        {
             return false;
         }
         [0.25, 0.5, 0.75]
@@ -3912,7 +3964,7 @@ fn clip_line_to_face_extent(
         // prism standing on a disc, gear teeth against a collar's annular
         // cap) runs inside the face and must split it.
         if only_endpoint_crossings
-            && PlaneMaterial::new(topo, face)
+            && PlaneMaterial::new(topo, face, tol)
                 .is_some_and(|material| material.holds_uncrossed_segment(line_start, line_end))
         {
             return Some(vec![(line_start, line_end)]);

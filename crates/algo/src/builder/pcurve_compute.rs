@@ -232,6 +232,14 @@ fn pcurve_through_uv_samples(
     uv_pts: &[Point2],
     surface: &FaceSurface,
 ) -> Result<Curve2D, AlgoError> {
+    // A curved edge on a plane keeps its bulge down to the linear tolerance:
+    // the lens a boss 5e-7 past a block side cuts off the boss rim is told
+    // from the side's chord in the wire builder only by its pcurve tangent.
+    let collinear_tol = if matches!(surface, FaceSurface::Plane { .. }) {
+        1e-7
+    } else {
+        1e-6
+    };
     if uv_pts.len() < 2 {
         return Err(projection_failure(surface, "insufficient_curve_samples"));
     }
@@ -242,7 +250,7 @@ fn pcurve_through_uv_samples(
     // origin + unit_dir * t), not [0,1] mapping. For curves that need
     // evaluate(0)→start and evaluate(1)→end, use NURBS interpolation
     // instead, which naturally maps [0,1] to the full extent.
-    if is_collinear_2d(uv_pts, 1e-6) {
+    if is_collinear_2d(uv_pts, collinear_tol) {
         let p0 = uv_pts[0];
         let pn = uv_pts[uv_pts.len() - 1];
         let dx = pn.x() - p0.x();
