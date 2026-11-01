@@ -7038,8 +7038,8 @@ fn split_face_2d_impl(
                 // A section running along the hole (a tooth tip on the bore)
                 // is that hole edge, not a second copy of it.
                 all_edges.retain(|e| {
-                    !e.source_edge_idx
-                        .is_some_and(|si| si >= WEAVE_SECTION_SRC_BASE)
+                    e.source_edge_idx
+                        .is_none_or(|si| si < WEAVE_SECTION_SRC_BASE)
                         || !hole.iter().any(|h| loop_edges_coincide(e, h, tol.linear))
                 });
                 all_edges.extend(hole.iter().cloned());
@@ -8635,9 +8635,13 @@ fn split_face_2d_impl(
         // "outside" and got promoted — a lip base annulus lost its throat hole
         // and the spurious full disc capped the bin interior (the
         // mid-cell-dividers lip fuse).
+        // A promoted hole runs 0.1 inside a rim stored as one closed edge (a
+        // collar cap's r 21.35 rim round internal gear roots), which eight
+        // samples make an octagon that the hole pokes out of.
+        let closed_samples = if touched_hole_promoted { 64 } else { 8 };
         let sample_loop = |wl: &[OrientedPCurveEdge]| -> Vec<Point2> {
             if is_plane {
-                sampling::sample_wire_loop_uv_via_frame(wl, frame)
+                sampling::sample_wire_loop_uv_via_frame_closed(wl, frame, closed_samples)
             } else {
                 sample_wire_loop_uv(wl)
             }

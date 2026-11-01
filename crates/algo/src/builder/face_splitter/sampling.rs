@@ -28,9 +28,18 @@ pub(super) fn sample_wire_loop_uv_via_frame(
     wire: &[OrientedPCurveEdge],
     frame: &super::super::plane_frame::PlaneFrame,
 ) -> Vec<Point2> {
+    sample_wire_loop_uv_via_frame_closed(wire, frame, 8)
+}
+
+/// [`sample_wire_loop_uv_via_frame`] with `closed_samples` points on each
+/// closed curve (a whole rim stored as one edge) instead of eight.
+pub(super) fn sample_wire_loop_uv_via_frame_closed(
+    wire: &[OrientedPCurveEdge],
+    frame: &super::super::plane_frame::PlaneFrame,
+    closed_samples: usize,
+) -> Vec<Point2> {
     use remus_topology::edge::EdgeCurve;
     const CURVE_SAMPLES: usize = 8;
-    const CLOSED_CURVE_SAMPLES: usize = 64;
 
     let mut pts = Vec::with_capacity(wire.len() * CURVE_SAMPLES);
     for e in wire {
@@ -47,11 +56,8 @@ pub(super) fn sample_wire_loop_uv_via_frame(
             (e.end_3d, e.start_3d)
         };
         let (t0, t1) = e.native_domain();
-        // A whole rim stored as one closed edge would be an octagon, its
-        // chords 8 % of the radius inside the circle: a collar cap's r 21.35
-        // rim then left the gear root arcs 0.1 inside it reading as outside.
         let n = if (e.start_3d - e.end_3d).length() < 1e-10 {
-            CLOSED_CURVE_SAMPLES
+            closed_samples
         } else {
             CURVE_SAMPLES
         };
