@@ -1232,11 +1232,20 @@ pub fn integrate_torus_band_face_about(
     )
 }
 
-/// Integrate between two tube-wrapping rims using their oriented material side.
+/// Integrate between two rims that each wrap one torus angle once, using their
+/// oriented material side.
 ///
-/// Non-default adaptive controls refine the same sliced domain (tube-angle
-/// breaks at every rim sample, sweep spans between the rims); the default
-/// controls and the order-only API keep the fixed rule.
+/// Two families qualify. Rims that wrap the TUBE (minor `v`) angle bound a
+/// sector of the tube between two meridians. Rims that wrap the MAJOR (`u`)
+/// angle bound a revolved band between two parallels: the fillet a rolling
+/// ball leaves on a cylinder's rim, closing on its cap, is one, its rims the
+/// wall's tangent circle and the cap's. That face has no seam edge, so its
+/// projected outline spans both periods and trims nothing, and the generic
+/// path integrated the WHOLE torus (`2π²Rr²`) in its place.
+///
+/// Non-default adaptive controls refine the same sliced domain (breaks on the
+/// wrapped angle at every rim sample, sweep spans between the rims); the
+/// default controls and the order-only API keep the fixed rule.
 #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 fn integrate_torus_tube_band<const AREA_ONLY: bool>(
     topo: &Topology,
@@ -1262,55 +1271,81 @@ fn integrate_torus_tube_band<const AREA_ONLY: bool>(
             "face trim exceeds the {MAX_TRIM_POINTS}-point integration budget"
         )));
     }
-    let mut rings = Vec::new();
-    let mut windings = Vec::new();
+    let mut wires = Vec::with_capacity(2);
     for wire in [face.outer_wire(), face.inner_wires()[0]] {
         let points =
             crate::util::wire_polygon_curve_sampled(topo, wire, TRIM_SAMPLES, TRIM_SAMPLES)?;
         if points.len() < 3 {
             return Ok(None);
         }
-        let mut uv: Vec<_> = points.into_iter().map(|p| torus.project_point(p)).collect();
-        uv.push(uv[0]);
-        let mut winding = 0.0;
-        for pair in uv.windows(2) {
-            let delta = (pair[1].1 - pair[0].1 + PI).rem_euclid(TAU) - PI;
-            winding += delta;
-        }
-        if (winding.abs() - TAU).abs() > 1e-6 {
-            return Ok(None);
-        }
-        // A folded rim is not a single-valued u(v) graph.
-        if uv.windows(2).any(|pair| {
-            let delta = (pair[1].1 - pair[0].1 + PI).rem_euclid(TAU) - PI;
-            delta * winding < -1e-10
-        }) {
-            return Ok(None);
-        }
-        uv.pop();
-        let mut ring: Vec<_> = uv
-            .into_iter()
-            .map(|(u, v)| (v.rem_euclid(TAU), u))
-            .collect();
-        ring.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
-        if ring.windows(2).any(|pair| {
-            (pair[1].0 - pair[0].0).abs() < 1e-12
-                && ((pair[1].1 - pair[0].1 + PI).rem_euclid(TAU) - PI).abs() > 1e-8
-        }) {
-            return Ok(None);
-        }
-        ring.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-12);
-        if ring.len() < 3 {
-            return Ok(None);
-        }
-        rings.push(ring);
-        windings.push(winding);
+        let uv: Vec<_> = points.into_iter().map(|p| torus.project_point(p)).collect();
+        wires.push(uv);
     }
-    if windings[0] * windings[1] >= 0.0 {
-        return Ok(None);
-    }
-    let at = |ring: &[(f64, f64)], v: f64| {
-        let index = ring.partition_point(|point| point.0 <= v);
+    // Each rim as `(wrapped angle, other angle)` samples sorted on the wrapped
+    // angle, with the signed turn it makes; `None` unless both rims wrap
+    // `wraps_tube`'s angle once and are single-valued graphs over it.
+    let rings_wrapping = |wraps_tube: bool| {
+        let key = |(u, v): (f64, f64)| if wraps_tube { (v, u) } else { (u, v) };
+        let mut rings = Vec::with_capacity(2);
+        let mut windings = Vec::with_capacity(2);
+        for uv in &wires {
+            let mut keyed: Vec<_> = uv.iter().copied().map(key).collect();
+            keyed.push(keyed[0]);
+            let mut winding = 0.0;
+            for pair in keyed.windows(2) {
+                let delta = (pair[1].0 - pair[0].0 + PI).rem_euclid(TAU) - PI;
+                winding += delta;
+            }
+            if (winding.abs() - TAU).abs() > 1e-6 {
+                return None;
+            }
+            // A folded rim is not a single-valued graph over the wrapped angle.
+            if keyed.windows(2).any(|pair| {
+                let delta = (pair[1].0 - pair[0].0 + PI).rem_euclid(TAU) - PI;
+                delta * winding < -1e-10
+            }) {
+                return None;
+            }
+            keyed.pop();
+            let mut ring: Vec<_> = keyed
+                .into_iter()
+                .map(|(wrapped, other)| (wrapped.rem_euclid(TAU), other))
+                .collect();
+            ring.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
+            if ring.windows(2).any(|pair| {
+                (pair[1].0 - pair[0].0).abs() < 1e-12
+                    && ((pair[1].1 - pair[0].1 + PI).rem_euclid(TAU) - PI).abs() > 1e-8
+            }) {
+                return None;
+            }
+            ring.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-12);
+            if ring.len() < 3 {
+                return None;
+            }
+            rings.push(ring);
+            windings.push(winding);
+        }
+        (windings[0] * windings[1] < 0.0).then_some((rings, windings))
+    };
+    // The tube family is tried first, so a rim that happens to qualify for
+    // both keeps the reading it had before the major family existed.
+    let (wraps_tube, rings, windings) = match rings_wrapping(true) {
+        Some((rings, windings)) => (true, rings, windings),
+        None => match rings_wrapping(false) {
+            Some((rings, windings)) => (false, rings, windings),
+            None => return Ok(None),
+        },
+    };
+    // The material lies left of the outer rim in the right-handed `(u, v)`
+    // chart. Walking `-v` puts it toward `+u`; walking `+u` puts it toward
+    // `+v`.
+    let sweeps_forward = if wraps_tube {
+        windings[0] < 0.0
+    } else {
+        windings[0] > 0.0
+    };
+    let at = |ring: &[(f64, f64)], key: f64| {
+        let index = ring.partition_point(|point| point.0 <= key);
         let (a, b) = if index == 0 {
             (
                 (ring[ring.len() - 1].0 - TAU, ring[ring.len() - 1].1),
@@ -1322,7 +1357,7 @@ fn integrate_torus_tube_band<const AREA_ONLY: bool>(
             (ring[index - 1], ring[index])
         };
         let delta = (b.1 - a.1 + PI).rem_euclid(TAU) - PI;
-        a.1 + delta * (v - a.0) / (b.0 - a.0)
+        a.1 + delta * (key - a.0) / (b.0 - a.0)
     };
     let mut breaks = vec![0.0, TAU];
     for ring in &rings {
@@ -1330,19 +1365,25 @@ fn integrate_torus_tube_band<const AREA_ONLY: bool>(
     }
     breaks.compact_sort_by(f64::total_cmp);
     breaks.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
-    let sweep = |v: f64| {
-        let a = at(&rings[0], v);
-        let b = at(&rings[1], v);
-        let span = if windings[0] < 0.0 {
+    let sweep = |outer: f64| {
+        let a = at(&rings[0], outer);
+        let b = at(&rings[1], outer);
+        let span = if sweeps_forward {
             (b - a).rem_euclid(TAU)
         } else {
             -(a - b).rem_euclid(TAU)
         };
         (a, span)
     };
+    // `outer` runs along the wrapped angle, `inner` sweeps between the rims.
+    let inner_scale = if wraps_tube {
+        PatchScale::ANGULAR.u
+    } else {
+        PatchScale::ANGULAR.v
+    };
     if let Some(options) = rule.requested_refinement() {
-        let spans = |v: f64| {
-            let (a, span) = sweep(v);
+        let spans = |outer: f64| {
+            let (a, span) = sweep(outer);
             vec![(a, a + span)]
         };
         return adaptive::integrate_sliced(
@@ -1351,9 +1392,9 @@ fn integrate_torus_tube_band<const AREA_ONLY: bool>(
                 breaks: &breaks,
                 inner_knots: &[],
                 outer_scale: f64::INFINITY,
-                inner_scale: PatchScale::ANGULAR.u,
+                inner_scale,
                 spans: &spans,
-                outer_is_v: true,
+                outer_is_v: wraps_tube,
             },
             sign,
             options,
@@ -1369,22 +1410,27 @@ fn integrate_torus_tube_band<const AREA_ONLY: bool>(
     };
     let mut scratch = DerivativeScratch::new();
     for interval in breaks.windows(2) {
-        let v_scale = (interval[1] - interval[0]) / 2.0;
-        let v_mid = f64::midpoint(interval[0], interval[1]);
-        for gv in gauss {
-            let v = v_scale.fma(gv.x, v_mid);
-            let (a, span) = sweep(v);
-            let patches = patch_count(span.abs(), PatchScale::ANGULAR.u);
+        let outer_scale = (interval[1] - interval[0]) / 2.0;
+        let outer_mid = f64::midpoint(interval[0], interval[1]);
+        for g_outer in gauss {
+            let outer = outer_scale.fma(g_outer.x, outer_mid);
+            let (a, span) = sweep(outer);
+            let patches = patch_count(span.abs(), inner_scale);
             let step = span / patches as f64;
             for patch in 0..patches {
                 let mid = a + (patch as f64 + 0.5) * step;
-                for gu in gauss {
-                    let u = (step / 2.0).fma(gu.x, mid);
+                for g_inner in gauss {
+                    let inner = (step / 2.0).fma(g_inner.x, mid);
+                    let (u, v) = if wraps_tube {
+                        (inner, outer)
+                    } else {
+                        (outer, inner)
+                    };
                     acc.add::<_, AREA_ONLY>(
                         torus,
                         u,
                         v,
-                        gu.w * gv.w * step.abs() / 2.0 * v_scale,
+                        g_inner.w * g_outer.w * step.abs() / 2.0 * outer_scale,
                         reference,
                         &mut scratch,
                     );
@@ -5488,6 +5534,98 @@ mod tests {
         }
         let volume: f64 = contributions.iter().map(|part| part.volume).sum();
         assert!((volume - 180.0 * PI * PI).abs() < 1e-7);
+    }
+
+    /// Two parallels bound a revolved band — the rim fillet of a boss — whose
+    /// rims wrap the MAJOR angle. Before the major family qualified, its
+    /// outline spanned both periods and trimmed nothing, so either side read
+    /// as the whole torus. Each side is held to its closed form, under the
+    /// fixed rule and the refined one.
+    #[test]
+    fn torus_major_bands_integrate_complementary_regions() {
+        use remus_math::{curves::Circle3D, surfaces::ToroidalSurface};
+        use remus_topology::{
+            edge::Edge,
+            face::Face,
+            vertex::Vertex,
+            wire::{OrientedEdge, Wire},
+        };
+        use std::f64::consts::{PI, TAU};
+        let (big, small) = (10.0_f64, 3.0_f64);
+        let (low, high) = (0.4_f64, 1.6_f64);
+        let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), big, small).unwrap();
+        let mut topo = Topology::new();
+        let mut edges = Vec::new();
+        for v in [low, high] {
+            let rho = big + small * v.cos();
+            let circle = Circle3D::new_with_ref(
+                Point3::new(0.0, 0.0, small * v.sin()),
+                Vec3::new(0.0, 0.0, 1.0),
+                rho,
+                Vec3::new(1.0, 0.0, 0.0),
+            )
+            .unwrap();
+            let vertex = topo.add_vertex(Vertex::new(Point3::new(rho, 0.0, small * v.sin()), 1e-7));
+            let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+            edge.set_trim(Some((0.0, TAU)));
+            edges.push(topo.add_edge(edge));
+        }
+        // About the centre P·n = R·cos v + r and dA = r(R + r·cos v) du dv.
+        let band = |a: f64, b: f64| {
+            let area = TAU * small * (big * (b - a) + small * (b.sin() - a.sin()));
+            let moment = (big * big + small * small) * (b.sin() - a.sin())
+                + big * small * (1.5 * (b - a) + ((2.0 * b).sin() - (2.0 * a).sin()) / 4.0);
+            (area, TAU * small * moment / 3.0)
+        };
+        let mut volume = 0.0;
+        for complement in [false, true] {
+            let outer = topo
+                .add_wire(Wire::new(vec![OrientedEdge::new(edges[0], !complement)], true).unwrap());
+            let inner = topo
+                .add_wire(Wire::new(vec![OrientedEdge::new(edges[1], complement)], true).unwrap());
+            let face = topo.add_face(Face::new(
+                outer,
+                vec![inner],
+                FaceSurface::Torus(torus.clone()),
+            ));
+            let (area, expected) = if complement {
+                band(high, low + TAU)
+            } else {
+                band(low, high)
+            };
+            let fixed = integrate_face(&topo, face, 8).unwrap();
+            let qualified = integrate_torus_band_face(&topo, face, 8).unwrap().unwrap();
+            assert!((qualified.volume - fixed.volume).abs() < 1e-10);
+            assert!(
+                (fixed.area - area).abs() < 1e-9 * area,
+                "complement {complement}: area {} vs {area}",
+                fixed.area
+            );
+            assert!(
+                (fixed.volume - expected).abs() < 1e-9 * expected.abs().max(1.0),
+                "complement {complement}: volume {} vs {expected}",
+                fixed.volume
+            );
+            let refined = integrate_face_with_options(
+                &topo,
+                face,
+                &PropertiesOptions {
+                    gauss_order: 4,
+                    adaptive_eps: 1e-11,
+                    max_depth: 24,
+                },
+            )
+            .unwrap();
+            assert!(
+                (refined.volume - expected).abs() < 1e-9 * expected.abs().max(1.0),
+                "complement {complement}: refined volume {} vs {expected}",
+                refined.volume
+            );
+            volume += fixed.volume;
+        }
+        // The two sides tile the closed torus.
+        let whole = 2.0 * PI * PI * big * small * small;
+        assert!((volume - whole).abs() < 1e-9 * whole, "{volume} vs {whole}");
     }
 
     /// Non-default controls refine the two-rim tube band instead of refusing,
