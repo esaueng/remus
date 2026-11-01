@@ -378,7 +378,25 @@ pub fn estimate_added_material(
     tube: &ReachTube,
 ) -> Result<AddedEstimate, OperationsError> {
     let before = classify_points(pristine, input, &tube.points, 0.01, MATERIAL_RAY_TOLERANCE)?;
-    let after = classify_points(live, result, &tube.points, 0.01, MATERIAL_RAY_TOLERANCE)?;
+    // Only a point outside the input can count as added, so the result is
+    // asked about those alone; every other point keeps its input verdict,
+    // which never counts.
+    let outside: Vec<usize> = before
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| matches!(c, PointClassification::Outside).then_some(i))
+        .collect();
+    let probes: Vec<Point3> = outside.iter().map(|&i| tube.points[i]).collect();
+    let mut after = before.clone();
+    for (&i, c) in outside.iter().zip(classify_points(
+        live,
+        result,
+        &probes,
+        0.01,
+        MATERIAL_RAY_TOLERANCE,
+    )?) {
+        after[i] = c;
+    }
     let mut added_counts = 0u64;
     for (a, b) in before.iter().zip(after.iter()) {
         if matches!(a, PointClassification::Outside) && matches!(b, PointClassification::Inside) {
