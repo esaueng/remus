@@ -79,6 +79,8 @@ impl<'a> ChamferBuilder<'a> {
     ///
     /// Off by default, so every selection keeps the outcome it had; a caller
     /// that validates the result enables it after the per-edge build refuses.
+    /// With it on, a selection that is not such a chain is refused rather
+    /// than built edge by edge again.
     pub fn with_ridge_chains(&mut self) -> &mut Self {
         self.ridge_chains = true;
         self
@@ -238,6 +240,13 @@ impl<'a> ChamferBuilder<'a> {
                     return Ok(result);
                 }
             }
+        }
+        // Ridge mode is a retry after the per-edge build refused: running that
+        // build again would only repeat its refusal.
+        if ridge_chains {
+            return Err(BlendError::InvalidInput {
+                reason: "chamfer: the selection is not a ridge chain".to_owned(),
+            });
         }
 
         let mut touched_faces: HashSet<FaceId> = HashSet::new();
