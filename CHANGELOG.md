@@ -8,6 +8,15 @@ historical predecessor-line records, retained for provenance. The
 
 ### Added
 
+* **operations,wasm:** `cut_thread` / `cutThreadDetailed` cut a screw thread
+  along a solid's boss (external) or bore (internal), over the whole face or a
+  band of it from `offset`. The form is trapezoidal with independent flank
+  angles, crest and root flats, any number of starts and either hand, which
+  covers ISO metric and unified threads as well as print-oriented forms
+  (steep lower flanks, square flanks, wide flats). Results report `quality: "approximate"` with a proven
+  `deviationBound` and the thread's dimensions; a feature crossing the band,
+  a span past the face, a thread larger than the boss or smaller than the
+  bore refuse with typed `thread:<reason>` codes, and the input solid is kept.
 * **operations,wasm:** `make_gear` / `makeGearDetailed` build involute external
   spur gears, internal (ring) gears and straight racks as one extruded outline.
   Involute flanks are certified cubic B-splines: results report
