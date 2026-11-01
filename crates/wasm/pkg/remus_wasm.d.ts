@@ -1875,6 +1875,11 @@ export class RemusKernel {
      */
     discardCheckpoint(checkpoint_id: number): void;
     /**
+     * Whether blends are built for display only (see
+     * `setDisplayOnlyBlends`).
+     */
+    displayOnlyBlendsEnabled(): boolean;
+    /**
      * Apply draft angle to faces of a solid.
      *
      * `face_handles` is an array of face handles to draft.
@@ -4374,6 +4379,26 @@ export class RemusKernel {
      * body, or serialization fails.
      */
     serializeWires(wires: Uint32Array): Uint8Array;
+    /**
+     * Build fillets and chamfers for display only (off by default).
+     *
+     * For a live preview that rebuilds a blend on every step of a drag. On
+     * a body with curved faces nearly all of a blend's time goes to two
+     * postconditions, not to the blend: a fine whole-solid volume
+     * measurement and a material check that classifies thousands of sample
+     * points. With this on, every blend skips both. The structural checks
+     * still run: every named edge is blended, the outer shell is closed and
+     * the result carries no validation error the input did not.
+     *
+     * A result built this way is for display only. Turn the switch off and
+     * rebuild before keeping a result: a band those checks would refuse can
+     * look plausible on screen.
+     *
+     * The setting is per thread, like `setStoreLocalCuts`: it applies to
+     * every kernel in this module instance (one browser worker), not only
+     * to this one.
+     */
+    setDisplayOnlyBlends(enabled: boolean): void;
     /**
      * Sets (or clears, when `name` is null/empty) a face's semantic
      * name, preserving its other attributes.
