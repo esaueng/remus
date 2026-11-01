@@ -3277,16 +3277,37 @@ fn line_circle_cylinder_signed_volume(
     let oy = origin.dot(cylinder.y_axis());
     let mut boundary_integral = 0.0;
     let mut signed_chart_area = 0.0;
-    let mut circles = 0;
     for oriented in topo.wire(face.outer_wire()).ok()?.edges() {
         let edge = topo.edge(oriented.edge()).ok()?;
         match edge.curve() {
             EdgeCurve::Line => {
-                let start = topo.vertex(edge.start()).ok()?.point();
-                let end = topo.vertex(edge.end()).ok()?.point();
-                if (end - start).cross(cylinder.axis()).length() > tolerance.linear {
+                let (from, to) = if oriented.is_forward() {
+                    (edge.start(), edge.end())
+                } else {
+                    (edge.end(), edge.start())
+                };
+                let (u0, v0) = cylinder.project_point(topo.vertex(from).ok()?.point());
+                let (u1, v1) = cylinder.project_point(topo.vertex(to).ok()?.point());
+                let du = (u1 - u0 + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+                    - std::f64::consts::PI;
+                // Near-tangent cuts (a boss wall 1e-7 past a block side) leave
+                // lines that are not rulings: a seam whose vertex closes the
+                // crossing leans off its ruling by more than the linear
+                // tolerance, and a rim arc shorter than the tolerance's chord
+                // is written as a line. Accept a line while its chord stays
+                // within tolerance of the wall and integrate it as its chart
+                // segment. That bounds |du| by sqrt(8·tol/r), where Simpson's
+                // rule is exact to far below rounding.
+                if cylinder.radius() * (1.0 - (0.5 * du).cos()) > tolerance.linear {
                     return None;
                 }
+                let along = |s: f64| {
+                    let u = u0 + s * du;
+                    v1.mul_add(s, v0 * (1.0 - s))
+                        * (ox * u.cos() + oy * u.sin() + cylinder.radius())
+                };
+                boundary_integral -= du / 6.0 * (along(0.0) + 4.0 * along(0.5) + along(1.0));
+                signed_chart_area -= 0.5 * (v0 + v1) * du;
             }
             EdgeCurve::Circle(circle) => {
                 let delta = circle.center() - cylinder.origin();
@@ -3306,17 +3327,29 @@ fn line_circle_cylinder_signed_volume(
                         .dot(cylinder.axis())
                         .signum()
                     * direction;
-                let start = circle.evaluate(if oriented.is_forward() { lo } else { hi });
-                let (u0, _) = cylinder.project_point(start);
+                // The chart loop closes on the shared vertices, as the
+                // neighbouring faces' boundaries do; the trims only fix the
+                // sweep's turn and direction. A vertex that closes a
+                // near-tangent crossing can sit off its arc's trim end along
+                // the arc while lying on every carrier.
+                let (from, to) = if oriented.is_forward() {
+                    (edge.start(), edge.end())
+                } else {
+                    (edge.end(), edge.start())
+                };
+                let (u0, _) = cylinder.project_point(topo.vertex(from).ok()?.point());
+                let (u_to, _) = cylinder.project_point(topo.vertex(to).ok()?.point());
+                let chord = u_to - u0;
+                let sweep = std::f64::consts::TAU
+                    .mul_add(((sweep - chord) / std::f64::consts::TAU).round(), chord);
                 let u1 = u0 + sweep;
                 boundary_integral -= v
                     * (ox * (u1.sin() - u0.sin())
                         + oy * (u0.cos() - u1.cos())
                         + cylinder.radius() * sweep);
                 signed_chart_area -= v * sweep;
-                circles += 1;
             }
-            // Only straight axial segments and coaxial rim circles bound the
+            // Only lines lying on the wall and coaxial rim circles bound the
             // line/circle cylinder this integrator is exact for. A closed
             // NURBS rim on a RECOGNIZED converted wall is the same geometry
             // (an exact rational circle at constant chart-v): integrate it
@@ -3369,14 +3402,13 @@ fn line_circle_cylinder_signed_volume(
                 };
                 boundary_integral -= v * sweep * cylinder.radius();
                 signed_chart_area -= v * sweep;
-                circles += 1;
             }
             EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
                 return None;
             }
         }
     }
-    if circles == 0 || signed_chart_area.abs() <= tolerance.linear * tolerance.angular {
+    if signed_chart_area.abs() <= tolerance.linear * tolerance.angular {
         return None;
     }
     // Wire traversal may run either way independently of the face reversal.
