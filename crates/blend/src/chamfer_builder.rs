@@ -184,6 +184,29 @@ impl<'a> ChamferBuilder<'a> {
         // boundary rewrites go copy-on-write through this scope.
         let mut scope = EditScope::new(topo, original_faces.iter().copied())?;
 
+        // A concave seam along a boss whose other face turns sharp corners
+        // (or runs round the boss): see `seam_chain`.
+        let (first_d1, first_d2) = (all_edges[0].1, all_edges[0].2);
+        if first_d1.to_bits() == first_d2.to_bits()
+            && all_edges.iter().all(|&(_, d1, d2)| {
+                d1.to_bits() == first_d1.to_bits() && d2.to_bits() == first_d1.to_bits()
+            })
+        {
+            let edges: Vec<EdgeId> = all_edges.iter().map(|&(edge, ..)| edge).collect();
+            if let Some(result) = crate::seam_chain::blend(
+                topo,
+                &adjacency,
+                &edges,
+                crate::seam_chain::SeamBlend::Chamfer(first_d1),
+                &mut scope,
+                &original_faces,
+                &inner_shells,
+                &edges,
+            )? {
+                return Ok(result);
+            }
+        }
+
         let mut touched_faces: HashSet<FaceId> = HashSet::new();
 
         let mut succeeded: Vec<EdgeId> = Vec::new();

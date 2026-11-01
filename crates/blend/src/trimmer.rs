@@ -1552,6 +1552,56 @@ pub fn boundary_vertex_at(
     Ok(Some(vertex))
 }
 
+/// The boundary vertex of `face_id`'s outer boundary at `point`, splitting
+/// the body there when none exists yet.
+///
+/// Like [`boundary_vertex_at`], but the split is written into every face of
+/// the body that uses the edge, `face_id` included, so a caller can make all
+/// of a build's boundary vertices first and cut the faces afterwards from
+/// their current wires. Returns `None`, before any mutation, when the point is
+/// on no boundary edge.
+///
+/// # Errors
+///
+/// Returns [`BlendError`] when the split cannot be certified or a topology
+/// lookup fails.
+pub fn split_body_boundary_at(
+    topo: &mut Topology,
+    edit: &mut BodyEdit<'_>,
+    face_id: FaceId,
+    point: Point3,
+    tolerance: f64,
+) -> Result<Option<VertexId>, BlendError> {
+    let wire = topo
+        .wire(topo.face(face_id)?.outer_wire())?
+        .edges()
+        .to_vec();
+    let mut nearest_vertex: Option<(VertexId, f64)> = None;
+    for oriented in &wire {
+        let vertex = oriented.oriented_start(topo.edge(oriented.edge())?);
+        let distance = (topo.vertex(vertex)?.point() - point).length();
+        if distance <= tolerance && nearest_vertex.is_none_or(|(_, best)| distance < best) {
+            nearest_vertex = Some((vertex, distance));
+        }
+    }
+    if let Some((vertex, _)) = nearest_vertex {
+        return Ok(Some(vertex));
+    }
+    let mut nearest_edge: Option<(usize, f64)> = None;
+    for (position, oriented) in wire.iter().enumerate() {
+        let (_, _, distance) = closest_on_oriented_edge(topo, *oriented, point)?;
+        if distance <= tolerance && nearest_edge.is_none_or(|(_, best)| distance < best) {
+            nearest_edge = Some((position, distance));
+        }
+    }
+    let Some((position, distance)) = nearest_edge else {
+        return Ok(None);
+    };
+    let vertex = topo.add_vertex(Vertex::new(point, distance.max(VERTEX_TOL)));
+    split_edge_at(topo, edit, None, &wire[position], vertex)?;
+    Ok(Some(vertex))
+}
+
 /// The position in `wire` whose edge use starts at `vertex`, choosing among
 /// repeated occurrences the one whose side of the face `toward` lies on.
 ///
