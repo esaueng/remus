@@ -819,7 +819,11 @@ fn glue(
                         && on_axis(c.center())
                         && c.normal().cross(frame.axis).length() <= 1e-9
                 }
-                _ => false,
+                EdgeCurve::Line
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => false,
             })
         };
     // A wire that is one closed coaxial circle of `radius`.
@@ -835,7 +839,11 @@ fn glue(
                     && (normal.dot(Vec3::new(origin.x(), origin.y(), origin.z())) - d).abs()
                         <= 1e-9 * scale
             }
-            _ => false,
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => false,
         })
     };
     let effective_normal = |topo: &Topology, face: FaceId| -> Result<f64, ThreadError> {
@@ -1148,7 +1156,11 @@ fn flush_end(topo: &mut Topology, end: &FlushEnd<'_>) -> Result<Option<FlushSpli
                 let sign = c.normal().dot(frame.axis).signum();
                 Some(if oe.is_forward() { sign } else { -sign })
             }
-            _ => None,
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => None,
         })
     };
     let mut direction = 0.0;
