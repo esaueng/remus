@@ -16,8 +16,8 @@ historical predecessor-line records, retained for provenance. The
   are returned as data.
 * **operations,wasm:** `cut_gear_teeth` / `cutGearTeethDetailed` cut gear
   teeth into a solid's boss (external) or bore (internal), keeping its
-  diameter or using a given module; the input solid is kept. External teeth
-  run along the whole face or over a band of it from `offset`, collars of the
+  diameter or using a given module; the input solid is kept. External teeth,
+  spur, helical or herringbone, run along the whole face or over a band of it from `offset`, collars of the
   boss staying on either side, with tips flush or turned down below them;
   internal teeth likewise run along the whole bore or over part of it. A
   feature crossing the tooth band or a span reaching past an end of the face
