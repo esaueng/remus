@@ -375,15 +375,24 @@ pub(super) fn find_splits_on_circle(
 /// piece breaks the tie: the same chord serves the piece and its complement, so
 /// a cap cut into an in-body wedge and a protruding crescent can come back with
 /// the wedge twice and no crescent at all, leaving the fused shell open where
-/// the wall pokes out. Halving major pieces keeps every emitted arc inside the
-/// range its chord determines.
+/// the wall pokes out. Subdividing major pieces keeps every emitted arc inside
+/// the range its chord determines.
 ///
-/// Major pieces are divided at their geometric gap midpoints. A rim with four
-/// or more crossings additionally gets fixed quarter-turn stations: that is
-/// the multiple-disjoint-lobe regime, where individually minor arcs can still
-/// form a chain whose chords step across a circle extremum and make the planar
-/// arrangement classify the wrong cell. Both choices are derived from the
-/// circle itself, so the cap and wall stay split in step.
+/// Major pieces are divided at the rim's fixed quarter-turn stations (measured
+/// from the seam vertex `base`) that fall inside them. A rim with four or more
+/// crossings gets a station in every quadrant: that is the
+/// multiple-disjoint-lobe regime, where individually minor arcs can still form
+/// a chain whose chords step across a circle extremum and make the planar
+/// arrangement classify the wrong cell.
+///
+/// The stations depend only on the closed rim edge — its circle and its seam
+/// vertex — never on which crossings one face happens to see. That is what
+/// keeps the cap and the wall split in step. Halving each major gap at its own
+/// midpoint did not: the wall rim also carries the seam-antipodal split, so the
+/// two faces see different gaps and pick different midpoints. A cylinder on a
+/// box's corner edge, both based at z = 0, put a 225° vertex on the cap and a
+/// 270° vertex on the wall, and the union of both survived into the result as
+/// a degree-2 vertex between two arcs of one circle on the same two faces.
 fn subdivide_ambiguous_closed_rim_pieces(
     circle: &remus_math::curves::Circle3D,
     base: f64,
@@ -429,13 +438,17 @@ fn subdivide_ambiguous_closed_rim_pieces(
         if gap <= MAX_PIECE - PIECE_EPS {
             continue;
         }
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let pieces = ((gap / MAX_PIECE).ceil() as usize).max(2);
-        for k in 1..pieces {
-            #[allow(clippy::cast_precision_loss)]
-            let t = gap.mul_add(k as f64 / pieces as f64, w[0]);
-            let angle = std::f64::consts::TAU.mul_add(dir * t, base);
-            added.push((t, circle.evaluate(angle)));
+        // Every quarter-turn station strictly inside the major piece, kept
+        // clear of its ends by the same snap as above so no sliver arc is
+        // emitted. The piece spans at least a half turn less PIECE_EPS, so the
+        // window left after the snap is longer than a quarter turn and holds
+        // at least one station; every emitted piece then spans at most a
+        // quarter turn plus one snap — well under the half-turn ceiling.
+        for t in [0.25, 0.5, 0.75] {
+            if t >= w[0] + STATION_SNAP && t <= w[1] - STATION_SNAP {
+                let angle = std::f64::consts::TAU.mul_add(dir * t, base);
+                added.push((t, circle.evaluate(angle)));
+            }
         }
     }
     if added.is_empty() {
@@ -966,6 +979,116 @@ mod tests {
                 w[1].start_uv.x() < w[0].start_uv.x(),
                 "reversed rim UV must decrease monotonically"
             );
+        }
+    }
+
+    /// The cap and the wall of one closed rim must be cut at the same points.
+    ///
+    /// A cylinder on a box's corner edge, both based at z = 0: the box face
+    /// crosses the rim a quarter turn past the seam. The plane cap (walked
+    /// clockwise) sees only that crossing; the wall (walked counter-clockwise)
+    /// also carries the seam-antipodal split the periodic path always adds.
+    /// Halving each face's major gap at its own midpoint cut the cap at 225°
+    /// from the seam and the wall at 270°, and the union of both survived as a
+    /// degree-2 vertex between two arcs of one circle. Quarter-turn stations
+    /// depend only on the rim, so both faces land on the same three points.
+    #[test]
+    fn closed_rim_major_piece_splits_match_on_cap_and_wall() {
+        use std::f64::consts::{FRAC_PI_2, PI, TAU};
+        let (wall_surface, wall_edge, _) = closed_rim_edge(true);
+        let EdgeCurve::Circle(circle) = wall_edge.curve_3d.clone() else {
+            unreachable!("closed_rim_edge builds a circle")
+        };
+        let mut cap_edge = wall_edge.clone();
+        cap_edge.forward = false;
+        let cap_surface = FaceSurface::Plane {
+            normal: remus_math::vec::Vec3::new(0.0, 0.0, -1.0),
+            d: 0.0,
+        };
+        let seam = 1.5 * PI;
+        let crossing = circle.evaluate(seam + FRAC_PI_2);
+        let antipode = circle.evaluate(seam + PI);
+
+        let angles = |splits: &[(f64, Point3)]| -> Vec<f64> {
+            let mut a: Vec<f64> = splits
+                .iter()
+                .map(|(_, p)| (circle.project(*p) - seam).rem_euclid(TAU))
+                .collect();
+            a.compact_sort_by(f64::total_cmp);
+            a
+        };
+        let cap = find_splits_on_circle(&circle, &cap_edge, &[crossing], &cap_surface, 1e-7);
+        let wall = find_splits_on_circle(
+            &circle,
+            &wall_edge,
+            &[crossing, antipode],
+            &wall_surface,
+            1e-7,
+        );
+        let expected = [FRAC_PI_2, PI, 1.5 * PI];
+        for (label, got) in [("cap", angles(&cap)), ("wall", angles(&wall))] {
+            assert_eq!(got.len(), 3, "{label} splits: {got:?}");
+            for (g, e) in got.iter().zip(expected) {
+                assert!(
+                    (g - e).abs() < 1e-9,
+                    "{label} rim split at {g} rad from the seam, expected {e}: {got:?}"
+                );
+            }
+        }
+    }
+
+    /// Every piece a closed rim is cut into stays below a half turn, wherever
+    /// the crossings fall and whichever way the rim is walked, and no piece is
+    /// a sliver below the station snap.
+    #[test]
+    fn closed_rim_pieces_stay_below_a_half_turn() {
+        use std::f64::consts::TAU;
+        let (_, edge, _) = closed_rim_edge(true);
+        let EdgeCurve::Circle(circle) = edge.curve_3d else {
+            unreachable!("closed_rim_edge builds a circle")
+        };
+        let base = 1.5 * std::f64::consts::PI;
+        for forward in [true, false] {
+            let dir = if forward { 1.0 } else { -1.0 };
+            for k in 1..64 {
+                for width in [0.0, 0.004, 0.02, 0.1, 0.3] {
+                    let t0 = f64::from(k) / 64.0;
+                    let mut splits: Vec<(f64, Point3)> = [t0, t0 + width]
+                        .into_iter()
+                        .filter(|t| *t < 1.0)
+                        .map(|t| (t, circle.evaluate(TAU.mul_add(dir * t, base))))
+                        .collect();
+                    splits.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-12);
+                    let crossings: Vec<f64> = splits.iter().map(|s| s.0).collect();
+                    // Bit identity: a crossing is carried through unchanged.
+                    let mut ends: Vec<u64> = crossings.iter().map(|t| t.to_bits()).collect();
+                    ends.extend([0.0_f64.to_bits(), 1.0_f64.to_bits()]);
+                    subdivide_ambiguous_closed_rim_pieces(&circle, base, forward, &mut splits);
+                    let mut bounds = vec![0.0];
+                    bounds.extend(splits.iter().map(|s| s.0));
+                    bounds.push(1.0);
+                    for w in bounds.windows(2) {
+                        let piece = w[1] - w[0];
+                        assert!(
+                            piece < 0.5 - 1e-9,
+                            "piece {w:?} reaches a half turn (forward={forward}, \
+                             crossings {crossings:?})"
+                        );
+                        // Only the caller's own crossings may sit closer
+                        // together than the snap; an added station never does.
+                        let both_crossings =
+                            [w[0], w[1]].iter().all(|t| ends.contains(&t.to_bits()));
+                        assert!(
+                            both_crossings || piece >= 1.0 / 64.0,
+                            "station sliver {w:?} (forward={forward}, crossings {crossings:?})"
+                        );
+                    }
+                    for (t, p) in &splits {
+                        let expected = circle.evaluate(TAU.mul_add(dir * t, base));
+                        assert!((*p - expected).length() < 1e-9, "split point off its t");
+                    }
+                }
+            }
         }
     }
 
