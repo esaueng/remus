@@ -14,13 +14,14 @@ use remus_math::compact_sort::CompactSort;
 use std::collections::VecDeque;
 
 use remus_math::det_hash::{DetHashMap, DetHashSet, DetState};
-use remus_math::vec::{Point3, Vec3};
+use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeDomainError, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::shell::Shell;
 use remus_topology::solid::{Solid, SolidId};
 use remus_topology::wire::{OrientedEdge, WireId};
+use std::f64::consts::{PI, TAU};
 
 use super::FaceProvenance;
 
@@ -1370,6 +1371,59 @@ fn spherical_hemisphere_flux(topo: &Topology, face: &Face) -> Option<f64> {
     Some(if face.is_reversed() { -flux } else { flux })
 }
 
+/// The `(u, v)` trim of a cylinder or cone face bounded by one wire that does
+/// not wind around the axis: its boundary samples in traversal order, `u`
+/// unwrapped across the seam. `None` for any other face, a full-turn band, or
+/// a boundary point that does not project.
+fn revolved_strip_uv_polygon(topo: &Topology, face: &Face) -> Option<Vec<Point2>> {
+    let surface = face.surface();
+    if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_))
+        || !face.inner_wires().is_empty()
+    {
+        return None;
+    }
+    let wire = topo.wire(face.outer_wire()).ok()?;
+    let mut polygon: Vec<Point2> = Vec::new();
+    let mut shift = 0.0_f64;
+    let mut previous: Option<f64> = None;
+    let mut unwrap = |u: f64| {
+        if let Some(last) = previous {
+            let step = u + shift - last;
+            if step > PI {
+                shift -= TAU;
+            } else if step < -PI {
+                shift += TAU;
+            }
+        }
+        previous = Some(u + shift);
+        u + shift
+    };
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge()).ok()?;
+        let sp = topo.vertex(edge.start()).ok()?.point();
+        let ep = topo.vertex(edge.end()).ok()?.point();
+        let (lo, hi) = edge.strict_domain().ok()?;
+        // The next edge's first sample is this edge's last; skip it.
+        for k in 0..8 {
+            let f = f64::from(k) / 8.0;
+            let f = if oe.is_forward() { f } else { 1.0 - f };
+            let point = edge
+                .curve()
+                .evaluate_with_endpoints((hi - lo).mul_add(f, lo), sp, ep);
+            let (u, v) = surface.project_point(point)?;
+            polygon.push(Point2::new(unwrap(u), v));
+        }
+    }
+    // The first sample was taken before any shift; closing back onto it
+    // must not complete a turn.
+    let first = polygon.first()?.x();
+    let closing = unwrap(first);
+    if polygon.len() < 3 || (closing - first).abs() > PI {
+        return None;
+    }
+    Some(polygon)
+}
+
 /// Robust outward-orientation test for a closed shell, independent of face
 /// curvature and wire winding.
 ///
@@ -1474,6 +1528,12 @@ fn shell_is_outward_oriented(topo: &Topology, faces: &[FaceId]) -> Option<bool> 
             if uvs.len() < 3 {
                 continue;
             }
+            // A strip on a revolved carrier (a helical gear land) covers only
+            // part of its parameter box; integrate the cells inside its trim.
+            let trim = revolved_strip_uv_polygon(topo, face);
+            if let Some(polygon) = &trim {
+                uvs = polygon.iter().map(|p| (p.x(), p.y())).collect();
+            }
             let (u_lo, u_hi, v_lo, v_hi) = uvs.iter().fold(
                 (f64::MAX, f64::MIN, f64::MAX, f64::MIN),
                 |(ul, uh, vl, vh), &(u, v)| (ul.min(u), uh.max(u), vl.min(v), vh.max(v)),
@@ -1491,6 +1551,11 @@ fn shell_is_outward_oriented(topo: &Topology, faces: &[FaceId]) -> Option<bool> 
                 for iv in 0..n_v {
                     let u = u_lo + (iu as f64 + 0.5) * du;
                     let v = v_lo + (iv as f64 + 0.5) * dv;
+                    if trim.as_ref().is_some_and(|polygon| {
+                        !super::classify_2d::point_in_polygon_2d(Point2::new(u, v), polygon)
+                    }) {
+                        continue;
+                    }
                     let (Some(p), Some(pu1), Some(pu0), Some(pv1), Some(pv0)) = (
                         surface.evaluate(u, v),
                         surface.evaluate(u + eps_u, v),

@@ -690,3 +690,47 @@ fn keep_diameter_teeth_on_the_middle_of_a_plain_boss() {
         );
     }
 }
+
+/// Internal helical teeth in a bore, whole or over part of it. The tooth tip
+/// and root lands are helical strips facing the axis; once their twist
+/// outgrew their width, the shell orientation test read the fused ring as
+/// inward and assembly refused it.
+#[test]
+fn internal_helical_teeth_in_a_bore_match_the_standalone_gear() {
+    for (hand, offset, width, height) in [
+        (Hand::Right, 0.0, 7.0, 7.0),
+        (Hand::Left, 0.0, 10.0, 10.0),
+        (Hand::Left, 1.0, 7.0, 9.0),
+    ] {
+        let mut topo = Topology::new();
+        let outer = make_cylinder(&mut topo, 30.0, height).unwrap();
+        let drill = moved_cylinder(&mut topo, 19.0, height + 10.0, -5.0);
+        let ring = boolean(&mut topo, BooleanOp::Cut, outer, drill).unwrap();
+        let ring_volume = volume(&topo, ring);
+        let face = cylinder_face(&topo, ring, 19.0);
+        let params = GearParams {
+            helix_angle: 15.0_f64.to_radians(),
+            hand,
+            ..GearParams::standard(GearKind::Internal, 1.0, 40, width)
+        };
+        let options = CylinderGearOptions {
+            offset,
+            ..CylinderGearOptions::default()
+        };
+        let outcome = cut_gear_teeth(&mut topo, ring, face, &params, &options)
+            .unwrap_or_else(|error| panic!("{hand:?} {offset}..{}: {error}", offset + width));
+        assert_valid_and_watertight(&topo, outcome.solid);
+
+        let mut standalone = params.clone();
+        standalone.module = outcome.geometry.module;
+        standalone.rim_diameter = Some(56.0);
+        let hole_area = PI * 28.0 * 28.0 - outline_area(&standalone);
+        let expected = ring_volume - (hole_area - PI * 19.0 * 19.0) * width;
+        let got = volume(&topo, outcome.solid);
+        assert!(
+            ((got - expected) / expected).abs() < 1e-9,
+            "{hand:?} {offset}..{}: {got} vs {expected}",
+            offset + width
+        );
+    }
+}
