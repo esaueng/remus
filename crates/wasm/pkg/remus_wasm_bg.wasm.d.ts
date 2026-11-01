@@ -100,6 +100,7 @@ export const remuskernel_cut: (a: number, b: number, c: number) => [number, numb
 export const remuskernel_cutDetailed: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_cutGearTeethDetailed: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_cutJournaled: (a: number, b: number, c: number) => [number, number, number, number];
+export const remuskernel_cutThreadDetailed: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_cutWithEntityEvolution: (a: number, b: number, c: number) => [number, number, number, number];
 export const remuskernel_cutWithEvolution: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_cutWithOptions: (a: number, b: number, c: number, d: number) => [number, number, number];

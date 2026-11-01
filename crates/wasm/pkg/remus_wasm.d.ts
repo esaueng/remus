@@ -1728,6 +1728,20 @@ export class RemusKernel {
      */
     cutJournaled(a: number, b: number): string;
     /**
+     * Cut a screw thread along a solid's cylindrical face, as typed data:
+     * external on a boss, internal in a bore (see the module docs for the
+     * fields).
+     *
+     * The input solid is left in place and a new solid is returned. Never
+     * throws on a refusal: the envelope's `status` is `"error"` with a
+     * `thread:<reason>` code and the session unchanged.
+     *
+     * # Errors
+     *
+     * Only when the envelope cannot be converted to a JavaScript value.
+     */
+    cutThreadDetailed(solid: number, face: number, spec: string): SolidOperationDetailedResult;
+    /**
      * Cut with full entity history; see `fuseWithEntityEvolution`.
      */
     cutWithEntityEvolution(a: number, b: number): string;
