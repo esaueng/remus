@@ -203,19 +203,6 @@ pub fn cut_gear_teeth(
             _ => "the cylinder is a bore: it takes an internal gear",
         }));
     }
-    // Internal teeth over part of a bore leave the tooth outline ending on
-    // the bore circle of the collars' annular caps, a hole the exact
-    // boolean's planar splitter does not weave curved sections into.
-    if kind == GearKind::Internal && (offset > 0.0 || width < length) {
-        return Err(GearError::refused(
-            GearRefusal::PartialSpan,
-            format!(
-                "internal teeth must span the whole bore ({length} long), got {offset}..{}",
-                offset + width
-            ),
-        ));
-    }
-
     let z = f64::from(params.teeth);
     let mut resolved = params.clone();
     if options.fit == GearFit::KeepDiameter {

@@ -28,6 +28,16 @@ pub(super) fn sample_wire_loop_uv_via_frame(
     wire: &[OrientedPCurveEdge],
     frame: &super::super::plane_frame::PlaneFrame,
 ) -> Vec<Point2> {
+    sample_wire_loop_uv_via_frame_closed(wire, frame, 8)
+}
+
+/// [`sample_wire_loop_uv_via_frame`] with `closed_samples` points on each
+/// closed curve (a whole rim stored as one edge) instead of eight.
+pub(super) fn sample_wire_loop_uv_via_frame_closed(
+    wire: &[OrientedPCurveEdge],
+    frame: &super::super::plane_frame::PlaneFrame,
+    closed_samples: usize,
+) -> Vec<Point2> {
     use remus_topology::edge::EdgeCurve;
     const CURVE_SAMPLES: usize = 8;
 
@@ -46,10 +56,15 @@ pub(super) fn sample_wire_loop_uv_via_frame(
             (e.end_3d, e.start_3d)
         };
         let (t0, t1) = e.native_domain();
+        let n = if (e.start_3d - e.end_3d).length() < 1e-10 {
+            closed_samples
+        } else {
+            CURVE_SAMPLES
+        };
         #[allow(clippy::cast_precision_loss)]
-        let mut samples: Vec<Point2> = (1..CURVE_SAMPLES)
+        let mut samples: Vec<Point2> = (1..n)
             .map(|k| {
-                let t = (t1 - t0).mul_add(k as f64 / CURVE_SAMPLES as f64, t0);
+                let t = (t1 - t0).mul_add(k as f64 / n as f64, t0);
                 frame.project(e.curve_3d.evaluate_with_endpoints(t, s3, e3))
             })
             .collect();

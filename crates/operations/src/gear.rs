@@ -573,7 +573,8 @@ pub enum GearRefusal {
     NotABossOrBore,
     /// The teeth would reach past an end of the picked face.
     SpanOutsideFace,
-    /// Internal teeth would cover only part of the picked bore.
+    /// Internal teeth would cover only part of the picked bore. No longer
+    /// returned: internal teeth over part of a bore build.
     PartialSpan,
     /// The tip circle is larger than the picked boss.
     CylinderTooSmall,
