@@ -721,7 +721,10 @@ fn wire_in_arc_plane(
             let end_point = topo.vertex(arc_edge.end())?.point();
             (normal, (end_point - start_point).length())
         }
-        _ => return Ok(false),
+        EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return Ok(false),
     };
     for oe in oes {
         let edge = topo.edge(oe.edge())?;
