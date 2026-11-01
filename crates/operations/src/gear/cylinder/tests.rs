@@ -734,3 +734,42 @@ fn internal_helical_teeth_in_a_bore_match_the_standalone_gear() {
         );
     }
 }
+
+/// Internal herringbone teeth in a bore, whole or over part of it. The
+/// ring's rim is two faces, one per half; the groove wall it meets is one,
+/// and the fuse kept that wall as a stray face until the halves were merged.
+#[test]
+fn internal_herringbone_teeth_in_a_bore_match_the_standalone_gear() {
+    for (offset, width, height) in [(0.0, 6.0, 6.0), (2.0, 6.0, 9.0)] {
+        let mut topo = Topology::new();
+        let outer = make_cylinder(&mut topo, 30.0, height).unwrap();
+        let drill = moved_cylinder(&mut topo, 19.0, height + 10.0, -5.0);
+        let ring = boolean(&mut topo, BooleanOp::Cut, outer, drill).unwrap();
+        let ring_volume = volume(&topo, ring);
+        let face = cylinder_face(&topo, ring, 19.0);
+        let params = GearParams {
+            helix_angle: 15.0_f64.to_radians(),
+            herringbone: true,
+            ..GearParams::standard(GearKind::Internal, 1.0, 40, width)
+        };
+        let options = CylinderGearOptions {
+            offset,
+            ..CylinderGearOptions::default()
+        };
+        let outcome = cut_gear_teeth(&mut topo, ring, face, &params, &options)
+            .unwrap_or_else(|error| panic!("{offset}..{}: {error}", offset + width));
+        assert_valid_and_watertight(&topo, outcome.solid);
+
+        let mut standalone = params.clone();
+        standalone.module = outcome.geometry.module;
+        standalone.rim_diameter = Some(56.0);
+        let hole_area = PI * 28.0 * 28.0 - outline_area(&standalone);
+        let expected = ring_volume - (hole_area - PI * 19.0 * 19.0) * width;
+        let got = volume(&topo, outcome.solid);
+        assert!(
+            ((got - expected) / expected).abs() < 1e-9,
+            "{offset}..{}: {got} vs {expected}",
+            offset + width
+        );
+    }
+}
