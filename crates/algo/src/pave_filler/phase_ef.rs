@@ -812,6 +812,12 @@ fn check_edge_face_pairs(
                     &curve, start_pos, end_pos, t0, t1, surface, tol, grid,
                 ),
             };
+            let crossings =
+                if let (FaceSurface::Cylinder(wall), EdgeCurve::Line) = (surface, &curve) {
+                    settle_line_cylinder_crossings(crossings, start_pos, end_pos, t0, t1, wall, tol)
+                } else {
+                    crossings
+                };
 
             // Endpoint-drop windows, one per crossing and per endpoint,
             // computed while the face's surface borrow is still live (the
@@ -1111,6 +1117,79 @@ fn find_edge_cylinder_crossings(
     } else {
         find_crossings_by_sampling(curve, start_pos, end_pos, t0, t1, signed, tol.linear)
     }
+}
+
+/// Settle the sampled scan's line-cylinder crossings on the closed-form roots.
+///
+/// The scan's ternary search on the unsigned distance narrows its bracket to
+/// (2/3)^30 of a sample interval, 1.6e-6 along a 40 mm edge. A transversal
+/// crossing hides that, but along a near-tangent line the distance barely
+/// changes: a block edge 1e-9 inside a boss wall left its crossing 6e-7 off,
+/// beside the exact vertex the wall's rim crossing minted, and the fuse kept
+/// both. Each crossing moves to the nearest root of |radial|² = r² within its
+/// sample bracket, or to the closest approach when the line passes the wall
+/// within tolerance without crossing it. Which crossings exist is the scan's
+/// decision; only their positions change.
+fn settle_line_cylinder_crossings(
+    crossings: Vec<(f64, Point3)>,
+    start_pos: Point3,
+    end_pos: Point3,
+    t0: f64,
+    t1: f64,
+    wall: &remus_math::surfaces::CylindricalSurface,
+    tol: Tolerance,
+) -> Vec<(f64, Point3)> {
+    let axis = wall.axis();
+    let dir = end_pos - start_pos;
+    let radial_dir = dir - axis * axis.dot(dir);
+    let to_start = start_pos - wall.origin();
+    let radial_start = to_start - axis * axis.dot(to_start);
+    let a = radial_dir.length_squared();
+    if a < 1e-30 || (t1 - t0).abs() <= 0.0 {
+        return crossings;
+    }
+    let half_b = radial_start.dot(radial_dir);
+    let c = radial_start.length_squared() - wall.radius() * wall.radius();
+    let quarter_disc = half_b.mul_add(half_b, -a * c);
+    let roots: Vec<f64> = if quarter_disc >= 0.0 {
+        // Cancellation-free pair: q carries the sign of -half_b.
+        let q = -half_b - quarter_disc.sqrt().copysign(half_b);
+        if q == 0.0 {
+            vec![0.0]
+        } else {
+            vec![q / a, c / q]
+        }
+    } else {
+        vec![-half_b / a]
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let bracket = 2.0 / N_SAMPLES as f64;
+    let mut settled: Vec<(f64, Point3)> = Vec::with_capacity(crossings.len());
+    for (t, pt) in crossings {
+        let s = (t - t0) / (t1 - t0);
+        let nearest = roots
+            .iter()
+            .copied()
+            .filter(|root| (0.0..=1.0).contains(root) && (root - s).abs() <= bracket)
+            .min_by(|x, y| (x - s).abs().total_cmp(&(y - s).abs()));
+        let (t, pt) = nearest.map_or((t, pt), |root| {
+            let p = start_pos + dir * root;
+            let radial = p - wall.origin();
+            let off = ((radial - axis * axis.dot(radial)).length() - wall.radius()).abs();
+            if off <= tol.linear {
+                (root.mul_add(t1 - t0, t0), p)
+            } else {
+                (t, pt)
+            }
+        });
+        if !settled
+            .iter()
+            .any(|&(_, q): &(f64, Point3)| (q - pt).length() <= tol.linear)
+        {
+            settled.push((t, pt));
+        }
+    }
+    settled
 }
 
 /// Algebraic events for an actual analytic Plane×Circle pair. All root
