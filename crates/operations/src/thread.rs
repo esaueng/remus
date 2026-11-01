@@ -9,7 +9,7 @@
 //! crests and roots that leave no knife edges.
 //!
 //! The thread is the screw sweep of its transverse outline (see
-//! [`profile`]), built as twisted extrusions: a thread ring. The ring is
+//! `profile`), built as twisted extrusions: a thread ring. The ring is
 //! put on the body the way gear teeth are ([`crate::gear::cut_gear_teeth`]),
 //! in two booleans that never intersect a swept flank with a cylinder:
 //!
