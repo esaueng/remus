@@ -22,6 +22,7 @@ pub mod g1_chain;
 pub mod query;
 pub mod radius_law;
 pub(crate) mod rail_chain;
+pub(crate) mod ridge_chain;
 pub(crate) mod seam_chain;
 pub(crate) mod section;
 pub(crate) mod spherical_triangle;

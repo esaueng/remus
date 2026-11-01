@@ -2186,13 +2186,12 @@ pub fn chamfer_v2(
     let deduped = dedup_seed_edges(edges);
     let edges = deduped.as_slice();
     reject_seed_selection_larger_than_solid(topo, solid, "chamfer", edges)?;
-    if is_planar_line_blend(topo, solid, edges)? {
-        return transactional(topo, |t| planar_chamfer_result(t, solid, edges, d1, d2));
-    }
-    refuse_cavity_in_blend_reach(topo, solid, edges, d1.max(d2), "chamfer")?;
-    transactional(topo, |t| {
+    let walking = |t: &mut Topology, ridge_chains: bool| {
         let mut builder = ChamferBuilder::new(t, solid);
         builder.add_edges_asymmetric(edges, d1, d2);
+        if ridge_chains {
+            builder.with_ridge_chains();
+        }
         let result = builder.build()?;
         validate_complete_blend(
             t,
@@ -2203,7 +2202,26 @@ pub fn chamfer_v2(
             BlendSize::Chamfer { d1, d2 },
         )?;
         Ok(result)
-    })
+    };
+    let refusal = if is_planar_line_blend(topo, solid, edges)? {
+        match transactional(topo, |t| planar_chamfer_result(t, solid, edges, d1, d2)) {
+            Ok(result) => return Ok(result),
+            Err(error) => error,
+        }
+    } else {
+        refuse_cavity_in_blend_reach(topo, solid, edges, d1.max(d2), "chamfer")?;
+        match transactional(topo, |t| walking(t, false)) {
+            Ok(result) => return Ok(result),
+            Err(error) => error,
+        }
+    };
+    // A selection whose tangent chain changes faces along the way (a box
+    // edge running into an earlier seam band) is one band; every other
+    // refusal stands, and so does this one when that band does not build.
+    if d1.to_bits() != d2.to_bits() || has_cavity_shells(topo, solid)? {
+        return Err(refusal);
+    }
+    transactional(topo, |t| walking(t, true)).or(Err(refusal))
 }
 
 /// Chamfer edges with distance and angle (v2 engine).
