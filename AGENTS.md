@@ -598,6 +598,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Result-aware edge/vertex evolution induced from an exact face map (typed unresolved reasons, F/E/V completeness) | `boundary_evolution.rs` |
 | Compound operations | `compound_ops.rs` |
 | Blend v2 wrappers (fillet/chamfer) | `blend_ops.rs` |
+| A cylinder/block seam followed by its adjoining convex straight edge, in one transactional fillet with construction-derived remapping | `blend_ops/mixed_seam.rs` |
 | Differential oracle for the fillet feature grouping: the pairwise polyline grouping before its connected-pair skip, box prefilter and early-exit scan, kept verbatim (tests) | `blend_ops/grouping_oracle_tests.rs` |
 | Convex blend material-side acceptance | `blend_material.rs` |
 | Exact standalone face-face blend sheets | `face_face_blend.rs` |
