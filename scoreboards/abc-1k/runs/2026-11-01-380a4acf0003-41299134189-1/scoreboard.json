@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "models": 1000,
+  "passed": 166,
+  "failed": 834,
+  "stages": {
+    "boolean": {
+      "passed": 168,
+      "failed": 832
+    },
+    "read": {
+      "passed": 193,
+      "failed": 807
+    },
+    "round_trip": {
+      "passed": 166,
+      "failed": 834
+    },
+    "tessellate": {
+      "passed": 166,
+      "failed": 834
+    },
+    "validate": {
+      "passed": 193,
+      "failed": 807
+    }
+  },
+  "failure_categories": {
+    "invalid_input": 800,
+    "invalid_topology": 7,
+    "resource_limit": 9,
+    "tolerance_violation": 2,
+    "unsupported": 16
+  },
+  "failure_details": {
+    "first_failure_codes": {
+      "boolean": {
+        "operation_invalid_input": 18,
+        "operation_invalid_topology": 7
+      },
+      "read": {
+        "import_limit_exceeded": 9,
+        "step_contains_no_solids": 10,
+        "step_parse_error": 772,
+        "unsupported_step_entity": 16
+      },
+      "tessellate": {
+        "tessellation_not_watertight": 2
+      }
+    },
+    "import_families": {
+      "resource_limit": 9,
+      "endpoint_authority": 33,
+      "face_boundary": 1,
+      "unsupported_entity": 16,
+      "no_solids": 10,
+      "unknown": 738
+    }
+  },
+  "boolean_exact": 682,
+  "boolean_approximate": 65
+}

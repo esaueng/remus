@@ -1,24 +1,24 @@
 {
   "schema_version": 1,
   "models": 1000,
-  "passed": 165,
-  "failed": 835,
+  "passed": 166,
+  "failed": 834,
   "stages": {
     "boolean": {
-      "passed": 167,
-      "failed": 833
+      "passed": 168,
+      "failed": 832
     },
     "read": {
       "passed": 193,
       "failed": 807
     },
     "round_trip": {
-      "passed": 165,
-      "failed": 835
+      "passed": 166,
+      "failed": 834
     },
     "tessellate": {
-      "passed": 165,
-      "failed": 835
+      "passed": 166,
+      "failed": 834
     },
     "validate": {
       "passed": 193,
@@ -26,7 +26,7 @@
     }
   },
   "failure_categories": {
-    "invalid_input": 801,
+    "invalid_input": 800,
     "invalid_topology": 7,
     "resource_limit": 9,
     "tolerance_violation": 2,
@@ -35,7 +35,7 @@
   "failure_details": {
     "first_failure_codes": {
       "boolean": {
-        "operation_invalid_input": 19,
+        "operation_invalid_input": 18,
         "operation_invalid_topology": 7
       },
       "read": {
@@ -57,6 +57,6 @@
       "unknown": 738
     }
   },
-  "boolean_exact": 670,
-  "boolean_approximate": 76
+  "boolean_exact": 682,
+  "boolean_approximate": 65
 }
