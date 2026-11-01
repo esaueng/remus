@@ -12,7 +12,7 @@ export const PACKAGE = 'remus-windows-arm-tooling-probe';
 // Expected installer inputs, not an observation that its archive is retained.
 // The executable digest was independently read from the checksum-verified asset.
 export const BINDGEN_INSTALLATION = Object.freeze({
-  action: 'taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283',
+  action: 'taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91',
   manifest: 'manifests/wasm-bindgen.json',
   tool: 'wasm-pack@0.15.0,wasm-bindgen@0.2.126', checksum: true, fallback: 'none',
   assetUrl: 'https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.126/wasm-bindgen-0.2.126-x86_64-pc-windows-msvc.tar.gz',
@@ -313,7 +313,7 @@ export function validateWorkflowPolicy(text) {
   assert.match(text, /node-version: 24\n          architecture: arm64/);
   assert.match(text, /toolchain: '1\.96\.0-aarch64-pc-windows-msvc'\n          targets: wasm32-unknown-unknown/);
   assert.match(text, /RUSTUP_TOOLCHAIN: '1\.96\.0-aarch64-pc-windows-msvc'/);
-  assert.match(text, /uses: taiki-e\/install-action@8cca0918f8471c33515202b73f56ab27f2bed283[^\n]*\n        with:\n          tool: wasm-pack@0\.15\.0,wasm-bindgen@0\.2\.126\n          checksum: true\n          fallback: none\n/);
+  assert.match(text, /uses: taiki-e\/install-action@1e29709c0ec63babbe8f266397a465f29a825f91[^\n]*\n        with:\n          tool: wasm-pack@0\.15\.0,wasm-bindgen@0\.2\.126\n          checksum: true\n          fallback: none\n/);
   assert.match(text, /if: always\(\)/);
   assert.match(text, /persist-credentials: false/);
   assert.equal([...text.matchAll(/uses: [^@\n]+@[a-f0-9]{40}(?: |\n)/g)].length, 5);

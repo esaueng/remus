@@ -1376,29 +1376,8 @@ fn analytic_faces_solid_volume(
             }
             // A torus's tube is periodic in BOTH parameters, so a hole that
             // wraps a period bounds no patch and has no "above" to count: the
-            // generic integrator leaves it, and the solid is deferred to
-            // tessellation. The one exception is a revolved band — two rims
-            // each wrapping the MAJOR angle once, the rolling-ball fillet
-            // between a cylinder wall and its cap — which the qualified
-            // two-rim integrator measures between its rims. Deferring it was
-            // worse than imprecise: the direct path's own mesh of that face
-            // covers the whole torus, and a filleted boss read the full
-            // `2π²Rr²` for its quarter-tube fillet (12292.9 for
-            // 12409.9). Tube-wrapping bands keep their dedicated route.
-            FaceSurface::Torus(torus) if !face.inner_wires().is_empty() => {
-                if face.inner_wires().len() != 1
-                    || torus_wire_wraps_tube(topo, face.outer_wire(), torus)
-                    || remus_check::properties::face_integrator::integrate_torus_band_face(
-                        topo, fid, 8,
-                    )
-                    .ok()
-                    .flatten()
-                    .is_none()
-                {
-                    return Ok(None);
-                }
-                has_bored_quadric = true;
-            }
+            // integrator leaves it, and the solid is deferred to tessellation.
+            FaceSurface::Torus(_) if !face.inner_wires().is_empty() => return Ok(None),
             // Plain (unholed) planes, holed planes, and unholed quadrics
             // reach the integrator below; each carrier is named so a new
             // variant is a compile error, not a silent pass-through.
@@ -3298,16 +3277,37 @@ fn line_circle_cylinder_signed_volume(
     let oy = origin.dot(cylinder.y_axis());
     let mut boundary_integral = 0.0;
     let mut signed_chart_area = 0.0;
-    let mut circles = 0;
     for oriented in topo.wire(face.outer_wire()).ok()?.edges() {
         let edge = topo.edge(oriented.edge()).ok()?;
         match edge.curve() {
             EdgeCurve::Line => {
-                let start = topo.vertex(edge.start()).ok()?.point();
-                let end = topo.vertex(edge.end()).ok()?.point();
-                if (end - start).cross(cylinder.axis()).length() > tolerance.linear {
+                let (from, to) = if oriented.is_forward() {
+                    (edge.start(), edge.end())
+                } else {
+                    (edge.end(), edge.start())
+                };
+                let (u0, v0) = cylinder.project_point(topo.vertex(from).ok()?.point());
+                let (u1, v1) = cylinder.project_point(topo.vertex(to).ok()?.point());
+                let du = (u1 - u0 + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+                    - std::f64::consts::PI;
+                // Near-tangent cuts (a boss wall 1e-7 past a block side) leave
+                // lines that are not rulings: a seam whose vertex closes the
+                // crossing leans off its ruling by more than the linear
+                // tolerance, and a rim arc shorter than the tolerance's chord
+                // is written as a line. Accept a line while its chord stays
+                // within tolerance of the wall and integrate it as its chart
+                // segment. That bounds |du| by sqrt(8·tol/r), where Simpson's
+                // rule is exact to far below rounding.
+                if cylinder.radius() * (1.0 - (0.5 * du).cos()) > tolerance.linear {
                     return None;
                 }
+                let along = |s: f64| {
+                    let u = u0 + s * du;
+                    v1.mul_add(s, v0 * (1.0 - s))
+                        * (ox * u.cos() + oy * u.sin() + cylinder.radius())
+                };
+                boundary_integral -= du / 6.0 * (along(0.0) + 4.0 * along(0.5) + along(1.0));
+                signed_chart_area -= 0.5 * (v0 + v1) * du;
             }
             EdgeCurve::Circle(circle) => {
                 let delta = circle.center() - cylinder.origin();
@@ -3327,17 +3327,29 @@ fn line_circle_cylinder_signed_volume(
                         .dot(cylinder.axis())
                         .signum()
                     * direction;
-                let start = circle.evaluate(if oriented.is_forward() { lo } else { hi });
-                let (u0, _) = cylinder.project_point(start);
+                // The chart loop closes on the shared vertices, as the
+                // neighbouring faces' boundaries do; the trims only fix the
+                // sweep's turn and direction. A vertex that closes a
+                // near-tangent crossing can sit off its arc's trim end along
+                // the arc while lying on every carrier.
+                let (from, to) = if oriented.is_forward() {
+                    (edge.start(), edge.end())
+                } else {
+                    (edge.end(), edge.start())
+                };
+                let (u0, _) = cylinder.project_point(topo.vertex(from).ok()?.point());
+                let (u_to, _) = cylinder.project_point(topo.vertex(to).ok()?.point());
+                let chord = u_to - u0;
+                let sweep = std::f64::consts::TAU
+                    .mul_add(((sweep - chord) / std::f64::consts::TAU).round(), chord);
                 let u1 = u0 + sweep;
                 boundary_integral -= v
                     * (ox * (u1.sin() - u0.sin())
                         + oy * (u0.cos() - u1.cos())
                         + cylinder.radius() * sweep);
                 signed_chart_area -= v * sweep;
-                circles += 1;
             }
-            // Only straight axial segments and coaxial rim circles bound the
+            // Only lines lying on the wall and coaxial rim circles bound the
             // line/circle cylinder this integrator is exact for. A closed
             // NURBS rim on a RECOGNIZED converted wall is the same geometry
             // (an exact rational circle at constant chart-v): integrate it
@@ -3390,14 +3402,13 @@ fn line_circle_cylinder_signed_volume(
                 };
                 boundary_integral -= v * sweep * cylinder.radius();
                 signed_chart_area -= v * sweep;
-                circles += 1;
             }
             EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
                 return None;
             }
         }
     }
-    if circles == 0 || signed_chart_area.abs() <= tolerance.linear * tolerance.angular {
+    if signed_chart_area.abs() <= tolerance.linear * tolerance.angular {
         return None;
     }
     // Wire traversal may run either way independently of the face reversal.
@@ -4290,6 +4301,21 @@ fn analytic_torus_signed_volume(
         compute_angular_range(&mut u_vals)
     };
 
+    let vol = torus_window_volume(tor, u_range, (v_min, v_max), reference);
+
+    Ok(if face.is_reversed() { -vol } else { vol })
+}
+
+/// The closed-form divergence integral `(1/3)∬(P − reference)·n dA` over the
+/// window `u_range × v_range` of a torus, `n` the surface's own outward normal
+/// `∂u × ∂v` (the caller applies the face's reversal).
+fn torus_window_volume(
+    tor: &remus_math::surfaces::ToroidalSurface,
+    u_range: (f64, f64),
+    v_range: (f64, f64),
+    reference: Point3,
+) -> f64 {
+    let (v_min, v_max) = v_range;
     let big_r = tor.major_radius();
     let small_r = tor.minor_radius();
     let x_axis = tor.x_axis();
@@ -4362,9 +4388,125 @@ fn analytic_torus_signed_volume(
     //   r*r*[R*dv + r*i_cos] * du
     let const_coeff = small_r * small_r * (big_r * dv + small_r * i_cos);
 
-    let vol = (1.0 / 3.0) * (s_coeff * s_u_integral + (cz_coeff + rcos_coeff + const_coeff) * du);
+    (1.0 / 3.0) * (s_coeff * s_u_integral + (cz_coeff + rcos_coeff + const_coeff) * du)
+}
 
-    Ok(if face.is_reversed() { -vol } else { vol })
+/// Exact signed volume contribution of a torus LATITUDE BAND: a face whose
+/// outer wire and single inner wire are each one full parallel ring — coaxial
+/// circle arcs at one constant tube angle `v`, together sweeping a whole turn
+/// in `u`. The rolled rim of a filleted boss (a quarter torus from the wall's
+/// top circle to the cap's circle) is this family.
+///
+/// Such a face has no single-wire outline, so the rectangle reader
+/// ([`analytic_torus_signed_volume`]) cannot see it, and its per-face mesh
+/// cannot either: the standalone torus tessellator reads the outer ring alone,
+/// falls back to the whole tube, and the face measured as the complete torus
+/// (a boss rounded r1.8 on R4.2 read 268.6 where its band encloses 385.6, the
+/// body 117 mm³ light). On a torus the two rings bound TWO complementary
+/// bands, because `v` is periodic, so the band is read off the wires'
+/// orientation — the kernel's convention, which the STEP reader normalizes to
+/// and the classifier and the tube-band integrator also read: wires run with
+/// the face on their LEFT in the surface's own `(u, v)`, whatever the face's
+/// reversal flag. The ring run toward `+u` is the band's lower edge and the
+/// ring run toward `−u` its upper edge.
+///
+/// Returns `None` — the caller keeps its fallback — for any other trim: a
+/// non-circle edge, a circle off a parallel, a ring that does not sweep one
+/// full turn or mixes levels, two rings run the same way, or rings on one
+/// level.
+fn torus_parallel_band_signed_volume(
+    topo: &Topology,
+    face_id: FaceId,
+    reference: Point3,
+) -> Option<f64> {
+    use std::f64::consts::TAU;
+
+    let face = topo.face(face_id).ok()?;
+    let FaceSurface::Torus(tor) = face.surface() else {
+        return None;
+    };
+    let &[inner] = face.inner_wires() else {
+        return None;
+    };
+    let tolerance = remus_math::tolerance::Tolerance::new();
+    let axis = tor.z_axis();
+    // The closed form measures `u` from `x` toward `y`; a left-handed frame
+    // would run it the other way round the axis.
+    if tor.x_axis().cross(tor.y_axis()).dot(axis) <= 0.0 {
+        return None;
+    }
+    let (big_r, small_r) = (tor.major_radius(), tor.minor_radius());
+
+    // (tube angle, signed u sweep) of each wire.
+    let mut rings = Vec::with_capacity(2);
+    for wire_id in [face.outer_wire(), inner] {
+        let mut level: Option<(f64, f64)> = None;
+        let mut sweep = 0.0;
+        for oriented in topo.wire(wire_id).ok()?.edges() {
+            let edge = topo.edge(oriented.edge()).ok()?;
+            let circle = match edge.curve() {
+                EdgeCurve::Circle(circle) => circle,
+                // A latitude ring is a coaxial circle; meridians, seams,
+                // intersection curves and conics are other trims, and a
+                // future variant must not inherit this band silently.
+                EdgeCurve::Line
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => return None,
+            };
+            let offset = circle.center() - tor.center();
+            let height = offset.dot(axis);
+            let radial = circle.radius() - big_r;
+            if circle.normal().cross(axis).length() > tolerance.angular
+                || (offset - axis * height).length() > tolerance.linear
+                || (radial.hypot(height) - small_r).abs() > tolerance.linear
+            {
+                return None;
+            }
+            match level {
+                None => level = Some((radial, height)),
+                Some((r0, h0)) => {
+                    if (radial - r0).hypot(height - h0) > tolerance.linear {
+                        return None;
+                    }
+                }
+            }
+            let (lo, hi) = edge.strict_domain().ok()?;
+            let sense = circle.u_axis().cross(circle.v_axis()).dot(axis).signum();
+            let direction = if oriented.is_forward() { 1.0 } else { -1.0 };
+            let arc = (hi - lo) * sense * direction;
+            // A ring split into arcs runs one way round; arcs that double
+            // back are not a ring, whatever their sum.
+            if arc * sweep < 0.0 {
+                return None;
+            }
+            sweep += arc;
+        }
+        let (radial, height) = level?;
+        if (sweep.abs() - TAU).abs() > 1e-9 {
+            return None;
+        }
+        rings.push((height.atan2(radial), sweep));
+    }
+    let [(v_a, sweep_a), (v_b, sweep_b)] = rings[..] else {
+        return None;
+    };
+    if sweep_a * sweep_b >= 0.0 {
+        return None;
+    }
+    let (lower, upper) = if sweep_a > 0.0 {
+        (v_a, v_b)
+    } else {
+        (v_b, v_a)
+    };
+    let span = (upper - lower).rem_euclid(TAU);
+    let floor = tolerance.linear / small_r;
+    if span <= floor || span >= TAU - floor {
+        return None;
+    }
+    let volume = torus_window_volume(tor, (0.0, TAU), (lower, lower + span), reference);
+    Some(if face.is_reversed() { -volume } else { volume })
 }
 
 /// Exact per-face divergence sum for a solid whose WHOLE boundary integrates in
@@ -4383,8 +4525,9 @@ fn analytic_torus_signed_volume(
 /// Returns `None` — defer to the tessellated summation — unless
 ///   * every face is a plane or a quadric (no NURBS), and
 ///   * no quadric face carries an inner wire (the quadric integrators below are
-///     hole-unaware, so a bored wall must keep whatever the caller did before),
-///     and
+///     hole-unaware, so a bored wall must keep whatever the caller did before)
+///     — except a torus latitude band, whose two rings
+///     [`torus_parallel_band_signed_volume`] integrates in closed form — and
 ///   * every planar face is bounded only by lines and circular arcs, so
 ///     [`planar_face_signed_volume`] applies, and
 ///   * every planar face's closed form AGREES with the area of its own mesh to
@@ -4437,13 +4580,15 @@ fn exact_analytic_face_volume(
             FaceSurface::Torus(_) if !holed => {
                 analytic_torus_signed_volume(topo, fid, reference).ok()?
             }
+            // A holed torus is exact only as a latitude band between two
+            // parallel rings; any other holed torus declines.
+            FaceSurface::Torus(_) => torus_parallel_band_signed_volume(topo, fid, reference)?,
             // Holed quadric walls have no hole-aware integrator on this path:
             // each holed carrier declines explicitly so a future variant
             // cannot silently inherit the unholed arm above.
-            FaceSurface::Cylinder(_)
-            | FaceSurface::Cone(_)
-            | FaceSurface::Sphere(_)
-            | FaceSurface::Torus(_) => return None,
+            FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => {
+                return None;
+            }
         };
     }
     Some(total.abs())
@@ -4576,8 +4721,9 @@ pub fn volume_from_direct_face_tessellation(
         // Exact analytic volume for UNHOLED analytic faces only. A holed
         // quadric wall has no hole-aware closed form on this path (the
         // bounding-rectangle integrators would credit the removed patch), so
-        // it takes its own tessellation below, which subtracts its holes.
-        // This matches `exact_analytic_face_volume`'s explicit decline.
+        // it takes its own tessellation below, which subtracts its holes —
+        // except a torus latitude band, integrated in closed form because the
+        // torus mesh does not. This matches `exact_analytic_face_volume`.
         let holed = !face.inner_wires().is_empty();
         match face.surface() {
             FaceSurface::Cylinder(_) if !holed => {
@@ -4598,19 +4744,13 @@ pub fn volume_from_direct_face_tessellation(
                 total += analytic_torus_signed_volume(topo, fid, global)? * 6.0;
                 continue;
             }
-            // A holed torus's own mesh is no subtraction of its holes: a
-            // revolved fillet band (two full rims, no seam edge) tessellates
-            // as the whole torus. When its rims qualify, integrate between
-            // them instead.
+            // A holed torus's own mesh ignores its inner wire (the standalone
+            // torus tessellator reads the outer ring alone and skins the whole
+            // tube), so a latitude band integrates in closed form instead.
             FaceSurface::Torus(_) => {
-                if let Some(band) =
-                    remus_check::properties::face_integrator::integrate_torus_band_face_about(
-                        topo, fid, 8, global,
-                    )
-                    .ok()
-                    .flatten()
-                {
-                    total += band.volume * 6.0;
+                if let Some(v) = torus_parallel_band_signed_volume(topo, fid, global) {
+                    vol_trace(|| format!("direct torus band face {} -> {v}", fid.index()));
+                    total += v * 6.0;
                     continue;
                 }
             }
@@ -6818,5 +6958,171 @@ mod nested_inner_loop_tests {
                 .sum();
             assert!((area - 58.0).abs() < 1e-12, "signed area {area}");
         }
+    }
+}
+
+/// The torus latitude band (two parallel rings, one outer and one inner wire)
+/// integrates in closed form over the band its wires' orientation selects.
+#[cfg(test)]
+mod torus_latitude_band_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use remus_math::curves::Circle3D;
+    use remus_math::surfaces::ToroidalSurface;
+    use remus_topology::edge::Edge;
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire, WireId};
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+
+    const BIG_R: f64 = 2.5;
+    const SMALL_R: f64 = 1.0;
+
+    /// An off-origin torus about an oblique axis, so neither the reference
+    /// terms nor a coordinate-aligned frame can hide an error.
+    fn torus() -> ToroidalSurface {
+        ToroidalSurface::with_axis(
+            Point3::new(3.0, -2.0, 5.0),
+            BIG_R,
+            SMALL_R,
+            Vec3::new(1.0, 2.0, 2.0).normalize().unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// The full parallel ring at tube angle `v`, run toward `+u` when
+    /// `plus_u`, its single edge trimmed `trim` long.
+    fn ring(
+        topo: &mut Topology,
+        torus: &ToroidalSurface,
+        v: f64,
+        plus_u: bool,
+        trim: f64,
+    ) -> WireId {
+        let axis = torus.z_axis();
+        let circle = Circle3D::new(
+            torus.center() + axis * (SMALL_R * v.sin()),
+            axis,
+            BIG_R + SMALL_R * v.cos(),
+        )
+        .unwrap();
+        let along_u = circle.u_axis().cross(circle.v_axis()).dot(axis) > 0.0;
+        let start = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let end = if trim < TAU {
+            topo.add_vertex(Vertex::new(circle.evaluate(trim), 1e-7))
+        } else {
+            start
+        };
+        let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, trim)));
+        let edge = topo.add_edge(edge);
+        topo.add_wire(
+            Wire::new(
+                vec![OrientedEdge::new(edge, plus_u == along_u)],
+                trim >= TAU,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// The band from tube angle `lower` up to `upper`: the lower ring runs
+    /// toward `+u`, the upper toward `−u` (face on the left in `(u, v)`).
+    fn band(lower: f64, upper: f64, reversed: bool) -> (Topology, FaceId) {
+        let torus = torus();
+        let mut topo = Topology::new();
+        let outer = ring(&mut topo, &torus, lower, true, TAU);
+        let inner = ring(&mut topo, &torus, upper, false, TAU);
+        let mut face = Face::new(outer, vec![inner], FaceSurface::Torus(torus));
+        face.set_reversed(reversed);
+        let face = topo.add_face(face);
+        (topo, face)
+    }
+
+    /// `(1/3)∬(P − reference)·n dA` over `u ∈ [0, 2π]`, `v ∈ [lower, upper]`
+    /// by quadrature on the surface's own points and normals: trapezoid in
+    /// the periodic `u`, composite Simpson in `v`.
+    fn quadrature(lower: f64, upper: f64, reference: Point3) -> f64 {
+        const NU: u32 = 64;
+        const NV: u32 = 2000;
+        let torus = torus();
+        let (du, dv) = (TAU / f64::from(NU), (upper - lower) / f64::from(NV));
+        let mut total = 0.0;
+        for j in 0..=NV {
+            let v = lower + dv * f64::from(j);
+            let weight = if j == 0 || j == NV {
+                1.0
+            } else if j % 2 == 1 {
+                4.0
+            } else {
+                2.0
+            };
+            let mut row = 0.0;
+            for i in 0..NU {
+                let u = du * f64::from(i);
+                row += (torus.evaluate(u, v) - reference).dot(torus.normal(u, v));
+            }
+            total += weight * row * du * SMALL_R * (BIG_R + SMALL_R * v.cos());
+        }
+        total * dv / 3.0 / 3.0
+    }
+
+    #[test]
+    fn band_matches_quadrature_including_spans_past_half_a_turn() {
+        let reference = Point3::new(-1.0, 4.0, 0.5);
+        // The boss rim (a quarter tube), a band across the outer equator and
+        // a band of three quarters of the tube: the last is NOT the shorter
+        // arc between its rings, so only the orientation can select it.
+        for (lower, upper) in [(0.0, FRAC_PI_2), (-1.0, 0.7), (-0.75 * PI, 0.75 * PI)] {
+            let expected = quadrature(lower, upper, reference);
+            for reversed in [false, true] {
+                let (topo, face) = band(lower, upper, reversed);
+                let got = torus_parallel_band_signed_volume(&topo, face, reference).unwrap();
+                let want = if reversed { -expected } else { expected };
+                assert!(
+                    (got - want).abs() <= 1e-10 * want.abs().max(1.0),
+                    "band [{lower}, {upper}] reversed={reversed}: {got} vs {want}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn complementary_bands_tile_the_whole_torus() {
+        // The same two rings run the other way bound the complement; the two
+        // bands close the tube, whose volume is 2π²Rr² about any reference.
+        let reference = Point3::new(7.0, 1.0, -3.0);
+        let (lower, upper) = (0.4, 2.1);
+        let (topo, face) = band(lower, upper, false);
+        let near = torus_parallel_band_signed_volume(&topo, face, reference).unwrap();
+        let (topo, face) = band(upper, lower, false);
+        let far = torus_parallel_band_signed_volume(&topo, face, reference).unwrap();
+        let whole = 2.0 * PI * PI * BIG_R * SMALL_R * SMALL_R;
+        assert!(
+            (near + far - whole).abs() <= 1e-12 * whole,
+            "{near} + {far} vs {whole}"
+        );
+    }
+
+    #[test]
+    fn declines_rings_run_the_same_way_or_short_of_a_turn() {
+        let torus = torus();
+        let reference = Point3::new(0.0, 0.0, 0.0);
+        // Both rings toward +u: no band has them both as its lower edge.
+        let mut topo = Topology::new();
+        let outer = ring(&mut topo, &torus, 0.0, true, TAU);
+        let inner = ring(&mut topo, &torus, 1.0, true, TAU);
+        let face = topo.add_face(Face::new(
+            outer,
+            vec![inner],
+            FaceSurface::Torus(torus.clone()),
+        ));
+        assert!(torus_parallel_band_signed_volume(&topo, face, reference).is_none());
+        // A half-turn arc is not a ring.
+        let mut topo = Topology::new();
+        let outer = ring(&mut topo, &torus, 0.0, true, TAU);
+        let inner = ring(&mut topo, &torus, 1.0, false, PI);
+        let face = topo.add_face(Face::new(outer, vec![inner], FaceSurface::Torus(torus)));
+        assert!(torus_parallel_band_signed_volume(&topo, face, reference).is_none());
     }
 }

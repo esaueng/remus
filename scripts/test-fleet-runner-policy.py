@@ -90,7 +90,7 @@ class FleetRunnerPolicy(unittest.TestCase):
 
     def test_activated_profile_cannot_restore_the_retired_budget(self):
         active = workflow_path('ci')
-        if active.name not in ('fleet-ci-v6.yml', 'fleet-ci-v7.yml', 'fleet-ci-v9.yml'):
+        if active.name not in ('fleet-ci-v6.yml', 'fleet-ci-v7.yml', 'fleet-ci-v9.yml', 'fleet-ci-v11.yml'):
             return  # Other independently staged workflow versions keep their own contract.
         guard = re.search(r'case "\$RUNNER_NAME" in\n.*?\besac', active.read_text(), re.S).group()
         self.assertIn('ci-server-jane-1|ci-server-jane-2|ci-server-jane-3)', guard)

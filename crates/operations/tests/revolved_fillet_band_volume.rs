@@ -1,14 +1,15 @@
-//! Volume of a solid whose rim fillet is a revolved torus band.
+//! Mass properties of a solid whose rim fillet is a revolved torus band.
 //!
 //! Rolling a ball round a circular rim leaves a torus face bounded by two full
 //! circles — the wall's tangent circle and the cap's — that each wrap the
 //! torus's MAJOR angle once, with no seam edge between them. The face
-//! integrator only qualified bands whose rims wrap the tube angle, so this
-//! face fell to the generic path: its projected outline spans both periods,
-//! trims nothing, and the whole closed torus (`2π²Rr²`) was integrated in its
-//! place. The direct per-face route tessellated the same face as the whole
-//! torus too. A filleted boss on a block measured
-//! 12292.9 mm³ against an exact 12409.9.
+//! integrator in `remus-check` only qualified bands whose rims wrap the tube
+//! angle, so this face fell to the generic path: its projected outline spans
+//! both periods, trims nothing, and the whole closed torus (`2π²Rr²`) was
+//! integrated in its place. `solid_volume` reads the band in closed form
+//! (`torus_parallel_band_signed_volume`), but `mass_properties` and the centre
+//! of mass integrate every face through `remus-check`, and a filleted boss on a
+//! block read 12292.9 mm³ there against an exact 12409.9.
 //!
 //! Every expectation here is a closed form (Pappus for the fillet), not the
 //! kernel's reading of itself.
@@ -19,7 +20,7 @@ use std::f64::consts::PI;
 
 use remus_operations::blend_ops::{blend_failure_code, fillet_cascade};
 use remus_operations::boolean::{BooleanOp, boolean};
-use remus_operations::measure::solid_volume;
+use remus_operations::measure::{mass_properties, solid_center_of_mass, solid_volume};
 use remus_operations::primitives::{make_box, make_cylinder};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
@@ -91,11 +92,49 @@ fn filleted_boss_on_a_block_measures_its_fillet_band() {
     let (big, small) = (4.2_f64, 1.8_f64);
     let cap =
         PI * (big * big * small + 2.0 * big * PI * small * small / 4.0 + 2.0 / 3.0 * small.powi(3));
-    let expected = 9720.0 + 0.75 * PI * 36.0 * 18.0 + PI * 36.0 * 8.7 + cap;
+    let lower = 0.75 * PI * 36.0 * 18.0;
+    let upper = PI * 36.0 * 8.7;
+    let expected = 9720.0 + lower + upper + cap;
     let measured = solid_volume(&topo, result.solid, DEFLECTION).unwrap();
     assert!(
         (measured - expected).abs() < 1e-6,
         "filleted boss: {measured} vs {expected} (whole torus 2π²Rr² = {})",
         2.0 * PI * PI * big * small * small
     );
+
+    // First moments: the block about its centre; the three-quarter disc's
+    // centroid is minus a third of the quarter disc's `4r/3π` on each axis;
+    // the cap's height moment is `π∫ρ²(t)(26.7 + t) dt`.
+    let quarter_offset = -(4.0 * 6.0 / (3.0 * PI)) / 3.0;
+    let cap_moment_z = 26.7 * cap
+        + PI * (big * big * small * small / 2.0
+            + 2.0 * big * small.powi(3) / 3.0
+            + small.powi(4) / 4.0);
+    let center = [
+        (9720.0 * 15.0 + lower * quarter_offset) / expected,
+        (9720.0 * 9.0 + lower * quarter_offset) / expected,
+        (9720.0 * 9.0 + lower * 9.0 + upper * 22.35 + cap_moment_z) / expected,
+    ];
+    let properties = mass_properties(&topo, result.solid).unwrap();
+    assert!(
+        (properties.mass - expected).abs() < 1e-6,
+        "mass properties: {} vs {expected}",
+        properties.mass
+    );
+    let centroid = solid_center_of_mass(&topo, result.solid, DEFLECTION).unwrap();
+    for (label, got) in [
+        ("mass properties", properties.center),
+        ("centre of mass", centroid),
+    ] {
+        for (axis, (got, want)) in [got.x(), got.y(), got.z()]
+            .into_iter()
+            .zip(center)
+            .enumerate()
+        {
+            assert!(
+                (got - want).abs() < 1e-8,
+                "{label} axis {axis}: {got} vs {want}"
+            );
+        }
+    }
 }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import test from 'node:test';
 
 import {
@@ -9,6 +10,7 @@ import {
   HAMMER_HOLDER_FIXTURE,
   HAMMER_SHIFTED_INTERSECT_ID,
   classifyFailures,
+  directObservation,
   expandContractMatrix,
   installPackage,
   resolveFixtures,
@@ -17,6 +19,46 @@ import {
   summarizeFailureClasses,
 } from './contract-matrix.mjs';
 import { hashFile } from './provenance.mjs';
+
+test('refusal and approximation use the native guarded fixture on batch and direct surfaces', (t) => {
+  const native = readFileSync(new URL('../../crates/operations/tests/fallback_policy.rs', import.meta.url), 'utf8');
+  assert.match(native, /fn tangent_boss\([\s\S]*?Mat4::translation\(9\.999_99, 20\.0, 0\.0\)/);
+  const expected = [1, 0, 0, 9.99999, 0, 1, 0, 20, 0, 0, 1, 0, 0, 0, 0, 1];
+  const root = mkdtempSync(resolve(tmpdir(), 'remus fallback fixture '));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const entry = resolve(root, 'kernel.cjs');
+  writeFileSync(entry, `
+    const transforms = [];
+    class RemusKernel {
+      makeBox() { return 0; }
+      makeCylinder() { return 1; }
+      transformSolid(id, matrix) { transforms.push({ id, matrix }); }
+      getEntityCounts() { return [2, 0, 0, 0, 0, 0]; }
+      booleanWithQuality(op, a, b, exactOnly) {
+        if (exactOnly) throw new Error('exact-only refusal');
+        return { solid: 2, quality: 'approximate', deflection: 0.1 };
+      }
+      volume() { return 21713; }
+      free() {}
+    }
+    module.exports = { RemusKernel, transforms };
+  `);
+  const fake = createRequire(import.meta.url)(entry);
+  for (const c of expandContractMatrix().filter(({ id }) =>
+    id === 'contract/exact-only-refusal' || id === 'contract/disclosed-approximation')) {
+    assert.deepEqual(c.batch[2].args.matrix, expected);
+    fake.transforms.length = 0;
+    const observation = directObservation(c, entry);
+    assert.deepEqual(fake.transforms, [{ id: 1, matrix: expected }]);
+    if (c.id === 'contract/exact-only-refusal') {
+      assert.equal(observation.outcome, 'batch_error');
+      assert.deepEqual(observation.diagnosticCodes, ['operation_failed']);
+    } else {
+      assert.equal(observation.outcome, 'success');
+      assert.equal(observation.quality, 'approximate');
+    }
+  }
+});
 
 test('same-version fresh and committed package archives cannot overwrite each other', (t) => {
   const root = mkdtempSync(resolve(tmpdir(), 'remus same version ü '));

@@ -8,6 +8,7 @@ import unittest
 from fleet_workflows import (
     ROOT, validate_reference, workflow_text, workflow_calls, workflow_manifest, workflow_path,
 )
+from test_dependabot_actions_stage import WORKFLOWS as DEPENDABOT_STAGES, previous_definition
 
 
 SOURCE = "f167bb2bde923b9d8a252d3ef9f6ebb475487332"
@@ -73,7 +74,7 @@ class FleetActionsStageTests(unittest.TestCase):
         for previous, staged in WORKFLOWS.values():
             with self.subTest(workflow=staged):
                 source = original(previous)
-                content = (ROOT / ".github/workflows" / staged).read_bytes()
+                content = workflow_text(staged).encode()
                 self.assertNotEqual(content, source)
                 validate_stage(content, source)
 
@@ -104,14 +105,21 @@ class FleetActionsStageTests(unittest.TestCase):
                         cwd=ROOT,
                     )),
                 ):
-                    if family == "ci" and filename == "fleet-ci-v9.yml":
+                    if family == "ci" and filename in ("fleet-ci-v9.yml", DEPENDABOT_STAGES["ci"][1]):
                         self.assertEqual(workflow_text(previous).encode(),
                                          original(previous))
+                        if filename == "fleet-ci-v9.yml":
+                            validate_reference(".github/workflows/" + filename,
+                                               "4e355573ffe9b1bc0466d0a57fcc98677d5fc5eb", content)
+                            continue
                         matching = [(path, sha) for _caller, path, sha in workflow_calls()
                                     if path == ".github/workflows/" + filename]
                         self.assertEqual(len(matching), 1)
                         validate_reference(*matching[0], content)
                         continue
+                    if family in DEPENDABOT_STAGES and filename == DEPENDABOT_STAGES[family][1]:
+                        content = previous_definition(family, content.decode()).encode()
+                        filename = DEPENDABOT_STAGES[family][0]
                     self.assertIn(filename, (previous, staged))
                     expected = original(previous)
                     if filename == staged:
@@ -120,7 +128,8 @@ class FleetActionsStageTests(unittest.TestCase):
                                      "Preserve intervening workflow edits before activation")
 
     def test_windows_arm_receipts_match_the_executed_installer(self):
-        expected = "taiki-e/install-action@" + UPDATES["taiki-e/install-action"][1].split()[0]
+        from test_dependabot_actions_stage import INSTALLER_PIN
+        expected = "taiki-e/install-action@" + INSTALLER_PIN
         for workflow in ("windows-arm-tooling.yml", "parity.yml"):
             with self.subTest(workflow=workflow):
                 text = (ROOT / ".github/workflows" / workflow).read_text()

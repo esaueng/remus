@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   checks:
-    uses: esaueng/remus/.github/workflows/fleet-benchmark-v4.yml@4e355573ffe9b1bc0466d0a57fcc98677d5fc5eb
+    uses: esaueng/remus/.github/workflows/fleet-benchmark-v5.yml@ff8415b3005256df5a65af5c92b8c26caa4c878f
     permissions:
       contents: write
       pull-requests: write

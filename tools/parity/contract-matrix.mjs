@@ -54,13 +54,15 @@ function overlappingBoxesBatch({ exactOnly = false } = {}) {
 }
 
 // B21 tangent-boss fixture: block 60x40x8 plus cylinder r10 h16 at
-// (9.999,20,0). The exact pipeline cannot assemble it, so the default
-// policy discloses `approximate` and `exactOnly` refuses typed.
+// (9.99999,20,0), matching the native fallback_policy guard. The earlier
+// 9.999 placement now succeeds exactly and no longer exercises these contracts.
+// Keep batch and direct cases on the same still-unresolved near-tangent wound.
+const tangentBossTranslation = Object.freeze([9.999_99, 20, 0]);
 function tangentBossBatch({ exactOnly = false } = {}) {
   const batch = [
     { op: 'makeBox', args: { width: 60, height: 40, depth: 8 } },
     { op: 'makeCylinder', args: { radius: 10, height: 16 } },
-    { op: 'transform', args: { solid: 1, matrix: translationMatrix([9.999, 20, 0]) } },
+    { op: 'transform', args: { solid: 1, matrix: translationMatrix(tangentBossTranslation) } },
     {
       op: 'booleanWithQuality',
       args: { operation: 'fuse', solidA: 0, solidB: 1, ...(exactOnly ? { exactOnly: true } : {}) },
@@ -874,7 +876,7 @@ function runDirectCase(c, kernel, mod) {
   if (c.id === 'contract/exact-only-refusal') {
     const a = kernel.makeBox(60, 40, 8);
     const b = kernel.makeCylinder(10, 16);
-    kernel.transformSolid(b, translationMatrix([9.999, 20, 0]));
+    kernel.transformSolid(b, translationMatrix(tangentBossTranslation));
     const before = countsOf(a);
     try {
       kernel.booleanWithQuality('fuse', a, b, true);
@@ -893,7 +895,7 @@ function runDirectCase(c, kernel, mod) {
   if (c.id === 'contract/disclosed-approximation') {
     const a = kernel.makeBox(60, 40, 8);
     const b = kernel.makeCylinder(10, 16);
-    kernel.transformSolid(b, translationMatrix([9.999, 20, 0]));
+    kernel.transformSolid(b, translationMatrix(tangentBossTranslation));
     const out = kernel.booleanWithQuality('fuse', a, b);
     const volume = kernel.volume(out.solid, 0.05);
     return {

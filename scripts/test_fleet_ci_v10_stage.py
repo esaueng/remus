@@ -6,11 +6,13 @@ bytes; every command, permission, guard and runner expression must be
 unchanged until a later PR activates it.
 """
 
+import json
 import subprocess
 import unittest
 
-from fleet_workflows import ROOT, workflow_manifest
+from fleet_workflows import ROOT, workflow_manifest, workflow_text
 from test_fleet_actions_stage import UPDATES, updated
+from test_dependabot_actions_stage import WORKFLOWS as DEPENDABOT_STAGES, previous_definition
 
 V9_LANDED = "4e355573ffe9b1bc0466d0a57fcc98677d5fc5eb"
 V9 = ".github/workflows/fleet-ci-v9.yml"
@@ -62,10 +64,22 @@ class FleetCiV10StageTests(unittest.TestCase):
         manifest = workflow_manifest()
         if manifest["ci"] == V10.name:
             return  # Activated: the caller pin check binds v10 to its landed bytes.
-        self.assertEqual(manifest["ci"], "fleet-ci-v9.yml")
-        self.assertEqual((ROOT / V9).read_bytes(), landed_v9())
-        self.assertEqual(subprocess.check_output(["git", "show", f"origin/main:{V9}"], cwd=ROOT),
-                         landed_v9())
+        self.assertIn(manifest["ci"], ("fleet-ci-v9.yml", DEPENDABOT_STAGES["ci"][1]))
+        self.assertEqual(workflow_text("fleet-ci-v9.yml").encode(), landed_v9())
+        local = workflow_text(manifest["ci"])
+        main_manifest = subprocess.check_output(
+            ["git", "show", "origin/main:.github/fleet-workflows.json"], cwd=ROOT,
+        )
+        main_file = json.loads(main_manifest)["ci"]
+        main = subprocess.check_output(
+            ["git", "show", f"origin/main:.github/workflows/{main_file}"], cwd=ROOT, text=True,
+        )
+        for filename, content in ((manifest["ci"], local), (main_file, main)):
+            if filename == DEPENDABOT_STAGES["ci"][1]:
+                content = previous_definition("ci", content)
+            else:
+                self.assertEqual(filename, "fleet-ci-v9.yml")
+            self.assertEqual(content.encode(), landed_v9())
 
 
 if __name__ == "__main__":
