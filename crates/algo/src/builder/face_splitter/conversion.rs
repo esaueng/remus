@@ -341,11 +341,12 @@ pub(super) fn boundary_edges_to_pcurve_with_images(
 /// window is inconsistent, and sections projected inside the true window
 /// (u≈5.5) dangle unconnected and are dropped as pendants (the face returns
 /// unsplit, leaving the cut's intersection curves unpaired). Each at-seam
-/// endpoint takes the seam image (0 or TAU) closest to its reference — wire
-/// continuity for a start, the edge's own other endpoint for an end (boundary
-/// sector arcs are minor in u, so the closer image is the consistent one;
-/// deriving the span from the circle's own parameterization is unreliable
-/// because a stored normal opposite the surface axis flips the sign).
+/// endpoint takes the seam image (0 or TAU) closest to its reference — the
+/// edge's own other endpoint, or wire continuity for a start whose end is on
+/// the seam too (boundary sector arcs are minor in u, so the closer image is
+/// the consistent one; deriving the span from the circle's own
+/// parameterization is unreliable because a stored normal opposite the
+/// surface axis flips the sign).
 /// Endpoints away from the seam are never touched, so consistent faces are
 /// no-ops.
 fn resolve_seam_endpoint_uv(edges: &mut [OrientedPCurveEdge], surface: &FaceSurface) {
@@ -384,7 +385,20 @@ fn resolve_seam_endpoint_uv(edges: &mut [OrientedPCurveEdge], surface: &FaceSurf
                 0.0
             }
         };
-        let su = pick(e.start_uv.x(), cur);
+        // A start on the seam takes its image from the edge's own end when
+        // that end is off the seam: the edge is minor in u, so that image is
+        // the one its sweep leaves from. Wire continuity is only the
+        // reference when both ends sit on the seam (a meridian along it).
+        // Following continuity instead, a rim arc leaving the seam the other
+        // way from its predecessor — a quarter arc from u = 0 to π/2 after
+        // one that arrived at u = 2π — read as its 3π/2 complement, and the
+        // splitter then cut it at points that lie on the complement.
+        let start_ref = if at_seam(e.end_uv.x()) {
+            cur
+        } else {
+            e.end_uv.x()
+        };
+        let su = pick(e.start_uv.x(), start_ref);
         let eu = pick(e.end_uv.x(), su);
         if (su - e.start_uv.x()).abs() > 1e-12 {
             e.start_uv = Point2::new(su, e.start_uv.y());
@@ -601,5 +615,82 @@ mod tests {
 
         assert!(unit_band < 2.5e-3);
         assert!(small_band < unit_band / 50.0);
+    }
+
+    /// A rim arc that leaves the u-seam keeps its own sweep, whichever seam
+    /// image the wire arrived at.
+    ///
+    /// The wall wire arrives at the seam vertex along an arc ending at
+    /// u = 2π, then leaves it along a quarter arc to u = π/2 and returns
+    /// along the seam meridian. Taking the leaving arc's start from wire
+    /// continuity gave it u = 2π → π/2, its 3π/2 complement, and the face
+    /// splitter then split it at points on the complement (a boss rim cut
+    /// at its quarter stations, drilled off its axis).
+    #[test]
+    fn seam_start_takes_the_image_its_own_arc_leaves_from() {
+        #![allow(clippy::unwrap_used)]
+        use remus_math::curves::Circle3D;
+        use remus_math::curves2d::{Curve2D, Line2D};
+        use remus_math::surfaces::CylindricalSurface;
+        use remus_math::vec::Vec2;
+        use remus_topology::edge::EdgeCurve;
+        use std::f64::consts::{FRAC_PI_2, TAU};
+
+        let cyl =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 12.0)
+                .unwrap();
+        let surface = FaceSurface::Cylinder(cyl);
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 12.0).unwrap();
+        let at = |u: f64, v: f64| surface.evaluate(u, v).unwrap();
+        // Endpoints projected on their own, as the conversion does: u in [0, 2π).
+        let uv = |p: Point3| {
+            let (u, v) = surface.project_point(p).unwrap();
+            Point2::new(u, v)
+        };
+        let edge = |curve: EdgeCurve, start: Point3, end: Point3| OrientedPCurveEdge {
+            curve_3d: curve,
+            trim: None,
+            pcurve: Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap()),
+            start_uv: uv(start),
+            end_uv: uv(end),
+            start_3d: start,
+            end_3d: end,
+            forward: true,
+            source_edge_idx: None,
+            pave_block_id: None,
+            source_topo_edge: None,
+        };
+        let seam_low = at(0.0, 0.0);
+        let mut edges = vec![
+            edge(
+                EdgeCurve::Circle(circle.clone()),
+                at(3.0 * FRAC_PI_2, 0.0),
+                seam_low,
+            ),
+            edge(EdgeCurve::Circle(circle), seam_low, at(FRAC_PI_2, 0.0)),
+            edge(EdgeCurve::Line, at(0.0, 5.0), seam_low),
+        ];
+        // The seam vertex must project onto the seam for the case to bite.
+        let s = edges[1].start_uv.x();
+        assert!(s.abs() < 1e-9 || (s - TAU).abs() < 1e-9, "seam u {s}");
+
+        resolve_seam_endpoint_uv(&mut edges, &surface);
+
+        let span = |e: &OrientedPCurveEdge| e.end_uv.x() - e.start_uv.x();
+        assert!(
+            (edges[0].end_uv.x() - TAU).abs() < 1e-9,
+            "arriving arc ends on the 2π image: {:?}",
+            edges[0].end_uv
+        );
+        assert!(
+            (span(&edges[1]) - FRAC_PI_2).abs() < 1e-9,
+            "leaving quarter arc must sweep +π/2, got {:?} -> {:?}",
+            edges[1].start_uv,
+            edges[1].end_uv
+        );
+        // Both ends of the seam meridian sit on the seam: it still follows
+        // wire continuity, so it stays on one image along its length.
+        assert!(span(&edges[2]).abs() < 1e-9, "seam meridian {:?}", edges[2]);
     }
 }
