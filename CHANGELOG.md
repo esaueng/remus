@@ -229,6 +229,11 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **operations:** `solid_volume` measures a boss fused a hair (1e-7, 1e-8)
+  past a block side exactly. The cylinder sliver along the side has seams
+  that lean off their rulings, or rims written as lines, which the exact
+  cylinder integral declined, so the volume came from a chorded mesh: 21712.33
+  against 21713.27.
 * **algo:** booleans whose coplanar caps put one body's outline inside the
   other's cap face — a prism standing on a cylinder's cap, a tooth ring fused
   into a groove of a boss — split that face exactly instead of refusing or,
