@@ -1376,8 +1376,29 @@ fn analytic_faces_solid_volume(
             }
             // A torus's tube is periodic in BOTH parameters, so a hole that
             // wraps a period bounds no patch and has no "above" to count: the
-            // integrator leaves it, and the solid is deferred to tessellation.
-            FaceSurface::Torus(_) if !face.inner_wires().is_empty() => return Ok(None),
+            // generic integrator leaves it, and the solid is deferred to
+            // tessellation. The one exception is a revolved band — two rims
+            // each wrapping the MAJOR angle once, the rolling-ball fillet
+            // between a cylinder wall and its cap — which the qualified
+            // two-rim integrator measures between its rims. Deferring it was
+            // worse than imprecise: the direct path's own mesh of that face
+            // covers the whole torus, and a filleted boss read the full
+            // `2π²Rr²` for its quarter-tube fillet (12292.9 for
+            // 12409.9). Tube-wrapping bands keep their dedicated route.
+            FaceSurface::Torus(torus) if !face.inner_wires().is_empty() => {
+                if face.inner_wires().len() != 1
+                    || torus_wire_wraps_tube(topo, face.outer_wire(), torus)
+                    || remus_check::properties::face_integrator::integrate_torus_band_face(
+                        topo, fid, 8,
+                    )
+                    .ok()
+                    .flatten()
+                    .is_none()
+                {
+                    return Ok(None);
+                }
+                has_bored_quadric = true;
+            }
             // Plain (unholed) planes, holed planes, and unholed quadrics
             // reach the integrator below; each carrier is named so a new
             // variant is a compile error, not a silent pass-through.
@@ -4577,12 +4598,27 @@ pub fn volume_from_direct_face_tessellation(
                 total += analytic_torus_signed_volume(topo, fid, global)? * 6.0;
                 continue;
             }
+            // A holed torus's own mesh is no subtraction of its holes: a
+            // revolved fillet band (two full rims, no seam edge) tessellates
+            // as the whole torus. When its rims qualify, integrate between
+            // them instead.
+            FaceSurface::Torus(_) => {
+                if let Some(band) =
+                    remus_check::properties::face_integrator::integrate_torus_band_face_about(
+                        topo, fid, 8, global,
+                    )
+                    .ok()
+                    .flatten()
+                {
+                    total += band.volume * 6.0;
+                    continue;
+                }
+            }
             FaceSurface::Plane { .. }
             | FaceSurface::Nurbs(_)
             | FaceSurface::Cylinder(_)
             | FaceSurface::Cone(_)
-            | FaceSurface::Sphere(_)
-            | FaceSurface::Torus(_) => {}
+            | FaceSurface::Sphere(_) => {}
         }
 
         let mesh = tessellate::tessellate(topo, fid, deflection)?;
