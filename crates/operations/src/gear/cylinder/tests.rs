@@ -773,3 +773,42 @@ fn internal_herringbone_teeth_in_a_bore_match_the_standalone_gear() {
         );
     }
 }
+
+/// Thirty helical teeth over the middle of a bore. Every tooth space on a
+/// collar cap reads as straddling the ring's coplanar cap: its vertices on
+/// the true flanks and root fillets sit inside the cap outline's sampled
+/// polygon by more than a circular-rim band. The in-plane ray cast that
+/// decided instead dropped two of the thirty spaces at the z 3 cap.
+#[test]
+fn thirty_helical_teeth_over_the_middle_of_a_bore_match_the_standalone_gear() {
+    for helix in [15.0_f64, 20.0] {
+        let mut topo = Topology::new();
+        let outer = make_cylinder(&mut topo, 30.0, 9.0).unwrap();
+        let drill = moved_cylinder(&mut topo, 19.0, 19.0, -5.0);
+        let ring = boolean(&mut topo, BooleanOp::Cut, outer, drill).unwrap();
+        let ring_volume = volume(&topo, ring);
+        let face = cylinder_face(&topo, ring, 19.0);
+        let params = GearParams {
+            helix_angle: helix.to_radians(),
+            ..GearParams::standard(GearKind::Internal, 1.0, 30, 3.0)
+        };
+        let options = CylinderGearOptions {
+            offset: 3.0,
+            ..CylinderGearOptions::default()
+        };
+        let outcome = cut_gear_teeth(&mut topo, ring, face, &params, &options)
+            .unwrap_or_else(|error| panic!("{helix}°: {error}"));
+        assert_valid_and_watertight(&topo, outcome.solid);
+
+        let mut standalone = params.clone();
+        standalone.module = outcome.geometry.module;
+        standalone.rim_diameter = Some(56.0);
+        let hole_area = PI * 28.0 * 28.0 - outline_area(&standalone);
+        let expected = ring_volume - (hole_area - PI * 19.0 * 19.0) * 3.0;
+        let got = volume(&topo, outcome.solid);
+        assert!(
+            ((got - expected) / expected).abs() < 1e-9,
+            "{helix}°: {got} vs {expected}"
+        );
+    }
+}

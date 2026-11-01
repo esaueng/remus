@@ -2978,7 +2978,7 @@ fn section_on_existing_boundary(
 /// Whether `p` lies on the edge's true geometry within `tol` (perpendicular
 /// distance for a Line; in-plane + radial distance with an arc-span containment
 /// test for a Circle/Ellipse). NURBS edges are not boundary candidates here.
-pub(super) fn point_on_edge(
+pub fn point_on_edge(
     curve: &remus_topology::edge::EdgeCurve,
     start: Point3,
     end: Point3,

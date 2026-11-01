@@ -246,6 +246,13 @@ pub fn classify_coincident_coplanar(
             }
             all_verts_on_rim = false;
             if point_in_planar_region(v, &outer, &holes, &region_normal) {
+                // A vertex on a hole's TRUE edge can sit inside its sampled
+                // polygon by more than the circular-rim band: a gear outline's
+                // root fillets and flanks bend far tighter than its mean
+                // radius. On the curve itself it is on the boundary.
+                if point_on_wire_curves(opposing_topo, face.inner_wires(), v, plane_tol)? {
+                    continue;
+                }
                 any_strictly_inside = true;
             } else if deepest_outside.is_none_or(|(d, _)| dist > d) {
                 deepest_outside = Some((dist, v));
@@ -380,6 +387,47 @@ pub fn classify_coincident_coplanar(
         return Ok(any_valid.then_some(FaceClass::Outside));
     }
     Ok(None)
+}
+
+/// Whether `p` lies within `tol` of one of the wires' edges, measured to the
+/// edge's own curve over its trimmed range.
+fn point_on_wire_curves(
+    topo: &Topology,
+    wires: &[remus_topology::wire::WireId],
+    p: Point3,
+    tol: f64,
+) -> Result<bool, AlgoError> {
+    use remus_topology::edge::EdgeCurve;
+    for &wire in wires {
+        for oe in topo.wire(wire)?.edges() {
+            let edge = topo.edge(oe.edge())?;
+            let start = topo.vertex(edge.start())?.point();
+            let end = topo.vertex(edge.end())?.point();
+            let on = match edge.curve() {
+                EdgeCurve::NurbsCurve(curve) => {
+                    if !curve.aabb().expanded(tol).contains_point(p) {
+                        continue;
+                    }
+                    let Ok((t0, t1)) = edge.strict_domain() else {
+                        continue;
+                    };
+                    remus_math::nurbs::projection::project_point_to_curve(curve, p, tol * 1e-2)
+                        .is_ok_and(|hit| {
+                            hit.distance <= tol
+                                && hit.parameter >= t0.min(t1) - tol
+                                && hit.parameter <= t0.max(t1) + tol
+                        })
+                }
+                curve => {
+                    crate::builder::fill_images_faces::point_on_edge(curve, start, end, p, tol)
+                }
+            };
+            if on {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Minimum distance from `p` to the closed polyline `poly` (edges + wrap).
