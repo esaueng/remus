@@ -567,17 +567,15 @@ fn batch_fillet_v2_support_cliff_names_the_cause() {
     );
 }
 
-/// A mixed selection whose only succeeding subset is the planar one is a
-/// whole-selection refusal on the batch path too — the same
-/// `edges-not-blended` the direct `fillet` binding reports — never a quietly
-/// reduced answer.
+/// A refused mixed selection stays a whole-selection refusal on the batch
+/// path, preserving the engine's primary cause rather than returning a subset
+/// or labelling untested edges as unblendable.
 ///
 /// The fixture is the OpenZCAD plate case: one straight top-perimeter edge
-/// (planar, blendable on its own) plus the bore rim (a closed circle that is
-/// an inner loop of the top face — the walking trimmer cannot retrim it, the
-/// rolling-ball engine declines closed edges, and the flat bevel cannot touch
-/// a curved face). Every engine refuses the pair, the planar subset exists,
-/// so the answer must name the rim edge it could not blend.
+/// plus a circular bore rim. At r4 every engine refuses the pair. The batch
+/// error must retain the primary trimming failure, without claiming either
+/// subset was tested. A subsequent r2 perimeter fillet proves the unchanged
+/// input remains usable.
 #[test]
 fn batch_fillet_mixed_selection_is_refused_as_a_whole() {
     let mut k = RemusKernel::new();
@@ -629,6 +627,7 @@ fn batch_fillet_mixed_selection_is_refused_as_a_whole() {
     // (that is the covered case); at r=4 the rim blends are beyond the bore's
     // clearance and every engine refuses the pair.
     let before = volume(&mut k, plate);
+    let before_bytes = k.serialize_solids(&[plate]).unwrap();
     let structured = run_v2(
         &mut k,
         &[op(
@@ -638,21 +637,35 @@ fn batch_fillet_mixed_selection_is_refused_as_a_whole() {
     );
     let error = &structured[0]["error"];
     assert_eq!(
-        error["details"]["kernelCode"], "edges-not-blended",
-        "a partially-coverable selection must be refused whole: {error}"
+        error["details"]["kernelCode"], "trimming-failure",
+        "the whole-selection refusal must preserve the engine's cause: {error}"
     );
     assert!(
-        error["message"].as_str().unwrap().contains("not blended"),
-        "the message must name the unblended edges: {error}"
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("trimming failure"),
+        "the message must retain the actual cause: {error}"
     );
+    assert!(
+        !error["message"]
+            .as_str()
+            .unwrap()
+            .contains("would round on their own")
+    );
+    assert!(
+        structured[0].get("ok").is_none(),
+        "a refused selection cannot return a subset"
+    );
+    assert_eq!(k.serialize_solids(&[plate]).unwrap(), before_bytes);
     let after_vol = volume(&mut k, plate);
     assert!(
         (after_vol - before).abs() < 1e-9,
         "the refused mixed fillet must leave the plate exactly as it was: {before} -> {after_vol}"
     );
 
-    // The perimeter edge alone rounds cleanly (the subset answer exists — it
-    // is just never passed off as the answer to the mixed request).
+    // The refused request leaves the original body usable for a subsequent
+    // smaller perimeter fillet.
     let solo = run(
         &mut k,
         &[op(

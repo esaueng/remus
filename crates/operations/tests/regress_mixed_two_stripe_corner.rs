@@ -44,7 +44,7 @@ use remus_operations::transform::transform_solid;
 use remus_topology::Topology;
 use remus_topology::builder::make_polygon_wire;
 use remus_topology::edge::{EdgeCurve, EdgeId};
-use remus_topology::explorer::{edge_to_face_map, solid_edges, solid_entity_counts, solid_faces};
+use remus_topology::explorer::{edge_to_face_map, solid_edges, solid_faces};
 use remus_topology::face::{Face, FaceSurface};
 use remus_topology::solid::SolidId;
 use remus_topology::validation::validate_shell_closed;
@@ -317,37 +317,63 @@ fn flush_tab_three_edge_notch_over_three_way_split_cap() {
     assert_eq!(torus_seams(&topo, out), (6, 0));
 }
 
-/// Outside the rectangular cell the corner keeps a typed refusal and leaves
-/// the input untouched: an oblique inner wall.
+/// Outside the rectangular cell the corner has no closed form, but it builds
+/// as the two fillets would by hand: the concave stripe first, then the
+/// convex ball rolling along its edge into the concave stripe's band — the
+/// order the qualified cell builds in. The result is sound and is exactly
+/// the hand-made body. (An oblique inner wall.)
 #[test]
-fn oblique_two_stripe_corner_refuses_atomically() {
-    let mut topo = Topology::new();
-    let input = extruded(
-        &mut topo,
-        &[
-            (0.0, 0.0),
-            (7.0, 0.0),
-            (7.0, 2.0),
-            (3.0, 2.0),
-            (2.0, 7.0),
-            (0.0, 7.0),
-        ],
-        5.0,
-    );
-    let edges = [
-        edge_between(&topo, input, p(3.0, 2.0, 0.0), p(3.0, 2.0, 5.0)),
-        edge_between(&topo, input, p(3.0, 2.0, 5.0), p(2.0, 7.0, 5.0)),
+fn oblique_two_stripe_corner_builds_as_by_hand() {
+    let outline = [
+        (0.0, 0.0),
+        (7.0, 0.0),
+        (7.0, 2.0),
+        (3.0, 2.0),
+        (2.0, 7.0),
+        (0.0, 7.0),
     ];
-    let counts = solid_entity_counts(&topo, input).unwrap();
-    let volume = solid_volume(&topo, input, 0.005).unwrap();
-    let Err(error) = fillet_cascade(&mut topo, input, &edges, 0.4) else {
-        panic!("oblique mixed corner is outside the qualified cell");
-    };
-    assert_eq!(
-        blend_failure_code(&error),
-        "unsupported-vertex-blend",
-        "{error}"
+    let r = 0.4;
+    let concave = (p(3.0, 2.0, 0.0), p(3.0, 2.0, 5.0));
+    let convex = (p(3.0, 2.0, 5.0), p(2.0, 7.0, 5.0));
+
+    let mut topo = Topology::new();
+    let input = extruded(&mut topo, &outline, 5.0);
+    let concave_edge = edge_between(&topo, input, concave.0, concave.1);
+    let first = fillet_cascade(&mut topo, input, &[concave_edge], r)
+        .unwrap()
+        .solid;
+    // The convex edge, shortened at its concave end by the first fillet.
+    let rest = solid_edges(&topo, first)
+        .unwrap()
+        .into_iter()
+        .find(|&edge_id| {
+            let edge = topo.edge(edge_id).unwrap();
+            let on = |q: Point3| {
+                let span = convex.1 - convex.0;
+                let t = (q - convex.0).dot(span) / span.dot(span);
+                ((q - convex.0) - span * t).length() < 1e-6 && (-1e-9..=1.0 + 1e-9).contains(&t)
+            };
+            matches!(edge.curve(), EdgeCurve::Line)
+                && on(topo.vertex(edge.start()).unwrap().point())
+                && on(topo.vertex(edge.end()).unwrap().point())
+        })
+        .unwrap();
+    let by_hand = fillet_cascade(&mut topo, first, &[rest], r).unwrap().solid;
+    let by_hand_volume = solid_volume(&topo, by_hand, 0.005).unwrap();
+
+    let mut topo = Topology::new();
+    let input = extruded(&mut topo, &outline, 5.0);
+    let edges = [
+        edge_between(&topo, input, concave.0, concave.1),
+        edge_between(&topo, input, convex.0, convex.1),
+    ];
+    let result = fillet_cascade(&mut topo, input, &edges, r)
+        .unwrap_or_else(|e| panic!("{}: {e}", blend_failure_code(&e)));
+    assert!(!result.is_partial);
+    assert_sound(&topo, result.solid, "oblique");
+    let volume = solid_volume(&topo, result.solid, 0.005).unwrap();
+    assert!(
+        (volume - by_hand_volume).abs() < 1e-9 * by_hand_volume.max(1.0),
+        "{volume} as one selection, {by_hand_volume} by hand"
     );
-    assert_eq!(solid_entity_counts(&topo, input).unwrap(), counts);
-    assert!((solid_volume(&topo, input, 0.005).unwrap() - volume).abs() < 1e-9);
 }
