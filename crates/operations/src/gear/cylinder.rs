@@ -332,6 +332,16 @@ pub fn cut_gear_teeth(
             twist(&build_params, &geometry).into(),
         )?;
         let flank_deviation_bound = profile_bound + twisted.bound;
+        let seam_radius = if kind == GearKind::External {
+            band.0
+        } else {
+            band.1
+        };
+        let (ring, ring_roles) = if build_params.herringbone {
+            merge_split_wall(topo, ring, ring_roles, seam_radius)?
+        } else {
+            (ring, ring_roles)
+        };
         let (result, map) = boolean_with_evolution(topo, BooleanOp::Fuse, kept, ring)?;
 
         // A ring face keeps its role only when the fuse maps it to exactly
@@ -404,6 +414,148 @@ fn seam_direction(
         }
     }
     Ok(None)
+}
+
+/// A herringbone ring's wall on the seam cylinder is two faces, one per
+/// half, meeting on the mid-plane circle; the tube's wall it meets is one.
+/// The fuse pairs coincident faces one to one, so the halves are merged into
+/// one face first: they lie on the same cylinder, and their seam lines lie on
+/// one generator because a concentric circle is not turned by the twist.
+/// The merged face is consumed by the fuse, so it needs no role. Any other
+/// arrangement leaves the ring as it is.
+#[allow(clippy::type_complexity)]
+fn merge_split_wall(
+    topo: &mut Topology,
+    ring: SolidId,
+    roles: Vec<(FaceId, super::GearFace)>,
+    radius: f64,
+) -> Result<(SolidId, Vec<(FaceId, super::GearFace)>), GearError> {
+    use remus_topology::edge::Edge;
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+
+    let tol = remus_math::tolerance::Tolerance::new().linear;
+    let unchanged = |roles| Ok((ring, roles));
+    let faces = solid_faces(topo, ring)?;
+    let mut halves = Vec::new();
+    for &face in &faces {
+        let data = topo.face(face)?;
+        if let FaceSurface::Cylinder(c) = data.surface()
+            && (c.radius() - radius).abs() <= tol
+            && data.inner_wires().is_empty()
+        {
+            halves.push(face);
+        }
+    }
+    let [a, b] = halves[..] else {
+        return unchanged(roles);
+    };
+    let (face_a, face_b) = (topo.face(a)?.clone(), topo.face(b)?.clone());
+    if face_a.is_reversed() != face_b.is_reversed() {
+        return unchanged(roles);
+    }
+    let wire_a = topo.wire(face_a.outer_wire())?.edges().to_vec();
+    let wire_b = topo.wire(face_b.outer_wire())?.edges().to_vec();
+    let is_circle = |topo: &Topology, oe: &OrientedEdge| {
+        topo.edge(oe.edge())
+            .is_ok_and(|e| matches!(e.curve(), EdgeCurve::Circle(_)))
+    };
+    let is_line = |topo: &Topology, oe: &OrientedEdge| {
+        topo.edge(oe.edge())
+            .is_ok_and(|e| matches!(e.curve(), EdgeCurve::Line))
+    };
+    // Each half: two circles and one seam line used twice.
+    let shape_ok = |wire: &[OrientedEdge]| {
+        wire.len() == 4
+            && wire.iter().filter(|oe| is_circle(topo, oe)).count() == 2
+            && wire.iter().filter(|oe| is_line(topo, oe)).count() == 2
+    };
+    if !shape_ok(&wire_a) || !shape_ok(&wire_b) {
+        return unchanged(roles);
+    }
+    let shared: Vec<_> = wire_a
+        .iter()
+        .filter(|oe| is_circle(topo, oe) && wire_b.iter().any(|ob| ob.edge() == oe.edge()))
+        .map(OrientedEdge::edge)
+        .collect();
+    let [mid] = shared[..] else {
+        return unchanged(roles);
+    };
+    let Some(far) = wire_b
+        .iter()
+        .find(|oe| is_circle(topo, oe) && oe.edge() != mid)
+        .copied()
+    else {
+        return unchanged(roles);
+    };
+    let line_of = |wire: &[OrientedEdge]| {
+        wire.iter()
+            .find(|oe| is_line(topo, oe))
+            .map(OrientedEdge::edge)
+    };
+    let (Some(line_a), Some(line_b)) = (line_of(&wire_a), line_of(&wire_b)) else {
+        return unchanged(roles);
+    };
+    let middle = topo.edge(mid)?.start();
+    let (la, lb) = (topo.edge(line_a)?.clone(), topo.edge(line_b)?.clone());
+    let other = |start, end| {
+        if start == middle {
+            Some(end)
+        } else if end == middle {
+            Some(start)
+        } else {
+            None
+        }
+    };
+    let (Some(v_a), Some(v_b)) = (other(la.start(), la.end()), other(lb.start(), lb.end())) else {
+        return unchanged(roles);
+    };
+    if topo.edge(far.edge())?.start() != v_b {
+        return unchanged(roles);
+    }
+    let (p_a, p_m, p_b) = (
+        topo.vertex(v_a)?.point(),
+        topo.vertex(middle)?.point(),
+        topo.vertex(v_b)?.point(),
+    );
+    let span = p_b - p_a;
+    if span.length() <= tol || (p_m - p_a).cross(span).length() > tol * span.length() {
+        return unchanged(roles);
+    }
+    let seam = topo.add_edge(Edge::new(v_a, v_b, EdgeCurve::Line));
+    // `line_a` runs `v_a → middle` or back; the seam runs `v_a → v_b`.
+    let seam_forward = |oe: &OrientedEdge| oe.is_forward() == (la.start() == v_a);
+    let merged: Vec<OrientedEdge> = wire_a
+        .iter()
+        .map(|oe| {
+            if oe.edge() == mid {
+                far
+            } else if oe.edge() == line_a {
+                OrientedEdge::new(seam, seam_forward(oe))
+            } else {
+                *oe
+            }
+        })
+        .collect();
+    let wire = topo.add_wire(Wire::new(merged, true)?);
+    let surface = face_a.surface().clone();
+    let face = topo.add_face(if face_a.is_reversed() {
+        Face::new_reversed(wire, vec![], surface)
+    } else {
+        Face::new(wire, vec![], surface)
+    });
+    let kept: Vec<FaceId> = faces
+        .into_iter()
+        .filter(|&f| f != a && f != b)
+        .chain(std::iter::once(face))
+        .collect();
+    let shell = topo.add_shell(Shell::new(kept)?);
+    let solid = topo.add_solid(Solid::new(shell, vec![]));
+    let roles = roles
+        .into_iter()
+        .filter(|(f, _)| *f != a && *f != b)
+        .collect();
+    Ok((solid, roles))
 }
 
 /// A coaxial tube (or a solid cylinder when `inner` is not positive) of
