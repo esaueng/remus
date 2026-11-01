@@ -30,6 +30,7 @@ pub(super) fn sample_wire_loop_uv_via_frame(
 ) -> Vec<Point2> {
     use remus_topology::edge::EdgeCurve;
     const CURVE_SAMPLES: usize = 8;
+    const CLOSED_CURVE_SAMPLES: usize = 64;
 
     let mut pts = Vec::with_capacity(wire.len() * CURVE_SAMPLES);
     for e in wire {
@@ -46,10 +47,18 @@ pub(super) fn sample_wire_loop_uv_via_frame(
             (e.end_3d, e.start_3d)
         };
         let (t0, t1) = e.native_domain();
+        // A whole rim stored as one closed edge would be an octagon, its
+        // chords 8 % of the radius inside the circle: a collar cap's r 21.35
+        // rim then left the gear root arcs 0.1 inside it reading as outside.
+        let n = if (e.start_3d - e.end_3d).length() < 1e-10 {
+            CLOSED_CURVE_SAMPLES
+        } else {
+            CURVE_SAMPLES
+        };
         #[allow(clippy::cast_precision_loss)]
-        let mut samples: Vec<Point2> = (1..CURVE_SAMPLES)
+        let mut samples: Vec<Point2> = (1..n)
             .map(|k| {
-                let t = (t1 - t0).mul_add(k as f64 / CURVE_SAMPLES as f64, t0);
+                let t = (t1 - t0).mul_add(k as f64 / n as f64, t0);
                 frame.project(e.curve_3d.evaluate_with_endpoints(t, s3, e3))
             })
             .collect();

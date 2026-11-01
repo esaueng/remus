@@ -19,10 +19,9 @@ historical predecessor-line records, retained for provenance. The
   diameter or using a given module; the input solid is kept. External teeth
   run along the whole face or over a band of it from `offset`, collars of the
   boss staying on either side, with tips flush or turned down below them;
-  internal teeth span the whole bore. A feature crossing the tooth band, a
-  span reaching past an end of the face (`gear:span-outside-face`) or internal
-  teeth over part of a bore (`gear:partial-span-unsupported`) refuse with a
-  typed `gear:<reason>` code. Gear results now name every gear face
+  internal teeth likewise run along the whole bore or over part of it. A
+  feature crossing the tooth band or a span reaching past an end of the face
+  (`gear:span-outside-face`) refuses with a typed `gear:<reason>` code. Gear results now name every gear face
   (`faceRoles`, e.g. `tooth[3].flank.plus`) and report the `module`.
 * **operations,wasm:** helical gears. `GearParams::helix_angle` and `hand`
   (`helixAngle` in degrees, `hand: "right" | "left"`) make external and

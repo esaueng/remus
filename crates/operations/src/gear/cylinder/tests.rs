@@ -536,24 +536,46 @@ fn turned_down_teeth_on_the_middle_of_a_stepped_bored_hub() {
     assert_eq!(probe(11.5, 9.5), PointClassification::Inside);
 }
 
-/// Internal teeth over part of a bore are refused: their outline would end
-/// on the bore circle of the collars' caps.
+/// Internal teeth over part of a bore, collars kept either side: the hole
+/// grows from the bore circle to the internal outline over the span only.
+/// The outline's tip corners sit on the bore circle of the collars' caps.
 #[test]
-fn internal_teeth_over_part_of_a_bore_refuse() {
-    let mut topo = Topology::new();
-    let outer = make_cylinder(&mut topo, 30.0, 9.0).unwrap();
-    let drill = moved_cylinder(&mut topo, 19.0, 20.0, -5.0);
-    let ring = boolean(&mut topo, BooleanOp::Cut, outer, drill).unwrap();
-    let face = cylinder_face(&topo, ring, 19.0);
-    let params = GearParams::standard(GearKind::Internal, 1.0, 40, 5.0);
-    let options = CylinderGearOptions {
-        offset: 2.0,
-        ..CylinderGearOptions::default()
-    };
-    assert_eq!(
-        refusal(&mut topo, ring, face, &params, &options),
-        GearRefusal::PartialSpan
-    );
+fn internal_teeth_over_part_of_a_bore_open_only_the_span() {
+    for (teeth, offset, width) in [
+        (40, 2.0, 5.0),
+        (40, 0.0, 5.0),
+        (40, 4.0, 5.0),
+        (30, 3.0, 3.0),
+    ] {
+        let mut topo = Topology::new();
+        let outer = make_cylinder(&mut topo, 30.0, 9.0).unwrap();
+        let drill = moved_cylinder(&mut topo, 19.0, 20.0, -5.0);
+        let ring = boolean(&mut topo, BooleanOp::Cut, outer, drill).unwrap();
+        let ring_volume = volume(&topo, ring);
+        let face = cylinder_face(&topo, ring, 19.0);
+        let params = GearParams::standard(GearKind::Internal, 1.0, teeth, width);
+        let options = CylinderGearOptions {
+            offset,
+            ..CylinderGearOptions::default()
+        };
+        let outcome = cut_gear_teeth(&mut topo, ring, face, &params, &options)
+            .unwrap_or_else(|error| panic!("{teeth} teeth at {offset}: {error}"));
+        assert_valid_and_watertight(&topo, outcome.solid);
+        // The inner tip diameter is the bore: m = 38 / (z − 2).
+        let module = outcome.geometry.module;
+        assert!((module - 38.0 / f64::from(teeth - 2)).abs() < 1e-12);
+
+        let mut standalone = GearParams::standard(GearKind::Internal, module, teeth, width);
+        standalone.rim_diameter = Some(56.0);
+        let hole_area = PI * 28.0 * 28.0 - outline_area(&standalone);
+        let expected = ring_volume - (hole_area - PI * 19.0 * 19.0) * width;
+        let got = volume(&topo, outcome.solid);
+        assert!(
+            ((got - expected) / expected).abs() < 1e-9,
+            "{teeth} teeth at {offset}..{}: {got} vs {expected}",
+            offset + width
+        );
+    }
 }
 
 /// The circles the operation adds start on the phase reference, not on the

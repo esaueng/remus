@@ -3437,8 +3437,12 @@ fn restrict_curves_to_faces(
                 | EdgeCurve::Parabola(_) => 0.0,
             }
             .max(tol.linear * 100.0);
+            // A plane extent's polygon chords its curved edges (16 samples a
+            // closed rim): a gear root fillet's arc 0.2 inside a collar cap's
+            // r 21.35 rim lies outside that polygon by up to its sagitta.
             let outside_a_plane = |p: Point3| -> bool {
-                !ext_a.contains_or_on_boundary(p, band) || !ext_b.contains_or_on_boundary(p, band)
+                !ext_a.contains_or_on_boundary(p, band.max(ext_a.outline_sagitta()))
+                    || !ext_b.contains_or_on_boundary(p, band.max(ext_b.outline_sagitta()))
             };
             // Probe the run's quarter points and midpoint; the run may wrap
             // past N (closed-curve seam) — the curve is periodic there. The

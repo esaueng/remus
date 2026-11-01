@@ -957,6 +957,49 @@ fn integrate_holes_plane(
     Ok(any_crossing.then_some((out, passthrough)))
 }
 
+/// A section as the forward and reverse edges a planar arrangement takes, its
+/// pcurve fitted in this face's frame.
+fn woven_section_pair(
+    section: &SectionEdge,
+    source: usize,
+    frame: &PlaneFrame,
+    surface: &FaceSurface,
+    wire_pts: &[Point3],
+) -> Result<[OrientedPCurveEdge; 2], AlgoError> {
+    let pcurve = super::pcurve_compute::compute_pcurve_on_surface_in_domain(
+        &section.curve_3d,
+        section.start,
+        section.end,
+        section.domain(),
+        surface,
+        wire_pts,
+        Some(frame),
+    )?;
+    let (su, eu) = (frame.project(section.start), frame.project(section.end));
+    let forward = OrientedPCurveEdge {
+        curve_3d: section.curve_3d.clone(),
+        trim: section.trim,
+        pcurve,
+        start_uv: su,
+        end_uv: eu,
+        start_3d: section.start,
+        end_3d: section.end,
+        forward: true,
+        source_edge_idx: Some(source),
+        pave_block_id: section.pave_block_id,
+        source_topo_edge: None,
+    };
+    let reverse = OrientedPCurveEdge {
+        start_uv: eu,
+        end_uv: su,
+        start_3d: section.end,
+        end_3d: section.start,
+        forward: false,
+        ..forward.clone()
+    };
+    Ok([forward, reverse])
+}
+
 /// How a loop sits relative to an outer loop's sampled polygon. Exact for
 /// loops from a planar subdivision (loops never cross an outer, so boundary
 /// containment of every sampled point decides region containment):
@@ -6893,6 +6936,7 @@ fn split_face_2d_impl(
     // untouched openings — a baseplate top cut at one corner — keeps the other
     // openings' exact arc geometry instead of chord-fragmenting them).
     let mut woven_hole_indices: Vec<usize> = Vec::new();
+    let mut touched_hole_promoted = false;
     let mut holes_integrated = if is_plane && !original_inner_wires.is_empty() {
         if let Some((extra, passthrough)) = integrate_holes_plane(
             sections,
@@ -6959,6 +7003,46 @@ fn split_face_2d_impl(
                 }
             }
             if coincident.is_empty() {
+                // A curved outline ending on the hole: internal gear teeth
+                // over part of a bore, whose tip corners sit on the bore
+                // circle of the collars' annular caps. The pave filler split
+                // the hole there, so it joins the arrangement as it is.
+                let weld = tol.linear * 10.0;
+                let touched = hole.iter().any(|e| {
+                    [e.start_3d, e.end_3d].into_iter().any(|p| {
+                        sections.iter().any(|sct| {
+                            (sct.start - p).length() < weld || (sct.end - p).length() < weld
+                        })
+                    })
+                });
+                if !touched {
+                    continue;
+                }
+                if !holes_integrated {
+                    holes_integrated = true;
+                    for (si, sct) in sections.iter().enumerate() {
+                        if (sct.start - sct.end).length() < 1e-10 {
+                            continue;
+                        }
+                        all_edges.extend(woven_section_pair(
+                            sct,
+                            WEAVE_SECTION_SRC_BASE + si,
+                            frame,
+                            &surface,
+                            &wire_pts,
+                        )?);
+                    }
+                }
+                woven_hole_indices.push(i);
+                touched_hole_promoted = true;
+                // A section running along the hole (a tooth tip on the bore)
+                // is that hole edge, not a second copy of it.
+                all_edges.retain(|e| {
+                    !e.source_edge_idx
+                        .is_some_and(|si| si >= WEAVE_SECTION_SRC_BASE)
+                        || !hole.iter().any(|h| loop_edges_coincide(e, h, tol.linear))
+                });
+                all_edges.extend(hole.iter().cloned());
                 continue;
             }
             if !holes_integrated {
@@ -7715,6 +7799,25 @@ fn split_face_2d_impl(
 
     // Build wire loops via angular-sorting traversal.
     let mut loops = build_wire_loops(&all_edges, tol.linear, u_periodic, v_periodic);
+    // A promoted hole's pieces bound regions on both sides of the turn rule's
+    // convention: the tooth spaces between internal gear teeth meet the bore
+    // circle at the tip corners, where the default rule turns back up the
+    // flank it came down. A loop that runs back over its own edges encloses
+    // nothing; the mirrored rule traces the spaces.
+    if touched_hole_promoted
+        && loops
+            .iter()
+            .any(|l| l.len() > 1 && loop_retraces_itself(l, tol.linear))
+    {
+        let mirrored =
+            build_wire_loops_with_winding(&all_edges, tol.linear, u_periodic, v_periodic, true);
+        if !mirrored
+            .iter()
+            .any(|l| l.len() > 1 && loop_retraces_itself(l, tol.linear))
+        {
+            loops = mirrored;
+        }
+    }
     // Clockwise-boundary handling: this face's UV frame derives from the raw
     // surface normal, not the effective face orientation, so an inner-shell
     // (cavity) wall winds CW in UV while the outer wall winds CCW. Two effects
@@ -8661,7 +8764,14 @@ fn split_face_2d_impl(
                     fallback_idx = Some(i);
                 }
                 let outer_pts = sample_wire_loop_uv(&sf.outer_wire);
-                if super::classify_2d::point_in_polygon_2d(first_pt, &outer_pts) {
+                // A promoted hole's every vertex sits on some tooth space's
+                // outline, so its first vertex can land in one; it belongs to
+                // the region it lies inside, not one it lies wholly outside.
+                if super::classify_2d::point_in_polygon_2d(first_pt, &outer_pts)
+                    && !(touched_hole_promoted
+                        && loop_containment(&sample_wire_loop_uv(&hole), &outer_pts)
+                            == LoopContainment::Outside)
+                {
                     sf.inner_wires.push(hole.clone());
                     assigned = true;
                     break;
