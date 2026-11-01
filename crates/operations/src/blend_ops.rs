@@ -13,6 +13,8 @@ use remus_topology::solid::SolidId;
 use crate::OperationsError;
 use crate::evolution::EvolutionMap;
 
+mod mixed_seam;
+
 /// Run a blend attempt transactionally: on any failure, roll the arena back
 /// to its pre-attempt state.
 ///
@@ -1887,6 +1889,14 @@ fn fillet_v2_attempts(
     // so give each feature the engine that fits it.
     let groups = independent_blend_groups(topo, solid, edges, radius)?;
     if groups.len() < 2 {
+        // A boss seam and the convex edge at its mitre interact, but have a
+        // certified construction order. Keep this separate from the distance
+        // partition: arbitrary touching blends must still be solved together.
+        if let Ok(Some(result)) =
+            transactional(topo, |t| mixed_seam::fillet(t, solid, edges, radius))
+        {
+            return Ok(result);
+        }
         return Err(refusal);
     }
     transactional(topo, |t| {
