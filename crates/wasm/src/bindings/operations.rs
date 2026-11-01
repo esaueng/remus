@@ -563,6 +563,38 @@ impl RemusKernel {
 
     // ── Fillet ────────────────────────────────────────────────────
 
+    /// Build fillets and chamfers for display only (off by default).
+    ///
+    /// For a live preview that rebuilds a blend on every step of a drag. On
+    /// a body with curved faces nearly all of a blend's time goes to two
+    /// postconditions, not to the blend: a fine whole-solid volume
+    /// measurement and a material check that classifies thousands of sample
+    /// points. With this on, every blend skips both. The structural checks
+    /// still run: every named edge is blended, the outer shell is closed and
+    /// the result carries no validation error the input did not.
+    ///
+    /// A result built this way is for display only. Turn the switch off and
+    /// rebuild before keeping a result: a band those checks would refuse can
+    /// look plausible on screen.
+    ///
+    /// The setting is per thread, like `setStoreLocalCuts`: it applies to
+    /// every kernel in this module instance (one browser worker), not only
+    /// to this one.
+    #[wasm_bindgen(js_name = "setDisplayOnlyBlends")]
+    #[allow(clippy::unused_self)] // instance method so JS finds it on the kernel
+    pub fn set_display_only_blends(&self, enabled: bool) {
+        remus_operations::blend_ops::set_display_only_blends(enabled);
+    }
+
+    /// Whether blends are built for display only (see
+    /// `setDisplayOnlyBlends`).
+    #[wasm_bindgen(js_name = "displayOnlyBlendsEnabled")]
+    #[must_use]
+    #[allow(clippy::unused_self)] // instance method so JS finds it on the kernel
+    pub fn display_only_blends_enabled(&self) -> bool {
+        remus_operations::blend_ops::display_only_blends()
+    }
+
     /// Fillet (round) edges of a solid.
     ///
     /// `edge_handles` is an array of edge handles. Returns a solid handle.

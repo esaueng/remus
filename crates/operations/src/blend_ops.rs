@@ -13,6 +13,34 @@ use remus_topology::solid::SolidId;
 use crate::OperationsError;
 use crate::evolution::EvolutionMap;
 
+thread_local! {
+    static DISPLAY_ONLY_BLENDS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Build blends for display only: skip the two measuring postconditions.
+///
+/// A live preview rebuilds a blend for every step of a drag, and on a body
+/// with curved faces nearly all of that time goes to two checks rather than
+/// to the blend: the volume oracle (`validate_blend_volume`), which
+/// tessellates the whole result finely, and the convex material guard, which
+/// classifies thousands of sample points against input and result. With this
+/// switch on, every blend on this thread skips both (and the guard's rebuild).
+/// The structural checks still run: the result covers every named edge, has
+/// a closed outer shell and no validation error the input did not have.
+///
+/// A result built this way is for display only. The caller must rebuild with
+/// the switch off before keeping it, since a band the skipped checks would
+/// have refused looks plausible on screen.
+pub fn set_display_only_blends(enabled: bool) {
+    DISPLAY_ONLY_BLENDS.with(|flag| flag.set(enabled));
+}
+
+/// Whether [`set_display_only_blends`] is on for this thread.
+#[must_use]
+pub fn display_only_blends() -> bool {
+    DISPLAY_ONLY_BLENDS.with(std::cell::Cell::get)
+}
+
 /// Run a blend attempt transactionally: on any failure, roll the arena back
 /// to its pre-attempt state.
 ///
@@ -203,6 +231,81 @@ pub(crate) fn edge_is_convex(
     })
 }
 
+/// Classify an edge as convex or concave by stepping across it rather than
+/// into it: from the edge's midpoint along the difference of its two faces'
+/// outward normals, both ways. Both steps leave the material at a convex
+/// edge (each lands beyond one face's tangent plane) and both stay in it at
+/// a concave one. Unlike a step along the normals' bisector, which stays in
+/// the material either way, the verdict does not depend on which side of
+/// the edge the probe started.
+///
+/// Returns `None` when the two steps disagree or a face normal cannot be
+/// evaluated at the midpoint.
+fn edge_is_convex_across(
+    topo: &Topology,
+    adjacency: &remus_topology::adjacency::AdjacencyIndex,
+    edge: EdgeId,
+    step: f64,
+    classifier: &mut crate::classify::RobustClassifier<'_>,
+) -> Result<Option<bool>, OperationsError> {
+    let faces = adjacency.faces_for_edge(edge);
+    if faces.len() != 2 {
+        return Ok(None);
+    }
+    let e = topo.edge(edge)?;
+    let (start, end) = (
+        topo.vertex(e.start())?.point(),
+        topo.vertex(e.end())?.point(),
+    );
+    let t = if matches!(e.curve(), EdgeCurve::Line) {
+        0.5
+    } else {
+        let (t0, t1) = crate::authoritative_edge_domain(e, "blend convexity classification")?;
+        f64::midpoint(t0, t1)
+    };
+    let mid = e.curve().evaluate_with_endpoints(t, start, end);
+    let outward = |fid: FaceId| {
+        let face = topo.face(fid).ok()?;
+        // A plane has no UV projection; its normal is its own.
+        let surface = face.surface();
+        let n = match surface {
+            FaceSurface::Plane { normal, .. } => *normal,
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => {
+                let (u, v) = surface.project_point(mid)?;
+                surface.normal(u, v)
+            }
+        };
+        let n = if face.is_reversed() { -n } else { n };
+        n.normalize().ok()
+    };
+    let (Some(n1), Some(n2)) = (outward(faces[0]), outward(faces[1])) else {
+        return Ok(None);
+    };
+    let Ok(across) = (n1 - n2).normalize() else {
+        return Ok(None);
+    };
+    let mut inside = [false; 2];
+    for (slot, sign) in inside.iter_mut().zip([1.0, -1.0]) {
+        let Ok(classification) = classifier.classify(mid + across * (sign * step)) else {
+            return Ok(None);
+        };
+        *slot = match classification {
+            crate::classify::PointClassification::Inside => true,
+            crate::classify::PointClassification::Outside => false,
+            crate::classify::PointClassification::OnBoundary => return Ok(None),
+        };
+    }
+    Ok(match inside {
+        [false, false] => Some(true),
+        [true, true] => Some(false),
+        _ => None,
+    })
+}
+
 /// The size a blend was asked for, as the volume oracle needs it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum BlendSize {
@@ -349,6 +452,9 @@ pub(crate) fn validate_blend_volume(
     edges: &[EdgeId],
     size: BlendSize,
 ) -> Result<(), OperationsError> {
+    if display_only_blends() {
+        return Ok(());
+    }
     let (topo, input_solid) = (baseline.topo, baseline.input);
     let before = crate::measure::solid_volume(topo, input_solid, 0.1)?;
     let after = crate::measure::solid_volume(topo, result_solid, 0.1)?;
@@ -1395,6 +1501,9 @@ impl ConvexMaterialGuard {
         operation: &'static str,
         result: SolidId,
     ) -> Result<(), OperationsError> {
+        if display_only_blends() {
+            return Ok(());
+        }
         if !crate::blend_material::result_has_nurbs_band(&self.pristine, self.input, live, result)?
         {
             return Ok(());
@@ -1444,6 +1553,12 @@ fn attempt_with_lazy_material_guard(
     enum ProbeError {
         Build(OperationsError),
         NeedsGuard,
+    }
+
+    // A display-only build keeps whatever the engine made: there is no guard
+    // to rebuild under.
+    if display_only_blends() {
+        return transactional(topo, |t| build(t));
     }
 
     let mut original_nurbs: DetHashSet<FaceId> = DetHashSet::default();
@@ -1958,10 +2073,280 @@ fn fillet_cascade_attempts(
     }) {
         return Ok(result);
     }
+    // Features that touch each other, which no engine takes in one pass,
+    // can each build once the one before it has: a seam, then the edges
+    // that run into its band, then those that run into theirs.
+    if let Ok(Some(result)) = transactional(topo, |t| {
+        fillet_touching_features_in_steps(t, solid, edges, radius)
+    }) {
+        return Ok(result);
+    }
     match transactional(topo, |t| fillet_carrying_cavities(t, solid, edges, radius)) {
         Ok(Some(result)) => Ok(result),
         Ok(None) | Err(_) => Err(refusal),
     }
+}
+
+/// Where a selected edge lies, so a later step can find what is left of it
+/// after an earlier step trimmed its faces.
+#[derive(Clone, Copy)]
+enum SeedCarrier {
+    /// A straight edge: the segment it spanned.
+    Line(remus_math::vec::Point3, remus_math::vec::Point3),
+    /// A circular edge: its circle.
+    Circle {
+        center: remus_math::vec::Point3,
+        normal: remus_math::vec::Vec3,
+        radius: f64,
+    },
+}
+
+impl SeedCarrier {
+    fn of(topo: &Topology, edge: EdgeId) -> Option<Self> {
+        let edge = topo.edge(edge).ok()?;
+        match edge.curve() {
+            EdgeCurve::Line => Some(Self::Line(
+                topo.vertex(edge.start()).ok()?.point(),
+                topo.vertex(edge.end()).ok()?.point(),
+            )),
+            EdgeCurve::Circle(circle) => Some(Self::Circle {
+                center: circle.center(),
+                normal: circle.normal(),
+                radius: circle.radius(),
+            }),
+            EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_)
+            | EdgeCurve::NurbsCurve(_) => None,
+        }
+    }
+
+    /// Whether `edge` lies on this carrier: a straight edge inside the
+    /// seed's segment, or an arc of the seed's circle.
+    fn carries(&self, topo: &Topology, edge: EdgeId, tolerance: f64) -> bool {
+        let Ok(data) = topo.edge(edge) else {
+            return false;
+        };
+        let (Ok(start), Ok(end)) = (topo.vertex(data.start()), topo.vertex(data.end())) else {
+            return false;
+        };
+        let ends = [start.point(), end.point()];
+        let curve = data.curve();
+        match self {
+            Self::Line(a, b) => {
+                if !matches!(curve, EdgeCurve::Line) {
+                    return false;
+                }
+                let span = *b - *a;
+                let length = span.length();
+                if length <= tolerance {
+                    return false;
+                }
+                let along = span * (1.0 / length);
+                ends.iter().all(|&p| {
+                    let t = (p - *a).dot(along);
+                    let off = (p - *a) - along * t;
+                    off.length() <= tolerance && t >= -tolerance && t <= length + tolerance
+                })
+            }
+            Self::Circle {
+                center,
+                normal,
+                radius,
+            } => match curve {
+                EdgeCurve::Circle(circle) => {
+                    (circle.center() - *center).length() <= tolerance
+                        && (circle.radius() - radius).abs() <= tolerance
+                        && circle.normal().cross(*normal).length() <= tolerance
+                }
+                EdgeCurve::Line
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_)
+                | EdgeCurve::NurbsCurve(_) => false,
+            },
+        }
+    }
+}
+
+/// Fillet a selection whose features touch, one feature at a time, when no
+/// engine takes it whole.
+///
+/// A concave seam where a boss meets a block, the block's top edges that
+/// run into it and a block corner edge that meets one of those form one
+/// selection in any CAD tool, but meet at vertices where two stripes cross
+/// and no engine builds that vertex blend. Each feature builds once the one
+/// it runs into exists: the seam as one band, then each top edge rounding
+/// into that band, then the corner edge rounding into the top edge's.
+///
+/// Features are the selection's connected runs of one convexity, concave
+/// first, since a convex edge ending at a concave seam rounds into the seam's
+/// band and not the reverse. A run that refuses as a whole is retried an
+/// edge at a time; an edge that refuses waits until the others have built.
+/// Each step finds what is left of its edges on the solid the step before
+/// it made (a trimmed edge keeps its line or circle). Nothing is reported
+/// unless every named edge built, and the finished body is checked against
+/// the input as one blend.
+///
+/// Returns `Ok(None)` when the selection is not several touching features,
+/// or when some feature does not build in any order.
+fn fillet_touching_features_in_steps(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    radius: f64,
+) -> Result<Option<BlendResult>, OperationsError> {
+    const MAX_EDGES: usize = 32;
+    if edges.len() < 2 || edges.len() > MAX_EDGES {
+        return Ok(None);
+    }
+    let tolerance = remus_math::tolerance::Tolerance::new().linear * 100.0;
+
+    let mut carriers = Vec::with_capacity(edges.len());
+    for &edge in edges {
+        let Some(carrier) = SeedCarrier::of(topo, edge) else {
+            return Ok(None);
+        };
+        carriers.push(carrier);
+    }
+    let mut concave = Vec::with_capacity(edges.len());
+    {
+        let adjacency = topo.build_adjacency(solid)?;
+        let mut classifier = crate::classify::RobustClassifier::new(topo, solid, 0.01, 1e-7);
+        for &edge in edges {
+            let convex =
+                match edge_is_convex(topo, &adjacency, edge, radius * 0.25, &mut classifier)? {
+                    Some(convex) => Some(convex),
+                    None => edge_is_convex_across(
+                        topo,
+                        &adjacency,
+                        edge,
+                        radius * 0.05,
+                        &mut classifier,
+                    )?,
+                };
+            match convex {
+                Some(convex) => concave.push(!convex),
+                None => return Ok(None),
+            }
+        }
+    }
+
+    // Runs: edges of one convexity joined through shared vertices.
+    let mut parent: Vec<usize> = (0..edges.len()).collect();
+    let ends: Vec<[usize; 2]> = edges
+        .iter()
+        .map(|&edge| {
+            topo.edge(edge)
+                .map(|e| [e.start().index(), e.end().index()])
+        })
+        .collect::<Result<_, _>>()?;
+    let mut touching = false;
+    for i in 0..edges.len() {
+        for j in i + 1..edges.len() {
+            if ends[i].iter().any(|v| ends[j].contains(v)) {
+                touching = true;
+                if concave[i] == concave[j] {
+                    let (a, b) = (
+                        union_find_root(&mut parent, i),
+                        union_find_root(&mut parent, j),
+                    );
+                    parent[b] = a;
+                }
+            }
+        }
+    }
+    if !touching {
+        return Ok(None);
+    }
+    let mut runs: Vec<(bool, Vec<usize>)> = Vec::new();
+    for i in 0..edges.len() {
+        let r = union_find_root(&mut parent, i);
+        match runs
+            .iter_mut()
+            .find(|(_, members)| union_find_root(&mut parent, members[0]) == r)
+        {
+            Some((_, members)) => members.push(i),
+            None => runs.push((concave[i], vec![i])),
+        }
+    }
+    if runs.len() < 2 {
+        return Ok(None);
+    }
+    runs.compact_sort_by_key(|&(is_concave, _)| !is_concave);
+
+    let mut queue: std::collections::VecDeque<Vec<usize>> =
+        runs.into_iter().map(|(_, members)| members).collect();
+    let mut current = solid;
+    let mut engine: Option<BlendEngine> = None;
+    let mut waiting = 0_usize;
+    while let Some(group) = queue.pop_front() {
+        // What is left of each edge on the current solid.
+        let adjacency = topo.build_adjacency(current)?;
+        let live = |edge: EdgeId| adjacency.faces_for_edge(edge).len() == 2;
+        let current_edges = remus_topology::explorer::solid_edges(topo, current)?;
+        let mut step_edges = Vec::with_capacity(group.len());
+        for &i in &group {
+            if live(edges[i]) && carriers[i].carries(topo, edges[i], tolerance) {
+                step_edges.push(edges[i]);
+                continue;
+            }
+            let found: Vec<EdgeId> = current_edges
+                .iter()
+                .copied()
+                .filter(|&edge| live(edge) && carriers[i].carries(topo, edge, tolerance))
+                .collect();
+            let [edge] = found.as_slice() else {
+                return Ok(None);
+            };
+            step_edges.push(*edge);
+        }
+        match transactional(topo, |t| {
+            fillet_cascade_engines(t, current, &step_edges, radius)
+        }) {
+            Ok(step) => {
+                engine = Some(match engine {
+                    Some(seen) if seen != step.engine => BlendEngine::Mixed,
+                    Some(seen) => seen,
+                    None => step.engine,
+                });
+                current = step.solid;
+                waiting = 0;
+            }
+            Err(_) if group.len() > 1 => {
+                for &i in group.iter().rev() {
+                    queue.push_front(vec![i]);
+                }
+            }
+            Err(_) => {
+                queue.push_back(group);
+                waiting += 1;
+                if waiting > queue.len() {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
+    let result = BlendResult {
+        solid: current,
+        succeeded: edges.to_vec(),
+        failed: Vec::new(),
+        is_partial: false,
+        // A band built by one step is trimmed by the next, so the steps'
+        // records do not compose by concatenation; see `fillet_by_feature`.
+        face_origins: None,
+        engine: engine.unwrap_or(BlendEngine::Mixed),
+    };
+    validate_complete_blend(
+        topo,
+        "fillet",
+        solid,
+        &result,
+        edges,
+        BlendSize::Fillet { radius },
+    )?;
+    Ok(Some(result))
 }
 
 /// The cascade on a hollow body's outer shell alone, with its cavity shells

@@ -75,6 +75,19 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Features
 
+* Add `setDisplayOnlyBlends(enabled)` and `displayOnlyBlendsEnabled()`, a
+  per-thread switch for live blend previews (off by default). When on,
+  fillets and chamfers skip the whole-solid volume measurement and the
+  convex material check, which take nearly all of a blend's time on a body
+  with curved faces: the boss-seam selection with the block's top and
+  corner edges drops from about 455 ms to about 8 ms natively. The
+  structural checks still run. Results are for display only; rebuild with
+  the switch off before keeping one.
+
+* Fillet a selection whose features touch at a vertex no engine can blend
+  (a boss's seam with the block edges that run into it) by building the
+  features in turn, as they would be made by hand, instead of refusing it.
+
 * Add `setStoreLocalCuts(enabled)` and `storeLocalCutsEnabled()` (direct and
   batch), the switch for store-local booleans (off by default; despite the
   name it covers cut, fuse and intersect). When on, a boolean whose second
