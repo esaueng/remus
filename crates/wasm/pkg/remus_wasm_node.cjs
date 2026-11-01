@@ -2265,6 +2265,15 @@ class RemusKernel {
         }
     }
     /**
+     * Whether blends are built for display only (see
+     * `setDisplayOnlyBlends`).
+     * @returns {boolean}
+     */
+    displayOnlyBlendsEnabled() {
+        const ret = wasm.remuskernel_displayOnlyBlendsEnabled(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
      * Apply draft angle to faces of a solid.
      *
      * `face_handles` is an array of face handles to draft.
@@ -7945,6 +7954,29 @@ class RemusKernel {
         var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v2;
+    }
+    /**
+     * Build fillets and chamfers for display only (off by default).
+     *
+     * For a live preview that rebuilds a blend on every step of a drag. On
+     * a body with curved faces nearly all of a blend's time goes to two
+     * postconditions, not to the blend: a fine whole-solid volume
+     * measurement and a material check that classifies thousands of sample
+     * points. With this on, every blend skips both. The structural checks
+     * still run: every named edge is blended, the outer shell is closed and
+     * the result carries no validation error the input did not.
+     *
+     * A result built this way is for display only. Turn the switch off and
+     * rebuild before keeping a result: a band those checks would refuse can
+     * look plausible on screen.
+     *
+     * The setting is per thread, like `setStoreLocalCuts`: it applies to
+     * every kernel in this module instance (one browser worker), not only
+     * to this one.
+     * @param {boolean} enabled
+     */
+    setDisplayOnlyBlends(enabled) {
+        wasm.remuskernel_setDisplayOnlyBlends(this.__wbg_ptr, enabled);
     }
     /**
      * Sets (or clears, when `name` is null/empty) a face's semantic
