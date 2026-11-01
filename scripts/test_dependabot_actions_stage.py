@@ -57,6 +57,14 @@ def validate_stage(content, source):
         raise ValueError("Stage may change only the reviewed Action pins and comments")
 
 
+def previous_definition(family, text):
+    """Keep earlier stage proofs exact after the separately checked activation."""
+    source = original(family)
+    if text.encode() not in (source, updated(source)):
+        raise ValueError("Historical proof requires the complete reviewed workflow definition")
+    return source.decode()
+
+
 class DependabotActionsStageTests(unittest.TestCase):
     def test_source_is_a_reachable_main_commit(self):
         self.assertEqual(subprocess.run(
@@ -91,6 +99,14 @@ class DependabotActionsStageTests(unittest.TestCase):
             with self.subTest(change=before), self.assertRaisesRegex(ValueError, "only the reviewed"):
                 self.assertIn(before, content)
                 validate_stage(content.replace(before, after, 1), source)
+
+    def test_historical_proofs_cannot_hide_an_intervening_edit(self):
+        source = original("ci")
+        for content in (source, updated(source)):
+            self.assertEqual(previous_definition("ci", content.decode()), source.decode())
+            with self.assertRaisesRegex(ValueError, "complete reviewed"):
+                previous_definition("ci", content.replace(
+                    b"--fail-under-lines 60", b"--fail-under-lines 0", 1).decode())
 
     def test_active_and_current_main_definitions_are_preserved_until_activation(self):
         main_manifest = json.loads(subprocess.check_output(

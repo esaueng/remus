@@ -16,6 +16,7 @@ from fleet_workflows import (
 )
 from test_jane_helper_workflows import STAGE
 from test_fleet_actions_stage import FleetActionsStageTests, revert_action_updates, staged_action_update
+from test_dependabot_actions_stage import WORKFLOWS as DEPENDABOT_STAGES, previous_definition
 
 CI_V4_LANDED = '9e5b65b9e00f004d83eb583ab3934c863ad7956d'
 CI_V9_LANDED = '4e355573ffe9b1bc0466d0a57fcc98677d5fc5eb'
@@ -29,6 +30,8 @@ def historical_workflow(family, text):
     including every application step and guard. Keep the earlier Action-update
     regressions against their original source after those versions are retired.
     """
+    if family in DEPENDABOT_STAGES and workflow_manifest()[family] == DEPENDABOT_STAGES[family][1]:
+        text = previous_definition(family, text)
     if family == 'ci' and '  queue-trust:\n' in text:
         return subprocess.check_output(
             ['git', 'show', f'{CI_V4_LANDED}:.github/workflows/fleet-ci-v4.yml'],
@@ -144,7 +147,8 @@ def strip_refresh_deltas(text):
 
 
 def carries_reviewed_updates(filename):
-    return re.search(r"-v[2-9]\.yml$", filename) is not None
+    version = re.search(r"-v([1-9][0-9]*)\.yml$", filename)
+    return version is not None and int(version[1]) >= 2
 
 # The ci v4 callee moves Fuzz Targets Compile and
 # Software Rendering from the second tier into the first, so a merge group that
@@ -208,6 +212,12 @@ THREE_SLOT_AUXILIARIES = {
 
 
 class FleetWorkflowTests(unittest.TestCase):
+    def test_reviewed_update_versions_include_multi_digit_callees(self):
+        for version in (2, 9, 10, 11):
+            self.assertTrue(carries_reviewed_updates(f"fleet-ci-v{version}.yml"))
+        for filename in ("fleet-ci.yml", "fleet-ci-v1.yml"):
+            self.assertFalse(carries_reviewed_updates(filename))
+
     def test_three_slot_auxiliaries_only_change_guard_pin_and_profile_selector(self):
         self.assertEqual(subprocess.run(
             ["git", "merge-base", "--is-ancestor", THREE_SLOT_GUARD_LANDED, "origin/main"],
@@ -286,6 +296,11 @@ class FleetWorkflowTests(unittest.TestCase):
         staged = landed_v2("ci")
         drifted = active.read_text().replace("  contents: read", "  contents: write", 1)
         self.assertNotEqual(drifted, active.read_text())
+        if active.name == DEPENDABOT_STAGES["ci"][1]:
+            with self.assertRaisesRegex(ValueError, "complete reviewed"):
+                previous_definition("ci", drifted)
+            drifted = previous_definition("ci", active.read_text()).replace(
+                "  contents: read", "  contents: write", 1)
         with self.assertRaisesRegex(AssertionError, "active command, guard or permission"):
             assert_reviewed_workflow_delta(strip_v3_deltas(staged), strip_v3_deltas(drifted), True)
 
@@ -351,6 +366,8 @@ class FleetWorkflowTests(unittest.TestCase):
                 allowed.update({'fleet-ci-v6.yml', 'fleet-ci-v7.yml', 'fleet-ci-v9.yml'} if family == 'ci'
                                else {STAGE['workflows'][family]['staged']}
                                | staged_action_update(family))
+                if family in DEPENDABOT_STAGES:
+                    allowed.add(DEPENDABOT_STAGES[family][1])
                 self.assertIn(main_file, allowed)
                 main_active = subprocess.check_output(
                     ["git", "show", f"origin/main:.github/workflows/{main_file}"], cwd=ROOT, text=True,

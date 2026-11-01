@@ -11,6 +11,7 @@ from fleet_workflows import (
     FAMILIES, validate_reference, workflow_calls, workflow_manifest, workflow_text,
 )
 from test_fleet_actions_stage import revert_action_updates, staged_action_update
+from test_dependabot_actions_stage import WORKFLOWS as DEPENDABOT_STAGES, previous_definition
 
 ROOT = Path(__file__).resolve().parents[1]
 STAGE = json.loads((ROOT / '.github/fleet-profile-stage.json').read_text())
@@ -50,7 +51,12 @@ class JaneHelperWorkflowTests(unittest.TestCase):
         manifest = workflow_manifest()
         for family, entry in STAGE['workflows'].items():
             with self.subTest(family=family):
-                if family == 'benchmark' and manifest[family] == 'fleet-benchmark-v4.yml':
+                filename = manifest[family]
+                active = workflow_text(filename)
+                if family in DEPENDABOT_STAGES and filename == DEPENDABOT_STAGES[family][1]:
+                    active = previous_definition(family, active)
+                    filename = DEPENDABOT_STAGES[family][0]
+                if family == 'benchmark' and filename == 'fleet-benchmark-v4.yml':
                     # Preserve the complete original helper-stage proof. V4's
                     # separately reviewed speed changes must match its landed pin.
                     self.assertEqual(workflow_text(entry['staged']),
@@ -62,7 +68,7 @@ class JaneHelperWorkflowTests(unittest.TestCase):
                     self.assertEqual(len(matching), 1)
                     validate_reference(*matching[0], (ROOT / path).read_bytes())
                     continue
-                if manifest[family] in staged_action_update(family):
+                if filename in staged_action_update(family):
                     # #1297's dependency-only update replaced the helper; the
                     # helper's own bytes stay proven at its landed commit.
                     helper = workflow_text(entry['staged'])
@@ -70,12 +76,11 @@ class JaneHelperWorkflowTests(unittest.TestCase):
                     self.assertFalse((WORKFLOWS / entry['staged']).exists(),
                                      'Activation retires the replaced helper file')
                     self.assertEqual(revert_action_updates(
-                        family, (WORKFLOWS / manifest[family]).read_text()), helper)
+                        family, active), helper)
                     continue
-                self.assertIn(manifest[family], entry.values())
-                active = (WORKFLOWS / manifest[family]).read_text()
+                self.assertIn(filename, entry.values())
                 expected = original(entry['previous'])
-                if manifest[family] == entry['staged']:
+                if filename == entry['staged']:
                     expected = expected_stage(expected)
                     self.assertFalse((WORKFLOWS / entry['previous']).exists(),
                                      'Activation retires the previous helper file')

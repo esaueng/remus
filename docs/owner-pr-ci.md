@@ -1,6 +1,6 @@
 # Trusted owner CI fleet
 
-Required Linux CI jobs and their completion gate live in `fleet-ci-v9.yml`, called
+Required Linux CI jobs and their completion gate live in `fleet-ci-v11.yml`, called
 at an immutable commit from `ci.yml`. Benchmarks, corpus gauntlets, fuzzing,
 mutation checks, OSV scans, WASM candidates and size reports each have their
 own immutable `fleet-*.yml` callee. Their shared pre-checkout guard is a pinned
@@ -259,17 +259,26 @@ slots. Hosted runs pick them up in parallel.
 
 ## Updating immutable workflow dependencies
 
-PR #1449 stages the rust-cache, installer v2.87.31 and SARIF uploader v4.39.1
+PR #1449 staged the rust-cache, installer v2.87.31 and SARIF uploader v4.39.1
 updates in `fleet-ci-v11.yml`, `fleet-benchmark-v5.yml`, `fleet-fuzz-v5.yml`,
 `fleet-gauntlet-v5.yml`, `fleet-mutants-sharded-v6.yml`,
 `fleet-mutation-scope-v5.yml`, `fleet-osv-v7.yml` and
 `fleet-wasm-candidate-v6.yml`. `scripts/test_dependabot_actions_stage.py`
 compares each complete file with main commit
 `3862e7f9f162ed5c1fc651f9eba8d7ea7ef90fd3`, permitting only those exact
-Action pins and version comments. Existing active and historical stages stay
-byte-identical. Windows ARM receipt and workflow-policy checks bind the new
-installer SHA. A second protected PR must activate the new versions at the
-actual landed staging commit; runner variables and allowlists remain separate.
+Action pins and version comments. That staging PR preserved all previously
+active and historical definitions. Windows ARM receipt and workflow-policy
+checks bind the new installer SHA. Activation requires a separate protected PR
+pinned to the landed staging commit; runner variables and allowlists remain
+separate.
+
+The activation selects those eight new versions together and retires their
+eight replaced files. The historical stage, guard, resource-profile and CI-speed
+proofs read the retired definitions from the staging commit, while the #1449
+proof separately checks every byte of the active files and rejects unreviewed
+changes before allowing historical normalization. Caller pins use the landed
+staging merge commit `ff8415b3005256df5a65af5c92b8c26caa4c878f`. Activation
+leaves runner selection variables unchanged.
 
 PR #1297 stages the installer v2.87.29 and SARIF uploader v4.39.0 updates in
 `fleet-ci-v8.yml`, `fleet-mutants-sharded-v5.yml`,
