@@ -13,6 +13,34 @@ use remus_topology::solid::SolidId;
 use crate::OperationsError;
 use crate::evolution::EvolutionMap;
 
+thread_local! {
+    static DISPLAY_ONLY_BLENDS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Build blends for display only: skip the two measuring postconditions.
+///
+/// A live preview rebuilds a blend for every step of a drag, and on a body
+/// with curved faces nearly all of that time goes to two checks rather than
+/// to the blend: the volume oracle (`validate_blend_volume`), which
+/// tessellates the whole result finely, and the convex material guard, which
+/// classifies thousands of sample points against input and result. With this
+/// switch on, every blend on this thread skips both (and the guard's rebuild).
+/// The structural checks still run: the result covers every named edge, has
+/// a closed outer shell and no validation error the input did not have.
+///
+/// A result built this way is for display only. The caller must rebuild with
+/// the switch off before keeping it, since a band the skipped checks would
+/// have refused looks plausible on screen.
+pub fn set_display_only_blends(enabled: bool) {
+    DISPLAY_ONLY_BLENDS.with(|flag| flag.set(enabled));
+}
+
+/// Whether [`set_display_only_blends`] is on for this thread.
+#[must_use]
+pub fn display_only_blends() -> bool {
+    DISPLAY_ONLY_BLENDS.with(std::cell::Cell::get)
+}
+
 /// Run a blend attempt transactionally: on any failure, roll the arena back
 /// to its pre-attempt state.
 ///
@@ -419,6 +447,9 @@ pub(crate) fn validate_blend_volume(
     edges: &[EdgeId],
     size: BlendSize,
 ) -> Result<(), OperationsError> {
+    if display_only_blends() {
+        return Ok(());
+    }
     let (topo, input_solid) = (baseline.topo, baseline.input);
     let before = crate::measure::solid_volume(topo, input_solid, 0.1)?;
     let after = crate::measure::solid_volume(topo, result_solid, 0.1)?;
@@ -1465,6 +1496,9 @@ impl ConvexMaterialGuard {
         operation: &'static str,
         result: SolidId,
     ) -> Result<(), OperationsError> {
+        if display_only_blends() {
+            return Ok(());
+        }
         if !crate::blend_material::result_has_nurbs_band(&self.pristine, self.input, live, result)?
         {
             return Ok(());
@@ -1514,6 +1548,12 @@ fn attempt_with_lazy_material_guard(
     enum ProbeError {
         Build(OperationsError),
         NeedsGuard,
+    }
+
+    // A display-only build keeps whatever the engine made: there is no guard
+    // to rebuild under.
+    if display_only_blends() {
+        return transactional(topo, |t| build(t));
     }
 
     let mut original_nurbs: DetHashSet<FaceId> = DetHashSet::default();

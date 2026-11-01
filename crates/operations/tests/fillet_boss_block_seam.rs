@@ -22,7 +22,9 @@
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use remus_math::vec::Point3;
-use remus_operations::blend_ops::{blend_failure_code, chamfer_v2, fillet_cascade};
+use remus_operations::blend_ops::{
+    blend_failure_code, chamfer_v2, display_only_blends, fillet_cascade, set_display_only_blends,
+};
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::measure::solid_volume;
 use remus_operations::primitives::{make_box, make_cylinder};
@@ -595,4 +597,46 @@ fn convex_corner_into_the_boss_refuses_atomically() {
     );
     assert_eq!(solid_entity_counts(&topo, body).unwrap(), counts);
     assert!((solid_volume(&topo, body, MEASURE_DEFLECTION).unwrap() - volume).abs() < 1e-9);
+}
+
+/// A display-only build skips the measuring postconditions but builds the
+/// same body: the six-edge selection lands on the checked result's volume,
+/// and the switch is off again afterwards.
+#[test]
+fn display_only_build_matches_the_checked_build() {
+    let p = Point3::new;
+    let selection = |topo: &Topology, body: SolidId| {
+        let mut edges = seam(topo, body).to_vec();
+        for (a, b) in [
+            (p(BOSS, 0.0, BLOCK.2), p(BLOCK.0, 0.0, BLOCK.2)),
+            (p(0.0, BOSS, BLOCK.2), p(0.0, BLOCK.1, BLOCK.2)),
+            (p(BLOCK.0, 0.0, 0.0), p(BLOCK.0, 0.0, BLOCK.2)),
+        ] {
+            edges.push(edge_between(topo, body, a, b));
+        }
+        edges
+    };
+    let r = 2.0;
+
+    let mut topo = Topology::new();
+    let body = imported_body(&mut topo);
+    let edges = selection(&topo, body);
+    let checked = fillet_cascade(&mut topo, body, &edges, r).unwrap().solid;
+    let checked_volume = solid_volume(&topo, checked, MEASURE_DEFLECTION).unwrap();
+
+    let mut topo = Topology::new();
+    let body = imported_body(&mut topo);
+    let edges = selection(&topo, body);
+    assert!(!display_only_blends());
+    set_display_only_blends(true);
+    let shown = fillet_cascade(&mut topo, body, &edges, r);
+    set_display_only_blends(false);
+    assert!(!display_only_blends());
+    let shown = shown.unwrap();
+    assert_valid(&topo, shown.solid, "display only");
+    let volume = solid_volume(&topo, shown.solid, MEASURE_DEFLECTION).unwrap();
+    assert!(
+        (volume - checked_volume).abs() < 1e-6 * checked_volume,
+        "{volume} for display, {checked_volume} checked"
+    );
 }
