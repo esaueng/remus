@@ -45,13 +45,19 @@ fn boss_a_hair_past_the_block_side_measures_exactly() {
     }
 }
 
-/// The same boss 1e-9 to 5e-8 past the side used to refuse: the block's top
-/// edge met the boss wall along a near-tangent line, the edge-face scan left
-/// its crossing up to 6e-7 off, beside the exact vertex of the wall's rim
-/// crossing, and the fuse kept both and an open shell.
+/// The same boss 1e-9 to 5e-5 past the side used to refuse. Up to 5e-8 the
+/// block's top edge met the boss wall along a near-tangent line and the
+/// edge-face scan left its crossing up to 6e-7 off, beside the exact vertex
+/// of the wall's rim crossing. From 1.2e-7 the lens the side's chord cuts off
+/// the boss's bottom disc was lost: its arc took a straight pcurve, the chord
+/// was dropped as lying on the rim, the lens was filed as a hole or a sliver,
+/// and the block's bottom took the lens arcs as sections lying in its
+/// material.
 #[test]
-fn boss_within_tolerance_of_the_block_side_fuses_exactly() {
-    for gap in [1e-9, 5e-9, 2e-8, 3e-8, 5e-8] {
+fn boss_a_hair_past_the_block_side_fuses_exactly() {
+    for gap in [
+        1e-9, 5e-9, 2e-8, 3e-8, 5e-8, 1.5e-7, 2e-7, 5e-7, 1e-6, 3e-6, 1e-5, 5e-5,
+    ] {
         let mut topo = Topology::new();
         let block = make_box(&mut topo, 60.0, 40.0, 8.0).unwrap();
         let boss = make_cylinder(&mut topo, 10.0, 16.0).unwrap();

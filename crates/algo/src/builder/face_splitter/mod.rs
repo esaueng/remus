@@ -995,6 +995,84 @@ fn loop_containment(loop_pts: &[Point2], outer: &[Point2]) -> LoopContainment {
     }
 }
 
+/// Exact distance from `p` to a boundary edge that is a line segment or a
+/// circular arc; `None` for other curves, whose distance is left to the
+/// sampled polygon.
+fn distance_to_boundary_edge(p: Point3, edge: &OrientedPCurveEdge) -> Option<f64> {
+    use std::f64::consts::TAU;
+    if matches!(edge.curve_3d, EdgeCurve::Line) {
+        let d = edge.end_3d - edge.start_3d;
+        let len_sq = d.length_squared();
+        let s = if len_sq > 0.0 {
+            ((p - edge.start_3d).dot(d) / len_sq).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        return Some((p - (edge.start_3d + d * s)).length());
+    }
+    let EdgeCurve::Circle(circle) = &edge.curve_3d else {
+        return None;
+    };
+    let ends = (p - edge.start_3d).length().min((p - edge.end_3d).length());
+    let (lo, hi) = edge.trim?;
+    let (lo, hi) = (lo.min(hi), lo.max(hi));
+    let angle = circle.project(p);
+    let on_arc = (-2..=2).any(|k| {
+        let a = TAU.mul_add(f64::from(k), angle);
+        (lo..=hi).contains(&a)
+    });
+    Some(if on_arc {
+        (circle.evaluate(angle) - p).length().min(ends)
+    } else {
+        ends
+    })
+}
+
+/// Whether two loop edges are one curve within `tol`, either way round: their
+/// ends agree and so do their quarter, mid and three-quarter points.
+fn loop_edges_coincide(a: &OrientedPCurveEdge, b: &OrientedPCurveEdge, tol: f64) -> bool {
+    let at = |e: &OrientedPCurveEdge, t: f64| {
+        evaluate_edge_at_t(&e.curve_3d, e.start_3d, e.end_3d, e.traversal_domain(), t)
+    };
+    let along = |flip: bool| {
+        [0.25, 0.5, 0.75].iter().all(|&t| {
+            let tb = if flip { 1.0 - t } else { t };
+            (at(a, t) - at(b, tb)).length() <= tol
+        })
+    };
+    ((a.start_3d - b.start_3d).length() <= tol
+        && (a.end_3d - b.end_3d).length() <= tol
+        && along(false))
+        || ((a.start_3d - b.end_3d).length() <= tol
+            && (a.end_3d - b.start_3d).length() <= tol
+            && along(true))
+}
+
+/// Whether `hole` shares at least one edge with `outer` but not all of them:
+/// the region beside an outline, not a re-trace of it.
+fn shares_part_of_outline(
+    hole: &[OrientedPCurveEdge],
+    outer: &[OrientedPCurveEdge],
+    tol: f64,
+) -> bool {
+    let shared = hole
+        .iter()
+        .filter(|h| outer.iter().any(|o| loop_edges_coincide(h, o, tol)))
+        .count();
+    shared > 0 && shared < hole.len()
+}
+
+/// Whether every edge of a loop runs back over another edge of it within
+/// `tol`: a loop that encloses nothing, however its sampled area reads.
+fn loop_retraces_itself(wire_loop: &[OrientedPCurveEdge], tol: f64) -> bool {
+    wire_loop.iter().enumerate().all(|(i, a)| {
+        wire_loop
+            .iter()
+            .enumerate()
+            .any(|(j, b)| i != j && loop_edges_coincide(a, b, tol))
+    })
+}
+
 /// Attach each whole hole to the sub-face that geometrically contains it.
 ///
 /// A hole is assigned to the INNERMOST containing sub-face (the one whose own
@@ -7591,6 +7669,7 @@ fn split_face_2d_impl(
         let boundary_poly = sample_wire_loop_uv_via_frame(&all_edges[..n_boundary_edges], frame);
         let eps = tol.linear * 10.0;
         let n_b = n_boundary_edges;
+        let boundary = all_edges[..n_b].to_vec();
         all_edges
             .into_iter()
             .enumerate()
@@ -7607,14 +7686,26 @@ fn split_face_2d_impl(
                     return true;
                 }
                 let (s, t) = (e.start_uv, e.end_uv);
-                !(0..=8).all(|k| {
+                let near_polygon = (0..=8).all(|k| {
                     let f = f64::from(k) / 8.0;
                     let p = Point2::new(
                         f.mul_add(t.x() - s.x(), s.x()),
                         f.mul_add(t.y() - s.y(), s.y()),
                     );
                     super::classify_2d::distance_to_polygon_boundary(p, &boundary_poly) <= eps
-                })
+                });
+                // The band covers the polygon's chords of boundary arcs. A
+                // chord 2e-7 inside a rim arc (a boss that far past a block
+                // side) is a real cut: measured against the true lines and
+                // circles it stands off by more than the tolerance.
+                !(near_polygon
+                    && (0..=8).all(|k| {
+                        let f = f64::from(k) / 8.0;
+                        let p = e.start_3d + (e.end_3d - e.start_3d) * f;
+                        boundary.iter().any(|b| {
+                            distance_to_boundary_edge(p, b).is_none_or(|d| d <= tol.linear)
+                        })
+                    }))
             })
             .map(|(_, e)| e)
             .collect()
@@ -8296,11 +8387,16 @@ fn split_face_2d_impl(
             // forward then backward when a coplanar partner's boundary
             // coincides with the face's own corner arc. Classifying it as
             // outer creates a zero-area face; as hole, a spurious inner wire.
+            // A thin loop whose edges part by more than the tolerance is a
+            // region, though: the lens a boss 2e-7 past a block side leaves
+            // between the side's chord and the boss rim.
             let mut perimeter: f64 = pts.windows(2).map(|w| (w[1] - w[0]).length()).sum();
             if let (Some(first), Some(last)) = (pts.first(), pts.last()) {
                 perimeter += (*last - *first).length();
             }
-            if area.abs() <= perimeter * tol.linear {
+            if area.abs() <= perimeter * tol.linear
+                && (!is_plane || loop_retraces_itself(&wire_loop, tol.linear))
+            {
                 continue;
             }
             if area > 0.0 {
@@ -8450,9 +8546,21 @@ fn split_face_2d_impl(
             if hole_pts.len() < 3 {
                 return true;
             }
-            let nested = outer_uv
-                .iter()
-                .any(|o| loop_containment(&hole_pts, o) != LoopContainment::Outside);
+            let nested = outer_uv.iter().zip(&outers).any(|(o, (outer, _))| {
+                match loop_containment(&hole_pts, o) {
+                    LoopContainment::Outside => false,
+                    LoopContainment::Nested => true,
+                    // The boundary band is scale-relative (1e-6 of the
+                    // outline's diagonal), so a lens 1e-6 thick cut off a
+                    // disc by a chord reads as lying on the outline. A
+                    // re-trace's edges are all the outline's own; a hole
+                    // never shares an edge with its outer. A loop sharing
+                    // some edges but not all is the region beside it.
+                    LoopContainment::BoundaryCoincident => {
+                        !shares_part_of_outline(hole, outer, tol.linear)
+                    }
+                }
+            });
             if nested {
                 true
             } else {
