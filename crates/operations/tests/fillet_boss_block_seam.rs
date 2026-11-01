@@ -50,7 +50,11 @@ fn native_body(topo: &mut Topology) -> SolidId {
 /// round on its top rim, and its parameter seam runs up from the corner
 /// vertex where the front ruling meets the arc.
 fn imported_body(topo: &mut Topology) -> SolidId {
-    remus_io::step::reader::read_step(include_str!("data/box_corner_rounded_cylinder_boss.step"), topo).unwrap()[0]
+    remus_io::step::reader::read_step(
+        include_str!("data/box_corner_rounded_cylinder_boss.step"),
+        topo,
+    )
+    .unwrap()[0]
 }
 
 fn native_volume() -> f64 {
