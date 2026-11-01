@@ -29,7 +29,7 @@ use remus_operations::primitives::{make_box, make_cylinder};
 use remus_operations::validate::validate_solid;
 use remus_topology::Topology;
 use remus_topology::edge::EdgeId;
-use remus_topology::explorer::{solid_edges, solid_faces, solid_vertices};
+use remus_topology::explorer::{solid_edges, solid_entity_counts, solid_faces, solid_vertices};
 use remus_topology::face::FaceSurface;
 use remus_topology::solid::SolidId;
 use remus_topology::validation::validate_shell_closed;
@@ -461,4 +461,138 @@ fn chamfer_up_one_wall() {
             "d{d}: gained {gained}, expected {expected}"
         );
     }
+}
+
+/// The section a convex round of radius `r` takes off a right-angled edge.
+fn convex_round_section(r: f64) -> f64 {
+    (1.0 - PI / 4.0) * r * r
+}
+
+/// The straight edge of `solid` lying on the segment `a`–`b`: what is left
+/// of a block edge once an earlier fillet trimmed one end of it.
+fn edge_along(topo: &Topology, solid: SolidId, a: Point3, b: Point3) -> EdgeId {
+    let span = b - a;
+    let along = span * (1.0 / span.length());
+    let on = |q: Point3| {
+        let t = (q - a).dot(along);
+        ((q - a) - along * t).length() < 1e-6 && t > -1e-6 && t < span.length() + 1e-6
+    };
+    let found: Vec<EdgeId> = solid_edges(topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&edge_id| {
+            let edge = topo.edge(edge_id).unwrap();
+            matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line)
+                && on(topo.vertex(edge.start()).unwrap().point())
+                && on(topo.vertex(edge.end()).unwrap().point())
+        })
+        .collect();
+    let [edge] = found.as_slice() else {
+        panic!("{} edges along {a:?} -- {b:?}", found.len());
+    };
+    *edge
+}
+
+/// The seam, the block's top edges that run into it and the block's front
+/// corner edge that meets one of them, rounded as one selection.
+///
+/// No engine builds the vertices where these stripes cross, so the selection
+/// used to refuse whole (`unsupported-vertex-blend`). It builds as the
+/// features would be made by hand, and lands on exactly that body: the seam
+/// as one band, then the top edges rounding into it (held to closed forms in
+/// `fillet_into_seam_band.rs`), then the corner edge rounding into the front
+/// top edge's band. The convex rounds also take at least their straight
+/// runs' closed-form sections.
+#[test]
+fn fillet_seam_top_edges_and_corner_edge_as_one_selection() {
+    let p = Point3::new;
+    let front_top = (p(BOSS, 0.0, BLOCK.2), p(BLOCK.0, 0.0, BLOCK.2));
+    let side_top = (p(0.0, BOSS, BLOCK.2), p(0.0, BLOCK.1, BLOCK.2));
+    let corner = (p(BLOCK.0, 0.0, 0.0), p(BLOCK.0, 0.0, BLOCK.2));
+    for (label, make) in [
+        ("native", native_body as fn(&mut Topology) -> SolidId),
+        ("imported", imported_body),
+    ] {
+        for r in [2.0, 4.5] {
+            let label = format!("{label} r{r}");
+            let fillet = |topo: &mut Topology, body: SolidId, edges: &[EdgeId], step: &str| {
+                fillet_cascade(topo, body, edges, r)
+                    .unwrap_or_else(|e| panic!("{label} {step}: {}: {e}", blend_failure_code(&e)))
+                    .solid
+            };
+
+            // By hand: the seam, then the top edges, then the corner edge.
+            let mut topo = Topology::new();
+            let body = make(&mut topo);
+            let seam_edges = seam(&topo, body);
+            let seamed = fillet(&mut topo, body, &seam_edges, "seam");
+            let seamed_volume = solid_volume(&topo, seamed, MEASURE_DEFLECTION).unwrap();
+            let tops = [
+                edge_along(&topo, seamed, front_top.0, front_top.1),
+                edge_along(&topo, seamed, side_top.0, side_top.1),
+            ];
+            let topped = fillet(&mut topo, seamed, &tops, "top edges");
+            let last = edge_along(&topo, topped, corner.0, corner.1);
+            let by_hand = fillet(&mut topo, topped, &[last], "corner edge");
+            let by_hand_volume = solid_volume(&topo, by_hand, MEASURE_DEFLECTION).unwrap();
+
+            // As one selection.
+            let mut topo = Topology::new();
+            let body = make(&mut topo);
+            let mut edges = seam(&topo, body).to_vec();
+            for (a, b) in [front_top, side_top, corner] {
+                edges.push(edge_between(&topo, body, a, b));
+            }
+            let result = fillet_cascade(&mut topo, body, &edges, r)
+                .unwrap_or_else(|e| panic!("{label}: {}: {e}", blend_failure_code(&e)));
+            assert!(result.failed.is_empty(), "{label}: partial blend");
+            assert_valid(&topo, result.solid, &label);
+            for sharp in [front_top.0, side_top.0, corner.1] {
+                assert!(
+                    !has_vertex(&topo, result.solid, sharp),
+                    "{label}: sharp corner left at {sharp:?}"
+                );
+            }
+            let volume = solid_volume(&topo, result.solid, MEASURE_DEFLECTION).unwrap();
+            assert!(
+                (volume - by_hand_volume).abs() < 1e-6 * by_hand_volume,
+                "{label}: {volume} as one selection, {by_hand_volume} by hand"
+            );
+            let straight: f64 = [BLOCK.0 - BOSS - r, BLOCK.1 - BOSS - r, BLOCK.2 - r]
+                .iter()
+                .map(|length| convex_round_section(r) * length)
+                .sum();
+            assert!(
+                seamed_volume - volume > straight,
+                "{label}: the rounds took {}, their straight runs alone {straight}",
+                seamed_volume - volume
+            );
+        }
+    }
+}
+
+/// A selection the steps cannot split keeps its typed refusal and leaves the
+/// input untouched: the block's front top edge with the corner edge it meets,
+/// one convex run whose top edge, alone, cannot end against the boss.
+#[test]
+fn convex_corner_into_the_boss_refuses_atomically() {
+    let p = Point3::new;
+    let mut topo = Topology::new();
+    let body = imported_body(&mut topo);
+    let edges = [
+        edge_between(&topo, body, p(BOSS, 0.0, BLOCK.2), p(BLOCK.0, 0.0, BLOCK.2)),
+        edge_between(&topo, body, p(BLOCK.0, 0.0, 0.0), p(BLOCK.0, 0.0, BLOCK.2)),
+    ];
+    let counts = solid_entity_counts(&topo, body).unwrap();
+    let volume = solid_volume(&topo, body, MEASURE_DEFLECTION).unwrap();
+    let Err(error) = fillet_cascade(&mut topo, body, &edges, 2.0) else {
+        panic!("the top edge cannot yet end against the boss");
+    };
+    assert_eq!(
+        blend_failure_code(&error),
+        "unsupported-vertex-blend",
+        "{error}"
+    );
+    assert_eq!(solid_entity_counts(&topo, body).unwrap(), counts);
+    assert!((solid_volume(&topo, body, MEASURE_DEFLECTION).unwrap() - volume).abs() < 1e-9);
 }
