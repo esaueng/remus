@@ -812,3 +812,78 @@ fn thirty_helical_teeth_over_the_middle_of_a_bore_match_the_standalone_gear() {
         );
     }
 }
+
+/// The boolean classifier's ray cast against a helical gear ring: every ray
+/// from a point in the empty bore must cross the ring an even number of
+/// times. Its twisted NURBS flanks were cast against as flat polygons
+/// through their boundary samples, which gained or lost crossings.
+#[test]
+fn rays_from_a_helical_ring_bore_cross_it_evenly() {
+    let teeth = 17_u32;
+    let helix = 25.0_f64.to_radians();
+    let module = 24.0 / (f64::from(teeth) / helix.cos() + 2.0);
+    let mut params = GearParams {
+        helix_angle: helix,
+        ..GearParams::standard(GearKind::External, module, teeth, 10.0)
+    };
+    params.bore_diameter = Some(18.0);
+    let mut topo = Topology::new();
+    let ring = make_gear(&mut topo, &params, &GearPlacement::default())
+        .unwrap()
+        .solid;
+    for z in [
+        1e-4,
+        1e-3,
+        1e-2,
+        0.1,
+        5.0,
+        10.0 - 1e-2,
+        10.0 - 1e-3,
+        10.0 - 1e-4,
+    ] {
+        for (x, y) in [(0.0, 0.0), (1.0, 2.0), (-3.0, 1.5)] {
+            let votes =
+                remus_algo::classifier::ray_cast_inside_votes(&topo, ring, Point3::new(x, y, z))
+                    .unwrap();
+            assert_eq!(votes, 0, "({x}, {y}, {z})");
+        }
+    }
+}
+
+/// Helical teeth whose fuse kept or dropped faces on a ray-cast vote
+/// through twisted flanks: the core disc at the start cap, tooth spaces on
+/// a collar cap. Each now builds and matches the standalone gear.
+#[test]
+fn helical_teeth_classified_against_twisted_flanks_match_the_standalone_gear() {
+    for (teeth, helix, herringbone, offset, width) in [
+        (17_u32, 25.0_f64, false, 0.0, 10.0),
+        (31, 25.0, false, 2.0, 6.0),
+        (22, 15.0, true, 5.0, 5.0),
+    ] {
+        let mut topo = Topology::new();
+        let boss = make_cylinder(&mut topo, 12.0, 10.0).unwrap();
+        let boss_volume = volume(&topo, boss);
+        let face = cylinder_face(&topo, boss, 12.0);
+        let params = GearParams {
+            helix_angle: helix.to_radians(),
+            herringbone,
+            ..GearParams::standard(GearKind::External, 1.0, teeth, width)
+        };
+        let options = CylinderGearOptions {
+            offset,
+            ..CylinderGearOptions::default()
+        };
+        let outcome = cut_gear_teeth(&mut topo, boss, face, &params, &options)
+            .unwrap_or_else(|error| panic!("z{teeth} {helix}° at {offset}: {error}"));
+        assert_valid_and_watertight(&topo, outcome.solid);
+
+        let mut standalone = params.clone();
+        standalone.module = outcome.geometry.module;
+        let expected = boss_volume - (PI * 144.0 - outline_area(&standalone)) * width;
+        let got = volume(&topo, outcome.solid);
+        assert!(
+            ((got - expected) / expected).abs() < 1e-9,
+            "z{teeth} {helix}° at {offset}: {got} vs {expected}"
+        );
+    }
+}
