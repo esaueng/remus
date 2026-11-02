@@ -242,13 +242,16 @@ impl PreparedFaceMove {
                     return Err(error);
                 };
                 remus_topology::transaction::run_transacted(topo, |topo| {
-                    let moved = crate::resize_blend::move_with_cap_reblend(
+                    let Some(moved) = crate::resize_blend::move_with_cap_reblend(
                         topo,
                         self.solid,
                         &self.faces,
                         distance,
                         permission,
-                    )?;
+                    )?
+                    else {
+                        return Err(error);
+                    };
                     Ok((
                         (
                             MoveFacesResult {

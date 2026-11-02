@@ -26,11 +26,14 @@ pub fn move_with_cap_reblend(
     faces: &[FaceId],
     distance: f64,
     permission: CapReblendApproximation,
-) -> Result<BlendMoveEntities, OperationsError> {
+) -> Result<Option<BlendMoveEntities>, OperationsError> {
     check_translation_distance(distance)?;
     let _total = crate::performance::span("move_faces.cap_join");
-    let plan = original_plan(topo, solid, faces, distance)
-        .or_else(|_| joined_plan(topo, solid, faces, distance))?;
+    let Ok(plan) = original_plan(topo, solid, faces, distance)
+        .or_else(|_| joined_plan(topo, solid, faces, distance))
+    else {
+        return Ok(None);
+    };
     let translation = BlendTranslation {
         vertices: plan.entities.vertices,
         edges: plan.entities.edges,
@@ -208,11 +211,11 @@ pub fn move_with_cap_reblend(
             .map(|(source, target)| (EntityKey::vertex(source), EntityKey::vertex(target.index()))),
     );
     log::debug!(target: "remus_approx", "move_faces: sampled cap reconstruction uses {} stations per corner", permission.stations);
-    Ok(BlendMoveEntities {
+    Ok(Some(BlendMoveEntities {
         solid: result,
         evolution,
         boundary_pairs,
-    })
+    }))
 }
 
 struct CapJoinPlan {

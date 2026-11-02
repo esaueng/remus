@@ -38,6 +38,44 @@ fn top_at(topo: &Topology, solid: SolidId, height: f64) -> FaceId {
         .expect("planar top at requested height")
 }
 
+#[test]
+fn cap_permission_preserves_unrelated_exact_refusals_and_rollback() {
+    let mut topo = Topology::new();
+    let solid = make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let face = top_at(&topo, solid, 10.0);
+    let expected = move_faces(&mut topo, solid, &[face], -11.0)
+        .unwrap_err()
+        .to_string();
+    let counts = solid_entity_counts(&topo, solid).unwrap();
+    let faces = solid_faces(&topo, solid).unwrap();
+    let entries = topo.journal().entries().len();
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    let mut prepared = PreparedFaceMove::prepare(&topo, solid, &[face]).unwrap();
+    let ordinary =
+        move_faces_with_quality(&mut topo, solid, &[face], -11.0, permission).unwrap_err();
+    let journaled = remus_operations::journal_ops::move_faces_journaled_with_quality(
+        &mut topo,
+        solid,
+        &[face],
+        -11.0,
+        permission,
+    )
+    .unwrap_err();
+    let preview = prepared
+        .move_faces_with_quality(&mut topo, -11.0, permission)
+        .unwrap_err();
+    let journaled_preview = prepared
+        .move_faces_journaled_with_quality(&mut topo, -11.0, permission)
+        .unwrap_err();
+    for error in [ordinary, journaled, preview, journaled_preview] {
+        assert_eq!(error.to_string(), expected);
+    }
+    assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
+    assert_eq!(solid_faces(&topo, solid).unwrap(), faces);
+    assert_eq!(topo.journal().entries().len(), entries);
+    assert!(validate_solid(&topo, solid).unwrap().is_valid());
+}
+
 fn shoulder() -> (Topology, SolidId, FaceId) {
     shoulder_at(26.0, 35.0)
 }
