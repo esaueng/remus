@@ -9,7 +9,7 @@ It introduces no reference-kernel library dependency and does not execute
 FreeCAD code.
 
 The first qualified envelope is ASCII topology V1–V3, straight 3D edges,
-linear pcurves, planar faces with one boundary, one shell per solid, and
+at most two linear pcurves per edge, planar faces with one boundary, one shell per solid, and
 compound roots containing solids. Only identity locations are accepted in
 this first slice. Units are millimetres, as in FreeCAD saved shapes; standalone
 BREP callers must supply geometry in those units. Source vertex/edge tolerances
@@ -19,6 +19,9 @@ Remus validation before the transaction commits.
 
 Malformed references, unsupported geometry/placements, surface-only roots,
 non-manifold results and exceeded resource budgets refuse the whole import.
+Repeated shell/face/wire occurrences also refuse, bounding reconstruction by
+source records instead of expanding a shared source DAG. Shared vertices and
+edges retain their source identity.
 No welding, healing, tessellation fallback or tolerance widening is permitted.
 The decoder counts geometry records, shape records, representations and child
 references against one aggregate budget before allocating their storage.

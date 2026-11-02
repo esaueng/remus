@@ -269,3 +269,46 @@ fn planar_edges_without_saved_pcurves_remain_exact_and_exportable() {
         6000.,
     );
 }
+
+#[test]
+fn shared_shell_occurrences_cannot_expand_into_repeated_native_boundaries() {
+    let end = V3.rfind("+1 0").unwrap();
+    let body = V3[..end].replacen("TShapes 34", "TShapes 36", 1);
+    let body = body
+        .lines()
+        .map(|line| {
+            if !line.ends_with('*') {
+                return line.to_owned();
+            }
+            line.split_ascii_whitespace()
+                .map(|token| {
+                    if token.starts_with('+') || token.starts_with('-') {
+                        format!(
+                            "{}{}",
+                            &token[..1],
+                            token[1..].parse::<usize>().unwrap() + 2
+                        )
+                    } else {
+                        token.to_owned()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Two distinct solid records reference the same shell. They are distinct
+    // roots, so merely deduplicating root identities does not bound the work.
+    let text = format!("{body}\nSo\n1100000\n+4 0 *\nCo\n1100000\n+3 0 +2 0 *\n+1 0");
+    let error = refuses_without_changing_existing_solid(&text);
+    assert!(matches!(error, IoError::UnsupportedEntity { .. }));
+    assert!(error.to_string().contains("repeated shell"));
+}
+
+#[test]
+fn excess_edge_representations_refuse_before_unbounded_per_face_search() {
+    let line = "2  1 1 0 0 30";
+    let text = V3.replacen(line, &format!("{line}\n{line}\n{line}"), 1);
+    let error = refuses_without_changing_existing_solid(&text);
+    assert!(error.to_string().contains("two pcurves"));
+}

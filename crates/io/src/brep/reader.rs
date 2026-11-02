@@ -281,6 +281,9 @@ fn edge(
                 });
             }
             "2" => {
+                if pcurves.len() >= 2 {
+                    return Err(unsupported("more than two pcurves on an edge"));
+                }
                 let index = tokens.index(line2_count)?;
                 let surface = tokens.index(plane_count)?;
                 tokens.location(location_count)?;
@@ -668,22 +671,35 @@ impl Document {
         Ok(Some(PCurve::new(curve, a, b)))
     }
 
+    fn claim(used: &mut [bool], index: usize) -> Result<(), IoError> {
+        if used[index] {
+            return Err(unsupported("repeated shell, face or wire occurrence"));
+        }
+        used[index] = true;
+        Ok(())
+    }
+
     fn build(&self, topo: &mut Topology) -> Result<Vec<SolidId>, IoError> {
         let roots = self.roots()?;
         let vertices = self.vertices(topo);
         let edges = self.edges(topo, &vertices)?;
         let mut solids = Vec::new();
+        // Rebuilding each source boundary at most once also bounds output work:
+        // an acyclic source DAG must not expand into a quadratic arena tree.
+        let mut used_boundaries = vec![false; self.shapes.len()];
         for root in roots {
             let shells = &self.shapes[root.index].children;
             if shells.len() != 1 {
                 return Err(unsupported("multiple shells or cavities"));
             }
             let shell = shells[0];
+            Self::claim(&mut used_boundaries, shell.index)?;
             if !matches!(self.shapes[shell.index].geometry, Geometry::Shell) {
                 return Err(malformed("solid child is not a shell"));
             }
             let mut faces = Vec::new();
             for face_use in &self.shapes[shell.index].children {
+                Self::claim(&mut used_boundaries, face_use.index)?;
                 let shape = &self.shapes[face_use.index];
                 let Geometry::Face { surface } = shape.geometry else {
                     return Err(malformed("shell child is not a face"));
@@ -691,6 +707,7 @@ impl Document {
                 if shape.children.len() != 1 {
                     return Err(unsupported("multiple face loops"));
                 }
+                Self::claim(&mut used_boundaries, shape.children[0].index)?;
                 let ordered = self.ordered_wire(shape.children[0])?;
                 let boundary: Vec<_> = ordered
                     .iter()
