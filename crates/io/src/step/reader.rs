@@ -6751,7 +6751,60 @@ impl<'a> StepBuilder<'a> {
                     let reverse_matches = reverse_residuals
                         .iter()
                         .all(|residual| residual.is_finite() && *residual <= tolerance_cap);
-                    if forward_matches && !reverse_matches {
+                    let natural_residual = if forward_matches && !reverse_matches {
+                        forward_residuals[0].max(forward_residuals[1])
+                    } else {
+                        reverse_residuals[0].max(reverse_residuals[1])
+                    };
+                    let transport_cap =
+                        tolerance_cap.min(remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE);
+                    // Decimal 1e-4 is one ulp above the product used for the
+                    // arena ceiling. Keep that existing boundary on its old
+                    // path; this refinement concerns materially looser STEP
+                    // uncertainty, not that representation roundoff.
+                    if declared_curve_trim.is_none()
+                        && (forward_matches ^ reverse_matches)
+                        && tolerance_cap > transport_cap.next_up()
+                        && natural_residual > transport_cap.next_up()
+                    {
+                        // A loose STEP uncertainty can admit the natural span
+                        // while its endpoint certificate cannot cross the arena
+                        // boundary. Refine only this already-admitted, untrimmed
+                        // carrier to unique endpoint feet. The carrier and the
+                        // vertices stay unchanged; every stored residual must
+                        // still fit the existing arena tolerance ceiling.
+                        let (t0, t1) = Self::projected_nurbs_domain(
+                            ec_ref,
+                            &self.limits,
+                            nurbs,
+                            start,
+                            end,
+                            transport_cap,
+                        )?
+                        .ok_or_else(|| IoError::ParseError {
+                            reason: format!(
+                                "EDGE_CURVE #{ec_ref} has no unique NURBS domain \
+                                 within the arena tolerance ceiling"
+                            ),
+                        })?;
+                        let residual = (nurbs.evaluate(t0) - start)
+                            .length()
+                            .max((nurbs.evaluate(t1) - end).length());
+                        measured_tolerance = measured_tolerance.max(residual);
+                        endpoint_tolerance_cap = transport_cap;
+                        record_nurbs_balls = true;
+                        self.diagnostics.push(
+                            StepImportDiagnostic::UntrimmedNurbsDomainRecovered {
+                                edge_curve_entity: ec_ref,
+                                start_parameter: t0,
+                                end_parameter: t1,
+                                endpoint_residual_mm: residual,
+                                stored_edge_tolerance_mm: measured_tolerance,
+                                recovery_tolerance_cap_mm: transport_cap,
+                            },
+                        );
+                        (t0, t1)
+                    } else if forward_matches && !reverse_matches {
                         measured_tolerance = measured_tolerance
                             .max(forward_residuals[0])
                             .max(forward_residuals[1]);
@@ -14392,6 +14445,91 @@ mod tests {
     fn large_periodic_anchors_cannot_hide_a_multi_turn_span() {
         let error = periodic_trim_span(77, 1e15, 1e15 + 12.0, false).unwrap_err();
         assert!(error.to_string().contains("unsupported multi-turn"));
+    }
+
+    #[test]
+    fn loose_step_uncertainty_keeps_nurbs_edges_transportable() {
+        let curve = remus_math::nurbs::NurbsCurve::new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            (0..4)
+                .map(|i| Point3::new(f64::from(i), 0.0, 0.0))
+                .collect(),
+            vec![1.0; 4],
+        )
+        .unwrap();
+        let a = Point3::new(1.5e-4, 2.0e-5, 0.0);
+        let b = Point3::new(3.0 - 1.5e-4, 3.0e-5, 0.0);
+        for (start, end, expected) in [(a, b, (5.0e-5, 0.99995)), (b, a, (0.99995, 5.0e-5))] {
+            let data = step_file("");
+            let entities = parse_step_entities(&data, ImportLimits::default()).unwrap();
+            let units = required_unit_scale(&entities).unwrap();
+            let mut topo = Topology::new();
+            let first = topo.add_vertex(Vertex::new(start, Tolerance::new().linear));
+            let last = topo.add_vertex(Vertex::new(end, Tolerance::new().linear));
+            let mut builder =
+                StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
+            builder.model_tolerance_cap = 1.0e-3;
+            let edge = builder
+                .import_edge_with_authority(
+                    42,
+                    first,
+                    last,
+                    EdgeCurve::NurbsCurve(curve.clone()),
+                    None,
+                )
+                .unwrap();
+            assert!(edge.tolerance().unwrap() <= remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE);
+            assert!((edge.strict_domain().unwrap().0 - expected.0).abs() < 1e-9);
+            assert!((edge.strict_domain().unwrap().1 - expected.1).abs() < 1e-9);
+            let EdgeCurve::NurbsCurve(stored_curve) = edge.curve() else {
+                panic!("the imported carrier changed type");
+            };
+            assert_eq!(stored_curve, &curve);
+            let edge = topo.add_edge(edge);
+            assert_eq!(topo.vertex(first).unwrap().point(), start);
+            assert_eq!(topo.vertex(last).unwrap().point(), end);
+            let wire =
+                topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap());
+            let bytes = crate::arena_io::serialize_wire(&topo, wire).unwrap();
+            let mut transported = Topology::new();
+            let roundtrip = crate::arena_io::deserialize_wire(&bytes, &mut transported).unwrap();
+            let result = transported.wire(roundtrip).unwrap().edges()[0].edge();
+            assert_eq!(
+                transported.edge(result).unwrap().strict_domain().unwrap(),
+                topo.edge(edge).unwrap().strict_domain().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn loose_step_uncertainty_cannot_admit_a_nurbs_foot_outside_the_arena_cap() {
+        let data = step_file("");
+        let entities = parse_step_entities(&data, ImportLimits::default()).unwrap();
+        let units = required_unit_scale(&entities).unwrap();
+        let mut topo = Topology::new();
+        let a = topo.add_vertex(Vertex::new(
+            Point3::new(1.5e-4, 1.1e-4, 0.0),
+            Tolerance::new().linear,
+        ));
+        let b = topo.add_vertex(Vertex::new(
+            Point3::new(3.0 - 1.5e-4, 1.1e-4, 0.0),
+            Tolerance::new().linear,
+        ));
+        let curve = remus_math::nurbs::NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(3.0, 0.0, 0.0)],
+            vec![1.0; 2],
+        )
+        .unwrap();
+        let mut builder =
+            StepBuilder::new(&mut topo, &entities, units, ImportLimits::default()).unwrap();
+        builder.model_tolerance_cap = 1.0e-3;
+        let error = builder
+            .import_edge_with_authority(42, a, b, EdgeCurve::NurbsCurve(curve), None)
+            .unwrap_err();
+        assert!(error.to_string().contains("local recovery cap"), "{error}");
     }
 
     #[test]
