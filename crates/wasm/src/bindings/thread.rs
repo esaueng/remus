@@ -22,9 +22,16 @@
 //!   "offset": 0,                      // from the face's lower end
 //!   "length": 8,                      // optional; default to the face end
 //!   "xDirection": [1, 0, 0], "phase": 0,
-//!   "tolerance": 1e-4                 // default 1e-4 · pitch
+//!   "tolerance": 1e-4,                // default 1e-4 · pitch
+//!   "start": { "kind": "plain" } | { "kind": "chamfer", "angle": 45 },
+//!   "end":   { "kind": "plain" } | { "kind": "chamfer", "angle": 45 }
 //! }
 //! ```
+//!
+//! A `chamfer` end cuts the thread with a cone from just inside the root on
+//! the end plane, `angle` degrees from the axis, so the first turn tapers out
+//! instead of ending in a full-depth wedge; a chamfered end must be the end
+//! of the face.
 //!
 //! The root flat is what the crest and flanks leave of the pitch. An
 //! external thread's crest is its major diameter, an internal thread's its
@@ -47,8 +54,8 @@ use wasm_bindgen::prelude::*;
 
 use remus_math::vec::Vec3;
 use remus_operations::thread::{
-    CylinderThreadOptions, ThreadError, ThreadForm, ThreadGeometry, ThreadHand, ThreadKind,
-    ThreadOutcome, ThreadRefusal, cut_thread,
+    CylinderThreadOptions, ThreadEnd, ThreadError, ThreadForm, ThreadGeometry, ThreadHand,
+    ThreadKind, ThreadOutcome, ThreadRefusal, cut_thread,
 };
 
 use crate::error::StructuredWasmError;
@@ -62,6 +69,27 @@ enum HandSpec {
     #[default]
     Right,
     Left,
+}
+
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+enum EndSpec {
+    #[default]
+    Plain,
+    Chamfer {
+        angle: f64,
+    },
+}
+
+impl From<EndSpec> for ThreadEnd {
+    fn from(end: EndSpec) -> Self {
+        match end {
+            EndSpec::Plain => Self::Plain,
+            EndSpec::Chamfer { angle } => Self::Chamfer {
+                angle: angle.to_radians(),
+            },
+        }
+    }
 }
 
 const fn default_starts() -> u32 {
@@ -89,6 +117,10 @@ struct ThreadSpec {
     #[serde(default)]
     phase: f64,
     tolerance: Option<f64>,
+    #[serde(default)]
+    start: EndSpec,
+    #[serde(default)]
+    end: EndSpec,
 }
 
 impl ThreadSpec {
@@ -112,6 +144,8 @@ impl ThreadSpec {
             x_direction: self.x_direction.map(|v| Vec3::new(v[0], v[1], v[2])),
             phase: self.phase.to_radians(),
             tolerance: self.tolerance,
+            start: self.start.into(),
+            end: self.end.into(),
         };
         (form, options)
     }

@@ -8,6 +8,12 @@ historical predecessor-line records, retained for provenance. The
 
 ### Added
 
+* **operations,wasm:** thread ends can be chamfered (`ThreadEnd::Chamfer`,
+  spec `start` / `end` `{ "kind": "chamfer", "angle": 45 }`): a cone from just
+  inside the root on the end plane tapers the first turn out instead of ending
+  in a full-depth wedge, for clean prints and an easy start. The chamfer is
+  built into the thread without a boolean, its flank–cone curves fitted as
+  certified conical helices.
 * **operations,wasm:** `cut_thread` / `cutThreadDetailed` cut a screw thread
   along a solid's boss (external) or bore (internal), over the whole face or a
   band of it from `offset`. The form is trapezoidal with independent flank
