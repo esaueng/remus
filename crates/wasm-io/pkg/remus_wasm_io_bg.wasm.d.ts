@@ -13,6 +13,7 @@ export const remusio_exportStepWithOptions: (a: number, b: number, c: number, d:
 export const remusio_exportStl: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const remusio_exportStlAscii: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const remusio_import3mf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+export const remusio_importBrep: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
 export const remusio_importGlb: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
 export const remusio_importIges: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
 export const remusio_importIndexedMesh: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
