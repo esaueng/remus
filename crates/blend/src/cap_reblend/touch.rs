@@ -83,7 +83,12 @@ fn restore_touching(
                 {
                     bosses.insert(face);
                 }
-                _ => {}
+                FaceSurface::Plane { .. }
+                | FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_)
+                | FaceSurface::Nurbs(_) => {}
             }
         }
     }

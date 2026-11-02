@@ -12,13 +12,14 @@ use super::{
     translated_solid_copy, validate_exact_result,
 };
 use crate::OperationsError;
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::Vec3;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::face::FaceSurface;
 use remus_topology::journal::EntityKey;
 use remus_topology::{FaceId, SolidId, Topology};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 
 pub fn move_with_cap_reblend(
     topo: &mut Topology,
@@ -149,7 +150,7 @@ pub fn move_with_cap_reblend(
         ));
     }
     crate::push_pull::validate_moved_solid(topo, faces, result)?;
-    let inverse: HashMap<_, _> = copied
+    let inverse: DetHashMap<_, _> = copied
         .face_map
         .iter()
         .map(|(&source, &copy)| (copy, source))
@@ -183,13 +184,13 @@ pub fn move_with_cap_reblend(
     }
     let evolution =
         crate::blend_ops::evolution_from_blend_origins(topo, result, Some(&origins), &[])?;
-    let edges: HashSet<_> = solid_edges(topo, result)?.into_iter().collect();
-    let vertices: HashSet<_> = solid_vertices(topo, result)?.into_iter().collect();
-    let split: HashMap<_, Vec<_>> =
+    let edges: DetHashSet<_> = solid_edges(topo, result)?.into_iter().collect();
+    let vertices: DetHashSet<_> = solid_vertices(topo, result)?.into_iter().collect();
+    let split: DetHashMap<_, Vec<_>> =
         rebuilt
             .edge_images
             .into_iter()
-            .fold(HashMap::new(), |mut map, (source, child)| {
+            .fold(DetHashMap::default(), |mut map, (source, child)| {
                 map.entry(source).or_default().push(child);
                 map
             });
@@ -237,7 +238,7 @@ fn original_plan(
         analyze_translation(topo, solid, faces)
     })?;
     analysis.swept.check(distance)?;
-    let reached: HashSet<_> = analysis
+    let reached: DetHashSet<_> = analysis
         .axial_clearance
         .iter()
         .filter(|limit| limit.reached(distance))
@@ -255,7 +256,7 @@ fn original_plan(
     };
     let radius = torus.minor_radius();
     let adjacency = topo.build_adjacency(solid)?;
-    let caps: HashSet<_> = face_edges(topo, rim)?
+    let caps: DetHashSet<_> = face_edges(topo, rim)?
         .into_iter()
         .flat_map(|edge| adjacency.faces_for_edge(edge).iter().copied())
         .filter(|&face| {
@@ -296,7 +297,7 @@ fn section_radius(topo: &Topology, face: FaceId) -> Option<f64> {
         FaceSurface::Cylinder(surface) => Some(surface.radius()),
         FaceSurface::Torus(surface) => Some(surface.minor_radius()),
         FaceSurface::Nurbs(_) => sampled_section_radius(topo.face(face).ok()?).ok(),
-        _ => None,
+        FaceSurface::Plane { .. } | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => None,
     }
 }
 
@@ -357,7 +358,7 @@ fn joined_plan(
         .effective_plane_normal()
         .ok_or_else(|| reconstruction("joined shoulder must be planar"))?;
     let adjacency = topo.build_adjacency(solid)?;
-    let neighbours = |face| -> Result<HashSet<FaceId>, OperationsError> {
+    let neighbours = |face| -> Result<DetHashSet<FaceId>, OperationsError> {
         Ok(face_edges(topo, face)?
             .into_iter()
             .flat_map(|edge| adjacency.faces_for_edge(edge).iter().copied())
@@ -402,7 +403,12 @@ fn joined_plan(
                 FaceSurface::Torus(torus) if torus.z_axis().cross(direction).length() < 1e-10 => {
                     Some(torus.minor_radius())
                 }
-                _ => None,
+                FaceSurface::Plane { .. }
+                | FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_)
+                | FaceSurface::Nurbs(_) => None,
             })
         else {
             continue;
@@ -421,7 +427,7 @@ fn joined_plan(
             "joined shoulder does not have one qualified cap group",
         ));
     };
-    let mut moved = HashSet::from([*selected]);
+    let mut moved = DetHashSet::from_iter([*selected]);
     let mut queue = VecDeque::from([*selected]);
     while let Some(current) = queue.pop_front() {
         for edge in face_edges(topo, current)? {
@@ -448,12 +454,12 @@ fn joined_plan(
             }
         }
     }
-    let mut vertices = HashSet::new();
+    let mut vertices = DetHashSet::default();
     for &face in &moved {
         vertices.extend(remus_topology::explorer::face_vertices(topo, face)?);
     }
     let mut edges = Vec::new();
-    let mut invariant = HashSet::new();
+    let mut invariant = DetHashSet::default();
     for edge in solid_edges(topo, solid)? {
         let data = topo.edge(edge)?;
         let a = vertices.contains(&data.start());
@@ -495,8 +501,11 @@ fn joined_plan(
             }
         }
     }
-    let mut excluded = moved.union(&invariant).copied().collect::<HashSet<_>>();
-    excluded.extend(rims);
+    let excluded = moved
+        .union(&invariant)
+        .copied()
+        .chain(rims.iter().copied())
+        .collect();
     let selected_faces = faces.iter().copied().collect();
     let swept = crate::push_pull::SweptRegionCheck::prepare(
         topo,
@@ -513,9 +522,9 @@ fn joined_plan(
         rims: rims.clone(),
         radius: *radius,
         entities: TranslatedEntities {
-            vertices,
+            vertices: vertices.into_iter().collect(),
             edges,
-            faces: moved,
+            faces: moved.into_iter().collect(),
         },
     })
 }

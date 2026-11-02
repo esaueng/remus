@@ -120,7 +120,12 @@ fn restore(
                     {
                         shoulder_edges.push((edge, other));
                     }
-                    _ => {}
+                    FaceSurface::Plane { .. }
+                    | FaceSurface::Cylinder(_)
+                    | FaceSurface::Cone(_)
+                    | FaceSurface::Sphere(_)
+                    | FaceSurface::Torus(_)
+                    | FaceSurface::Nurbs(_) => {}
                 }
             }
         }

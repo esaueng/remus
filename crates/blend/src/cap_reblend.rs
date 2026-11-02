@@ -650,7 +650,14 @@ fn analytic_sections(
                 torus.x_axis(),
             )
         }
-        _ => return Err(refusal("cap analytic support is outside the axial family")),
+        FaceSurface::Plane { .. }
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_)
+        | FaceSurface::Nurbs(_) => {
+            return Err(refusal("cap analytic support is outside the axial family"));
+        }
     };
     if major <= 0.0 {
         return Err(refusal("cap rolling circle collapses"));
@@ -667,7 +674,10 @@ fn analytic_sections(
         let point = match f.surface() {
             FaceSurface::Cylinder(_) => contact_circle.evaluate(u),
             FaceSurface::Torus(torus) => torus.evaluate(u, contact_v),
-            _ => return Err(refusal("cap analytic support changed")),
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Nurbs(_) => return Err(refusal("cap analytic support changed")),
         };
         sections.push(CircSection {
             p1: point,
@@ -787,7 +797,11 @@ fn reblend_impl(
                 torus.minor_radius()
             }
             FaceSurface::Nurbs(_) => sampled_section_radius(face)?,
-            _ => {
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => {
                 return Err(refusal(
                     "old cap band is outside the axial circular-section family",
                 ));
@@ -911,7 +925,11 @@ fn reblend_impl(
                 );
                 (sections, surface)
             }
-            _ => analytic_sections(
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => analytic_sections(
                 topo,
                 live(&replacements, face),
                 &nodes[a],

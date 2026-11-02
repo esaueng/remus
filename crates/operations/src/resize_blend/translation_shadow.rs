@@ -1,6 +1,6 @@
 //! Closed-form vector area of a translating region's construction boundary.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
@@ -53,7 +53,10 @@ fn edge_area(
             }
             sum
         }
-        _ => return Ok(None),
+        EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return Ok(None),
     };
     if !area.length().is_finite() {
         return Ok(None);
@@ -74,9 +77,9 @@ fn edge_area(
 /// cancel exactly and the remaining directed graph must balance at every
 /// vertex. The operation already proved every unmoved carrier invariant under
 /// this translation; this boundary therefore measures the swept prism's sign.
-pub(super) fn volume_change(
+pub(super) fn volume_change<'a>(
     topo: &Topology,
-    faces: &HashSet<FaceId>,
+    faces: impl IntoIterator<Item = &'a FaceId>,
     delta: Vec3,
 ) -> Result<Option<BoundaryVolumeChange>, OperationsError> {
     #[cfg(test)]
@@ -175,10 +178,9 @@ mod tests {
                     })
                     .unwrap();
                 for distance in [-0.5, 2.0] {
-                    let change =
-                        volume_change(&topo, &HashSet::from([face]), Vec3::new(0.0, 0.0, distance))
-                            .unwrap()
-                            .unwrap();
+                    let change = volume_change(&topo, [&face], Vec3::new(0.0, 0.0, distance))
+                        .unwrap()
+                        .unwrap();
                     let area = if circle {
                         std::f64::consts::PI * 1.5 * 1.5
                     } else {
@@ -222,8 +224,7 @@ mod tests {
                 .unwrap()
                 .set_curve(EdgeCurve::NurbsCurve(curve));
             topo.edge_mut(edge).unwrap().set_trim(Some((0.0, 1.0)));
-            let result =
-                volume_change(&topo, &HashSet::from([face]), Vec3::new(0.0, 0.0, 2.0)).unwrap();
+            let result = volume_change(&topo, [&face], Vec3::new(0.0, 0.0, 2.0)).unwrap();
             if degree == 1 {
                 assert!((result.unwrap().volume - 12.0).abs() < 1e-12);
             } else {

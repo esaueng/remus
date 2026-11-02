@@ -189,7 +189,12 @@ pub(super) fn is_complete(
                 {
                     claims.push((side, curve.domain()));
                 }
-                _ => {}
+                EdgeCurve::Line
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Circle(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => {}
             }
         }
         let [(side, interval)] = claims.as_slice() else {
