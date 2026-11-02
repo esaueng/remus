@@ -58,6 +58,14 @@ export class RemusIo {
      */
     import3mf(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): Uint8Array;
     /**
+     * Read planar, straight-edged ASCII BREP saved shapes in millimetres.
+     * Returns an exact solid document for `deserializeSolids`.
+     * Unsupported geometry or placements refuse the whole call.
+     * Optional budgets only tighten production limits; this first reader
+     * also caps aggregate records/references at 16,384.
+     */
+    importBrep(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): Uint8Array;
+    /**
      * Read a glTF binary into one mesh-backed solid document.
      */
     importGlb(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): Uint8Array;

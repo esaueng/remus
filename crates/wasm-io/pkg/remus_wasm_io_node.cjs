@@ -196,6 +196,28 @@ class RemusIo {
         return v2;
     }
     /**
+     * Read planar, straight-edged ASCII BREP saved shapes in millimetres.
+     * Returns an exact solid document for `deserializeSolids`.
+     * Unsupported geometry or placements refuse the whole call.
+     * Optional budgets only tighten production limits; this first reader
+     * also caps aggregate records/references at 16,384.
+     * @param {Uint8Array} data
+     * @param {number | null} [max_input_bytes]
+     * @param {number | null} [max_entities]
+     * @returns {Uint8Array}
+     */
+    importBrep(data, max_input_bytes, max_entities) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remusio_importBrep(this.__wbg_ptr, ptr0, len0, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
+    }
+    /**
      * Read a glTF binary into one mesh-backed solid document.
      * @param {Uint8Array} data
      * @param {number | null} [max_input_bytes]
