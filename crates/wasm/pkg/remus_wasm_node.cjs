@@ -1936,6 +1936,32 @@ class RemusKernel {
         }
     }
     /**
+     * Cut a screw thread along a solid's cylindrical face, as typed data:
+     * external on a boss, internal in a bore (see the module docs for the
+     * fields).
+     *
+     * The input solid is left in place and a new solid is returned. Never
+     * throws on a refusal: the envelope's `status` is `"error"` with a
+     * `thread:<reason>` code and the session unchanged.
+     *
+     * # Errors
+     *
+     * Only when the envelope cannot be converted to a JavaScript value.
+     * @param {number} solid
+     * @param {number} face
+     * @param {string} spec
+     * @returns {SolidOperationDetailedResult}
+     */
+    cutThreadDetailed(solid, face, spec) {
+        const ptr0 = passStringToWasm0(spec, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_cutThreadDetailed(this.__wbg_ptr, solid, face, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Cut with full entity history; see `fuseWithEntityEvolution`.
      * @param {number} a
      * @param {number} b
