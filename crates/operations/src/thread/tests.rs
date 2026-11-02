@@ -392,3 +392,174 @@ fn flush_collars_split_into_crescents() {
         }
     }
 }
+
+/// The thread surface's radius at `(θ, z)` in the frame of a thread cut
+/// with phase 0: the axial profile (crest flat, upper flank, root flat,
+/// lower flank) at `z − θ/k`, independent of the kernel's outline code.
+fn thread_radius(form: &ThreadForm, crest: f64, root: f64, theta: f64, z: f64) -> f64 {
+    let k = match form.hand {
+        ThreadHand::Right => TAU / form.lead(),
+        ThreadHand::Left => -TAU / form.lead(),
+    };
+    let u = (z - theta / k).rem_euclid(form.pitch);
+    let depth = (crest - root).abs();
+    let upper = depth * form.upper_flank_angle.tan();
+    let lower = depth * form.lower_flank_angle.tan();
+    let a = form.crest_width;
+    let b = a + upper;
+    let c = b + form.root_width();
+    if u < a {
+        crest
+    } else if u < b {
+        crest + (root - crest) * (u - a) / upper
+    } else if u < c {
+        root
+    } else {
+        root + (crest - root) * (u - c) / lower
+    }
+}
+
+/// Volume of a thread's material between radii `inner` and the thread
+/// surface (external) or the thread surface and `outer` (internal) over
+/// `[0, length]`, clipped by `cone(z)`, by midpoint quadrature in `θ` and
+/// `z`.
+fn chamfered_volume(
+    form: &ThreadForm,
+    kind: ThreadKind,
+    crest: f64,
+    root: f64,
+    bound: f64,
+    length: f64,
+    cone: impl Fn(f64) -> f64,
+) -> f64 {
+    let (nz, nt) = (4000_usize, 4000_usize);
+    let dz = length / nz as f64;
+    let dt = TAU / nt as f64;
+    let mut total = 0.0;
+    for iz in 0..nz {
+        let z = (iz as f64 + 0.5) * dz;
+        let c = cone(z);
+        let mut area = 0.0;
+        for it in 0..nt {
+            let theta = (it as f64 + 0.5) * dt;
+            let r = thread_radius(form, crest, root, theta, z);
+            area += match kind {
+                ThreadKind::External => 0.5 * (r.min(c).powi(2) - bound * bound),
+                ThreadKind::Internal => 0.5 * (bound * bound - r.max(c).powi(2)),
+            } * dt;
+        }
+        total += area * dz;
+    }
+    total
+}
+
+fn both_chamfers(angle: f64) -> CylinderThreadOptions {
+    let chamfer = ThreadEnd::Chamfer { angle };
+    CylinderThreadOptions {
+        start: chamfer,
+        end: chamfer,
+        ..CylinderThreadOptions::default()
+    }
+}
+
+#[test]
+fn chamfered_external_ends_taper_into_the_cone() {
+    let mut topo = Topology::new();
+    let (r, h) = (3.0, 8.0);
+    let (body, face) = boss(&mut topo, r, h);
+    let form = ThreadForm::iso_metric(1.0, ThreadKind::External);
+    let outcome = cut_thread(&mut topo, body, face, &form, &both_chamfers(PI / 4.0)).unwrap();
+    assert!(outcome.glued);
+    assert_valid_and_watertight(&topo, outcome.solid);
+    let root = r - form.depth;
+    let at_end = root - 0.05 * form.depth;
+    let expected = chamfered_volume(&form, ThreadKind::External, r, root, 0.0, h, |z| {
+        at_end + z.min(h - z)
+    });
+    let got = volume(&topo, outcome.solid);
+    assert!(rel(got, expected) < 2e-4, "{got} vs {expected}");
+    // The two chamfers take about 1.9 volume units off the plain body.
+    let plain = outline_area(&form, r, root) * h;
+    assert!(plain - got > 1.5, "{plain} vs {got}");
+    // On each end plane the chamfer clears the crest: a point just inside
+    // the crest radius there is air, a point inside the cone is material.
+    for z in [1e-3, h - 1e-3] {
+        let air = Point3::new(r - 0.02, 0.0, z);
+        let core = Point3::new(at_end - 0.02, 0.0, z);
+        assert_eq!(
+            classify_point(&topo, outcome.solid, air, 0.01, 1e-6).unwrap(),
+            PointClassification::Outside
+        );
+        assert_eq!(
+            classify_point(&topo, outcome.solid, core, 0.01, 1e-6).unwrap(),
+            PointClassification::Inside
+        );
+    }
+}
+
+#[test]
+fn chamfered_internal_ends_countersink_the_thread() {
+    let mut topo = Topology::new();
+    let form = ThreadForm::iso_metric(1.0, ThreadKind::Internal);
+    let (outer, h) = (6.0, 6.0);
+    let minor = 3.0 - form.depth;
+    let (body, face) = bored(&mut topo, outer, minor, h);
+    let outcome = cut_thread(&mut topo, body, face, &form, &both_chamfers(PI / 4.0)).unwrap();
+    assert!(outcome.glued);
+    assert_valid_and_watertight(&topo, outcome.solid);
+    let at_end = 3.0 + 0.05 * form.depth;
+    let expected = chamfered_volume(&form, ThreadKind::Internal, minor, 3.0, outer, h, |z| {
+        at_end - z.min(h - z)
+    });
+    let got = volume(&topo, outcome.solid);
+    assert!(rel(got, expected) < 2e-4, "{got} vs {expected}");
+}
+
+#[test]
+fn print_form_takes_a_start_chamfer_and_refuses_misplaced_ones() {
+    let mut topo = Topology::new();
+    let (r, h) = (4.0, 6.0);
+    let (body, face) = boss(&mut topo, r, h);
+    let form = ThreadForm {
+        pitch: 2.0,
+        depth: 0.8,
+        crest_width: 0.6,
+        upper_flank_angle: 0.0,
+        lower_flank_angle: PI / 4.0,
+        starts: 1,
+        hand: ThreadHand::Left,
+    };
+    let options = CylinderThreadOptions {
+        start: ThreadEnd::Chamfer { angle: PI / 6.0 },
+        ..CylinderThreadOptions::default()
+    };
+    let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
+    assert_valid_and_watertight(&topo, outcome.solid);
+    let root = r - form.depth;
+    let at_end = root - 0.05 * form.depth;
+    let slope = (PI / 6.0).tan();
+    let expected = chamfered_volume(&form, ThreadKind::External, r, root, 0.0, h, |z| {
+        slope.mul_add(z, at_end)
+    });
+    let got = volume(&topo, outcome.solid);
+    assert!(rel(got, expected) < 2e-4, "{got} vs {expected}");
+
+    // A chamfer on an end that stops short of the face's end refuses, and
+    // so do chamfers longer than the thread.
+    let banded = CylinderThreadOptions {
+        offset: 1.0,
+        ..options
+    };
+    assert_eq!(
+        refusal(cut_thread(&mut topo, body, face, &form, &banded)),
+        ThreadRefusal::InvalidParameter
+    );
+    let steep = CylinderThreadOptions {
+        length: Some(1.5),
+        ..both_chamfers(PI / 12.0)
+    };
+    assert_eq!(
+        refusal(cut_thread(&mut topo, body, face, &form, &steep)),
+        ThreadRefusal::InvalidParameter
+    );
+}
