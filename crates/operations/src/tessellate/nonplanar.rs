@@ -2633,8 +2633,11 @@ fn recover_unprojected_boundary_samples(
 /// Polygon containment and the distance predicate retain their original order.
 struct PreparedBoundarySegments {
     segments: Vec<PreparedBoundarySegment>,
+    blocks: Vec<Option<([f64; 2], [f64; 2])>>,
     clearance: f64,
 }
+
+const BOUNDARY_SEGMENTS_PER_BLOCK: usize = 16;
 
 struct PreparedBoundarySegment {
     start: remus_math::vec::Point2,
@@ -2656,7 +2659,7 @@ impl PreparedBoundarySegments {
             && radius.is_finite()
             && (radius * radius).sqrt() > clearance)
             .then_some(radius);
-        let segments = std::iter::once(outer)
+        let segments: Vec<_> = std::iter::once(outer)
             .chain(holes.iter().map(Vec::as_slice))
             .flat_map(|wire| {
                 (0..wire.len()).map(move |index| {
@@ -2670,34 +2673,71 @@ impl PreparedBoundarySegments {
                 })
             })
             .collect();
+        // These are unions of the existing outward-rounded bounds, so a
+        // rejected block contains no segment the narrow predicate can accept.
+        // Keep an unknown block unfiltered; the segment order and arithmetic
+        // remain unchanged, including nonfinite/overflow fallbacks.
+        let blocks = segments
+            .chunks(BOUNDARY_SEGMENTS_PER_BLOCK)
+            .map(|chunk| {
+                chunk.iter().try_fold(
+                    ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]),
+                    |(lower, upper), segment| {
+                        let (lo, hi) = segment.bounds?;
+                        Some((
+                            [lower[0].min(lo[0]), lower[1].min(lo[1])],
+                            [upper[0].max(hi[0]), upper[1].max(hi[1])],
+                        ))
+                    },
+                )
+            })
+            .collect();
         Self {
             segments,
+            blocks,
             clearance,
         }
     }
 
     fn is_on_boundary(&self, point: remus_math::vec::Point2) -> bool {
         let finite_query = point.x().is_finite() && point.y().is_finite();
-        self.segments.iter().any(|segment| {
-            if finite_query
-                && let Some((lower, upper)) = segment.bounds
-                && (point.x() < lower[0]
-                    || point.x() > upper[0]
-                    || point.y() < lower[1]
-                    || point.y() > upper[1])
-            {
-                return false;
-            }
-            #[cfg(test)]
-            boundary_clearance_tests::record_distance_test();
-            let fraction = if segment.length_squared > 1e-30 {
-                ((point - segment.start).dot(segment.edge) / segment.length_squared).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let nearest = segment.start + segment.edge * fraction;
-            (point - nearest).length() <= self.clearance
-        })
+        self.segments
+            .chunks(BOUNDARY_SEGMENTS_PER_BLOCK)
+            .zip(&self.blocks)
+            .any(|(segments, bounds)| {
+                if finite_query
+                    && let Some((lower, upper)) = bounds
+                    && (point.x() < lower[0]
+                        || point.x() > upper[0]
+                        || point.y() < lower[1]
+                        || point.y() > upper[1])
+                {
+                    return false;
+                }
+                segments.iter().any(|segment| {
+                    #[cfg(test)]
+                    boundary_clearance_tests::record_segment_test();
+                    if finite_query
+                        && let Some((lower, upper)) = segment.bounds
+                        && (point.x() < lower[0]
+                            || point.x() > upper[0]
+                            || point.y() < lower[1]
+                            || point.y() > upper[1])
+                    {
+                        return false;
+                    }
+                    #[cfg(test)]
+                    boundary_clearance_tests::record_distance_test();
+                    let fraction = if segment.length_squared > 1e-30 {
+                        ((point - segment.start).dot(segment.edge) / segment.length_squared)
+                            .clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let nearest = segment.start + segment.edge * fraction;
+                    (point - nearest).length() <= self.clearance
+                })
+            })
     }
 }
 
