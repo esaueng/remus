@@ -2667,9 +2667,15 @@ fn execute_translation(
     // region the integral cannot vouch for keeps the whole-body mesh
     // comparison with its original slack, so those bodies behave as before.
     let _volume = crate::performance::span("move_faces.blend.translation_volume");
-    let (volume_change, volume_slack) = if let Some(read) =
+    // Keep the established cached-integral path for general blend moves.
+    // Only the axial shoulder/rim family needs the boundary shortcut: its
+    // sampled corner carriers can otherwise exhaust the integration budget.
+    let boundary_change = if analysis.axial_clearance.is_empty() {
+        None
+    } else {
         translation_shadow::volume_change(topo, &translation.faces, translation.delta)?
-    {
+    };
+    let (volume_change, volume_slack) = if let Some(read) = boundary_change {
         (read.volume, read.uncertainty.max(1e-7))
     } else if let Some(read) = translated_faces_volume_change(
         topo,
