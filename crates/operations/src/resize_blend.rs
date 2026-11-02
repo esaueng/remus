@@ -6,6 +6,8 @@
 //! fillet construction at the requested radius. Any ambiguity is a refusal and
 //! the topology arena is restored to its pre-call state.
 
+mod axial_clearance;
+
 use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
@@ -2371,6 +2373,7 @@ pub(crate) struct TranslationAnalysis {
     source_counts: (usize, usize, usize),
     direction: Vec3,
     swept: crate::push_pull::SweptRegionCheck,
+    axial_clearance: Vec<axial_clearance::AxialBlendClearance>,
     /// The translated entities, or the reason the boundary classification
     /// refuses them, which the move reports only after the swept-region
     /// check, as it always has.
@@ -2468,6 +2471,14 @@ pub(crate) fn analyze_translation(
     let adjacency = solid_adjacency(topo, solid)?;
     let invariant_carriers =
         invariant_boundary_carriers(topo, &adjacency, &moved_faces, direction)?;
+    let axial_clearance = axial_clearance::axial_blend_clearances(
+        topo,
+        &adjacency,
+        &source_faces,
+        |face| moved_faces.contains(&face),
+        |face| invariant_carriers.contains(&face),
+        direction,
+    )?;
     let swept_faces = faces.iter().copied().collect();
     let excluded_candidates = moved_faces.union(&invariant_carriers).copied().collect();
     let swept = crate::push_pull::SweptRegionCheck::prepare(
@@ -2483,6 +2494,7 @@ pub(crate) fn analyze_translation(
         source_counts,
         direction,
         swept,
+        axial_clearance,
         entities,
     })
 }
@@ -2560,6 +2572,9 @@ fn execute_translation(
     distance: f64,
 ) -> Result<BlendMoveEntities, OperationsError> {
     analysis.swept.check(distance)?;
+    for clearance in &analysis.axial_clearance {
+        clearance.check(distance)?;
+    }
     let entities = analysis
         .entities
         .as_ref()
