@@ -10,6 +10,7 @@ use super::PreparedBoundarySegments;
 thread_local! {
     static REFERENCE: Cell<bool> = const { Cell::new(false) };
     static DISTANCE_TESTS: Cell<usize> = const { Cell::new(0) };
+    static SEGMENT_TESTS: Cell<usize> = const { Cell::new(0) };
 }
 
 pub(super) fn use_reference() -> bool {
@@ -20,8 +21,13 @@ pub(super) fn record_distance_test() {
     DISTANCE_TESTS.with(|count| count.set(count.get() + 1));
 }
 
+pub(super) fn record_segment_test() {
+    SEGMENT_TESTS.with(|count| count.set(count.get() + 1));
+}
+
 fn reset_count() {
     DISTANCE_TESTS.with(|count| count.set(0));
+    SEGMENT_TESTS.with(|count| count.set(0));
 }
 
 fn distance_tests() -> usize {
@@ -281,6 +287,11 @@ fn interior_queries_avoid_all_exact_segment_distances() {
         0,
         "broad-phase rejection must avoid every narrow distance"
     );
+    assert_eq!(
+        SEGMENT_TESTS.with(Cell::get),
+        0,
+        "interior queries must skip boundary blocks without scanning their segments"
+    );
     reset_count();
     for x in 0..32 {
         for y in 0..32 {
@@ -293,6 +304,58 @@ fn interior_queries_avoid_all_exact_segment_distances() {
         }
     }
     assert_eq!(distance_tests(), 512 * 32 * 32);
+}
+
+#[test]
+fn boundary_blocks_preserve_contacts_across_block_and_hole_boundaries() {
+    for scale in [1e-6, 1., 1e6] {
+        let ring = |radius: f64, count: u32| -> Vec<_> {
+            (0..count)
+                .map(|i| {
+                    let angle = f64::from(i) * std::f64::consts::TAU / f64::from(count);
+                    (radius * scale * angle.cos(), radius * scale * angle.sin())
+                })
+                .collect()
+        };
+        // Neither loop ends on a block boundary; the first hole crosses a
+        // block containing the outer loop's closing segment.
+        let outer = ring(3., 137);
+        let holes = [ring(1., 51), ring(0.5, 19)];
+        let clearance = scale * 1e-8;
+        let prepared = PreparedBoundarySegments::new(&outer, &holes, clearance);
+        let probes =
+            outer
+                .iter()
+                .chain(holes.iter().flatten())
+                .copied()
+                .chain((-20..=20).flat_map(|x| {
+                    (-20..=20).map(move |y| (f64::from(x) * scale / 5., f64::from(y) * scale / 5.))
+                }));
+        for (x, y) in probes {
+            for dx in [-clearance, 0., clearance] {
+                let point = Point2::new(x + dx, y);
+                assert_eq!(
+                    prepared.is_on_boundary(point),
+                    reference_is_on_boundary(&outer, &holes, point, clearance)
+                );
+            }
+        }
+    }
+    // An unknown segment inside an otherwise finite block must not allow
+    // that entire block to be culled.
+    let mut outer = vec![(1e16, 0.); 33];
+    outer.extend([(1., 0.), (f64::NAN, 0.), (0., 1.)]);
+    let prepared = PreparedBoundarySegments::new(&outer, &[], 1e-10);
+    for point in [
+        Point2::new(0., 0.),
+        Point2::new(9., 9.),
+        Point2::new(f64::NAN, 0.),
+    ] {
+        assert_eq!(
+            prepared.is_on_boundary(point),
+            reference_is_on_boundary(&outer, &[], point, 1e-10)
+        );
+    }
 }
 
 fn assert_mesh_bits(a: &super::super::TriangleMesh, b: &super::super::TriangleMesh, context: &str) {

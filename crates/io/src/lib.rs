@@ -13,6 +13,8 @@
 
 pub mod arena_io;
 #[cfg(feature = "formats")]
+pub mod brep;
+#[cfg(feature = "formats")]
 pub mod gltf;
 #[cfg(feature = "formats")]
 pub mod iges;
