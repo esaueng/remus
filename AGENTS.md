@@ -527,6 +527,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Gear teeth on an existing boss or bore, along the whole face or over a band of it with collars either side: keep-diameter or given-module fit, exact tooth-band material proof, tube cut then gear-ring fuse on one coaxial cylinder, circles started on the phase reference, roles carried through the fuse | `gear/cylinder.rs` |
 | Teeth-on-cylinder oracles: standalone-gear and closed-form volumes on a boss, a stepped bored shaft and a bored ring, flush and turned-down teeth over the middle of a hub or boss, turn-down fit and phase probes, internal teeth over part of a bore, any phase reference, cross-hole and span-outside-face refusals (tests) | `gear/cylinder/tests.rs` |
 | Helical sweep | `helix.rs` |
+| Screw threads on an existing boss or bore: a trapezoidal form (independent flank angles, crest and root flats, starts, hand) swept as one twisted extrusion of its transverse outline (crest and root arcs, certified Archimedean-spiral flanks), stacked in half-turn segments, put on by a tube cut and a ring fuse after the band is proven solid | `thread.rs`, `thread/profile.rs` |
+| Thread oracles: closed-form outline-area volumes (external, internal, multi-start, left hand, square flank, sharp crest), collars, typed refusals (tests) | `thread/tests.rs` |
 | Chamfer, Fillet | `chamfer.rs`, `fillet/` (mod, rolling_ball, g1_chain, geometry, radius_law, helpers, notch_torus, tests) |
 | Rolling-ball arc stripe between a plane and a coaxial cylinder as an exact torus, or a sphere triangle at the band's own radius (a fillet riding an earlier band's end) | `fillet/arc_torus.rs` |
 | Two convex stripes mitred over a reflex corner whose concave edge stays sharp | `fillet/mitre.rs` |
@@ -684,6 +686,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Differential oracle: the modifier twins' full-copy rollback envelope kept verbatim, against the rollback scope (tests) | `bindings/modifier_detailed/envelope_oracle_tests.rs` |
 | Typed construction results (`extrudeDetailed`, `revolveDetailed`) | `bindings/construction_detailed.rs` |
 | Gear construction from a JSON spec: new bodies (`makeGearDetailed`), straight bevel gears (`makeBevelGearDetailed`), worms and their wheels, plain or throated (`makeWormDetailed`, `makeWormWheelDetailed`), double-enveloping worms and their wheels (`makeEnvelopingWormDetailed`, `makeEnvelopingWormWheelDetailed`) and teeth on an existing cylinder (`cutGearTeethDetailed`), direct and batch | `bindings/gear.rs` |
+| Screw threads on an existing cylinder from a JSON spec (`cutThreadDetailed`), direct and batch, with `thread:<reason>` refusals | `bindings/thread.rs` |
 | Live planar polygon imprint, direct and both batch adapters | `bindings/construction_imprint.rs` |
 | Transform, copy, mirror, pattern | `bindings/transforms.rs` |
 | Typed affine transform results and refusals | `bindings/transform_detailed.rs` |
