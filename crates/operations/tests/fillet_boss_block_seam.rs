@@ -28,6 +28,7 @@ use remus_operations::blend_ops::{
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::measure::solid_volume;
 use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::tessellate::tessellate_solid_grouped_with_tolerance;
 use remus_operations::validate::validate_solid;
 use remus_topology::Topology;
 use remus_topology::edge::EdgeId;
@@ -639,4 +640,68 @@ fn display_only_build_matches_the_checked_build() {
         (volume - checked_volume).abs() < 1e-6 * checked_volume,
         "{volume} for display, {checked_volume} checked"
     );
+}
+
+/// The six-edge selection meshes for display with every triangle of a band
+/// facing the way its surface does.
+///
+/// At these radii one sample on the side top edge's contact row stalled in
+/// Newton, the band's CDT failed on it, and the face fell back to the snapped
+/// rectangular mesh: about 800 inside-out wedges fanning from where the
+/// contact leaves the block's top for the seam band, drawn as a black fan in
+/// the viewport. The tolerances are the app's display tessellation for this
+/// body (2e-4 of its size, 0.06 rad).
+#[test]
+fn six_edge_selection_meshes_every_band_facing_out() {
+    let p = Point3::new;
+    for r in [3.0, 3.25] {
+        let mut topo = Topology::new();
+        let body = imported_body(&mut topo);
+        let mut edges = seam(&topo, body).to_vec();
+        for (a, b) in [
+            (p(BOSS, 0.0, BLOCK.2), p(BLOCK.0, 0.0, BLOCK.2)),
+            (p(0.0, BOSS, BLOCK.2), p(0.0, BLOCK.1, BLOCK.2)),
+            (p(BLOCK.0, 0.0, 0.0), p(BLOCK.0, 0.0, BLOCK.2)),
+        ] {
+            edges.push(edge_between(&topo, body, a, b));
+        }
+        let solid = fillet_cascade(&mut topo, body, &edges, r).unwrap().solid;
+        let (mesh, offsets) =
+            tessellate_solid_grouped_with_tolerance(&topo, solid, 0.0072, 0.06).unwrap();
+        for (index, &face) in solid_faces(&topo, solid).unwrap().iter().enumerate() {
+            let FaceSurface::Nurbs(surface) = topo.face(face).unwrap().surface() else {
+                continue;
+            };
+            let (mut along, mut against) = (0, 0);
+            let triangles = &mesh.indices[offsets[index] as usize..offsets[index + 1] as usize];
+            for triangle in triangles.chunks(3) {
+                let [a, b, c] = [0, 1, 2].map(|k| mesh.positions[triangle[k] as usize]);
+                let normal = (b - a).cross(c - a);
+                if normal.length() < 1e-14 {
+                    continue;
+                }
+                let centroid = Point3::new(
+                    (a.x() + b.x() + c.x()) / 3.0,
+                    (a.y() + b.y() + c.y()) / 3.0,
+                    (a.z() + b.z() + c.z()) / 3.0,
+                );
+                // Newton stalls on the odd contact-row point, as the
+                // mesher's did; the rest of the band decides.
+                let Ok(foot) = remus_math::nurbs::projection::project_point_to_surface(
+                    surface, centroid, 1e-9,
+                ) else {
+                    continue;
+                };
+                if normal.dot(surface.normal(foot.u, foot.v).unwrap()) >= 0.0 {
+                    along += 1;
+                } else {
+                    against += 1;
+                }
+            }
+            assert!(
+                along == 0 || against == 0,
+                "r{r} face {index}: {along} triangles along the surface normal, {against} against"
+            );
+        }
+    }
 }

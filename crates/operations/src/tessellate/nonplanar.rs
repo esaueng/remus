@@ -2575,6 +2575,60 @@ pub(super) fn tessellate_nurbs_blend_band_shared(
     Ok(true)
 }
 
+/// The chart points of a face's boundary samples, with any sample whose own
+/// projection failed recovered from its neighbours.
+///
+/// Newton can stall on a sample its neighbours chart without trouble: on a
+/// walked band's contact row, where the domain's edge clamps every step, it
+/// oscillates until the iteration cap. One such sample used to fail the
+/// whole CDT, and the face fell back to the snapped rectangular mesh, which
+/// fans inside-out wedges across a band that runs out to a point. The sample
+/// is re-projected from the nearest charted sample on each side, and failing
+/// that takes their midpoint; it is accepted only within `deflection` of the
+/// surface, so a sample that really is off the face still fails.
+fn recover_unprojected_boundary_samples(
+    frame: Option<&NurbsFrame>,
+    boundary: &[(Point3, u32, remus_topology::edge::EdgeId, bool)],
+    charted: Vec<Result<(f64, f64), crate::OperationsError>>,
+    deflection: f64,
+) -> Result<Vec<(f64, f64)>, crate::OperationsError> {
+    let Some(frame) = frame else {
+        return charted.into_iter().collect();
+    };
+    let n = charted.len();
+    let known: Vec<Option<(f64, f64)>> =
+        charted.iter().map(|uv| uv.as_ref().ok().copied()).collect();
+    let nearest = |i: usize, step: usize| (1..n).find_map(|offset| known[(i + step * offset) % n]);
+    let limit = deflection.max(1e-9);
+    charted
+        .into_iter()
+        .enumerate()
+        .map(|(i, uv)| {
+            let Err(error) = uv else {
+                return uv;
+            };
+            let point = boundary[i].0;
+            let (before, after) = (nearest(i, n - 1), nearest(i, 1));
+            let mut best: Option<((f64, f64), f64)> = None;
+            let mut consider = |candidate: (f64, f64), distance: f64| {
+                if distance <= limit && best.is_none_or(|(_, d)| distance < d) {
+                    best = Some((candidate, distance));
+                }
+            };
+            for seed in before.into_iter().chain(after) {
+                if let Some((candidate, distance)) = frame.project_seeded(point, seed) {
+                    consider(candidate, distance);
+                }
+            }
+            if let (Some(a), Some(b)) = (before, after) {
+                let midpoint = (f64::midpoint(a.0, b.0), f64::midpoint(a.1, b.1));
+                consider(midpoint, frame.residual(point, midpoint));
+            }
+            best.map(|(candidate, _)| candidate).ok_or(error)
+        })
+        .collect()
+}
+
 /// Immutable segment data for the nonplanar grid's boundary-clearance query.
 /// Polygon containment and the distance predicate retain their original order.
 struct PreparedBoundarySegments {
@@ -2917,7 +2971,7 @@ pub(super) fn tessellate_nonplanar_cdt(
         hole_boundaries_3d.push(hole);
     }
 
-    let mut boundary_uv: Vec<(f64, f64)> = boundary_3d
+    let boundary_uv: Vec<Result<(f64, f64), crate::OperationsError>> = boundary_3d
         .iter()
         .map(|(pt, _, edge_id_local, is_fwd)| {
             // Prefer the GFA-carried pcurve (fitted through exact-chart
@@ -2949,7 +3003,13 @@ pub(super) fn tessellate_nonplanar_cdt(
             }
             chart_uv(face_data.surface(), nurbs_frame.as_ref(), *pt)
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Vec<_>>();
+    let mut boundary_uv = recover_unprojected_boundary_samples(
+        nurbs_frame.as_ref(),
+        &boundary_3d,
+        boundary_uv,
+        deflection,
+    )?;
 
     // A boundary sample lies on the face, so a chart point that misses it by
     // more than the deflection came from a Newton start in the wrong basin.
