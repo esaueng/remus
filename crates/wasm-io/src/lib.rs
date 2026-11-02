@@ -323,6 +323,18 @@ impl RemusIo {
         )?)
     }
 
+    fn import_brep_impl(
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<Vec<u8>, IoWasmError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
+        let text = utf8(data, "BREP")?;
+        let mut topo = Topology::new();
+        let solids = remus_io::brep::read_brep_with_limits(text, &mut topo, limits)?;
+        Ok(solids_document_with_limits(&topo, &solids, limits)?)
+    }
+
     fn import_step_impl(
         data: &[u8],
         max_input_bytes: Option<f64>,
@@ -583,6 +595,21 @@ impl RemusIo {
 
     // ── Import: returns an arena document for the kernel ───────────
 
+    /// Read planar, straight-edged ASCII BREP saved shapes in millimetres.
+    /// Returns an exact solid document for `deserializeSolids`.
+    /// Unsupported geometry or placements refuse the whole call.
+    /// Optional budgets only tighten production limits; this first reader
+    /// also caps aggregate records/references at 16,384.
+    #[wasm_bindgen(js_name = "importBrep")]
+    pub fn import_brep(
+        &self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<Vec<u8>, JsError> {
+        Ok(Self::import_brep_impl(data, max_input_bytes, max_entities)?)
+    }
+
     /// Read a STEP file; returns a solid document for `deserializeSolids`,
     /// or no bytes when the file holds no solids.
     ///
@@ -737,6 +764,19 @@ mod tests {
     use super::*;
     use remus_operations::measure::solid_volume;
     use remus_operations::primitives::make_box;
+
+    #[test]
+    fn brep_translator_returns_exact_arena_and_enforces_api_limits() {
+        let input = include_bytes!("../../io/tests/data/brep/freecad-box-v1.brep");
+        let document = RemusIo::import_brep_impl(input, None, None).unwrap();
+        let actual = volumes(&document);
+        assert_eq!(actual.len(), 1);
+        assert!((actual[0] - 1000.).abs() < 1e-8);
+        assert!(RemusIo::import_brep_impl(input, Some(1.), None).is_err());
+        assert!(RemusIo::import_brep_impl(input, None, Some(10.)).is_err());
+        assert!(RemusIo::import_brep_impl(input, Some(f64::NAN), None).is_err());
+        assert!(RemusIo::import_brep_impl(&[0xff], None, None).is_err());
+    }
 
     fn box_document() -> Vec<u8> {
         let mut topo = Topology::new();
