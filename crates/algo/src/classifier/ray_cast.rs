@@ -20,6 +20,17 @@ use crate::error::AlgoError;
 use crate::perf::RayWork;
 use remus_math::compact_sort::CompactSort;
 
+/// A NURBS face that covers its surface's whole parameter domain, with the
+/// line-intersection seed grid built once for the many rays cast at it.
+struct FullDomainNurbs {
+    surface: remus_math::nurbs::surface::NurbsSurface,
+    grid: remus_math::nurbs::intersection::LineSurfaceSeedGrid,
+}
+
+/// Seed-grid resolution for [`FaceGeom::FullDomainNurbs`], as the check
+/// crate's NURBS ray path uses.
+const NURBS_RAY_SAMPLES: usize = 20;
+
 /// Per-face geometry used for ray crossing tests.
 enum FaceGeom {
     /// Exact torus crossings restricted by a sampled local trim in UV space.
@@ -67,6 +78,12 @@ enum FaceGeom {
         polygon: Vec<Point2>,
         centre_u: f64,
     },
+    /// A NURBS face bounded by its own parameter domain, such as a helical
+    /// gear flank or root fillet swept between its end curves. Crossings are
+    /// the exact ray/surface roots, every one inside the face. The planar
+    /// polygon fallback flattens such a twisted patch and gains or loses
+    /// crossings.
+    FullDomainNurbs(Box<FullDomainNurbs>),
     /// A conical face without inner wires, full-period or partial-arc.
     /// Crossings come from the ray/double-cone quadratic filtered to the
     /// face's slant range (`v` = distance from apex along the generator,
@@ -1021,6 +1038,7 @@ fn line_clears_carrier(geom: &FaceGeom, origin: Point3, ray_dir: Vec3) -> bool {
         FaceGeom::Planar { .. }
         | FaceGeom::Cylinder { .. }
         | FaceGeom::TrimmedCylinder { .. }
+        | FaceGeom::FullDomainNurbs(_)
         | FaceGeom::Cone { .. } => false,
     }
 }
@@ -1130,6 +1148,7 @@ fn geom_kind(geom: &FaceGeom) -> String {
         FaceGeom::Planar { face, .. } => face.kind(),
         FaceGeom::Cylinder { v_min, v_max, .. } => format!("Cylinder(v {v_min:.2}..{v_max:.2})"),
         FaceGeom::TrimmedCylinder { polygon, .. } => format!("TrimmedCylinder({})", polygon.len()),
+        FaceGeom::FullDomainNurbs(_) => "FullDomainNurbs".into(),
         FaceGeom::Cone { .. } => "Cone".into(),
         FaceGeom::Torus { .. } => "Torus".into(),
         FaceGeom::TrimmedTorus { .. } => "TrimmedTorus".into(),
@@ -1404,6 +1423,24 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
                         continue;
                     }
                 }
+            }
+        }
+
+        // Work on a copy: projection and seed grids fill the surface's lazy
+        // caches, and classification must leave its input untouched.
+        if let remus_topology::face::FaceSurface::Nurbs(nurbs) = face.surface()
+            && face.inner_wires().is_empty()
+        {
+            let surface = nurbs.clone();
+            if wire_spans_nurbs_domain(topo, face.outer_wire(), &surface)? {
+                result.push(FaceGeom::FullDomainNurbs(Box::new(FullDomainNurbs {
+                    grid: remus_math::nurbs::intersection::LineSurfaceSeedGrid::for_surface(
+                        &surface,
+                        NURBS_RAY_SAMPLES,
+                    ),
+                    surface,
+                })));
+                continue;
             }
         }
 
@@ -1817,6 +1854,9 @@ fn ray_geom_crossings(
             polygon,
             centre_u,
         } => ray_trimmed_cylinder_crossings(origin, ray_dir, surface, polygon, *centre_u, tol),
+        FaceGeom::FullDomainNurbs(nurbs) => {
+            ray_full_domain_nurbs_crossings(origin, ray_dir, nurbs, tol)
+        }
         FaceGeom::Cone {
             surface,
             v_min,
@@ -2022,6 +2062,106 @@ fn sheared_cylinder_trim(
         .map(|(u, v)| Point2::new(radius * u, v))
         .collect();
     Some((polygon, centre_u))
+}
+
+/// Whether `wire` runs along the boundary of `surface`'s parameter domain
+/// and reaches all four of its sides, so the face it bounds is the whole
+/// surface. Every edge is sampled and projected; a sample off the surface,
+/// or inside the domain, says no.
+fn wire_spans_nurbs_domain(
+    topo: &Topology,
+    wire: remus_topology::wire::WireId,
+    surface: &remus_math::nurbs::surface::NurbsSurface,
+) -> Result<bool, AlgoError> {
+    let (u0, u1) = surface.domain_u();
+    let (v0, v1) = surface.domain_v();
+    let (du, dv) = (u1 - u0, v1 - v0);
+    if du <= 0.0 || dv <= 0.0 {
+        return Ok(false);
+    }
+    // Parameter round-off of a projection onto the boundary, and the
+    // distance a boundary curve may sit off the surface.
+    let (eu, ev) = (1e-7 * du, 1e-7 * dv);
+    let off = Tolerance::default().linear;
+    let mut sides = [false; 4];
+    for oe in topo.wire(wire)?.edges() {
+        let edge = topo.edge(oe.edge())?;
+        let start = topo.vertex(edge.start())?.point();
+        let end = topo.vertex(edge.end())?.point();
+        let Ok((t0, t1)) = edge.strict_domain() else {
+            return Ok(false);
+        };
+        for k in 0..=4 {
+            let t = t0 + (t1 - t0) * f64::from(k) / 4.0;
+            let p = edge.curve().evaluate_with_endpoints(t, start, end);
+            let Ok(hit) = remus_math::nurbs::projection::project_point_to_surface(surface, p, off)
+            else {
+                return Ok(false);
+            };
+            if hit.distance > off {
+                return Ok(false);
+            }
+            let on = [
+                (hit.u - u0).abs() <= eu,
+                (u1 - hit.u).abs() <= eu,
+                (hit.v - v0).abs() <= ev,
+                (v1 - hit.v).abs() <= ev,
+            ];
+            if !on.iter().any(|&b| b) {
+                return Ok(false);
+            }
+            for (side, &b) in sides.iter_mut().zip(&on) {
+                *side |= b;
+            }
+        }
+    }
+    Ok(sides.iter().all(|&b| b))
+}
+
+/// Crossings with a [`FaceGeom::FullDomainNurbs`]: the exact forward
+/// ray/surface roots. A root near the domain boundary (the face's edges) or
+/// at a near-tangent incidence flags the ray as unreliable, like the
+/// analytic faces' grazing conventions.
+fn ray_full_domain_nurbs_crossings(
+    origin: Point3,
+    ray_dir: Vec3,
+    nurbs: &FullDomainNurbs,
+    tol: Tolerance,
+) -> (i32, bool) {
+    let surface = &nurbs.surface;
+    let Ok(hits) = remus_math::nurbs::intersection::intersect_line_nurbs_with_grid(
+        surface,
+        &nurbs.grid,
+        origin,
+        ray_dir,
+    ) else {
+        // No reliable answer from the surface: abstain from this ray.
+        return (0, true);
+    };
+    let dir_sq = ray_dir.dot(ray_dir);
+    let Ok(dir) = ray_dir.normalize() else {
+        return (0, false);
+    };
+    let (u0, u1) = surface.domain_u();
+    let (v0, v1) = surface.domain_v();
+    let (eu, ev) = (1e-6 * (u1 - u0), 1e-6 * (v1 - v0));
+    let mut crossings = 0;
+    let mut suspicious = false;
+    for hit in &hits {
+        let t = (hit.point - origin).dot(ray_dir) / dir_sq;
+        if t <= tol.linear {
+            continue;
+        }
+        let (u, v) = hit.param1;
+        crossings += 1;
+        let near_edge = (u - u0).abs() <= eu
+            || (u1 - u).abs() <= eu
+            || (v - v0).abs() <= ev
+            || (v1 - v).abs() <= ev;
+        let grazing = surface.normal(u, v).is_ok_and(|n| n.dot(dir).abs() < 1e-6);
+        suspicious |= near_edge || grazing;
+    }
+    (crossings, suspicious)
 }
 
 /// Crossings with a [`FaceGeom::TrimmedCylinder`]: the ray/cylinder roots
