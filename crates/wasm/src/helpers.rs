@@ -419,16 +419,13 @@ pub fn try_fillet_result(
 /// dropped — though that rim rounds perfectly when picked on its own. A caller
 /// had no way to detect it.
 ///
-/// The retry still runs, because it is a cheap way to find out whether the
-/// non-planar edges are the blocker, but its solid is never the answer: when it
-/// covers only part of the selection the result is a typed
-/// [`BlendError::EdgesNotBlended`] naming the edges that carry no blend, and
-/// the input is left untouched.
+/// A refused selection preserves the cascade's typed cause. Neither subset
+/// is advertised as blendable without constructing and validating it.
 ///
 /// # Errors
 ///
-/// Returns the engine chain's typed failure, or `EdgesNotBlended` when the only
-/// thing that would have succeeded is a strict subset of the selection.
+/// Returns the engine cascade's typed failure without inferring failed seeds
+/// from their surface classes.
 pub fn fillet_whole_selection(
     topo: &mut remus_topology::Topology,
     solid_id: remus_topology::solid::SolidId,
@@ -450,31 +447,9 @@ pub fn fillet_whole_selection_result(
     edge_ids: &[remus_topology::edge::EdgeId],
     radius: f64,
 ) -> Result<remus_operations::blend_ops::BlendResult, remus_operations::OperationsError> {
-    let primary = match try_fillet_result(topo, solid_id, edge_ids, radius) {
-        Ok(result) => return Ok(result),
-        Err(e) => e,
-    };
-
-    let planar_edges = remus_operations::query::filter_planar_edges(topo, solid_id, edge_ids)?;
-    if planar_edges.is_empty() || planar_edges.len() == edge_ids.len() {
-        return Err(primary);
-    }
-    let dropped: Vec<remus_topology::edge::EdgeId> = edge_ids
-        .iter()
-        .copied()
-        .filter(|e| !planar_edges.contains(e))
-        .collect();
-    Err(remus_operations::OperationsError::Blend(
-        remus_operations::blend_ops::BlendError::EdgesNotBlended {
-            edges: dropped,
-            reason: format!(
-                "the blend engines refused the whole selection ({primary}); the {} \
-                 edge(s) between planar faces would round on their own, but \
-                 returning that subset would drop the rest without saying so",
-                planar_edges.len()
-            ),
-        },
-    ))
+    // Preserve the engine's actual diagnosis. Filtering planar seeds does not
+    // test either subset and cannot establish which edges work separately.
+    try_fillet_result(topo, solid_id, edge_ids, radius)
 }
 
 /// Chamfer edges, falling back to the v2 walking engine when the v1 flat-bevel

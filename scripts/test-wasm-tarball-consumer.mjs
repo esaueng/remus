@@ -46,6 +46,7 @@ import { runLinkedSketchPackaged } from './linked-sketch-packaged.mjs';
 import { runGridPatternPackaged } from './grid-pattern-packaged.mjs';
 import { runRevolveHistoryPackaged } from './revolve-history-packaged.mjs';
 import { runPlanarImprintPackaged } from './planar-imprint-packaged.mjs';
+import { runMixedSeamFilletPackaged } from './mixed-seam-fillet-packaged.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptDir, '..');
@@ -124,6 +125,7 @@ try {
   runOpseqTorusPropertiesPackaged(packageExports);
   runDocumentCopyPackaged({ ...packageExports, ...ioExports });
   runBoundedTabRolloverPackaged(packageExports);
+  runMixedSeamFilletPackaged(packageExports);
   runPackagedPreviewWorkContract({
     kernelPackage: realpathSync(resolve(consumerDir, 'node_modules/remus-wasm')),
     ioPackage: realpathSync(resolve(consumerDir, 'node_modules/remus-wasm-io')),

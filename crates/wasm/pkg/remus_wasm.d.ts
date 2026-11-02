@@ -1728,6 +1728,20 @@ export class RemusKernel {
      */
     cutJournaled(a: number, b: number): string;
     /**
+     * Cut a screw thread along a solid's cylindrical face, as typed data:
+     * external on a boss, internal in a bore (see the module docs for the
+     * fields).
+     *
+     * The input solid is left in place and a new solid is returned. Never
+     * throws on a refusal: the envelope's `status` is `"error"` with a
+     * `thread:<reason>` code and the session unchanged.
+     *
+     * # Errors
+     *
+     * Only when the envelope cannot be converted to a JavaScript value.
+     */
+    cutThreadDetailed(solid: number, face: number, spec: string): SolidOperationDetailedResult;
+    /**
      * Cut with full entity history; see `fuseWithEntityEvolution`.
      */
     cutWithEntityEvolution(a: number, b: number): string;
@@ -1874,6 +1888,11 @@ export class RemusKernel {
      * Returns an error if `checkpoint_id` does not refer to a valid checkpoint.
      */
     discardCheckpoint(checkpoint_id: number): void;
+    /**
+     * Whether blends are built for display only (see
+     * `setDisplayOnlyBlends`).
+     */
+    displayOnlyBlendsEnabled(): boolean;
     /**
      * Apply draft angle to faces of a solid.
      *
@@ -4374,6 +4393,26 @@ export class RemusKernel {
      * body, or serialization fails.
      */
     serializeWires(wires: Uint32Array): Uint8Array;
+    /**
+     * Build fillets and chamfers for display only (off by default).
+     *
+     * For a live preview that rebuilds a blend on every step of a drag. On
+     * a body with curved faces nearly all of a blend's time goes to two
+     * postconditions, not to the blend: a fine whole-solid volume
+     * measurement and a material check that classifies thousands of sample
+     * points. With this on, every blend skips both. The structural checks
+     * still run: every named edge is blended, the outer shell is closed and
+     * the result carries no validation error the input did not.
+     *
+     * A result built this way is for display only. Turn the switch off and
+     * rebuild before keeping a result: a band those checks would refuse can
+     * look plausible on screen.
+     *
+     * The setting is per thread, like `setStoreLocalCuts`: it applies to
+     * every kernel in this module instance (one browser worker), not only
+     * to this one.
+     */
+    setDisplayOnlyBlends(enabled: boolean): void;
     /**
      * Sets (or clears, when `name` is null/empty) a face's semantic
      * name, preserving its other attributes.
