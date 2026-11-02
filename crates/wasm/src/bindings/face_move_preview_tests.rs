@@ -47,6 +47,74 @@ fn result_solid(result: &Value) -> u32 {
 }
 
 #[test]
+fn quality_aware_face_move_retains_exact_defaults_and_direct_batch_parity() {
+    for stations in [None, Some(16), Some(256), Some(2048)] {
+        let mut kernel = RemusKernel::new();
+        let (solid, face) = fixture(&mut kernel);
+        let direct = serde_json::to_value(kernel.move_faces_with_quality_detailed_impl(
+            solid,
+            &[face],
+            2.0,
+            stations,
+        ))
+        .unwrap();
+        let mut kernel = RemusKernel::new();
+        let (solid, face) = fixture(&mut kernel);
+        let input = json!([{"op":"moveFacesWithQualityDetailed","args":{
+            "solid":solid,"faces":[face],"distance":2.0,"cornerStations":stations,
+        }}]);
+        let batch: Value = serde_json::from_str(&kernel.execute_batch(&input.to_string())).unwrap();
+        assert_eq!(direct, batch[0]["ok"]);
+        assert_eq!(direct["details"]["quality"], "exact");
+    }
+    for budget in [json!(0), json!(15), json!(2049), json!(2.5), json!(true)] {
+        for op in [
+            "moveFacesWithQualityDetailed",
+            "moveFacesJournaledWithQuality",
+        ] {
+            let mut kernel = RemusKernel::new();
+            let (solid, face) = fixture(&mut kernel);
+            let before = kernel.serialize_solids(&[solid]).unwrap();
+            let input = json!([{"op":op,"args":{
+                "solid":solid,"faces":[face],"distance":2.0,"cornerStations":budget,
+            }}]);
+            let output: Value =
+                serde_json::from_str(&kernel.execute_batch(&input.to_string())).unwrap();
+            assert!(
+                output[0]["error"].is_string() || output[0]["ok"]["status"] == "error",
+                "{output}"
+            );
+            assert_eq!(kernel.serialize_solids(&[solid]).unwrap(), before);
+        }
+    }
+}
+
+#[test]
+fn quality_aware_journaled_and_prepared_moves_publish_the_same_construction_map() {
+    let mut direct = RemusKernel::new();
+    let (solid, face) = fixture(&mut direct);
+    let result = direct
+        .move_faces_journaled_with_quality_json(solid, &[face], 2.0, Some(256))
+        .unwrap();
+    assert_eq!(result["quality"], "exact");
+    assert_eq!(result["faceEvolution"]["origin"], "construction");
+    let mut batch = RemusKernel::new();
+    let (solid, face) = fixture(&mut batch);
+    let input = json!([{"op":"moveFacesJournaledWithQuality","args":{
+        "solid":solid,"faces":[face],"distance":2.0,"cornerStations":256,
+    }}]);
+    let output: Value = serde_json::from_str(&batch.execute_batch(&input.to_string())).unwrap();
+    assert_eq!(result, output[0]["ok"]);
+    let mut prepared = RemusKernel::new();
+    let (solid, face) = fixture(&mut prepared);
+    let handle = prepared.prepare_move_faces_impl(solid, &[face]).unwrap();
+    let output = prepared
+        .move_faces_prepared_journaled_with_quality_json(handle, 2.0, Some(256))
+        .unwrap();
+    assert_eq!(result, output);
+}
+
+#[test]
 fn refused_drag_preserves_source_and_last_valid_mesh_then_recovers() {
     for preview in [direct, batch] {
         let mut kernel = RemusKernel::new();

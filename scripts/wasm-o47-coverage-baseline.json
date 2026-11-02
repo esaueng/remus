@@ -2681,6 +2681,36 @@
       "coverage": "special",
       "owner": "B30",
       "reason": "prepared-move session disposal; no solid twin applicable"
+    },
+    {
+      "js": "moveFacesWithQualityDetailed",
+      "rust": "move_faces_with_quality_detailed",
+      "file": "bindings/modifier_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "Typed solid envelope with explicit sampled-cap permission and construction quality; direct and both batch routes use the same implementation."
+    },
+    {
+      "js": "moveFacesJournaledWithQuality",
+      "rust": "move_faces_journaled_with_quality_js",
+      "file": "bindings/evolution.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B18",
+      "reason": "Journal surface with explicit sampled-cap permission, disclosed quality and complete construction face evolution; direct and both batch routes share the payload."
+    },
+    {
+      "js": "moveFacesPreparedJournaledWithQuality",
+      "rust": "move_faces_prepared_journaled_with_quality",
+      "file": "bindings/prepared_move.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B30",
+      "reason": "Prepared journal surface with explicit sampled-cap permission and the same quality and construction-history payload as the ordinary journaled move."
     }
   ]
 }

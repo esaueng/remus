@@ -1730,7 +1730,11 @@ fn walking_fillet(
     ) {
         return Err(refusal);
     }
-    transactional(topo, |t| build(t, true)).or(Err(refusal))
+    let retried = transactional(topo, |t| build(t, true));
+    if let Err(error) = &retried {
+        log::debug!("rail-chain fillet candidate refused: {error}");
+    }
+    retried.or(Err(refusal))
 }
 
 type FeatureSeedGeometry =

@@ -61,3 +61,49 @@ The kernel API is independently usable. A consumer must adopt the regenerated
 package pair and preserve construction history across replay; updating only
 source code does not change an already pinned browser kernel. Private customer
 models are local acceptance evidence and are not committed as public fixtures.
+
+## Interacting shoulder and cap rims (in progress)
+
+Tier: core — the move edits live solid topology, persistent entity history and
+session checkpoints. A translating shoulder that reaches a fixed rounded cap
+needs a reconstructed rolling contour, shared trim edges and new corner bands;
+axial clearance alone is not functionality parity. The acceptance case raises a
+19.1 mm shoulder to 24.1 mm below a 28.5 mm cap, preserving an R5 shoulder and
+an R1.8 rim. Native regressions now exercise the positive transition, further
+moves, reversal through separation, exact contact onset and rotated/scaled
+placements. Broader qualification remains in progress. Sampled construction must
+require explicit approximation permission and disclose its quality; exact-only
+calls continue to refuse it atomically.
+
+The core operation is owned by `operations/src/face_move_quality.rs` and the
+bounded translation/reconstruction adapter by
+`operations/src/resize_blend/axial_rim_join.rs`. The existing exact-only APIs
+retain their contract. The blend trimmer exposes construction-derived split
+images for edge history; journal and prepared adapters must preserve the same
+explicit quality permission and transactional behavior.
+
+Within the operations crate graph, `face_move_quality` belongs to the feature
+tier; it reads common entity scope from the core evolution module. Journal
+and prepared adapters remain in the facade tier. Solved contour parameters
+pass directly to certified boundary splits, retaining both endpoint and
+interior-domain checks instead of repeating a nearest-point search.
+
+Additive core WASM methods expose the opt-in operation, detailed result and
+prepared/journal variants; their existing exact-only counterparts do not change.
+Both batch envelopes use the same implementation as the direct methods.
+
+The core `operations/src/resize_blend/translation_shadow.rs` guard uses the
+translation region's construction boundary to check volume direction when
+all boundary carriers have closed-form vector-area integrals (lines, circles
+and piecewise linear NURBS). It does not seed measured volume caches. Unsupported
+curves or ambiguous winding retain the existing integration/mesh oracle.
+
+Core `blend/src/cap_reblend/restore.rs` recovers the original shoulder limits
+from the retained circular-section carriers before a reverse joined-cap edit.
+It operates on an owned disposable candidate, records extended edge images,
+and refuses ambiguous boundary roles or missing original parameter authority.
+
+Core `blend/src/cap_reblend/touch.rs` handles the zero-width onset of contact:
+the retained shoulder spring becomes shared with the analytic rim, whose
+remaining lower circle bounds the boss. It creates no zero-area corner bands
+and only rewrites an owned disposable candidate.

@@ -217,3 +217,21 @@ to a cold kernel's; every reading after it is a hit. The remove/rebuild and
 prismatic paths still measure their result themselves, so their readings
 are memoized as before. The "seeded" rows and numbers above describe the
 superseded revision.
+
+## Quadrature budget preflight
+
+The fixed knot-aligned rule counts the same trimmed Gauss lines before
+evaluating a surface. Oversized sampled carriers therefore retain the same
+typed work-budget refusal without spending the whole budget on a partial
+integral. Admitted integrals keep their sample order and arithmetic, and the
+cell cap, quadrature order, validation rules and measured-volume cache remain
+unchanged. The preflight stores no surface samples or derived measurements.
+
+Core `check/properties/face_integrator/natural_rectangle.rs` recognizes a
+bounded degree-(2,1) natural NURBS rectangle from complete boundary images.
+Degree-one iso rows must retain their exact carrier/control net and cover
+their complete parameter interval without gaps or overlaps; the two quadratic
+iso sections must be certified circular arcs with matching endpoints, support
+and minor span. Holes, partial sections, altered carriers and ambiguous side
+claims decline. This avoids recovering known iso boundaries through a noisy
+generic surface projection; it retains the existing quadrature and work cap.

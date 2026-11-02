@@ -89,6 +89,25 @@ impl RemusKernel {
             .map_err(|error| JsError::new(error.message()))
     }
 
+    /// Prepared journaled face move with explicit sampled-cap permission.
+    ///
+    /// JSON includes `solid`, `op`, and disclosed construction quality.
+    ///
+    /// # Errors
+    /// Refuses invalid budgets, stale preparations or unsupported geometry
+    /// atomically, as the unprepared quality-aware method does.
+    #[wasm_bindgen(js_name = "moveFacesPreparedJournaledWithQuality")]
+    pub fn move_faces_prepared_journaled_with_quality(
+        &mut self,
+        prepared: u32,
+        distance: f64,
+        corner_stations: Option<u32>,
+    ) -> Result<String, JsError> {
+        self.move_faces_prepared_journaled_with_quality_json(prepared, distance, corner_stations)
+            .map(|value| value.to_string())
+            .map_err(|error| JsError::new(error.message()))
+    }
+
     /// Release a prepared move. Returns whether `prepared` was live.
     #[wasm_bindgen(js_name = "releasePreparedMove")]
     pub fn release_prepared_move(&mut self, prepared: u32) -> bool {
@@ -153,6 +172,27 @@ impl RemusKernel {
             "solid": solid_id_to_u32(result.solid),
             "op": u32::try_from(result.op.value()).unwrap_or(u32::MAX),
         }))
+    }
+
+    pub(crate) fn move_faces_prepared_journaled_with_quality_json(
+        &mut self,
+        prepared: u32,
+        distance: f64,
+        corner_stations: Option<u32>,
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        validate_finite(distance, "distance")?;
+        let permission = super::modifier_detailed::face_move_permission(corner_stations)?;
+        let (result, quality) = self
+            .with_prepared_move(prepared, |topo, move_| {
+                move_.move_faces_journaled_with_quality(topo, distance, permission)
+            })
+            .map_err(StructuredWasmError::from)?
+            .map_err(StructuredWasmError::from)?;
+        let mut value = super::modifier_detailed::face_move_quality_json(quality);
+        value["faceEvolution"] = super::modifier_detailed::face_move_evolution_json(&result.map);
+        value["solid"] = serde_json::json!(solid_id_to_u32(result.solid));
+        value["op"] = serde_json::json!(u32::try_from(result.op.value()).unwrap_or(u32::MAX));
+        Ok(value)
     }
 
     /// Runs `edit` on the live prepared move `prepared` and the topology.

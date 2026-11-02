@@ -24,6 +24,7 @@ mod boundary_area;
 #[cfg(test)]
 mod cylinder_band_tests;
 mod loop_index;
+mod natural_rectangle;
 #[cfg(test)]
 mod nurbs_rows_oracle_tests;
 #[cfg(test)]
@@ -918,6 +919,20 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 ..rule.compatibility()
             };
             let full = (s.domain_u(), s.domain_v());
+            if natural_rectangle::is_complete(topo, face_id, s)? {
+                return integrate_parametric::<_, AREA_ONLY>(
+                    s,
+                    full.0,
+                    full.1,
+                    rule,
+                    sign,
+                    &UvTrim::new(None, &[], &[], true),
+                    PatchScale {
+                        u: knot_axis_patch_scale(s.knots_u(), full.0),
+                        v: knot_axis_patch_scale(s.knots_v(), full.1),
+                    },
+                );
+            }
             let periodic_u = s.is_periodic_u();
             let periodic_v = s.is_periodic_v();
             // One seed grid serves every trim projection on this face. The
@@ -4913,52 +4928,61 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
     let (mut cuts, mut spans) = (Vec::new(), Vec::new());
     // Gauss lines integrated so far, each one `v` sub-cell at one `u`
     // abscissa: `order` of them make one tensor cell.
-    let mut lines = 0usize;
     // Every interval is integrated, however narrow: no width floor is safe,
     // since the parameter speed is unbounded (a narrow knot span, a steep
     // rational weight), and a sliver costs only its own Gauss lines. The
     // breaks are distinct after `dedup`, so none is empty.
-    for w in breaks.windows(2) {
-        let (u0, u1) = (w[0], w[1]);
-        let nu = knot_aligned_cells(u1 - u0, cell_u);
-        let du_patch = (u1 - u0) / nu as f64;
-        let u_scale = du_patch / 2.0;
-        for iu in 0..nu {
-            let u_mid = du_patch.fma(iu as f64, u0) + u_scale;
-            for gpu in gauss_pts {
-                let u = u_scale.fma(gpu.x, u_mid);
-                if splits {
-                    trim.v_spans_into(u, v_range, &mut cuts, &mut spans);
-                } else {
-                    spans.clear();
-                    spans.push((v_range.0.min(v_range.1), v_range.0.max(v_range.1)));
-                }
-                for &(a, b) in &spans {
-                    let first = knots_v.partition_point(|&k| k <= a);
-                    let last = knots_v.partition_point(|&k| k < b);
-                    let inner = knots_v.get(first..last).unwrap_or(&[]);
-                    let lows = std::iter::once(a).chain(inner.iter().copied());
-                    let highs = inner.iter().copied().chain(std::iter::once(b));
-                    for (p0, p1) in lows.zip(highs) {
-                        let nv = knot_aligned_cells(p1 - p0, cell_v);
-                        lines = lines.saturating_add(nv);
-                        if lines > budget {
-                            return Err(over_budget());
-                        }
-                        let dv_patch = (p1 - p0) / nv as f64;
-                        let v_scale = dv_patch / 2.0;
-                        for iv in 0..nv {
-                            let v_mid = dv_patch.fma(iv as f64, p0) + v_scale;
-                            for gpv in gauss_pts {
-                                let v = v_scale.fma(gpv.x, v_mid);
-                                acc.add::<_, AREA_ONLY>(
-                                    surface,
-                                    u,
-                                    v,
-                                    gpu.w * gpv.w * u_scale * v_scale,
-                                    rule.reference,
-                                    &mut scratch,
-                                );
+    // Count before evaluating: a refusal after a partial integral otherwise
+    // spends the entire cap again on every validation of the same carrier.
+    // Both passes use identical abscissas, trim spans and budget arithmetic;
+    // the admitted pass retains its original sample/accumulation order.
+    for preflight in [true, false] {
+        let mut lines = 0usize;
+        for w in breaks.windows(2) {
+            let (u0, u1) = (w[0], w[1]);
+            let nu = knot_aligned_cells(u1 - u0, cell_u);
+            let du_patch = (u1 - u0) / nu as f64;
+            let u_scale = du_patch / 2.0;
+            for iu in 0..nu {
+                let u_mid = du_patch.fma(iu as f64, u0) + u_scale;
+                for gpu in gauss_pts {
+                    let u = u_scale.fma(gpu.x, u_mid);
+                    if splits {
+                        trim.v_spans_into(u, v_range, &mut cuts, &mut spans);
+                    } else {
+                        spans.clear();
+                        spans.push((v_range.0.min(v_range.1), v_range.0.max(v_range.1)));
+                    }
+                    for &(a, b) in &spans {
+                        let first = knots_v.partition_point(|&k| k <= a);
+                        let last = knots_v.partition_point(|&k| k < b);
+                        let inner = knots_v.get(first..last).unwrap_or(&[]);
+                        let lows = std::iter::once(a).chain(inner.iter().copied());
+                        let highs = inner.iter().copied().chain(std::iter::once(b));
+                        for (p0, p1) in lows.zip(highs) {
+                            let nv = knot_aligned_cells(p1 - p0, cell_v);
+                            lines = lines.saturating_add(nv);
+                            if lines > budget {
+                                return Err(over_budget());
+                            }
+                            if preflight {
+                                continue;
+                            }
+                            let dv_patch = (p1 - p0) / nv as f64;
+                            let v_scale = dv_patch / 2.0;
+                            for iv in 0..nv {
+                                let v_mid = dv_patch.fma(iv as f64, p0) + v_scale;
+                                for gpv in gauss_pts {
+                                    let v = v_scale.fma(gpv.x, v_mid);
+                                    acc.add::<_, AREA_ONLY>(
+                                        surface,
+                                        u,
+                                        v,
+                                        gpu.w * gpv.w * u_scale * v_scale,
+                                        rule.reference,
+                                        &mut scratch,
+                                    );
+                                }
                             }
                         }
                     }
@@ -6467,10 +6491,18 @@ mod tests {
         assert!((inside.area - 2.0).abs() <= 1e-10, "{}", inside.area);
         // Past it, a typed refusal rather than an unbounded integration.
         let finer = grid(600);
+        NORMAL_EVALUATIONS.with(|count| count.set(0));
         assert!(matches!(
             run((&finer, &finer)),
             Err(CheckError::IntegrationFailed(_))
         ));
+        NORMAL_EVALUATIONS.with(|count| {
+            assert_eq!(
+                count.get(),
+                0,
+                "a work-budget refusal must not evaluate a partial surface integral"
+            );
+        });
     }
 
     #[test]

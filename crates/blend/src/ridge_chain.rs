@@ -269,6 +269,14 @@ fn blend_one(
     let Some(ridge) = detect(topo, adjacency, spine)? else {
         return Ok(None);
     };
+    if let RidgeBlend::Fillet(radius) = blend
+        && !ridge.concave
+        && ridge.runout
+        && let Some(result) =
+            crate::equal_radius_boss_corner::blend(topo, solid, adjacency, spine, radius)?
+    {
+        return Ok(Some(result));
+    }
     let spine_edges = spine.edges();
     let length = spine.length();
     let size = blend.size();

@@ -56,6 +56,7 @@ pub(crate) mod local_wound;
 pub mod remove_blends;
 pub mod resize_blend;
 
+pub mod face_move_quality;
 pub mod offset_face;
 pub mod offset_trim;
 pub mod offset_v2;

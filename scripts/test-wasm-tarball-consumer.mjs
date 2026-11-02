@@ -23,6 +23,7 @@ import { runDraftAnalysisPackaged } from './draft-analysis-packaged.mjs';
 import { runWasmParserReferencesPackaged } from './wasm-parser-refs-packaged.mjs';
 import { runVariableFilletInputPackaged } from './variable-fillet-input-packaged.mjs';
 import { runVariableFilletBoundariesPackaged } from './variable-fillet-boundaries-packaged.mjs';
+import { runFaceMoveQualityPackaged } from './face-move-quality-packaged.mjs';
 import { runTaperedHollowSweepPackaged } from './tapered-hollow-sweep-packaged.mjs';
 import { runWasmRayNurbsPackaged } from './wasm-ray-nurbs-packaged.mjs';
 import { runOpseqF5Packaged } from './opseq-f5-packaged.mjs';
@@ -142,6 +143,7 @@ try {
   runWasmParserReferencesPackaged(packageExports);
   runVariableFilletInputPackaged(packageExports);
   runVariableFilletBoundariesPackaged(packageExports);
+  runFaceMoveQualityPackaged(packageExports);
   runTaperedHollowSweepPackaged(packageExports);
   runWasmRayNurbsPackaged(packageExports);
   runOpseqF5Packaged(packageExports);
