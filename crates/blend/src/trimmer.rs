@@ -540,7 +540,7 @@ fn split_edge_at_with_parameter(
         (source_t1, source_t0)
     };
     let split_parameter = if let Some(parameter) = parameter {
-        certify_split_parameter(
+        validate_split_parameter(
             &curve,
             oriented_t0,
             oriented_t1,
@@ -653,11 +653,11 @@ fn split_parameter_on_curve(
         }
     };
 
-    certify_split_parameter(curve, t0, t1, start, end, split, tolerance, parameter)
+    validate_split_parameter(curve, t0, t1, start, end, split, tolerance, parameter)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn certify_split_parameter(
+fn validate_split_parameter(
     curve: &EdgeCurve,
     t0: f64,
     t1: f64,
@@ -1734,7 +1734,7 @@ pub fn split_body_boundary_at_parameter(
             "parameter witness has an invalid tolerance".into(),
         ));
     }
-    certify_split_parameter(
+    validate_split_parameter(
         data.curve(),
         a,
         b,
