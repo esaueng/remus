@@ -448,6 +448,17 @@ fn split_edge_at(
     oe: &OrientedEdge,
     split_vertex: VertexId,
 ) -> Result<(OrientedEdge, OrientedEdge), BlendError> {
+    split_edge_at_with_parameter(topo, edit, trimmed, oe, split_vertex, None)
+}
+
+fn split_edge_at_with_parameter(
+    topo: &mut Topology,
+    edit: &mut BodyEdit<'_>,
+    trimmed: Option<FaceId>,
+    oe: &OrientedEdge,
+    split_vertex: VertexId,
+    parameter: Option<f64>,
+) -> Result<(OrientedEdge, OrientedEdge), BlendError> {
     let edge = topo.edge(oe.edge())?;
     let start_vid = oe.oriented_start(edge);
     let end_vid = oe.oriented_end(edge);
@@ -528,15 +539,28 @@ fn split_edge_at(
     } else {
         (source_t1, source_t0)
     };
-    let split_parameter = split_parameter_on_curve(
-        &curve,
-        oriented_t0,
-        oriented_t1,
-        topo.vertex(start_vid)?.point(),
-        topo.vertex(end_vid)?.point(),
-        split.point(),
-        effective_tolerance,
-    )?;
+    let split_parameter = if let Some(parameter) = parameter {
+        certify_split_parameter(
+            &curve,
+            oriented_t0,
+            oriented_t1,
+            topo.vertex(start_vid)?.point(),
+            topo.vertex(end_vid)?.point(),
+            split.point(),
+            effective_tolerance,
+            parameter,
+        )?
+    } else {
+        split_parameter_on_curve(
+            &curve,
+            oriented_t0,
+            oriented_t1,
+            topo.vertex(start_vid)?.point(),
+            topo.vertex(end_vid)?.point(),
+            split.point(),
+            effective_tolerance,
+        )?
+    };
 
     // The sub-edges run the SOURCE edge's way, `edge.start() → V → edge.end()`
     // over `[t0, ts]` and `[ts, t1]`, whichever way this face traverses it. A
@@ -629,6 +653,20 @@ fn split_parameter_on_curve(
         }
     };
 
+    certify_split_parameter(curve, t0, t1, start, end, split, tolerance, parameter)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn certify_split_parameter(
+    curve: &EdgeCurve,
+    t0: f64,
+    t1: f64,
+    start: Point3,
+    end: Point3,
+    split: Point3,
+    tolerance: f64,
+    parameter: f64,
+) -> Result<f64, BlendError> {
     let scale = t0.abs().max(t1.abs()).max(1.0);
     let parameter_epsilon = 32.0 * f64::EPSILON * scale;
     let inside = if t0 < t1 {
@@ -900,6 +938,27 @@ pub fn closest_on_oriented_edge(
         let parameter = (t1 - t0).mul_add(fraction, t0);
         edge.curve().evaluate_with_endpoints(parameter, start, end)
     };
+    if let EdgeCurve::Circle(circle) = edge.curve() {
+        // The radial foot is exact for a circle. A fixed ternary search
+        // otherwise leaves a scale-dependent residual even for a point
+        // constructed on this very curve, making valid trim roots disappear.
+        let projected = circle.project(target);
+        let period = std::f64::consts::TAU;
+        let base = projected + period * ((f64::midpoint(t0, t1) - projected) / period).round();
+        let mut best = (0.0, evaluate(0.0), (evaluate(0.0) - target).length());
+        for fraction in std::iter::once(1.0).chain((-1..=1).filter_map(|turn| {
+            let parameter = base + f64::from(turn) * period;
+            let fraction = (parameter - t0) / (t1 - t0);
+            (fraction.is_finite() && (0.0..=1.0).contains(&fraction)).then_some(fraction)
+        })) {
+            let point = evaluate(fraction);
+            let distance = (point - target).length();
+            if distance < best.2 {
+                best = (fraction, point, distance);
+            }
+        }
+        return Ok(best);
+    }
     let mut best_index = 0_u32;
     let mut best_point = evaluate(0.0);
     let mut best_distance = (best_point - target).length();
@@ -1572,6 +1631,31 @@ pub fn split_body_boundary_at(
     point: Point3,
     tolerance: f64,
 ) -> Result<Option<VertexId>, BlendError> {
+    Ok(
+        split_body_boundary_with_images(topo, edit, face_id, point, tolerance)?
+            .map(|split| split.vertex),
+    )
+}
+
+/// A certified boundary split and the new edges constructed from its source.
+pub struct BoundarySplit {
+    /// The existing or newly constructed boundary vertex.
+    pub vertex: VertexId,
+    /// Source and its two children; absent when an existing vertex was reused.
+    pub edge_images: Option<(EdgeId, [EdgeId; 2])>,
+}
+
+/// [`split_body_boundary_at`] with construction-derived edge images.
+///
+/// # Errors
+/// Returns the same certification and topology errors as the vertex-only API.
+pub fn split_body_boundary_with_images(
+    topo: &mut Topology,
+    edit: &mut BodyEdit<'_>,
+    face_id: FaceId,
+    point: Point3,
+    tolerance: f64,
+) -> Result<Option<BoundarySplit>, BlendError> {
     let wire = topo
         .wire(topo.face(face_id)?.outer_wire())?
         .edges()
@@ -1585,7 +1669,10 @@ pub fn split_body_boundary_at(
         }
     }
     if let Some((vertex, _)) = nearest_vertex {
-        return Ok(Some(vertex));
+        return Ok(Some(BoundarySplit {
+            vertex,
+            edge_images: None,
+        }));
     }
     let mut nearest_edge: Option<(usize, f64)> = None;
     for (position, oriented) in wire.iter().enumerate() {
@@ -1598,8 +1685,72 @@ pub fn split_body_boundary_at(
         return Ok(None);
     };
     let vertex = topo.add_vertex(Vertex::new(point, distance.max(VERTEX_TOL)));
-    split_edge_at(topo, edit, None, &wire[position], vertex)?;
-    Ok(Some(vertex))
+    let (before, after) = split_edge_at(topo, edit, None, &wire[position], vertex)?;
+    Ok(Some(BoundarySplit {
+        vertex,
+        edge_images: Some((wire[position].edge(), [before.edge(), after.edge()])),
+    }))
+}
+
+/// Split one uniquely identified boundary edge at a supplied parameter witness.
+///
+/// The source edge, strict interior parameter, evaluated point, existing
+/// endpoint certificates and propagated child domains are all checked. This
+/// avoids repeating a nearest-point search after a contour solver already
+/// identified its source curve. Like the other boundary APIs, callers own
+/// the enclosing build transaction.
+///
+/// # Errors
+/// Refuses an absent or repeated boundary use, an invalid parameter or a
+/// point outside the existing certification tolerance, before rewriting it.
+#[allow(clippy::too_many_arguments)]
+pub fn split_body_boundary_at_parameter(
+    topo: &mut Topology,
+    edit: &mut BodyEdit<'_>,
+    face_id: FaceId,
+    edge: EdgeId,
+    parameter: f64,
+    point: Point3,
+    tolerance: f64,
+) -> Result<BoundarySplit, BlendError> {
+    let uses: Vec<_> = topo
+        .wire(topo.face(face_id)?.outer_wire())?
+        .edges()
+        .iter()
+        .copied()
+        .filter(|oe| oe.edge() == edge)
+        .collect();
+    let [use_] = uses.as_slice() else {
+        return Err(invalid_split(
+            "parameter witness has no unique boundary use".into(),
+        ));
+    };
+    let data = topo.edge(edge)?;
+    let (a, b) = data
+        .strict_domain()
+        .map_err(|error| invalid_split(error.to_string()))?;
+    if !tolerance.is_finite() || tolerance < 0.0 {
+        return Err(invalid_split(
+            "parameter witness has an invalid tolerance".into(),
+        ));
+    }
+    certify_split_parameter(
+        data.curve(),
+        a,
+        b,
+        topo.vertex(data.start())?.point(),
+        topo.vertex(data.end())?.point(),
+        point,
+        tolerance,
+        parameter,
+    )?;
+    let vertex = topo.add_vertex(Vertex::new(point, VERTEX_TOL));
+    let (before, after) =
+        split_edge_at_with_parameter(topo, edit, None, use_, vertex, Some(parameter))?;
+    Ok(BoundarySplit {
+        vertex,
+        edge_images: Some((edge, [before.edge(), after.edge()])),
+    })
 }
 
 /// The position in `wire` whose edge use starts at `vertex`, choosing among
@@ -1861,6 +2012,39 @@ mod tests {
     /// A scope whose input body is every face built so far.
     fn input_scope(topo: &Topology) -> EditScope {
         EditScope::new(topo, topo.faces().iter().map(|(id, _)| id)).unwrap()
+    }
+
+    #[test]
+    fn circle_boundary_foot_preserves_exact_and_wrapped_parameter_witnesses() {
+        use std::f64::consts::{FRAC_PI_2, TAU};
+        for (lo, hi, parameter) in [
+            (0.0, FRAC_PI_2, (3.25_f64 / 9.25).asin()),
+            (TAU - 0.4, TAU + 0.7, TAU + 0.21),
+        ] {
+            let mut topo = Topology::new();
+            let circle = Circle3D::new_with_ref(
+                Point3::new(13.0, -7.0, 3.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                9.25,
+                Vec3::new(1.0, 0.0, 0.0),
+            )
+            .unwrap();
+            let a = topo.add_vertex(Vertex::new(circle.evaluate(lo), VERTEX_TOL));
+            let b = topo.add_vertex(Vertex::new(circle.evaluate(hi), VERTEX_TOL));
+            let point = circle.evaluate(parameter);
+            let mut edge = Edge::new(a, b, EdgeCurve::Circle(circle));
+            edge.set_trim(Some((lo, hi)));
+            let edge = topo.add_edge(edge);
+            for forward in [true, false] {
+                let (fraction, foot, distance) =
+                    closest_on_oriented_edge(&topo, OrientedEdge::new(edge, forward), point)
+                        .unwrap();
+                let expected = (parameter - lo) / (hi - lo);
+                let expected = if forward { expected } else { 1.0 - expected };
+                assert!((fraction - expected).abs() < 1e-12);
+                assert!(distance < 1e-12 && (foot - point).length() < 1e-12);
+            }
+        }
     }
 
     /// Helper: create a unit square face on the XY plane (z=0).

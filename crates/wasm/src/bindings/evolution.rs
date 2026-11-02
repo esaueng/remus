@@ -745,6 +745,42 @@ impl RemusKernel {
         }))
     }
 
+    pub(crate) fn move_faces_journaled_with_quality_json(
+        &mut self,
+        solid: u32,
+        faces: &[u32],
+        distance: f64,
+        corner_stations: Option<u32>,
+    ) -> Result<serde_json::Value, StructuredWasmError> {
+        validate_finite(distance, "distance")?;
+        let permission = super::modifier_detailed::face_move_permission(corner_stations)?;
+        crate::error::validate_work_count(u32::try_from(faces.len()).unwrap_or(u32::MAX), "faces")
+            .map_err(StructuredWasmError::from)?;
+        let solid_id = self
+            .resolve_solid(solid)
+            .map_err(StructuredWasmError::from)?;
+        let face_ids = faces
+            .iter()
+            .map(|&face| self.resolve_face(face))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StructuredWasmError::from)?;
+        super::operations::validate_move_faces_topology_work(self.topo(), solid_id, &face_ids)
+            .map_err(StructuredWasmError::from)?;
+        let (result, quality) = journal_ops::move_faces_journaled_with_quality(
+            self.topo_mut(),
+            solid_id,
+            &face_ids,
+            distance,
+            permission,
+        )
+        .map_err(StructuredWasmError::from)?;
+        let mut value = super::modifier_detailed::face_move_quality_json(quality);
+        value["faceEvolution"] = super::modifier_detailed::face_move_evolution_json(&result.map);
+        value["solid"] = serde_json::json!(crate::handles::solid_id_to_u32(result.solid));
+        value["op"] = serde_json::json!(u32::try_from(result.op.value()).unwrap_or(u32::MAX));
+        Ok(value)
+    }
+
     fn offset_journaled_json(
         &mut self,
         solid: u32,
@@ -1004,6 +1040,13 @@ impl RemusKernel {
                 let faces = get_u32_array(args, "faces")?;
                 let distance = get_f64(args, "distance")?;
                 self.move_faces_journaled_json(solid, &faces, distance)
+            })(),
+            "moveFacesJournaledWithQuality" => (|| {
+                let solid = get_u32(args, "solid")?;
+                let faces = get_u32_array(args, "faces")?;
+                let distance = get_f64(args, "distance")?;
+                let stations = super::modifier_detailed::face_move_stations_arg(args)?;
+                self.move_faces_journaled_with_quality_json(solid, &faces, distance, stations)
             })(),
             "offsetJournaled" => get_u32(args, "solid").and_then(|solid| {
                 get_f64(args, "distance")
@@ -1431,6 +1474,23 @@ impl RemusKernel {
     ) -> Result<String, JsError> {
         validate_finite(distance, "distance")?;
         self.move_faces_journaled_json(solid, faces, distance)
+            .map(|value| value.to_string())
+            .map_err(structured_to_js)
+    }
+
+    /// Journaled face move with explicit sampled-cap permission and quality.
+    ///
+    /// Omitting `cornerStations` retains exact-only behavior. JSON includes
+    /// `solid`, `op`, `quality` and approximation details when used.
+    #[wasm_bindgen(js_name = "moveFacesJournaledWithQuality")]
+    pub fn move_faces_journaled_with_quality_js(
+        &mut self,
+        solid: u32,
+        faces: &[u32],
+        distance: f64,
+        corner_stations: Option<u32>,
+    ) -> Result<String, JsError> {
+        self.move_faces_journaled_with_quality_json(solid, faces, distance, corner_stations)
             .map(|value| value.to_string())
             .map_err(structured_to_js)
     }

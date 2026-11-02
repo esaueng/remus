@@ -19,8 +19,16 @@ pub(super) struct AxialBlendClearance {
 }
 
 impl AxialBlendClearance {
+    pub(super) fn reached(&self, distance: f64) -> bool {
+        distance * self.gap > 0.0 && distance.abs() + Tolerance::new().linear >= self.gap.abs()
+    }
+
+    pub(super) const fn fixed(&self) -> FaceId {
+        self.fixed
+    }
+
     pub(super) fn check(&self, distance: f64) -> Result<(), OperationsError> {
-        if distance * self.gap > 0.0 && distance.abs() + Tolerance::new().linear >= self.gap.abs() {
+        if self.reached(distance) {
             return Err(remus_offset::OffsetError::TopologyChange {
                 face: Some(self.moving),
                 edge: None,

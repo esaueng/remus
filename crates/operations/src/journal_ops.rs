@@ -939,6 +939,36 @@ pub fn move_faces_journaled(
     })
 }
 
+/// [`move_faces_journaled`] with explicit sampled-reconstruction permission.
+///
+/// Returns construction quality alongside the journaled result. Exact-only
+/// callers pass `None`; every failure restores topology and journal together.
+///
+/// # Errors
+/// Returns a geometry or history recording error.
+pub fn move_faces_journaled_with_quality(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces: &[remus_topology::FaceId],
+    distance: f64,
+    approximation: Option<crate::face_move_quality::FaceMoveApproximation>,
+) -> Result<(JournaledSolidOp, crate::face_move_quality::FaceMoveQuality), OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "move_faces", &[solid])?;
+        let (edit, quality) = crate::face_move_quality::edit_with_quality(
+            topo,
+            solid,
+            faces,
+            distance,
+            approximation,
+        )?;
+        Ok((
+            record_qualified_face_move(topo, pending, solid, edit, quality)?,
+            quality,
+        ))
+    })
+}
+
 /// [`move_faces_journaled`] with the pre-operation scope already walked:
 /// `scope` is [`solid_entity_keys`] of the source and `edit` the move.
 pub(crate) fn move_faces_journaled_with_scope(
@@ -954,7 +984,7 @@ pub(crate) fn move_faces_journaled_with_scope(
     })
 }
 
-fn record_face_move(
+pub(crate) fn record_face_move(
     topo: &mut Topology,
     pending: PendingOp,
     (result, boundary_pairs): crate::push_pull::DirectEditEvolution,
@@ -966,6 +996,32 @@ fn record_face_move(
         &result.evolution,
         &[result.solid],
         &boundary_pairs,
+    )?;
+    Ok(JournaledSolidOp {
+        solid: result.solid,
+        op,
+        map: result.evolution,
+    })
+}
+
+pub(crate) fn record_qualified_face_move(
+    topo: &mut Topology,
+    pending: PendingOp,
+    source: SolidId,
+    (result, pairs): crate::push_pull::DirectEditEvolution,
+    quality: crate::face_move_quality::FaceMoveQuality,
+) -> Result<JournaledSolidOp, OperationsError> {
+    if quality == crate::face_move_quality::FaceMoveQuality::Exact {
+        return record_face_move(topo, pending, (result, pairs));
+    }
+    let outputs = crate::face_move_quality::boundary_outputs(topo, source, &result, &pairs)?;
+    let op = record_entity_evolution_with_outputs(
+        topo,
+        pending,
+        &result.evolution,
+        &[result.solid],
+        &pairs,
+        &outputs,
     )?;
     Ok(JournaledSolidOp {
         solid: result.solid,

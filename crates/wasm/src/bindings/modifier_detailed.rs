@@ -61,8 +61,77 @@ const QUALITY_EXACT: &str = "exact";
 /// Quality label of a disclosed approximate result.
 const QUALITY_APPROXIMATE: &str = "approximate";
 
+pub(super) fn face_move_stations_arg(args: &Value) -> Result<Option<u32>, StructuredWasmError> {
+    if args.get("cornerStations").is_none_or(Value::is_null) {
+        Ok(None)
+    } else {
+        crate::helpers::get_u32(args, "cornerStations").map(Some)
+    }
+}
+
+pub(super) fn face_move_permission(
+    stations: Option<u32>,
+) -> Result<Option<remus_operations::face_move_quality::FaceMoveApproximation>, StructuredWasmError>
+{
+    stations
+        .map(|stations| {
+            if !(16..=2048).contains(&stations) {
+                return Err(StructuredWasmError::from(WasmError::InvalidInput {
+                    reason: "cap reconstruction requires 16..=2048 stations".into(),
+                }));
+            }
+            Ok(remus_operations::face_move_quality::FaceMoveApproximation {
+                stations: stations as usize,
+            })
+        })
+        .transpose()
+}
+
+pub(super) fn face_move_quality_json(
+    quality: remus_operations::face_move_quality::FaceMoveQuality,
+) -> Value {
+    use remus_operations::face_move_quality::FaceMoveQuality;
+    match quality {
+        FaceMoveQuality::Exact => serde_json::json!({"quality": "exact"}),
+        FaceMoveQuality::SampledCapJoin { stations } => serde_json::json!({
+            "quality": "approximate", "construction": "sampledCapJoin", "cornerStations": stations,
+        }),
+    }
+}
+
+pub(super) fn face_move_evolution_json(map: &remus_operations::evolution::EvolutionMap) -> Value {
+    let mut deleted: Vec<_> = map.deleted.iter().copied().collect();
+    deleted.sort_unstable();
+    serde_json::json!({
+        "origin": map.origin.as_str(),
+        "modified": map.modified,
+        "generated": map.generated,
+        "deleted": deleted,
+        "unresolved": map.unresolved,
+    })
+}
+
 #[wasm_bindgen]
 impl RemusKernel {
+    /// Move faces with explicit permission for sampled cap-corner reconstruction.
+    ///
+    /// Omitting `cornerStations` preserves exact-only behavior. Supplying a
+    /// 16..=2048 station budget permits a validated approximate cap join;
+    /// `details.quality` and `details.cornerStations` disclose its construction.
+    #[wasm_bindgen(js_name = "moveFacesWithQualityDetailed")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn move_faces_with_quality_detailed(
+        &mut self,
+        solid: u32,
+        faces: Vec<u32>,
+        distance: f64,
+        corner_stations: Option<u32>,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        Ok(self
+            .move_faces_with_quality_detailed_impl(solid, &faces, distance, corner_stations)
+            .into_ts()?)
+    }
+
     /// Move selected faces and return an exact result or a typed refusal.
     ///
     /// Additive twin of [`moveFaces`](Self::move_faces_binding), with the same
@@ -286,8 +355,19 @@ impl RemusKernel {
         faces: &[u32],
         distance: f64,
     ) -> SolidOperationDetailedResult {
+        self.move_faces_with_quality_detailed_impl(solid, faces, distance, None)
+    }
+
+    pub(crate) fn move_faces_with_quality_detailed_impl(
+        &mut self,
+        solid: u32,
+        faces: &[u32],
+        distance: f64,
+        corner_stations: Option<u32>,
+    ) -> SolidOperationDetailedResult {
         self.run_modifier_detailed("moveFaces", "Move faces", |kernel| {
             validate_finite(distance, "distance")?;
+            let permission = face_move_permission(corner_stations)?;
             validate_work_count(u32::try_from(faces.len()).unwrap_or(u32::MAX), "faces")?;
             let solid_id = kernel.resolve_solid(solid)?;
             let face_ids = faces
@@ -299,16 +379,19 @@ impl RemusKernel {
                 solid_id,
                 &face_ids,
             )?;
-            let result = remus_operations::push_pull::move_faces(
+            let result = remus_operations::face_move_quality::move_faces_with_quality(
                 kernel.topo_mut(),
                 solid_id,
                 &face_ids,
                 distance,
+                permission,
             )?;
-            let mut details = Map::new();
-            details.insert("quality".into(), Value::from(QUALITY_EXACT));
+            let mut details = face_move_quality_json(result.quality)
+                .as_object()
+                .cloned()
+                .unwrap_or_default();
             details.insert("distance".into(), Value::from(distance));
-            Ok((solid_id_to_u32(result), details))
+            Ok((solid_id_to_u32(result.result.solid), details))
         })
     }
 

@@ -339,6 +339,11 @@ Quick reference — find the right file for any task:
 | Vertex blend / corner solver | `corner.rs` |
 | Face trimming along contact curves | `trimmer.rs` |
 | Copy-on-write boundary rewrites, so a blend never edits faces its input still uses | `body_edit.rs` |
+| Rebuild a rounded planar cap against joined supports with explicit sampled-corner permission | `cap_reblend.rs` |
+| Restore retained sampled shoulder limits before reversing a joined-cap edit on an owned disposable candidate | `cap_reblend/restore.rs` |
+| Restore the full analytic rounded cap after a recovered shoulder separates from its rim | `cap_reblend/unjoin.rs` |
+| Share the analytic shoulder spring with its fixed rim at zero-width contact onset | `cap_reblend/touch.rs` |
+| Rolling sections for a boss seam crossing an equal-radius convex round | `equal_radius_boss_corner.rs` |
 | Shared builder utilities | `builder_utils.rs` |
 | G1-continuous fillet edge-chain expansion | `g1_chain.rs` |
 | One band along a concave tangent chain whose second face changes (a boss seam over an earlier round): supports switched at bisected stations, the rail trimmed across its seam edge and closed back to the chain end | `rail_chain.rs` |
@@ -427,6 +432,7 @@ Quick reference — find the right file for any task:
 | Closed-form formulas (box, sphere, cylinder, etc.) | `properties/analytic.rs` |
 | AABB computation | `properties/bbox.rs` |
 | Face Gauss integration, with area/volume/vector-flux-only orientation accumulation | `properties/face_integrator.rs` |
+| Complete degree-(2,1) natural NURBS rectangles certified from iso-row and circular-section boundary images | `properties/face_integrator/natural_rectangle.rs` |
 | Bounded native Circle latitude domains, independent of trim sampling | `properties/face_integrator/sphere_latitude.rs` |
 | Bounded sampling of native-contiguous exact equator runs | `properties/face_integrator/sphere_latitude/partition_sampling.rs` |
 | Bounded h-refinement on an already resolved rectangular analytic domain | `properties/face_integrator/adaptive.rs` |
@@ -613,11 +619,14 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Shared loft/sweep/pipe/revolve end caps | `cap.rs` |
 | Journal ingestion for modeling operations | `journal_ops.rs` |
 | Direct push/pull face editing | `push_pull.rs` |
+| Face moves with explicit permission and quality disclosure for sampled cap reconstruction | `face_move_quality.rs` |
 | Prepared face moves: repeated moves of one source selection to new distances, distance-independent analysis read once (`PreparedFaceMove`) | `prepared_move.rs` |
 | Work-count guards for interactive face moves: writes independent of unrelated bodies, constant slots per drag tick (tests) | `prepared_move/tests/scaling.rs` |
 | Exact support-surface replacement with topology-preserving re-limitation | `replace_surface.rs` |
 | Exact constant-radius blend-band resizing; a bore resize that carries its rim rounds (`resize_cylindrical_face_with_blends`) | `resize_blend.rs` |
 | Exact axial travel limits between a moving shoulder blend and a full fixed rim on their shared cylindrical support | `resize_blend/axial_clearance.rs` |
+| Approximate cap reconstruction after a translating shoulder reaches a fixed rim, with construction history | `resize_blend/axial_rim_join.rs` |
+| Closed-form vector area of a translating region's construction boundary for the swept-volume sign guard | `resize_blend/translation_shadow.rs` |
 | Fillets onto earlier bands: remove them, fillet, rebuild largest first, so fillet order does not matter (the cascade's last fallback) | `resize_blend/fillet_reorder.rs` |
 | Differential oracle for the blend move's translation path: the whole-document scratch-copy version kept verbatim, also with its copy-validation refusal forced through a test hook (tests) | `resize_blend/translation_oracle_tests.rs` |
 | Blend-translation move carrying an imported edge's stamped endpoint certificate through the strict arena I/O gate (tests) | `resize_blend/endpoint_certificate_tests.rs` |

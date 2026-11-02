@@ -7,6 +7,9 @@
 //! the topology arena is restored to its pre-call state.
 
 mod axial_clearance;
+mod axial_rim_join;
+mod translation_shadow;
+pub(crate) use axial_rim_join::move_with_cap_reblend;
 
 use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -2562,31 +2565,11 @@ fn translated_entities(
     }))
 }
 
-/// The distance-dependent half of [`move_translation_invariant_blend_region`]
-/// for an `analysis` of `solid`'s current content.
-#[allow(clippy::too_many_lines)]
-fn execute_translation(
+fn translated_solid_copy(
     topo: &mut Topology,
     solid: SolidId,
-    analysis: &TranslationAnalysis,
-    distance: f64,
-) -> Result<BlendMoveEntities, OperationsError> {
-    analysis.swept.check(distance)?;
-    for clearance in &analysis.axial_clearance {
-        clearance.check(distance)?;
-    }
-    let entities = analysis
-        .entities
-        .as_ref()
-        .map_err(|reason| reconstruction(reason.clone()))?;
-    let source_faces = &analysis.source_faces;
-    let source_counts = analysis.source_counts;
-    let translation = BlendTranslation {
-        vertices: entities.vertices.clone(),
-        edges: entities.edges.clone(),
-        faces: entities.faces.clone(),
-        delta: analysis.direction * distance,
-    };
+    translation: &BlendTranslation,
+) -> Result<crate::copy::CopiedSolidEntities, OperationsError> {
     // The result is the copy of the translated solid, written straight from
     // the input with the translated geometry in place of the old: no
     // document-sized scratch copy, the same entities allocated in the same
@@ -2626,6 +2609,35 @@ fn execute_translation(
             })
             .collect::<Result<_, OperationsError>>()?,
     )?;
+    Ok(copied)
+}
+
+/// The distance-dependent half of [`move_translation_invariant_blend_region`]
+/// for an `analysis` of `solid`'s current content.
+#[allow(clippy::too_many_lines)]
+fn execute_translation(
+    topo: &mut Topology,
+    solid: SolidId,
+    analysis: &TranslationAnalysis,
+    distance: f64,
+) -> Result<BlendMoveEntities, OperationsError> {
+    analysis.swept.check(distance)?;
+    for clearance in &analysis.axial_clearance {
+        clearance.check(distance)?;
+    }
+    let entities = analysis
+        .entities
+        .as_ref()
+        .map_err(|reason| reconstruction(reason.clone()))?;
+    let source_faces = &analysis.source_faces;
+    let source_counts = analysis.source_counts;
+    let translation = BlendTranslation {
+        vertices: entities.vertices.clone(),
+        edges: entities.edges.clone(),
+        faces: entities.faces.clone(),
+        delta: analysis.direction * distance,
+    };
+    let copied = translated_solid_copy(topo, solid, &translation)?;
     let result = copied.solid;
     // Validate the deliverable: the copy is entity-for-entity, so one strict
     // pass serves both it and the translated input, and running it here
@@ -2655,7 +2667,11 @@ fn execute_translation(
     // region the integral cannot vouch for keeps the whole-body mesh
     // comparison with its original slack, so those bodies behave as before.
     let _volume = crate::performance::span("move_faces.blend.translation_volume");
-    let (volume_change, volume_slack) = if let Some(read) = translated_faces_volume_change(
+    let (volume_change, volume_slack) = if let Some(read) =
+        translation_shadow::volume_change(topo, &translation.faces, translation.delta)?
+    {
+        (read.volume, read.uncertainty.max(1e-7))
+    } else if let Some(read) = translated_faces_volume_change(
         topo,
         topo,
         solid,

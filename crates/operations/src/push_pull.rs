@@ -203,7 +203,7 @@ pub(crate) fn move_faces_with_entity_evolution(
 }
 
 /// The strict validation every face move's result must pass.
-fn validate_moved_solid(
+pub(crate) fn validate_moved_solid(
     topo: &Topology,
     faces: &[FaceId],
     result: SolidId,

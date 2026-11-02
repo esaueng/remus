@@ -176,6 +176,96 @@ impl PreparedFaceMove {
         }
     }
 
+    /// The prepared move with explicit permission for sampled cap reconstruction.
+    ///
+    /// # Errors
+    /// Returns a stale-source error or the same atomic geometry refusal as the
+    /// unprepared quality-aware move.
+    pub fn move_faces_with_quality(
+        &mut self,
+        topo: &mut Topology,
+        distance: f64,
+        approximation: Option<crate::face_move_quality::FaceMoveApproximation>,
+    ) -> Result<crate::face_move_quality::QualifiedFaceMove, OperationsError> {
+        self.require_current(topo)?;
+        let (edit, quality) = self.edit_with_quality(topo, distance, approximation)?;
+        Ok(crate::face_move_quality::QualifiedFaceMove {
+            result: edit.0,
+            quality,
+        })
+    }
+
+    /// Journaled prepared move preserving explicit construction quality.
+    ///
+    /// # Errors
+    /// Refuses stale source content, unsupported geometry or failed history
+    /// recording; topology and journal are restored together.
+    pub fn move_faces_journaled_with_quality(
+        &mut self,
+        topo: &mut Topology,
+        distance: f64,
+        approximation: Option<crate::face_move_quality::FaceMoveApproximation>,
+    ) -> Result<(JournaledSolidOp, crate::face_move_quality::FaceMoveQuality), OperationsError>
+    {
+        self.require_current(topo)?;
+        remus_topology::transaction::run_transacted(topo, |topo| {
+            let mut pending = topo.journal_begin("move_faces");
+            pending.add_scope(self.scope.clone());
+            let (edit, quality) = self.edit_with_quality(topo, distance, approximation)?;
+            Ok((
+                crate::journal_ops::record_qualified_face_move(
+                    topo, pending, self.solid, edit, quality,
+                )?,
+                quality,
+            ))
+        })
+    }
+
+    fn edit_with_quality(
+        &mut self,
+        topo: &mut Topology,
+        distance: f64,
+        approximation: Option<crate::face_move_quality::FaceMoveApproximation>,
+    ) -> Result<
+        (
+            DirectEditEvolution,
+            crate::face_move_quality::FaceMoveQuality,
+        ),
+        OperationsError,
+    > {
+        use crate::face_move_quality::FaceMoveQuality;
+        crate::face_move_quality::check_permission(approximation)?;
+        match self.edit(topo, distance) {
+            Ok(edit) => Ok((edit, FaceMoveQuality::Exact)),
+            Err(error) => {
+                let Some(permission) = approximation else {
+                    return Err(error);
+                };
+                remus_topology::transaction::run_transacted(topo, |topo| {
+                    let moved = crate::resize_blend::move_with_cap_reblend(
+                        topo,
+                        self.solid,
+                        &self.faces,
+                        distance,
+                        permission,
+                    )?;
+                    Ok((
+                        (
+                            MoveFacesResult {
+                                solid: moved.solid,
+                                evolution: moved.evolution,
+                            },
+                            moved.boundary_pairs,
+                        ),
+                        FaceMoveQuality::SampledCapJoin {
+                            stations: permission.stations,
+                        },
+                    ))
+                })
+            }
+        }
+    }
+
     fn edit(
         &mut self,
         topo: &mut Topology,

@@ -300,6 +300,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "resizeCylindricalFaceJournaled"
         | "replaceSurfaceJournaled"
         | "moveFacesJournaled"
+        | "moveFacesJournaledWithQuality"
         | "offsetJournaled"
         | "extrudeJournaled"
         | "revolveJournaled"
@@ -330,6 +331,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "pushPullFace"
         | "moveFaces"
         | "moveFacesDetailed"
+        | "moveFacesWithQualityDetailed"
         | "resizeCylindricalFace"
         | "extrude"
         | "extrudeDetailed"
@@ -1736,6 +1738,23 @@ impl RemusKernel {
                     let distance = get_f64(args, "distance")?;
                     Ok::<_, StructuredWasmError>(
                         self.move_faces_detailed_impl(solid, &faces, distance),
+                    )
+                })()
+                .unwrap_or_else(|error| {
+                    SolidOperationDetailedResult::error(error.with_direct_operation("moveFaces"))
+                });
+                serde_json::to_value(result).map_err(StructuredWasmError::from)
+            }
+            "moveFacesWithQualityDetailed" => {
+                let result = (|| {
+                    let solid = get_u32(args, "solid")?;
+                    let faces = get_u32_array(args, "faces")?;
+                    let distance = get_f64(args, "distance")?;
+                    let stations = super::modifier_detailed::face_move_stations_arg(args)?;
+                    Ok::<_, StructuredWasmError>(
+                        self.move_faces_with_quality_detailed_impl(
+                            solid, &faces, distance, stations,
+                        ),
                     )
                 })()
                 .unwrap_or_else(|error| {
